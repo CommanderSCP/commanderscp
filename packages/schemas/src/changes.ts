@@ -6,7 +6,11 @@ import {
   cursorPageResponseSchema
 } from "./common.js";
 import { ControlRunSchema } from "./governance.js";
-import { ExecutorTypeSchema, ExecutorCategorySchema } from "./executors.js";
+import {
+  ExecutorTypeSchema,
+  ExecutorCategorySchema,
+  PipelineClassificationSchema
+} from "./executors.js";
 
 /**
  * M3 Change Coordination Engine wire contract (DESIGN.md §9, §10.4, BUILD_AND_TEST.md §8 M3).
@@ -217,7 +221,22 @@ export type Decision = z.infer<typeof DecisionSchema>;
 
 export const DecisionIdParamSchema = z.object({ id: z.string().uuid() });
 export const DecisionListQuerySchema = CursorPageQuerySchema.extend({
-  subjectId: z.string().uuid().optional()
+  subjectId: z.string().uuid().optional(),
+  /** Exact-match filter on `kind` (ADR-0028 increment 4) — `stage_dependency`, `watchdog`, `gate`, …
+   *  Additive optional query parameter: an old client omits it and gets the unfiltered page it
+   *  always got.
+   *
+   *  IT ANSWERS "which mechanism", NOT "what happened": several kinds carry more than one verdict
+   *  against the same subject. `stage_dependency` in particular is written both as a `hold` (a
+   *  trigger withheld — `reconcile.ts`) and as an `allow` (the declaration stripped on promotion
+   *  import — `federation/promotion-repo.ts`), so on an outpost the newest row of that kind is an
+   *  `allow` for a change that may well be held. Read the `verdict` on each row; a kind alone is not
+   *  a state.
+   *
+   *  Usable WITHOUT `subjectId` on purpose — that is the whole point, the operator asking about a
+   *  coupling does not have the change id — and drizzle/0056's `decisions_org_kind_created` is what
+   *  makes that shape an index probe instead of the parallel seq scan it measured as. */
+  kind: z.string().min(1).max(128).optional()
 });
 export type DecisionListQuery = z.infer<typeof DecisionListQuerySchema>;
 export const DecisionListResponseSchema = cursorPageResponseSchema(DecisionSchema);
@@ -339,6 +358,115 @@ export const ChangeWaitStatusSchema = z.object({
 export type ChangeWaitStatus = z.infer<typeof ChangeWaitStatusSchema>;
 
 // -------------------------------------------------------------------------------------------
+// ADR-0028 increment 4 — THE STAGE-DEPENDENCY WAIT STATUS.
+//
+// The `requires` wait status above and this one are DIFFERENT COUPLINGS and deliberately do not
+// share a shape. `requires` is keyed on `{key, at}` and parks the WHOLE change in `waiting`; a
+// stage dependency is keyed on (component x deployment-target) and withholds ONE wave target's
+// trigger while the change stays `executing`. Widening `ChangeWaitStatusSchema` to carry both
+// would have made `requirements[]` mean two things for its two existing consumers (the CLI's
+// `printWaitStatusBody` and the web change-pipeline view), so this is a sibling field instead.
+//
+// READ LIVE, NEVER OFF THE PINNED DECISION (coupled-pipelines.md §3.6, and the reason
+// `resolveWaitStatus` exists at all). `recordStageDependencyHold` writes a `hold` Decision and
+// NOTHING ever writes a clearing row, so the newest `stage_dependency` row of a change that was
+// briefly held, triggered, succeeded and reached `accepted` is still a `hold` — answering "is this
+// held?" from that row would rebuild, on a read surface, precisely the permanent-marker bug the
+// `hold` verdict was chosen to avoid. Every field below is re-derived at request time by
+// `evaluateStageDependencies`, the same predicate reconcile runs.
+// -------------------------------------------------------------------------------------------
+
+/** Which branch of ADR-0028 decision 4 produced a verdict — mirrors `StageDependencyBranch`
+ *  (`coordination/stage-dependency-hold.ts`), whose doc comment defines each one. Three satisfy
+ *  (`not_placed`/`succeeded`/`min_weight`), three hold (`never_deployed`/`behind`/
+ *  `weight_unreadable`), `undeclarable` holds an unparseable stored entry, and `unscopeable`/`self`
+ *  record a coupling that had nothing to scope by / named its own declarer. */
+export const StageDependencyBranchSchema = z.enum([
+  "not_placed",
+  "succeeded",
+  "min_weight",
+  "never_deployed",
+  "behind",
+  "weight_unreadable",
+  "undeclarable",
+  "unscopeable",
+  "self"
+]);
+export type StageDependencyBranchWire = z.infer<typeof StageDependencyBranchSchema>;
+
+/** One dependency's LIVE verdict at one place. The optional fields are optional for the same reason
+ *  they are optional on the persisted verdict: they are echoes of a qualifier the declaration
+ *  carried, and a change that declared none must not grow fields claiming otherwise. */
+export const ChangeStageDependencyVerdictSchema = z.object({
+  /** The component object id depended on — or, for an `undeclarable` entry, the raw stored entry
+   *  rendered as JSON, because there was no parseable id to name. Not `.uuid()` for that reason. */
+  dependsOn: z.string(),
+  /** The dependency's display name, for a readable "held behind …" surface. Null when the id does
+   *  not resolve to a live object (a deleted component, or an `undeclarable` entry's raw JSON). */
+  dependsOnName: z.string().nullable(),
+  branch: StageDependencyBranchSchema,
+  satisfied: z.boolean(),
+  /** Present only when this dependency came from a plain `depends_on` edge between two of this
+   *  change's own targets rather than from the change's own declaration (ADR-0028 decision 6). The
+   *  remedy differs — delete an edge, not edit a pipeline — so it has to be visible. */
+  source: z.literal("edge").optional(),
+  /** The status of the dependency's most recent wave target at this place, when it had one. */
+  dependencyStatus: z.string().optional(),
+  /** Echoed only when the declaration carried the qualifier. */
+  minWeight: z.number().int().optional(),
+  /** The declared `minWeight` was NOT applied, because a `depends_on` edge between two targets of
+   *  this change asserts the stricter plain-`succeeded` test and a declaration may not weaken it. */
+  minWeightSupersededByEdge: z.literal(true).optional(),
+  /** Why a declared `minWeight` could not be read — mirrors `WeightUnreadableCause`. Present even on
+   *  a verdict that went on to be SATISFIED by the universal `succeeded` test: the release proceeded,
+   *  but not for the reason its author asked for. An unreadable weight never means "satisfied". */
+  weightUnreadable: z.enum(["no_weight", "not_observed", "stale"]).optional(),
+  /** The one-line operator sentence, from `describeStageDependencyHold` — the SAME function the hold
+   *  Decision's `reasonTree.blocked` lines are built from, so the API and the audit record cannot
+   *  drift into describing the same verdict differently. */
+  summary: z.string()
+});
+export type ChangeStageDependencyVerdict = z.infer<typeof ChangeStageDependencyVerdictSchema>;
+
+/** One wave target of the active wave that has not been triggered yet, and every dependency verdict
+ *  that applies to it. Only `pending`/`triggering` targets appear: a target already handed to its
+ *  executor is past the hold, and re-deciding its coupling would report a wait that is over. */
+export const ChangeStageDependencyTargetSchema = z.object({
+  targetObjectId: z.string().uuid(),
+  targetName: z.string().nullable(),
+  /** The (component, place) pair this wave target resolves to. BOTH null for a legacy-shaped target
+   *  naming a component rather than a placement — the `unscopeable` fail-open, where there is no
+   *  place for a stage-scoped hold to be scoped by and the declaration is NOT enforced. */
+  componentObjectId: z.string().uuid().nullable(),
+  componentName: z.string().nullable(),
+  deploymentTargetObjectId: z.string().uuid().nullable(),
+  deploymentTargetName: z.string().nullable(),
+  /** True when at least one verdict here is unsatisfied — this target's trigger is being withheld
+   *  right now. */
+  held: z.boolean(),
+  dependencies: z.array(ChangeStageDependencyVerdictSchema)
+});
+export type ChangeStageDependencyTarget = z.infer<typeof ChangeStageDependencyTargetSchema>;
+
+/** A change's stage-dependency status (ADR-0028 increment 4). Present on `explain` for any change
+ *  that declared `stageDependencies` (well-formed or not) OR whose own targets are joined by a
+ *  `depends_on` edge; null otherwise, so it is absent for every uncoupled change. */
+export const ChangeStageDependencyStatusSchema = z.object({
+  /** True when any evaluated target is held. This is a LIVE answer: it goes false the moment the
+   *  dependency lands, with no clearing row to write and none to wait for. */
+  held: z.boolean(),
+  /** The wave this reflects — the first one not `succeeded`/`skipped`, exactly the wave reconcile
+   *  is working. Null when the change has no plan yet, or every wave is done. */
+  waveIndex: z.number().int().nullable(),
+  /** True when any verdict landed on the `unscopeable` branch: a coupling was declared and NOT
+   *  enforced (the wave target names a component, not a placement). The live counterpart of the
+   *  `stage_dependency_unscoped` warn Decision — a fail-open an operator must be able to see. */
+  unenforced: z.boolean(),
+  targets: z.array(ChangeStageDependencyTargetSchema)
+});
+export type ChangeStageDependencyStatus = z.infer<typeof ChangeStageDependencyStatusSchema>;
+
+// -------------------------------------------------------------------------------------------
 // M16.1 — THE UNIVERSAL BOUNDARY SEGMENT (ADR-0011; ADR-0021 D6 vocabulary).
 //
 // A boundary SEGMENT of the component pipeline, composed of two boundary PHASES — *transferred*
@@ -441,6 +569,12 @@ export const ChangeExplainResponseSchema = z.object({
   controlRuns: z.array(ControlRunSchema),
   /** Cross-change coupling status (M12 P4B): null when the change declared no `requires`. */
   waitStatus: ChangeWaitStatusSchema.nullable(),
+  /** ADR-0028 increment 4 — the stage-dependency status, re-evaluated LIVE on this request. `null`
+   *  for a change that coupled nothing. `.nullable().optional()` following `boundarySegment`'s
+   *  precedent below: additive within /v1, so a pre-increment-4 SDK reading a new response is
+   *  unaffected and an old server's response is still valid here. Never `.default()` — a default
+   *  renders the property REQUIRED in the generated SDK type, which is an oasdiff ERR. */
+  stageDependencyStatus: ChangeStageDependencyStatusSchema.nullable().optional(),
   /** M16.1 — the boundary segment. `null` for a change that has NOT crossed a domain boundary:
    *  absent, deliberately not a fabricated empty pass. Optional/additive within /v1 — a pre-M16.1
    *  SDK reading a new response is unaffected, and an old server's response is valid here. */
@@ -458,6 +592,10 @@ export const SourceMappingSchema = z.object({
   sourceKind: z.string(),
   repoPattern: z.string().nullable(),
   pathPattern: z.string().nullable(),
+  /** Glob matched against the event's git REF (`refs/heads/dev`) — the third routing glob
+   *  (ADR-0030 §1). NULL means "match any ref", so every mapping written before it existed keeps
+   *  routing exactly as it did. */
+  refPattern: z.string().nullable(),
   componentObjectId: z.string().uuid(),
   /** WHICH pipeline releases from this source roll (M12 P4A) — the routing Type (ADR-0007). NOT
    *  inferable from `sourceKind` — a GitHub Actions run can apply Terraform or ship an app — so the
@@ -466,6 +604,9 @@ export const SourceMappingSchema = z.object({
   type: ExecutorTypeSchema,
   /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
   category: ExecutorCategorySchema,
+  /** The operator's declared classification of this pipeline (ADR-0030 §2) — UI/reporting only,
+   *  never an enforcement input. `null` for an ordinary pipeline. */
+  classification: PipelineClassificationSchema.nullable(),
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -474,11 +615,18 @@ export const CreateSourceMappingRequestSchema = z.object({
   sourceKind: z.string().min(1),
   repoPattern: z.string().optional(),
   pathPattern: z.string().optional(),
+  /** Glob matched against the event's git ref (`refs/heads/dev`), ADR-0030 §1. Omitted means "match
+   *  any ref" — the pre-0057 behaviour, so an existing caller is unaffected. */
+  refPattern: z.string().optional(),
   component: z.string().min(1), // idOrUrn
   /** The routing Type (ADR-0007). Omitted means 'configuration' (defaulted server-side in
    *  `source-mappings-repo.ts`). `.optional()` not `.default()`: a default renders the property
    *  REQUIRED in the generated SDK request type, an unnecessary extra request-shape break. */
-  type: ExecutorTypeSchema.optional()
+  type: ExecutorTypeSchema.optional(),
+  /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting only. Omitted
+   *  means unclassified. Accepting it here is what makes dev-ness DECLARED rather than inferred
+   *  from the branch name. */
+  classification: PipelineClassificationSchema.optional()
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 
@@ -495,11 +643,25 @@ export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingReque
  * `repoPattern`/`pathPattern` are NULLABLE rather than optional: a NULL pattern is meaningful (it
  * means "match any"), so absent and null must be distinguishable — omitting one would otherwise
  * silently target a different row than the caller sees in the list.
+ *
+ * `refPattern` (ADR-0030 §1) JOINS THE TUPLE, and it had to: it is a routing discriminator, so two
+ * mappings may now differ ONLY by it — `refs/heads/dev` → the dev pipeline and `refs/heads/main` →
+ * the production one, same component, same repo, same path, same Type. A tuple that ignored the ref
+ * would match BOTH and delete the production route along with the dev one, silently, reporting a
+ * `deleted` count the operator would read as success.
+ *
+ * It is `.nullable().optional()` rather than plain `.nullable()` — the ONE asymmetry in this tuple —
+ * because making it required would break every existing caller's request shape. **An ABSENT
+ * `refPattern` is treated as NULL, not as a wildcard**, which is the fail-closed reading: a legacy
+ * caller that omits it deletes only ref-agnostic rows and never reaches a ref-scoped one. It can
+ * therefore UNDER-delete (visible immediately — `deleted` reports 0, which this response exists to
+ * surface) but never OVER-delete a route nobody asked to remove.
  */
 export const DeleteSourceMappingRequestSchema = z.object({
   component: z.string().min(1), // idOrUrn
   repoPattern: z.string().nullable(),
   pathPattern: z.string().nullable(),
+  refPattern: z.string().nullable().optional(),
   type: ExecutorTypeSchema.optional()
 });
 export type DeleteSourceMappingRequest = z.infer<typeof DeleteSourceMappingRequestSchema>;

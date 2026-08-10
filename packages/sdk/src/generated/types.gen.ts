@@ -5993,8 +5993,10 @@ export type GetComponentPipelineResponses = {
             sourceKind: string;
             repoPattern: string | null;
             pathPattern: string | null;
+            refPattern: string | null;
             type: string;
             category: 'build' | 'infrastructure' | 'configuration';
+            classification: 'dev' | 'beta' | null;
             url: string | null;
         }>;
         stages: Array<{
@@ -6072,6 +6074,23 @@ export type GetComponentPipelineResponses = {
                     changeId: string | null;
                 }>;
             };
+            hold?: {
+                changeId: string;
+                changeName: string | null;
+                waveIndex: number | null;
+                dependencies: Array<{
+                    dependsOn: string;
+                    dependsOnName: string | null;
+                    branch: 'not_placed' | 'succeeded' | 'min_weight' | 'never_deployed' | 'behind' | 'weight_unreadable' | 'undeclarable' | 'unscopeable' | 'self';
+                    satisfied: boolean;
+                    source?: 'edge';
+                    dependencyStatus?: string;
+                    minWeight?: number;
+                    minWeightSupersededByEdge?: true;
+                    weightUnreadable?: 'no_weight' | 'not_observed' | 'stale';
+                    summary: string;
+                }>;
+            } | null;
             version: string | null;
             unknownFields: Array<string>;
         }>;
@@ -10046,7 +10065,9 @@ export type CreatePlanData = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
+                refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification?: 'dev' | 'beta';
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10149,7 +10170,9 @@ export type CreatePlanResponses = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
+                refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification?: 'dev' | 'beta';
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10207,7 +10230,9 @@ export type CreatePlanResponses = {
                 sourceKind: string;
                 repoPattern: string | null;
                 pathPattern: string | null;
+                refPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification: 'dev' | 'beta' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -10336,7 +10361,9 @@ export type GetPlanResponses = {
                 sourceKind: string;
                 repoPattern?: string;
                 pathPattern?: string;
+                refPattern?: string;
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification?: 'dev' | 'beta';
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10394,7 +10421,9 @@ export type GetPlanResponses = {
                 sourceKind: string;
                 repoPattern: string | null;
                 pathPattern: string | null;
+                refPattern: string | null;
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                classification: 'dev' | 'beta' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -10535,7 +10564,9 @@ export type ApplyPlanResponses = {
                     sourceKind: string;
                     repoPattern?: string;
                     pathPattern?: string;
+                    refPattern?: string;
                     type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    classification?: 'dev' | 'beta';
                 }>;
                 executorBindings?: Array<{
                     targetUrn: string;
@@ -10593,7 +10624,9 @@ export type ApplyPlanResponses = {
                     sourceKind: string;
                     repoPattern: string | null;
                     pathPattern: string | null;
+                    refPattern: string | null;
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+                    classification: 'dev' | 'beta' | null;
                     reason: string;
                 }>;
                 placements?: Array<{
@@ -11082,6 +11115,32 @@ export type ExplainChangeResponses = {
             }>;
             malformed?: Array<unknown>;
         } | null;
+        stageDependencyStatus?: {
+            held: boolean;
+            waveIndex: number | null;
+            unenforced: boolean;
+            targets: Array<{
+                targetObjectId: string;
+                targetName: string | null;
+                componentObjectId: string | null;
+                componentName: string | null;
+                deploymentTargetObjectId: string | null;
+                deploymentTargetName: string | null;
+                held: boolean;
+                dependencies: Array<{
+                    dependsOn: string;
+                    dependsOnName: string | null;
+                    branch: 'not_placed' | 'succeeded' | 'min_weight' | 'never_deployed' | 'behind' | 'weight_unreadable' | 'undeclarable' | 'unscopeable' | 'self';
+                    satisfied: boolean;
+                    source?: 'edge';
+                    dependencyStatus?: string;
+                    minWeight?: number;
+                    minWeightSupersededByEdge?: true;
+                    weightUnreadable?: 'no_weight' | 'not_observed' | 'stale';
+                    summary: string;
+                }>;
+            }>;
+        } | null;
         boundarySegment?: {
             transfer: {
                 state: 'exported' | 'received' | 'not_observed';
@@ -11415,6 +11474,7 @@ export type ListDecisionsData = {
         cursor?: string;
         limit?: number;
         subjectId?: string;
+        kind?: string;
     };
     url: '/decisions';
 };
@@ -11594,6 +11654,7 @@ export type ReportChangeSourceData = {
     body: {
         repo?: string;
         path?: string;
+        ref?: string;
         correlationKey?: string;
         workspace?: string;
         artifactDigest?: string;
@@ -11722,6 +11783,7 @@ export type DeleteSourceMappingData = {
         component: string;
         repoPattern: string | null;
         pathPattern: string | null;
+        refPattern?: string | null;
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
     };
     path: {
@@ -11838,9 +11900,11 @@ export type ListSourceMappingsResponses = {
             sourceKind: string;
             repoPattern: string | null;
             pathPattern: string | null;
+            refPattern: string | null;
             componentObjectId: string;
             type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
             category: 'build' | 'infrastructure' | 'configuration';
+            classification: 'dev' | 'beta' | null;
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -11854,8 +11918,10 @@ export type CreateSourceMappingData = {
         sourceKind: string;
         repoPattern?: string;
         pathPattern?: string;
+        refPattern?: string;
         component: string;
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        classification?: 'dev' | 'beta';
     };
     path: {
         sourceKind: string;
@@ -11923,9 +11989,11 @@ export type CreateSourceMappingResponses = {
         sourceKind: string;
         repoPattern: string | null;
         pathPattern: string | null;
+        refPattern: string | null;
         componentObjectId: string;
         type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         category: 'build' | 'infrastructure' | 'configuration';
+        classification: 'dev' | 'beta' | null;
         createdAt: string;
     };
 };

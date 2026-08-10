@@ -1,0 +1,105 @@
+-- ===========================================================================================
+-- ADR-0028 INCREMENT 4 — THE `kind` FILTER ON `GET /decisions`, AND THE INDEX THAT MAKES IT
+-- SHIPPABLE. Same rule as 0044 and 0046: make the good plan the ONLY plan, before the query exists
+-- in a release.
+--
+-- THE READ. `DecisionListQuerySchema` gains an optional `kind`, so `coordination/decisions-repo.ts`'s
+-- `listDecisions` can now be issued as:
+--
+--     WHERE org_id = $1 AND kind = $2                 -- NO subject_id
+--     ORDER BY created_at ASC, id ASC
+--     LIMIT $3 + 1
+--
+-- That is deliberately the shape WITHOUT a subject: the filter exists because
+-- `federation/promotion-repo.ts` promises `scp decision list --kind stage_dependency` to the operator
+-- asking "what happened to my coupling here?" — precisely the person who does NOT know the change id.
+-- With a subject it is already covered by 0044's `(org_id, subject_id, kind, created_at DESC)`.
+--
+-- NO EXISTING INDEX CARRIES `kind` WITHOUT `subject_id` LEADING. `decisions_org_subject` is
+-- (org_id, subject_id, created_at), `decisions_org_created` is (org_id, created_at, id),
+-- `decisions_org_subject_kind_created` (0044) leads with subject_id, and
+-- `decisions_org_subject_block_created` (0046) is a partial on the verdict. The best a kind-only
+-- filter could hope for is `kind = …` as a heap FILTER on a walk of `decisions_org_created`. It does
+-- not even get that. MEASURED:
+--
+--     Limit (actual time=98.867..99.940 rows=101)
+--       Buffers: shared hit=1509 read=54141
+--       ->  Gather Merge  ->  Sort (Sort Key: created_at, id)
+--             ->  Parallel Seq Scan on decisions
+--                   Filter: ((org_id = …) AND (kind = 'stage_dependency'))
+--                   Rows Removed by Filter: 1333333        (x3 workers = the whole table)
+--     Execution Time: 99.985 ms
+--
+-- A PARALLEL SEQ SCAN, not an index scan: with the kind selective enough the planner prefers
+-- scanning all 4,000,400 rows and sorting the survivors to walking `decisions_org_created` far
+-- enough to fill a page of 100. 55,650 buffers and the entire table read to return 101 rows — the
+-- exact "do not ship a query that table-scans `decisions`" case, and it gets worse in two ways at
+-- once as an instance ages: the table grows, and `ORDER BY created_at ASC` means a page of a RECENTLY
+-- INTRODUCED kind (`stage_dependency` shipped days ago) is at the far END of the scan.
+--
+-- The common-kind case is not the reassurance it looks like — with `kind = 'gate'` (a third of the
+-- table) the planner does pick `decisions_org_created` and finishes in 1.045 ms, because 101 matches
+-- turn up almost immediately. Selectivity decides which plan runs, so the same endpoint is fast or
+-- catastrophic depending on which kind an operator types. That is not a property to ship.
+--
+-- THE FIX, and measured on the same rows, same box, immediately after:
+--
+--     Limit (actual time=0.044..0.074 rows=101)
+--       Buffers: shared hit=2 read=6
+--       ->  Index Scan using decisions_org_kind_created on decisions
+--             Index Cond: ((org_id = …) AND (kind = 'stage_dependency'))
+--     Execution Time: 0.098 ms
+--
+--     kind-only, rare kind    99.985 ms / 55,650 buffers  ->  0.098 ms / 8 buffers   (~1000x)
+--     kind-only, common kind   1.045 ms /     11 buffers  ->  (unchanged shape, now index-covered)
+--     kind + subject_id        0.796 ms /     20 buffers  ->  unchanged — still 0044's index
+--     no kind at all           0.058 ms /      6 buffers  ->  unchanged — still `decisions_org_created`
+--
+-- No `Rows Removed by Filter` line at all in the fixed plan, and no Sort node: the index key ends in
+-- `created_at, id`, which is the query's ORDER BY verbatim, so the LIMIT stops at 101 index entries.
+--
+-- WHY `id` IS IN THE KEY, where 0044 deliberately left it out. 0044's query is `LIMIT 1` with a
+-- DESC order, where a tiebreak cannot change which row comes back. This one is the CURSOR-PAGINATED
+-- list read: `keysetAfter(created_at, id)` and `keysetOrderBy(created_at, id)` (`pagination.ts`), so
+-- `id` is part of the ordering the pages are cut on. Without it in the key every page is an index
+-- scan plus a sort, and the keyset cursor's tiebreak is exactly what a sort would have to
+-- re-establish for rows sharing a timestamp.
+--
+-- THE WRITE COST, MEASURED THE SAME WAY 0044 MEASURES IT — this is a FIFTH index on an insert-only,
+-- insert-heavy table, so the number matters more than the argument.
+--
+--     bulk INSERT ... SELECT, 100,000 rows, alternated over three rounds:
+--         WITH this index    1,566 / 1,415 / 1,567 ms      (mean 1,516)
+--         WITHOUT it           836 /   889 /   953 ms      (mean   892)
+--     -> 1.70x on a bulk statement: +6.2 microseconds of index maintenance per row.
+--
+--     pgbench, ONE INSERT per transaction — the PRODUCTION shape, where WAL flush and commit
+--     dominate and index maintenance does not (5,000 transactions, two alternated rounds):
+--         WITH this index    0.183 / 0.183 ms per transaction
+--         WITHOUT it         0.171 / 0.173 ms per transaction
+--     -> +0.011 ms (11 microseconds) per Decision written. That is the figure to reason from, and it
+--        is the same 11 us 0044 measured for the index before this one.
+--
+-- Index size 283 MB at 4,000,400 rows; the initial build took 2.7 s.
+--
+-- SCALE OF THE REPRODUCTION, STATED RATHER THAN IMPLIED. 0044 and 0046 were measured on a 12,006,000-
+-- row / 10 GB reproduction of the live homelab; this one is 4,000,400 rows / 1,324 MB (one org, 29
+-- subjects, 90 days, PostgreSQL 16 in a local VM), because the property under test is which PLAN the
+-- planner picks and that flips well below either size. The direction of the error is the safe one:
+-- the seq scan gets strictly worse with more rows, the index probe does not.
+--
+-- WHY AN INDEX RATHER THAN REQUIRING `subjectId` ALONGSIDE `kind`. Requiring it would have made the
+-- filter answer only the question that was already answerable — `scp decision list --subject-id` has
+-- always worked — and left the promoted-change case (`promotion-repo.ts`'s strip record, found by
+-- kind because the operator does not have the id) exactly as unanswerable as it was.
+--
+-- IDEMPOTENT, AND NOT `CONCURRENTLY`, for the reason 0044 spells out: drizzle runs each migration
+-- inside a transaction and `CREATE INDEX CONCURRENTLY` cannot run in one. On a large instance this
+-- holds an ordinary `SHARE` lock for the duration of the build (writes to `decisions` block, reads do
+-- not) — 2.7 s at 4M rows here. An operator who cannot take that window can pre-create it by hand
+-- with `CREATE INDEX CONCURRENTLY` under the same name; `IF NOT EXISTS` then finds it and does
+-- nothing.
+-- ===========================================================================================
+
+CREATE INDEX IF NOT EXISTS "decisions_org_kind_created"
+  ON "decisions" USING btree ("org_id", "kind", "created_at", "id");

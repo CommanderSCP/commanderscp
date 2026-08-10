@@ -92,7 +92,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     const result = await match(sourceKind, repo);
     // Asserted on the resolved VALUES, not on a truthy match: routing this event to the fallback
     // component's configuration pipeline is precisely the wrong outcome, and it must be named.
-    expect(result).toEqual({ componentObjectId: infraComponent, type: "infrastructure" });
+    expect(result).toEqual({
+      componentObjectId: infraComponent,
+      type: "infrastructure",
+      classification: null
+    });
   });
 
   it("the SAME specific mapping wins when the catch-all is inserted AFTER it", async () => {
@@ -112,7 +116,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     await mapping({ sourceKind, componentIdOrUrn: fallbackComponent, type: "configuration" });
 
     const result = await match(sourceKind, repo);
-    expect(result).toEqual({ componentObjectId: infraComponent, type: "infrastructure" });
+    expect(result).toEqual({
+      componentObjectId: infraComponent,
+      type: "infrastructure",
+      classification: null
+    });
   });
 
   it("the winner is STABLE across repeated matches of the same event", async () => {
@@ -152,7 +160,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     });
 
     const result = await match(sourceKind, "acme/something-else-entirely");
-    expect(result).toEqual({ componentObjectId: fallbackComponent, type: "configuration" });
+    expect(result).toEqual({
+      componentObjectId: fallbackComponent,
+      type: "configuration",
+      classification: null
+    });
   });
 
   it("the EXACT pattern beats the wildcard even when the wildcard is OLDER", async () => {
@@ -183,7 +195,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     });
 
     const result = await match(sourceKind, `acme-${suffix}/app`);
-    expect(result).toEqual({ componentObjectId: exactComponent, type: "infrastructure" });
+    expect(result).toEqual({
+      componentObjectId: exactComponent,
+      type: "infrastructure",
+      classification: null
+    });
   });
 
   it("`*` beats `**`, because `*` cannot cross a slash and so matches strictly less", async () => {
@@ -206,7 +222,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     });
 
     const result = await match(sourceKind, `acme-${suffix}/app`);
-    expect(result).toEqual({ componentObjectId: singleStar, type: "infrastructure" });
+    expect(result).toEqual({
+      componentObjectId: singleStar,
+      type: "infrastructure",
+      classification: null
+    });
   });
 
   it("the LONGER literal prefix wins between two same-shaped patterns", async () => {
@@ -237,7 +257,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     const result = await matchPath(sourceKind, `acme-${suffix}/repo`, [
       "alloy/manifests/deploy.yaml"
     ]);
-    expect(result).toEqual({ componentObjectId: narrow, type: "infrastructure" });
+    expect(result).toEqual({
+      componentObjectId: narrow,
+      type: "infrastructure",
+      classification: null
+    });
   });
 
   it("a genuine tie STILL resolves to the older mapping — rule 3 is not removed", async () => {
@@ -262,7 +286,11 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     });
 
     const result = await match(sourceKind, `acme-${suffix}/app`);
-    expect(result).toEqual({ componentObjectId: older, type: "configuration" });
+    expect(result).toEqual({
+      componentObjectId: older,
+      type: "configuration",
+      classification: null
+    });
   });
 
   it("a fully-constrained mapping still beats a more SPECIFIC single-pattern one — rule 1 outranks rule 2", async () => {
@@ -289,6 +317,10 @@ describe("source mapping precedence: the most-constrained mapping wins, determin
     });
 
     const result = await matchPath(sourceKind, `acme-${suffix}/app`, ["anything.yaml"]);
-    expect(result).toEqual({ componentObjectId: bothPatterns, type: "configuration" });
+    expect(result).toEqual({
+      componentObjectId: bothPatterns,
+      type: "configuration",
+      classification: null
+    });
   });
 });

@@ -136,6 +136,17 @@ export interface ExecutorEventCorrelation {
    */
   stateRef?: string;
   labels?: Record<string, string>;
+  /**
+   * The fully-qualified git ref (`refs/heads/dev`) this event is on — the input a `refPattern`
+   * source mapping routes on (ADR-0030 §1). Kept distinct from `correlationKey`, which is a
+   * GROUPING identity whose composition varies by event kind; see `GitProviderEventHint.ref`.
+   *
+   * Poll-vs-push equivalence (DESIGN §12) depends on this being set here as well as on the webhook
+   * path: a git provider's `observe()` and its webhook adapter run the SAME `mapEvent`, so a
+   * ref-scoped mapping must route a POLLED push exactly as it routes a delivered one. Undefined for
+   * any event with no ref.
+   */
+  ref?: string;
   correlationKey?: string;
 }
 

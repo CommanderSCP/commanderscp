@@ -639,7 +639,9 @@ describe("iac/plan-diff: source mappings (C1)", () => {
       sourceKind: "github",
       repoPattern: "acme/api",
       pathPattern: null,
+      refPattern: null,
       type: "configuration",
+      classification: null,
       ...over
     };
   }
@@ -665,7 +667,9 @@ describe("iac/plan-diff: source mappings (C1)", () => {
         sourceKind: "github",
         repoPattern: "acme/api",
         pathPattern: null,
+        refPattern: null,
         type: "configuration",
+        classification: null,
         reason: "no existing source mapping with this identity"
       }
     ]);
@@ -848,7 +852,9 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
     sourceKind: "github",
     repoPattern: "acme/api",
     pathPattern: null,
-    type: "configuration"
+    refPattern: null,
+    type: "configuration",
+    classification: null
   });
 
   const bindingOn = (targetUrn: string): ManifestBinding => ({
@@ -949,7 +955,9 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
     sourceKind: "github",
     repoPattern: "acme/api",
     pathPattern: null,
-    type: "configuration"
+    refPattern: null,
+    type: "configuration",
+    classification: null
   };
 
   const bindingOn: ManifestBinding = {
@@ -975,7 +983,7 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
 
   it("flags the same mapping tuple declared twice", () => {
     expect(duplicateProjectionDeclarations(base({ sourceMappings: [mapping, mapping] }))).toEqual([
-      `sourceMapping github:acme/api:* -> ${COMP} (configuration)`
+      `sourceMapping github:acme/api:*:* -> ${COMP} (configuration)`
     ]);
   });
 

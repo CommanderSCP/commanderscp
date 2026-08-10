@@ -297,6 +297,10 @@ export function mapGithubWebhookEventToHint(
       return {
         repo,
         commitSha: headCommit?.id ?? (p.after as string | undefined),
+        // The same `p.ref` the correlation key already carried, now ALSO surfaced under its own
+        // name (ADR-0030 §1) — the key is a grouping identity, `ref` is the routing input, and a
+        // ref-scoped mapping must read the latter.
+        ref: typeof p.ref === "string" ? p.ref : undefined,
         correlationKey: p.ref as string | undefined,
         ...(paths.length > 0 ? { paths } : {})
       };

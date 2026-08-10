@@ -1,6 +1,7 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { categoryOfType } from "@scp/schemas";
 import type {
+  ComponentPipelineHold,
   ComponentPipelineResponse,
   ComponentPipelineStage,
   ComponentPipelineUnplacedStage
@@ -14,6 +15,7 @@ import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
 import { resolvePolicies } from "../governance/policy-model.js";
 import { readExistingControlOutcomes } from "../governance/control-runner.js";
 import { resolvePipelineForTarget } from "./pipeline-resolution.js";
+import { resolveStageDependencyStatus } from "./stage-dependency-status.js";
 import { parseTopologyWaves } from "./topology-waves.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { federationPeers } from "../db/schema.js";
@@ -170,6 +172,126 @@ async function currentsByPlacement(
       });
     }
     out.set(placementId, currents);
+  }
+  return out;
+}
+
+/** The two wave-target statuses whose trigger can STILL be withheld — reconcile's own set, verbatim
+ *  (`stage-dependency-status.ts` uses the same one for the same reason). A held target is left
+ *  `pending` because the hold `continue`s before `triggerWaveTarget`; `triggering` is what a crash
+ *  mid-claim leaves behind, and reconcile re-offers such a target to the hold on the next tick.
+ *  Anything past those has already been handed to an executor, and a hold cannot un-ring that bell. */
+const WITHHOLDABLE_STATUSES = new Set(["pending", "triggering"]);
+
+/**
+ * WHICH STAGES HAVE A RELEASE SITTING HERE WITH ITS TRIGGER WITHHELD (ADR-0028 increment 4).
+ *
+ * Keyed on the PLACEMENT, because in stage mode a wave target's `target_object_id` IS the placement
+ * — so `status.targets[].targetObjectId` joins to `seed.placement.id` exactly, with no (component,
+ * place) pair to reassemble and no chance of attributing one stage's hold to another.
+ *
+ * ============================================================================================
+ * WHY THIS RE-EVALUATES INSTEAD OF READING THE DECISION IT ALREADY WROTE
+ * ============================================================================================
+ * `recordStageDependencyHold` persists a `hold` Decision carrying exactly the join keys this needs
+ * (`componentObjectId` + `deploymentTargetObjectId` per entry), and reading it would be one query
+ * for the whole page. It is still the wrong source, for the reason `reconcile.ts` spells out where
+ * it chose `verdict: "hold"` over `"block"`: NOTHING anywhere writes a clearing row. The newest
+ * `stage_dependency` row of a change that was briefly held, triggered, succeeded and reached
+ * `accepted` is STILL a `hold`, permanently — so a badge sourced from it would paint every stage
+ * that was EVER held as held forever, which is the permanent-marker bug rebuilt one surface over.
+ * The kind is overloaded on top of that: `applyPromotionImport` writes `stage_dependency`/`allow`
+ * against the same subject, so on an outpost the newest row of that kind is not a hold at all.
+ *
+ * `resolveStageDependencyStatus` is the ONE read side of the hold (`explain` and the watchdog use
+ * the same function) and it re-runs reconcile's own predicate. It is read-only by contract and
+ * persists nothing: stamping a `held` flag onto `change_wave_targets` so this could be a column read
+ * would be one UPDATE per held target per 1 s tick, which is ADR-0024's 1.44 GB/day write
+ * amplification relocated to another table.
+ *
+ * ============================================================================================
+ * WHAT IT COSTS
+ * ============================================================================================
+ * Nothing for a component with nothing releasing (the candidate set is empty and this returns before
+ * any query), and nothing for an uncoupled release: the resolver's declaration parse is in memory
+ * and it returns `null` before touching the plan. The candidates are only those releases that could
+ * still be withheld — a change with a `pending`/`triggering` target at one of THIS component's
+ * placements — which is at most one per pipeline per stage. A candidate whose change is no longer
+ * `executing` costs one indexed state read inside the resolver and stops there.
+ */
+async function holdsByPlacement(
+  tx: TenantTx,
+  orgId: string,
+  currents: Map<string, ComponentPipelineStage["currents"]>
+): Promise<Map<string, ComponentPipelineHold>> {
+  const out = new Map<string, ComponentPipelineHold>();
+
+  // NO LIVE-STATE GATE HERE ANY MORE, and its absence is the fix rather than an omission. This
+  // module used to carry one — `current.changeState !== "executing" && continue` — and it was the
+  // ONLY one of the resolver's three call sites that did, so `explain` and the watchdog reported a
+  // cancelled release as held forever. The gate now lives inside `resolveStageDependencyStatus`
+  // (`isStillTriggerable`), which is the one place every caller passes through. Re-adding a copy
+  // here would restore the two-predicates-one-question shape that produced the bug.
+  //
+  // This filter is a DIFFERENT predicate and stays: a target past `pending`/`triggering` has been
+  // handed to an executor, so no release at this stage could be withheld and there is nothing to
+  // ask the resolver about.
+  const candidates = new Set<string>();
+  for (const list of currents.values()) {
+    for (const current of list) {
+      if (current.targetStatus && WITHHOLDABLE_STATUSES.has(current.targetStatus)) {
+        candidates.add(current.changeId);
+      }
+    }
+  }
+  if (candidates.size === 0) return out;
+
+  const changeRows = await tx
+    .select({ id: objects.id, properties: objects.properties })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.id, [...candidates])));
+
+  const heldByChange = new Map<
+    string,
+    { waveIndex: number | null; byPlacement: Map<string, ComponentPipelineHold["dependencies"]> }
+  >();
+  for (const row of changeRows) {
+    const status = await resolveStageDependencyStatus(tx, orgId, {
+      objectId: row.id,
+      properties: row.properties as Record<string, unknown> | null
+    });
+    if (!status) continue;
+    const byPlacement = new Map<string, ComponentPipelineHold["dependencies"]>();
+    for (const target of status.targets) {
+      if (!target.held) continue;
+      // ONLY THE UNSATISFIED ones. A change declaring three dependencies of which one is behind is
+      // held by that one, and listing the two that are met beside it would bury the answer in the
+      // question.
+      const unsatisfied = target.dependencies.filter((dependency) => !dependency.satisfied);
+      if (unsatisfied.length > 0) byPlacement.set(target.targetObjectId, unsatisfied);
+    }
+    if (byPlacement.size > 0) {
+      heldByChange.set(row.id, { waveIndex: status.waveIndex, byPlacement });
+    }
+  }
+  if (heldByChange.size === 0) return out;
+
+  for (const [placementId, list] of currents) {
+    // `currents` is newest-first (established in `currentsByPlacement`), so the first of this
+    // stage's releases that is actually held is the one to report. A stage carrying a held
+    // `configuration` release and an older, finished `image` one is held by the former.
+    for (const current of list) {
+      const held = heldByChange.get(current.changeId);
+      const dependencies = held?.byPlacement.get(placementId);
+      if (!held || !dependencies) continue;
+      out.set(placementId, {
+        changeId: current.changeId,
+        changeName: current.changeName,
+        waveIndex: held.waveIndex,
+        dependencies
+      });
+      break;
+    }
   }
   return out;
 }
@@ -332,15 +454,20 @@ export async function getComponentPipeline(
       sourceKind: m.sourceKind,
       repoPattern: m.repoPattern ?? null,
       pathPattern: m.pathPattern ?? null,
+      refPattern: m.refPattern ?? null,
       type: m.type,
       category: categoryOfType(m.type),
+      classification: m.classification ?? null,
       url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null)
     }))
     .sort(
       (a, b) =>
         a.category.localeCompare(b.category) ||
         (a.repoPattern ?? "").localeCompare(b.repoPattern ?? "") ||
-        (a.pathPattern ?? "").localeCompare(b.pathPattern ?? "")
+        (a.pathPattern ?? "").localeCompare(b.pathPattern ?? "") ||
+        // Without this, two mappings differing ONLY by ref have no tiebreak and render in whatever
+        // order the query returned — an unstable list for the exact pair this feature creates.
+        (a.refPattern ?? "").localeCompare(b.refPattern ?? "")
     );
 
   const currents = await currentsByPlacement(
@@ -348,6 +475,9 @@ export async function getComponentPipeline(
     orgId,
     placementRows.map((p) => p.id)
   );
+  // ADR-0028 increment 4 — which of those releases is sitting here with its trigger WITHHELD. Read
+  // live off `currents`, so it costs nothing at all for a component with nothing in flight.
+  const holds = await holdsByPlacement(tx, orgId, currents);
   const self = await ensureFederationSelf(tx, orgId);
   // WHO MAINTAINS EACH PLACE. The commander gives the go-ahead; the outpost still runs its own
   // targets (ADR-0017 §2, ADR-0011). Resolved from the target's OWN `origin_domain_id` — never from
@@ -539,6 +669,11 @@ export async function getComponentPipeline(
       current: placementCurrents[0] ?? null,
       currents: placementCurrents,
       gate,
+      // Null means "no stage dependency is withholding this stage's release" — a live answer, not a
+      // remembered one. NOT added to `unknownFields`: see `ComponentPipelineHoldSchema` for why the
+      // one case that looks unobservable (an outpost's stripped-on-import declaration) genuinely is
+      // not held here rather than unknown here.
+      hold: holds.get(seed.placement.id) ?? null,
       version: null,
       // See the module header: always unknown until Phase 4a, and said so explicitly rather than
       // shipped as a confident blank.

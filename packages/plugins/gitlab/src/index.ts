@@ -239,6 +239,9 @@ export function mapGitlabWebhookEventToHint(
       return {
         repo,
         commitSha: (p.checkout_sha as string | undefined) ?? (p.after as string | undefined),
+        // Surfaced under its own name for ref-scoped routing (ADR-0030 §1) — see
+        // `GitProviderEventHint.ref` for why this is not parsed back out of `correlationKey`.
+        ref: typeof p.ref === "string" ? p.ref : undefined,
         correlationKey: p.ref as string | undefined
       };
     }

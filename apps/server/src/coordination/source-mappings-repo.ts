@@ -1,6 +1,12 @@
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
-import { categoryOfType, type SourceMapping, type ExecutorType } from "@scp/schemas";
+import {
+  categoryOfType,
+  parsePipelineClassification,
+  type SourceMapping,
+  type ExecutorType,
+  type PipelineClassification
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
@@ -14,9 +20,11 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     sourceKind: row.sourceKind,
     repoPattern: row.repoPattern,
     pathPattern: row.pathPattern,
+    refPattern: row.refPattern,
     componentObjectId: row.componentObjectId,
     type,
     category: categoryOfType(type),
+    classification: parsePipelineClassification(row.classification),
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -26,8 +34,10 @@ export interface CreateSourceMappingInput {
   sourceKind: string;
   repoPattern?: string;
   pathPattern?: string;
+  refPattern?: string;
   componentIdOrUrn: string;
   type?: ExecutorType;
+  classification?: PipelineClassification;
 }
 
 export async function createSourceMapping(
@@ -43,8 +53,10 @@ export async function createSourceMapping(
       sourceKind: input.sourceKind,
       repoPattern: input.repoPattern ?? null,
       pathPattern: input.pathPattern ?? null,
+      refPattern: input.refPattern ?? null,
       componentObjectId: component.id,
-      type: input.type ?? "configuration"
+      type: input.type ?? "configuration",
+      classification: input.classification ?? null
     })
     .returning();
   if (!row) throw new Error("failed to insert source mapping");
@@ -69,7 +81,9 @@ export interface BackfillSourceMappingInput {
   sourceKind: string;
   repoPattern?: string;
   pathPattern?: string;
+  refPattern?: string;
   type?: ExecutorType;
+  classification?: PipelineClassification;
 }
 
 export interface BackfillSourceMappingsResult {
@@ -123,13 +137,17 @@ export async function backfillSourceMappings(
     }
     const componentId = matches[0]!.id;
 
-    // Idempotent: skip an identical (component, sourceKind, repo, path) mapping — re-running is a no-op.
+    // Idempotent: skip an identical (component, sourceKind, repo, path, ref) mapping — re-running is
+    // a no-op. `refPattern` is part of the comparison because it is a ROUTING discriminator: without
+    // it, a backfill declaring the `dev`-branch mapping would be swallowed as a duplicate of the
+    // ref-agnostic one already on the row, and the dev pipeline would silently never be created.
     const existing = await listSourceMappingsForSource(tx, input.orgId, m.sourceKind);
     const dup = existing.some(
       (e) =>
         e.componentObjectId === componentId &&
         (e.repoPattern ?? null) === (m.repoPattern ?? null) &&
-        (e.pathPattern ?? null) === (m.pathPattern ?? null)
+        (e.pathPattern ?? null) === (m.pathPattern ?? null) &&
+        (e.refPattern ?? null) === (m.refPattern ?? null)
     );
     if (dup) {
       skipped.push({ objectName: m.objectName, reason: "already mapped" });
@@ -141,8 +159,10 @@ export async function backfillSourceMappings(
       sourceKind: m.sourceKind,
       repoPattern: m.repoPattern,
       pathPattern: m.pathPattern,
+      refPattern: m.refPattern,
       componentIdOrUrn: componentId,
-      type: m.type
+      type: m.type,
+      classification: m.classification
     });
     createdSourceMappingIds.push(created.id);
   }
@@ -156,6 +176,10 @@ export interface DeleteSourceMappingsMatchingInput {
   sourceKind: string;
   repoPattern: string | null;
   pathPattern: string | null;
+  /** Part of the identity tuple (ADR-0030 §1) — see the over-deletion note on the function below.
+   *  Required (not optional) here because every in-repo caller is a prune path that MUST discriminate
+   *  on it; the HTTP surface is where absent-means-null back-compat lives. */
+  refPattern: string | null;
   type: ExecutorType;
 }
 
@@ -172,6 +196,13 @@ export interface DeleteSourceMappingsMatchingInput {
  * survivor still correlates — and it would come back as a prune candidate on the next plan forever,
  * so the manifest would never converge. Returns the number of rows removed so the caller can tell a
  * real prune from a no-op.
+ *
+ * `refPattern` is part of the tuple and MUST stay part of it (ADR-0030 §1). It is a routing
+ * discriminator, so two mappings can differ ONLY by it — `refs/heads/dev` → the dev pipeline,
+ * `refs/heads/main` → the production one, same component, same repo, same path, same Type. A tuple
+ * that ignored the ref would match BOTH, so pruning the dev mapping would silently take the
+ * production route with it and report a `deleted` count the caller reads as success. The `is null`
+ * branch below is what keeps a ref-agnostic prune from reaching a ref-scoped row.
  */
 export async function deleteSourceMappingsMatching(
   tx: TenantTx,
@@ -190,6 +221,9 @@ export async function deleteSourceMappingsMatching(
         input.pathPattern === null
           ? isNull(sourceMappings.pathPattern)
           : eq(sourceMappings.pathPattern, input.pathPattern),
+        input.refPattern === null
+          ? isNull(sourceMappings.refPattern)
+          : eq(sourceMappings.refPattern, input.refPattern),
         eq(sourceMappings.type, input.type)
       )
     )
