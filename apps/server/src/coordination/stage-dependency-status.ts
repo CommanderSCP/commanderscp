@@ -18,11 +18,12 @@ import {
 /**
  * ADR-0028 increment 4 — THE READ SIDE OF THE HOLD, and the ONLY one.
  *
- * `explain` (routes/changes.ts) and the watchdog's `executing` stall arm both need the same answer —
- * *which dependency is withholding this change's trigger, at which place, and why* — and they get it
- * from this one function. Two copies would be two predicates, and the second would drift the moment
- * a branch was added: the whole point of ADR-0028 decision 4 is that the branches are
- * DISTINGUISHABLE, which is a property a second implementation cannot inherit.
+ * THREE callers, one predicate: `explain` (routes/changes.ts), the watchdog's `executing` stall arm,
+ * and the component-pipeline projection's per-stage `hold` (component-pipeline.ts). All three need
+ * the same answer — *which dependency is withholding this change's trigger, at which place, and why*
+ * — and they get it from this one function. Two copies would be two predicates, and the second would
+ * drift the moment a branch was added: the whole point of ADR-0028 decision 4 is that the branches
+ * are DISTINGUISHABLE, which is a property a second implementation cannot inherit.
  *
  * LIVE, NOT OFF THE PINNED DECISION. `recordStageDependencyHold` persists a `hold` Decision and
  * NOTHING anywhere writes a clearing row when the hold releases. So the newest `stage_dependency` row
