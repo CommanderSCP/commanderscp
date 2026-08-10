@@ -5533,3 +5533,15 @@ export const zGraphHealthResponse = z.object({
         source: z.string().nullable()
     }))
 });
+
+/**
+ * Success
+ */
+export const zDoctorReportResponse = z.object({
+    checks: z.array(z.object({
+        id: z.string(),
+        status: z.enum(['ok', 'warn']),
+        summary: z.string(),
+        detail: z.string()
+    }))
+});

@@ -1,5 +1,11 @@
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
-import type { Campaign, CampaignStatus, ContainmentDomainId, ExecutorType } from "@scp/schemas";
+import type {
+  Campaign,
+  CampaignStatus,
+  ContainmentDomainId,
+  ExecutorType,
+  TrustDomainId
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
   campaignPlans,
@@ -296,11 +302,48 @@ export function campaignTargetObjectIdsOf(
  *
  * The reconciler's own `plan.status === "completed" || "aborted"` early-return STAYS as defence in
  * depth — this filter is an efficiency and honesty fix, not the safety boundary.
+ *
+ * ## `selfDomainId` — the S10 single-writer filter, and why the campaign side needed it MORE
+ *
+ * The twin of `changes-repo.ts`'s `listChangeRowsInStates` argument of the same name (read that doc
+ * comment for the shape of the remedy and why a round-robin bump is the wrong one). The two loops
+ * now agree, but the hole they close was NOT equally severe, and the asymmetry is worth recording
+ * because it is what made this one urgent:
+ *
+ *  - A synced CHANGE was never a candidate in the first place. `federation/import-repo.ts`'s
+ *    `object_upsert` branch explicitly never creates a local `changes` state-machine row, and
+ *    `listChangeRowsInStates` INNER JOINs that row, so the change-side guard was latent (measured in
+ *    `change-origin-domain.integration.test.ts`'s header).
+ *  - A synced CAMPAIGN was. `object_upsert` is TYPE-AGNOSTIC (`const typeId = String(payload.typeId)`)
+ *    and `graph/objects-repo.ts`'s `journalEntryKindFor` routes every non-`policy` object onto that
+ *    entry kind, so a peer's campaign object rides an ordinary `full`-scope journal and lands here
+ *    through `upsertObjectByUrn(..., { federationImport: { originDomainId: exporterDomainId } })` —
+ *    a real local row with a FOREIGN `origin_domain_id`, matched by every predicate above.
+ *
+ * `reconcileOneCampaign` would then compile a plan for ANOTHER DOMAIN'S campaign and propose member
+ * Changes from it. That is a single-writer violation with real side effects — rows in
+ * `campaign_plans`/`campaign_waves`/`campaign_wave_targets`, brand-new `changes`, a `coordinates`
+ * edge hanging off a replica — not merely a scheduling problem. Worse, `reconcileCampaignsOrgTick`'s
+ * unconditional round-robin bump then WROTE the replica's own `objects.updated_at` every tick.
+ *
+ * WHY THE FILTER AND NOT A MID-LOOP `continue`. This query is `ORDER BY objects.updated_at ASC LIMIT
+ * n` — capped AND ordered — so a body-level skip that did not write the row would re-create the
+ * batch-starvation property (`candidate-loop-registry.test.ts`) that cost 13 days of production
+ * coordination. And the remedy used for every other instance of that property, a round-robin
+ * `updated_at` bump, is ILLEGAL on a replica: it is itself the write S10 forbids. Filtering removes
+ * the row from the candidate set entirely, which is starvation-free AND single-writer-clean, and it
+ * keeps "SKIP, NOT PARK" intact — nothing is written, so the campaign rejoins the batch by itself
+ * the moment authority returns.
+ *
+ * REQUIRED, not optional, and deliberately so: a future call site that forgets it would silently
+ * re-open the hole, and this project's recurring bug is fixing SOME call sites of a concept. Pinned
+ * by `foreign-origin-campaign.integration.test.ts`.
  */
 export async function listActiveCampaignObjectIds(
   tx: TenantTx,
   orgId: string,
-  limit: number
+  limit: number,
+  selfDomainId: TrustDomainId
 ): Promise<ObjectRow[]> {
   return tx
     .select()
@@ -310,6 +353,7 @@ export async function listActiveCampaignObjectIds(
         eq(objects.orgId, orgId),
         eq(objects.typeId, "campaign"),
         sql`${objects.deletedAt} IS NULL`,
+        eq(objects.originDomainId, selfDomainId),
         sql`${objects.id} NOT IN (
           SELECT latest.campaign_object_id FROM (
             SELECT DISTINCT ON (p.campaign_object_id) p.campaign_object_id, p.status
@@ -323,19 +367,6 @@ export async function listActiveCampaignObjectIds(
     )
     .orderBy(asc(objects.updatedAt))
     .limit(limit);
-}
-
-/** Member-change lookup for a campaign wave target, used by the reconciler to poll progress. */
-export async function memberChangeIdsForCampaign(
-  tx: TenantTx,
-  orgId: string,
-  waveId: string
-): Promise<(typeof campaignWaveTargets.$inferSelect)[]> {
-  return tx
-    .select()
-    .from(campaignWaveTargets)
-    .where(and(eq(campaignWaveTargets.orgId, orgId), eq(campaignWaveTargets.waveId, waveId)))
-    .orderBy(asc(campaignWaveTargets.createdAt));
 }
 
 /**

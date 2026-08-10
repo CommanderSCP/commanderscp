@@ -27,6 +27,7 @@ import { transitionChange } from "./transition.js";
 import { triggerCampaignRollback } from "./campaign-rollback.js";
 import type { GateDeps } from "./gates.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 
 /**
  * The CAMPAIGN-side half of the same unbounded-Decision-write class (see
@@ -104,8 +105,14 @@ describe("Decision write amplification: the campaign reconciler persists ON CHAN
   }
 
   async function tick(org: TestOrg, times: number): Promise<void> {
+    // S10: the reconciler drives only campaigns THIS domain is authoritative for, so the tick needs
+    // this org's own `federation_self.domain_id` — which is exactly what every locally-created
+    // campaign in this suite is stamped with. See `campaign-repo.ts`'s `listActiveCampaignObjectIds`.
+    const selfDomainId = (
+      await withTenantTx(server.deps.db, org.orgId, (tx) => ensureFederationSelf(tx, org.orgId))
+    ).domainId;
     for (let i = 0; i < times; i++) {
-      await reconcileCampaignsOrgTick(server.deps.db, org.orgId, host, sandbox);
+      await reconcileCampaignsOrgTick(server.deps.db, org.orgId, host, sandbox, selfDomainId);
     }
   }
 

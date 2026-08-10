@@ -1,6 +1,7 @@
 import type { Db } from "../db/client.js";
+import type { TrustDomainId } from "@scp/schemas";
 import { and, eq } from "drizzle-orm";
-import { objects, orgs } from "../db/schema.js";
+import { objects } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
@@ -394,12 +395,34 @@ export async function reconcileCampaignsOrgTick(
   db: Db,
   orgId: string,
   host: PluginHost,
-  sandbox: CelSandbox
+  sandbox: CelSandbox,
+  selfDomainId: TrustDomainId
 ): Promise<void> {
+  // S10 SINGLE-WRITER, filtered IN THE SQL rather than skipped in the loop below — see
+  // `campaign-repo.ts`'s doc comment for why, and `reconcile.ts`'s six `advance*` loops for the
+  // change-side twin this deliberately matches in shape. A peer's campaign object DOES land here as
+  // an ordinary local row (`import-repo.ts`'s `object_upsert` is type-agnostic), so without this the
+  // loop compiled a plan for another domain's campaign and proposed member changes from it.
   const rows = await withTenantTx(db, orgId, (tx) =>
-    listActiveCampaignObjectIds(tx, orgId, BATCH_LIMIT)
+    listActiveCampaignObjectIds(tx, orgId, BATCH_LIMIT, selfDomainId)
   );
   for (const campaignObject of rows) {
+    // S10 single-writer guard, DEFENCE IN DEPTH AND NOW UNREACHABLE. The query above filters
+    // foreign-origin campaigns out of the candidate set, so this `continue` can no longer fire. It
+    // stays because it states this loop's S10 INVARIANT — "this loop only ever drives, and only ever
+    // writes, campaigns this domain is authoritative for" — which is a property of the LOOP, not of
+    // one query; a future candidate fetch that forgot the filter would find this still standing.
+    //
+    // WHAT THIS MUST NEVER BECOME is a round-robin `updated_at` bump. Note where this `continue`
+    // sits: BEFORE the bump at the bottom of this loop, deliberately. Un-filtered, that would make
+    // this a re-serve-without-writing path — the batch-starvation property (instance 4 in
+    // `candidate-loop-registry.test.ts`, and `listActiveCampaignObjectIds` really is `ORDER BY
+    // updated_at ASC LIMIT 25`) — but the bump that closes that property everywhere else is ILLEGAL
+    // on a replica: it writes a row this domain does not own, which is the very violation the guard
+    // exists to prevent. Filtering the candidate set is the only remedy that is both starvation-free
+    // and single-writer-clean. Pinned by `foreign-origin-campaign.integration.test.ts`, whose
+    // "SKIP, NOT DRIVE and SKIP, NOT PARK" case asserts the replica's `updated_at` never moves.
+    if (campaignObject.originDomainId !== selfDomainId) continue;
     try {
       await reconcileOneCampaign(db, orgId, campaignObject, host, sandbox);
     } catch (err) {
@@ -422,6 +445,11 @@ export async function reconcileCampaignsOrgTick(
     // turn", not "made progress". Unlike the change-side loops there is no cheap in-loop signal for
     // which of the two happened, and bumping both is correct for fairness either way.
     //
+    // "UNCONDITIONALLY" NOW MEANS "for every campaign THIS DOMAIN OWNS". The candidate query filters
+    // foreign-origin campaigns out and the S10 guard above `continue`s before reaching here, so this
+    // write can only ever land on a locally-originated row. That ordering is load-bearing: this bump
+    // used to fire on a replica too, which made a fairness write into a single-writer violation.
+    //
     // STILL REQUIRED AFTER THE ACTIVE-FILTER FIX, and it is worth being explicit about why, because
     // the filter looks like it makes this redundant and does not. `listActiveCampaignObjectIds` now
     // excludes campaigns whose LATEST plan is terminal, which removes the *finished* campaigns from
@@ -438,23 +466,5 @@ export async function reconcileCampaignsOrgTick(
         .set({ updatedAt: new Date() })
         .where(and(eq(objects.orgId, orgId), eq(objects.id, campaignObject.id)))
     ).catch((err) => logCampaignError(orgId, campaignObject.id, "round-robin-bump", err));
-  }
-}
-
-/** Every org, one `reconcileCampaignsOrgTick` each — the campaign-scoped sibling of
- *  `reconcile.ts`'s `runReconcileSweep`, kept separate only because it needs its own org-list
- *  query; wired into the same sweep, not a second pg-boss job. */
-export async function runCampaignReconcileSweep(
-  db: Db,
-  host: PluginHost,
-  sandbox: CelSandbox
-): Promise<void> {
-  const orgRows = await db.select({ id: orgs.id }).from(orgs);
-  for (const org of orgRows) {
-    try {
-      await reconcileCampaignsOrgTick(db, org.id, host, sandbox);
-    } catch (err) {
-      console.error(`[campaign-reconcile] org ${org.id} tick failed:`, err);
-    }
   }
 }

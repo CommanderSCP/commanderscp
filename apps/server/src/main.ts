@@ -15,6 +15,7 @@ import { startWatchdogLoop } from "./coordination/watchdog.js";
 import { startInboxLoop } from "./federation/inbox-loop.js";
 import { startAutoRelayLoop } from "./federation/auto-relay.js";
 import { startFederationSyncLoop } from "./federation/federation-sync.js";
+import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import type { AppDeps } from "./types.js";
@@ -75,6 +76,36 @@ async function main(): Promise<void> {
     { orgName: config.bootstrapOrgName, adminUsername: config.bootstrapAdminUsername },
     { info: (msg) => app.log.info(msg), warn: (msg) => app.log.warn(msg) }
   );
+
+  // ---------------------------------------------------------------------------------------------
+  // THE FEDERATION-IDENTITY STARTUP CHECK (federation/self-origin-check.ts has the full rationale).
+  //
+  // Every reconcile candidate query filters on `objects.origin_domain_id =
+  // federation_self.domain_id`. If those two ever diverge — a partial restore, an org cloned into a
+  // fresh database, a rebuild that recreated the `federation_self` row — every batch comes back
+  // empty and ALL coordination for that org stops with no error and no log line. That is the exact
+  // shape of the 13-day production outage this codebase already measured, and a green `/healthz`
+  // (four lines below) says nothing about it.
+  //
+  // WHY HERE, three ways:
+  //  - AFTER `ensureBootstrapAdmin`, because that is the one code path that creates an org and its
+  //    first locally-authored objects; running before it would inspect an org that does not exist yet.
+  //  - BEFORE `app.listen` and before the loops start, so the warning is in the log AHEAD of the
+  //    first silent tick rather than buried under an hour of ordinary request logging.
+  //  - UNCONDITIONALLY, not inside the `runsBackgroundWork` guard below. The damage lands on the
+  //    worker, but the api pod is where an operator looks first, and in the chart's default split
+  //    topology only one of the two would otherwise say anything. It costs two small reads per org,
+  //    once per boot — it is emphatically NOT on the reconcile hot path, which was the whole reason
+  //    a per-tick empty-batch probe was rejected in favour of this.
+  //
+  // Read-only and non-fatal: it never repairs the divergence (which side is wrong depends on where
+  // the good backup is — an operator decision), and it never blocks boot, exactly like the ephemeral
+  // secrets-key and expired-CRL warnings.
+  // ---------------------------------------------------------------------------------------------
+  await warnOnFederationSelfOriginDivergence(db, {
+    warn: (msg) => app.log.warn(msg),
+    error: (msg) => app.log.error(msg)
+  });
 
   // ---------------------------------------------------------------------------------------------
   // THE SUBPROCESS PLUGIN HOST — constructed for EVERY role, including `api`.

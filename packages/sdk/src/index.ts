@@ -28,6 +28,10 @@ export type { RelayedEvent } from "@scp/schemas";
 // re-exported automatically, and omitting this is what made #211's failure look like a missing method.
 export type { GraphIntegrityReport, DanglingRelationship, OrphanProjectionRow } from "@scp/schemas";
 
+// `scp doctor` report types — same SEPARATE step as the graph-integrity line above (schema types are
+// not re-exported automatically, and forgetting this makes a present client method look missing).
+export type { DoctorReport, DoctorCheck, DoctorCheckStatus } from "@scp/schemas";
+
 export type {
   CreateServiceObjectData,
   CreateServiceObjectResponse,
