@@ -32,6 +32,7 @@ import { transitionChange } from "../coordination/transition.js";
 import type { GateDeps } from "../coordination/gates.js";
 import { triggerRollback } from "../coordination/rollback.js";
 import { getLatestPlanForChange } from "../coordination/plan-service.js";
+import { resolveStageDependencyStatus } from "../coordination/stage-dependency-status.js";
 import { buildBoundarySegment } from "../coordination/boundary-segment.js";
 import {
   getDecision,
@@ -285,15 +286,31 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           scopeObjectId: auth.orgId
         });
         const change = await getChange(tx, auth.orgId, request.params.id);
-        const [plan, decisions, controlRuns, waitStatus, boundarySegment] = await Promise.all([
-          getLatestPlanForChange(tx, auth.orgId, request.params.id),
-          listDecisionsForSubject(tx, auth.orgId, request.params.id),
-          listControlRunsForChange(tx, auth.orgId, request.params.id),
-          buildWaitStatus(tx, auth.orgId, change),
-          // M16.1 — the boundary segment (transferred + validated phases). Read-only; null for a
-          // change that never crossed a domain boundary.
-          buildBoundarySegment(tx, auth.orgId, change)
-        ]);
+        // The plan is awaited BEFORE the batch below rather than inside it, so the stage-dependency
+        // status can be handed the plan this handler already loads instead of re-issuing its three
+        // queries (ADR-0028 increment 4). Costs nothing: these all run on ONE tenant transaction,
+        // i.e. one connection, so the `Promise.all` was never actually concurrent.
+        const plan = await getLatestPlanForChange(tx, auth.orgId, request.params.id);
+        const [decisions, controlRuns, waitStatus, stageDependencyStatus, boundarySegment] =
+          await Promise.all([
+            listDecisionsForSubject(tx, auth.orgId, request.params.id),
+            listControlRunsForChange(tx, auth.orgId, request.params.id),
+            buildWaitStatus(tx, auth.orgId, change),
+            // ADR-0028 increment 4 — which stage dependency is withholding a trigger, RE-EVALUATED
+            // NOW. Deliberately not read off the `stage_dependency` Decision in `decisions` above:
+            // that row is a historical record with no clearing counterpart, so it still says `hold`
+            // long after the hold released (and on an outpost the latest row of that kind is the
+            // import-time `allow`). Null for a change that coupled nothing.
+            resolveStageDependencyStatus(
+              tx,
+              auth.orgId,
+              { objectId: change.id, properties: change.properties },
+              plan
+            ),
+            // M16.1 — the boundary segment (transferred + validated phases). Read-only; null for a
+            // change that never crossed a domain boundary.
+            buildBoundarySegment(tx, auth.orgId, change)
+          ]);
         return {
           change,
           plan,
@@ -309,6 +326,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             createdAt: r.createdAt.toISOString()
           })),
           waitStatus,
+          stageDependencyStatus,
           boundarySegment
         };
       });

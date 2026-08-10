@@ -11082,6 +11082,32 @@ export type ExplainChangeResponses = {
             }>;
             malformed?: Array<unknown>;
         } | null;
+        stageDependencyStatus?: {
+            held: boolean;
+            waveIndex: number | null;
+            unenforced: boolean;
+            targets: Array<{
+                targetObjectId: string;
+                targetName: string | null;
+                componentObjectId: string | null;
+                componentName: string | null;
+                deploymentTargetObjectId: string | null;
+                deploymentTargetName: string | null;
+                held: boolean;
+                dependencies: Array<{
+                    dependsOn: string;
+                    dependsOnName: string | null;
+                    branch: 'not_placed' | 'succeeded' | 'min_weight' | 'never_deployed' | 'behind' | 'weight_unreadable' | 'undeclarable' | 'unscopeable' | 'self';
+                    satisfied: boolean;
+                    source?: 'edge';
+                    dependencyStatus?: string;
+                    minWeight?: number;
+                    minWeightSupersededByEdge?: true;
+                    weightUnreadable?: 'no_weight' | 'not_observed' | 'stale';
+                    summary: string;
+                }>;
+            }>;
+        } | null;
         boundarySegment?: {
             transfer: {
                 state: 'exported' | 'received' | 'not_observed';
@@ -11415,6 +11441,7 @@ export type ListDecisionsData = {
         cursor?: string;
         limit?: number;
         subjectId?: string;
+        kind?: string;
     };
     url: '/decisions';
 };

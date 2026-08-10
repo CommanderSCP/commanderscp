@@ -3614,6 +3614,46 @@ export const zExplainChangeResponse = z.object({
         })),
         malformed: z.array(z.unknown()).optional()
     }).nullable(),
+    stageDependencyStatus: z.object({
+        held: z.boolean(),
+        waveIndex: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+        unenforced: z.boolean(),
+        targets: z.array(z.object({
+            targetObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            targetName: z.string().nullable(),
+            componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            componentName: z.string().nullable(),
+            deploymentTargetObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            deploymentTargetName: z.string().nullable(),
+            held: z.boolean(),
+            dependencies: z.array(z.object({
+                dependsOn: z.string(),
+                dependsOnName: z.string().nullable(),
+                branch: z.enum([
+                    'not_placed',
+                    'succeeded',
+                    'min_weight',
+                    'never_deployed',
+                    'behind',
+                    'weight_unreadable',
+                    'undeclarable',
+                    'unscopeable',
+                    'self'
+                ]),
+                satisfied: z.boolean(),
+                source: z.literal('edge').optional(),
+                dependencyStatus: z.string().optional(),
+                minWeight: z.int().gte(-9007199254740991).lte(9007199254740991).optional(),
+                minWeightSupersededByEdge: z.literal(true).optional(),
+                weightUnreadable: z.enum([
+                    'no_weight',
+                    'not_observed',
+                    'stale'
+                ]).optional(),
+                summary: z.string()
+            }))
+        }))
+    }).nullish(),
     boundarySegment: z.object({
         transfer: z.object({
             state: z.enum([
