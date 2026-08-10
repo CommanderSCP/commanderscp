@@ -94,6 +94,7 @@ export type {
   ComponentPipelineStage,
   ComponentPipelineUnplacedStage,
   ServiceBoardResponse,
+  ServiceBoardAssembly,
   ServiceBoardRow,
   ServiceBoardWave,
   ServiceBoardKind,

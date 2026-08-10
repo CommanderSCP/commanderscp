@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ServiceBoardAsOf, ServiceBoardRow, ServiceBoardSummary } from "@scp/sdk";
+import type {
+  ServiceBoardAsOf,
+  ServiceBoardAssembly,
+  ServiceBoardRow,
+  ServiceBoardSummary
+} from "@scp/sdk";
 
 /**
  * The RENDERING half of the service board's federation-honesty rule, pinned by a check that runs on
@@ -34,6 +39,7 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
 
 const {
   BoardAsOfLabel,
+  BoardAssemblies,
   BoardRow,
   PipelineChips,
   BoardSummary,
@@ -410,5 +416,55 @@ describe("a board row shows EVERY pipeline, not one status for all of them", () 
     ]);
     expect(html).toContain("not bound");
     expect(html).toContain('data-bound="false"');
+  });
+});
+
+/**
+ * MUTATION LOG (each applied alone to `BoardAssemblies`, then reverted):
+ *
+ * | Mutation | Result |
+ * |---|---|
+ * | drop the count expression, render a bare "components" | 3 tests fail (count, plural, zero) |
+ * | remove the `assemblies.length === 0` early return | "renders NOTHING when there are none" fails |
+ * | `.filter((a) => a.componentCount > 0)` before mapping | "shows a ZERO count as zero" fails — the absence bug one level down |
+ */
+describe("an assembly child is shown, and its count is never dressed as a status", () => {
+  // Before migration 0055 the board's child filter was `typeId === "component"`, so an assembly child
+  // — and every component beneath it — was silently absent while the board still rendered. D3 chose
+  // DIRECT children plus a per-child summary over flattening, so the count must appear AND the
+  // assembly must stay out of the status columns.
+  const render = (assemblies: ServiceBoardAssembly[]) =>
+    renderToStaticMarkup(<BoardAssemblies assemblies={assemblies} />);
+
+  const one = (over: Partial<ServiceBoardAssembly> = {}): ServiceBoardAssembly => ({
+    id: "11111111-1111-1111-1111-111111111111",
+    urn: "urn:scp:assembly:control-plane",
+    name: "control-plane",
+    componentCount: 7,
+    ...over
+  });
+
+  it("names the assembly and its component count", () => {
+    const html = render([one()]);
+    expect(html).toContain("control-plane");
+    expect(html, "the count is the summary D3 asked for").toContain("7 components");
+    expect(html).toContain("Assemblies (1)");
+  });
+
+  it("renders NOTHING when there are none — an empty card would imply a level that isn't used", () => {
+    // Deliberately unlike the pipeline chips, where an absent chip would read as "not shown here".
+    expect(render([])).toBe("");
+  });
+
+  it("pluralises one component correctly, so the summary does not read as broken", () => {
+    expect(render([one({ componentCount: 1 })])).toContain("1 component<");
+  });
+
+  it("shows a ZERO count as zero — an empty assembly is a real, reportable state", () => {
+    // Not filtered out and not blank: an assembly with nothing under it is exactly the thing an
+    // operator needs to see, and hiding it would repeat the absence bug one level down.
+    const html = render([one({ componentCount: 0 })]);
+    expect(html).toContain("control-plane");
+    expect(html).toContain("0 components");
   });
 });
