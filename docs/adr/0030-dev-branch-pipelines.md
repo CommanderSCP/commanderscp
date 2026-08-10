@@ -149,13 +149,14 @@ partition. That mechanism is **operator-declared** (a policy row written through
 not a string in a `git push`), **boundary-scoped by design**, and **already built and tested**. It
 makes the gate cheaper to satisfy without making it absent, and it is not mintable by a pusher.
 
-#### What is NOT yet measured, and would change this
+#### The latency is taken on report, not measured (owner decision, 2026-08-10)
 
-The latency claim itself is taken from the owner, not measured: this ADR has **not** established how
-long a promotion scan actually takes on the live estate, nor what fraction is the skopeo pull versus
-the Trivy run. If the pull dominates for large images, moving the scan left removes essentially all of
-it. If something else dominates, that should be found before any further design. **Recommended next
-step: measure one real promotion scan end to end** and record the split here.
+How long a promotion scan actually takes on the live estate — and what fraction is the skopeo pull
+versus the Trivy run — was **not** measured; the owner declined the measurement as unnecessary. The
+design does not depend on the split: moving the scan off the promotion critical path removes whatever
+that cost is, whichever component dominates, because the crossing then does no pull and no scan at
+all. Recorded here so a future reader does not mistake the latency premise for something this ADR
+established.
 
 ## Charter alignment
 
