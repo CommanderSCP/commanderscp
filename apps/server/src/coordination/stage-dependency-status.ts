@@ -92,7 +92,7 @@ export async function resolveStageDependencyStatus(
     .from(changes)
     .where(and(eq(changes.orgId, orgId), eq(changes.objectId, change.objectId)))
     .limit(1);
-  if (!isStillTriggerable(changeRow?.state)) return NOTHING_AWAITING_A_TRIGGER;
+  if (!isStillTriggerable(changeRow?.state)) return nothingAwaitingATrigger();
 
   const resolvedPlan =
     plan === undefined ? await getLatestPlanForChange(tx, orgId, change.objectId) : plan;
@@ -186,13 +186,14 @@ function isStillTriggerable(state: string | undefined): boolean {
 /** What a change that IS coupled but is past (or short of) the point of being triggered reports.
  *  NOT `null` — null is "this change coupled nothing at any stage", a different claim, and the CLI
  *  prints it as one. An empty `targets` renders as "no wave target is awaiting a trigger", which is
- *  the true statement about a cancelled release that declared a coupling. */
-const NOTHING_AWAITING_A_TRIGGER: ChangeStageDependencyStatus = {
-  held: false,
-  waveIndex: null,
-  unenforced: false,
-  targets: []
-};
+ *  the true statement about a cancelled release that declared a coupling.
+ *
+ *  A FUNCTION rather than a module constant, because a constant would hand every caller the SAME
+ *  object (and the same `targets` array). Nothing mutates it today; a shared mutable reply on a
+ *  read path is a bug waiting for the first caller that sorts its own copy in place. */
+function nothingAwaitingATrigger(): ChangeStageDependencyStatus {
+  return { held: false, waveIndex: null, unenforced: false, targets: [] };
+}
 
 /** The verdict as reconcile computed it, plus the two things a persisted Decision deliberately does
  *  NOT carry: display names (they would make the Decision's `inputContext` churn on a rename) and the
