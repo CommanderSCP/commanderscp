@@ -132,7 +132,12 @@ describe("dev pipelines route by source ref (ADR-0030)", () => {
     const repo = `acme/app-${uuidv7()}`;
     const anyRef = await component("any-ref");
 
-    await mapping({ sourceKind, componentIdOrUrn: anyRef, type: "configuration", repoPattern: repo });
+    await mapping({
+      sourceKind,
+      componentIdOrUrn: anyRef,
+      type: "configuration",
+      repoPattern: repo
+    });
 
     for (const ref of ["refs/heads/dev", "refs/heads/main", "refs/tags/v1.0.0"]) {
       expect(await match(sourceKind, repo, ref)).toEqual({

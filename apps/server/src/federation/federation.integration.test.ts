@@ -9,7 +9,8 @@ import pg from "pg";
 import type { SyncBundle, SyncScope } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { ProblemError } from "../errors.js";
-import { changes, decisions, roleBindings, roles } from "../db/schema.js";
+import { changes, decisions, roleBindings, roles, sourceMappings } from "../db/schema.js";
+import { createSourceMapping } from "../coordination/source-mappings-repo.js";
 import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
@@ -1767,10 +1768,11 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
   });
 
   it("LABEL INERTNESS: a forged dev/local classification on an UNSCANNED artifact does NOT grant an exemption — still REFUSED, identically to the unlabeled case", async () => {
-    // Stuff a plausible future operator-label shape (ADR-0018 §4: deploymentTarget
-    // `classification='dev'` / scan-requirement-floor-style `origin='local'`) directly onto the
-    // change's sourceRef — the most literal "forge the label onto a boundary-crossing artifact" a
-    // caller could attempt today, since no dedicated column exists yet. The gate must ignore it.
+    // Stuff a plausible operator-label shape (ADR-0018 §4 / ADR-0030 §2) directly onto the change's
+    // sourceRef — the most literal "forge the label onto a boundary-crossing artifact" a caller
+    // could attempt. The gate must ignore it. The REAL declared column (`source_mappings.
+    // classification`, migration 0056) is covered separately below; this case keeps the forged-shape
+    // axis, which is the one an attacker actually controls.
     const { changeId } = await proposeApprovedChangeInA(
       { artifact_digest: DEV_DIGEST, classification: "dev", origin: "local", devPipeline: true },
       { seedScan: false }
@@ -1823,6 +1825,124 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const checksumPayload = JSON.stringify(promotionChecksumPayload(bundle));
     expect(checksumPayload).toContain("classification");
     expect(computeBundleChecksum(promotionChecksumPayload(bundle))).toBe(bundle.checksum);
+  });
+
+  it("LABEL INERTNESS (the REAL column): a dev-classified, dev-ref source mapping grants no exemption — refused identically, and identically again once the label is removed", async () => {
+    // ADR-0030 §3, the clause this milestone turns on. The previous case forges a label onto a
+    // sourceRef; this one uses the GENUINE declared surface — a `source_mappings` row with
+    // `classification: 'dev'` and `ref_pattern: 'refs/heads/dev'`, written exactly as an operator
+    // writes it — and proves E6 does not read it.
+    //
+    // The three-way comparison is the point. Refusing once proves little on its own; what proves
+    // INERTNESS is that the refusal is BYTE-IDENTICAL with the label present, with it cleared, and
+    // with no mapping at all. If `classification` ever became a gate input, exactly one of these
+    // three would diverge.
+    //
+    // WHAT THIS IS MUTATION-PROVEN AGAINST, precisely — because the difference matters. Making the
+    // gate honour a dev-branch ORIGIN (`sourceRef.ref` containing "dev" ⇒ pass), which is the
+    // rejected alternative in ADR-0018 and the literal reading of the branch-grants-the-exemption
+    // direction, REDS this case and nothing else in the file. That is the hazard it exists to catch.
+    //
+    // The mapping-presence axis is weaker and is NOT claimed as mutation-proven: the change here is
+    // built directly by `proposeApprovedChangeInA` rather than correlated FROM this mapping, so the
+    // row establishes "a dev-classified mapping exists in the org" rather than "this change came
+    // from one". Closing that gap needs a correlation-driven fixture — worth doing when a
+    // classification-consuming code path exists to justify it; today none does.
+    const component = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: domainA.orgId,
+        requestId: "t-m18-dev-labelled",
+        name: `m18-dev-component-${randomUUID()}`
+      })
+    );
+    const devMapping = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createSourceMapping(tx, {
+        orgId: domainA.orgId,
+        sourceKind: `m18-dev-${randomUUID()}`,
+        repoPattern: "acme/dev-app",
+        refPattern: "refs/heads/dev",
+        componentIdOrUrn: component.id,
+        type: "configuration",
+        classification: "dev"
+      })
+    );
+    expect(devMapping.classification).toBe("dev"); // the label really is set on the row
+
+    const expectedReason =
+      `export refused: substantive artifact oci:${DEV_DIGEST} has no passing, ` +
+      `digest-bound scan outcome — every cross-boundary artifact must carry a passing scan whose ` +
+      `scanned digest matches (fail-closed, M17.3 E6)`;
+
+    const refuseOnce = async () => {
+      const { changeId } = await proposeApprovedChangeInA(
+        { artifact_digest: DEV_DIGEST, ref: "refs/heads/dev" },
+        { seedScan: false }
+      );
+      const outcome = await exportPromotionBundle(domainA.db, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: changeId
+      });
+      expect(outcome.refused).toBe(true);
+      if (!outcome.refused) throw new Error("expected refusal");
+      return outcome.reason;
+    };
+
+    // 1. With the dev label declared on the mapping.
+    expect(await refuseOnce()).toBe(expectedReason);
+
+    // 2. With the label CLEARED — removing it must not change the outcome either. (An enforcement
+    //    input would show up here as the difference between "exempt" and "refused".)
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      tx
+        .update(sourceMappings)
+        .set({ classification: null })
+        .where(eq(sourceMappings.id, devMapping.id))
+    );
+    expect(await refuseOnce()).toBe(expectedReason);
+
+    // 3. With the mapping deleted entirely — the no-label baseline.
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      tx.delete(sourceMappings).where(eq(sourceMappings.id, devMapping.id))
+    );
+    expect(await refuseOnce()).toBe(expectedReason);
+  });
+
+  it("LABEL INERTNESS (the REAL column): a dev-classified mapping does not block a PASSING scan from exporting either — inert in BOTH directions", async () => {
+    // The other half, and the one a "dev means less trusted, so tighten" misreading would break.
+    // The label must not make the gate stricter any more than it makes it looser: it is not an
+    // input, so a correctly-scanned dev-labelled promotion exports exactly like any other.
+    const component = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: domainA.orgId,
+        requestId: "t-m18-dev-pass",
+        name: `m18-dev-pass-${randomUUID()}`
+      })
+    );
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createSourceMapping(tx, {
+        orgId: domainA.orgId,
+        sourceKind: `m18-dev-pass-${randomUUID()}`,
+        repoPattern: "acme/dev-app",
+        refPattern: "refs/heads/dev",
+        componentIdOrUrn: component.id,
+        type: "configuration",
+        classification: "dev"
+      })
+    );
+
+    const { changeId } = await proposeApprovedChangeInA({
+      artifact_digest: DEV_DIGEST,
+      ref: "refs/heads/dev"
+    }); // seedScan defaults true — a passing, digest-bound scan exists
+    const bundle = await exportBundleA(changeId);
+    expect(bundle.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
   });
 
   it("LABEL INERTNESS: an instance-scoped scan-requirement floor (the ADR-0016 origin='local' discriminator) has ZERO effect on E6 — the gate consults no scan-requirement policy at all", async () => {
