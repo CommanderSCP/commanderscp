@@ -2423,11 +2423,24 @@ export function buildProgram(): Command {
     .command("list")
     .description("List Decisions")
     .option("--subject-id <id>", "filter by subject (e.g. a Change) id")
+    // ADR-0028 increment 4. Usable on its OWN, which is the point: `--subject-id` already answered
+    // "what happened to this change", and the question this exists for — "was my coupling enforced
+    // here?" — is asked by someone who has the coupling and not the change id. A kind is not a
+    // state, though: `stage_dependency` carries a `hold` (a withheld trigger) AND an `allow` (the
+    // declaration stripped on promotion import), so read the verdict column beside it.
+    .option(
+      "--kind <kind>",
+      "filter by Decision kind (e.g. stage_dependency, watchdog, gate) — combinable with --subject-id"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { subjectId?: string }) => {
+    .action(async (opts: BaseCliOpts & { subjectId?: string; kind?: string }) => {
       const client = await clientFromStoredCredentials(opts);
-      const page = await client.decisions.list({ subjectId: opts.subjectId, limit: 100 });
+      const page = await client.decisions.list({
+        subjectId: opts.subjectId,
+        kind: opts.kind,
+        limit: 100
+      });
       printResult(page.items, opts.output, (item) => decisionRow(item as Decision));
     });
 
