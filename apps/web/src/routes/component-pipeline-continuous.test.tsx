@@ -824,12 +824,12 @@ describe("who MAINTAINS a place", () => {
  * ============================================================================================
  * | Mutation | Result |
  * |---|---|
- * | `StatusPill` renders `status ?? "never deployed"` regardless of the hold | the headline test FAILS — `expected '…pending…' to contain 'held'`; the pill reads `pending`, which is the bug verbatim |
- * | `HoldSubnode` prints only "Held here", dropping the dependency lines | the naming test FAILS — the page says a release is held and gives no way to find out by what |
- * | `holdFor` ignores the lane and returns `stage.hold` whenever it is set | the per-lane test FAILS — the infrastructure lane, whose release at this place succeeded a month ago, is painted as held by the software pipeline's coupling |
- * | `stateOf` maps a hold to `"blocked"` (the union member that already existed) | the arrow test FAILS on `data-state="held"` — and this is the mutation worth keeping in mind, because it type-checks, renders, and re-creates the permanent-red marker the server deliberately wrote `verdict: "hold"` to avoid |
- * | `arrowInto` checks `held` AFTER `approval` | the precedence test FAILS |
- * | `arrowInto` checks `held` BEFORE `blocked` | ALL TESTS STAY GREEN — recorded as a real gap rather than hidden. A wave holding one target while another has FAILED needs a fixture with both, and the ladder test below now has one; before it did not |
+ * | `StatusPill` renders `status ?? "never deployed"` regardless of the hold | 1 fails — `expected 'pending' to contain 'held'`. The pill reads `pending`: the defect verbatim |
+ * | `HoldSubnode` maps over `[]` instead of `hold.dependencies` | 4 fail — the naming, id-fallback, edge-provenance and per-lane cases. The card still says "Held here" and gives no way to find out by what |
+ * | `holdFor` ignores the lane and returns `stage.hold` whenever it is set | 1 fails — `expected … not to contain 'payments-api'`. The infrastructure lane, whose release here succeeded a month ago, is painted as held by the software pipeline's coupling |
+ * | `stateOf` maps a hold to `"blocked"` — the union member that already existed | 2 fail — `expected 'blocked' to be 'held'`. Worth keeping in mind: it type-checks, it renders, and it re-creates the permanent-red marker the server deliberately wrote `verdict: "hold"` rather than `"block"` to avoid |
+ * | `arrowInto` checks `held` AFTER `approval` | 1 fails — `expected 'approval' to be 'held'` |
+ * | `arrowInto` checks `held` BEFORE `blocked` (by dropping the `blocked` rung) | 1 fails — `expected 'held' to be 'blocked'`. This is the rung the ladder test was given a two-target fixture for; with one target per wave it would have stayed green, which is why the fixture holds a held target and a FAILED one in the same wave |
  */
 describe("a HELD stage is not a `pending` one", () => {
   const HELD_CHANGE = "019f0000-0000-7000-8000-00000000e001";
