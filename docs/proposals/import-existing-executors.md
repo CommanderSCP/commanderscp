@@ -73,6 +73,29 @@ scp discovery accept <proposalId>                  # create components + binding
 - **P3 — `argocd-discovery`** (DONE): a `DiscoveryPlugin` in the `@scp/plugin-argocd` package (mirrors github's executor+discovery split) that enumerates Applications (`GET /api/v1/applications`) and proposes one `component` per app with `properties.argocdApplication = <name>` recorded (so an execution-system binding's `externalRef` addresses the right app). Wired into the plugin host + `KNOWN_DISCOVERY_MODULES` + the manifest catalog.
 - **P3b — accept-creates-bindings** (DONE): `DiscoveryProposal` gains `bindings[]` (both the plugin-api contract and the API schema); `discovery accept` creates them (resolving `objectName` → the freshly-created id) and returns `createdBindingIds`; argocd-discovery emits a binding per app when its config carries `executionSystemId`. Import→coordinate is now one `accept`.
 - **P4 — `scp connect argocd`** (DONE): one command — stores the token, creates the `execution-system` object, best-effort connectivity check, and prints the `discovery run` next-step. Wraps `secret put` + `object create`.
-- **P5 (fast-follow) — UI "Connect Argo CD" wizard.**
+- **P5 — UI "Connect Argo CD" wizard.** No longer an unhomed "fast-follow": it lands as **[M19](../BUILD_AND_TEST.md#m19--connect-an-execution-system-from-the-browser-the-import-wizard)** (decided 2026-08-10 — M15.3 is the right topic home but M15 closed COMPLETE on 2026-07-22, and the M14 slot promised to P5 on 2026-07-13 was later reallocated to Federation live-sync + Poke-Mode). Design below.
 
-Each phase is codegen-clean (`pnpm gen`) and lands with tests. Credential asymmetry holds throughout: SCP stores a scoped **API token** to the user's Argo CD, never its cluster credentials.
+Each phase is codegen-clean (`pnpm gen`) and lands with tests.
+
+## P5 design — the wizard (M19)
+
+**UI-only.** Every step already has a public door, so P5 adds no route, no schema, no migration, and no codegen output:
+
+| Step | Door |
+|---|---|
+| store the Argo CD token | `client.secrets.put` |
+| create the `execution-system` | `client.object("execution-system").create` |
+| enumerate Applications | `client.discovery.run` |
+| import + coordinate | `client.discovery.accept` (returns `createdBindingIds`) |
+
+`scp connect argocd` is the reference implementation; the wizard mirrors its real flags (`--url`, `--token`, `--name`, `--token-key`, `--allow-internal-egress`) rather than inventing a second shape. Every route it touches needs `object:write`, which the operator registering an execution system already holds.
+
+**Step 2 sends only `{executionSystemId}`.** `POST /discovery/run` resolves `serverUrl`, `tokenSecretKey`, `secretRefs`, the egress allowlist and `allowInternalEgress` from the **persisted** system and lets those win over anything the caller sent (`routes/executors.ts`) — the ADR-0003 fix for "a grant on system X authorizing egress to a caller-supplied address". So the wizard never re-sends the URL and **never handles the token again after step 1**.
+
+**Three hazards, and the shape of each answer:**
+
+1. **In-cluster Argo CD is the first case, not the edge case.** A private `serverUrl` is refused by the SSRF guard unless *both* ADR-0003 layers permit. The wizard offers `allowInternalEgress` as an explained checkbox, labelled as the **declaration** it is — the operator's `SCP_INTERNAL_EGRESS_HOSTS` allowlist remains the boundary, and the wizard says so instead of implying the checkbox is the grant. Never a silent default.
+2. **A credential crosses the browser exactly once.** The token goes to `secrets.put` and nowhere else — no query cache, no URL, no router state, no retained mutation `variables`, no log, and cleared from component state on success. `secrets` is write-only by contract, so the wizard cannot read it back and does not try. Credential asymmetry unchanged: a scoped API token *to* Argo CD, never Argo CD's cluster credentials.
+3. **Imported components are graph orphans (§3 correction, 2026-07-15).** `accept` creates components + bindings + `source_mappings` and **zero relationships**. The success screen renders the counts the server returned and, when the relationship count is zero, states plainly that nothing was linked into a service and names the next step. Counts are **read from the response, never inferred** from what the plugin is believed to emit.
+
+**No client-side connectivity check.** The CLI's best-effort `GET /api/version` runs in the operator's shell and cannot be reproduced in a browser aimed at a private address — a client-side probe would fail for hazard 1 and would be simulating server behaviour in the client (the class of thing PR #152 removed). Step 2 is the real check: server-side, through the guard, with the stored token. Stopping after step 1 is the `--no-validate` equivalent and reaches the same end state. Credential asymmetry holds throughout: SCP stores a scoped **API token** to the user's Argo CD, never its cluster credentials.
