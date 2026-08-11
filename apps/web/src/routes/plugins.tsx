@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { ScpApiError } from "@scp/sdk";
 import type { DiscoveryProposal, PluginManifest } from "@scp/schemas";
 import { client } from "../lib/client";
@@ -366,6 +367,30 @@ export function PluginsPage(): React.JSX.Element {
           appear in this form.
         </p>
       </div>
+
+      {/* M19.1 — the launch point for the "Connect Argo CD" wizard. This page configures a plugin
+          INSTANCE from its manifest, which is the wrong shape for "point SCP at the Argo CD I already
+          run": that act spans a secret, an execution-system object, a discovery run and an accept.
+          The wizard owns the flow; this is where an operator looking at executor config finds it. */}
+      <Card data-testid="connect-argocd-card">
+        <CardHeader>
+          <CardTitle className="text-base">Connect an Argo CD you already run</CardTitle>
+          <CardDescription>
+            Register an existing Argo CD server and import its Applications as components SCP
+            coordinates — the UI equivalent of <code className="font-mono">scp connect argocd</code>{" "}
+            plus <code className="font-mono">scp discovery run|accept</code>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Link
+            to="/connect/argocd"
+            className="inline-flex h-9 items-center justify-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-slate-700"
+            data-testid="connect-argocd-launch"
+          >
+            Connect Argo CD…
+          </Link>
+        </CardContent>
+      </Card>
 
       {manifestsQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
       {manifestsQuery.isError && (

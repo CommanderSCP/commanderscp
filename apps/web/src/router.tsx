@@ -26,6 +26,7 @@ import { FederationStatusPage } from "./routes/federation-status";
 import { OutpostsPage } from "./routes/outposts";
 import { OutpostDetailPage } from "./routes/outpost-detail";
 import { PluginsPage } from "./routes/plugins";
+import { ConnectArgoCdPage } from "./routes/connect-argocd";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -245,6 +246,18 @@ const pluginsRoute = createRoute({
   component: PluginsPage
 });
 
+// M19.1 — the "Connect Argo CD" wizard. A static 2-segment path, so it out-ranks the dynamic
+// `/$basePath/$idOrUrn` registry-detail route below exactly as `/graph/service/...` and
+// `/federation/outposts` already do. `/connect/<kind>` rather than `/plugins/connect-argocd`
+// because the thing being connected is an execution SYSTEM, not a plugin instance — the `/plugins`
+// page configures bindings from manifests, which is a different act — and because the next kinds
+// (gitea, gitlab, harbor) already have server-side discovery modules and belong beside this one.
+const connectArgoCdRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/connect/argocd",
+  component: ConnectArgoCdPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/initiatives`, `/initiatives/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -292,6 +305,7 @@ const routeTree = rootRoute.addChildren([
     outpostsRoute,
     outpostDetailRoute,
     pluginsRoute,
+    connectArgoCdRoute,
     registryListRoute,
     registryDetailRoute
   ])

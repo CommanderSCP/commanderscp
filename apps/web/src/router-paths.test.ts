@@ -75,7 +75,8 @@ describe("router: URLs other code depends on still resolve", () => {
     [`/graph/${ID}`, "e2e/graph.spec.ts + e2e/seeded-demo.spec.ts"],
     ["/services", "e2e/browse.spec.ts + e2e/seeded-demo.spec.ts"],
     ["/assemblies", "the Assemblies registry (migration 0055)"],
-    [`/assemblies/${ID}`, "the assembly link on a service board"]
+    [`/assemblies/${ID}`, "the assembly link on a service board"],
+    ["/connect/argocd", "e2e/connect-argocd.spec.ts + the launch button on /plugins (M19.1)"]
   ])("resolves %s — needed by %s", (url) => {
     expect(resolves(url)).toBe(true);
   });
