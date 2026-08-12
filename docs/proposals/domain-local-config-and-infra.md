@@ -1,6 +1,6 @@
 # Proposal: domain-local config & infrastructure — code that lives in one domain, deploys in that domain, and never leaves it
 
-**Status:** Draft — **proposed, pending review** (2026-08-11)
+**Status:** **Accepted** (owner sign-off 2026-08-11, including all six §10 decision points) — not yet built. [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) carries the normative record; §10 below is preserved as the reasoning behind each choice.
 **Relates to:** [ADR-0017](../adr/0017-ownership-refinement.md) (§2 — domain-specific config/infra is outpost-owned); [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (outpost-local Gitea); [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0018](../adr/0018-domain-local-dev-pipelines.md) / [ADR-0030](../adr/0030-dev-branch-pipelines.md) (M18 dev pipelines — **a different thing**, see §2); [ADR-0022](../adr/0022-outpost-config-authority-split.md) (the commander-declared-config replica direction — this is its mirror image); [ADR-0011](../adr/0011-universal-outpost-validation.md) (§1 — domain-local artifacts have no transfer phase); [GLOSSARY.md](../GLOSSARY.md); charter principles 1 (coordinate, not execute), 2 (graph-native), 6 (explainability), 7 (Simplicity first).
 **Proposed ADR:** [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) (draft, lands with this)
 
@@ -472,13 +472,36 @@ provided it renders as commander-entered and never as observed.
 > **Recommend keeping Option 1.** No code, no ADR change. If an annotation is ever wanted, reach for
 > Option 4 rather than reopening the journal.
 
-### Summary
+### Summary — all six decided, owner sign-off 2026-08-11
 
-| | Question | Recommendation | Differs from ADR-0031 draft? |
+| | Question | Decision | Where it is normative |
 |---|---|---|---|
-| Q1 | Mixed-locality change | Refuse at propose time | No |
-| Q2 | Mutability | **Allow local→shared publication; pull M20.4 into scope** | **Yes** |
-| Q3 | Permission | `federation:write` | No |
-| Q4 | Declaration site | Per-component now, subtree later (materialized) | No — adds an implementation constraint |
-| Q5 | Commander declaring | Allow anywhere | No — **adds** the pre-pairing sequencing clause |
-| Q6 | Aggregate signal | Keep "nothing at all"; Option 4 if ever wanted | No |
+| Q1 | Mixed-locality change | Refuse at propose time | ADR-0031 §5 |
+| Q2 | Mutability | **Local→shared allowed via an explicit publication verb; shared→local refused permanently.** M20.4 pulled into M20 scope | ADR-0031 §6 (amended by this sign-off) |
+| Q3 | Permission | `federation:write` | ADR-0031 §1 |
+| Q4 | Declaration site | Per-component now; a subtree layer later **must materialize, never resolve** | ADR-0031 §1 |
+| Q5 | Commander declaring | Allow on any instance in any role; **declare-then-pair** is the safe order | ADR-0031 §1 |
+| Q6 | Aggregate signal | "Nothing at all" stands; ADR-0022's commander-entered note is the free fallback if an annotation is ever wanted | ADR-0031 §"Alternatives" |
+
+## 11. Configuration as code — and why it is not scanned
+
+The content class this milestone serves is **configuration as code**, now a
+[GLOSSARY.md](../GLOSSARY.md) entry: declarative configuration and infrastructure kept in a git
+repository and released through a pipeline like any other artifact. A large share of it is domain-local
+— a security domain's VPC layout, route tables, transit-gateway attachments, security-group rules and
+its per-domain Kubernetes configuration have no upstream original — which is precisely the class §1
+opens with.
+
+**It is not subject to the scan gate, and the reason is the path, never the location.** It crosses no
+security-domain boundary, so there is no crossing to authorize — [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md)'s
+domain-local case, already stated in the glossary's `scan gate` entry.
+
+**"Because it is at the outpost" is not the reason.** An outpost is not a scan-free zone:
+[ADR-0017 §2](../adr/0017-ownership-refinement.md) devolved **build to the originating outpost**, so an
+outpost routinely produces artifacts that *do* need a passing, digest-bound scan before they may cross.
+Recording location as the reason would license a bypass in the one place the gate matters most. Full
+statement, including the Gate 1 / Gate 2 table, in **ADR-0031 §8**.
+
+**The optional local scan Control is unaffected and stays available.** A domain that wants its own
+network configuration scanned locally attaches an [ADR-0016](../adr/0016-scoped-scan-requirement-policies.md)
+scan requirement and gets one — a quality choice the org owns, never an authorization.

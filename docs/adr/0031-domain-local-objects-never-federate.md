@@ -1,6 +1,6 @@
 # ADR-0031: Domain-local objects never federate — locality is declared on the object, stamped into the journal, and is not an enforcement input
 
-**Status:** **Draft — proposed, pending owner review** (2026-08-11)
+**Status:** **Accepted** (owner sign-off 2026-08-11, including the six decision points in the context doc's §10 — §6 below is amended by that sign-off, per Q2)
 **Context doc:** [docs/proposals/domain-local-config-and-infra.md](../proposals/domain-local-config-and-infra.md)
 **Relates to:** [ADR-0017](0017-ownership-refinement.md) (§2 — domain-specific config/infra is outpost-owned; this supplies the tracking model it assumed); [ADR-0022](0022-outpost-config-authority-split.md) (the commander→outpost declared-config replica — this is its mirror image, and the "journal cannot carry a peer" reasoning is reused); [ADR-0018](0018-domain-local-dev-pipelines.md) / [ADR-0030](0030-dev-branch-pipelines.md) (M18 dev pipelines — adjacent mechanism, different intent; §"Relationship to M18"); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0011](0011-universal-outpost-validation.md) (§1 — domain-local artifacts have no transfer phase); [ADR-0010](0010-outpost-local-artifact-infra.md) (outpost-local Gitea); charter principle 1 (coordinate, not execute), 2 (graph-native), 3 (API-first parity), 6 (explainability), 7 (Simplicity first)
 
@@ -69,6 +69,25 @@ point, not conventional. The declaration is gated on `federation:write`, not pla
 [ADR-0022](0022-outpost-config-authority-split.md) set exactly that precedent for the mirror-image
 case, and for the same reason: a property that governs a boundary is not an ordinary object field.
 
+**Declarable on any instance, in any role** (owner Q5, 2026-08-11) — the commander's own domain is a
+domain too, and the root domain is dev-heavy and has exactly this class of code. Gating on
+`federation_self.role` was rejected: that field is **org-scoped and advisory**, and M16.3's P3 already
+declined to use it for an authorization decision, introducing the install-time `SCP_FEDERATION_ROLE`
+axis instead precisely because the advisory value forks from the Helm one.
+
+**The sequencing property is a safety feature, not a no-op, and is worth documenting for operators:
+declare locality *before* pairing a peer, and pairing later cannot retroactively publish anything.**
+On an instance with no peers nothing was going to be exported in any case; the declaration is what
+guarantees that adding a peer tomorrow does not change that. The safe order is declare-then-pair.
+
+**A future containment-subtree declaration layer must MATERIALIZE, not resolve** (owner Q4,
+2026-08-11). Declaring locality once on a containment ancestor instead of on twenty networking
+components is an ergonomic layer worth having later — but it must write the bit onto each object at
+declaration time, never resolve it by walking containment at export. Resolving dynamically would put a
+graph walk in the write path and turn the journal stamp from a column read into a traversal, which is
+where a filter of this kind acquires the failure mode it exists to prevent. It is deferred, not
+rejected, and it depends on the unresolved stage-vs-`domain`-object question.
+
 ### 2. The declaration is **stamped into the journal payload** at append time
 
 Each of the six writers above stamps `domainLocal: true` into the payload it already builds. Both
@@ -134,12 +153,19 @@ rather than a divergence discovered later.
 - **Shared → domain-local is refused permanently.** Federation has no un-send. Once a component's
   existence has crossed, declaring it local afterwards asserts a confidentiality property the system
   cannot deliver, and an API that answers 200 to that request is lying.
-- **Domain-local → shared is refused in v1** and named as future increment **M20.4**. It is
-  implementable — journal payloads are full-state upserts, not deltas, so re-journaling the object's
-  current state would publish it correctly from that point forward — but it needs a companion census
-  of the object's existing edges and a decision about what "no history before this point" means to a
-  commander-side reader. Shipping it half-done would create an object the commander holds with an
-  unexplained genesis.
+- **Domain-local → shared is allowed, through an explicit publication verb** (amended by the owner's
+  Q2 sign-off, 2026-08-11; the first draft deferred this to M20.4 and overstated its cost). Journal
+  payloads are **full-state upserts, not deltas**, so re-journaling the object publishes it correctly
+  from that point forward; the companion edge census is one bounded query over `relationships` where
+  the object is `from_id` or `to_id`, re-journaling only those edges whose **other** endpoint is
+  shared. The "no history before this point" worry that motivated the deferral is close to a
+  non-issue: the importer does `upsertObjectByUrn`, and imported audit segments are discarded on the
+  import path regardless.
+
+  It is a **verb, not a property write** — `POST /v1/objects/{type}/{id}/publish` rather than a PATCH
+  of the column — because it performs the re-journal and the edge sweep, and an operator must be able
+  to see that publication is an action with an effect rather than a field edit. It is **one-way**, and
+  the response reports exactly which edges were published so the sweep is legible rather than implicit.
 
 Both refusals are enforced at the `createObject`/`updateObject` choke point in
 `graph/objects-repo.ts`, not per route, so every write door inherits them — the same choke-point
@@ -160,6 +186,42 @@ without a passing, digest-bound scan **exactly as it would for any other digest*
 This must be pinned by an **inertness test** — forging or removing the bit changes no gate outcome,
 mutation-proven — the same obligation [ADR-0018 §4](0018-domain-local-dev-pipelines.md) placed on its
 own descriptive label. The bit and the gate are deliberately unaware of each other.
+
+### 8. Configuration as code is not scanned when it is domain-local — because of the **path**, never the location
+
+Most of what this ADR governs is **configuration as code** (now a [GLOSSARY.md](../GLOSSARY.md) entry): a
+security domain's VPC layout, route tables, transit-gateway attachments, security-group rules and its
+per-domain Kubernetes configuration, kept in a git repository in that domain and released through an
+ordinary pipeline.
+
+It is **not subject to the scan gate**, and the reason must be stated exactly:
+
+> It crosses **no security-domain boundary**, so there is **no crossing to authorize**.
+
+This is [ADR-0013](0013-supply-chain-scan-sbom-manifest.md)'s existing domain-local case, already written
+into the glossary's `scan gate` entry ("domain-local artifacts are never scanned — they never cross a
+boundary, so there is nothing to authorize"). It is the **path** property §7 relies on, restated for the
+content class an operator actually recognises.
+
+**"Because it is at the outpost" is NOT the reason, and must never be recorded as one.** An outpost is not
+a scan-free zone: [ADR-0017 §2](0017-ownership-refinement.md) devolved **build to the originating
+outpost**, so an outpost routinely produces artifacts that *do* require a passing, digest-bound scan
+before they may cross. Location-based reasoning would license exactly that leak, and it would license it
+in the one place — an outpost — where the artifacts most need the gate. Only the absence of a crossing
+exempts anything.
+
+**The separate local scan Control stays available and is unaffected.** [ADR-0030](0030-dev-branch-pipelines.md)
+distinguishes two gates, and only the second is structurally inapplicable here:
+
+| | **Gate 1 — the local scan Control** | **Gate 2 — E6, the export gate** |
+|---|---|---|
+| What it is | An *optional* operator-attached scan requirement ([ADR-0016](0016-scoped-scan-requirement-policies.md)) | The fail-closed cross-boundary authorization gate |
+| Default for domain-local config | **Off** — ungated, as today | **Structurally never reached** — there is no peer, so no export |
+| May an operator change it? | **Yes** — attach one and it applies | **No, in either direction.** No policy turns it on for a non-crossing path, and none turns it off for a crossing one |
+
+So an IL5 domain that wants its own network configuration scanned locally simply attaches a scan
+requirement, and gets one. That is a **quality** choice the org owns. Nothing in this ADR removes it, and
+nothing in this ADR makes it an authorization.
 
 ## Relationship to M18 (ADR-0018 / ADR-0030)
 
@@ -252,9 +314,17 @@ rejected alternative would be back, and this ADR would be wrong.
   entry kind*. `audit_segment` is the easiest to skip and must not be: an audit segment naming a
   domain-local change's action is exactly this leak, and "the importer discards audit segments anyway"
   is a property of the receiver, not a guarantee of the sender.
-- **The immutability in §6 is a real ergonomic cost.** An operator who declares a component local and
-  later needs it shared must create a new object until M20.4 exists. Accepted because every mutable
-  alternative has a silent-divergence failure mode and federation has no un-send.
+- **The one-way asymmetry in §6 remains a real constraint**, even with publication in scope. An
+  operator who declares a component **shared** and later wants it local has no remedy but to create a
+  new object, and that is permanent — federation has no un-send, and an API answering 200 to
+  "un-publish this" would assert a confidentiality property the system cannot deliver. The publication
+  verb makes the *recoverable* direction recoverable; it deliberately does not make both directions
+  symmetric.
+- **Publication re-journals, so a commander sees a component with no history before that point.**
+  Accepted as harmless (the importer upserts by urn, and imported audit segments are discarded
+  regardless), but it is a real observable: the commander's first knowledge of a published component is
+  its state at publication, not its origin. An operator reading commander-side history must not read
+  that absence as "this component was created then".
 - **The DoD must include a negative control.** A test that proves nothing crossed is vacuous unless it
   also proves something did — and it must run at `syncScope: {mode:'full'}`, the widest scope, so it
   cannot pass by accident of a narrow one. This repo has shipped six vacuous tests in two days before;
