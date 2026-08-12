@@ -359,19 +359,126 @@ database **cannot** contain:
 5. A `role: outpost` instance renders the domain-local component in its own service/component views
    (extending `outpost-local-ui.integration.test.ts`).
 
-## 10. Open questions for review
+## 10. Decision points — options and recommendations
 
-1. **Where the declaration is made.** Per-component (D1) is the simple answer and the one specified here.
-   Option D's containment-subtree inheritance would be more ergonomic for an operator declaring twenty
-   networking components, but it depends on the unresolved `domain`-object modeling question. Ship D1, or
-   wait?
-2. **Should a domain-local component be declarable at the commander at all,** or only at an instance whose
-   `federation_self.role` is `outpost`? Refusing it on a commander is defensible (the root domain is where
-   the commander lives and is dev-heavy — a domain-local declaration there means something different) but
-   it is a role-gated write, which this codebase has deliberately avoided outside the retrans SPA gate.
-   Recommendation: **allow it anywhere**, since the commander's own domain is a domain too, and let the
-   absence of any peer make it a no-op.
-3. **Does the commander need a *count*?** "Nothing at all" is decided and this proposal implements it
-   literally. Recording the alternative for the record: an aggregate ("this outpost has 14 domain-local
-   components") would preserve an inventory signal for governance rollups at the cost of a new
-   journal-carried fact. Not proposed, and it would need its own ADR.
+Six choices are open. Three are written into ADR-0031's clauses as drafted and are flagged here because
+they were **decided rather than asked**; three were never decided. Each is stated with its options, the
+reasoning, and a recommendation. **Where a recommendation differs from what ADR-0031 currently says, that
+is called out** — the ADR is a draft and has not been amended ahead of this review.
+
+### Q1 — A change whose targets span localities *(ADR-0031 §5, decided-not-asked)*
+
+| | Option | Consequence |
+|---|---|---|
+| **1** | **Refuse at propose time (400)** | Loud, at authoring time. Cannot express a release spanning both. |
+| 2 | Resolve to **local** if any target is local | Fail-closed on the leak — but **silently darkens a legitimate cross-boundary release**. |
+| 3 | Resolve to **shared** if any target is shared | Leaks. Disqualified by the "nothing at all" decision. |
+| 4 | **Auto-split** into two changes, one per locality | Attractive, but a change is the unit of coordination: waves, gates, approvals and M12 `provides`/`requires` coupling all attach to it. Splitting one into two unrelated changes silently breaks that. |
+
+Option 2 is the tempting one and is worse than it looks: in a **coordination** platform, silently making a
+real release invisible to the coordinator is a coordination failure, not a safe default. Option 4 is a
+genuine v2 but needs an explicit relationship between the split changes or it recreates the same problem
+one level down.
+
+The refusal also bites rarely. Webhook-born changes target one component; multi-target changes come from
+campaigns, initiatives and explicit API calls, where an author is already thinking about scope.
+
+> **Recommend Option 1** (as drafted). Revisit Option 4 only if the refusal proves blunt in practice, and
+> only with a modelled relationship between the halves.
+
+### Q2 — Mutability of the locality declaration *(ADR-0031 §6, decided-not-asked)*
+
+| | Option | Consequence |
+|---|---|---|
+| 1 | **Immutable both directions** *(as drafted)* | Simplest. An operator who declares wrong must create a new object. |
+| **2** | **Shared→local refused forever; local→shared allowed via an explicit publish** | Honest in both directions. Needs a bounded edge census. |
+| 3 | Fully mutable, "from now on" semantics | Out: shared→local cannot be honoured, so the API would answer 200 to a request it cannot satisfy. |
+| 4 | Mutable within a grace window | A fuzzy predicate ("not yet referenced") that will be wrong at the boundary. |
+
+**This is the recommendation that differs from the ADR as drafted.** §6 defers local→shared to M20.4 on the
+grounds that it needs an edge census and raises a "no history before this point" question. On closer
+reading both costs are smaller than that clause implies: journal payloads are **full-state upserts, not
+deltas**, so re-journaling the object publishes it correctly from that point; the edge census is one
+bounded query (`relationships` where `from_id` or `to_id` = the object) re-journaling only the edges whose
+other endpoint is shared; and "no history" is close to a non-issue, because the importer does
+`upsertObjectByUrn` and **discards imported audit segments anyway**.
+
+The asymmetry is the whole point and must survive either way: **shared → domain-local stays refused
+permanently**, because federation has no un-send and an API that answers 200 there is lying.
+
+> **Recommend Option 2, pulling M20.4 into M20 scope.** Immutability is the clause most likely to cause
+> real operational pain, and the honest version is cheaper than the draft assumed. If you prefer to keep
+> M20 small, Option 1 ships safely and M20.4 stays a named increment — it forecloses nothing.
+
+### Q3 — Which permission governs the declaration *(ADR-0031 §1, decided-not-asked)*
+
+| | Option | Consequence |
+|---|---|---|
+| **1** | **`federation:write`** *(as drafted)* | Matches ADR-0022's precedent for the mirror-image case. |
+| 2 | Plain `object:write` | Wrong: the generic `/objects/{type}` door and the IaC plan-apply path would write a boundary-governing bit with the weaker permission — the exact hole ADR-0022 closed. |
+| 3 | A dedicated permission (`federation:locality`) | Cleanest in principle; adds an RBAC member for one bit. |
+| 4 | `object:write` to create, `federation:write` to set the bit | This **is** Option 1, stated precisely. |
+
+> **Recommend Option 1.** Revisit Option 3 only if a second boundary-governing bit ever appears — one bit
+> does not earn its own permission (principle 7).
+
+### Q4 — Where the declaration is made *(the same containment-subtree idea §6 weighs as its Option D, asked here as a standalone choice)*
+
+| | Option | Consequence |
+|---|---|---|
+| 1 | **Per-component only** *(as drafted, D1)* | Simple; tedious for twenty networking components. |
+| 2 | Containment subtree only | Couples this design to the `domain` object type — an unpopulated slot with the unresolved stage-vs-domain question ahead of it. |
+| **3** | **Per-component now; subtree later as an ergonomic layer** | Additive, and forecloses nothing. |
+| 4 | Both from day one | Creates a precedence question (does the object win, or the ancestor?) on day one, for no measured need. |
+
+Subtree inheritance is **purely a declaration convenience** — it resolves to the same per-object bit — so
+adding it later invalidates nothing built now.
+
+> **Recommend Option 3**, with one implementation constraint worth fixing now: when the subtree layer
+> lands, it should **materialize** the bit onto each object at declaration time rather than resolve it
+> dynamically at export. That keeps the journal stamp a plain column read and puts no containment walk in
+> the write path.
+
+### Q5 — May a **commander** declare an object domain-local?
+
+| | Option | Consequence |
+|---|---|---|
+| **1** | **Allow anywhere** | The commander's own domain is a domain. With no peer, nothing was going to be exported anyway. |
+| 2 | Refuse unless `federation_self.role == 'outpost'` | A role-gated write on an **org-scoped, advisory** field — precisely what M16.3's P3 declined to do when it introduced the install-time `SCP_FEDERATION_ROLE` axis instead, because `self_domain.role` would fork from the Helm value. |
+| 3 | Refuse unless at least one peer exists | Penalises the normal bootstrap state (a fresh instance has no peers yet). |
+| 4 | Allow, but warn in the UI on a commander | A warning for a legitimate action trains operators to ignore warnings. |
+
+Option 2 is also substantively wrong, not merely awkward: the root domain is dev-heavy and has its own
+config and infra, so it has exactly this class of code.
+
+> **Recommend Option 1** — and add a clause to ADR-0031 making the sequencing property explicit, because it
+> is a genuine safety feature and not just a no-op: **declaring locality *before* a peer is paired means
+> pairing later cannot retroactively publish anything.** That is the correct operational order to document.
+
+### Q6 — Does the commander get any aggregate signal? *(you decided "nothing at all"; recorded for completeness)*
+
+| | Option | Consequence |
+|---|---|---|
+| **1** | **Nothing at all** *(decided)* | Commander loses inventory visibility of a real part of the estate. |
+| 2 | An aggregate count per outpost | Needs a new journal-carried fact — and a count is a **covert channel**: it moves when local work happens, which is the observability the decision rules out. |
+| 3 | Type-level counts | Same cost as 2, higher resolution, same objection. |
+| 4 | A commander-**entered** note on the existing `outpost` object (ADR-0022) | **Free** — no new machinery, no journal change. But it is the commander describing what it *believes*, never an observation. |
+
+Option 4 is worth knowing about because it costs nothing: ADR-0022 already gives the commander an
+`outpost` graph object it authors, carrying `provenance`/`originIsSelf` specifically so a reader can tell
+an assertion from a verified fact. An operator wanting an inventory **annotation** can have one today,
+provided it renders as commander-entered and never as observed.
+
+> **Recommend keeping Option 1.** No code, no ADR change. If an annotation is ever wanted, reach for
+> Option 4 rather than reopening the journal.
+
+### Summary
+
+| | Question | Recommendation | Differs from ADR-0031 draft? |
+|---|---|---|---|
+| Q1 | Mixed-locality change | Refuse at propose time | No |
+| Q2 | Mutability | **Allow local→shared publication; pull M20.4 into scope** | **Yes** |
+| Q3 | Permission | `federation:write` | No |
+| Q4 | Declaration site | Per-component now, subtree later (materialized) | No — adds an implementation constraint |
+| Q5 | Commander declaring | Allow anywhere | No — **adds** the pre-pairing sequencing clause |
+| Q6 | Aggregate signal | Keep "nothing at all"; Option 4 if ever wanted | No |
