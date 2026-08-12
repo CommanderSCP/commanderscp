@@ -21,6 +21,12 @@ export type RawObjectRow = {
   origin_domain_id: string;
   revision: string | number;
   provenance: string | null;
+  /** M20.1 (ADR-0031). Plain `boolean` with no string variant, unlike the bigints above: pg returns
+   *  bool as a JS boolean, and the column is NOT NULL so every `SELECT *` row carries one. All four
+   *  raw call sites (`named-queries.ts` ×3, `traverse.ts` ×1) select `*`/`o.*`, so it arrives
+   *  without touching their SQL — but a future raw query that enumerates columns must include it,
+   *  or this mapper would emit `undefined` for a field the wire schema requires. */
+  domain_local: boolean;
   version: string | number;
   created_at: Date | string;
   updated_at: Date | string;
@@ -44,6 +50,7 @@ export function mapRawObjectRow(row: RawObjectRow): GraphObject {
     originDomainId: row.origin_domain_id,
     revision: Number(row.revision),
     provenance: row.provenance as GraphObject["provenance"],
+    domainLocal: row.domain_local,
     version: Number(row.version),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),

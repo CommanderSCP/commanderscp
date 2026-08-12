@@ -90,6 +90,13 @@ function wellFormedObject(): JsonObject {
     originDomainId: OBJECT_ID,
     revision: 1,
     provenance: null,
+    // M20.1 (ADR-0031) — required on the wire. Added HERE, in the shared well-formed fixture,
+    // rather than to the dedup test's expected issue list: that test's subject is that a union
+    // reports each missing field ONCE, and it names the fields it omits by `delete`-ing them
+    // explicitly. Keeping its missing set exactly {revision, urn} preserves what it measures;
+    // widening the expectation instead would have quietly turned it into a test that also
+    // tracks the object's field count.
+    domainLocal: false,
     version: 1,
     createdAt: "2026-07-30T12:00:00Z",
     updatedAt: "2026-07-30T12:00:00Z",

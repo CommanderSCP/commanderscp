@@ -20,6 +20,9 @@ export interface CreateComponentInServiceInput {
   labels?: Record<string, unknown>;
   /** id or URN of the service this component must belong to (the `contains` parent). */
   serviceIdOrUrn: string;
+  /** M20.1 (ADR-0031 §1) — declare that this component never federates. Threaded to `createObject`,
+   *  which is the sole writer of the column; authorization for the declaration is at the route. */
+  domainLocal?: boolean;
 }
 
 /**
@@ -70,7 +73,8 @@ export async function createComponentInService(
     name: input.name,
     domainId: input.domainId,
     properties: input.properties ?? {},
-    labels: input.labels
+    labels: input.labels,
+    domainLocal: input.domainLocal
   });
 
   await createRelationship(tx, {

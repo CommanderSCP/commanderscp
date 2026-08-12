@@ -1253,6 +1253,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -1297,6 +1300,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -1594,6 +1598,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -1638,6 +1645,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -1911,6 +1919,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -1955,6 +1966,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -2262,6 +2274,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -2306,6 +2321,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -3494,6 +3510,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -3581,6 +3600,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -3621,6 +3643,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -3906,6 +3929,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -3946,6 +3972,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -4172,6 +4199,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -4212,6 +4242,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -4510,6 +4541,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -4550,6 +4584,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -4840,6 +4875,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -4880,6 +4918,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -5096,6 +5135,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -5183,6 +5225,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -5223,6 +5268,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -5309,6 +5355,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -5349,6 +5398,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -6630,6 +6680,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -6717,6 +6770,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -6757,6 +6813,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -7032,6 +7089,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -7072,6 +7132,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -7288,6 +7349,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -7328,6 +7392,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -7616,6 +7681,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -7656,6 +7724,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -7936,6 +8005,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -7976,6 +8048,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -8182,6 +8255,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -8269,6 +8345,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -8309,6 +8388,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -8395,6 +8475,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -8435,6 +8518,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -8633,6 +8717,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -8720,6 +8807,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -8760,6 +8850,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -9035,6 +9126,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -9075,6 +9169,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -9291,6 +9386,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -9331,6 +9429,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -9619,6 +9718,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -9659,6 +9761,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -9939,6 +10042,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -9979,6 +10085,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -10185,6 +10292,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -10272,6 +10382,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -10312,6 +10425,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -10398,6 +10512,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -10438,6 +10555,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -10636,6 +10754,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -10723,6 +10844,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -10763,6 +10887,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -11038,6 +11163,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -11078,6 +11206,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -11294,6 +11423,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -11334,6 +11466,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -11622,6 +11755,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -11662,6 +11798,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -11942,6 +12079,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -11982,6 +12122,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -12188,6 +12329,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -12275,6 +12419,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -12315,6 +12462,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -12401,6 +12549,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -12441,6 +12592,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -12639,6 +12791,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -12726,6 +12881,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -12766,6 +12924,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -13041,6 +13200,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -13081,6 +13243,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -13297,6 +13460,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -13337,6 +13503,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -13625,6 +13792,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -13665,6 +13835,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -13945,6 +14116,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -13985,6 +14159,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -14191,6 +14366,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -14278,6 +14456,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -14318,6 +14499,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -14404,6 +14586,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -14444,6 +14629,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -14642,6 +14828,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -14729,6 +14918,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -14769,6 +14961,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -15044,6 +15237,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -15084,6 +15280,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -15300,6 +15497,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -15340,6 +15540,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -15628,6 +15829,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -15668,6 +15872,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -15948,6 +16153,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -15988,6 +16196,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -16194,6 +16403,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -16281,6 +16493,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -16321,6 +16536,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -16407,6 +16623,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -16447,6 +16666,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -16645,6 +16865,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -16732,6 +16955,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -16772,6 +16998,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -17047,6 +17274,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -17087,6 +17317,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -17303,6 +17534,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -17343,6 +17577,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -17631,6 +17866,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -17671,6 +17909,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -17951,6 +18190,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -17991,6 +18233,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -18197,6 +18440,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -18284,6 +18530,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -18324,6 +18573,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -18410,6 +18660,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -18450,6 +18703,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -18648,6 +18902,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -18735,6 +18992,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -18775,6 +19035,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -19050,6 +19311,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -19090,6 +19354,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -19306,6 +19571,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -19346,6 +19614,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -19634,6 +19903,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -19674,6 +19946,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -19954,6 +20227,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -19994,6 +20270,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -20200,6 +20477,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -20287,6 +20567,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -20327,6 +20610,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -20413,6 +20697,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -20453,6 +20740,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -20651,6 +20939,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -20738,6 +21029,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -20778,6 +21072,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -21053,6 +21348,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -21093,6 +21391,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -21309,6 +21608,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -21349,6 +21651,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -21637,6 +21940,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -21677,6 +21983,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -21957,6 +22264,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -21997,6 +22307,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -22203,6 +22514,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -22290,6 +22604,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -22330,6 +22647,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -22416,6 +22734,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -22456,6 +22777,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -23901,6 +24223,9 @@
                     },
                     "additionalProperties": {}
                   },
+                  "domainLocal": {
+                    "type": "boolean"
+                  },
                   "service": {
                     "type": "string",
                     "minLength": 1
@@ -23992,6 +24317,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -24032,6 +24360,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -24349,6 +24678,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -24389,6 +24721,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -24605,6 +24938,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -24645,6 +24981,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -24933,6 +25270,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -24973,6 +25313,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -25253,6 +25594,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -25293,6 +25637,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -25500,6 +25845,9 @@
                     },
                     "additionalProperties": {}
                   },
+                  "domainLocal": {
+                    "type": "boolean"
+                  },
                   "service": {
                     "type": "string",
                     "minLength": 1
@@ -25590,6 +25938,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -25630,6 +25981,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -25716,6 +26068,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -25756,6 +26111,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -26059,6 +26415,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -26099,6 +26458,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -26447,6 +26807,9 @@
                             }
                           ]
                         },
+                        "domainLocal": {
+                          "type": "boolean"
+                        },
                         "version": {
                           "type": "integer",
                           "minimum": -9007199254740991,
@@ -26487,6 +26850,7 @@
                         "originDomainId",
                         "revision",
                         "provenance",
+                        "domainLocal",
                         "version",
                         "createdAt",
                         "updatedAt",
@@ -26871,6 +27235,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -26911,6 +27278,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -27290,6 +27658,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -27330,6 +27701,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -27588,6 +27960,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -27628,6 +28003,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -27866,6 +28242,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -27906,6 +28285,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -37135,6 +37515,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -37175,6 +37558,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -37532,6 +37916,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -37572,6 +37959,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -47614,6 +48002,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -47701,6 +48092,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -47741,6 +48135,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -48016,6 +48411,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -48056,6 +48454,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -48272,6 +48671,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -48312,6 +48714,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -48600,6 +49003,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -48640,6 +49046,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -48920,6 +49327,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -48960,6 +49370,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -49166,6 +49577,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -49253,6 +49667,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -49293,6 +49710,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -49379,6 +49797,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -49419,6 +49840,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -49617,6 +50039,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -49704,6 +50129,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -49744,6 +50172,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -50019,6 +50448,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -50059,6 +50491,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -50275,6 +50708,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -50315,6 +50751,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -50603,6 +51040,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -50643,6 +51083,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -50923,6 +51364,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -50963,6 +51407,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -51169,6 +51614,9 @@
                       "type": "string"
                     },
                     "additionalProperties": {}
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -51256,6 +51704,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -51296,6 +51747,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -51382,6 +51834,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -51422,6 +51877,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -64397,6 +64853,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -64437,6 +64896,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",
@@ -64722,6 +65182,9 @@
                             }
                           ]
                         },
+                        "domainLocal": {
+                          "type": "boolean"
+                        },
                         "version": {
                           "type": "integer",
                           "minimum": -9007199254740991,
@@ -64762,6 +65225,7 @@
                         "originDomainId",
                         "revision",
                         "provenance",
+                        "domainLocal",
                         "version",
                         "createdAt",
                         "updatedAt",
@@ -64842,6 +65306,9 @@
                               }
                             ]
                           },
+                          "domainLocal": {
+                            "type": "boolean"
+                          },
                           "version": {
                             "type": "integer",
                             "minimum": -9007199254740991,
@@ -64882,6 +65349,7 @@
                           "originDomainId",
                           "revision",
                           "provenance",
+                          "domainLocal",
                           "version",
                           "createdAt",
                           "updatedAt",
@@ -65176,6 +65644,9 @@
                         }
                       ]
                     },
+                    "domainLocal": {
+                      "type": "boolean"
+                    },
                     "version": {
                       "type": "integer",
                       "minimum": -9007199254740991,
@@ -65216,6 +65687,7 @@
                     "originDomainId",
                     "revision",
                     "provenance",
+                    "domainLocal",
                     "version",
                     "createdAt",
                     "updatedAt",

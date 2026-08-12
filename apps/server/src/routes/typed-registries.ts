@@ -16,6 +16,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize, type Permission } from "../authz/resolve.js";
+import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { withIdempotency } from "../idempotency.js";
 import {
   createObject,
@@ -182,6 +183,14 @@ export function registerTypedRegistryRoutes(
           permission: writePermission,
           scopeObjectId: scopeObjectId ?? auth.orgId
         });
+        // ADR-0031 — every typed registry route is generated from this one factory, so a single
+        // call here covers all of them (assemblies, domains, services, …) rather than one per type.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId: scopeObjectId ?? auth.orgId,
+          requested: request.body.domainLocal
+        });
         await config.validateWrite?.(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
@@ -207,7 +216,8 @@ export function registerTypedRegistryRoutes(
               name: request.body.name,
               domainId: containmentDomainIdFromWire(request.body.domainId) ?? undefined,
               properties: request.body.properties,
-              labels: request.body.labels
+              labels: request.body.labels,
+              domainLocal: request.body.domainLocal
             })
           })
         );
@@ -426,6 +436,14 @@ export function registerTypedRegistryRoutes(
           permission: writePermission,
           scopeObjectId
         });
+        // ADR-0031 — see the POST branch above; on an existing row this authorizes the DECLARED
+        // value, which `upsertObjectByUrn` then treats as a precondition rather than a write.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId,
+          requested: request.body.domainLocal
+        });
         await config.validateWrite?.(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,
@@ -441,7 +459,8 @@ export function registerTypedRegistryRoutes(
           name: request.body.name,
           domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
-          labels: request.body.labels
+          labels: request.body.labels,
+          domainLocal: request.body.domainLocal
         });
       });
       reply.status(created ? 201 : 200).send(object);

@@ -16,6 +16,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { forbidden } from "../errors.js";
 import { withIdempotency } from "../idempotency.js";
 import {
@@ -204,6 +205,13 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId: scopeObjectId ?? auth.orgId
         });
+        // ADR-0031 — declaring an object domain-local additionally needs `federation:write`.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId: scopeObjectId ?? auth.orgId,
+          requested: request.body.domainLocal
+        });
         return withIdempotency(
           tx,
           {
@@ -224,7 +232,8 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
               name: request.body.name,
               domainId: containmentDomainIdFromWire(request.body.domainId) ?? undefined,
               properties: request.body.properties,
-              labels: request.body.labels
+              labels: request.body.labels,
+              domainLocal: request.body.domainLocal
             })
           })
         );
@@ -450,6 +459,16 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId
         });
+        // ADR-0031 — gated on the DECLARED value, so it fires on the create branch (a real
+        // declaration) and equally on an update branch that would be refused as a locality flip;
+        // an unauthorized caller learns "forbidden" rather than probing the row's locality via the
+        // shape of a 409.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId,
+          requested: request.body.domainLocal
+        });
         return upsertObjectByUrn(tx, {
           orgId: auth.orgId,
           typeId: type,
@@ -460,7 +479,8 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           name: request.body.name,
           domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
-          labels: request.body.labels
+          labels: request.body.labels,
+          domainLocal: request.body.domainLocal
         });
       });
       reply.status(created ? 201 : 200).send(object);
