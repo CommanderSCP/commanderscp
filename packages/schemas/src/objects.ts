@@ -37,6 +37,19 @@ export const CreateServiceObjectRequestSchema = z.object({
   id: z.string().uuid().optional(),
   urn: z.string().optional(),
   domainId: z.string().uuid().nullable().optional(),
+  /**
+   * M20.1 (ADR-0031 §1) — and a second instance of exactly the hazard the comment above names.
+   *
+   * That comment records that this shadowing route silently dropped `domainId`/`properties`/
+   * `labels`/`id`/`urn` for the `service` type until they were added here. `domainLocal` was added
+   * to `CreateObjectRequestSchema` and was dropped the same way, for the same reason — Fastify
+   * prefers this literal route over the parametric one — until
+   * `domain-local-rbac.integration.test.ts`'s contract-derived census caught it.
+   *
+   * Per CLAUDE.md: a well-written comment naming a hazard is a signal to sweep, not evidence the
+   * hazard was handled. Any future field added to the generic create body must be added here too.
+   */
+  domainLocal: z.boolean().optional(),
   properties: z.record(z.string(), z.unknown()).optional(),
   labels: z.record(z.string(), z.unknown()).optional()
 });

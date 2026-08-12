@@ -451,6 +451,7 @@ export type CreateServiceObjectData = {
         id?: string;
         urn?: string;
         domainId?: string | null;
+        domainLocal?: boolean;
         properties?: {
             [key: string]: unknown;
         };
@@ -622,6 +623,7 @@ export type CreateServiceObjectForOrgData = {
         id?: string;
         urn?: string;
         domainId?: string | null;
+        domainLocal?: boolean;
         properties?: {
             [key: string]: unknown;
         };

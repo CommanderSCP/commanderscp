@@ -8,6 +8,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject, listObjects, resolveDomainId } from "../graph/objects-repo.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { authorize } from "../authz/resolve.js";
+import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { withIdempotency } from "../idempotency.js";
 import type { GraphObject } from "@scp/schemas";
 
@@ -59,6 +60,14 @@ export async function createServiceObject(
       permission: "object:write",
       scopeObjectId: scopeObjectId ?? orgId
     });
+    // ADR-0031 — doors 7 and 8. BOTH `POST /objects/service` and its `orgs/{org}` path-override
+    // form funnel through this one function, so the check lands once for both.
+    await assertMayDeclareDomainLocal(tx, {
+      orgId,
+      subjectObjectId: actorObjectId,
+      scopeObjectId: scopeObjectId ?? orgId,
+      requested: body.domainLocal
+    });
     const result = await withIdempotency(
       tx,
       { orgId, idempotencyKey, route: "POST /objects/service", requestBody: body },
@@ -74,7 +83,8 @@ export async function createServiceObject(
           name: body.name,
           domainId: containmentDomainIdFromWire(body.domainId),
           properties: body.properties,
-          labels: body.labels
+          labels: body.labels,
+          domainLocal: body.domainLocal
         })
       })
     );

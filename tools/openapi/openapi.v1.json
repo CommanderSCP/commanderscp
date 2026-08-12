@@ -1153,6 +1153,9 @@
                       }
                     ]
                   },
+                  "domainLocal": {
+                    "type": "boolean"
+                  },
                   "properties": {
                     "type": "object",
                     "propertyNames": {
@@ -1818,6 +1821,9 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "domainLocal": {
+                    "type": "boolean"
                   },
                   "properties": {
                     "type": "object",
