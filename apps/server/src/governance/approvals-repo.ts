@@ -273,18 +273,27 @@ export async function castApprovalVote(
   // can carry this attestation, and so a peer syncing with a `full`/`changes_only` scope can see
   // it happened, WITHOUT it ever becoming authority anywhere but here (§13 "approvals transfer as
   // evidence, never as authority" — this entry is read-only history, never replayed as a vote).
-  await appendJournalEntry(tx, {
-    orgId: input.orgId,
-    entryKind: "approval_evidence",
-    contentHash: attestation.record.approvedObjectContentHash,
-    payload: {
-      approvalRequestId: input.approvalRequestId,
-      changeObjectId: request.changeObjectId,
-      changeUrn: changeObject.urn,
-      voterObjectId: input.voterObjectId,
-      attestation
-    }
-  });
+  // M20.3 (ADR-0031 §5) — ...but NOT for a domain-local change. This payload carries `changeUrn`,
+  // i.e. `urn:scp:<org>:change:<name>` — the change's NAME in plain text — plus its object id and
+  // the voter's identity, so an approval on a domain-local release would disclose both that the
+  // release exists and who signed off on it. The vote, the attestation and the local audit trail are
+  // all written unchanged: this withholds the evidence from PEERS, never from this domain, and the
+  // "approvals transfer as evidence, never as authority" property above is untouched — a domain-local
+  // change has no peer to carry evidence to.
+  if (!changeObject.domainLocal) {
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: "approval_evidence",
+      contentHash: attestation.record.approvedObjectContentHash,
+      payload: {
+        approvalRequestId: input.approvalRequestId,
+        changeObjectId: request.changeObjectId,
+        changeUrn: changeObject.urn,
+        voterObjectId: input.voterObjectId,
+        attestation
+      }
+    });
+  }
 
   // Idempotent upsert of the graph-visible `approves` relationship (voter -> change). A
   // pre-existing edge (from an earlier vote on a DIFFERENT approval request for the same change)

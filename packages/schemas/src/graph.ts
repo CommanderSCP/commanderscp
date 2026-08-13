@@ -115,6 +115,23 @@ export const GraphObjectSchema = z.object({
   // NULL = normal (either authored here, or a bundle-imported replica already confirmed by
   // signature verification).
   provenance: z.enum(["manual"]).nullable(),
+  /**
+   * M20.1 ([ADR-0031](../../../docs/adr/0031-domain-local-objects-never-federate.md) §1) — `true`
+   * when this object's existence stays inside its own security domain: its journal entries match
+   * NO peer sync scope, in either direction, so no peer ever learns it exists.
+   *
+   * DECLARED at create by a `federation:write` caller, never inferred. **Immutable** thereafter —
+   * shared → domain-local is refused permanently (federation has no un-send), and the reverse is
+   * the one-way M20.4 publication verb.
+   *
+   * **Visibility only.** It is not an enforcement input: it grants no scan exemption and is read by
+   * no governance path. Domain-local content is outside the cross-boundary scan gate because it
+   * crosses no boundary (the *path*), never because of this flag or because of where it lives.
+   *
+   * Always present on the wire (defaults to `false`), so a reader never has to distinguish
+   * "not declared" from "not sent".
+   */
+  domainLocal: z.boolean(),
   version: z.number().int(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -128,7 +145,20 @@ export const CreateObjectRequestSchema = z.object({
   name: z.string().min(1).max(500),
   domainId: z.string().uuid().nullable().optional(),
   properties: JsonRecordSchema.optional(),
-  labels: JsonRecordSchema.optional()
+  labels: JsonRecordSchema.optional(),
+  /**
+   * M20.1 (ADR-0031 §1) — declare that this object never leaves its security domain. Optional and
+   * defaulting to `false`, so every existing client is unaffected.
+   *
+   * Setting it `true` additionally requires **`federation:write`**, not merely `object:write`: a
+   * property that governs what crosses a trust boundary is not an ordinary object field, and
+   * ADR-0022 set exactly this precedent for the mirror-image case (commander-declared outpost
+   * config). Omitting it, or sending `false`, needs only the ordinary create permission.
+   *
+   * There is deliberately **no counterpart on update or upsert-of-an-existing-row** — the
+   * capability is structurally absent rather than conditionally refused. See `GraphObject`.
+   */
+  domainLocal: z.boolean().optional()
 });
 export type CreateObjectRequest = z.infer<typeof CreateObjectRequestSchema>;
 
@@ -143,6 +173,22 @@ export const CreateComponentRequestSchema = CreateObjectRequestSchema.extend({
   service: z.string().min(1)
 });
 export type CreateComponentRequest = z.infer<typeof CreateComponentRequestSchema>;
+
+/**
+ * M20.4 (ADR-0031 §6) — the result of publishing a domain-local object.
+ *
+ * Reports the edge sweep in two buckets rather than one, because a partial sweep is the CORRECT
+ * outcome and a silent one would be indistinguishable from a bug: edges to a neighbour that is
+ * itself still domain-local stay unpublished, and the operator needs to see which those were.
+ */
+export const PublishObjectResponseSchema = z.object({
+  object: GraphObjectSchema,
+  /** Edges re-journaled alongside the object — their other endpoint already federates. */
+  publishedRelationshipIds: z.array(z.string().uuid()),
+  /** Edges deliberately left unpublished because their other endpoint is still domain-local. */
+  withheldRelationshipIds: z.array(z.string().uuid())
+});
+export type PublishObjectResponse = z.infer<typeof PublishObjectResponseSchema>;
 
 export const UpdateObjectRequestSchema = z.object({
   name: z.string().min(1).max(500).optional(),
@@ -159,7 +205,19 @@ export const UpsertObjectRequestSchema = z.object({
   name: z.string().min(1).max(500),
   domainId: z.string().uuid().nullable().optional(),
   properties: JsonRecordSchema.optional(),
-  labels: JsonRecordSchema.optional()
+  labels: JsonRecordSchema.optional(),
+  /**
+   * M20.1 (ADR-0031 §1) — accepted here, unlike on `PATCH`, so the declaration keeps full
+   * API → SDK → CLI → **IaC** → UI parity (charter principle 3): `scp plan`/`apply` reaches the
+   * graph through this upsert, and a property IaC could not express would be a parity hole.
+   *
+   * On the **create** branch it declares locality, exactly as on `POST`, and requires
+   * `federation:write`. On the **update** branch it is a *precondition, never a write*: a value
+   * equal to the stored one is an idempotent no-op (so re-applying an unchanged IaC stack keeps
+   * working), and a value that **differs** is refused `409` — locality is immutable, and a PUT
+   * must not become the flip door that `PATCH` structurally is not.
+   */
+  domainLocal: z.boolean().optional()
 });
 export type UpsertObjectRequest = z.infer<typeof UpsertObjectRequestSchema>;
 

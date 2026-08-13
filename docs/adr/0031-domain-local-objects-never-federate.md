@@ -54,9 +54,17 @@ exists to prevent.
 
 ### 1. Locality is a **declared property of the object**, read, never inferred
 
-A nullable boolean column `objects.domain_local`, set at create. An operator declares *"this
-component is domain-local"*. Nothing parses a repo name for `network`, consults a deployment-target
-label, or matches a branch string.
+A **`NOT NULL DEFAULT false`** boolean column `objects.domain_local`, set at create. An operator
+declares *"this component is domain-local"*. Nothing parses a repo name for `network`, consults a
+deployment-target label, or matches a branch string.
+
+**Corrected during M20.1 (2026-08-11); this clause originally said "nullable".** Locality is a
+two-state property — an object either stays home or it does not — and a nullable boolean invites a
+third reading, *unknown*, which the export filter would then have to resolve. A predicate deciding
+what crosses a security boundary must have no unknown case, which is why
+`federation/scope-filter.ts` tests `=== true` and why the column carries a default instead of a
+null. `false` for every pre-existing row is exactly today's behaviour, so the expand needs no
+backfill. Rationale is restated in the migration header (`drizzle/0059_objects_domain_local.sql`).
 
 This mirrors [ADR-0030 §2](0030-dev-branch-pipelines.md) deliberately and for the recorded reason: a
 label named after *what matched* goes false the moment the thing it matched covers a second kind —
@@ -88,15 +96,56 @@ graph walk in the write path and turn the journal stamp from a column read into 
 where a filter of this kind acquires the failure mode it exists to prevent. It is deferred, not
 rejected, and it depends on the unresolved stage-vs-`domain`-object question.
 
-### 2. The declaration is **stamped into the journal payload** at append time
+### 2. A domain-local object is **never journaled**; the stamp and filter remain as the import-side check
 
-Each of the six writers above stamps `domainLocal: true` into the payload it already builds. Both
-payloads are already full-state (`object_upsert` carries `properties`/`labels`/`version`;
-`relationship_upsert` carries `fromId`/`toId`/`properties`/`labels`), so this is one more field, not
-a shape change, and **no new journal entry kind** — the nine kinds are unchanged and the bundle
+> **Corrected during M20.2 (2026-08-12).** This clause originally said the object *is* journaled and
+> withheld at export by §3's filter, and asserted that "bundles become sparser … so the chain model
+> needs no change". **That was wrong, and the M20.2 invisibility test found it.** The correction is
+> recorded in full because the reasoning matters more than the outcome.
+>
+> **Why filtering alone breaks federation.** A filtered bundle is *sparse* — its sequence has gaps —
+> and `federation/import-repo.ts` only accepts a sparse chain when the **receiver's own**
+> `sync_scope` is narrow (`receiverExpectsContiguity = peer.syncScope.mode === "full"`). A `full`
+> scope is the default and the widest, and it demands a gap-free chain. So under the original design,
+> the first object anyone declared domain-local would have made every subsequent bundle fail a
+> contiguity check at the most common kind of peer, with a 409 that reads as a tampering alarm. The
+> claim that sparse bundles are "already verified with `contiguous: false`" was true only of the
+> narrow scopes, which is not the case that matters.
+>
+> **Why not journaling is also strictly more private**, which is what makes this a correction rather
+> than a workaround: a withheld-but-numbered entry leaks *its own existence*. The gap in the sequence
+> tells a peer how many domain-local objects exist and when they changed — precisely the aggregate
+> signal declined under Q6. An entry that was never allocated a sequence leaves nothing to count.
+>
+> **What is unchanged:** the local `audit_events` chain is written in full for domain-local objects
+> and stays complete and verifiable (principle 6). Locality governs what **leaves** this domain,
+> never what this domain records about itself.
+
+**A domain-local object's mutations are never appended to the sync journal at all.** The three object
+writers (`createObject`, `updateObject`, `upsertObjectByUrn`'s update branch) and the tombstone in
+`deleteObject` each skip `appendJournalEntry`, alongside the existing `federationImport` skip — and so
+does `audit/audit-repo.ts`, whose `audit_segment` carries `subjectId`, i.e. the object's id. That last
+one is the one that hides: the graph entries can be correctly withheld while the object's identity
+sails out in the audit stream beside them, which is exactly what the M20.2 test caught by searching
+the serialized bundle for the id rather than by checking which rows landed.
+
+### 2a. The stamp and the export filter are retained as the **import-side** check
+
+Because of §2 this domain now produces **no** stamped entries of its own, so the stamp and §3's
+filter no longer do the primary work. **Both are kept deliberately**, and their job is now precisely
+stated: they are the **receiving** side's defense against a peer that ships a domain-local-stamped
+entry anyway — a misconfigured, downgraded, or older sender. Without them the receiver would simply
+apply it.
+
+Where an entry does carry the stamp, it is one field on a payload that is already full-state
+(`object_upsert` carries `properties`/`labels`/`version`; `relationship_upsert` carries
+`fromId`/`toId`/`properties`/`labels`), present **only when true**, so no ordinary payload changes
+shape and **no new journal entry kind** is introduced — the nine kinds are unchanged and the bundle
 format does not move.
 
-Stamping is what keeps `entryMatchesScope` pure and keeps the two sides in agreement, per §Context.
+Keeping the stamp in the payload is also what allows §3 to stay a **pure** predicate that both ends
+evaluate identically, per §Context. Resolving locality by a database lookup at export time would
+leave the receiving side with nothing to check at all.
 
 ### 3. A domain-local entry matches **no** peer scope, in **either** direction
 

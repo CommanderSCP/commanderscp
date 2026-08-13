@@ -21,6 +21,7 @@ import {
   updateObject as updateObjectRequest,
   deleteObject as deleteObjectRequest,
   upsertObjectByUrn as upsertObjectByUrnRequest,
+  publishDomainLocalObject as publishDomainLocalObjectRequest,
   createRelationship as createRelationshipRequest,
   listRelationships as listRelationshipsRequest,
   getRelationship as getRelationshipRequest,
@@ -286,6 +287,7 @@ import type {
   TraverseResult,
   UpdateObjectRequest,
   UpsertObjectRequest,
+  PublishObjectResponse,
   // M3: the Change lifecycle + Decision records + change sources (BUILD_AND_TEST.md §8 M3).
   Change,
   ChangeListResponse,
@@ -767,6 +769,20 @@ export class ScpClient {
           client: this.client,
           path: { type, urn },
           body: req
+        });
+        return unwrap(result);
+      },
+      /**
+       * M20.4 (ADR-0031 §6) — publish a domain-local object so it federates from this point on.
+       *
+       * ONE-WAY: there is no inverse method and there will not be one, because federation has no
+       * un-send. The response reports the edge sweep in two buckets — edges published alongside the
+       * object, and edges deliberately withheld because their other endpoint is still domain-local.
+       */
+      publish: async (idOrUrn: string): Promise<PublishObjectResponse> => {
+        const result = await publishDomainLocalObjectRequest({
+          client: this.client,
+          path: { type, idOrUrn }
         });
         return unwrap(result);
       }

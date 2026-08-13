@@ -266,10 +266,23 @@ async function applyEntry(
           federationImport: { originDomainId, revision }
         });
       } catch (err) {
-        // Endpoints not yet replicated locally (out-of-order relative to this domain's own
-        // history — should not happen for a from-genesis or contiguous-cursor import, since a
-        // relationship's origin domain always creates its endpoints first in its OWN chain, but
-        // handled defensively rather than failing the whole bundle over one skippable edge).
+        // Endpoints not yet replicated locally. Skipped rather than failing the whole bundle over
+        // one edge.
+        //
+        // CORRECTED M20.3 (ADR-0031 §4). This used to say the case "should not happen for a
+        // from-genesis or contiguous-cursor import, since a relationship's origin domain always
+        // creates its endpoints first in its OWN chain". That premise was true when written and is
+        // NOT a safe thing to keep asserting: locality is now a property an endpoint can have, and
+        // an origin domain legitimately creates endpoints this side will never be shown.
+        //
+        // As things actually stand the case still cannot arise from locality, because §4 makes an
+        // edge inherit locality from EITHER endpoint — so an edge whose endpoint is withheld is
+        // itself never journaled, and never reaches this importer. That is the reason it does not
+        // happen; the sentence above was not. A stale rationale inside a defensive catch is how the
+        // next instance hides (CLAUDE.md: a comment naming a hazard is a signal to sweep, not
+        // evidence it was handled), so if a future change ever lets a one-sided edge cross, THIS is
+        // the line that quietly absorbs it — and the skip below is then the only thing standing
+        // between a partial graph and a wedged bundle.
         if (err instanceof ProblemError && err.status === 400) return;
         throw err;
       }

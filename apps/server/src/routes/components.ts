@@ -19,6 +19,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { getComponentPipeline } from "../coordination/component-pipeline.js";
 import { badRequest } from "../errors.js";
 import { withIdempotency } from "../idempotency.js";
@@ -136,6 +137,15 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           permission: "object:write",
           scopeObjectId
         });
+        // ADR-0031 — this door inherits `domainLocal` because CreateComponentRequestSchema EXTENDS
+        // CreateObjectRequestSchema. Threading it here (rather than letting it be silently dropped)
+        // is the reason the census covers all six doors and not just the generic two.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId,
+          requested: request.body.domainLocal
+        });
         return withIdempotency(
           tx,
           {
@@ -156,7 +166,8 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
               domainId: containmentDomainIdFromWire(request.body.domainId),
               properties: request.body.properties,
               labels: request.body.labels,
-              serviceIdOrUrn: request.body.service
+              serviceIdOrUrn: request.body.service,
+              domainLocal: request.body.domainLocal
             })
           })
         );
@@ -364,6 +375,13 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
             permission: "object:write",
             scopeObjectId
           });
+          // ADR-0031 — the CREATE branch: a real declaration, so it needs `federation:write`.
+          await assertMayDeclareDomainLocal(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            scopeObjectId,
+            requested: request.body.domainLocal
+          });
           const created = await createComponentInService(tx, {
             orgId: auth.orgId,
             actorObjectId: auth.subjectObjectId,
@@ -374,7 +392,8 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
             domainId: containmentDomainIdFromWire(request.body.domainId),
             properties: request.body.properties,
             labels: request.body.labels,
-            serviceIdOrUrn: request.body.service
+            serviceIdOrUrn: request.body.service,
+            domainLocal: request.body.domainLocal
           });
           return { object: created, status: 201 as const };
         }
@@ -384,6 +403,15 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
           scopeObjectId: existing.id
+        });
+        // ADR-0031 — the UPDATE branch: `domainLocal` is a precondition here, never a write
+        // (`assertDomainLocalUnchanged`). Authorized on the DECLARED value all the same, so an
+        // unauthorized caller gets 403 rather than learning the row's locality from a 409's shape.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId: existing.id,
+          requested: request.body.domainLocal
         });
         const { object: updated } = await upsertObjectByUrn(tx, {
           orgId: auth.orgId,
@@ -395,7 +423,8 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           name: request.body.name,
           domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
-          labels: request.body.labels
+          labels: request.body.labels,
+          domainLocal: request.body.domainLocal
         });
         return { object: updated, status: 200 as const };
       });

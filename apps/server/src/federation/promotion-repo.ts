@@ -1,3 +1,4 @@
+import { and, eq } from "drizzle-orm";
 import { ScanEvidenceSchema, type TrustDomainId } from "@scp/schemas";
 import type {
   ArtifactRef,
@@ -45,7 +46,7 @@ import {
   listApprovalRequestsForChange,
   listVotesForRequest
 } from "../governance/approvals-repo.js";
-import { importedApprovalEvidence } from "../db/schema.js";
+import { importedApprovalEvidence, objects } from "../db/schema.js";
 import { v7 as uuidv7 } from "uuid";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import {
@@ -203,6 +204,60 @@ export async function exportPromotionBundle(
   // Phase 1 — resolve the cosign signing keypair OUTSIDE any tx (first-use keygen runs a subprocess
   // that must never execute while a pooled DB connection is held open).
   const cosignPair = await ensureInstanceCosignKey(db, input.orgId);
+
+  // Phase 1.2 — A DOMAIN-LOCAL CHANGE IS NEVER PROMOTED (M20.4, ADR-0031 §5).
+  //
+  // THIS IS A SECOND EGRESS, and the reason it needs its own guard. ADR-0031's withholding works by
+  // never allocating journal sequences (§2), which covers the SYNC path completely — but a promotion
+  // bundle is not built from the journal. `exportPromotionBundle` reads the change directly, names a
+  // peer explicitly, and would happily carry a domain-local change's urn, name, properties and
+  // target list across a boundary. The sync guarantee simply does not reach here.
+  //
+  // Refused rather than filtered, because a promotion is an operator naming a destination: silently
+  // exporting nothing would look like success. The refusal is also NOT a scan verdict and must never
+  // be read as one — it fires BEFORE the scan step, so a domain-local change is not "exempted from
+  // scanning", it is refused a crossing outright. That ordering is the point (ADR-0031 §7): locality
+  // never becomes an input to E6, in either direction.
+  //
+  // ADR-0018's standing invariant made concrete: "if a future feature adds another cross-boundary
+  // egress, it must carry the same gate." This one did, and this is that check.
+  const localityRefusal = await withTenantTx(db, input.orgId, async (tx) => {
+    const change = await getChange(tx, input.orgId, input.changeIdOrUrn);
+    const rows = await tx
+      .select({ domainLocal: objects.domainLocal })
+      .from(objects)
+      .where(and(eq(objects.orgId, input.orgId), eq(objects.id, change.id)))
+      .limit(1);
+    if (!rows[0]?.domainLocal) return null;
+
+    const reason =
+      `refused: change '${change.urn}' is domain-local — it never leaves its own security domain, ` +
+      `so it cannot be promoted to a peer (ADR-0031 §5). Publish the target object first if it is ` +
+      `genuinely meant to federate.`;
+    const decision = await insertDecision(tx, {
+      orgId: input.orgId,
+      kind: "promotion-export-domain-local",
+      subjectId: change.id,
+      verdict: "block",
+      inputContext: { changeUrn: change.urn, peerIdOrName: input.peerIdOrName },
+      reasonTree: { summary: reason }
+    });
+    await appendAuditEvent(tx, {
+      orgId: input.orgId,
+      actorId: actorObjectId,
+      action: "federation.promotion.export.blocked",
+      subjectId: change.id,
+      reason,
+      decisionId: decision.id,
+      requestId: `federation-promotion-export:${change.id}`,
+      // The subject IS domain-local — that is why we are here — so its audit segment is withheld
+      // from peers while the local chain records the refusal in full. Omitting this would leak the
+      // change's id through the very call that refused to let it cross.
+      subjectDomainLocal: true
+    });
+    return { refused: true as const, decisionId: decision.id, reason };
+  });
+  if (localityRefusal) return localityRefusal;
 
   // Phase 1.5 — THE COMMANDER'S PROMOTION SCAN STEP (ADR-0020, proposal §13.3), BEFORE the E6 gate
   // so its managed evidence exists when the gate reads. It deposits digest-bound managed-scan

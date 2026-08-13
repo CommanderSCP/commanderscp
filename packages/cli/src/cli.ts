@@ -176,6 +176,10 @@ function objectRow(o: GraphObject): Record<string, string> {
     name: o.name,
     urn: o.urn,
     version: String(o.version),
+    // M20.1 (ADR-0031). Shown as a column rather than only in `--output json`: whether an object
+    // leaves its security domain is exactly the kind of fact an operator should not have to go
+    // looking for, and the table view is what they see by default.
+    "domain-local": o.domainLocal ? "yes" : "no",
     deleted: o.deletedAt ? "yes" : "no"
   };
 }
@@ -1237,6 +1241,13 @@ function registerTypedResourceCrud(
     .option("--id <uuid>", "client-suppliable UUIDv7 id")
     .option("--urn <urn>", "explicit URN (defaults to a derived one)")
     .option("--domain-id <id>", "containing object id (defaults to the org root)")
+    // M20.1 (ADR-0031). Named `--domain-local` after the property, never after what it is FOR
+    // ("--private", "--no-sync"): the flag has to keep meaning the same thing when the reason for
+    // reaching for it changes. Requires `federation:write`, not merely object-write authority.
+    .option(
+      "--domain-local",
+      "declare that this object never leaves its security domain (requires federation:write; IMMUTABLE once set — see `publish`)"
+    )
     .option("--properties <json>", "JSON object")
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
@@ -1249,6 +1260,7 @@ function registerTypedResourceCrud(
           id?: string;
           urn?: string;
           domainId?: string;
+          domainLocal?: boolean;
           properties?: string;
           labels?: string;
         }
@@ -1263,6 +1275,10 @@ function registerTypedResourceCrud(
             id: cmdOpts.id,
             urn: cmdOpts.urn,
             domainId: cmdOpts.domainId,
+            // Only sent when the flag is actually present. Commander omits a boolean flag entirely
+            // rather than defaulting it to `false`, and sending an explicit `false` would be a
+            // needless request-body difference on every ordinary create.
+            ...(cmdOpts.domainLocal ? { domainLocal: true } : {}),
             properties: parseJsonOption(cmdOpts.properties, "--properties"),
             labels: parseJsonOption(cmdOpts.labels, "--labels"),
             ...(opts?.serviceOption ? { service: cmdOpts.service } : {})
@@ -1351,6 +1367,14 @@ function registerTypedResourceCrud(
     );
   }
   upsertCmd
+    // M20.1 (ADR-0031 §6) — a DECLARATION on the create branch and a PRECONDITION on the update
+    // branch. Accepted here so the declaration keeps IaC parity (`scp apply` reaches the graph
+    // through this upsert); on an existing object a matching value is an idempotent no-op and a
+    // differing one is refused 409, because locality is immutable.
+    .option(
+      "--domain-local",
+      "declare locality when this URN is new; on an existing object it is a precondition, not a change (409 if it differs)"
+    )
     .option("--properties <json>", "JSON object")
     .option("--labels <json>", "JSON object")
     .option("--base-url <url>", "API base URL override")
@@ -1361,6 +1385,7 @@ function registerTypedResourceCrud(
         cmdOpts: BaseCliOpts & {
           name: string;
           service?: string;
+          domainLocal?: boolean;
           properties?: string;
           labels?: string;
         }
@@ -1368,6 +1393,7 @@ function registerTypedResourceCrud(
         const client = await clientFromStoredCredentials(cmdOpts);
         const result = await resourceOf(client).upsertByUrn(urn, {
           name: cmdOpts.name,
+          ...(cmdOpts.domainLocal ? { domainLocal: true } : {}),
           properties: parseJsonOption(cmdOpts.properties, "--properties"),
           labels: parseJsonOption(cmdOpts.labels, "--labels"),
           ...(opts?.serviceOption ? { service: cmdOpts.service } : {})
@@ -1375,6 +1401,41 @@ function registerTypedResourceCrud(
         printResult(result, cmdOpts.output, (item) => objectRow(item as GraphObject));
       }
     );
+
+  // M20.4 (ADR-0031 §6). A VERB, matching the API — deliberately NOT `update --no-domain-local`,
+  // because it re-journals the object and sweeps its edges rather than editing a field, and the
+  // command name is where an operator first learns that.
+  cmd
+    .command("publish <idOrUrn>")
+    .description(
+      `Publish a domain-local ${name} so it federates from now on (ONE-WAY — there is no un-publish)`
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, cmdOpts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(cmdOpts);
+      // Routed through the GENERIC object resource rather than the typed one, because `name` here
+      // IS the type id ("service", "deployment-target", …) and publish has exactly one endpoint —
+      // `POST /objects/{type}/{idOrUrn}/publish`. The typed SDK namespaces wrap per-type routes that
+      // have no publish counterpart, so adding a method there would mean six call sites threading a
+      // type string to reach the same generic operation this reaches directly.
+      const result = await client.object(name).publish(idOrUrn);
+      if (cmdOpts.output === "json") {
+        printResult(result, "json", () => ({}));
+        return;
+      }
+      printResult(result.object, "table", (item) => objectRow(item as GraphObject));
+      // The edge sweep is reported in BOTH directions, always — including the zero cases. A partial
+      // sweep is the correct outcome when a neighbour is still domain-local, but an operator who is
+      // not told is left assuming the whole subgraph travelled.
+      process.stdout.write(
+        `\npublished ${result.publishedRelationshipIds.length} relationship(s)` +
+          `; withheld ${result.withheldRelationshipIds.length} (endpoint still domain-local)\n`
+      );
+      for (const id of result.withheldRelationshipIds) {
+        process.stdout.write(`  withheld: ${id}\n`);
+      }
+    });
 
   return cmd;
 }
