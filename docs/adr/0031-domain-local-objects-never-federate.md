@@ -1,6 +1,6 @@
 # ADR-0031: Domain-local objects never federate — locality is declared on the object, stamped into the journal, and is not an enforcement input
 
-**Status:** **Accepted** (owner sign-off 2026-08-11, including the six decision points in the context doc's §10 — §6 below is amended by that sign-off, per Q2)
+**Status:** **Accepted** (owner sign-off 2026-08-11, including the six decision points in the context doc's §10 — §6 below is amended by that sign-off, per Q2). **Amended 2026-08-13 (owner-decided): §6a adds containment-subtree declaration as inheritance at create**, resolving the layer §1 deferred and correcting a conflict between §1's "materialize at declaration time" wording and §6's permanent refusal of shared → domain-local. §1's constraint is preserved in substance — the bit is still written onto the row, never resolved by a walk — and §1's own text now points forward to §6a.
 **Context doc:** [docs/proposals/domain-local-config-and-infra.md](../proposals/domain-local-config-and-infra.md)
 **Relates to:** [ADR-0017](0017-ownership-refinement.md) (§2 — domain-specific config/infra is outpost-owned; this supplies the tracking model it assumed); [ADR-0022](0022-outpost-config-authority-split.md) (the commander→outpost declared-config replica — this is its mirror image, and the "journal cannot carry a peer" reasoning is reused); [ADR-0018](0018-domain-local-dev-pipelines.md) / [ADR-0030](0030-dev-branch-pipelines.md) (M18 dev pipelines — adjacent mechanism, different intent; §"Relationship to M18"); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0011](0011-universal-outpost-validation.md) (§1 — domain-local artifacts have no transfer phase); [ADR-0010](0010-outpost-local-artifact-infra.md) (outpost-local Gitea); charter principle 1 (coordinate, not execute), 2 (graph-native), 3 (API-first parity), 6 (explainability), 7 (Simplicity first)
 
@@ -88,13 +88,18 @@ declare locality *before* pairing a peer, and pairing later cannot retroactively
 On an instance with no peers nothing was going to be exported in any case; the declaration is what
 guarantees that adding a peer tomorrow does not change that. The safe order is declare-then-pair.
 
-**A future containment-subtree declaration layer must MATERIALIZE, not resolve** (owner Q4,
-2026-08-11). Declaring locality once on a containment ancestor instead of on twenty networking
-components is an ergonomic layer worth having later — but it must write the bit onto each object at
-declaration time, never resolve it by walking containment at export. Resolving dynamically would put a
-graph walk in the write path and turn the journal stamp from a column read into a traversal, which is
-where a filter of this kind acquires the failure mode it exists to prevent. It is deferred, not
-rejected, and it depends on the unresolved stage-vs-`domain`-object question.
+**A containment-subtree declaration layer must MATERIALIZE, not resolve** (owner Q4, 2026-08-11).
+Declaring locality once on a containment ancestor instead of on twenty networking components is an
+ergonomic layer worth having — but it must write the bit onto each object, never resolve it by walking
+containment at export. Resolving dynamically would put a graph walk in the write path and turn the
+journal stamp from a column read into a traversal, which is where a filter of this kind acquires the
+failure mode it exists to prevent.
+
+> **Superseded in part by [§6a](#6a-containment-subtree-declaration-is-inheritance-at-create-never-a-backfill-m205) (2026-08-13).** The
+> requirement above stands; the phrase *"at declaration time"* did not. Read literally it means a bulk
+> flip of existing descendants — the **shared → domain-local** direction §6 refuses permanently — so
+> the bit is written at each object's **own create** instead. The dependency this clause named (the
+> stage-vs-`domain`-object question) was already resolved by [ADR-0026](0026-placements-and-derived-stage-names.md) D1.
 
 ### 2. A domain-local object is **never journaled**; the stamp and filter remain as the import-side check
 
@@ -221,6 +226,56 @@ Both refusals are enforced at the `createObject`/`updateObject` choke point in
 argument [ADR-0022](0022-outpost-config-authority-split.md) clause 4 makes, and for the same reason:
 four free-form-`typeId` local write doors already exist and any new one would silently be a fifth.
 
+### 6a. Containment-subtree declaration is **inheritance at create**, never a backfill (M20.5)
+
+> **Added 2026-08-13 (owner-decided), resolving the layer §1 deferred.** §1 said a future subtree
+> layer "must write the bit onto each object at declaration time, never resolve it by walking
+> containment at export", and deferred it on the unresolved stage-vs-`domain`-object question. Both
+> halves of that deferral are now settled — one by another ADR, one by a conflict §1 did not notice.
+
+**The dependency is gone.** [ADR-0026](0026-placements-and-derived-stage-names.md) D1 decided there
+will be **no `stage` entity** — a stage name is *derived* — and explicitly rejected a `stage` object
+type. Stage therefore never claimed the `domain` containment slot, and the ambiguity §1 was waiting
+on does not exist.
+
+**But §1's wording, taken literally, contradicts §6.** "Write the bit onto each object at declaration
+time" reads as a bulk update flipping existing descendants to domain-local. That is precisely the
+**shared → domain-local** direction §6 refuses *permanently*: a descendant that already federates may
+already have reached a peer, and federation has no un-send, so declaring its ancestor local would
+assert a confidentiality property the system cannot deliver. The two clauses cannot both hold for any
+ancestor that already has shared descendants.
+
+**Decision: locality is inherited at CREATE, one hop, along either containment route.**
+
+1. **A container declares its own locality at its own create**, under the same immutable rule as every
+   other object (§1, §6). There is no verb that makes an existing container domain-local.
+
+2. **An object created under a domain-local container inherits the bit at ITS create.** Both
+   containment routes count, and the resolution is *either*, mirroring §4's either-endpoint rule for
+   edges:
+   - the **`domain_id` parent** — `graph/objects-repo.ts::createObject` already resolves it
+     (`resolveDomainId`), so this is one column read on a row it has already fetched;
+   - the **`contains` parent** — `graph/components-repo.ts::createComponentInService` already resolves
+     and type-checks the container before creating the component, so the same read serves.
+
+3. **One hop is sufficient, by induction, and that is why no walk is needed.** If a container is
+   domain-local, everything created under it is domain-local at its own create; so any *intermediate*
+   container is itself already stamped by the time a grandchild is created, and reading the immediate
+   parent yields the same answer a full ancestor walk would. This is the property that keeps
+   `containmentChain` out of the write path — §1's real requirement, which this clause preserves
+   exactly. What changes is **when** the bit is written, never **what** is written or read.
+
+4. **Adding a `contains` edge later NEVER flips an existing object.** Attaching a shared component to a
+   domain-local service leaves both objects' locality untouched; the *edge* is withheld by §4's
+   either-endpoint rule, and the component keeps federating. This is the only behaviour consistent
+   with §6, and it is also the honest one: the component's existence has already crossed.
+
+**The cost, stated plainly: an existing populated subtree cannot be retrofitted.** An operator who
+wants a domain-local grouping declares the container local and builds underneath it. For a subtree
+whose members already federate there is no remedy — and there should not be one, because the remedy
+would be a lie. This is the same asymmetry §6 already imposes on individual objects, applied one level
+up; it is not a new limitation, only a newly visible one.
+
 ### 7. `domain_local` is **visibility only** — never an enforcement input
 
 It grants **no** scan exemption, relaxes **no** gate, and is read by **no** governance code path. E6
@@ -325,12 +380,27 @@ rejected alternative would be back, and this ADR would be wrong.
   component an orphan in the outpost's *own* graph, since the outpost's service and component-journey
   views are built on containment. Buying a structural guarantee by breaking the local modeling is the
   wrong trade.
-- **Locality as a containment subtree (declare a `domain` object local, inherit downward) — deferred,
-  not rejected.** It does not actually answer the cross-boundary-edge question (a component inside the
-  subtree still needs an edge to a service outside it), and it lands on the `domain` object type,
-  which is an unpopulated slot with an unresolved stage-vs-domain modeling question ahead of it. Worth
-  revisiting as an **ergonomic layer over** §1 once that settles — a declaration convenience, not a
-  different mechanism.
+- **Locality as a containment subtree (declare a `domain` object local, inherit downward) — deferred
+  2026-08-11, RESOLVED 2026-08-13 as §6a.** The deferral rested on the stage-vs-`domain`-object
+  question, which [ADR-0026](0026-placements-and-derived-stage-names.md) D1 had already settled by
+  deciding there is no `stage` entity. Adopted as **inheritance at create**; the two readings below
+  are what it was chosen over.
+- **Bulk-materialize onto existing descendants at declaration time — rejected (§6a).** This is §1's
+  own wording read literally, and it is a **shared → domain-local flip**, which §6 refuses
+  permanently. A descendant that already federates may already have reached a peer; no write on this
+  side can retract that, so the operation would claim a guarantee the system cannot deliver.
+- **Bulk-materialize, but REFUSE when any descendant is already shared — rejected as a different
+  feature, not as a bad idea.** It is honest where the previous option is not, and it may be worth
+  building later. It was not adopted now for two reasons: it is a **bulk verb with its own failure
+  modes** (what an operator does with a subtree that refuses, and how they find the offending
+  descendant, are a design problem of their own), and it is **racy against concurrent creates** — a
+  descendant created between the check and the write is shared, unstamped, and inside a subtree that
+  now claims otherwise. Closing that needs subtree-wide locking, which is a real cost to impose for an
+  ergonomic layer. Recorded so a future reader knows the honest variant was considered on its merits.
+- **Resolve locality by walking containment at export instead of storing it — rejected by §1 and
+  restated here.** It would put a graph walk in the write path and turn the journal stamp from a
+  column read into a traversal, which is where a filter of this kind acquires the failure mode it
+  exists to prevent. §6a's one-hop-at-create inheritance is what makes the walk unnecessary.
 - **A per-outpost aggregate count reported upward ("14 domain-local components") — not proposed.**
   It would preserve an inventory signal for governance rollups, but it contradicts the owner's
   "nothing at all" and would need a new journal-carried fact. Recorded so a future reader knows it was
@@ -374,6 +444,17 @@ rejected alternative would be back, and this ADR would be wrong.
   regardless), but it is a real observable: the commander's first knowledge of a published component is
   its state at publication, not its origin. An operator reading commander-side history must not read
   that absence as "this component was created then".
+- **§6a means an existing populated subtree can never be made domain-local.** Declaring a container
+  local is a decision taken when the container is created; there is no retrofit, and the operator's
+  only path for an already-shared subtree is to build a new one. This will be the most common
+  complaint about the feature, and the answer is not a missing verb — it is §6's asymmetry one level
+  up. Anything that appeared to fix it would be claiming a crossing can be un-made.
+- **§6a's one-hop inheritance is sound only because every intermediate is itself stamped at create.**
+  That induction is the whole reason no containment walk is needed, and it is therefore load-bearing:
+  any future path that creates an object *under* a domain-local container **without** going through
+  `createObject`'s `domain_id` resolution or `createComponentInService`'s container resolution would
+  break the chain silently, producing a shared object inside a local subtree. A new create door is the
+  thing to watch, exactly as the eight-door census was for the declaration itself.
 - **The DoD must include a negative control.** A test that proves nothing crossed is vacuous unless it
   also proves something did — and it must run at `syncScope: {mode:'full'}`, the widest scope, so it
   cannot pass by accident of a narrow one. This repo has shipped six vacuous tests in two days before;

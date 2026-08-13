@@ -479,7 +479,7 @@ provided it renders as commander-entered and never as observed.
 | Q1 | Mixed-locality change | Refuse at propose time | ADR-0031 §5 |
 | Q2 | Mutability | **Local→shared allowed via an explicit publication verb; shared→local refused permanently.** M20.4 pulled into M20 scope | ADR-0031 §6 (amended by this sign-off) |
 | Q3 | Permission | `federation:write` | ADR-0031 §1 |
-| Q4 | Declaration site | Per-component now; a subtree layer later **must materialize, never resolve** | ADR-0031 §1 |
+| Q4 | Declaration site | Per-component now; a subtree layer later **must materialize, never resolve**. **Resolved 2026-08-13 as M20.5** — inheritance at **create**, one hop, either containment route; *not* a backfill, because "materialize at declaration time" read literally is the shared → domain-local flip §6 refuses | ADR-0031 §1 + **§6a** |
 | Q5 | Commander declaring | Allow on any instance in any role; **declare-then-pair** is the safe order | ADR-0031 §1 |
 | Q6 | Aggregate signal | "Nothing at all" stands; ADR-0022's commander-entered note is the free fallback if an annotation is ever wanted | ADR-0031 §"Alternatives" |
 
