@@ -24,6 +24,7 @@ import {
   TableRow
 } from "../components/ui/table";
 import { PageHeader } from "../components/ui/page-header";
+import { DomainLocalBadge, DomainLocalCreateField } from "../components/domain-local";
 import { Alert } from "../components/ui/alert";
 import { EmptyState } from "../components/ui/empty-state";
 import { SkeletonRows } from "../components/ui/skeleton";
@@ -37,6 +38,7 @@ export function RegistryListPage(): React.JSX.Element {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [serviceId, setServiceId] = useState("");
+  const [domainLocal, setDomainLocal] = useState(false);
   const serviceMember = registry?.serviceMember ?? false;
 
   const listQuery = useQuery({
@@ -54,13 +56,14 @@ export function RegistryListPage(): React.JSX.Element {
   });
 
   const createMutation = useMutation({
-    mutationFn: (input: { name: string; service?: string }) =>
+    mutationFn: (input: { name: string; service?: string; domainLocal?: boolean }) =>
       // `service` is only set for a service-member registry; it rides through to
       // `CreateComponentRequest.service`. Cast because the shared client type is the base request.
       getRegistryClient(client, registry!).create(input as CreateObjectRequest),
     onSuccess: async () => {
       setName("");
       setServiceId("");
+      setDomainLocal(false);
       setShowCreate(false);
       await queryClient.invalidateQueries({ queryKey: registryListKey(basePath ?? "") });
     }
@@ -81,9 +84,13 @@ export function RegistryListPage(): React.JSX.Element {
     // Create is strict for a service member — block submit until a service is chosen (the server
     // would 400 otherwise). The Select is also marked required for accessibility/native validation.
     if (serviceMember && !serviceId) return;
-    createMutation.mutate(
-      serviceMember ? { name: trimmed, service: serviceId } : { name: trimmed }
-    );
+    createMutation.mutate({
+      name: trimmed,
+      ...(serviceMember ? { service: serviceId } : {}),
+      // Omitted when unchecked rather than sent as `false` — only a true declaration needs the
+      // `federation:write` permission, and only true is immutable (ADR-0031 §1/§6).
+      ...(domainLocal ? { domainLocal: true } : {})
+    });
   }
 
   return (
@@ -99,9 +106,10 @@ export function RegistryListPage(): React.JSX.Element {
 
       {showCreate && (
         <form
-          className="flex items-end gap-2 rounded-lg border border-slate-200 bg-white p-4"
+          className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4"
           onSubmit={handleCreate}
         >
+          <div className="flex items-end gap-2">
           <div className="flex flex-1 flex-col gap-1.5">
             <label htmlFor="new-name" className="text-sm font-medium text-slate-700">
               Name
@@ -145,6 +153,8 @@ export function RegistryListPage(): React.JSX.Element {
           >
             {createMutation.isPending ? "Creating…" : "Create"}
           </Button>
+          </div>
+          <DomainLocalCreateField checked={domainLocal} onChange={setDomainLocal} />
         </form>
       )}
       {createMutation.isError && (
@@ -183,13 +193,16 @@ export function RegistryListPage(): React.JSX.Element {
             {listQuery.data.items.map((item) => (
               <TableRow key={item.id} data-testid="registry-row">
                 <TableCell>
-                  <Link
-                    to="/$basePath/$idOrUrn"
-                    params={{ basePath: registry.basePath, idOrUrn: item.id }}
-                    className="font-medium text-slate-900 hover:underline"
-                  >
-                    {item.name}
-                  </Link>
+                  <span className="flex items-center gap-2">
+                    <Link
+                      to="/$basePath/$idOrUrn"
+                      params={{ basePath: registry.basePath, idOrUrn: item.id }}
+                      className="font-medium text-slate-900 hover:underline"
+                    >
+                      {item.name}
+                    </Link>
+                    {item.domainLocal === true && <DomainLocalBadge />}
+                  </span>
                 </TableCell>
                 <TableCell className="font-mono text-xs text-slate-500">{item.urn}</TableCell>
                 {/* A date is not a status (spec §4E) — plain caption text, not a Badge. */}

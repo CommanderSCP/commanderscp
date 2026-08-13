@@ -461,6 +461,37 @@ async function main() {
     }
   }
 
+  // ------------------------------------------------------ domain-local (M20, ADR-0031)
+  // The canonical content class from the ADR: this domain's own network configuration-as-code —
+  // authored here, reviewed here, deployed here, with NO upstream original. Declared at create;
+  // `domainLocal` on the upsert is a PRECONDITION on re-runs (409 on mismatch, ADR-0031 §6), so
+  // this stays idempotent. Gives the review instance a row wearing the domain-local badge, a
+  // detail page with the one-way publish card, and (if published during review) the edge-sweep
+  // report — the withheld bucket stays empty here because its only edge is to a shared service.
+  // NOT the shared `put` helper: publish is one-way, so once a reviewer clicks Publish the
+  // precondition `domainLocal: true` 409s forever — that is the API being honest (there is no
+  // un-publish), not a fixture failure, so a 409 here is tolerated instead of recorded as failed.
+  // (The urn is deliberately one that has NEVER existed shared on this instance: an urn that was
+  // ever shared — even soft-deleted — refuses to come back domain-local, ADR-0031 §6.)
+  try {
+    await api(
+      "PUT",
+      `/components/${encodeURIComponent(urn("component", "transit-gateway-attachments"))}`,
+      {
+        name: "transit-gateway-attachments",
+        service: urn("service", "platform-compute"),
+        domainLocal: true
+      }
+    );
+    created.push("components: transit-gateway-attachments (domain-local)");
+  } catch (e) {
+    if (e.status === 409)
+      created.push(
+        "components: transit-gateway-attachments (already shared — published during review, or created before M20; left as-is)"
+      );
+    else failed.push(`components transit-gateway-attachments: ${e.message}`);
+  }
+
   // --------------------------------------------------------------- federation
   // Federation status and Outposts render nothing until this instance has an identity and at
   // least one peer. Three peers across three TRUST TIERS (a commercial one, a FedRAMP one and an

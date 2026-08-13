@@ -16,6 +16,7 @@ import {
   useOwnDomainId
 } from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { DomainLocalBadge, DomainLocalPublishCard } from "../components/domain-local";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Alert } from "../components/ui/alert";
@@ -116,7 +117,14 @@ export function RegistryDetailPage(): React.JSX.Element {
       <PageHeader
         title={<span data-testid="object-name">{object.name}</span>}
         description={<span className="font-mono text-xs break-all">{object.urn}</span>}
-        meta={foreign ? <ForeignOriginNotice originDomainId={object.originDomainId} /> : undefined}
+        meta={
+          foreign || object.domainLocal === true ? (
+            <span className="flex flex-wrap items-center gap-2">
+              {foreign && <ForeignOriginNotice originDomainId={object.originDomainId} />}
+              {object.domainLocal === true && <DomainLocalBadge />}
+            </span>
+          ) : undefined
+        }
         actions={
           <>
             {/* Service release board (coordination-ui-views.md Phase 2) — the scannable
@@ -132,6 +140,16 @@ export function RegistryDetailPage(): React.JSX.Element {
             </Link>
           </>
         }
+      />
+
+      {/* M20 (ADR-0031 §6): the one-way publish verb. Self-gates on the object's own
+          `domainLocal` bit — never on the instance's federation role (see the module doc in
+          components/domain-local.tsx). First card so the action and its edge-sweep report are
+          visible without scrolling. */}
+      <DomainLocalPublishCard
+        object={object}
+        typeId={registry.typeId}
+        invalidateKeys={[detailKey, registryListKey(basePath ?? "")]}
       />
 
       <Card>
