@@ -20,6 +20,24 @@ export interface AppendAuditEventInput {
   reason?: string | null;
   decisionId?: string | null;
   requestId: string;
+  /**
+   * M20.2 (ADR-0031 §2) — true when the SUBJECT of this audited action is a domain-local object, so
+   * the `audit_segment` journal entry below is withheld from every peer.
+   *
+   * SUPPLIED BY THE CALLER, never looked up here. The callers that mutate an object already hold its
+   * row, and making the audit path issue a query per event would put a read in the hot path of every
+   * audited action in the system to serve a small minority of them.
+   *
+   * THIS IS NOT OPTIONAL POLISH. The audit segment carries `subjectId` — the object's id — so
+   * without it a domain-local object's *identity* crosses on every single mutation even though its
+   * `object_upsert` is withheld. `domain-local-invisibility.integration.test.ts` found exactly that:
+   * the graph entries were correctly filtered and the id sailed out in the audit stream beside them.
+   *
+   * The LOCAL audit row is written unchanged either way — this withholds the entry from the journal,
+   * never from this domain's own hash-chained audit log, which stays complete and verifiable
+   * (charter principle 6). Locality is about what leaves, not about what is recorded.
+   */
+  subjectDomainLocal?: boolean;
 }
 
 /**
@@ -88,20 +106,32 @@ export async function appendAuditEvent(tx: TenantTx, input: AppendAuditEventInpu
   // audited action already funnels through, so every audit event — object/relationship/change/
   // policy/approval/freeze/rollback mutations alike — automatically gets an `audit_segment`
   // journal entry with zero additional call-site wiring anywhere else in the codebase.
-  await appendJournalEntry(tx, {
-    orgId: input.orgId,
-    entryKind: "audit_segment",
-    contentHash: rowHash,
-    payload: {
-      auditEventId: id,
-      action: input.action,
-      subjectId,
-      actorId: input.actorId,
-      occurredAt: occurredAt.toISOString(),
-      reason,
-      decisionId
-    }
-  });
+  // M20.2 (ADR-0031 §2 as corrected) — a domain-local subject's audit event is allocated NO journal
+  // sequence. The local `auditEvents` row above is written unconditionally and its hash chain stays
+  // complete and verifiable (charter principle 6): locality governs what LEAVES this domain, never
+  // what this domain records about itself.
+  //
+  // This one is easy to miss and was: the graph entries were correctly withheld while the object's
+  // id sailed out in the audit stream beside them, because `subjectId` IS the object id.
+  // `domain-local-invisibility.integration.test.ts` found it by searching the serialized bundle for
+  // the id rather than by checking which rows landed — which is why that assertion is written that
+  // way.
+  if (!input.subjectDomainLocal) {
+    await appendJournalEntry(tx, {
+      orgId: input.orgId,
+      entryKind: "audit_segment",
+      contentHash: rowHash,
+      payload: {
+        auditEventId: id,
+        action: input.action,
+        subjectId,
+        actorId: input.actorId,
+        occurredAt: occurredAt.toISOString(),
+        reason,
+        decisionId
+      }
+    });
+  }
 }
 
 function toAuditEvent(row: typeof auditEvents.$inferSelect): AuditEvent {

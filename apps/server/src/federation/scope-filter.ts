@@ -21,7 +21,40 @@ import type { SyncJournalEntry, SyncScope } from "@scp/schemas";
  * re-sync from sequence 0 (the cursor has already advanced past entries a widened scope would now
  * want) — documented operational boundary.
  */
+/**
+ * M20.2 (ADR-0031 §2/§3) — is this journal entry one whose object never leaves its own security
+ * domain?
+ *
+ * Exported so the two sides can be reasoned about (and tested) independently of the scope modes,
+ * and so `export-repo.ts`/`import-repo.ts` can report *why* an entry was withheld without
+ * re-deriving the rule. Never widen this to consult anything outside the entry: the whole design
+ * rests on {@link entryMatchesScope} staying a pure, synchronous predicate that the importer — which
+ * cannot query the sender's database — can apply to exactly the same input and reach exactly the
+ * same answer.
+ */
+export function isDomainLocalEntry(entry: SyncJournalEntry): boolean {
+  return (entry.payload as { domainLocal?: unknown }).domainLocal === true;
+}
+
 export function entryMatchesScope(entry: SyncJournalEntry, scope: SyncScope): boolean {
+  // M20.2 (ADR-0031 §3) — DOMAIN-LOCAL ENTRIES MATCH NO SCOPE, IN EITHER DIRECTION.
+  //
+  // Ahead of the mode switch, and deliberately not a case inside it: this is not a narrower scope,
+  // it is a property of the ENTRY that no scope can override. `full` is the mode that proves it —
+  // the widest scope there is, and the one an operator reaches for when something is missing, so a
+  // clause reachable only from the narrow modes would leak exactly when someone widens to debug.
+  //
+  // `=== true` rather than truthiness: the payload is `Record<string, unknown>` off the wire, and a
+  // filter deciding what crosses a security boundary must have no coercion in it. The stamp is
+  // written ONLY when true (`graph/objects-repo.ts`), so absent means false and there is no
+  // third, unknown state to resolve — which is why the column behind it is NOT NULL.
+  //
+  // Applied at BOTH ends, like every predicate in this module: `export-repo.ts` filters here so the
+  // bytes never leave, and `import-repo.ts` re-applies it so a peer that ships one anyway — a
+  // misconfigured or downgraded sender — still has it dropped rather than applied. That symmetry is
+  // only possible because the flag rides IN the payload; resolving it by a database lookup at
+  // export time would leave the receiving side with nothing to check.
+  if (isDomainLocalEntry(entry)) return false;
   switch (scope.mode) {
     case "full":
       return true;

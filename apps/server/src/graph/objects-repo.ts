@@ -252,13 +252,36 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
     subjectId: id,
     beforeHash: null,
     afterHash: contentHash,
-    requestId: input.requestId
+    requestId: input.requestId,
+    // M20.2 (ADR-0031 §2) — the audit segment carries `subjectId`, so without this the object's id
+    // crosses on every mutation even though its `object_upsert` is withheld. The LOCAL audit row is
+    // written unchanged; only the journal entry is withheld.
+    subjectDomainLocal: domainLocal
   });
   // Only journal writes THIS domain actually authored — an imported row was already journaled (and
   // signed) by ITS origin domain; re-journaling it here would falsely claim co-authorship and
   // corrupt this domain's own hash chain with content it didn't originate (DESIGN §13 single-writer
   // authority: "no merge algorithm exists because none is needed").
-  if (!input.federationImport) {
+  //
+  // ...AND NEVER JOURNAL A DOMAIN-LOCAL OBJECT AT ALL (M20.2, ADR-0031 §2 as corrected). The first
+  // cut journaled it and filtered it at export. That is wrong, and `domain-local-invisibility`
+  // caught it: a filtered bundle is SPARSE, and `import-repo.ts` only accepts a sparse chain when
+  // the RECEIVER's own `sync_scope` is narrow (`receiverExpectsContiguity = mode === 'full'`). A
+  // `full`-scope peer — the default, and the widest — would refuse every bundle with a
+  // contiguity-break 409 the moment any object in the org was declared domain-local. The feature
+  // would have broken federation for exactly the most common peer.
+  //
+  // Not journaling is also STRICTLY MORE PRIVATE than filtering, which is what makes this a
+  // correction rather than a workaround. A withheld-but-numbered entry leaks its own existence: the
+  // gap in the sequence tells a peer how many local objects there are and when they changed — the
+  // aggregate signal the owner explicitly declined (ADR-0031 "Alternatives", Q6). An entry that was
+  // never allocated a sequence leaves nothing to count.
+  //
+  // The export-side filter in `federation/scope-filter.ts` therefore no longer has anything of ours
+  // to catch, and is kept deliberately: it is the IMPORT-side defense against a peer that ships a
+  // domain-local-stamped entry anyway. The stamps below remain for the same reason — so that if such
+  // an entry is ever produced, both ends still recognise and drop it.
+  if (!input.federationImport && !domainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
       entryKind: journalEntryKindFor(input.typeId, false),
@@ -588,10 +611,14 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     subjectId: existing.id,
     beforeHash,
     afterHash,
-    requestId: input.requestId
+    requestId: input.requestId,
+    // M20.2 (ADR-0031 §2) — from the ROW, not the request: locality is immutable and unexpressible
+    // on an update body, so `row` is the only truth.
+    subjectDomainLocal: row.domainLocal
   });
-  // See the identical note in `createObject` — never re-journal an imported row's own history.
-  if (!input.federationImport) {
+  // See the identical note in `createObject` — never re-journal an imported row's own history, and
+  // never allocate a journal sequence to a domain-local object (M20.2, ADR-0031 §2 as corrected).
+  if (!input.federationImport && !row.domainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
       entryKind: journalEntryKindFor(input.typeId, false),
@@ -607,7 +634,15 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
         labels: nextLabels,
         originDomainId: row.originDomainId,
         revision: nextRevision,
-        version: nextVersion
+        version: nextVersion,
+        // M20.2 (ADR-0031 §2). Read from the ROW, never from the request: locality is immutable and
+        // `UpdateObjectRequestSchema` cannot express it, so the row is the only truth here.
+        //
+        // This stamp is not optional convenience — without it a domain-local object leaks on its
+        // SECOND write. Its create entry would be filtered and every later `object_upsert` would
+        // sail through carrying its id, urn, name, properties and labels, which is the whole object
+        // arriving one revision late. The create-path stamp alone protects nothing.
+        ...(row.domainLocal ? { domainLocal: true } : {})
       }
     });
   }
@@ -807,7 +842,11 @@ export async function upsertObjectByUrn(
       subjectId: row.id,
       beforeHash: existing.contentHash,
       afterHash,
-      requestId: input.requestId
+      requestId: input.requestId,
+      // M20.2 (ADR-0031 §2) — `upsertObjectByUrn`'s own update branch; it does NOT delegate to
+      // `updateObject`, so it needs its own stamp. Exactly the kind of second write site the
+      // objects-table census exists to catch.
+      subjectDomainLocal: row.domainLocal
     });
     return { object: toGraphObject(row), created: false };
   }
@@ -969,14 +1008,30 @@ export async function deleteObject(
     subjectId: existing.id,
     beforeHash: existing.contentHash,
     afterHash: null,
-    requestId: input.requestId
+    requestId: input.requestId,
+    // M20.2 (ADR-0031 §2) — the delete's audit segment, paired with the tombstone stamp below.
+    subjectDomainLocal: existing.domainLocal
   });
-  if (!input.federationImport && !removedForeignShadow) {
+  // `!existing.domainLocal` — M20.2 (ADR-0031 §2 as corrected): the tombstone is allocated no
+  // sequence either, so a domain-local object's DELETION is as invisible as its existence. This is
+  // the easiest of the three to overlook, because a tombstone "carries no data" — but its payload
+  // holds the id and the urn, and a urn is `urn:scp:<org>:<type>:<name>`.
+  if (!input.federationImport && !removedForeignShadow && !existing.domainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
       entryKind: journalEntryKindFor(input.typeId, true),
       contentHash: existing.contentHash,
-      payload: { id: existing.id, typeId: input.typeId, urn: existing.urn }
+      payload: {
+        id: existing.id,
+        typeId: input.typeId,
+        urn: existing.urn,
+        // M20.2 (ADR-0031 §2) — the TOMBSTONE needs it too, and this is the easiest one to miss
+        // because a tombstone "carries no data". It carries the id and the URN, and a URN is
+        // `urn:scp:<org>:<type>:<name>` — the object's NAME in plain text. Letting a domain-local
+        // object's deletion cross would leak both its existence and its name, and would additionally
+        // tell a peer that something it was never shown has now been removed.
+        ...(existing.domainLocal ? { domainLocal: true } : {})
+      }
     });
   }
   await eventBus.publish(tx, {
