@@ -1,10 +1,41 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+// House pattern (outposts-honesty.test.tsx): `Link` throws outside a RouterProvider, so it is
+// stubbed — but UNLIKE the bare-anchor stub there, this one interpolates `params` into `to`, because
+// the EndpointName tests below assert the href. What that pins is that the component CHOSE the link
+// branch and fed it the right registry basePath + object id; TanStack's own interpolation is
+// covered by the E2E spec against the real router.
+vi.mock("@tanstack/react-router", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-router")>()),
+  Link: ({
+    to,
+    params,
+    title,
+    children
+  }: {
+    to?: string;
+    params?: Record<string, string>;
+    title?: string;
+    children?: React.ReactNode;
+  }) => {
+    const href = Object.entries(params ?? {}).reduce(
+      (path, [key, value]) => path.replace(`$${key}`, value),
+      to ?? ""
+    );
+    return (
+      <a href={href} title={title}>
+        {children}
+      </a>
+    );
+  }
+}));
 import {
   DomainLocalBadge,
   DomainLocalCreateField,
   DomainLocalPublishCard,
+  EndpointName,
   PublishConfirmBody
 } from "./domain-local";
 
@@ -76,6 +107,56 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
     // "There is no un-publish" appears only in the confirm copy (asserted below), never as a
     // control: the card's own markup must not contain an un-publish affordance.
     expect(html.toLowerCase()).not.toMatch(/un-?publish/);
+  });
+
+  // The sweep report's link decision is derived ENTIRELY from `otherEndpointUrn`'s type segment,
+  // and the no-link branch depends on a server-side FALLBACK (a vanished endpoint degrades the
+  // urn to the raw id), not on a contract. These pin both branches so a change to that fallback —
+  // or to the urn shape — breaks a test here instead of shipping a dead link (M20 author's
+  // caveat, 2026-08-13).
+  it("sweep endpoint with a routable urn renders a LINK into its registry page", () => {
+    const html = renderToStaticMarkup(
+      <EndpointName
+        edge={{
+          id: "6f0a1b2c-3d4e-4f50-8161-728394a5b6c7",
+          typeId: "depends_on",
+          otherEndpointId: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5",
+          otherEndpointUrn: "urn:scp:default:component:pub-drill-delta",
+          otherEndpointName: "pub-drill-delta"
+        }}
+      />
+    );
+    expect(html).toContain("<a ");
+    expect(html).toContain('href="/components/0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5"');
+    expect(html).toContain("pub-drill-delta");
+  });
+
+  it("sweep endpoint with a NON-routable urn renders plain text, never a dead link", () => {
+    const base = {
+      id: "6f0a1b2c-3d4e-4f50-8161-728394a5b6c7",
+      typeId: "depends_on",
+      otherEndpointId: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5",
+      otherEndpointName: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5"
+    };
+    // Today's degraded shape: the raw id substituted for the urn (no type segment at all).
+    const degradedToday = renderToStaticMarkup(
+      <EndpointName edge={{ ...base, otherEndpointUrn: base.otherEndpointId }} />
+    );
+    // A plausible future degraded shape: a sentinel string. Must ALSO stay linkless.
+    const degradedSentinel = renderToStaticMarkup(
+      <EndpointName edge={{ ...base, otherEndpointUrn: "unknown" }} />
+    );
+    // A well-formed urn whose type is simply not a routed registry.
+    const unroutedType = renderToStaticMarkup(
+      <EndpointName
+        edge={{ ...base, otherEndpointUrn: "urn:scp:default:not-a-registry:something" }} />
+    );
+    for (const html of [degradedToday, degradedSentinel, unroutedType]) {
+      expect(html).not.toContain("<a ");
+      expect(html).not.toContain("href=");
+      // The name is still shown — the row never drops out of the report.
+      expect(html).toContain(base.otherEndpointName);
+    }
   });
 
   it("confirm copy states the one-way property and the withheld-edge semantics", () => {

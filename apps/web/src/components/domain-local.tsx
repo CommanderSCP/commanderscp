@@ -263,8 +263,17 @@ function EdgeBucket({
   );
 }
 
-/** The other endpoint, linked into its registry page when its urn names a routed type. */
-function EndpointName({ edge }: { edge: SweptRelationship }): React.JSX.Element {
+/**
+ * The other endpoint, linked into its registry page when its urn names a routed type.
+ *
+ * Exported for `domain-local.test.tsx`, which pins BOTH branches — because the no-link branch
+ * rides on a server-side FALLBACK, not a contract (the M20 author's caveat, 2026-08-13): a
+ * vanished endpoint currently degrades `otherEndpointUrn` to the raw id, which happens to have no
+ * type segment and so resolves to no registry. If that fallback ever changes shape (say, to the
+ * literal string "unknown"), the pinned test is what turns the change into a red test instead of
+ * a dead link discovered by an operator.
+ */
+export function EndpointName({ edge }: { edge: SweptRelationship }): React.JSX.Element {
   // `urn:scp:{org}:{type}:{slug}` — segment 3 is the typeId. A degraded urn (vanished endpoint:
   // the server substitutes the raw id) has no such segment and resolves to no registry.
   const registry = findRegistryByTypeId(edge.otherEndpointUrn.split(":")[3]);
