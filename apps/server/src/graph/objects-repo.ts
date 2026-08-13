@@ -152,16 +152,57 @@ export async function resolveDomainId(
   orgId: string,
   domainId: ContainmentDomainId | null | undefined
 ): Promise<ContainmentDomainId | null> {
+  return (await resolveContainmentParent(tx, orgId, domainId)).id;
+}
+
+/**
+ * M20.5 (ADR-0031 §6a) — the same resolution as {@link resolveDomainId}, plus the parent's
+ * **locality**, which a child inherits at its own create.
+ *
+ * ## Why this exists rather than a second lookup
+ *
+ * Both branches were ALREADY reading the parent row — `getOrgRootObjectId` selects the org root and
+ * returns only its id, and the explicit branch selects the named parent purely to validate it exists.
+ * Returning `domainLocal` from reads that already happen makes subtree inheritance cost **zero extra
+ * queries**. That is not micro-optimisation: `createObject` is the hottest write path in the system
+ * (the M1 DoD alone drives 5,000 sequential creates against a 180s budget that already runs at ~60%
+ * of it on CI hardware), and a per-create SELECT added for a feature most creates never use is the
+ * kind of thing that turns a green suite amber a month later.
+ *
+ * ## Why one hop is enough
+ *
+ * ADR-0031 §6a: every intermediate container is itself stamped at ITS create, so the immediate
+ * parent's flag already equals what a full ancestor walk would return, by induction. That is what
+ * keeps `containmentChain` — a recursive CTE — out of the write path, which §1 requires.
+ *
+ * The induction is load-bearing, and its precondition is that EVERY create door funnels through here
+ * or through `graph/components-repo.ts::createComponentInService`. A future door that resolves a
+ * containment parent by itself would silently produce a shared object inside a domain-local subtree;
+ * `domain-local-inheritance.integration.test.ts` is the census that keeps that honest.
+ */
+export async function resolveContainmentParent(
+  tx: TenantTx,
+  orgId: string,
+  domainId: ContainmentDomainId | null | undefined
+): Promise<{ id: ContainmentDomainId | null; domainLocal: boolean }> {
   // BOUNDARY (ADR-0021 D4): the org root is an ordinary object id being promoted into the
-  // containment-parent role — `getOrgRootObjectId` returns a plain object id, and this is the
-  // one place that answer becomes a containment domain id.
-  if (domainId === undefined) return asContainmentDomainId(await getOrgRootObjectId(tx, orgId));
-  if (domainId === null) return null;
+  // containment-parent role — this is the one place that answer becomes a containment domain id.
+  if (domainId === undefined) {
+    const root = await tx.query.objects.findFirst({
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(eqOp(t.orgId, orgId), eqOp(t.typeId, "organization"), isNullOp(t.domainId))
+    });
+    if (!root)
+      throw new Error(`org ${orgId} has no root 'organization' object — bootstrap incomplete`);
+    return { id: asContainmentDomainId(root.id), domainLocal: root.domainLocal };
+  }
+  // The org root itself (bootstrap): no parent, so nothing to inherit.
+  if (domainId === null) return { id: null, domainLocal: false };
   const parent = await tx.query.objects.findFirst({
     where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId))
   });
   if (!parent) throw badRequest(`domainId '${domainId}' does not reference an object in this org`);
-  return domainId;
+  return { id: domainId, domainLocal: parent.domainLocal };
 }
 
 export async function createObject(tx: TenantTx, input: CreateObjectInput): Promise<GraphObject> {
@@ -170,7 +211,27 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   const labels = input.labels ?? {};
   validateProperties(type.propertySchema, properties, type.id);
 
-  const domainId = await resolveDomainId(tx, input.orgId, input.domainId);
+  const containmentParent = await resolveContainmentParent(tx, input.orgId, input.domainId);
+  const domainId = containmentParent.id;
+
+  // M20.5 (ADR-0031 §6a) — INHERIT LOCALITY FROM THE CONTAINMENT PARENT, at create.
+  //
+  // An explicit `false` under a domain-local parent is REFUSED, not silently overridden. Both of the
+  // silent options are worse: honouring it creates a federating object inside a subtree whose whole
+  // point is that it stays home — its name alone can disclose what the subtree is about — while
+  // quietly upgrading it to `true` would mean an operator who asked for a shared object got a local
+  // one and was never told. A 400 at authoring time is the only outcome that leaves nobody with a
+  // false belief.
+  //
+  // The `federationImport` path is exempt: an imported row crossed a boundary by definition, its
+  // parent is a replica, and the coercion below already forces `false` for it regardless.
+  if (!input.federationImport && containmentParent.domainLocal && input.domainLocal === false) {
+    throw badRequest(
+      `cannot create a non-domain-local object inside a domain-local container: the containing ` +
+        `object '${domainId}' is domain-local, so everything created under it is too (ADR-0031 §6a). ` +
+        `Omit domainLocal, or create this object under a different container.`
+    );
+  }
 
   const id = input.id ?? uuidv7();
 
@@ -212,7 +273,13 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // row that arrived over the journal is, by definition, one that crossed a boundary, so it cannot
   // be domain-local. Coercing here rather than trusting `import-repo.ts` not to pass it keeps the
   // invariant at the choke point every write door funnels through.
-  const domainLocal = input.federationImport ? false : (input.domainLocal ?? false);
+  // M20.5 (ADR-0031 §6a): declared OR inherited. The `||` is the either-route rule — a container's
+  // locality reaches its children without the child restating it, which is the whole ergonomic point
+  // of the subtree layer. `containmentParent.domainLocal` is `false` on the import path by
+  // construction (a replica's parent is a replica), and the ternary forces `false` there anyway.
+  const domainLocal = input.federationImport
+    ? false
+    : (input.domainLocal ?? false) || containmentParent.domainLocal;
 
   let row: typeof objects.$inferSelect | undefined;
   try {

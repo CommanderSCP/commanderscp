@@ -74,7 +74,19 @@ export async function createComponentInService(
     domainId: input.domainId,
     properties: input.properties ?? {},
     labels: input.labels,
-    domainLocal: input.domainLocal
+    // M20.5 (ADR-0031 §6a) — THE SECOND CONTAINMENT ROUTE. `createObject` inherits from the
+    // `domain_id` parent; it cannot see this one, because the `contains` edge to `service` does not
+    // exist yet — it is written below, AFTER the object. So the container's locality has to be read
+    // here and passed in.
+    //
+    // `service` is already loaded and type-checked above, so this costs no extra query. Combined
+    // with the caller's own declaration, mirroring §4's either-endpoint rule: a component is
+    // domain-local if it says so OR if the thing containing it is.
+    //
+    // Note this is the reason `domainLocal` is threaded rather than inferred later: making the
+    // component local when the EDGE is created would be a shared -> domain-local flip, which §6
+    // refuses permanently. It has to be true at create or never.
+    domainLocal: input.domainLocal || service.domainLocal
   });
 
   await createRelationship(tx, {
