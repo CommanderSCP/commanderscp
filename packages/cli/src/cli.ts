@@ -1462,11 +1462,15 @@ function registerTypedResourceCrud(
       // sweep is the correct outcome when a neighbour is still domain-local, but an operator who is
       // not told is left assuming the whole subgraph travelled.
       process.stdout.write(
-        `\npublished ${result.publishedRelationshipIds.length} relationship(s)` +
-          `; withheld ${result.withheldRelationshipIds.length} (endpoint still domain-local)\n`
+        `\npublished ${result.publishedRelationships.length} relationship(s)` +
+          `; withheld ${result.withheldRelationships.length} (endpoint still domain-local)\n`
       );
-      for (const id of result.withheldRelationshipIds) {
-        process.stdout.write(`  withheld: ${id}\n`);
+      // NAMES, not uuids. For a withheld edge the other endpoint is the operator's next action —
+      // "publish that one too" — and a bare id cannot tell them which object that is.
+      for (const rel of result.withheldRelationships) {
+        process.stdout.write(
+          `  withheld: ${rel.typeId} -> ${rel.otherEndpointName} (${rel.otherEndpointUrn})\n`
+        );
       }
     });
 

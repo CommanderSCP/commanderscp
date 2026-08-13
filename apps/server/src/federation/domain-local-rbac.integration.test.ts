@@ -145,7 +145,9 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     // Org-root Operator: object:write + relationship:write + federation:read, NO federation:write.
     operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
-    const service = await admin.object("service").create({ name: `svc-${randomUUID().slice(0, 8)}` });
+    const service = await admin
+      .object("service")
+      .create({ name: `svc-${randomUUID().slice(0, 8)}` });
     serviceUrn = service.urn;
   }, 120_000);
 

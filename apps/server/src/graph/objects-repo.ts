@@ -697,15 +697,16 @@ export interface UpsertObjectByUrnInput {
  *    verb instead of silently doing half of it.
  */
 function assertDomainLocalUnchanged(
-  existing: { id: string; domainLocal: boolean },
+  existing: { id: string; urn: string; domainLocal: boolean },
   requested: boolean | undefined
 ): void {
   if (requested === undefined || requested === existing.domainLocal) return;
   throw conflict(
     requested
-      ? `object '${existing.id}' is not domain-local and cannot become domain-local: federation ` +
-          `has no un-send, so an object whose existence may already have reached a peer can never ` +
-          `be un-published (ADR-0031 §6). Create a new object instead.`
+      ? `object '${existing.id}' (urn '${existing.urn}') is not domain-local and cannot become ` +
+          `domain-local: federation has no un-send, so an object whose existence may already have ` +
+          `reached a peer can never be un-published (ADR-0031 §6). Use a DIFFERENT urn — this one ` +
+          `is taken by the existing shared object, including if it has been soft-deleted.`
       : `object '${existing.id}' is domain-local; publishing it is an explicit one-way action, not ` +
           `a field edit — use the publication verb so the object and its edges are re-journaled ` +
           `together (ADR-0031 §6).`

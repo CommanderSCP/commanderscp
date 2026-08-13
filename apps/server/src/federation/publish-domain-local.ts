@@ -1,5 +1,5 @@
 import { and, eq, isNull, or } from "drizzle-orm";
-import type { GraphObject } from "@scp/schemas";
+import type { GraphObject, SweptRelationship } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, relationships } from "../db/schema.js";
 import { conflict, notFound } from "../errors.js";
@@ -23,6 +23,10 @@ export interface PublishDomainLocalResult {
   /** Ids of the object's live edges deliberately LEFT unpublished because their OTHER endpoint is
    *  itself still domain-local. Reported so the caller can see the sweep was partial and why. */
   withheldRelationshipIds: string[];
+  /** The same two sets, described well enough to act on — see {@link SweptRelationship}. Derived
+   *  from the identical loop, so membership and order can never diverge from the id arrays. */
+  publishedRelationships: SweptRelationship[];
+  withheldRelationships: SweptRelationship[];
 }
 
 /**
@@ -161,23 +165,35 @@ export async function publishDomainLocalObject(
       )
     );
 
-  const publishedRelationshipIds: string[] = [];
-  const withheldRelationshipIds: string[] = [];
+  const publishedRelationships: SweptRelationship[] = [];
+  const withheldRelationships: SweptRelationship[] = [];
   for (const edge of edges) {
     // Only edges THIS domain authored may be journaled by it (single-writer authority) — an edge
     // replicated from a peer is already on that peer's own chain.
     if (edge.originDomainId !== self.domainId) continue;
 
     const otherId = edge.fromId === row.id ? edge.toId : edge.fromId;
+    // Urn and name come back alongside the locality flag — the same row read, no extra query. They
+    // are what make the sweep legible: for a WITHHELD edge, the other endpoint IS the operator's
+    // next action ("publish that one too"), and an id alone cannot say which object that is.
     const other = await tx
-      .select({ domainLocal: objects.domainLocal })
+      .select({ domainLocal: objects.domainLocal, urn: objects.urn, name: objects.name })
       .from(objects)
       .where(and(eq(objects.orgId, input.orgId), eq(objects.id, otherId)))
       .limit(1);
+    const swept: SweptRelationship = {
+      id: edge.id,
+      typeId: edge.typeId,
+      otherEndpointId: otherId,
+      // An endpoint row that has vanished still has to be reportable, so the descriptive fields
+      // degrade to the id rather than dropping the edge from the report entirely.
+      otherEndpointUrn: other[0]?.urn ?? otherId,
+      otherEndpointName: other[0]?.name ?? otherId
+    };
     // A missing endpoint is treated as still-withheld rather than published: it cannot be shown to
     // be shared, and this is the fail-closed direction.
     if (!other[0] || other[0].domainLocal) {
-      withheldRelationshipIds.push(edge.id);
+      withheldRelationships.push(swept);
       continue;
     }
 
@@ -197,8 +213,17 @@ export async function publishDomainLocalObject(
         revision: edge.revision
       }
     });
-    publishedRelationshipIds.push(edge.id);
+    publishedRelationships.push(swept);
   }
 
-  return { object: published, publishedRelationshipIds, withheldRelationshipIds };
+  // The id arrays are DERIVED from the descriptive ones rather than accumulated in parallel, so the
+  // two views cannot drift in membership or order — a `push` that landed in one loop branch and not
+  // the other is a class of bug this shape simply cannot have.
+  return {
+    object: published,
+    publishedRelationshipIds: publishedRelationships.map((r) => r.id),
+    withheldRelationshipIds: withheldRelationships.map((r) => r.id),
+    publishedRelationships,
+    withheldRelationships
+  };
 }

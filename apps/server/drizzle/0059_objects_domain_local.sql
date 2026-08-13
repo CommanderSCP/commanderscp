@@ -55,9 +55,16 @@
 -- second index of `objects`.
 -- ===========================================================================================
 
-ALTER TABLE objects ADD COLUMN domain_local boolean NOT NULL DEFAULT false;
+-- `IF NOT EXISTS` on both, matching the convention 44 other migrations here already use, and for a
+-- reason that is not merely stylistic. Drizzle applies migrations by strictly-increasing `when`, and
+-- two branches that derive `when` from the same parent with the same arithmetic produce the SAME
+-- value — at which point one of them is silently skipped on a database that already applied the
+-- other, surfacing later as a missing column and 500s rather than as a migration error. (Reported
+-- from a parallel branch's dev database, 2026-08-13.) A re-run of this file must therefore be a
+-- no-op rather than a hard failure on `column already exists`.
+ALTER TABLE objects ADD COLUMN IF NOT EXISTS domain_local boolean NOT NULL DEFAULT false;
 
-CREATE INDEX obj_domain_local ON objects (org_id) WHERE domain_local;
+CREATE INDEX IF NOT EXISTS obj_domain_local ON objects (org_id) WHERE domain_local;
 
 COMMENT ON COLUMN objects.domain_local IS
   'ADR-0031: TRUE = this object never rides the federation journal to any peer, at any sync scope, in either direction. Operator-DECLARED at create (federation:write), never inferred. Named by no UPDATE statement — immutable by construction; the M20.4 publish verb is the one deliberate one-way exception. VISIBILITY ONLY: it is never an enforcement input, grants no scan exemption, and is read by no governance path.';
