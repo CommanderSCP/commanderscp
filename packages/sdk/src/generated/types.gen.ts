@@ -432,6 +432,7 @@ export type ListServiceObjectsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -450,6 +451,7 @@ export type CreateServiceObjectData = {
         id?: string;
         urn?: string;
         domainId?: string | null;
+        domainLocal?: boolean;
         properties?: {
             [key: string]: unknown;
         };
@@ -531,6 +533,7 @@ export type CreateServiceObjectResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -601,6 +604,7 @@ export type ListServiceObjectsForOrgResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -619,6 +623,7 @@ export type CreateServiceObjectForOrgData = {
         id?: string;
         urn?: string;
         domainId?: string | null;
+        domainLocal?: boolean;
         properties?: {
             [key: string]: unknown;
         };
@@ -702,6 +707,7 @@ export type CreateServiceObjectForOrgResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1037,6 +1043,7 @@ export type ListObjectsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -1060,6 +1067,7 @@ export type CreateObjectData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         type: string;
@@ -1126,6 +1134,7 @@ export type CreateObjectResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1134,6 +1143,113 @@ export type CreateObjectResponses = {
 };
 
 export type CreateObjectResponse = CreateObjectResponses[keyof CreateObjectResponses];
+
+export type PublishDomainLocalObjectData = {
+    body?: never;
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}/publish';
+};
+
+export type PublishDomainLocalObjectErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PublishDomainLocalObjectError = PublishDomainLocalObjectErrors[keyof PublishDomainLocalObjectErrors];
+
+export type PublishDomainLocalObjectResponses = {
+    /**
+     * Success
+     */
+    200: {
+        object: {
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            domainLocal: boolean;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        };
+        publishedRelationshipIds: Array<string>;
+        withheldRelationshipIds: Array<string>;
+        publishedRelationships: Array<{
+            id: string;
+            typeId: string;
+            otherEndpointId: string;
+            otherEndpointUrn: string;
+            otherEndpointName: string;
+        }>;
+        withheldRelationships: Array<{
+            id: string;
+            typeId: string;
+            otherEndpointId: string;
+            otherEndpointUrn: string;
+            otherEndpointName: string;
+        }>;
+    };
+};
+
+export type PublishDomainLocalObjectResponse = PublishDomainLocalObjectResponses[keyof PublishDomainLocalObjectResponses];
 
 export type DeleteObjectData = {
     body?: never;
@@ -1203,6 +1319,7 @@ export type DeleteObjectResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1280,6 +1397,7 @@ export type GetObjectResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1378,6 +1496,7 @@ export type UpdateObjectResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1398,6 +1517,7 @@ export type UpsertObjectByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         type: string;
@@ -1465,6 +1585,7 @@ export type UpsertObjectByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1489,6 +1610,7 @@ export type UpsertObjectByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1862,6 +1984,7 @@ export type ListDomainsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -1885,6 +2008,7 @@ export type CreateDomainData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -1949,6 +2073,7 @@ export type CreateDomainResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2025,6 +2150,7 @@ export type DeleteDomainResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2101,6 +2227,7 @@ export type GetDomainResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2198,6 +2325,7 @@ export type UpdateDomainResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2218,6 +2346,7 @@ export type UpsertDomainByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -2284,6 +2413,7 @@ export type UpsertDomainByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2308,6 +2438,7 @@ export type UpsertDomainByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2377,6 +2508,7 @@ export type ListServicesResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -2400,6 +2532,7 @@ export type CreateServiceData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -2464,6 +2597,7 @@ export type CreateServiceResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2540,6 +2674,7 @@ export type DeleteServiceResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2616,6 +2751,7 @@ export type GetServiceResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2713,6 +2849,7 @@ export type UpdateServiceResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2733,6 +2870,7 @@ export type UpsertServiceByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -2799,6 +2937,7 @@ export type UpsertServiceByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2823,6 +2962,7 @@ export type UpsertServiceByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2892,6 +3032,7 @@ export type ListAssembliesResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -2915,6 +3056,7 @@ export type CreateAssemblyData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -2979,6 +3121,7 @@ export type CreateAssemblyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3055,6 +3198,7 @@ export type DeleteAssemblyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3131,6 +3275,7 @@ export type GetAssemblyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3228,6 +3373,7 @@ export type UpdateAssemblyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3248,6 +3394,7 @@ export type UpsertAssemblyByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -3314,6 +3461,7 @@ export type UpsertAssemblyByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3338,6 +3486,7 @@ export type UpsertAssemblyByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3407,6 +3556,7 @@ export type ListDeploymentTargetsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -3430,6 +3580,7 @@ export type CreateDeploymentTargetData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -3494,6 +3645,7 @@ export type CreateDeploymentTargetResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3570,6 +3722,7 @@ export type DeleteDeploymentTargetResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3646,6 +3799,7 @@ export type GetDeploymentTargetResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3743,6 +3897,7 @@ export type UpdateDeploymentTargetResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3763,6 +3918,7 @@ export type UpsertDeploymentTargetByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -3829,6 +3985,7 @@ export type UpsertDeploymentTargetByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3853,6 +4010,7 @@ export type UpsertDeploymentTargetByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3922,6 +4080,7 @@ export type ListTeamsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -3945,6 +4104,7 @@ export type CreateTeamData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -4009,6 +4169,7 @@ export type CreateTeamResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4085,6 +4246,7 @@ export type DeleteTeamResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4161,6 +4323,7 @@ export type GetTeamResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4258,6 +4421,7 @@ export type UpdateTeamResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4278,6 +4442,7 @@ export type UpsertTeamByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -4344,6 +4509,7 @@ export type UpsertTeamByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4368,6 +4534,7 @@ export type UpsertTeamByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4437,6 +4604,7 @@ export type ListGroupsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -4460,6 +4628,7 @@ export type CreateGroupData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -4524,6 +4693,7 @@ export type CreateGroupResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4600,6 +4770,7 @@ export type DeleteGroupResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4676,6 +4847,7 @@ export type GetGroupResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4773,6 +4945,7 @@ export type UpdateGroupResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4793,6 +4966,7 @@ export type UpsertGroupByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -4859,6 +5033,7 @@ export type UpsertGroupByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4883,6 +5058,7 @@ export type UpsertGroupByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4952,6 +5128,7 @@ export type ListUsersResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -4975,6 +5152,7 @@ export type CreateUserData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -5039,6 +5217,7 @@ export type CreateUserResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5115,6 +5294,7 @@ export type DeleteUserResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5191,6 +5371,7 @@ export type GetUserResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5288,6 +5469,7 @@ export type UpdateUserResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5308,6 +5490,7 @@ export type UpsertUserByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -5374,6 +5557,7 @@ export type UpsertUserByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5398,6 +5582,7 @@ export type UpsertUserByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5467,6 +5652,7 @@ export type ListServiceAccountsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -5490,6 +5676,7 @@ export type CreateServiceAccountData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -5554,6 +5741,7 @@ export type CreateServiceAccountResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5630,6 +5818,7 @@ export type DeleteServiceAccountResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5706,6 +5895,7 @@ export type GetServiceAccountResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5803,6 +5993,7 @@ export type UpdateServiceAccountResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5823,6 +6014,7 @@ export type UpsertServiceAccountByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -5889,6 +6081,7 @@ export type UpsertServiceAccountByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5913,6 +6106,7 @@ export type UpsertServiceAccountByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6180,6 +6374,7 @@ export type ListComponentsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -6203,6 +6398,7 @@ export type CreateComponentData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
         service: string;
     };
     path?: never;
@@ -6279,6 +6475,7 @@ export type CreateComponentResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6355,6 +6552,7 @@ export type DeleteComponentResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6431,6 +6629,7 @@ export type GetComponentResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6528,6 +6727,7 @@ export type UpdateComponentResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6548,6 +6748,7 @@ export type UpsertComponentByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
         service?: string;
     };
     path: {
@@ -6626,6 +6827,7 @@ export type UpsertComponentByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6650,6 +6852,7 @@ export type UpsertComponentByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6750,6 +6953,7 @@ export type SetComponentServiceResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6851,6 +7055,7 @@ export type MergeComponentsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -6935,6 +7140,7 @@ export type ListPlacementsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -7043,6 +7249,7 @@ export type CreatePlacementResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -7130,6 +7337,7 @@ export type DeletePlacementResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -7206,6 +7414,7 @@ export type GetPlacementResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9675,6 +9884,7 @@ export type GraphQueryResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -9760,6 +9970,7 @@ export type GraphTraverseResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -12060,6 +12271,7 @@ export type ListPolicysResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -12083,6 +12295,7 @@ export type CreatePolicyData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -12147,6 +12360,7 @@ export type CreatePolicyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12223,6 +12437,7 @@ export type DeletePolicyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12299,6 +12514,7 @@ export type GetPolicyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12396,6 +12612,7 @@ export type UpdatePolicyResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12416,6 +12633,7 @@ export type UpsertPolicyByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -12482,6 +12700,7 @@ export type UpsertPolicyByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12506,6 +12725,7 @@ export type UpsertPolicyByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12575,6 +12795,7 @@ export type ListControlsResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -12598,6 +12819,7 @@ export type CreateControlData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path?: never;
     query?: never;
@@ -12662,6 +12884,7 @@ export type CreateControlResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12738,6 +12961,7 @@ export type DeleteControlResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12814,6 +13038,7 @@ export type GetControlResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12911,6 +13136,7 @@ export type UpdateControlResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12931,6 +13157,7 @@ export type UpsertControlByUrnData = {
         labels?: {
             [key: string]: unknown;
         };
+        domainLocal?: boolean;
     };
     path: {
         urn: string;
@@ -12997,6 +13224,7 @@ export type UpsertControlByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -13021,6 +13249,7 @@ export type UpsertControlByUrnResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -16310,6 +16539,7 @@ export type CreateOverlayResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -16387,6 +16617,7 @@ export type GetMergedOverlayViewResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -16408,6 +16639,7 @@ export type GetMergedOverlayViewResponses = {
             originDomainId: string;
             revision: number;
             provenance: 'manual' | null;
+            domainLocal: boolean;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -16508,6 +16740,7 @@ export type HandFillObjectResponses = {
         originDomainId: string;
         revision: number;
         provenance: 'manual' | null;
+        domainLocal: boolean;
         version: number;
         createdAt: string;
         updatedAt: string;

@@ -9,6 +9,7 @@ import {
   ObjectTypeParamSchema,
   ObjectUrnParamSchema,
   ProblemSchema,
+  PublishObjectResponseSchema,
   UpdateObjectRequestSchema,
   UpsertObjectRequestSchema
 } from "@scp/schemas";
@@ -16,6 +17,8 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
+import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
+import { publishDomainLocalObject } from "../federation/publish-domain-local.js";
 import { forbidden } from "../errors.js";
 import { withIdempotency } from "../idempotency.js";
 import {
@@ -204,6 +207,13 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId: scopeObjectId ?? auth.orgId
         });
+        // ADR-0031 — declaring an object domain-local additionally needs `federation:write`.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId: scopeObjectId ?? auth.orgId,
+          requested: request.body.domainLocal
+        });
         return withIdempotency(
           tx,
           {
@@ -224,7 +234,8 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
               name: request.body.name,
               domainId: containmentDomainIdFromWire(request.body.domainId) ?? undefined,
               properties: request.body.properties,
-              labels: request.body.labels
+              labels: request.body.labels,
+              domainLocal: request.body.domainLocal
             })
           })
         );
@@ -263,6 +274,62 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
         return listObjects(tx, auth.orgId, type, listObjectsQueryFromWire(request.query));
       });
       reply.status(200).send(page);
+    }
+  });
+
+  /**
+   * M20.4 (ADR-0031 §6) — publish a domain-local object.
+   *
+   * A VERB, not a `PATCH` of `domainLocal`, and the distinction is deliberate: this re-journals the
+   * object's current full state and sweeps its edges, so it is an action with an effect rather than a
+   * field edit that quietly emits a stream of entries. `PATCH` still cannot express locality at all,
+   * which is what keeps the column immutable everywhere except here.
+   *
+   * ONE-WAY. There is no un-publish route and there will not be one — federation has no un-send.
+   */
+  typed.route({
+    method: "POST",
+    url: "/api/v1/objects/:type/:idOrUrn/publish",
+    schema: {
+      params: ObjectIdOrUrnParamSchema,
+      response: {
+        200: PublishObjectResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema,
+        409: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "publishDomainLocalObject",
+        summary: "Publish a domain-local object so it federates from now on (one-way)",
+        tags: ["objects"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const { type, idOrUrn } = request.params;
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const existing = await getObjectByIdOrUrn(tx, auth.orgId, type, idOrUrn);
+        // `federation:write`, matching the permission that DECLARED locality in the first place
+        // (ADR-0031 §1) — undoing a boundary decision cannot be cheaper than making it. Scoped to
+        // the object itself, like every other operation on an existing object in this router.
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "federation:write",
+          scopeObjectId: existing.id
+        });
+        return publishDomainLocalObject(tx, {
+          orgId: auth.orgId,
+          typeId: type,
+          idOrUrn,
+          actorObjectId: auth.subjectObjectId,
+          requestId: request.id
+        });
+      });
+      reply.status(200).send(result);
     }
   });
 
@@ -450,6 +517,16 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           permission: "object:write",
           scopeObjectId
         });
+        // ADR-0031 — gated on the DECLARED value, so it fires on the create branch (a real
+        // declaration) and equally on an update branch that would be refused as a locality flip;
+        // an unauthorized caller learns "forbidden" rather than probing the row's locality via the
+        // shape of a 409.
+        await assertMayDeclareDomainLocal(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          scopeObjectId,
+          requested: request.body.domainLocal
+        });
         return upsertObjectByUrn(tx, {
           orgId: auth.orgId,
           typeId: type,
@@ -460,7 +537,8 @@ export function registerObjectRoutes(app: FastifyInstance, deps: AppDeps): void 
           name: request.body.name,
           domainId: containmentDomainIdFromWire(request.body.domainId),
           properties: request.body.properties,
-          labels: request.body.labels
+          labels: request.body.labels,
+          domainLocal: request.body.domainLocal
         });
       });
       reply.status(created ? 201 : 200).send(object);

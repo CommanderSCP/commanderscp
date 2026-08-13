@@ -25,6 +25,10 @@ describe("service object schemas", () => {
       originDomainId: "0198f2a0-0000-7000-8000-000000000004",
       revision: 1,
       provenance: null,
+      // M20.1 (ADR-0031) — required on the wire and always present, so this fixture must carry it
+      // to keep its own "every `GraphObject` field" claim true. `false` is the ordinary case: an
+      // object that federates normally, which is what the rest of this fixture describes.
+      domainLocal: false,
       version: 1,
       createdAt: "2026-07-08T12:00:00.000Z",
       updatedAt: "2026-07-08T12:00:00.000Z",

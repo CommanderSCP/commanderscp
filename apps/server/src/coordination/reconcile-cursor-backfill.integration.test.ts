@@ -67,13 +67,24 @@ describe("migration 0058 — the round-robin cursor backfills from `updated_at` 
     const journal = JSON.parse(await readFile(journalPath, "utf8")) as {
       entries: { idx: number; tag: string }[];
     };
-    // EVERYTHING EXCEPT THIS MIGRATION, rather than "entries up to 0055". Two branches are landing
-    // migrations either side of this one, so a numeric cut-off would either strand a sibling
-    // migration out of the scratch schema or — worse — silently stop excluding THIS one after a
-    // renumber, leaving the test to "verify" a backfill it never actually ran.
-    const truncated = journal.entries.filter((e) => e.tag !== MIGRATION_TAG);
+    // EVERYTHING STRICTLY BEFORE THIS MIGRATION — located BY TAG, never by a numeric cut-off.
+    //
+    // The tag lookup is the original design and stays: a renumber must not silently stop excluding
+    // the migration under test, which would leave this file "verifying" a backfill it never ran.
+    // Asserting the tag is present is what makes that safe.
+    //
+    // The `slice` replaced a `filter(tag !== MIGRATION_TAG)` that kept LATER migrations in the
+    // scratch schema (M20.1, when 0059 landed). Drizzle's migrator applies by ascending `when` and
+    // records the newest applied timestamp, so a scratch DB carrying 0059 has already moved its
+    // watermark PAST 0058 — the upgrade step then applies nothing, the column never appears, and the
+    // failure surfaces as `column "reconcile_cursor_at" does not exist` rather than as anything
+    // resembling its cause. "Everything except this one" is also not a state any real database is
+    // ever in; "everything before this one" is exactly the pre-upgrade state being modelled, and it
+    // lets the upgrade apply this migration AND its successors in their real order.
+    const targetIdx = journal.entries.findIndex((e) => e.tag === MIGRATION_TAG);
     expect(journal.entries.map((e) => e.tag)).toContain(MIGRATION_TAG);
-    expect(truncated).toHaveLength(journal.entries.length - 1);
+    const truncated = journal.entries.slice(0, targetIdx);
+    expect(truncated.map((e) => e.tag)).not.toContain(MIGRATION_TAG);
     await writeFile(journalPath, JSON.stringify({ ...journal, entries: truncated }, null, 2));
 
     const pool = new pg.Pool({ connectionString: scratchUrl.toString() });

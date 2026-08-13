@@ -184,10 +184,40 @@ export async function proposeChange(
   if (input.targets.length === 0) throw badRequest("a change must target at least one object");
 
   const targetObjectIds: string[] = [];
+  // M20.3 (ADR-0031 §5) — a change INHERITS locality from its targets, resolved in the loop that
+  // already reads every one of them.
+  const targetLocality: { urn: string; domainLocal: boolean }[] = [];
   for (const idOrUrn of input.targets) {
     const target = await getObjectByIdOrUrnAnyType(tx, input.orgId, idOrUrn);
     targetObjectIds.push(target.id);
+    targetLocality.push({ urn: target.urn, domainLocal: target.domainLocal });
   }
+
+  // A CHANGE MAY NOT SPAN A LOCALITY BOUNDARY (ADR-0031 §5). Refused at propose time — loudly, at
+  // authoring, where the author is still deciding scope — because NEITHER resolution is safe:
+  //
+  //   * resolving the change to LOCAL would silently darken a legitimate cross-boundary release: the
+  //     shared components in the same change would deploy while the commander never learned the
+  //     release existed. In a coordination platform, a real release invisible to the coordinator is
+  //     a coordination failure, not a conservative default.
+  //   * resolving it to SHARED would leak — the change object names all of its targets.
+  //
+  // Refusal is the only outcome with no silent failure mode. It bites rarely: webhook-born changes
+  // target one component, and multi-target changes come from campaigns, initiatives and explicit API
+  // calls, where an author is already reasoning about scope.
+  const localTargets = targetLocality.filter((t) => t.domainLocal);
+  if (localTargets.length > 0 && localTargets.length !== targetLocality.length) {
+    const shared = targetLocality.filter((t) => !t.domainLocal).map((t) => t.urn);
+    throw badRequest(
+      `a change cannot span a locality boundary: domain-local target(s) ` +
+        `${localTargets.map((t) => t.urn).join(", ")} cannot be released together with ` +
+        `non-domain-local target(s) ${shared.join(", ")}. A domain-local object never leaves its ` +
+        `security domain, so a change covering both could neither be reported upward without ` +
+        `leaking nor withheld without hiding the shared release (ADR-0031 §5). Propose them as ` +
+        `separate changes.`
+    );
+  }
+  const changeIsDomainLocal = localTargets.length > 0;
 
   // M12 P4B: resolve each requirement's `at` idOrUrn to an object id NOW, so a typo is a 404 at
   // propose time rather than a change that waits forever on an object that never existed.
@@ -375,7 +405,12 @@ export async function proposeChange(
       ...(requiresValue.length > 0 ? { requires: requiresValue } : {}),
       ...(stageDependenciesValue === undefined ? {} : { stageDependencies: stageDependenciesValue })
     },
-    labels: input.labels
+    labels: input.labels,
+    // M20.3 (ADR-0031 §5) — the change object inherits its targets' locality, so releasing a
+    // domain-local component produces a change that is itself invisible to every peer. Every
+    // downstream withholding follows from this one field: `createObject` skips the change's own
+    // journal entry and its audit segment, and the `change_status` entries below read it back.
+    domainLocal: changeIsDomainLocal
   });
 
   const now = new Date();
@@ -419,12 +454,19 @@ export async function proposeChange(
       importedFromDomain: input.importedFromDomain ?? null,
       rollbackOfObjectId: input.rollbackOfObjectId ?? null
     };
-    await appendJournalEntry(tx, {
-      orgId: input.orgId,
-      entryKind: "change_status",
-      contentHash: changeStatusContentHash(payload),
-      payload
-    });
+    // M20.3 (ADR-0031 §5) — a domain-local change's status is allocated NO journal sequence either.
+    // This one matters on its own: `change_status` is the entry kind `status_only` peers receive, so
+    // a commander scoped down to bare status would otherwise still be told that a release happened,
+    // when it was supposed to learn nothing at all. Its payload also carries the change's `urn` and
+    // `name`.
+    if (!changeIsDomainLocal) {
+      await appendJournalEntry(tx, {
+        orgId: input.orgId,
+        entryKind: "change_status",
+        contentHash: changeStatusContentHash(payload),
+        payload
+      });
+    }
   }
 
   await insertDecision(tx, {

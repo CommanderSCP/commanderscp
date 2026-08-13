@@ -414,6 +414,13 @@
       "when": 1788016400000,
       "tag": "0058_reconcile_cursor",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1788026400000,
+      "tag": "0059_objects_domain_local",
+      "breakpoints": true
     }
   ]
 }

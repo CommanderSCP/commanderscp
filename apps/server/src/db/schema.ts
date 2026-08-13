@@ -189,6 +189,20 @@ export const objects = pgTable(
     // for an air-gapped outpost with no bundle transport available yet — unverified until a signed
     // bundle later arrives and `federation/reconcile.ts` confirms or replaces it (DESIGN §13).
     provenance: text("provenance"),
+    // M20.1 (ADR-0031 §1) — TRUE = this object's existence stays inside its own security domain:
+    // `federation/scope-filter.ts` matches its journal entries against NO peer scope, in either
+    // direction. Operator-DECLARED at create under `federation:write`, never inferred from a repo
+    // name, a target label or a branch string (the ADR-0030 §2 lesson).
+    //
+    // IMMUTABLE BY CONSTRUCTION, not by a guard: of the five statements that write this table, only
+    // `createObject`'s INSERT names this column. Shared -> domain-local is refused forever
+    // (federation has no un-send); domain-local -> shared is the one-way M20.4 publication verb.
+    //
+    // VISIBILITY ONLY (ADR-0031 §7). It is never an enforcement input: it grants no scan exemption,
+    // relaxes no gate, and is read by no governance path. The exemption domain-local content enjoys
+    // comes from the PATH (no peer => `exportPromotionBundle` unreachable => E6 never applies), and
+    // an inertness test pins that this bit and that gate stay unaware of each other.
+    domainLocal: boolean("domain_local").notNull().default(false),
     // lifecycle
     version: bigint("version", { mode: "number" }).notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
