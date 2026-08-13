@@ -89,6 +89,10 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
     expect(html).toContain("Immutable once set");
     // ADR-0031 §6's asymmetry, stated at declaration time — the reverse direction is refused.
     expect(html).toContain("refused permanently");
+    // M20.5 §6a: container declarations propagate to children created later — and ONLY later
+    // (no retrofit). Both halves are claims the operator acts on, so both are pinned.
+    expect(html).toContain("inherits it at create");
+    expect(html).toContain("never retrofitted");
     expect(html).toContain('data-testid="new-domain-local-checkbox"');
   });
 

@@ -39,7 +39,7 @@ export function DomainLocalBadge(): React.JSX.Element {
       variant="neutral"
       icon={EyeOff}
       data-testid="domain-local-badge"
-      title="Declared domain-local (ADR-0031): its existence never leaves this security domain — nothing about it is ever journaled to federation peers. Immutable once set; the only exit is the one-way Publish action on its detail page."
+      title="Domain-local (ADR-0031), declared at create — directly, or inherited from a domain-local container (M20.5): its existence never leaves this security domain — nothing about it is ever journaled to federation peers. Immutable once set; the only exit is the one-way Publish action on its detail page."
     >
       domain-local
     </Badge>
@@ -50,6 +50,13 @@ export function DomainLocalBadge(): React.JSX.Element {
  * The create-form declaration. Create-time only by contract (ADR-0031 §6): shared → domain-local
  * is refused permanently after the fact, so this checkbox is the ONE moment the property can be
  * set — the help text says so instead of letting the operator find out from a 409 later.
+ *
+ * M20.5 (§6a): declared on a CONTAINER (domain, service, assembly), locality propagates — anything
+ * created underneath inherits at ITS create, one hop, along either containment route. The help
+ * text names that, and names the boundary: inheritance happens at create only, never as a
+ * retrofit of an existing subtree. The payload contract stays omit-when-unchecked — an explicit
+ * `domainLocal: false` inside a local container is a 400 by design (the operator asked for shared
+ * and must not silently get local), and omitting the field is what lets inheritance decide.
  */
 export function DomainLocalCreateField({
   checked,
@@ -75,7 +82,9 @@ export function DomainLocalCreateField({
         federation peers (ADR-0031). Declaring this requires the <code>federation:write</code>{" "}
         permission. Immutable once set — the only way out is the one-way publish action on its
         detail page; the reverse (shared → domain-local) is refused permanently, because
-        federation has no un-send.
+        federation has no un-send. Declared on a domain, service or assembly, it propagates:
+        anything created inside inherits it at create. Existing objects are never retrofitted —
+        only objects created after the declaration inherit.
       </p>
     </div>
   );

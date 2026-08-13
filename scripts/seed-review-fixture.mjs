@@ -492,6 +492,29 @@ async function main() {
     else failed.push(`components transit-gateway-attachments: ${e.message}`);
   }
 
+  // M20.5 (ADR-0031 §6a) — INHERITED locality: a domain-local SERVICE whose child component is
+  // created WITHOUT the flag and inherits the bit at create, one hop. The component upsert
+  // deliberately omits `domainLocal` (omitted = inheritance decides; an explicit `false` inside a
+  // local container is a 400 by design), so re-runs assert no precondition and stay idempotent
+  // whatever the pair's current state.
+  try {
+    await api("PUT", `/services/${encodeURIComponent(urn("service", "secure-partition"))}`, {
+      name: "secure-partition",
+      domainLocal: true
+    });
+    created.push("services: secure-partition (domain-local container)");
+  } catch (e) {
+    if (e.status === 409)
+      created.push("services: secure-partition (already shared — published during review; left as-is)");
+    else failed.push(`services secure-partition: ${e.message}`);
+  }
+  await put(
+    "components",
+    urn("component", "partition-route-tables"),
+    { name: "partition-route-tables", service: urn("service", "secure-partition") },
+    "partition-route-tables (inherits locality from secure-partition — flag never sent)"
+  );
+
   // --------------------------------------------------------------- federation
   // Federation status and Outposts render nothing until this instance has an identity and at
   // least one peer. Three peers across three TRUST TIERS (a commercial one, a FedRAMP one and an
