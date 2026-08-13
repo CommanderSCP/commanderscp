@@ -9,7 +9,7 @@ import pg from "pg";
 import type { SyncBundle, SyncScope } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { ProblemError } from "../errors.js";
-import { changes, decisions, roleBindings, roles, sourceMappings } from "../db/schema.js";
+import { changes, decisions, objects, roleBindings, roles, sourceMappings } from "../db/schema.js";
 import { createSourceMapping } from "../coordination/source-mappings-repo.js";
 import { createObject, getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
@@ -1535,6 +1535,128 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
     expect(decision.verdict).toBe("block");
     expect(decision.kind).toBe("promotion-export-scan-gate");
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M20 (ADR-0031 §7) — DOMAIN-LOCALITY IS INERT AT E6, AND THE SECOND EGRESS IS GUARDED.
+  //
+  // ADR-0031 §7 makes locality VISIBILITY ONLY: it grants no scan exemption, relaxes no gate, and is
+  // read by no governance path. That claim is exactly the thing ADR-0018 §1 rejected a per-artifact
+  // `dev` bit for — a bit that could be lifted onto a boundary-crossing artifact — so it needs a
+  // witness rather than a comment. ADR-0018 §4 imposed the same obligation on its own label.
+  //
+  // Two complementary properties, and they must not be confused with each other:
+  //
+  //   (a) INERTNESS. Setting or clearing `domain_local` anywhere changes NO E6 outcome. The refusal
+  //       for a missing scan is byte-identical; a passing scan still exports.
+  //   (b) ENFORCEMENT AT THE SECOND EGRESS. A domain-local change is refused a crossing OUTRIGHT,
+  //       under its OWN decision kind, BEFORE the scan step runs — so it is never "exempted from
+  //       scanning", it is denied the crossing. `exportPromotionBundle` does not read the journal,
+  //       so §2's never-journal withholding does not reach it; this is the guard that does.
+  // -----------------------------------------------------------------------------------------
+
+  it("M20 SECOND EGRESS: a DOMAIN-LOCAL change is refused promotion outright — under its own decision kind", async () => {
+    const { changeId, targetId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, {
+      seedScan: true // a PASSING scan: the refusal must NOT be the scan gate's
+    });
+    // Publish-in-reverse is impossible, so the fixture declares locality directly on the change's
+    // graph object — the state `proposeChange` would have produced had the target been declared
+    // domain-local at create.
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      tx
+        .update(objects)
+        .set({ domainLocal: true })
+        .where(and(eq(objects.orgId, domainA.orgId), eq(objects.id, changeId)))
+    );
+
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    expect(outcome.refused).toBe(true);
+    if (!outcome.refused) throw new Error("expected a locality refusal");
+    expect(outcome.reason).toMatch(/domain-local/i);
+
+    const decision = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      getDecision(tx, domainA.orgId, outcome.decisionId)
+    );
+    expect(decision.verdict).toBe("block");
+    // A DISTINCT kind from `promotion-export-scan-gate`. This is what makes the two refusals
+    // impossible to confuse in an audit: a locality refusal is not a scan verdict, and a scan
+    // refusal is not a locality one. Reading either as the other is precisely the conflation
+    // ADR-0031 §7 exists to prevent.
+    expect(decision.kind).toBe("promotion-export-domain-local");
+    expect(decision.kind).not.toBe("promotion-export-scan-gate");
+
+    void targetId;
+  });
+
+  it("M20 INERTNESS: a domain-local object elsewhere in the org changes NO E6 outcome — refusal is byte-identical", async () => {
+    // (a) Baseline: an unscanned promotion is refused, with no domain-local object anywhere near it.
+    const baseline = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    const before = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: baseline.changeId
+    });
+    expect(before.refused).toBe(true);
+    if (!before.refused) throw new Error("expected refusal");
+
+    // Introduce a domain-local object into the SAME org. If locality were an enforcement input
+    // anywhere, this is where it would start to matter.
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: domainA.orgId,
+        requestId: "inertness-local",
+        name: `inert-local-${randomUUID()}`,
+        domainLocal: true
+      })
+    );
+
+    const after = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    const afterOutcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: after.changeId
+    });
+    expect(afterOutcome.refused).toBe(true);
+    if (!afterOutcome.refused) throw new Error("expected refusal");
+
+    // BYTE-IDENTICAL reasons and the SAME decision kind — the gate did not notice.
+    expect(afterOutcome.reason).toBe(before.reason);
+    const [d1, d2] = await withTenantTx(domainA.db, domainA.orgId, async (tx) => [
+      await getDecision(tx, domainA.orgId, before.decisionId),
+      await getDecision(tx, domainA.orgId, afterOutcome.decisionId)
+    ]);
+    expect(d2.kind).toBe(d1.kind);
+    expect(d2.kind).toBe("promotion-export-scan-gate");
+  });
+
+  it("M20 INERTNESS: a PASSING scan still exports cleanly with a domain-local object in the org", async () => {
+    // The other direction, and the one that stops the test above from passing because promotion is
+    // simply broken: locality must not block a legitimate crossing either.
+    await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: domainA.orgId,
+        requestId: "inertness-local-2",
+        name: `inert-local-2-${randomUUID()}`,
+        domainLocal: true
+      })
+    );
+    const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: true });
+    const outcome = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: changeId
+    });
+    expect(outcome.refused).toBe(false);
   });
 
   it("E6 UNIVERSAL/FAIL-CLOSED: a substantive artifact with NO scan outcome is REFUSED", async () => {
