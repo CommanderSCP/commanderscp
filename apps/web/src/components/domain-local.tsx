@@ -1,8 +1,10 @@
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQueryClient, type QueryKey } from "@tanstack/react-query";
 import { EyeOff } from "lucide-react";
-import type { PublishObjectResponse } from "@scp/schemas";
+import type { PublishObjectResponse, SweptRelationship } from "@scp/schemas";
 import { client } from "../lib/client";
+import { findRegistryByTypeId } from "../lib/registries";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
@@ -151,14 +153,14 @@ export function DomainLocalPublishCard({
             </Notice>
             <div className="grid gap-4 sm:grid-cols-2">
               <EdgeBucket
-                heading={`Published with it — ${result.publishedRelationshipIds.length}`}
-                ids={result.publishedRelationshipIds}
+                heading={`Published with it — ${result.publishedRelationships.length}`}
+                edges={result.publishedRelationships}
                 emptyText="No relationships crossed with it — the object had no shared edges to sweep."
                 testId="publish-published-bucket"
               />
               <EdgeBucket
-                heading={`Withheld — ${result.withheldRelationshipIds.length}`}
-                ids={result.withheldRelationshipIds}
+                heading={`Withheld — ${result.withheldRelationships.length}`}
+                edges={result.withheldRelationships}
                 emptyText="None — every relationship crossed with it."
                 explain="Each withheld edge's other endpoint is still domain-local. Publishing that endpoint releases its edges; nothing here leaked."
                 testId="publish-withheld-bucket"
@@ -217,19 +219,23 @@ export function DomainLocalPublishCard({
 }
 
 /**
- * One bucket of the edge-sweep report. Relationship IDs are rendered raw: the publish response
- * carries bare ids (no endpoint names), and resolving each to "which edge is this" would cost a
- * lookup per id — flagged to the M20 author as contract feedback rather than papered over here.
+ * One bucket of the edge-sweep report, rendered from the DESCRIBED arrays
+ * (`publishedRelationships`/`withheldRelationships`) the contract grew after this UI's first cut
+ * flagged the bare-id arrays as illegible. Each row is edge type → other endpoint by name, urn in
+ * the tooltip. The withheld bucket's endpoint links to its own page when its type is a routed
+ * registry — "publish that endpoint" is the operator's next action, and its publish card lives
+ * there. A vanished endpoint degrades urn/name to the id server-side, so the name is always safe
+ * to render (and the failed registry lookup makes such a row plain text, not a dead link).
  */
 function EdgeBucket({
   heading,
-  ids,
+  edges,
   emptyText,
   explain,
   testId
 }: {
   heading: string;
-  ids: string[];
+  edges: SweptRelationship[];
   emptyText: string;
   explain?: string;
   testId: string;
@@ -237,18 +243,46 @@ function EdgeBucket({
   return (
     <div className="flex flex-col gap-1.5" data-testid={testId}>
       <h4 className="text-sm font-medium text-slate-900">{heading}</h4>
-      {explain && ids.length > 0 && <p className="text-xs text-slate-500">{explain}</p>}
-      {ids.length === 0 ? (
+      {explain && edges.length > 0 && <p className="text-xs text-slate-500">{explain}</p>}
+      {edges.length === 0 ? (
         <p className="text-xs text-slate-500">{emptyText}</p>
       ) : (
-        <ul className="flex flex-col gap-0.5">
-          {ids.map((id) => (
-            <li key={id} className="font-mono text-xs break-all text-slate-600">
-              {id}
+        <ul className="flex flex-col gap-1">
+          {edges.map((edge) => (
+            <li key={edge.id} className="flex items-baseline gap-1.5 text-xs">
+              <span className="shrink-0 font-mono text-slate-500">{edge.typeId}</span>
+              <span className="shrink-0 text-slate-400" aria-hidden="true">
+                →
+              </span>
+              <EndpointName edge={edge} />
             </li>
           ))}
         </ul>
       )}
     </div>
+  );
+}
+
+/** The other endpoint, linked into its registry page when its urn names a routed type. */
+function EndpointName({ edge }: { edge: SweptRelationship }): React.JSX.Element {
+  // `urn:scp:{org}:{type}:{slug}` — segment 3 is the typeId. A degraded urn (vanished endpoint:
+  // the server substitutes the raw id) has no such segment and resolves to no registry.
+  const registry = findRegistryByTypeId(edge.otherEndpointUrn.split(":")[3]);
+  if (!registry) {
+    return (
+      <span className="break-all text-slate-700" title={edge.otherEndpointUrn}>
+        {edge.otherEndpointName}
+      </span>
+    );
+  }
+  return (
+    <Link
+      to="/$basePath/$idOrUrn"
+      params={{ basePath: registry.basePath, idOrUrn: edge.otherEndpointId }}
+      className="break-all font-medium text-slate-900 hover:underline"
+      title={edge.otherEndpointUrn}
+    >
+      {edge.otherEndpointName}
+    </Link>
   );
 }
