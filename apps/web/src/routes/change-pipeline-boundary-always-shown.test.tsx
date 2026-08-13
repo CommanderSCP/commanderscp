@@ -11,8 +11,8 @@ import type { BoundarySegment, Change, ChangeExplainResponse } from "@scp/sdk";
  * "cannot see" and "observed" distinct and refuse to dress either as a pass? It renders
  * `BoundarySegmentStrip` / `NoBoundarySegment` DIRECTLY. Nothing in it — and nothing anywhere else
  * in the required PR checks — renders `ChangePipelinePage`. The Playwright specs that do walk the
- * real route are guarded in `.github/workflows/ci.yml` by `github.event_name == 'push' &&
- * github.ref == 'refs/heads/main'`, i.e. SKIPPED on pull requests.
+ * real route were `main`-only and SKIPPED on pull requests when this was written; they now run on PRs
+ * and 5z requires them. This file still owns the page altitude on the cheap side of the gate.
  *
  * The gap that left: DELETING the boundary card from `change-pipeline.tsx`, or flipping its
  * `boundarySegment ? <Strip/> : <NoBoundarySegment/>` to render nothing when the segment is null,

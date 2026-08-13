@@ -22761,6 +22761,16 @@
                               }
                             ]
                           },
+                          "refPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "type": {
                             "type": "string"
                           },
@@ -22770,6 +22780,20 @@
                               "build",
                               "infrastructure",
                               "configuration"
+                            ]
+                          },
+                          "classification": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
                             ]
                           },
                           "url": {
@@ -22788,8 +22812,10 @@
                           "sourceKind",
                           "repoPattern",
                           "pathPattern",
+                          "refPattern",
                           "type",
                           "category",
+                          "classification",
                           "url"
                         ],
                         "additionalProperties": false
@@ -23373,6 +23399,125 @@
                               "checks"
                             ],
                             "additionalProperties": false
+                          },
+                          "hold": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "changeId": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  "changeName": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "waveIndex": {
+                                    "anyOf": [
+                                      {
+                                        "type": "integer",
+                                        "minimum": -9007199254740991,
+                                        "maximum": 9007199254740991
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "dependencies": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "dependsOn": {
+                                          "type": "string"
+                                        },
+                                        "dependsOnName": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "branch": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_placed",
+                                            "succeeded",
+                                            "min_weight",
+                                            "never_deployed",
+                                            "behind",
+                                            "weight_unreadable",
+                                            "undeclarable",
+                                            "unscopeable",
+                                            "self"
+                                          ]
+                                        },
+                                        "satisfied": {
+                                          "type": "boolean"
+                                        },
+                                        "source": {
+                                          "type": "string",
+                                          "const": "edge"
+                                        },
+                                        "dependencyStatus": {
+                                          "type": "string"
+                                        },
+                                        "minWeight": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "minWeightSupersededByEdge": {
+                                          "type": "boolean",
+                                          "const": true
+                                        },
+                                        "weightUnreadable": {
+                                          "type": "string",
+                                          "enum": [
+                                            "no_weight",
+                                            "not_observed",
+                                            "stale"
+                                          ]
+                                        },
+                                        "summary": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "dependsOn",
+                                        "dependsOnName",
+                                        "branch",
+                                        "satisfied",
+                                        "summary"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "changeId",
+                                  "changeName",
+                                  "waveIndex",
+                                  "dependencies"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
                           },
                           "version": {
                             "anyOf": [
@@ -38689,6 +38834,10 @@
                               "type": "string",
                               "minLength": 1
                             },
+                            "refPattern": {
+                              "type": "string",
+                              "minLength": 1
+                            },
                             "type": {
                               "type": "string",
                               "enum": [
@@ -38698,6 +38847,13 @@
                                 "npm",
                                 "infrastructure",
                                 "configuration"
+                              ]
+                            },
+                            "classification": {
+                              "type": "string",
+                              "enum": [
+                                "dev",
+                                "beta"
                               ]
                             }
                           },
@@ -38956,6 +39112,10 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "refPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -38965,6 +39125,13 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
                                 ]
                               }
                             },
@@ -39252,6 +39419,16 @@
                                   }
                                 ]
                               },
+                              "refPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -39261,6 +39438,20 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "dev",
+                                      "beta"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
                                 ]
                               },
                               "reason": {
@@ -39274,7 +39465,9 @@
                               "sourceKind",
                               "repoPattern",
                               "pathPattern",
+                              "refPattern",
                               "type",
+                              "classification",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -39824,6 +40017,10 @@
                                 "type": "string",
                                 "minLength": 1
                               },
+                              "refPattern": {
+                                "type": "string",
+                                "minLength": 1
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -39833,6 +40030,13 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
                                 ]
                               }
                             },
@@ -40120,6 +40324,16 @@
                                   }
                                 ]
                               },
+                              "refPattern": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
                               "type": {
                                 "type": "string",
                                 "enum": [
@@ -40129,6 +40343,20 @@
                                   "npm",
                                   "infrastructure",
                                   "configuration"
+                                ]
+                              },
+                              "classification": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "dev",
+                                      "beta"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
                                 ]
                               },
                               "reason": {
@@ -40142,7 +40370,9 @@
                               "sourceKind",
                               "repoPattern",
                               "pathPattern",
+                              "refPattern",
                               "type",
+                              "classification",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -40695,6 +40925,10 @@
                                     "type": "string",
                                     "minLength": 1
                                   },
+                                  "refPattern": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
                                   "type": {
                                     "type": "string",
                                     "enum": [
@@ -40704,6 +40938,13 @@
                                       "npm",
                                       "infrastructure",
                                       "configuration"
+                                    ]
+                                  },
+                                  "classification": {
+                                    "type": "string",
+                                    "enum": [
+                                      "dev",
+                                      "beta"
                                     ]
                                   }
                                 },
@@ -40991,6 +41232,16 @@
                                       }
                                     ]
                                   },
+                                  "refPattern": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
                                   "type": {
                                     "type": "string",
                                     "enum": [
@@ -41000,6 +41251,20 @@
                                       "npm",
                                       "infrastructure",
                                       "configuration"
+                                    ]
+                                  },
+                                  "classification": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "dev",
+                                          "beta"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
                                     ]
                                   },
                                   "reason": {
@@ -41013,7 +41278,9 @@
                                   "sourceKind",
                                   "repoPattern",
                                   "pathPattern",
+                                  "refPattern",
                                   "type",
+                                  "classification",
                                   "reason"
                                 ],
                                 "additionalProperties": false
@@ -43511,6 +43778,197 @@
                         }
                       ]
                     },
+                    "stageDependencyStatus": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "held": {
+                              "type": "boolean"
+                            },
+                            "waveIndex": {
+                              "anyOf": [
+                                {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "unenforced": {
+                              "type": "boolean"
+                            },
+                            "targets": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "targetObjectId": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  "targetName": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "componentObjectId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "componentName": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "deploymentTargetObjectId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "format": "uuid",
+                                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "deploymentTargetName": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "held": {
+                                    "type": "boolean"
+                                  },
+                                  "dependencies": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "dependsOn": {
+                                          "type": "string"
+                                        },
+                                        "dependsOnName": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
+                                        "branch": {
+                                          "type": "string",
+                                          "enum": [
+                                            "not_placed",
+                                            "succeeded",
+                                            "min_weight",
+                                            "never_deployed",
+                                            "behind",
+                                            "weight_unreadable",
+                                            "undeclarable",
+                                            "unscopeable",
+                                            "self"
+                                          ]
+                                        },
+                                        "satisfied": {
+                                          "type": "boolean"
+                                        },
+                                        "source": {
+                                          "type": "string",
+                                          "const": "edge"
+                                        },
+                                        "dependencyStatus": {
+                                          "type": "string"
+                                        },
+                                        "minWeight": {
+                                          "type": "integer",
+                                          "minimum": -9007199254740991,
+                                          "maximum": 9007199254740991
+                                        },
+                                        "minWeightSupersededByEdge": {
+                                          "type": "boolean",
+                                          "const": true
+                                        },
+                                        "weightUnreadable": {
+                                          "type": "string",
+                                          "enum": [
+                                            "no_weight",
+                                            "not_observed",
+                                            "stale"
+                                          ]
+                                        },
+                                        "summary": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": [
+                                        "dependsOn",
+                                        "dependsOnName",
+                                        "branch",
+                                        "satisfied",
+                                        "summary"
+                                      ],
+                                      "additionalProperties": false
+                                    }
+                                  }
+                                },
+                                "required": [
+                                  "targetObjectId",
+                                  "targetName",
+                                  "componentObjectId",
+                                  "componentName",
+                                  "deploymentTargetObjectId",
+                                  "deploymentTargetName",
+                                  "held",
+                                  "dependencies"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "held",
+                            "waveIndex",
+                            "unenforced",
+                            "targets"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "boundarySegment": {
                       "anyOf": [
                         {
@@ -45211,6 +45669,17 @@
               "format": "uuid",
               "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
             }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
           }
         ],
         "responses": {
@@ -45799,6 +46268,9 @@
                   "path": {
                     "type": "string"
                   },
+                  "ref": {
+                    "type": "string"
+                  },
                   "correlationKey": {
                     "type": "string"
                   },
@@ -46241,6 +46713,9 @@
                   "pathPattern": {
                     "type": "string"
                   },
+                  "refPattern": {
+                    "type": "string"
+                  },
                   "component": {
                     "type": "string",
                     "minLength": 1
@@ -46254,6 +46729,13 @@
                       "npm",
                       "infrastructure",
                       "configuration"
+                    ]
+                  },
+                  "classification": {
+                    "type": "string",
+                    "enum": [
+                      "dev",
+                      "beta"
                     ]
                   }
                 },
@@ -46308,6 +46790,16 @@
                         }
                       ]
                     },
+                    "refPattern": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "componentObjectId": {
                       "type": "string",
                       "format": "uuid",
@@ -46332,6 +46824,20 @@
                         "configuration"
                       ]
                     },
+                    "classification": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "dev",
+                            "beta"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time",
@@ -46344,9 +46850,11 @@
                     "sourceKind",
                     "repoPattern",
                     "pathPattern",
+                    "refPattern",
                     "componentObjectId",
                     "type",
                     "category",
+                    "classification",
                     "createdAt"
                   ],
                   "additionalProperties": false
@@ -46570,6 +47078,16 @@
                     ]
                   },
                   "pathPattern": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "refPattern": {
                     "anyOf": [
                       {
                         "type": "string"
@@ -46864,6 +47382,16 @@
                               }
                             ]
                           },
+                          "refPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "componentObjectId": {
                             "type": "string",
                             "format": "uuid",
@@ -46888,6 +47416,20 @@
                               "configuration"
                             ]
                           },
+                          "classification": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "dev",
+                                  "beta"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time",
@@ -46900,9 +47442,11 @@
                           "sourceKind",
                           "repoPattern",
                           "pathPattern",
+                          "refPattern",
                           "componentObjectId",
                           "type",
                           "category",
+                          "classification",
                           "createdAt"
                         ],
                         "additionalProperties": false

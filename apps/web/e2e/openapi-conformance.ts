@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
  * the browser makes while walking the Outposts UI and asks, of each one, whether the EMITTED
  * OpenAPI document declares that method+path.
  *
- * This module is the "whether" half, kept separate from the spec on purpose: the spec is main-only
+ * This module is the "whether" half, kept separate from the spec on purpose: the spec was main-only
  * (every E2E job in `.github/workflows/ci.yml` is gated on `push` to `main`), and a matcher that
  * silently accepted everything would turn that whole check into a no-op with nothing failing.
  * `openapi-conformance.test.ts` runs it under Vitest on every PR, including the cases that must be

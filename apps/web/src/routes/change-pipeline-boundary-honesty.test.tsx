@@ -6,10 +6,11 @@ import type { BoundarySegment } from "@scp/sdk";
  * The RENDERING half of the M16.1 boundary segment's honesty rule, pinned by a check that runs on
  * EVERY PR.
  *
- * Same reasoning — and same mechanism — as `service-board-honesty.test.tsx`: the Playwright specs
- * in `.github/workflows/ci.yml` are guarded by `github.event_name == 'push' && github.ref ==
- * 'refs/heads/main'` and are SKIPPED on pull requests, so a browser-only guard would let the UI
- * regress into `main` with both required checks green. The server half of this rule is pinned by
+ * Same reasoning — and same mechanism — as `service-board-honesty.test.tsx`: written when the
+ * Playwright specs were `main`-only and SKIPPED on pull requests, so a browser-only guard would let
+ * the UI regress into `main` with both required checks green. E2E now runs on PRs and 5z requires it;
+ * this file stays because it is milliseconds and browser-free, not because nothing else covers it.
+ * The server half of this rule is pinned by
  * `apps/server/src/coordination/boundary-segment.integration.test.ts` (two federated domains, real
  * Postgres); this file owns the presentational half — given a segment response, does the UI keep
  * "cannot see" and "observed" visually distinct, and does it refuse to dress either as a pass?

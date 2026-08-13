@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { ExecutorCategorySchema } from "./executors.js";
+import { ChangeStageDependencyVerdictSchema } from "./changes.js";
+import { ExecutorCategorySchema, PipelineClassificationSchema } from "./executors.js";
 
 // ---------------------------------------------------------------------------------------------
 // COMPONENT PIPELINE (coordination-ui-views.md §2, as corrected 2026-08-03)
@@ -102,8 +103,15 @@ export const ComponentPipelineSourceMappingSchema = z.object({
    *  broader rule than it looks and must not render as an empty cell. Measured on the live estate:
    *  `agentkit-bootstrap` has such a mapping against all of `jag8765-personal/homelab-gitops`. */
   pathPattern: z.string().nullable(),
+  /** Git ref glob, or NULL meaning **every branch matches** — the ref-side twin of the whole-repo
+   *  case above, and just as broad: without it rendered, two mappings that route `dev` and `main`
+   *  to different pipelines look identical in the UI (ADR-0030 §1). */
+  refPattern: z.string().nullable(),
   type: z.string(),
   category: ExecutorCategorySchema,
+  /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting ONLY, never an
+   *  enforcement input. Rendered as a label; it grants and withholds nothing. */
+  classification: PipelineClassificationSchema.nullable(),
   /** The repo's web page, or null when it cannot be known — a GLOBBED `repoPattern` names a set of
    *  repos rather than a page, and a self-hosted provider's host is not recorded on a mapping. */
   url: z.string().nullable()
@@ -184,6 +192,53 @@ export const ComponentPipelineGateSchema = z.object({
 export type ComponentPipelineGate = z.infer<typeof ComponentPipelineGateSchema>;
 
 /**
+ * WHY A RELEASE IS SITTING AT THIS STAGE WITHOUT MOVING — a stage-scoped component coupling
+ * (ADR-0028) is withholding its trigger, and this names what by.
+ *
+ * THE BUG IT REMOVES. A held wave target's `change_wave_targets.status` is and stays `pending`: the
+ * hold `continue`s BEFORE `triggerWaveTarget`, so nothing advances it and nothing marks it. On this
+ * view that rendered as the same amber `pending` a stage gets when the wave simply has not reached
+ * it yet — so "waiting on something named" and "nothing is happening here" were the same picture,
+ * which is the confusion ADR-0028 increment 4 exists to remove.
+ *
+ * PRESENT EXACTLY WHEN A TRIGGER IS BEING WITHHELD RIGHT NOW, and null otherwise — including for a
+ * change that declared a coupling which is now satisfied. It is RE-EVALUATED LIVE on every request
+ * by `resolveStageDependencyStatus`, never read off the persisted `stage_dependency` Decision:
+ * nothing anywhere writes a clearing row, so that Decision stays `hold` forever — through the
+ * trigger, through `accepted` — and a badge sourced from it would be the permanent-marker bug the
+ * `hold` verdict (rather than `block`) was chosen to avoid, rebuilt on a read surface. The kind is
+ * overloaded too: `applyPromotionImport` writes `stage_dependency`/`allow` for the import-time
+ * strip, so on an outpost the newest row of that kind is an `allow` whatever the change is doing.
+ *
+ * WHOSE HOLD IT IS. Keyed on the wave target, which in stage mode IS the placement — so this is the
+ * hold on THIS stage, not the change's hold anywhere. A change held at gamma and free at prod
+ * carries this on its gamma stage alone.
+ *
+ * NOT IN `unknownFields` WHEN NULL, deliberately, and the one case that argues otherwise was
+ * checked: on an OUTPOST an imported change has had its `stageDependencies` stripped
+ * (`applyPromotionImport`), so the resolver has nothing to evaluate and this is null. That is not an
+ * unknown — the commander already withheld the trigger until every dependency was satisfied there,
+ * and its promotion of the bundle IS the go-ahead, so locally there genuinely is no hold. Null here
+ * always means "no stage dependency is withholding this stage's release", never "we did not look".
+ */
+export const ComponentPipelineHoldSchema = z.object({
+  /** The release being withheld. It is one of this stage's `currents[]` entries — a client shows the
+   *  hold against the lane whose `current` this is, since a change can hold the `configuration`
+   *  target at a place while the `infrastructure` pipeline there is simply idle. */
+  changeId: z.string().uuid(),
+  changeName: z.string().nullable(),
+  /** The wave being worked when the hold was evaluated — the first not `succeeded`/`skipped`. Null
+   *  only when the change has no plan, which a held target cannot come from. */
+  waveIndex: z.number().int().nullable(),
+  /** ONLY THE UNSATISFIED verdicts, each naming the dependency, the ADR-0028 decision 4 branch that
+   *  applied and a one-line summary — the same `describeStageDependencyHold` sentence the hold
+   *  Decision's `reasonTree` is built from, so this view and the audit record cannot drift. Never
+   *  empty: a hold with nothing unsatisfied is not a hold, and is reported as null above. */
+  dependencies: z.array(ChangeStageDependencyVerdictSchema)
+});
+export type ComponentPipelineHold = z.infer<typeof ComponentPipelineHoldSchema>;
+
+/**
  * ONE STAGE THE COMPONENT IS PLACED AT — one `placement` (ADR-0026): this component at one
  * deployment-target.
  *
@@ -253,6 +308,18 @@ export const ComponentPipelineStageSchema = z.object({
   currents: z.array(ComponentPipelineCurrentSchema),
   /** WHAT MUST PASS to move a release INTO this stage — see `ComponentPipelineGateSchema`. */
   gate: ComponentPipelineGateSchema,
+  /** WHAT IS WITHHOLDING THIS STAGE'S RELEASE RIGHT NOW — see `ComponentPipelineHoldSchema`. Null
+   *  when no stage dependency is holding it, which is the ordinary case.
+   *
+   *  `.nullable().optional()` and never `.default()`: `/v1` is additive-only (charter principle 3)
+   *  and a default renders the property REQUIRED in the generated SDK type, which is an oasdiff
+   *  ERR. It is a SIBLING of `currents[].targetStatus` rather than a new value inside it — that
+   *  field is documented as `change_wave_targets.status` verbatim, and a held target's status IS
+   *  and stays `pending`, so overloading it would make the raw column mean something it does not
+   *  say. It is also NOT the service board's `blocked`: that flag is derived from a verdict-only
+   *  Decision query with no recency gate, and conflating a transient self-clearing wait with a
+   *  permanent marker is the exact bug ADR-0028 wrote `verdict: "hold"` to avoid. */
+  hold: ComponentPipelineHoldSchema.nullable().optional(),
   /** ALWAYS null today, and ALWAYS listed in this stage's `unknownFields`.
    *
    *  The "version staircase" the design asks for needs a per-stage version/digest captured by

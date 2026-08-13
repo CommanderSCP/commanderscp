@@ -93,11 +93,13 @@ describe("source mapping: a repository routes by changed path, not just by name"
     // Same repository, same mappings — only the changed files differ, and that alone must decide.
     await expect(match(sourceKind, repo, ["loki/values.yaml"])).resolves.toEqual({
       componentObjectId: loki,
-      type: "configuration"
+      type: "configuration",
+      classification: null
     });
     await expect(match(sourceKind, repo, ["pihole/values.yaml"])).resolves.toEqual({
       componentObjectId: pihole,
-      type: "configuration"
+      type: "configuration",
+      classification: null
     });
   });
 
@@ -118,7 +120,11 @@ describe("source mapping: a repository routes by changed path, not just by name"
 
     await expect(
       match(sourceKind, repo, ["README.md", "docs/notes.md", "tailscale/values.yaml"])
-    ).resolves.toEqual({ componentObjectId: tailscale, type: "configuration" });
+    ).resolves.toEqual({
+      componentObjectId: tailscale,
+      type: "configuration",
+      classification: null
+    });
   });
 
   it("a path-scoped mapping BEATS an older repo-only mapping on the same repository", async () => {
@@ -146,7 +152,8 @@ describe("source mapping: a repository routes by changed path, not just by name"
 
     await expect(match(sourceKind, repo, ["trivy-operator/values.yaml"])).resolves.toEqual({
       componentObjectId: trivy,
-      type: "configuration"
+      type: "configuration",
+      classification: null
     });
   });
 
@@ -174,7 +181,8 @@ describe("source mapping: a repository routes by changed path, not just by name"
 
     await expect(match(sourceKind, repo, ["scripts/backup.sh"])).resolves.toEqual({
       componentObjectId: incumbent,
-      type: "configuration"
+      type: "configuration",
+      classification: null
     });
   });
 
@@ -206,11 +214,13 @@ describe("source mapping: a repository routes by changed path, not just by name"
     // nothing", and both must decline the path-scoped mapping.
     await expect(match(sourceKind, repo, undefined)).resolves.toEqual({
       componentObjectId: incumbent,
-      type: "configuration"
+      type: "configuration",
+      classification: null
     });
     await expect(match(sourceKind, repo, [])).resolves.toEqual({
       componentObjectId: incumbent,
-      type: "configuration"
+      type: "configuration",
+      classification: null
     });
   });
 

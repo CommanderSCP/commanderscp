@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Bell, Search, type LucideIcon } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { ScpApiError } from "@scp/sdk";
 import type { DiscoveryProposal, PluginManifest } from "@scp/schemas";
 import { client } from "../lib/client";
+import { cn, focusRing } from "../lib/utils";
 import { Badge, type BadgeProps } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
@@ -471,6 +473,34 @@ export function PluginsPage(): React.JSX.Element {
         <code className="rounded bg-slate-100 px-1 py-0.5">scp secret put</code>) and never appear in
         this form.
       </p>
+
+      {/* M19.1 — the launch point for the "Connect Argo CD" wizard. This page configures a plugin
+          INSTANCE from its manifest, which is the wrong shape for "point SCP at the Argo CD I already
+          run": that act spans a secret, an execution-system object, a discovery run and an accept.
+          The wizard owns the flow; this is where an operator looking at executor config finds it.
+          (Restyled to the design system on merge: primary action wears the accent, not slate.) */}
+      <Card data-testid="connect-argocd-card">
+        <CardHeader>
+          <CardTitle className="text-base">Connect an Argo CD you already run</CardTitle>
+          <CardDescription>
+            Register an existing Argo CD server and import its Applications as components SCP
+            coordinates — the UI equivalent of <code className="font-mono">scp connect argocd</code>{" "}
+            plus <code className="font-mono">scp discovery run|accept</code>.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Link
+            to="/connect/argocd"
+            className={cn(
+              "inline-flex h-9 items-center justify-center rounded-md bg-army-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-army-600",
+              focusRing
+            )}
+            data-testid="connect-argocd-launch"
+          >
+            Connect Argo CD…
+          </Link>
+        </CardContent>
+      </Card>
 
       {manifestsQuery.isLoading && <SkeletonRows n={3} />}
       {manifestsQuery.isError && <Alert tone="danger">{errorMessageOf(manifestsQuery.error)}</Alert>}

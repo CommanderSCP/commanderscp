@@ -429,6 +429,37 @@ export const changes = pgTable(
      * through this batch listing — see reconcile.ts's doc comment on the `failed` branch).
      */
     reconcileBlockedAt: timestamp("reconcile_blocked_at", { withTimezone: true }),
+    /**
+     * THE RECONCILE ROUND-ROBIN CURSOR (migration 0056) — engine scheduling state, and the ONLY
+     * column `listChangeRowsInStates` orders by. "When did the engine last take this change's turn",
+     * which is a queue position and NOT a fact about the change.
+     *
+     * It exists because `updated_at` used to carry both meanings at once. The engine serves
+     * `ORDER BY <cursor> ASC LIMIT BATCH_LIMIT`, and five reconcile paths re-stamp a change they
+     * examined but could NOT advance so it goes to the back of the queue — without that,
+     * >BATCH_LIMIT stuck changes own every batch slot forever and everything behind them is never
+     * evaluated even once (measured: 13 days of stopped production coordination behind green health
+     * checks, homelab 2026-08-01 — see reconcile.ts's gate-blocked bump). Sharing `updated_at` for
+     * that made the API-visible `Change.updatedAt` read "1s ago" for a change that had done nothing
+     * for three days.
+     *
+     * THE SPLIT IS STARVATION-SAFE BY DIRECTION, which is the property to check when touching this.
+     * The guarantee needs the not-advanced paths to push a change BACKWARD in the queue; every other
+     * write that used to move `updated_at` incidentally (a transition, a `source_ref` stamp, a park)
+     * now leaves the cursor alone, which can only make a change be served SOONER. Nothing that could
+     * delay a change was removed.
+     *
+     * DELIBERATELY UN-INDEXED. `changes_org_state` already narrows the candidate set to one org and
+     * state; adding a btree on this column would defeat HOT updates for the per-tick bump — index
+     * churn on exactly the write that fires most often (ADR-0024's cost lesson, one write class
+     * over). `updated_at`, which this replaces in the ORDER BY, was never indexed either.
+     *
+     * NOT ON THE WIRE, like `reconcile_blocked_at` beside it. See `Change`'s `updatedAt` docblock
+     * in `@scp/schemas` for the reasoning.
+     */
+    reconcileCursorAt: timestamp("reconcile_cursor_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
@@ -524,7 +555,16 @@ export const decisions = pgTable(
     // (drizzle/0046 carries the full before/after EXPLAIN and the write cost).
     index("decisions_org_subject_block_created")
       .on(table.orgId, table.subjectId, table.createdAt.desc())
-      .where(sql`${table.verdict} = 'block'`)
+      .where(sql`${table.verdict} = 'block'`),
+    // `GET /decisions?kind=…` WITHOUT a subject (ADR-0028 increment 4) — the operator who knows the
+    // coupling but not the change id. Every index above leads with `subject_id` or omits `kind`, so
+    // that filter was a PARALLEL SEQ SCAN of the whole table, sorted: measured at 4M rows,
+    // 100.0 ms / 55,650 buffers and every row scanned to return 101, versus 0.098 ms / 8 buffers
+    // with this index (drizzle/0056 carries the full before/after EXPLAIN and the write cost).
+    // `created_at, id` closes the key because that is the keyset cursor's ordering verbatim, so a
+    // page costs one descent and no sort — 0044 leaves `id` out for the opposite reason, its query
+    // is a `LIMIT 1` where a tiebreak cannot change the answer.
+    index("decisions_org_kind_created").on(table.orgId, table.kind, table.createdAt, table.id)
   ]
 );
 
@@ -540,6 +580,12 @@ export const sourceMappings = pgTable(
     sourceKind: text("source_kind").notNull(), // github|argocd|terraform|manual|...
     repoPattern: text("repo_pattern"), // glob, matched against source_ref.repo
     pathPattern: text("path_pattern"), // glob, matched against source_ref.path (optional)
+    // Glob matched against the event's git REF (`refs/heads/dev`), migration 0057 / ADR-0030 §1.
+    // The third routing glob and a PEER of the two above, not a rank above them: paths and refs are
+    // orthogonal, and the same directory on two branches is two pipelines — which no path glob can
+    // express. NULL matches EVERY ref (the matcher skips a null one, exactly as it already does for
+    // the other two), so every mapping written before 0057 keeps its behaviour unchanged.
+    refPattern: text("ref_pattern"),
     componentObjectId: uuid("component_object_id").notNull(),
     // WHICH pipeline of that component this source drives — the routing Type (ADR-0007, migration
     // 0026; was `purpose` in 0024). A change IS a release and comes from ONE source per pipeline, so
@@ -547,6 +593,16 @@ export const sourceMappings = pgTable(
     // because `github` can run Terraform OR deploy an app. Defaults to 'configuration'. Plain text
     // (no pg enum / CHECK): the closed value set is enforced in packages/schemas (Zod).
     type: text("type").notNull().default("configuration"),
+    // The operator's DECLARED classification of this pipeline (`dev`|`beta`), migration 0057 /
+    // ADR-0030 §2. UI and reporting read THIS; nothing parses the branch name looking for "dev".
+    // A label named after WHICH BRANCH MATCHED goes false the moment that branch covers a second
+    // kind — a failure already shipped once here (charter principle 6).
+    //
+    // NEVER an enforcement input (ADR-0030 §3): it is not threaded into the export gate, and forging
+    // or removing it changes no gate outcome. Enforcement keys on the path — a change targeting no
+    // federation peer never reaches `exportPromotionBundle`. Plain text (no pg enum / CHECK), like
+    // `type` above: the closed value set is enforced in packages/schemas (Zod).
+    classification: text("classification"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]

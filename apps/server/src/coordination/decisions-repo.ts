@@ -64,6 +64,10 @@ export interface ListDecisionsQuery {
   cursor?: string | undefined;
   limit: number;
   subjectId?: string | undefined;
+  /** Exact-match `kind` filter (ADR-0028 increment 4). Independent of `subjectId`: the shape this
+   *  was added for is kind-WITHOUT-subject, and drizzle/0056's `decisions_org_kind_created` is the
+   *  index that keeps it an index probe rather than the parallel seq scan it measured as. */
+  kind?: string | undefined;
 }
 
 /** Ordered oldest-first (chain-of-reasoning order) — `scp change explain` renders in this order. */
@@ -75,6 +79,7 @@ export async function listDecisions(
   const cursor = query.cursor ? decodeCursor(query.cursor) : null;
   const conditions = [eq(decisions.orgId, orgId)];
   if (query.subjectId) conditions.push(eq(decisions.subjectId, query.subjectId));
+  if (query.kind) conditions.push(eq(decisions.kind, query.kind));
   if (cursor) conditions.push(keysetAfter(decisions.createdAt, decisions.id, cursor));
 
   const rows = await tx

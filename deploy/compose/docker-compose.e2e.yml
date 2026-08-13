@@ -1,0 +1,77 @@
+# TEST-ONLY OVERRIDE for the compose-stack Playwright suite — `scripts/e2e-web.sh` layers this on
+# top of docker-compose.yml with a second `-f`. It is NOT part of the two-container evaluation stack
+# an operator runs (DESIGN.md §16); nothing here ships, and the base file stays exactly what a user
+# gets from `docker compose up`.
+#
+# It exists for one spec: apps/web/e2e/connect-argocd.spec.ts (M19.1, the "Connect Argo CD" wizard).
+# That flow can only be proven end to end against an Argo CD the SCP SERVER can reach — the enumerate
+# step is a server-side call through the plugin host, not a browser call — so the fake has to live on
+# the compose network beside it.
+#
+# TWO THINGS ARE LOAD-BEARING HERE, and both are the point of the test rather than scaffolding:
+#
+#   1. `fake-argocd` resolves to a PRIVATE compose-network address, so SCP's SSRF egress guard
+#      refuses it unless BOTH ADR-0003 layers permit: `SCP_INTERNAL_EGRESS_HOSTS` below (the
+#      operator's hard boundary, layer 1) AND the execution system's own `allowInternalEgress`
+#      property, which the wizard's checkbox writes (the declaration, layer 2). The spec ticks that
+#      checkbox, so a green run exercises the real in-cluster path — the case the wizard exists to
+#      support and the one a public-URL fake would never touch.
+#
+#   2. The fake DEMANDS a bearer token. A green run therefore proves the credential travelled
+#      secrets store -> server -> plugin subprocess -> Argo CD, not merely that the buttons wire up.
+#
+# The fake reuses the already-built `scp` image (same build context, so `docker compose build` hits
+# its cache and no second base image is pulled — CI job 9 runs offline) and overrides its command
+# with an inline Node server. It is a SECOND COPY of apps/web/e2e/fake-argocd.ts, which serves the
+# local Playwright target where the SCP server is in-process; that file's header explains why the
+# duplication was taken over host-network plumbing, and the spec asserts these exact Application
+# names in both modes, so drift between the two turns THIS job red rather than rotting.
+services:
+  fake-argocd:
+    # THE SAME IMAGE THE `scp` SERVICE BUILDS, by tag — deliberately NOT a second `build:` block.
+    # Compose builds services in PARALLEL, so two identical `build:` entries do not share a layer
+    # cache with each other: the second one starts before the first finishes and re-runs the whole
+    # `pnpm install`/`pnpm build`, roughly doubling this job's image-build time. Referencing the tag
+    # instead builds once. `pull_policy: never` because the tag is produced locally by the
+    # `docker compose build` that scripts/e2e-web.sh runs before `up` — there is no registry to
+    # fall back to, and a silent pull attempt would be a network call this job must not make.
+    image: commanderscp-e2e-scp:latest
+    pull_policy: never
+    command:
+      - node
+      - -e
+      - |
+        const http = require('node:http');
+        const APPS = { items: [
+          { metadata: { name: 'e2e-checkout' }, spec: { project: 'default', destination: { namespace: 'prod' },
+            source: { repoURL: 'https://github.com/acme/checkout.git', path: 'deploy/checkout' } } },
+          { metadata: { name: 'e2e-payments' }, spec: { project: 'default', destination: { namespace: 'prod' },
+            source: { repoURL: 'https://github.com/acme/payments.git', path: 'deploy/payments' } } }
+        ] };
+        const json = (res, status, body) => {
+          res.writeHead(status, { 'content-type': 'application/json' });
+          res.end(JSON.stringify(body));
+        };
+        http.createServer((req, res) => {
+          if (!/^Bearer .+/.test(req.headers.authorization || '')) return json(res, 401, { error: 'no bearer token' });
+          const path = (req.url || '').split('?')[0];
+          if (path === '/api/v1/applications') return json(res, 200, APPS);
+          if (path === '/api/version') return json(res, 200, { Version: 'v3.4.5+fake' });
+          return json(res, 404, { error: 'not found' });
+        }).listen(9000, '0.0.0.0', () => console.log('fake-argocd listening on 9000'));
+
+  scp:
+    # Names the image the BASE file's `build:` produces, so `fake-argocd` above can reference it.
+    # `image:` beside an inherited `build:` is compose's own "tag what you build" — it does not
+    # replace the build, and the base file (what an operator actually runs) is untouched.
+    image: commanderscp-e2e-scp:latest
+    environment:
+      # ADR-0003 layer 1. Hostnames only, never URLs or CIDRs. Scoped to the fake alone: the
+      # execution system's own declaration cannot widen this, which is the property the two-layer
+      # design exists to have.
+      SCP_INTERNAL_EGRESS_HOSTS: fake-argocd
+    # Long form, matching the base file's `postgres: {condition: service_healthy}` — compose merges
+    # the two mappings into one. A short-form list here would not merge with a mapping.
+    depends_on:
+      fake-argocd:
+        condition: service_started

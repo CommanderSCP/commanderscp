@@ -182,7 +182,8 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
 /**
  * One component's row. EXPORTED for `service-board-honesty.test.tsx`, which renders it directly:
  * the unknown-vs-observed distinction below is the whole point of this view, and it must be pinned
- * by a check that runs on every PR — not only by the Playwright suite, which is main-only.
+ * by a check that runs on every PR at a cheaper altitude than the Playwright suite (which now also
+ * runs on PRs).
  */
 /**
  * THE PER-PIPELINE STATE of one row, as one chip per ADR-0007 Category.

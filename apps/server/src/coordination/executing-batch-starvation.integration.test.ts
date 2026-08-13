@@ -23,16 +23,17 @@ import type { GateDeps } from "./gates.js";
  * COMPLETELY STOPPED for 13 days, behind green health checks, and nothing detected it.
  *
  * `advanceExecutingChanges` selects candidates with `listChangeRowsInStates(..., ["executing"],
- * BATCH_LIMIT)`, which is `ORDER BY updated_at ASC LIMIT 25`. A change whose wave gate BLOCKS stays
- * `executing` with its wave `pending` and — deliberately, see reconcile.ts's persist-on-change
- * comment — is never parked, so that it keeps being re-served and re-evaluated (an approval granted
- * elsewhere is noticed only by re-evaluation). But nothing on that path writes the `changes` row,
- * so its `updated_at` never moves again. Twenty-five such changes therefore pin every slot of every
- * tick, permanently.
+ * BATCH_LIMIT)`, which is `ORDER BY reconcile_cursor_at ASC LIMIT 25` (it was `updated_at` when
+ * this was measured; migration 0058 moved the round-robin onto its own column, and the property is
+ * unchanged — see the note below). A change whose wave gate BLOCKS stays `executing` with its wave
+ * `pending` and — deliberately, see reconcile.ts's persist-on-change comment — is never parked, so
+ * that it keeps being re-served and re-evaluated (an approval granted elsewhere is noticed only by
+ * re-evaluation). But nothing on that path writes the `changes` row, so its cursor never moves
+ * again. Twenty-five such changes therefore pin every slot of every tick, permanently.
  *
  * The measurement, which is why this file exists:
  *
- *   band (ORDER BY updated_at ASC)   count   updated_at range              has any gate Decision
+ *   band (ORDER BY the cursor)       count   cursor range                  has any gate Decision
  *   positions 1-25                      25   Jul 17 21:41 -> Jul 19 11:04   25 / 25
  *   positions 26+                      231   Jul 19 12:11 -> Aug  1 17:59    0 / 231
  *
@@ -43,10 +44,17 @@ import type { GateDeps } from "./gates.js";
  *
  * WHY IT SURVIVED REVIEW: this exact hazard was already found and fixed for the `waiting` state
  * (`advanceWaitingChanges`, "STARVATION fix, coupled-pipelines.md §3.5 hazard"), using the same
- * `updated_at` round-robin bump. The fix was applied to the instance, not to the class — `executing`
- * has the identical re-serve-without-writing property and was left alone. `validating` is a third
- * instance (its loop only prewarms governance and never writes the change row); it is bumped now
- * too, before it can bite.
+ * round-robin bump. The fix was applied to the instance, not to the class — `executing` has the
+ * identical re-serve-without-writing property and was left alone. `validating` is a third instance
+ * (its loop only prewarms governance and never writes the change row); it is bumped now too, before
+ * it can bite.
+ *
+ * MIGRATION 0058 MOVED THE COLUMN, NOT THE PROPERTY. The bumps now write `reconcile_cursor_at`
+ * instead of `updated_at`, so that `Change.updatedAt` can stop reporting a gate-blocked change as
+ * freshly updated on every tick of the week it spends blocked. This suite is re-pointed rather than
+ * rewritten, because what it asserts — COVERAGE, that every parked change eventually gets a turn —
+ * never named a column in the first place. That is why the arms below still fail on the unfixed
+ * engine, which was re-verified by mutation rather than assumed.
  *
  * This suite is the permanent regression test. It is deliberately built around MORE THAN
  * BATCH_LIMIT parked changes, because at or below the limit the bug is invisible — which is exactly
@@ -202,7 +210,7 @@ describe("executing-batch starvation: >BATCH_LIMIT gate-blocked changes must not
 
   it("THE REGRESSION: further ticks reach EVERY parked change — a blocked head must not own the batch forever", async () => {
     // Tick 1 (above) served the 25 oldest and bumped each to `now`, so the 5 never-served changes
-    // are now the oldest by `updated_at` and lead the next batch. Three more ticks is generous
+    // are now the oldest by `reconcile_cursor_at` and lead the next batch. Three more ticks is generous
     // headroom for a 30/25 fixture; the assertion is on COVERAGE, not on a tick count.
     await tick(3);
 
@@ -253,7 +261,7 @@ describe("executing-batch starvation: >BATCH_LIMIT gate-blocked changes must not
  * `waiting` path, the `validating` path, the gate-blocked path and `recordStageDependencyHold`) and
  * not one of them was reachable from it.
  *
- * So a change whose targets are merely being POLLED froze its `updated_at` at the instant it
+ * So a change whose targets are merely being POLLED froze its cursor at the instant it
  * entered `executing` and held a `BATCH_LIMIT` slot for as long as its executor kept answering
  * "still running". That is not an exotic state: it is an Argo CD Application sitting
  * `Progressing`, a workflow parked on a manual approval step, a sync waiting on an image that
@@ -393,9 +401,11 @@ describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose 
   }
 
   const pollingIds: string[] = [];
-  /** `state_entered_at` as the fixture left it, per change — the watchdog's stall clock. Captured
-   *  before any tick so the last arm can prove the bump moved `updated_at` and NOTHING else. */
+  /** `state_entered_at` and `updated_at` as the fixture left them, per change — the watchdog's
+   *  stall clock and the operator's "last modified". Captured before any tick so the last arm can
+   *  prove the bump moved the CURSOR and nothing else. */
   const enteredAt = new Map<string, number>();
+  const updatedAtBefore = new Map<string, number>();
 
   it(`parks ${PARKED_COUNT} changes in 'executing' with an allowing gate and a never-finishing executor (fixture)`, async () => {
     for (let i = 0; i < PARKED_COUNT; i++) {
@@ -409,12 +419,20 @@ describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose 
 
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
-        .select({ objectId: changes.objectId, enteredAt: changes.stateEnteredAt })
+        .select({
+          objectId: changes.objectId,
+          enteredAt: changes.stateEnteredAt,
+          updatedAt: changes.updatedAt
+        })
         .from(changes)
         .where(and(eq(changes.orgId, org.orgId), inArray(changes.objectId, pollingIds)))
     );
-    for (const row of rows) enteredAt.set(row.objectId, row.enteredAt.getTime());
+    for (const row of rows) {
+      enteredAt.set(row.objectId, row.enteredAt.getTime());
+      updatedAtBefore.set(row.objectId, row.updatedAt.getTime());
+    }
     expect(enteredAt.size).toBe(PARKED_COUNT);
+    expect(updatedAtBefore.size).toBe(PARKED_COUNT);
   }, 300_000);
 
   it("ONE tick serves exactly BATCH_LIMIT of them, and their gates ALLOWED — this is precisely the shape the gate-blocked bump does not cover", async () => {
@@ -455,9 +473,9 @@ describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose 
 
     // WITHOUT THE FIX THIS IS THE FAILING LINE. The 25 changes served by tick 1 are still in
     // `executing`, their targets are still `observing`, and nothing has written their `changes`
-    // row since they entered the state — so `ORDER BY updated_at ASC LIMIT 25` hands back the same
-    // 25 rows on every tick from here to the heat death of the instance, and the 5 behind them are
-    // never evaluated once.
+    // row since they entered the state — so `ORDER BY reconcile_cursor_at ASC LIMIT 25` hands back
+    // the same 25 rows on every tick from here to the heat death of the instance, and the 5 behind
+    // them are never evaluated once.
     expect(starved).toEqual([]);
     expect(served.size).toBe(PARKED_COUNT);
 
@@ -470,7 +488,7 @@ describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose 
     expect(counts.failed ?? 0).toBe(0);
   }, 120_000);
 
-  it("rotation is not progress: every change is still 'executing', still un-parked, and its stall clock is untouched", async () => {
+  it("rotation is not progress: every change is still 'executing', still un-parked, and BOTH operator clocks are untouched", async () => {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select({
@@ -478,7 +496,8 @@ describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose 
           state: changes.state,
           blockedAt: changes.reconcileBlockedAt,
           enteredAt: changes.stateEnteredAt,
-          updatedAt: changes.updatedAt
+          updatedAt: changes.updatedAt,
+          cursorAt: changes.reconcileCursorAt
         })
         .from(changes)
         .where(and(eq(changes.orgId, org.orgId), inArray(changes.objectId, pollingIds)))
@@ -491,13 +510,25 @@ describe("executing-batch starvation, POLLING shape: >BATCH_LIMIT changes whose 
       // polling change and it stops being re-served, so its executor is never polled again and the
       // change never completes.
       expect(row.blockedAt).toBeNull();
-      // THE `state_entered_at` INVARIANT, and the reason the bump touches `updated_at` ALONE.
-      // `watchdog.ts` measures the `executing` stall SLA off `state_entered_at`; if the round-robin
-      // bumped it too, a change whose executor polls forever would look permanently fresh and would
-      // never be reported as stalled — the round-robin would have bought fairness by disabling the
-      // one alarm that notices a change going nowhere.
+
+      // THE BUMP LANDED, and on the cursor. Without this the arms above could pass for the wrong
+      // reason — e.g. a fixture whose changes all terminalized and freed their slots — so the
+      // mechanism is asserted directly and not only through its coverage consequence.
+      expect(row.cursorAt.getTime()).toBeGreaterThan(row.enteredAt.getTime());
+
+      // THE `state_entered_at` INVARIANT. `watchdog.ts` measures the `executing` stall SLA off
+      // `state_entered_at`; if the round-robin bumped it too, a change whose executor polls forever
+      // would look permanently fresh and would never be reported as stalled — the round-robin would
+      // have bought fairness by disabling the one alarm that notices a change going nowhere.
       expect(row.enteredAt.getTime()).toBe(enteredAt.get(row.objectId));
-      expect(row.updatedAt.getTime()).toBeGreaterThan(row.enteredAt.getTime());
+
+      // THE `updated_at` INVARIANT (migration 0058), and the arm that would have caught the split
+      // being done backwards. These changes have been served, polled and bumped across four ticks
+      // and NOTHING about them has changed: same state, same wave, same targets, same executor
+      // answer. So the field an operator reads as "last modified" must be exactly where the fixture
+      // left it. Before 0058 this assertion was impossible to write — `updated_at` WAS the cursor,
+      // and this same loop moved it every tick.
+      expect(row.updatedAt.getTime()).toBe(updatedAtBefore.get(row.objectId));
     }
   }, 120_000);
 });

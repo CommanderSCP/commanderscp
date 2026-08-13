@@ -990,6 +990,13 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           const componentId =
             nameToId.get(proposedMapping.objectName) ??
             (await getObjectByIdOrUrnAnyType(tx, auth.orgId, proposedMapping.objectName)).id;
+          // NO `refPattern`/`classification` here, and that is deliberate rather than an omission
+          // (ADR-0030 §1). A discovery proposal carries neither: an executor tells us which repo and
+          // path drive a component, not which BRANCH is the dev one, and it certainly cannot tell us
+          // what an operator would classify the pipeline as. Leaving both null means "matches any
+          // ref, unclassified" — byte-identical to how every discovery-created mapping behaved
+          // before 0057. Inferring a ref from an Argo CD `targetRevision` would be a guess, and a
+          // ref is a ROUTING key, so a wrong guess silently sends releases to the wrong pipeline.
           const created = await createSourceMapping(tx, {
             orgId: auth.orgId,
             sourceKind: proposedMapping.sourceKind,

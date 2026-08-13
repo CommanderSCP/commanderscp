@@ -38,6 +38,7 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **change** | The coordinated unit of work; a graph object with a lifecycle state machine | SCP-SPECIFIC |
 | **pipeline** | The ordered path a release travels for one executor **Type** | INDUSTRY-STANDARD |
 | **artifact** | The immutable built thing identified by digest (image, rpm, npm, config bundle, plan) | INDUSTRY-STANDARD |
+| **configuration as code** | Declarative config/infra released from a git repo like any other artifact — often, **not always**, domain-local | INDUSTRY-STANDARD |
 | **bundle** | Three distinct things — see the entry; always qualify | SCP-SPECIFIC |
 | **security domain** | A domain implementing one security policy under a single administering authority | INDUSTRY-STANDARD (CNSSI-4009) |
 | **containment domain** | The intra-org `domain` graph object type — an ordinary grouping below org | SCP-SPECIFIC |
@@ -393,6 +394,44 @@ Every transition goes through **one guarded transition function** that atomicall
 **Not to be confused with:** a **bundle** (see below — a bundle is a transport container, not a built thing); a CI "build artifact" in the loose sense of any file a job uploads.
 
 **In the code.** Digests thread through the gate context as `artifactDigest` (`apps/server/src/governance/gate-orchestrator.ts` `buildControlContext`); bytes travel on the channel designed in [ADR-0019](adr/0019-artifact-byte-channel.md); verification is `apps/server/src/federation/artifact-verify.ts`.
+
+---
+
+### configuration as code
+
+**Definition.** Declarative configuration and infrastructure kept in a **git repository** and released through a
+pipeline like any other artifact, rather than applied by hand to a running system. In SCP it names a **class of
+release content**, not a mechanism — the same waves, gates, controls, Decisions and executor bindings apply to it
+as to an image.
+
+The term matters here because a large share of it is **domain-local**: a security domain's VPC layout, route
+tables, transit-gateway attachments, security-group rules and per-domain Kubernetes configuration have **no
+upstream original to promote from** — they are authored, reviewed and deployed inside one domain, and that domain
+is their source of truth ([ADR-0031](adr/0031-domain-local-objects-never-federate.md)). Configuration as code is
+**not** inherently domain-local, though: shared configuration promoted from a commander-hosted repo is the same
+class of content travelling the ordinary cross-boundary path.
+
+**Scanning — state the reason precisely.** Domain-local configuration as code is not subject to the **scan gate**,
+and the reason is the **path, never the location**: it crosses no security-domain boundary, so there is no
+crossing to authorize (see **scan gate**). *"It is at an outpost"* is **not** the reason and must never be written
+as one — an outpost builds and promotes plenty that **does** require a passing, digest-bound scan, since build
+devolves to the **originating** outpost ([ADR-0017](adr/0017-ownership-refinement.md) §2). The separate, optional
+**local** scan Control ([ADR-0016](adr/0016-scoped-scan-requirement-policies.md)) is **off by default** and stays
+available: a domain that wants its own network configuration scanned locally can attach one, and that is a quality
+choice, not an authorization one.
+
+**Industry-standard?** Yes as a term (alongside infrastructure as code / GitOps). What is SCP-specific is the
+observation that a large part of it has **no single upstream source of truth** and is therefore modelled as
+domain-local.
+
+**Not to be confused with:** **IaC** in the SCP-internal sense — `scp plan`/`apply` over SCP's *own* registry
+objects (`apps/server/src/iac/`), i.e. SCP's configuration managed as code, which is a different subject from a
+tenant's configuration travelling a pipeline. Also not the **managed IaC executor** (`scp-managed-iac`), which is
+an execution mechanism, not a content class.
+
+**In the code.** An ordinary component whose executor binding carries a `configuration` or `infrastructure`
+routing Type ([ADR-0007](adr/0007-executor-binding-type-taxonomy.md)); `executor_bindings` is unique on
+`(org_id, target_object_id, type_id)`, so one component may own both at once.
 
 ---
 

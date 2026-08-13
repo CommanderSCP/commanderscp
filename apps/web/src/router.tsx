@@ -25,6 +25,7 @@ import { OutpostDetailPage } from "./routes/outpost-detail";
 import { PluginsPage } from "./routes/plugins";
 import { AssemblyBoardPage, AssemblyDetailLayout } from "./routes/assembly-detail";
 import { IdentityPage } from "./routes/identity";
+import { ConnectArgoCdPage } from "./routes/connect-argocd";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -86,7 +87,7 @@ const graphExplorerRoute = createRoute({
 
 // Component layer of the two-layer graph (coordination-ui-views.md Phase 3). A 3-segment static
 // `service` prefix — deeper than the 2-segment `/graph/$idOrUrn` object explorer, so the two never
-// collide (mirrors how `/services/$id/board` sits under the dynamic registry routes).
+// collide (mirrors how `/services/$idOrUrn` sits under the dynamic registry routes).
 const componentGraphRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/graph/service/$serviceId",
@@ -110,7 +111,7 @@ const changePipelineRoute = createRoute({
 // ONE COMPONENT — a LAYOUT route carrying the Pipeline/Settings tabs, with the pipeline as its index
 // child (coordination-ui-views.md §2, corrected 2026-08-03). The static `/components/$idOrUrn`
 // segment out-ranks the dynamic `/$basePath/$idOrUrn` registry-detail route below — the same
-// precedence trick `/services/$id/board` uses — so going to a component lands on its pipeline rather
+// precedence trick `/services/$idOrUrn` uses — so going to a component lands on its pipeline rather
 // than a properties table, because the pipeline IS what a component is operationally.
 //
 // That precedence had a cost this layout repays: it made the generic registry detail UNREACHABLE for
@@ -187,6 +188,20 @@ const serviceBoardRoute = createRoute({
   component: ServiceBoardPage
 });
 
+// `/services/{id}/board` — the URL the board lived at BEFORE it became the index child, kept
+// working rather than removed. Two reasons, and the second is why this is a bug fix and not
+// politeness: it may be bookmarked or linked from outside the app, and
+// `apps/web/e2e/service-board-honesty.spec.ts` navigates to it. That spec is Playwright, every E2E
+// job is `main`-only, so removing this path passed EVERY required PR check and would have broken
+// only after merge — the exact hole `.github/workflows/ci.yml`'s own §6 comment warns about.
+// Renders the same component as the index; a redirect would work too, but two paths onto one view
+// is fewer moving parts than a redirect that has to reconstruct params.
+const serviceBoardLegacyRoute = createRoute({
+  getParentRoute: () => serviceDetailRoute,
+  path: "/board",
+  component: ServiceBoardPage
+});
+
 const serviceInfrastructureRoute = createRoute({
   getParentRoute: () => serviceDetailRoute,
   path: "/infrastructure",
@@ -240,6 +255,18 @@ const pluginsRoute = createRoute({
   component: PluginsPage
 });
 
+// M19.1 — the "Connect Argo CD" wizard. A static 2-segment path, so it out-ranks the dynamic
+// `/$basePath/$idOrUrn` registry-detail route below exactly as `/graph/service/...` and
+// `/federation/outposts` already do. `/connect/<kind>` rather than `/plugins/connect-argocd`
+// because the thing being connected is an execution SYSTEM, not a plugin instance — the `/plugins`
+// page configures bindings from manifests, which is a different act — and because the next kinds
+// (gitea, gitlab, harbor) already have server-side discovery modules and belong beside this one.
+const connectArgoCdRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/connect/argocd",
+  component: ConnectArgoCdPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -276,6 +303,7 @@ const routeTree = rootRoute.addChildren([
     identityRoute,
     serviceDetailRoute.addChildren([
       serviceBoardRoute,
+      serviceBoardLegacyRoute,
       serviceInfrastructureRoute,
       serviceSettingsRoute
     ]),
@@ -285,6 +313,7 @@ const routeTree = rootRoute.addChildren([
     outpostsRoute,
     outpostDetailRoute,
     pluginsRoute,
+    connectArgoCdRoute,
     registryListRoute,
     registryDetailRoute
   ])

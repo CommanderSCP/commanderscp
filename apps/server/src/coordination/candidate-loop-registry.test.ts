@@ -35,6 +35,19 @@ import { describe, expect, it } from "vitest";
  * this test is for: it cannot prove a loop is correct, but it makes ADDING one a deliberate act
  * that fails CI until somebody writes down which side of the property it falls on.
  *
+ * THE ORDERING COLUMN IS `changes.reconcile_cursor_at` ON THE CHANGE SIDE (migration 0058), and
+ * `objects.updated_at` on the campaign side. Read the property statement above with that in mind:
+ * "a column the loop can fail to write" was, until 0058, `updated_at` — which every ordinary write
+ * also moved, so the scheduler's queue position and the operator-visible "last modified" were the
+ * same field, and a change re-stamped every tick by the round-robin reported itself as freshly
+ * updated forever. The cursor is now its own engine-owned column and `updated_at` is nobody's queue
+ * position.
+ *
+ * THAT SPLIT IS EXACTLY THE KIND OF EDIT THIS FILE EXISTS TO POLICE, so it was made to police it:
+ * `count` and the "cursor agrees with itself" arm below were added in the same change, because the
+ * guard as it stood would have passed a split that moved the `ORDER BY` and four of the five bumps.
+ * A guard that cannot fail on the change being made is not a guard for that change.
+ *
  * THIS REGISTRY CLASSIFIES FUNCTIONS; THE PROPERTY LIVES ON PATHS. Instance 5 is the lesson, and
  * it is worth stating because this file was already green while the bug was live. The bump for
  * instance 2 sits on ONE branch of `reconcileExecutingChange` — the wave gate blocking while the
@@ -152,6 +165,15 @@ import { describe, expect, it } from "vitest";
 const SOURCES = ["reconcile.ts", "campaign-reconcile.ts", "watchdog.ts", "observe.ts"] as const;
 
 /**
+ * The two files holding the candidate QUERIES, read separately from `SOURCES` because they are
+ * scanned for a different thing: the column each `ORDER BY` reads. Deliberately NOT added to
+ * `SOURCES` — the classification sweep looks for function bodies containing `<fetcher>(`, and a
+ * fetcher's own declaration line contains its own name, so `listChangeRowsInStates` would report
+ * itself as an unclassified candidate loop.
+ */
+const QUERY_SOURCES = ["changes-repo.ts", "campaign-repo.ts"] as const;
+
+/**
  * Batch-fetch helpers that feed a per-tick candidate loop. A call to one of these inside the
  * coordination sweep is what makes a loop subject to the property above.
  */
@@ -160,40 +182,79 @@ const CANDIDATE_FETCHERS = ["listChangeRowsInStates", "listActiveCampaignObjectI
 /**
  * Loops that CAN re-serve without writing, and therefore carry an explicit round-robin bump.
  *
- * `bumpIn` names the function the bump actually lives in, which is NOT always the function that
+ * `bumpIn` names the functions the bumps actually live in, which are NOT always the function that
  * fetched the batch — `advanceExecutingChanges` delegates to `reconcileExecutingChange`, and the
  * gate-blocked path that needs the bump is in the callee. An earlier cut of this guard checked only
  * the fetching function's own body and reported the (present, working) executing bump as missing;
  * recording the location is what makes the check precise instead of merely loud.
+ *
+ * ## `count` and `queryIn` — added with migration 0058, and why "is there a bump in here" was not enough
+ *
+ * 0058 moved the round-robin off `changes.updated_at` onto `changes.reconcile_cursor_at`, which is
+ * a five-call-site edit on a codebase whose recurring bug is fixing SOME call sites of a concept.
+ * The pre-0058 check would have passed a HALF-DONE split without a murmur: it asked only whether
+ * each registered function contained at least one bump, so moving four of the five — or moving the
+ * `ORDER BY` and none of them — leaves every assertion satisfied while the engine reads one column
+ * and writes another and starves exactly as it did for 13 days in production.
+ *
+ * Two things close that, and both are DERIVED FROM SOURCE rather than restated here, so a rename
+ * cannot make the guard and the engine agree on a column neither one actually uses:
+ *
+ *  - `count` pins how many bumps each function holds. Moving 4 of 5 fails. So does silently
+ *    dropping one during an unrelated refactor, which is the same failure a year later.
+ *  - `queryIn` names the candidate fetcher whose `ORDER BY` column every one of this entry's bumps
+ *    must WRITE. This is the actual invariant — *the column the scheduler reads is the column the
+ *    not-advanced paths write* — and it is the one no amount of counting can express. Note the two
+ *    entries do not agree with each other, and must not: the change side reads and writes
+ *    `changes.reconcile_cursor_at`, the campaign side reads and writes `objects.updated_at`.
  */
-const BUMPED: Record<string, { bumpIn: string; why: string }> = {
+const BUMPED: Record<
+  string,
+  { bumpIn: string[]; count: number; queryIn: (typeof CANDIDATE_FETCHERS)[number]; why: string }
+> = {
   advanceWaitingChanges: {
-    bumpIn: "advanceWaitingChanges",
+    bumpIn: ["advanceWaitingChanges"],
+    count: 1,
+    queryIn: "listChangeRowsInStates",
     // The bump covers the still-waiting path ONLY. The S10 foreign-origin skip in the same loop is
     // a different not-advanced path with a different remedy — filtered out of the candidate query,
     // never bumped, because bumping writes a read-only replica's row.
     why: "a still-unsatisfied waiter writes nothing (coupled-pipelines.md §3.5)"
   },
   advanceExecutingChanges: {
-    bumpIn: "reconcileExecutingChange",
-    // TWO bumps, on two different not-advanced paths, and naming both is the point — the second
-    // was missing for the whole life of the first. See this file's header, "THIS REGISTRY
-    // CLASSIFIES FUNCTIONS; THE PROPERTY LIVES ON PATHS".
+    // THREE bumps across TWO functions, and enumerating them is the point — the second was missing
+    // for the whole life of the first. See this file's header, "THIS REGISTRY CLASSIFIES FUNCTIONS;
+    // THE PROPERTY LIVES ON PATHS". `recordStageDependencyHold` is reached only from
+    // `reconcileExecutingChange` and holds the ADR-0028 hold bump; before 0058 this registry did not
+    // name it at all, so one of the five bumps in the subject area was entirely unguarded.
+    bumpIn: ["reconcileExecutingChange", "recordStageDependencyHold"],
+    count: 3,
+    queryIn: "listChangeRowsInStates",
     why:
-      "a gate-blocked wave stays pending and writes nothing (the 13-day production outage); and a " +
-      "wave whose targets are merely POLLED writes only change_wave_targets, never the change row " +
-      "(its THIRD not-advanced path, the S10 foreign-origin skip, is filtered out of the candidate " +
+      "a gate-blocked wave stays pending and writes nothing (the 13-day production outage); a " +
+      "wave whose targets are merely POLLED writes only change_wave_targets, never the change row; " +
+      "and a stage-dependency hold (ADR-0028) withholds its targets and writes only a Decision " +
+      "(its FOURTH not-advanced path, the S10 foreign-origin skip, is filtered out of the candidate " +
       "query instead — a bump there would write a read-only replica's row)"
   },
   advanceValidatingChanges: {
-    bumpIn: "advanceValidatingChanges",
+    bumpIn: ["advanceValidatingChanges"],
+    count: 1,
+    queryIn: "listChangeRowsInStates",
     // THE SIXTH `listChangeRowsInStates` CALL SITE, and the one with no origin guard in its body at
     // all — so the bump below used to fire on a foreign-origin row, writing a replica. The query
     // filter is what stops that; the bump remains for the ordinary local case.
     why: "the loop only prewarms governance and never writes the change row"
   },
   reconcileCampaignsOrgTick: {
-    bumpIn: "reconcileCampaignsOrgTick",
+    bumpIn: ["reconcileCampaignsOrgTick"],
+    count: 1,
+    // THE CAMPAIGN SIDE DID NOT MOVE IN 0058, and `queryIn` is what records that as a checked fact
+    // rather than an omission. It orders `objects.updated_at` — the shared graph-object table, not
+    // `changes` — so the change-side column does not exist for it to use, and giving the universal
+    // object table an engine-scheduling column would put reconcile state on every service,
+    // component and policy row in the graph to serve one loop. See this file's census section.
+    queryIn: "listActiveCampaignObjectIds",
     // The bump sits BELOW this loop's S10 guard, deliberately. That guard's `continue` is the
     // second not-advanced path and it must NEVER reach the bump: writing a replica's `updated_at`
     // is the single-writer violation the guard exists to prevent. It is un-starvable anyway,
@@ -256,6 +317,38 @@ function bodyOf(source: string, fnName: string): string | null {
   return nextIdx === -1 ? rest : rest.slice(0, nextIdx);
 }
 
+/**
+ * The columns a function's round-robin bumps WRITE — every `.set({ <col>: new Date() })` in it.
+ *
+ * Deliberately shaped to match a bump and nothing else. A bump is a lone timestamp assignment; a
+ * real content write carries other fields beside it (`markChangeReconcileBlocked`'s
+ * `{ reconcileBlockedAt, updatedAt }`, `transitionChange`'s multi-field set), and the trailing `}`
+ * is what keeps those out of the count. If a future bump gains a second field it will stop matching
+ * and this guard will fail — which is correct: a bump that also writes something else is no longer
+ * only a queue position, and somebody should have to say so here.
+ */
+function bumpColumnsIn(body: string): string[] {
+  return [...body.matchAll(/\.set\(\{\s*(\w+): new Date\(\)\s*\}\)/g)].map((m) => m[1]!);
+}
+
+/** The column a candidate fetcher's `ORDER BY` actually reads, parsed from its own body. Scoped to
+ *  the function so an unrelated ordered query elsewhere in the same repo file cannot answer for it. */
+function orderByColumnOf(fetcher: string): string | null {
+  for (const name of QUERY_SOURCES) {
+    let text: string;
+    try {
+      text = readSource(name);
+    } catch {
+      continue;
+    }
+    const body = bodyOf(text, fetcher);
+    if (!body) continue;
+    const m = body.match(/\.orderBy\(asc\(\w+\.(\w+)\)\)/);
+    if (m) return m[1]!;
+  }
+  return null;
+}
+
 describe("candidate-loop registry: every batch-limited reconcile loop is classified", () => {
   const sources = new Map<string, string>();
   for (const name of SOURCES) {
@@ -301,24 +394,73 @@ describe("candidate-loop registry: every batch-limited reconcile loop is classif
     ).toEqual([]);
   });
 
-  it("every loop registered as BUMPED still contains a bump", () => {
+  it("every loop registered as BUMPED still contains EXACTLY the bumps it claims", () => {
     // Guards the other direction: a refactor that deletes a bump must not leave the registry
     // asserting a protection that is no longer there. Looks for the write, not for a comment.
-    const missing: string[] = [];
-    for (const [fnName, { bumpIn }] of Object.entries(BUMPED)) {
-      let found = false;
-      for (const text of sources.values()) {
-        if (!text) continue;
-        const body = bodyOf(text, bumpIn);
-        if (body && /\.set\(\{\s*updatedAt: new Date\(\)/.test(body)) found = true;
+    //
+    // COUNTED, not merely detected (0058). "At least one bump somewhere in this function" is
+    // satisfied by a half-finished migration of the cursor column, which is precisely the shape of
+    // this repo's recurring bug. See the `count` note on BUMPED.
+    const wrong: string[] = [];
+    for (const [fnName, { bumpIn, count }] of Object.entries(BUMPED)) {
+      let found = 0;
+      for (const fn of bumpIn) {
+        for (const text of sources.values()) {
+          if (!text) continue;
+          const body = bodyOf(text, fn);
+          if (body) found += bumpColumnsIn(body).length;
+        }
       }
-      if (!found) missing.push(`${fnName} (bump expected in ${bumpIn})`);
+      if (found !== count) {
+        wrong.push(`${fnName}: expected ${count} bump(s) in ${bumpIn.join(" + ")}, found ${found}`);
+      }
     }
     expect(
-      missing,
-      "A loop registered as BUMPED no longer contains an `updatedAt` round-robin bump. Either the " +
-        "bump was removed (restore it — see this file's header for what it costs) or the loop was " +
-        "restructured so it can no longer re-serve without writing (then move it to SELF_EVICTING)."
+      wrong,
+      "A loop registered as BUMPED no longer holds the round-robin bumps it claims. Either a bump " +
+        "was removed (restore it — see this file's header for what it costs), or one was added " +
+        "without updating `count`, or the loop was restructured so it can no longer re-serve " +
+        "without writing (then move it to SELF_EVICTING)."
+    ).toEqual([]);
+  });
+
+  it("THE CURSOR AGREES WITH ITSELF: every bump writes the column its own candidate query orders by", () => {
+    // THE INVARIANT NO COUNT CAN EXPRESS, and the one migration 0058 could have broken silently.
+    // The round-robin only works if the column the scheduler READS to pick candidates is the column
+    // the not-advanced paths WRITE to give up their turn. Point the `ORDER BY` at a new column and
+    // leave one bump behind on the old one and every other assertion in this file still passes,
+    // while that bump's loop re-serves the same row forever — the 13-day outage, restored.
+    //
+    // BOTH SIDES ARE READ FROM SOURCE. Nothing here hardcodes "reconcileCursorAt": the expected
+    // column is whatever the query actually orders by today, so renaming the column in one place
+    // and not the other fails, and renaming it in both passes without touching this file.
+    const mismatches: string[] = [];
+    for (const [fnName, { bumpIn, queryIn }] of Object.entries(BUMPED)) {
+      const ordered = orderByColumnOf(queryIn);
+      expect(
+        ordered,
+        `Could not find the ORDER BY column of ${queryIn} — the guard cannot check what it cannot read.`
+      ).not.toBeNull();
+      for (const fn of bumpIn) {
+        for (const text of sources.values()) {
+          if (!text) continue;
+          const body = bodyOf(text, fn);
+          if (!body) continue;
+          for (const col of bumpColumnsIn(body)) {
+            if (col !== ordered) {
+              mismatches.push(
+                `${fnName}/${fn} bumps \`${col}\` but ${queryIn} orders by \`${ordered}\``
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(
+      mismatches,
+      "A round-robin bump writes a different column from the one its candidate query orders by. " +
+        "The bump therefore does nothing for scheduling: the loop re-serves the same rows forever " +
+        "and starves everything behind them. Move the bump onto the ORDER BY column."
     ).toEqual([]);
   });
 
@@ -330,7 +472,7 @@ describe("candidate-loop registry: every batch-limited reconcile loop is classif
     }
     const stale = [
       ...Object.keys(BUMPED),
-      ...Object.values(BUMPED).map((b) => b.bumpIn),
+      ...Object.values(BUMPED).flatMap((b) => b.bumpIn),
       ...Object.keys(SELF_EVICTING)
     ].filter((n) => !allNames.has(n));
     expect(

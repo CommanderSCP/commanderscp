@@ -417,7 +417,13 @@ export async function computeDiffForManifest(
       sourceKind: row.sourceKind,
       repoPattern: row.repoPattern,
       pathPattern: row.pathPattern,
-      type: row.type
+      // Must be carried into the snapshot, not defaulted: this is the ACTUAL side of the diff, so a
+      // ref-scoped row read back as ref-null would key differently from the manifest that declared
+      // it — the plan would propose a create for a mapping that already exists and a prune for the
+      // one that does, on every single run.
+      refPattern: row.refPattern,
+      type: row.type,
+      classification: row.classification
     });
   }
 
@@ -477,7 +483,9 @@ export async function computeDiffForManifest(
       sourceKind: m.sourceKind,
       repoPattern: m.repoPattern ?? null,
       pathPattern: m.pathPattern ?? null,
-      type: m.type ?? DEFAULT_BINDING_TYPE
+      refPattern: m.refPattern ?? null,
+      type: m.type ?? DEFAULT_BINDING_TYPE,
+      classification: m.classification ?? null
     })),
     placements: (manifest.placements ?? []).map((pl) => ({
       componentUrn: pl.componentUrn,
@@ -994,6 +1002,7 @@ export async function executePlanDiff(
       sourceKind: entry.sourceKind,
       repoPattern: entry.repoPattern,
       pathPattern: entry.pathPattern,
+      refPattern: entry.refPattern,
       type: entry.type
     });
     if (removed === 0) {
@@ -1160,8 +1169,10 @@ export async function executePlanDiff(
       sourceKind: entry.sourceKind,
       ...(entry.repoPattern !== null ? { repoPattern: entry.repoPattern } : {}),
       ...(entry.pathPattern !== null ? { pathPattern: entry.pathPattern } : {}),
+      ...(entry.refPattern !== null ? { refPattern: entry.refPattern } : {}),
       componentIdOrUrn: endpointId(entry.componentUrn),
-      type: entry.type
+      type: entry.type,
+      ...(entry.classification !== null ? { classification: entry.classification } : {})
     });
   }
 

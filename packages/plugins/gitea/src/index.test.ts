@@ -113,7 +113,8 @@ describe("mapGiteaWebhookEventToHint", () => {
     ).toEqual({
       repo: "acme/widgets",
       commitSha: "1".repeat(40),
-      correlationKey: "refs/heads/main"
+      correlationKey: "refs/heads/main",
+      ref: "refs/heads/main"
     });
   });
 

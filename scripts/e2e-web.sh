@@ -21,8 +21,16 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 COMPOSE_FILE="deploy/compose/docker-compose.yml"
-COMPOSE=(docker compose -f "$COMPOSE_FILE")
+# The TEST-ONLY override (M19.1) adds the `fake-argocd` service the "Connect Argo CD" wizard spec
+# enumerates, and the ADR-0003 layer-1 allowlist entry that lets SCP reach it at a private
+# compose-network address. It is layered here rather than merged into the base file so the stack an
+# operator runs stays exactly the shipped two-container one. See that file's header.
+E2E_COMPOSE_FILE="deploy/compose/docker-compose.e2e.yml"
+COMPOSE=(docker compose -f "$COMPOSE_FILE" -f "$E2E_COMPOSE_FILE")
 BASE_URL="http://localhost:8080"
+# Reachable from the SCP CONTAINER (compose-network DNS), never from this shell or the browser —
+# which is the whole shape of the thing under test: the enumerate step is a server-side call.
+FAKE_ARGOCD_URL="http://fake-argocd:9000"
 
 cleanup() {
   local status=$?
@@ -110,6 +118,7 @@ export PLAYWRIGHT_BASE_URL="$BASE_URL"
 export E2E_ORG_NAME="$ORG_NAME"
 export E2E_ADMIN_USERNAME="$ADMIN_USERNAME"
 export E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+export E2E_FAKE_ARGOCD_URL="$FAKE_ARGOCD_URL"
 pnpm --filter @scp/web test:e2e
 
 echo "==> compose-stack Playwright e2e: ALL CHECKS PASSED"

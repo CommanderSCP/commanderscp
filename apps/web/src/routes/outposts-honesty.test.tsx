@@ -7,8 +7,9 @@ import type { FederationPeerStatus } from "@scp/schemas";
  * check that runs on EVERY PR.
  *
  * WHY A PLAIN VITEST FILE AND NOT A PLAYWRIGHT SPEC (the same reason `service-board-honesty.test.tsx`
- * exists): every E2E job in `.github/workflows/ci.yml` is guarded by `github.event_name == 'push' &&
- * github.ref == 'refs/heads/main'`, so specs are SKIPPED on pull requests. The server half of this
+ * exists): originally because every E2E job was `main`-only and SKIPPED on pull requests. E2E now
+ * runs on PRs and 5z requires it, so the reason is no longer coverage but COST and ALTITUDE — this
+ * is milliseconds, needs no browser, and fails with a diff. The server half of this
  * contract is gated on PRs by `apps/server/src/federation/status-honesty.integration.test.ts` and
  * `outpost-handfill-wedge.integration.test.ts`; the rendering half — where a browser can paint an
  * unobservable field exactly like an observed one and undo all of it — needs a gate of its own.

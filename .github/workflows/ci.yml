@@ -4,19 +4,34 @@ name: CI
 # command with no hosted-service dependency, so the same pipeline runs on self-hosted runners or
 # a bare local runner script (charter self-hosting requirement — §6).
 #
-# WHAT ACTUALLY GATES A PR: stages 1-5, plus 4b (helm-verify) and 5y (prod-audit) as of this PR —
-# branch protection requires "3. Codegen drift" and "5z. Integration (aggregation gate)", and 5z
-# now `needs:` the integration-shard matrix, helm-verify, AND prod-audit directly (previously 4b
-# was reachable from nothing and a red 4b did not block merge, despite that job's own comment
-# claiming otherwise; 5y is net-new). Job 4d (testcontainer-images) is also new this PR: a
-# prerequisite of integration-shard that mirrors postgres/nats/registry off Docker Hub, not a gate
-# itself. Every E2E job below (7, 8, 8b-8d, 9, plus the 9a image build they depend on) carries
-# `if: github.event_name == 'push' && github.ref == 'refs/heads/main'` and is SKIPPED on pull
-# requests. There is no "PR subset" of stage 7 — no --grep, no project filter, no second job; an
-# earlier version of this comment and of §6 claimed one, and it was never built. So a regression
-# that only a Playwright spec covers reaches `main` with both required checks green and is caught
-# only afterwards. Anything that must not regress needs an assertion reachable from job 4, 4b, 5,
-# or 5y.
+# WHAT ACTUALLY GATES A PR: stages 1-5, 4b (helm-verify), 5y (prod-audit), and — as of this PR —
+# EVERY E2E job (7, 8, 8b-8d, 9). Branch protection requires "3. Codegen drift" and "5z. Integration
+# (aggregation gate)"; 5z `needs:` all of them, so one required check covers the lot.
+#
+# WHAT THIS PR CHANGED, AND THE INCIDENT THAT FORCED IT. Every E2E job used to carry
+# `if: github.event_name == 'push' && github.ref == 'refs/heads/main'` and was SKIPPED on pull
+# requests, with no PR subset of stage 7 — no --grep, no project filter, no second job. An earlier
+# version of this comment said so plainly and drew the right conclusion: "a regression that only a
+# Playwright spec covers reaches `main` with both required checks green and is caught only
+# afterwards."
+#
+# That is exactly what happened. PR #222 moved the service board from `/services/{id}/board` to the
+# index child of a new layout, deleting the old path. Typecheck has no opinion about which routes
+# exist, nothing in the PR gate navigates, and the only consumer was
+# `e2e/service-board-honesty.spec.ts`. It merged with both required checks green; the very next
+# `main` run had job 9 RED and 5z GREEN beside it — the gate passing over a failing E2E job, which is
+# the hole stated as a fact rather than a risk. (Fixed in #223, which also added
+# `apps/web/src/router-paths.test.ts` so route removal is caught by job 4 as well.)
+#
+# So the prediction is retired rather than restated: E2E now runs on pull requests and 5z requires
+# it. The cost is real and was accepted deliberately — six more jobs per PR, job 9 the heaviest
+# (a compose build plus Chromium). Two things make it affordable: the E2E jobs need only
+# static-checks/codegen-drift/unit-tests, so they start early and run alongside the integration
+# shards rather than after them; and job 9's toolchain image is content-hash cached in GHCR (9a), so
+# the multi-GB build happens only when the Dockerfile or lockfile actually changes.
+#
+# Job 4d (testcontainer-images) is a prerequisite of integration-shard that mirrors
+# postgres/nats/registry off Docker Hub, not a gate itself.
 #
 # RUNNERS: GitHub-hosted `ubuntu-latest` throughout (previously two homelab ARC self-hosted labels,
 # `homelab-commanderscp-linux-general` and `homelab-commanderscp-linux-docker-build`). The old split
@@ -626,42 +641,47 @@ jobs:
     # so it's wired in immediately rather than landing dark. Neither has another dependency
     # relationship with integration-shard, so both are added as sibling `needs:` entries here
     # rather than folded into that job's chain.
-    needs: [integration-shard, helm-verify, prod-audit]
+    needs:
+      [integration-shard, helm-verify, prod-audit, e2e-m0, e2e-m4, e2e-m5, e2e-m6, e2e-m7, e2e-web]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Require every integration shard, helm-verify, and prod-audit to have succeeded
+      - name: Require every gated job to have succeeded — shards, helm, audit, and every E2E
         run: |
-          shards="${{ needs.integration-shard.result }}"
-          helm="${{ needs.helm-verify.result }}"
-          audit="${{ needs.prod-audit.result }}"
-          echo "integration-shard matrix result: $shards"
-          echo "helm-verify result: $helm"
-          echo "prod-audit result: $audit"
+          # One loop over "label=result" pairs rather than a copy-pasted block per job. The previous
+          # shape was three near-identical ifs, and adding six more that way is how one of them ends
+          # up checking the wrong variable — a gate that passes while its job failed.
           failed=0
-          if [ "$shards" != "success" ]; then
-            echo "::error::one or more integration shards did not succeed ($shards)"
-            failed=1
-          fi
-          if [ "$helm" != "success" ]; then
-            echo "::error::helm-verify (job 4b) did not succeed ($helm)"
-            failed=1
-          fi
-          if [ "$audit" != "success" ]; then
-            echo "::error::prod-audit (job 5y) did not succeed ($audit)"
-            failed=1
-          fi
+          for pair in \
+            "integration-shard=${{ needs.integration-shard.result }}" \
+            "helm-verify (4b)=${{ needs.helm-verify.result }}" \
+            "prod-audit (5y)=${{ needs.prod-audit.result }}" \
+            "e2e-m0 (7)=${{ needs.e2e-m0.result }}" \
+            "e2e-m4 (8)=${{ needs.e2e-m4.result }}" \
+            "e2e-m5 (8b)=${{ needs.e2e-m5.result }}" \
+            "e2e-m6 (8c)=${{ needs.e2e-m6.result }}" \
+            "e2e-m7 (8d)=${{ needs.e2e-m7.result }}" \
+            "e2e-web (9)=${{ needs.e2e-web.result }}"; do
+            label="${pair%%=*}"
+            result="${pair##*=}"
+            echo "$label result: $result"
+            # SKIPPED is a failure here, deliberately. A skipped job is the exact shape the hole this
+            # gate now closes had: green required checks over tests that never ran.
+            if [ "$result" != "success" ]; then
+              echo "::error::$label did not succeed ($result)"
+              failed=1
+            fi
+          done
           exit "$failed"
 
   e2e-m0:
-    name: "7. E2E (M0 golden path, main only)"
+    name: "7. E2E (M0 golden path)"
     # Needs a real Docker daemon (compose), which `ubuntu-latest` provides. (Before the hosted-runner
     # swap this — and every e2e-* job below — had to name the `homelab-…-docker-build` label, because
     # the other homelab label had no daemon at all; there is now only one label and the "which runner
     # and why" note on each of these jobs is purely historical.)
     runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -669,11 +689,10 @@ jobs:
       - run: bash scripts/e2e-m0.sh
 
   e2e-m4:
-    name: "8. E2E (M4 governance golden path, main only)"
+    name: "8. E2E (M4 governance golden path)"
     # Same as e2e-m0: needs a real Docker daemon (compose).
     runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -681,11 +700,12 @@ jobs:
       - run: bash scripts/e2e-m4.sh
 
   e2e-m5:
-    name: "8b. E2E (M5 campaigns golden path, main only)"
+    # Both sides of the 2026-08 merge: initiatives are removed (ADR-0032), and E2E jobs run on
+    # PRs now (#224), so neither "& initiatives" nor "main only" survives.
+    name: "8b. E2E (M5 campaigns golden path)"
     # Same as e2e-m0/e2e-m4: needs a real Docker daemon (compose).
     runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -693,7 +713,7 @@ jobs:
       - run: bash scripts/e2e-m5.sh
 
   e2e-m6:
-    name: "8c. E2E (M6 federation two-domain round-trip, main only)"
+    name: "8c. E2E (M6 federation two-domain round-trip)"
     # Same as e2e-m0/e2e-m4/e2e-m5: needs a real Docker daemon (compose). This one leans on it
     # twice over: the compose stack itself runs TWO fully
     # isolated scpd+postgres pairs on separate Docker networks with no shared network at all
@@ -701,7 +721,6 @@ jobs:
     # structurally by Docker's own network isolation, not a firewall rule).
     runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -709,7 +728,7 @@ jobs:
       - run: bash scripts/e2e-m6.sh
 
   e2e-m7:
-    name: "8d. E2E (M7 real executor integrations golden path, main only)"
+    name: "8d. E2E (M7 real executor integrations golden path)"
     # Same as e2e-m0/e2e-m4/e2e-m5/e2e-m6: needs a real Docker daemon (compose).
     # HONEST SCOPE (see scripts/e2e-m7.sh's own header comment): this
     # proves the M7 API/CLI surface end to end — webhook HMAC signature verification (fail-closed),
@@ -720,7 +739,6 @@ jobs:
     # nock-fixture suite (unit-tests job) plus the opt-in nightly-live-sandbox.yml workflow.
     runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
@@ -728,7 +746,7 @@ jobs:
       - run: bash scripts/e2e-m7.sh
 
   ci-image:
-    name: "9a. Ensure CI runner image in GHCR (tools/ci-image, main only)"
+    name: "9a. Ensure CI runner image in GHCR (tools/ci-image)"
     # BUILD_AND_TEST.md §6's versioned CI runner image (Node 22, corepack-pinned pnpm + a warmed
     # store, Playwright's Chromium + OS deps version-matched to pnpm-lock.yaml, the Docker CLI +
     # compose plugin, the vendored oasdiff binary — see tools/ci-image/Dockerfile).
@@ -752,7 +770,6 @@ jobs:
     # WHO CONSUMES THIS IMAGE: the `e2e-web` job below, via an explicit `docker run` (NOT a job-level
     # `container:` — no job in this repo uses `container:`). See that job's steps.
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
@@ -769,19 +786,24 @@ jobs:
           if docker pull "$IMAGE"; then
             echo "cache hit: $IMAGE already in GHCR — no build needed."
           else
-            echo "cache miss: building $IMAGE (Dockerfile/lockfile changed) and pushing to GHCR."
+            echo "cache miss: building $IMAGE (Dockerfile/lockfile changed)."
             docker build -f tools/ci-image/Dockerfile -t "$IMAGE" .
-            docker push "$IMAGE"
+            # The push is BEST-EFFORT since this job started running on pull requests too. A PR from a
+            # FORK gets a read-only GITHUB_TOKEN, so `packages: write` is not actually granted and the
+            # push fails through no fault of the contributor. Failing here would put every fork PR
+            # behind a required check it cannot satisfy. So: warn, carry on, and let `e2e-web` build
+            # the image for itself (it has the same fallback). A same-repo push still populates the
+            # cache exactly as before, which is what keeps the miss rare.
+            docker push "$IMAGE" || echo "::warning::could not push $IMAGE (expected for fork PRs); e2e-web will build it locally"
           fi
 
   e2e-web:
-    name: "9. E2E (Web UI, Playwright/Chromium, main only)"
+    name: "9. E2E (Web UI, Playwright/Chromium)"
     # Same as e2e-m0: needs a real Docker daemon (compose). This is ALSO the one and only consumer
     # of the `tools/ci-image` artifact the `ci-image` job (9a) publishes — consumed by an explicit
     # `docker run` below, not a job-level `container:`.
     runs-on: ubuntu-latest
     needs: [static-checks, codegen-drift, unit-tests, ci-image]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: read
@@ -791,10 +813,21 @@ jobs:
       - name: Compute the same toolchain image tag as the ci-image job
         id: img
         run: echo "ref=ghcr.io/commanderscp/scp-ci-image:$(cat tools/ci-image/Dockerfile pnpm-lock.yaml | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - name: Log in to GHCR and pull the baked CI runner image
+      - name: Log in to GHCR and pull the baked CI runner image (build it if unavailable)
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          docker pull "${{ steps.img.outputs.ref }}"
+          IMAGE="${{ steps.img.outputs.ref }}"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin || true
+          if docker pull "$IMAGE"; then
+            echo "pulled $IMAGE"
+          else
+            # Fallback, not the normal path: job 9a normally publishes this and the pull hits. It
+            # exists because this job now runs on pull requests, where 9a's push can legitimately
+            # fail (a fork PR's token is read-only). Building here costs minutes on a cache miss and
+            # is strictly better than a required check no fork PR can pass. Same Dockerfile and same
+            # content-hash tag, so the artifact is identical either way.
+            echo "::warning::$IMAGE unavailable — building it in this job (expected for fork PRs)"
+            docker build -f tools/ci-image/Dockerfile -t "$IMAGE" .
+          fi
 
       # Everything scripts/e2e-web.sh needs — Node 22, pnpm + its pre-warmed store, Playwright's
       # Chromium + its OS-level deps, the Docker CLI + compose plugin — is baked into

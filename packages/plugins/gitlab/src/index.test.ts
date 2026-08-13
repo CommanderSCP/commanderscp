@@ -112,7 +112,8 @@ describe("mapGitlabWebhookEventToHint", () => {
     ).toEqual({
       repo: "acme/widgets",
       commitSha: "1".repeat(40),
-      correlationKey: "refs/heads/main"
+      correlationKey: "refs/heads/main",
+      ref: "refs/heads/main"
     });
   });
 
@@ -127,7 +128,8 @@ describe("mapGitlabWebhookEventToHint", () => {
     ).toEqual({
       repo: "acme/widgets",
       commitSha: "2".repeat(40),
-      correlationKey: "refs/tags/v2.0.0"
+      correlationKey: "refs/tags/v2.0.0",
+      ref: "refs/tags/v2.0.0"
     });
   });
 

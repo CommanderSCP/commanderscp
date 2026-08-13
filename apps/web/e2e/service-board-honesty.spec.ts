@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
-import { ScpClient } from "@scp/sdk";
+import { ScpClient, type ServiceBoardResponse } from "@scp/sdk";
 import { adminCredentials, apiBaseUrl, baseUrl, loginAsAdmin } from "./fixtures.js";
 
 /**
@@ -36,9 +36,22 @@ interface StubComponent {
   name: string;
 }
 
-/** The exact board contract under test: one row this instance drives (observed-and-empty) and one
- *  it does not (every detail field declared unobservable). */
-function boardPayload(service: StubComponent, driven: StubComponent, replica: StubComponent) {
+/**
+ * The exact board contract under test: one row this instance drives (observed-and-empty) and one it
+ * does not (every detail field declared unobservable).
+ *
+ * TYPED AS THE REAL RESPONSE, and that annotation is the point. This builder and `stubBoard` were
+ * both untyped (`payload: unknown`), so when #222 added three REQUIRED fields to
+ * `ServiceBoardResponse` — `rows[].pipelines`, `servicePipelines`, `childAssemblies` — this stub kept
+ * compiling while serving a payload the UI could no longer render. Typecheck could not see it, the
+ * unit fixtures WERE typed so they were fixed, and this one was `main`-only so nothing caught it.
+ * With the annotation, the next required field is a compile error in the "2. Static checks" job.
+ */
+function boardPayload(
+  service: StubComponent,
+  driven: StubComponent,
+  replica: StubComponent
+): ServiceBoardResponse {
   return {
     service,
     rows: [
@@ -62,6 +75,11 @@ function boardPayload(service: StubComponent, driven: StubComponent, replica: St
         // explicit driver object to assert `data-driven-here="true"` (mirrors the `locallyDriven`
         // fixture in src/routes/service-board-honesty.test.tsx).
         driver: { drivenHere: true, originDomainId: null },
+        // Empty on purpose, not by omission: this spec owns the unknown-vs-observed distinction, and
+        // per-pipeline chips have their own PR-gated coverage in
+        // `src/routes/service-board-honesty.test.tsx`. `[]` claims "no pipelines", which is a fact the
+        // renderer handles, rather than smuggling in pipeline state this test does not assert.
+        pipelines: [],
         // Nothing declared unknown: these empties ARE observations.
         unknownFields: []
       },
@@ -81,6 +99,7 @@ function boardPayload(service: StubComponent, driven: StubComponent, replica: St
         },
         activeFreeze: null,
         driver: { drivenHere: false, originDomainId: ORIGIN_DOMAIN_ID },
+        pipelines: [],
         unknownFields: [
           "changeState",
           "currentWave",
@@ -95,6 +114,9 @@ function boardPayload(service: StubComponent, driven: StubComponent, replica: St
     ],
     summary: { releasing: 0, blocked: 0, stable: 1, notDrivenHere: 1 },
     serviceFreeze: null,
+    // Both new-in-#222 board-level fields, empty for the same reason as the per-row ones.
+    servicePipelines: [],
+    childAssemblies: [],
     // DESIGN §13's "as of" label. Null here on purpose: this stub is about the observed-vs-unknown
     // distinction, and a single-domain board legitimately has no upstream to label. The staleness
     // rendering has its own PR-gated coverage in `src/routes/service-board-honesty.test.tsx`.
@@ -105,7 +127,11 @@ function boardPayload(service: StubComponent, driven: StubComponent, replica: St
   };
 }
 
-async function stubBoard(page: Page, serviceId: string, payload: unknown): Promise<void> {
+async function stubBoard(
+  page: Page,
+  serviceId: string,
+  payload: ServiceBoardResponse
+): Promise<void> {
   await page.route(`**/api/v1/services/${serviceId}/board`, async (route) => {
     await route.fulfill({
       status: 200,

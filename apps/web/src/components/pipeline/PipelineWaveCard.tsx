@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight, ExternalLink } from "lucide-react";
+import type { ChangeStageDependencyTarget } from "@scp/sdk";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Badge } from "../ui/badge";
 import { cn, focusRing } from "../../lib/utils";
@@ -165,11 +166,68 @@ function TargetName({
   );
 }
 
+/**
+ * WHAT IS WITHHOLDING ONE WAVE TARGET'S TRIGGER (ADR-0028 increment 4) — the change-pipeline's half
+ * of the same fix the component-pipeline view got.
+ *
+ * The defect in one sentence: a held target's `change_wave_targets.status` IS `pending`, and so is
+ * the status of a target the wave has not reached yet. Rendering the raw column and nothing else
+ * made "waiting on something NAMED" and "nothing is happening here" the same picture — on the page
+ * an operator opens first when a release is not moving.
+ *
+ * It names the dependency, because a badge saying only "held" moves the question from "why is this
+ * pending?" to "why is this held?" and no further. Each line is the server's own
+ * `describeStageDependencyHold` sentence, the same one the hold Decision's `reasonTree` carries.
+ *
+ * The RAW STATUS IS KEPT beside it rather than replaced: the column really does say `pending`, and
+ * a view that quietly rewrote it would be lying in the other direction.
+ */
+function HeldTargetLine({ held }: { held: ChangeStageDependencyTarget }): React.JSX.Element {
+  return (
+    <div
+      className="mt-1 border-l-2 border-blue-200 pl-2 text-[11px] leading-snug text-blue-800"
+      data-testid="pipeline-wave-target-hold"
+    >
+      <span
+        className="text-blue-500"
+        title="A stage-scoped component coupling (ADR-0028): this target's trigger is being withheld until another component reaches this same stage. It clears itself — no operator action releases it."
+      >
+        Never triggered — held by a stage dependency:
+      </span>
+      <div className="mt-0.5">
+        {held.dependencies
+          // ONLY THE UNSATISFIED ones, like the server's own projection: a target held by one of
+          // three declared dependencies is held by that one, and listing the two that are met
+          // beside it buries the answer in the question.
+          .filter((dependency) => !dependency.satisfied)
+          .map((dependency) => (
+            <div key={dependency.dependsOn} data-testid="pipeline-wave-target-hold-dependency">
+              <span className="font-medium" title={dependency.dependsOn}>
+                {dependency.dependsOnName ?? dependency.dependsOn}
+              </span>{" "}
+              <span className="text-blue-600">— {dependency.summary}</span>
+              {dependency.source === "edge" && (
+                // The remedy differs and must be visible: this coupling came from a `depends_on`
+                // edge between two of the change's own targets, not from a declaration, so it is
+                // deleted in the graph rather than edited in a pipeline.
+                <span className="text-blue-500" data-testid="pipeline-wave-target-hold-from-edge">
+                  {" "}
+                  (from a <span className="font-mono">depends_on</span> edge, not a declaration)
+                </span>
+              )}
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
 export function PipelineWaveCard({
   wave,
   waveNumber,
   linksFor,
   nameOf,
+  holdFor,
   testIdPrefix = "pipeline-wave"
 }: {
   wave: PipelineWaveLike;
@@ -178,6 +236,11 @@ export function PipelineWaveCard({
   testIdPrefix?: string;
   /** Optional id->name resolver for payloads that carry only ids (lib/use-object-names.ts). */
   nameOf?: (targetObjectId: string) => string | undefined;
+  /** ADR-0028 increment 4 — the live stage-dependency verdict for this target, or null. OPTIONAL,
+   *  and its absence means "this caller does not know", which renders exactly as the card did
+   *  before: a caller that has not loaded `explain.stageDependencyStatus` must not thereby assert
+   *  that nothing is held. Structurally typed like every other prop of the generalized card. */
+  holdFor?: (target: PipelineWaveTargetLike) => ChangeStageDependencyTarget | null;
 }): React.JSX.Element {
   const kinds = pipelineKinds(wave);
   return (
@@ -217,16 +280,27 @@ export function PipelineWaveCard({
       <CardContent className="flex flex-col gap-2">
         {wave.targets.map((target) => {
           const links = linksFor?.(target) ?? {};
+          const held = holdFor?.(target) ?? null;
           return (
             <div
               key={target.id}
               className="rounded border border-slate-200 p-2 text-xs"
               data-testid={`${testIdPrefix}-target-row`}
+              data-held={held ? "true" : undefined}
             >
               <div className="flex min-w-0 items-center justify-between gap-2">
                 <TargetName target={target} nameOf={nameOf} />
+                {/* BOTH, not one instead of the other (ADR-0028 increment 4). `held` is the
+                    headline; the raw status stays beside it because `pending` is a real recorded
+                    value and substituting it would be a second kind of lie. */}
+                {held && (
+                  <Badge variant="info" data-testid="pipeline-wave-target-held-badge">
+                    held
+                  </Badge>
+                )}
                 <Badge variant={waveStatusTone(target.status)}>{target.status}</Badge>
               </div>
+              {held && <HeldTargetLine held={held} />}
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-slate-500">
                 {target.category && target.type && (
                   <span>

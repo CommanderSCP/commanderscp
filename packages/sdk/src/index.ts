@@ -86,6 +86,15 @@ export type {
   BoundaryValidatePhase
 } from "@scp/schemas";
 
+// ADR-0028 increment 4: the live stage-dependency status on `explain`. Re-exported for the same
+// reason the boundary segment above is — `apps/web` consumes ONLY the generated SDK (charter
+// principle 3), and the change-pipeline view names the per-target verdict in a prop type.
+export type {
+  ChangeStageDependencyStatus,
+  ChangeStageDependencyTarget,
+  ChangeStageDependencyVerdict
+} from "@scp/schemas";
+
 // Phase 2 coordination UI: the service release board projection (coordination-ui-views.md
 // § "Service release board") — one HTTP call backing `client.services.board(idOrUrn)`.
 export type {

@@ -406,8 +406,10 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           sourceKind: request.params.sourceKind,
           repoPattern: request.body.repoPattern,
           pathPattern: request.body.pathPattern,
+          refPattern: request.body.refPattern,
           componentIdOrUrn: request.body.component,
-          type: request.body.type
+          type: request.body.type,
+          classification: request.body.classification
         });
       });
       reply.status(201).send(mapping);
@@ -470,6 +472,11 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           sourceKind: request.params.sourceKind,
           repoPattern: request.body.repoPattern,
           pathPattern: request.body.pathPattern,
+          // ABSENT is treated as NULL, never as a wildcard (ADR-0030 §1). A caller written before
+          // `refPattern` existed therefore deletes only ref-agnostic rows and can never reach a
+          // ref-scoped one — it may UNDER-delete (visible immediately in the `deleted` count this
+          // response exists to report) but never silently take a dev or production route with it.
+          refPattern: request.body.refPattern ?? null,
           type: request.body.type ?? "configuration"
         });
       });

@@ -1,12 +1,16 @@
 import { and, eq, isNull, lt } from "drizzle-orm";
 import type PgBoss from "pg-boss";
-import type { ChangeState } from "@scp/schemas";
+import type { ChangeStageDependencyTarget, ChangeState } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { changes, objects, orgs } from "../db/schema.js";
 import { insertDecision } from "./decisions-repo.js";
 import { requiresOf } from "./changes-repo.js";
 import { describeRequirements, unsatisfiedRequirements } from "./coupling.js";
+import {
+  describeStageDependencyStatus,
+  resolveStageDependencyStatus
+} from "./stage-dependency-status.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
 import type { PluginHost } from "../plugin-host/contract.js";
@@ -101,10 +105,16 @@ export async function runWatchdogSweep(
       let waitingDetail: { waitingOn: string; unsatisfied?: unknown; malformed?: unknown } | null =
         null;
       if (state === "waiting") {
+        // `org_id` alongside the id, like every other query in this file. RLS would scope this on
+        // its own — the tenant tx sets `app.org_id` and the policy on `objects` enforces it — but a
+        // predicate that leans on RLS ALONE is one `withSystemTx`, one maintenance script or one
+        // policy regression away from reading another tenant's row, and this is a defence in depth
+        // the rest of the codebase already pays for everywhere. Both of this file's `objects`
+        // lookups were missing it (census, not one instance).
         const objRows = await tx
           .select({ properties: objects.properties })
           .from(objects)
-          .where(eq(objects.id, change.objectId))
+          .where(and(eq(objects.orgId, orgId), eq(objects.id, change.objectId)))
           .limit(1);
         const { requirements, malformed } = requiresOf(
           (objRows[0]?.properties ?? {}) as Record<string, unknown>
@@ -128,6 +138,47 @@ export async function runWatchdogSweep(
           ...(malformed.length > 0 ? { malformed } : {})
         };
       }
+      // ADR-0028 increment 4 — the `executing` arm. A stall notice that says only "wave target
+      // executor status to report success/failure" is actively misleading for a change whose
+      // trigger was never issued: nothing is going to report, because nothing was ever handed to an
+      // executor. Name the dependency and the place instead, from the SAME live resolver `explain`
+      // uses (`stage-dependency-status.ts`) — one predicate, not two — re-read at flag time exactly
+      // as the `waiting` arm above re-reads its requirements.
+      //
+      // COSTS NOTHING PER TICK, and that is structural rather than a matter of restraint. This
+      // block is inside the `stalled` loop, which selects on `watchdog_flagged_at IS NULL`; the
+      // UPDATE below sets that column and only `transitionChange` clears it. A held change does not
+      // transition, so it is flagged exactly ONCE per state entry — the sweep interval (60 s) and
+      // the reconcile tick (1 s) never re-enter this. `resolveStageDependencyStatus` is itself
+      // read-only and returns null before touching the plan for an uncoupled change.
+      //
+      // WHAT THIS DOES NOT DO IS RE-RULE THE SLA. `executing` keeps its 30-minute stall SLA, so a
+      // legitimately-coupled release held past half an hour still gets a `severity: "warning"`
+      // notification saying "stalled". That is a real design question — the `waiting` arm was given
+      // 24 h for exactly this shape, "an expected long wait, not a stall" — and it is NOT settled
+      // by naming the coupling. Naming it is the floor: the operator at least learns from the notice
+      // itself that the change is waiting on a declared dependency rather than on a silent executor.
+      // Lengthening the SLA would need a per-change "is held" state to hang it off, which is
+      // precisely the persisted flag ADR-0024 forbids writing per tick.
+      let heldDetail: { waitingOn: string; held: unknown } | null = null;
+      if (state === "executing") {
+        const objRows = await tx
+          .select({ properties: objects.properties })
+          .from(objects)
+          .where(and(eq(objects.orgId, orgId), eq(objects.id, change.objectId)))
+          .limit(1);
+        const stageStatus = await resolveStageDependencyStatus(tx, orgId, {
+          objectId: change.objectId,
+          properties: (objRows[0]?.properties ?? {}) as Record<string, unknown>
+        });
+        const described = stageStatus ? describeStageDependencyStatus(stageStatus) : null;
+        if (stageStatus && described) {
+          heldDetail = {
+            waitingOn: described,
+            held: stageStatus.targets.filter((target) => target.held).map(withoutDisplayNames)
+          };
+        }
+      }
       const decision = await insertDecision(tx, {
         orgId,
         kind: "watchdog",
@@ -142,7 +193,12 @@ export async function runWatchdogSweep(
           ...(waitingDetail?.unsatisfied
             ? { unsatisfiedRequirements: waitingDetail.unsatisfied }
             : {}),
-          ...(waitingDetail?.malformed ? { malformedRequires: waitingDetail.malformed } : {})
+          ...(waitingDetail?.malformed ? { malformedRequires: waitingDetail.malformed } : {}),
+          // The held targets — IDS ONLY (`withoutDisplayNames`) — so `scp decision get` answers
+          // "which dependency, where" without a second call, in terms that cannot be rewritten by
+          // a later rename. Absent, not an empty array, when no coupling is involved, so every
+          // pre-increment-4 watchdog Decision keeps exactly the shape it had.
+          ...(heldDetail ? { heldStageDependencies: heldDetail.held } : {})
         },
         reasonTree: {
           summary: `change has shown no progress in state '${state}' for ${Math.round(
@@ -152,7 +208,11 @@ export async function runWatchdogSweep(
             state === "waiting" && waitingDetail
               ? waitingDetail.waitingOn
               : state === "executing"
-                ? "wave target executor status to report success/failure, or an operator to cancel/rollback"
+                ? // A HELD target was never handed to an executor, so "waiting for executor status"
+                  // is not merely vague there, it names a report that is never coming. When a
+                  // coupling is what is withholding it, say so and name it.
+                  (heldDetail?.waitingOn ??
+                  "wave target executor status to report success/failure, or an operator to cancel/rollback")
                 : state === "validating"
                   ? "an operator to run `scp change accept` (or cancel/rollback)"
                   : "the reconciliation loop's next tick to advance this change, or an operator to investigate"
@@ -197,7 +257,12 @@ export async function runWatchdogSweep(
         subject: `Change stalled in '${state}'`,
         body: `Change ${change.objectId} has shown no progress in state '${state}' for ${Math.round(
           stalledForMs / 1000
-        )}s (SLA ${Math.round(WATCHDOG_SLA_MS[state] / 1000)}s). Decision ${decision.id}.`,
+        )}s (SLA ${Math.round(WATCHDOG_SLA_MS[state] / 1000)}s). Decision ${decision.id}.${
+          // The coupling in the notification itself, not only in the Decision: the whole point of
+          // naming it is that the operator learns WHAT the change is waiting for from the message
+          // that woke them, without having to know to go and look (ADR-0028 increment 4).
+          heldDetail ? ` Held by ${heldDetail.waitingOn}` : ""
+        }`,
         severity: "warning",
         context: { changeObjectId: change.objectId, state, decisionId: decision.id }
       });
@@ -212,6 +277,35 @@ export async function runWatchdogSweep(
   }
 
   return flags;
+}
+
+/**
+ * THE HELD TARGETS AS IDS ONLY, for the Decision's `inputContext`.
+ *
+ * `resolveStageDependencyStatus` returns display names alongside every id, because its primary
+ * consumers are a CLI and a web page where an id is not an answer. A DECISION is the other kind of
+ * consumer: `stage-dependency-status.ts`'s own `toWireVerdict` doc states the rule — display names
+ * are the thing a persisted Decision deliberately does NOT carry, because renaming a component
+ * would then rewrite the recorded inputs of a verdict that was reached about something else
+ * entirely. An audit record has to keep meaning what it meant, and an id is the only part of this
+ * that does.
+ *
+ * `summary` stays: `describeStageDependencyHold` renders ids, never names (checked, and it is the
+ * same function the hold Decision's own `reasonTree` is built from), so it is already byte-stable.
+ *
+ * The `reasonTree.waitingOn` sentence beside this DOES name the deployment-target, and that is
+ * deliberate rather than an oversight of the same rule: it is the line that goes out in the
+ * notification to a human being woken at 2am, and `describeStageDependencyStatus` says so where it
+ * appends the place. Structured inputs get ids; prose gets names.
+ */
+function withoutDisplayNames(target: ChangeStageDependencyTarget): unknown {
+  return {
+    targetObjectId: target.targetObjectId,
+    componentObjectId: target.componentObjectId,
+    deploymentTargetObjectId: target.deploymentTargetObjectId,
+    held: target.held,
+    dependencies: target.dependencies.map(({ dependsOnName: _dropped, ...verdict }) => verdict)
+  };
 }
 
 // -------------------------------------------------------------------------------------------

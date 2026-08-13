@@ -25,7 +25,7 @@ import { initFederationSelf } from "./self-repo.js";
  *      i.e. this is not just a static file server bolted on beside a broken API.
  *
  * Deliberately integration-level, not browser/Playwright level (BUILD_AND_TEST.md: Playwright e2e
- * is main-only in this repo, gated off on PRs) — modeled on the `bootDomain` pattern in
+ * costs minutes where this costs seconds) — modeled on the `bootDomain` pattern in
  * `federation-poke-chain.integration.test.ts`, but far simpler: no mTLS, no second domain, no
  * federation transport at all is needed to prove "this one instance serves its own UI + API".
  */

@@ -18,6 +18,7 @@ import type {
   DesiredStateManifest,
   DoctorCheck,
   ExecutorType,
+  PipelineClassification,
   Freeze,
   GraphObject,
   NamedGraphQuery,
@@ -52,7 +53,10 @@ import type {
   SyncScope,
   ScanMethod,
   // ADR-0028 — stage-scoped component coupling declared by a microservice's own CI.
-  StageDependency
+  StageDependency,
+  ChangeStageDependencyStatus,
+  ChangeStageDependencyTarget,
+  ChangeStageDependencyVerdict
 } from "@scp/schemas";
 import {
   DesiredStateManifestSchema,
@@ -755,12 +759,17 @@ type PlanDiffEntry =
   | PlanSourceMappingDiffEntry
   | PlanExecutorBindingDiffEntry;
 
-function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
+export function diffEntryRow(entry: PlanDiffEntry): Record<string, string> {
   if (entry.kind === "object") {
     return { kind: "object", action: entry.action, ref: entry.urn, reason: entry.reason };
   }
   if (entry.kind === "source-mapping") {
-    const glob = [entry.repoPattern ?? "*", entry.pathPattern ?? "*"].join(":");
+    // The ref is part of the mapping IDENTITY (ADR-0030 §1), so it MUST appear here: two mappings
+    // differing only by ref render identically without it, and a prune whose ref the plan did not
+    // show is a prune the operator cannot check.
+    const glob = [entry.repoPattern ?? "*", entry.pathPattern ?? "*", entry.refPattern ?? "*"].join(
+      ":"
+    );
     return {
       kind: "source-mapping",
       action: entry.action,
@@ -882,6 +891,127 @@ function printWaitStatusBody(waitStatus: ChangeWaitStatus | null, standalone: bo
 }
 
 /**
+ * ADR-0028 increment 4 — a Change's STAGE-DEPENDENCY status, the second and deliberately separate
+ * section of `scp change explain` and `scp change wait-status`.
+ *
+ * WHY A SIBLING SECTION AND NOT A WIDENING OF `printWaitStatusBody`. The two couplings answer
+ * different questions and are keyed differently: `requires` is `{key, at}` and parks the WHOLE change
+ * in `waiting`, whereas a stage dependency is (component x deployment-target) and withholds ONE wave
+ * target's trigger while the change stays `executing`. A change can be in either, both or neither.
+ * The server made the same call one layer up — `stageDependencyStatus` is a sibling field on
+ * `explain`, not a widening of `waitStatus`, whose `requirements[]` shape two consumers already read.
+ *
+ * EXPORTED, AND RETURNING LINES INSTEAD OF PRINTING THEM, for the reason `cli-absent-formatters.test.ts`
+ * sets out at length: a renderer that is module-private — or worse, inline in a Commander `.action()`
+ * closure — is unreachable by any test, and every one of the ten guards that survived last round's
+ * mutation sweep lived in exactly that position. This is the surface an operator reads at 2am; it is
+ * pinned directly.
+ *
+ * EVERY FIELD HERE IS LIVE. The server re-runs reconcile's own predicate per request rather than
+ * reading back the pinned `stage_dependency` Decision — which is never cleared when a hold releases,
+ * and whose kind ALSO carries a promotion-import `allow`. So "HELD" below means held right now, and
+ * stops saying so the moment the dependency lands, with no clearing row to wait for.
+ */
+export function formatStageDependencyLines(
+  status: ChangeStageDependencyStatus | null | undefined,
+  standalone: boolean
+): string[] {
+  // THE TWO ABSENCES ARE DIFFERENT CLAIMS AND ARE NOT COLLAPSED (which is why this does not reach for
+  // `isAbsent`, whose job is the opposite — to stop the two being told apart *by accident*). `null`
+  // is the server saying "this change coupled nothing"; an omitted key is the server saying nothing
+  // at all, which is contract-legal for an `.optional()` field and is exactly what a pre-increment-4
+  // server puts on the wire. Printing "coupled nothing" for the second would be a fabricated
+  // observation about a change that may well be held.
+  if (status === undefined) {
+    return standalone
+      ? ["(no stage-dependency status reported — this server predates ADR-0028 increment 4)"]
+      : [];
+  }
+  if (status === null) {
+    return standalone ? ["(no stage dependencies — this change coupled nothing at any stage)"] : [];
+  }
+
+  const wave = status.waveIndex === null ? "no active wave" : `wave ${status.waveIndex}`;
+  const held = status.targets.filter((target) => target.held);
+  // Only UNTRIGGERED targets of the active wave are evaluated at all (a target already handed to its
+  // executor is past the hold), so the denominator is named for what it is rather than left to read
+  // as "the change's targets".
+  const lines: string[] =
+    status.targets.length === 0
+      ? [`Stage dependencies (ADR-0028, ${wave}): no wave target is awaiting a trigger.`]
+      : held.length > 0
+        ? [
+            `Stage dependencies (ADR-0028, ${wave}) — HELD at ${held.length} of ` +
+              `${status.targets.length} untriggered wave target(s):`
+          ]
+        : [
+            `Stage dependencies (ADR-0028, ${wave}) — ${status.targets.length} untriggered wave ` +
+              `target(s), none held:`
+          ];
+
+  for (const target of status.targets) {
+    lines.push(`  - ${describeStageDependencyPlace(target)}: ${target.held ? "HELD" : "clear"}`);
+    for (const dependency of target.dependencies) {
+      // The name and the branch, then the server's own sentence verbatim. Verbatim because it is the
+      // SAME `describeStageDependencyHold` output the hold Decision's `reasonTree` is built from:
+      // re-wording it here would let the CLI and the audit record describe one verdict two ways.
+      lines.push(
+        `      - ${stageDependencyMark(dependency)} [${dependency.branch}] ` +
+          `${dependency.dependsOnName ?? "(unresolved)"}: ${dependency.summary}`
+      );
+    }
+  }
+
+  if (status.unenforced) {
+    lines.push(
+      "  NOT ENFORCED: a declared coupling had no place to scope by (its wave target names a " +
+        "component, not a placement), so it was not applied — see `scp decision list --kind " +
+        "stage_dependency_unscoped`."
+    );
+  }
+  return lines;
+}
+
+/** Where a wave target sits, for the target line above. BOTH halves null is the `unscopeable`
+ *  fail-open — a legacy-shaped target naming a component rather than a placement — and it is said
+ *  outright rather than rendered as a place called `null`. */
+function describeStageDependencyPlace(target: ChangeStageDependencyTarget): string {
+  const component = target.componentName ?? target.componentObjectId;
+  const place = target.deploymentTargetName ?? target.deploymentTargetObjectId;
+  if (isAbsent(component) || isAbsent(place)) {
+    return (
+      `${target.targetName ?? target.targetObjectId} (no placement — this wave target names a ` +
+      `component, so there is no stage to scope a hold by)`
+    );
+  }
+  return `${component} @ ${place}`;
+}
+
+/** THE ONE PLACE THE WIRE'S `satisfied` IS NOT TAKEN AT FACE VALUE. `unscopeable` carries
+ *  `satisfied: true` because the release proceeds — but nothing was checked, and printing "satisfied"
+ *  would tell an operator their coupling held when it was never applied. ADR-0028 gave that case its
+ *  own branch precisely so the fail-open would be findable; this is the CLI honouring that. */
+function stageDependencyMark(dependency: ChangeStageDependencyVerdict): string {
+  if (!dependency.satisfied) return "HELD";
+  return dependency.branch === "unscopeable" ? "NOT ENFORCED" : "satisfied";
+}
+
+/** The printing half of `formatStageDependencyLines` — shared by `explain` (embedded) and
+ *  `wait-status` (standalone). The blank separator is unconditional because this section is never
+ *  first on the screen: `explain` has printed the change line above it, and `wait-status` has printed
+ *  the `requires` section, which always emits at least its "(no coupled-pipeline prerequisites)"
+ *  line. `standalone` therefore governs only whether an ABSENT status is worth a line of its own. */
+function printStageDependencyBody(
+  status: ChangeStageDependencyStatus | null | undefined,
+  standalone: boolean
+): void {
+  const lines = formatStageDependencyLines(status, standalone);
+  if (lines.length === 0) return;
+  console.log("");
+  for (const line of lines) console.log(line);
+}
+
+/**
  * Prints a Change's compiled plan (waves/targets) and every Decision made about it, in order —
  * the CLI's window into the coordination engine's reasoning (BUILD_AND_TEST.md §8 M3 DoD:
  * "`scp change explain` renders" the Decision record). Deviates from `printResult`/`printTable`
@@ -899,6 +1029,10 @@ function printExplainResult(result: ChangeExplainResponse, output: OutputFormat)
 
   // M12 P4B: coupled-pipeline wait status. Present only for a change that declared `requires`.
   printWaitStatusBody(waitStatus, false);
+  // ADR-0028 increment 4: the stage-dependency status, printed BEFORE the plan below deliberately —
+  // it is the reason a wave target in that plan is sitting at `pending`, and reading the explanation
+  // after the symptom is how the hold stayed invisible until this increment.
+  printStageDependencyBody(result.stageDependencyStatus, false);
 
   if (plan) {
     console.log(`\nPlan ${plan.id} (status: ${plan.status}):`);
@@ -2304,23 +2438,43 @@ export function buildProgram(): Command {
 
   changeCmd
     .command("wait-status <id>")
+    // REWRITTEN AT ADR-0028 INCREMENT 4, not extended in silence. This command covered exactly one
+    // coupling until now, and its help text said so by name ("M12 P4B … which `requires`
+    // prerequisites"). Teaching it a second coupling while leaving that sentence would have left the
+    // help text asserting the narrower command — and any test pinning the string would have gone on
+    // passing, green for precisely the wrong reason.
     .description(
-      "M12 P4B: print ONLY a Change's coupled-pipeline wait status — which `requires` prerequisites " +
-        "are satisfied/outstanding (and by which change), a thin renderer over `explain`'s waitStatus"
+      "Print ONLY a Change's coupling status: which `requires` prerequisites are satisfied or " +
+        "outstanding and by which change (M12 P4B), and which stage dependencies are withholding a " +
+        "wave target's trigger, where, and why (ADR-0028). A thin renderer over `explain` — a change " +
+        "may be in either coupling, both, or neither"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (id: string, opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       // No dedicated route (coupled-pipelines.md §3.8/§7 Phase 4) — `explain` already computes and
-      // returns `waitStatus`; this command is deliberately just that call, rendering only the one
-      // section instead of the full plan/Decisions/control-runs picture `explain` prints.
+      // returns both statuses; this command is deliberately just that call, rendering only those two
+      // sections instead of the full plan/Decisions/control-runs picture `explain` prints.
       const result = await client.changes.explain(id);
       if (opts.output === "json") {
-        console.log(JSON.stringify(result.waitStatus, null, 2));
+        // BOTH KEYS. This branch printed `result.waitStatus` alone until increment 4, so a change
+        // held by a stage dependency that declared no `requires` — the common ADR-0028 shape, since
+        // the two couplings are independent — printed the literal `null`. The scripted path would
+        // have gone on reporting "nothing is holding this" while the table path said HELD.
+        // `stageDependencyStatus` is passed through UNNORMALISED: `JSON.stringify` drops an omitted
+        // key, so an older server's silence stays silence here rather than being dressed as `null`.
+        console.log(
+          JSON.stringify(
+            { waitStatus: result.waitStatus, stageDependencyStatus: result.stageDependencyStatus },
+            null,
+            2
+          )
+        );
         return;
       }
       printWaitStatusBody(result.waitStatus, true);
+      printStageDependencyBody(result.stageDependencyStatus, true);
     });
 
   changeCmd
@@ -2390,11 +2544,24 @@ export function buildProgram(): Command {
     .command("list")
     .description("List Decisions")
     .option("--subject-id <id>", "filter by subject (e.g. a Change) id")
+    // ADR-0028 increment 4. Usable on its OWN, which is the point: `--subject-id` already answered
+    // "what happened to this change", and the question this exists for — "was my coupling enforced
+    // here?" — is asked by someone who has the coupling and not the change id. A kind is not a
+    // state, though: `stage_dependency` carries a `hold` (a withheld trigger) AND an `allow` (the
+    // declaration stripped on promotion import), so read the verdict column beside it.
+    .option(
+      "--kind <kind>",
+      "filter by Decision kind (e.g. stage_dependency, watchdog, gate) — combinable with --subject-id"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts & { subjectId?: string }) => {
+    .action(async (opts: BaseCliOpts & { subjectId?: string; kind?: string }) => {
       const client = await clientFromStoredCredentials(opts);
-      const page = await client.decisions.list({ subjectId: opts.subjectId, limit: 100 });
+      const page = await client.decisions.list({
+        subjectId: opts.subjectId,
+        kind: opts.kind,
+        limit: 100
+      });
       printResult(page.items, opts.output, (item) => decisionRow(item as Decision));
     });
 
@@ -4389,8 +4556,16 @@ export function buildProgram(): Command {
     )
     .option("--path <pattern>", "path glob within the repo")
     .option(
+      "--ref <pattern>",
+      "git ref glob (e.g. refs/heads/dev) — omitted matches ANY ref, which is the pre-0057 behaviour"
+    )
+    .option(
       "--type <type>",
       "routing Type (ADR-0007): image|rpm|deb|npm|infrastructure|configuration (default: configuration)"
+    )
+    .option(
+      "--classification <label>",
+      "declared pipeline classification: dev|beta (UI/reporting ONLY — never an enforcement input, ADR-0030 §3)"
     )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
@@ -4401,7 +4576,9 @@ export function buildProgram(): Command {
           component: string;
           repo?: string;
           path?: string;
+          ref?: string;
           type?: ExecutorType;
+          classification?: PipelineClassification;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -4409,7 +4586,9 @@ export function buildProgram(): Command {
           component: opts.component,
           repoPattern: opts.repo,
           pathPattern: opts.path,
-          type: opts.type
+          refPattern: opts.ref,
+          type: opts.type,
+          classification: opts.classification
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }
@@ -4448,6 +4627,10 @@ export function buildProgram(): Command {
     .requiredOption("--status <status>", "planned|applied|errored|discarded")
     .option("--repo <repo>", "correlation hint: repo (source_mappings matching)")
     .option("--path <path>", "correlation hint: path")
+    .option(
+      "--ref <ref>",
+      "correlation hint: git ref (e.g. refs/heads/dev) — required to reach a ref-scoped mapping"
+    )
     .option("--correlation-key <key>", "correlation key for grouping related changes")
     .option("--workspace <workspace>", "Terraform/OpenTofu workspace name")
     .option("--artifact-digest <digest>", "artifact digest linking this to an app-side change")
@@ -4511,6 +4694,7 @@ export function buildProgram(): Command {
           status: string;
           repo?: string;
           path?: string;
+          ref?: string;
           correlationKey?: string;
           workspace?: string;
           artifactDigest?: string;
@@ -4572,6 +4756,7 @@ export function buildProgram(): Command {
           status: opts.status as (typeof validStatuses)[number],
           repo: opts.repo,
           path: opts.path,
+          ref: opts.ref,
           correlationKey: opts.correlationKey,
           workspace: opts.workspace,
           artifactDigest: opts.artifactDigest,

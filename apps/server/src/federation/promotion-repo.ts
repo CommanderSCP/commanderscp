@@ -853,15 +853,22 @@ async function applyPromotionImport(
   // is a persisted verdict rather than a deletion. Recorded under the hold's OWN kind, so the row
   // says which mechanism removed the declaration rather than leaving an unexplained absence.
   //
-  // HOW AN OPERATOR ACTUALLY FINDS IT, stated accurately: by the promoted change —
-  // `scp change explain <id>`, or `scp decision list --subject-id <change-id>`. An earlier version
-  // of this comment promised `scp decision list --kind stage_dependency`; that filter does not
-  // exist. `DecisionListQuerySchema` (`packages/schemas/src/changes.ts`) accepts `subjectId` and the
-  // cursor page fields only, and the CLI exposes `--subject-id` alone. The promise was worse than a
-  // missing feature, because it read as a working answer to "what happened to my coupling here?"
-  // for someone who does not already know the change id — which is precisely the person asking.
-  // Adding a `kind` filter is worth doing and belongs with the operator surfaces (proposal §5
-  // increment 4, the one increment that did not ship), not smuggled in here.
+  // HOW AN OPERATOR ACTUALLY FINDS IT. By the promoted change — `scp change explain <id>` or
+  // `scp decision list --subject-id <change-id>` — and, since ADR-0028 increment 4, WITHOUT the
+  // change id: `scp decision list --kind stage_dependency`. Two earlier versions of this comment
+  // were each wrong in the opposite direction: the first promised that filter before it existed
+  // (worse than a missing feature, because it read as a working answer to "what happened to my
+  // coupling here?" for exactly the person who does not have the change id), and the second recorded
+  // its absence. The filter now exists — `DecisionListQuerySchema.kind`, `listDecisions`'s `kind`
+  // condition, `--kind` on the CLI, and drizzle/0056's index so it is a probe rather than a table
+  // scan.
+  //
+  // WHAT THE FILTER STILL WILL NOT DO IS TELL YOU WHICH THING HAPPENED. This row and the hold share
+  // the kind and differ only in verdict: `allow` here (stripped, enforced upstream), `hold` in
+  // `reconcile.ts` (a trigger withheld). On an outpost the newest `stage_dependency` row of an
+  // imported change is therefore THIS one, whatever the change is doing locally — read the verdict,
+  // and for "is it held right now" read `explain`'s `stageDependencyStatus`, which re-evaluates the
+  // predicate live rather than believing any persisted row.
   //
   // Nothing stripped, nothing written.
   if (_stageDependenciesStrippedOnPromotion !== undefined) {
