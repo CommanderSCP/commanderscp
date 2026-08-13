@@ -298,6 +298,50 @@ describe("M20.1 (ADR-0031): declaring domainLocal requires federation:write at E
     expect(await objectExistsAt("service", urn)).toBe(false);
   });
 
+  it("POST /objects/{type}/{idOrUrn}/publish — 403 without federation:write, and the object stays domain-local", async () => {
+    // M20.4. Undoing a boundary decision cannot be cheaper than making it, so publish is gated on
+    // the same permission that declared locality. Note this route takes NO body, so the census above
+    // (which reads request bodies) cannot see it — it is covered here explicitly, and this comment
+    // is why the census is a floor rather than the whole story.
+    const created = await admin
+      .object("service")
+      .create({ name: `publish-rbac-${randomUUID().slice(0, 8)}`, domainLocal: true });
+
+    const res = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/objects/service/${created.id}/publish`,
+      headers: { authorization: `Bearer ${operator.token}` }
+    });
+    expect(res.statusCode).toBe(403);
+
+    // The refusal is REAL, not merely a status: the object is untouched and still domain-local.
+    const after = await admin.object("service").get(created.id);
+    expect(after.domainLocal).toBe(true);
+  });
+
+  it("POST /objects/{type}/{idOrUrn}/publish — an authorized actor publishes, and it is one-way", async () => {
+    const created = await admin
+      .object("service")
+      .create({ name: `publish-ok-${randomUUID().slice(0, 8)}`, domainLocal: true });
+
+    const res = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/objects/service/${created.id}/publish`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).object.domainLocal).toBe(false);
+
+    // Second publish is a 409, not a silent success — re-journaling an object that already federates
+    // would emit a redundant revision to every peer.
+    const again = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/objects/service/${created.id}/publish`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(again.statusCode).toBe(409);
+  });
+
   it("AN AUTHORIZED ACTOR ACTUALLY GETS THE DECLARATION — the guard is not just refusing everyone", async () => {
     const created = await admin
       .object("service")

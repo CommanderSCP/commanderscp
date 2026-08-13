@@ -3,7 +3,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SyncBundle } from "@scp/schemas";
 import { changes, objects, relationships } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { createObject, deleteObject, updateObject } from "../graph/objects-repo.js";
+import {
+  createObject,
+  deleteObject,
+  updateObject,
+  upsertObjectByUrn
+} from "../graph/objects-repo.js";
+import { publishDomainLocalObject } from "./publish-domain-local.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { proposeChange } from "../coordination/changes-repo.js";
 import { transitionChange } from "../coordination/transition.js";
@@ -417,6 +423,149 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
       tx.select().from(objects).where(eq(objects.id, change.id))
     );
     expect(landed).toHaveLength(1);
+  });
+
+  it("PUBLISH (M20.4): a published object reaches the commander from that point on, with its shareable edges", async () => {
+    // Owner decision Q2: local -> shared is a real, supported transition, exposed as an explicit
+    // one-way VERB rather than a property write.
+    const toPublish = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "publish-create",
+        name: "vpc-flow-logs",
+        domainLocal: true
+      })
+    );
+    // Two edges: one to a SHARED object (publishable alongside it) and one to a still-local object
+    // (must stay withheld — §4's either-endpoint rule still applies to that one).
+    const stillLocal = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "publish-neighbour",
+        name: "vpc-private-subnets",
+        domainLocal: true
+      })
+    );
+    const shareableEdge = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "publish-edge-shared",
+        typeId: "depends_on",
+        fromId: toPublish.id,
+        toId: sharedId
+      })
+    );
+    const withheldEdge = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "publish-edge-local",
+        typeId: "depends_on",
+        fromId: toPublish.id,
+        toId: stillLocal.id
+      })
+    );
+
+    // Pre-condition: none of it has crossed yet.
+    await importAtCommander(await exportUpward());
+    expect(await commanderRowsFor(toPublish.urn)).toHaveLength(0);
+
+    const result = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "component",
+        idOrUrn: toPublish.id,
+        actorObjectId: outpost.orgId,
+        requestId: "publish"
+      })
+    );
+    expect(result.object.domainLocal).toBe(false);
+    expect(result.publishedRelationshipIds).toEqual([shareableEdge.id]);
+    // The partial sweep is reported, not silent — an edge to a still-local neighbour cannot travel.
+    expect(result.withheldRelationshipIds).toEqual([withheldEdge.id]);
+
+    await importAtCommander(await exportUpward());
+    const landed = await commanderRowsFor(toPublish.urn);
+    expect(landed).toHaveLength(1);
+    expect(landed[0]!.name).toBe("vpc-flow-logs");
+    // Full state, not an empty shell: re-journaling works because payloads are full-state upserts.
+    expect(landed[0]!.domainLocal).toBe(false);
+
+    const landedEdges = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx.select().from(relationships)
+    );
+    expect(landedEdges.map((e) => e.id)).toContain(shareableEdge.id);
+    // AND the still-local neighbour did NOT come along for the ride.
+    expect(landedEdges.map((e) => e.id)).not.toContain(withheldEdge.id);
+    expect(await commanderRowsFor(stillLocal.urn)).toHaveLength(0);
+  });
+
+  it("PUBLISH (M20.4): publishing twice is refused, and the reverse direction has no door at all", async () => {
+    const already = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "double-publish-create",
+        name: "vpc-endpoints",
+        domainLocal: true
+      })
+    );
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "component",
+        idOrUrn: already.id,
+        actorObjectId: outpost.orgId,
+        requestId: "double-publish-1"
+      })
+    );
+
+    const second = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "component",
+        idOrUrn: already.id,
+        actorObjectId: outpost.orgId,
+        requestId: "double-publish-2"
+      })
+    ).then(
+      () => null,
+      (err: unknown) => err as ProblemError
+    );
+    // Asserted on `.detail`, never `.toThrow(/…/)` — a ProblemError's message is the bare title.
+    expect(second).toBeInstanceOf(ProblemError);
+    expect(second!.status).toBe(409);
+    expect(second!.detail).toMatch(/not domain-local/i);
+
+    // THE ONE-WAY PROPERTY, asserted structurally rather than by trying an endpoint that should not
+    // exist: shared -> domain-local is refused by the upsert precondition, and there is no verb for
+    // it anywhere. Federation has no un-send, so this must never become expressible.
+    const reverse = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      upsertObjectByUrn(tx, {
+        orgId: outpost.orgId,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "un-publish-attempt",
+        urn: already.urn,
+        name: "vpc-endpoints",
+        domainLocal: true
+      })
+    ).then(
+      () => null,
+      (err: unknown) => err as ProblemError
+    );
+    expect(reverse).toBeInstanceOf(ProblemError);
+    expect(reverse!.status).toBe(409);
+    expect(reverse!.detail).toMatch(/cannot become domain-local/i);
   });
 
   it("the commander's database holds NO row anywhere naming the domain-local object, across the whole run", async () => {

@@ -51,7 +51,7 @@ export interface FederationImportContext {
 // the SAME entryKind with two different payload shapes would make the importer's dispatch
 // ambiguous — so the graph-object snapshot for a `change` and its lifecycle-state snapshot are
 // kept as clearly separate entry kinds/payload shapes instead.
-function journalEntryKindFor(typeId: string, tombstone: boolean): JournalEntryKind {
+export function journalEntryKindFor(typeId: string, tombstone: boolean): JournalEntryKind {
   if (tombstone) return "object_tombstone";
   if (typeId === "policy") return "policy_upsert";
   return "object_upsert";

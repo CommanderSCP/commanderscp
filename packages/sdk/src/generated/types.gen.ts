@@ -1144,6 +1144,99 @@ export type CreateObjectResponses = {
 
 export type CreateObjectResponse = CreateObjectResponses[keyof CreateObjectResponses];
 
+export type PublishDomainLocalObjectData = {
+    body?: never;
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}/publish';
+};
+
+export type PublishDomainLocalObjectErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PublishDomainLocalObjectError = PublishDomainLocalObjectErrors[keyof PublishDomainLocalObjectErrors];
+
+export type PublishDomainLocalObjectResponses = {
+    /**
+     * Success
+     */
+    200: {
+        object: {
+            id: string;
+            orgId: string;
+            domainId: string | null;
+            typeId: string;
+            name: string;
+            urn: string;
+            properties: {
+                [key: string]: unknown;
+            };
+            labels: {
+                [key: string]: unknown;
+            };
+            originDomainId: string;
+            revision: number;
+            provenance: 'manual' | null;
+            domainLocal: boolean;
+            version: number;
+            createdAt: string;
+            updatedAt: string;
+            deletedAt: string | null;
+        };
+        publishedRelationshipIds: Array<string>;
+        withheldRelationshipIds: Array<string>;
+    };
+};
+
+export type PublishDomainLocalObjectResponse = PublishDomainLocalObjectResponses[keyof PublishDomainLocalObjectResponses];
+
 export type DeleteObjectData = {
     body?: never;
     path: {

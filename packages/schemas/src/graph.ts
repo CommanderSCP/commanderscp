@@ -174,6 +174,22 @@ export const CreateComponentRequestSchema = CreateObjectRequestSchema.extend({
 });
 export type CreateComponentRequest = z.infer<typeof CreateComponentRequestSchema>;
 
+/**
+ * M20.4 (ADR-0031 §6) — the result of publishing a domain-local object.
+ *
+ * Reports the edge sweep in two buckets rather than one, because a partial sweep is the CORRECT
+ * outcome and a silent one would be indistinguishable from a bug: edges to a neighbour that is
+ * itself still domain-local stay unpublished, and the operator needs to see which those were.
+ */
+export const PublishObjectResponseSchema = z.object({
+  object: GraphObjectSchema,
+  /** Edges re-journaled alongside the object — their other endpoint already federates. */
+  publishedRelationshipIds: z.array(z.string().uuid()),
+  /** Edges deliberately left unpublished because their other endpoint is still domain-local. */
+  withheldRelationshipIds: z.array(z.string().uuid())
+});
+export type PublishObjectResponse = z.infer<typeof PublishObjectResponseSchema>;
+
 export const UpdateObjectRequestSchema = z.object({
   name: z.string().min(1).max(500).optional(),
   domainId: z.string().uuid().nullable().optional(),
