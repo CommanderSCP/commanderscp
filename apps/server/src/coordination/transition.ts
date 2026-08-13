@@ -150,7 +150,14 @@ export async function transitionChange(
   gateDeps: GateDeps
 ): Promise<TransitionResult> {
   const rows = await tx
-    .select({ change: changes, originDomainId: objects.originDomainId })
+    // M20.3 (ADR-0031 §5) — `domainLocal` joins `originDomainId` here rather than becoming a second
+    // query: both are properties of the change's graph OBJECT, both are needed on every transition,
+    // and the join already exists.
+    .select({
+      change: changes,
+      originDomainId: objects.originDomainId,
+      domainLocal: objects.domainLocal
+    })
     .from(changes)
     .innerJoin(objects, eq(changes.objectId, objects.id))
     .where(and(eq(changes.orgId, input.orgId), eq(changes.objectId, input.changeObjectId)))
@@ -319,7 +326,10 @@ export async function transitionChange(
     afterHash: stateHash(toState),
     reason: input.reason ?? null,
     decisionId: decision.id,
-    requestId: input.requestId
+    requestId: input.requestId,
+    // M20.3 (ADR-0031 §5) — the audit segment names the change object id; withheld for a
+    // domain-local change, while the local audit row is written unchanged.
+    subjectDomainLocal: row.domainLocal
   });
   {
     // M6 (DESIGN §13): every state change rides the journal too — this is what lets a promotion
@@ -334,12 +344,19 @@ export async function transitionChange(
       reason: input.reason ?? null,
       importedFromDomain: existing.importedFromDomain
     };
-    await appendJournalEntry(tx, {
-      orgId: input.orgId,
-      entryKind: "change_status",
-      contentHash: changeStatusContentHash(payload),
-      payload
-    });
+    // M20.3 (ADR-0031 §5) — and NOT for a domain-local change. This is the entry that would
+    // otherwise defeat the whole feature at its most-scoped peer: `change_status` is exactly what a
+    // `status_only` commander receives, so without this skip a domain deploying its own networking
+    // config would still be reporting every state transition upward — "the commander doesn't need to
+    // know when these deploy out" is precisely this line.
+    if (!row.domainLocal) {
+      await appendJournalEntry(tx, {
+        orgId: input.orgId,
+        entryKind: "change_status",
+        contentHash: changeStatusContentHash(payload),
+        payload
+      });
+    }
   }
   await eventBus.publish(tx, {
     orgId: input.orgId,

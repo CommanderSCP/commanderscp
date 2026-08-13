@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { Relationship } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { relationships } from "../db/schema.js";
+import { objects, relationships } from "../db/schema.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
@@ -10,6 +10,31 @@ import { computeRelationshipContentHash } from "./content-hash.js";
 import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
+import { inArray } from "drizzle-orm";
+
+/**
+ * M20.3 (ADR-0031 §4) — does either endpoint of an edge stay inside its own security domain?
+ *
+ * Deliberately reads endpoints **including soft-deleted ones** (no `deletedAt` predicate): the one
+ * caller is `deleteRelationship`, which frequently runs while an endpoint is itself being torn down,
+ * and resolving a deleted endpoint to "not domain-local" would leak precisely at teardown — the
+ * moment a `relationship_tombstone` naming its id would otherwise cross.
+ *
+ * One query for both endpoints; a self-edge collapses to a single row, which `.some()` handles
+ * without a special case.
+ */
+async function eitherEndpointIsDomainLocal(
+  tx: TenantTx,
+  orgId: string,
+  fromId: string,
+  toId: string
+): Promise<boolean> {
+  const rows = await tx
+    .select({ domainLocal: objects.domainLocal })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), inArray(objects.id, [fromId, toId])));
+  return rows.some((row) => row.domainLocal);
+}
 import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
@@ -313,6 +338,20 @@ export async function createRelationship(
   }
   if (!row) throw new Error("failed to insert relationship");
 
+  // M20.3 (ADR-0031 §4) — AN EDGE INHERITS LOCALITY FROM EITHER ENDPOINT.
+  //
+  // EITHER, not both, and that is the whole point: the interesting edge is the MIXED one — a
+  // domain-local networking component `part_of` a service the commander knows about. Requiring both
+  // endpoints to be local would let exactly the leaking case through, because a
+  // `relationship_upsert` payload carries `fromId`, `toId`, `typeId`, `properties` and `labels`.
+  // Shipping that and letting the receiver decline to store it is a leak with a swallow, not
+  // invisibility — the edge still names the local object's id in a file written to disk and relayed.
+  //
+  // Both endpoints are already loaded and validated above (`requireLiveObject`), so this costs no
+  // extra query — and reading them is the only correct source, since locality is a property of the
+  // objects, never of the edge's own request.
+  const edgeIsDomainLocal = fromObj.domainLocal || toObj.domainLocal;
+
   await appendAuditEvent(tx, {
     orgId: input.orgId,
     actorId: input.actorObjectId,
@@ -320,9 +359,15 @@ export async function createRelationship(
     subjectId: id,
     beforeHash: null,
     afterHash: contentHash,
-    requestId: input.requestId
+    requestId: input.requestId,
+    // The audit segment carries `subjectId` (the edge id) and the action names the type — enough to
+    // tell a peer that a domain-local object gained an edge. Same reasoning as M20.2's object case.
+    subjectDomainLocal: edgeIsDomainLocal
   });
-  if (!input.federationImport) {
+  // Never journaled when either endpoint is local — see M20.2's note in `graph/objects-repo.ts` for
+  // why this is a SKIP rather than a stamp-and-filter (a filtered bundle is sparse, and a full-scope
+  // receiver refuses a sparse chain).
+  if (!input.federationImport && !edgeIsDomainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
       entryKind: "relationship_upsert",
@@ -441,6 +486,19 @@ export async function deleteRelationship(
     .set({ deletedAt: new Date(), revision: nextRevision })
     .where(eq(relationships.id, existing.id));
 
+  // M20.3 (ADR-0031 §4) — the tombstone inherits locality the same way the create did, and it has to
+  // be RE-RESOLVED here: the edge row itself carries no locality (locality belongs to the objects),
+  // so this is a real lookup rather than a field read. A tombstone payload names `fromId` and
+  // `toId`, so letting it cross would disclose the local object's id and the fact that its edge was
+  // removed. Endpoints are read even when soft-deleted — a deleted endpoint is still a domain-local
+  // one, and resolving it to "not local" would leak precisely at teardown.
+  const edgeIsDomainLocal = await eitherEndpointIsDomainLocal(
+    tx,
+    input.orgId,
+    existing.fromId,
+    existing.toId
+  );
+
   await appendAuditEvent(tx, {
     orgId: input.orgId,
     actorId: input.actorObjectId,
@@ -448,9 +506,10 @@ export async function deleteRelationship(
     subjectId: existing.id,
     beforeHash: existing.contentHash,
     afterHash: null,
-    requestId: input.requestId
+    requestId: input.requestId,
+    subjectDomainLocal: edgeIsDomainLocal
   });
-  if (!input.federationImport) {
+  if (!input.federationImport && !edgeIsDomainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
       entryKind: "relationship_tombstone",

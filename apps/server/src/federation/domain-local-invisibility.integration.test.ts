@@ -1,9 +1,15 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { SyncBundle } from "@scp/schemas";
-import { objects } from "../db/schema.js";
+import { changes, objects, relationships } from "../db/schema.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { createObject, deleteObject, updateObject } from "../graph/objects-repo.js";
+import { createRelationship } from "../graph/relationships-repo.js";
+import { proposeChange } from "../coordination/changes-repo.js";
+import { transitionChange } from "../coordination/transition.js";
+import { SYSTEM_ACTOR_ID } from "../coordination/system-actor.js";
+import { getSharedCelSandbox } from "../governance/cel-sandbox.js";
+import { ProblemError } from "../errors.js";
 import { ensureInstanceKey } from "../governance/attestation.js";
 import { ensureFederationSelf, type FederationSelf } from "./self-repo.js";
 import { pairPeer } from "./peers-repo.js";
@@ -234,6 +240,183 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
 
     await importAtCommander(bundle);
     expect(await commanderRowsFor(localUrn)).toHaveLength(0);
+  });
+
+  it("EDGE (M20.3): an edge from a domain-local object to a SHARED one does not cross either", async () => {
+    // The mixed edge is the whole reason §4 inherits from EITHER endpoint. A domain-local networking
+    // component `part_of` a service the commander knows is the natural modelling, and requiring BOTH
+    // endpoints to be local would let exactly this case through — carrying the local object's id in
+    // `fromId`.
+    const local = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "edge-local",
+        name: "vpc-route-tables",
+        domainLocal: true
+      })
+    );
+    const edge = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "edge-create",
+        typeId: "depends_on",
+        fromId: local.id,
+        toId: sharedId
+      })
+    );
+
+    const bundle = await exportUpward();
+    const wire = JSON.stringify(bundle);
+    expect(wire).not.toContain(local.id);
+    expect(wire).not.toContain("vpc-route-tables");
+    // The EDGE's own id must not cross either — its presence would tell the commander that the
+    // shared service gained a dependency it is not allowed to see.
+    expect(wire).not.toContain(edge.id);
+
+    await importAtCommander(bundle);
+    const landed = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx.select().from(relationships).where(eq(relationships.id, edge.id))
+    );
+    expect(landed).toHaveLength(0);
+  });
+
+  it("CHANGE (M20.3): releasing a domain-local component reports nothing upward — not even status", async () => {
+    // `change_status` is the entry kind a `status_only` commander receives, so this is the assertion
+    // that carries the owner's "the Commander doesn't need to know when these deploy out".
+    const target = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "change-target",
+        name: "vpc-security-groups",
+        domainLocal: true
+      })
+    );
+    const { change } = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      proposeChange(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "change-propose",
+        name: "tighten-sg-egress",
+        targets: [target.id]
+      })
+    );
+
+    // AND DRIVE A REAL STATE TRANSITION. `proposeChange` and `transitionChange` emit `change_status`
+    // from two DIFFERENT call sites, and only the propose one is exercised by creating a change —
+    // so without this the transition skip is untested. Mutation-proven: disabling
+    // `transition.ts`'s `if (!row.domainLocal)` left this file entirely green until this step
+    // existed, which is precisely the "green for the wrong reason" failure it now closes.
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      transitionChange(
+        tx,
+        {
+          orgId: outpost.orgId,
+          changeObjectId: change.id,
+          toState: "cancelled",
+          actorObjectId: SYSTEM_ACTOR_ID,
+          requestId: "change-transition",
+          reason: "domain-local transition — must not be reported upward"
+        },
+        { sandbox: getSharedCelSandbox(), host: null }
+      )
+    );
+
+    const bundle = await exportUpward();
+    const wire = JSON.stringify(bundle);
+    expect(wire).not.toContain(target.id);
+    expect(wire).not.toContain(change.id);
+    expect(wire).not.toContain("tighten-sg-egress");
+    expect(wire).not.toContain("vpc-security-groups");
+    // The transition's own reason must not travel either — `change_status` carries it verbatim.
+    expect(wire).not.toContain("must not be reported upward");
+
+    await importAtCommander(bundle);
+    const landed = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx.select().from(objects).where(eq(objects.id, change.id))
+    );
+    expect(landed).toHaveLength(0);
+
+    // The transition really happened locally — otherwise the assertions above would be satisfied by
+    // a change that never moved, and the transition skip would still be untested.
+    const localState = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx.select().from(changes).where(eq(changes.objectId, change.id))
+    );
+    expect(localState[0]!.state).toBe("cancelled");
+  });
+
+  it("CHANGE (M20.3): a change may not SPAN a locality boundary — refused at propose time", async () => {
+    const local = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "mixed-local",
+        name: "vpc-nat-gateways",
+        domainLocal: true
+      })
+    );
+
+    // Asserted on `.detail`, NOT via `.rejects.toThrow(/…/)`. A `ProblemError`'s `message` is the
+    // bare RFC 9457 title — here "Bad Request" — so a regex matched against the message passes for
+    // ANY 400 the function might throw, including the empty-targets one. This repo has already
+    // shipped exactly that vacuous assertion once (a `/checksum mismatch/` that was really matching
+    // `message === "Conflict"`), and it passed here too until the refusal's own text was checked.
+    const refusal = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      proposeChange(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "mixed-propose",
+        name: "spans-the-boundary",
+        targets: [local.id, sharedId]
+      })
+    ).then(
+      () => null,
+      (err: unknown) => err as ProblemError
+    );
+    expect(refusal).toBeInstanceOf(ProblemError);
+    expect(refusal!.status).toBe(400);
+    expect(refusal!.detail).toMatch(/cannot span a locality boundary/i);
+    // Both offending urns are named, so the operator can act without re-deriving which target was
+    // which — the refusal has to be usable, not merely correct.
+    expect(refusal!.detail).toContain(local.urn);
+    expect(refusal!.detail).toContain(sharedUrn);
+
+    // And the refusal is REAL — no change object was written on either side of the boundary.
+    const orphans = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx.select().from(objects).where(eq(objects.name, "spans-the-boundary"))
+    );
+    expect(orphans).toEqual([]);
+  });
+
+  it("CHANGE (M20.3): an all-SHARED change still reports upward exactly as before — the control", async () => {
+    // The regression control for the refusal above: locality inheritance must not have made ordinary
+    // multi-target changes harder to propose.
+    const { change } = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      proposeChange(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "shared-propose",
+        name: "ordinary-release",
+        targets: [sharedId]
+      })
+    );
+
+    const bundle = await exportUpward();
+    expect(JSON.stringify(bundle)).toContain(change.id);
+
+    await importAtCommander(bundle);
+    const landed = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      tx.select().from(objects).where(eq(objects.id, change.id))
+    );
+    expect(landed).toHaveLength(1);
   });
 
   it("the commander's database holds NO row anywhere naming the domain-local object, across the whole run", async () => {
