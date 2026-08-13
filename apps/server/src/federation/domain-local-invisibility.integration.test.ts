@@ -491,6 +491,21 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
     // The partial sweep is reported, not silent — an edge to a still-local neighbour cannot travel.
     expect(result.withheldRelationshipIds).toEqual([withheldEdge.id]);
 
+    // The DESCRIPTIVE view names the other endpoint, which is what makes a withheld edge actionable:
+    // it identifies the object the operator must publish next. Asserted alongside the id arrays
+    // because the two must never diverge — they are derived from one loop for exactly that reason.
+    expect(result.withheldRelationships).toEqual([
+      {
+        id: withheldEdge.id,
+        typeId: "depends_on",
+        otherEndpointId: stillLocal.id,
+        otherEndpointUrn: stillLocal.urn,
+        otherEndpointName: "vpc-private-subnets"
+      }
+    ]);
+    expect(result.publishedRelationships.map((r) => r.otherEndpointName)).toEqual([SHARED_NAME]);
+    expect(result.publishedRelationships.map((r) => r.id)).toEqual(result.publishedRelationshipIds);
+
     await importAtCommander(await exportUpward());
     const landed = await commanderRowsFor(toPublish.urn);
     expect(landed).toHaveLength(1);
@@ -566,6 +581,11 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
     expect(reverse).toBeInstanceOf(ProblemError);
     expect(reverse!.status).toBe(409);
     expect(reverse!.detail).toMatch(/cannot become domain-local/i);
+    // The remedy must be ACTIONABLE. "Create a new object instead" was measured as confusing by a
+    // consumer, because a create is exactly what 409'd — the operator retries the same urn and loops.
+    // The message now names the urn and says to use a different one.
+    expect(reverse!.detail).toContain(already.urn);
+    expect(reverse!.detail).toMatch(/different urn/i);
   });
 
   it("the commander's database holds NO row anywhere naming the domain-local object, across the whole run", async () => {

@@ -181,12 +181,39 @@ export type CreateComponentRequest = z.infer<typeof CreateComponentRequestSchema
  * outcome and a silent one would be indistinguishable from a bug: edges to a neighbour that is
  * itself still domain-local stay unpublished, and the operator needs to see which those were.
  */
+/**
+ * One swept edge, named well enough for an operator to act on it.
+ *
+ * The bare-id arrays below came first and could only ever render as UUIDs — which does not satisfy
+ * ADR-0031 §6's "the sweep is legible rather than implicit". Legible means knowing WHICH edge: its
+ * type, and above all the object at the other end. For a WITHHELD edge that other endpoint is
+ * literally the operator's next action ("publish that one too"), and a UI that only has an id has to
+ * issue a GET per relationship plus one per endpoint to say so.
+ */
+export const SweptRelationshipSchema = z.object({
+  id: z.string().uuid(),
+  typeId: z.string(),
+  /** The endpoint that is NOT the object being published. */
+  otherEndpointId: z.string().uuid(),
+  otherEndpointUrn: z.string(),
+  otherEndpointName: z.string()
+});
+export type SweptRelationship = z.infer<typeof SweptRelationshipSchema>;
+
 export const PublishObjectResponseSchema = z.object({
   object: GraphObjectSchema,
   /** Edges re-journaled alongside the object — their other endpoint already federates. */
   publishedRelationshipIds: z.array(z.string().uuid()),
   /** Edges deliberately left unpublished because their other endpoint is still domain-local. */
-  withheldRelationshipIds: z.array(z.string().uuid())
+  withheldRelationshipIds: z.array(z.string().uuid()),
+  /**
+   * The same two sets, described rather than merely identified. ADDITIVE SIBLINGS of the id arrays
+   * rather than a change to them: the id arrays already have consumers (the CLI, and a shipped UI),
+   * and changing an existing array's item type is a breaking oasdiff hit. Same order, same
+   * membership — these are a richer view of the identical sweep, never a different one.
+   */
+  publishedRelationships: z.array(SweptRelationshipSchema),
+  withheldRelationships: z.array(SweptRelationshipSchema)
 });
 export type PublishObjectResponse = z.infer<typeof PublishObjectResponseSchema>;
 

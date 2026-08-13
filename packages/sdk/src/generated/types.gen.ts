@@ -1232,6 +1232,20 @@ export type PublishDomainLocalObjectResponses = {
         };
         publishedRelationshipIds: Array<string>;
         withheldRelationshipIds: Array<string>;
+        publishedRelationships: Array<{
+            id: string;
+            typeId: string;
+            otherEndpointId: string;
+            otherEndpointUrn: string;
+            otherEndpointName: string;
+        }>;
+        withheldRelationships: Array<{
+            id: string;
+            typeId: string;
+            otherEndpointId: string;
+            otherEndpointUrn: string;
+            otherEndpointName: string;
+        }>;
     };
 };
 

@@ -99,9 +99,10 @@ describe("scp <type> — the domain-local operator surface (ADR-0031)", () => {
           .map((o) => o.long)
           .filter((long): long is string => typeof long === "string")
           .filter((long) => /^--no-domain-local$/.test(long));
-        expect(negations, `${registry.name()} ${sub.name()} exposes ${negations.join(", ")}`).toEqual(
-          []
-        );
+        expect(
+          negations,
+          `${registry.name()} ${sub.name()} exposes ${negations.join(", ")}`
+        ).toEqual([]);
       }
     }
   });

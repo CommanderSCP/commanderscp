@@ -47,9 +47,10 @@ describe("ADR-0031 §3: domain-local entries match no sync scope", () => {
   it("is withheld from EVERY scope mode — including `full`", () => {
     const local = entry({ typeId: "component", urn: "urn:scp:o:component:vpc", domainLocal: true });
     for (const scope of ALL_MODES) {
-      expect(entryMatchesScope(local, scope), `mode ${scope.mode} leaked a domain-local entry`).toBe(
-        false
-      );
+      expect(
+        entryMatchesScope(local, scope),
+        `mode ${scope.mode} leaked a domain-local entry`
+      ).toBe(false);
     }
   });
 
@@ -114,9 +115,10 @@ describe("ADR-0031 §3: domain-local entries match no sync scope", () => {
     // to be honoured. Coercing would instead make `0`, `""` and `"false"` each mean something, which
     // is exactly the ambiguity a filter deciding what crosses a security boundary must not have.
     for (const notTrue of ["true", 1, {}, [], "yes"]) {
-      expect(isDomainLocalEntry(entry({ domainLocal: notTrue })), `${JSON.stringify(notTrue)}`).toBe(
-        false
-      );
+      expect(
+        isDomainLocalEntry(entry({ domainLocal: notTrue })),
+        `${JSON.stringify(notTrue)}`
+      ).toBe(false);
     }
     expect(isDomainLocalEntry(entry({ domainLocal: true }))).toBe(true);
   });
