@@ -7,7 +7,9 @@ import type {
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, changeWaveTargets, changeWaves, changePlans, objects } from "../db/schema.js";
-import { listExecutorBindingsForTarget } from "./executor-bindings-repo.js";
+import type { ExecutorBindingRow } from "./executor-bindings-repo.js";
+import { resolveBindingForTarget } from "./binding-resolution.js";
+import { ExecutorTypeSchema } from "@scp/schemas";
 import { listSourceMappingsForComponents } from "./source-mappings-repo.js";
 import { executionSystemConsoleBase, executorConsoleUrl, repoConsoleUrl } from "./console-urls.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
@@ -375,6 +377,14 @@ export async function getComponentPipeline(
   };
   const resolved = await resolvePipelineForTarget(tx, orgId, component.id);
 
+  // One binding resolution per routing Type, from the COMPONENT — the same starting rung the
+  // engine's wave targets use. Mapped onto stages inside the stage loop (see the comment there
+  // for the outcome semantics).
+  const componentResolutions = [];
+  for (const bindingType of ExecutorTypeSchema.options) {
+    componentResolutions.push(await resolveBindingForTarget(tx, orgId, component.id, bindingType));
+  }
+
   const topologyRow = resolved
     ? await tx.query.objects.findFirst({
         where: (t, { eq: eqOp, and: andOp }) =>
@@ -479,16 +489,42 @@ export async function getComponentPipeline(
       continue;
     }
 
-    // EVERY pipeline bound here, not just the first. A stage can carry an `image` build, an
-    // `infrastructure` plan/apply AND a `configuration` sync at once — `UNIQUE(org, target, type)`
-    // is what makes that legal, and the first version of this projection took `bindings[0]` and
-    // dropped the rest silently. Sorted by Type so `binding` (the compat field, `bindings[0]`) is a
-    // defined choice rather than whatever the planner returned first.
-    const rows = [...(await listExecutorBindingsForTarget(tx, orgId, seed.placement.id))].sort(
-      (a, b) => a.type.localeCompare(b.type)
-    );
+    // EVERY pipeline the ENGINE would run at this stage, from the SAME resolution reconcile uses
+    // (binding-resolution.ts, ADR-0027/0029) — never a bare placement-only listing. The listing
+    // version shipped first and produced a projection that CONTRADICTED the engine: a component-
+    // level binding (the owner's own-infra case, 2026-08-12 — checkout-api's terraform'd bucket)
+    // triggered fine but rendered as "No executor" / "no infrastructure pipeline is bound", a
+    // false alarm about a working pipeline.
+    //
+    // RESOLVED FROM THE COMPONENT, mapped onto stages by outcome — not resolved from the placement.
+    // The first attempt at this fix called `resolveBindingForTarget(placement.id)` and STILL missed
+    // the component rung, because `containsAncestors` seeds AT the component and pushes only its
+    // parents: a placement-rooted walk visits assembly/service/org but never the component itself.
+    // The engine does not have this problem because it resolves from the component (that is what a
+    // wave target carries) and lets `via_placement` name the stage-local winner. Mirror that:
+    //   direct        -> the component's own binding, acts at EVERY stage ("component")
+    //   via_placement -> a stage-local binding, acts ONLY at the stage whose placement it names
+    //   via_service   -> an ancestor's binding, acts at every stage (labelled with the ancestor's
+    //                    own object type — provenance READ, never inferred,
+    //                    resolution-provenance.test.ts)
+    //   ambiguous     -> nothing here: projecting the refusal is the reconcile/Decision path's job
+    //                    (ADR-0027 D2), and rendering nothing is what this view always did.
+    // `componentResolutions` is computed ONCE for the whole journey — it does not vary by stage.
+    const resolved: { row: ExecutorBindingRow; resolvedVia: string }[] = [];
+    for (const resolution of componentResolutions) {
+      if (!resolution.binding) continue;
+      if (resolution.outcome === "via_placement") {
+        if (resolution.viaPlacementObjectId !== seed.placement.id) continue;
+        resolved.push({ row: resolution.binding, resolvedVia: "placement" });
+      } else if (resolution.outcome === "via_service") {
+        resolved.push({ row: resolution.binding, resolvedVia: resolution.viaObjectTypeId });
+      } else {
+        resolved.push({ row: resolution.binding, resolvedVia: "component" });
+      }
+    }
+    resolved.sort((a, b) => a.row.type.localeCompare(b.row.type));
     const bindings: ComponentPipelineStage["bindings"] = [];
-    for (const row of rows) {
+    for (const { row, resolvedVia } of resolved) {
       let executionSystemName: string | null = null;
       let systemKind: string | null = null;
       let consoleBase: string | null = null;
@@ -514,7 +550,8 @@ export async function getComponentPipeline(
         }),
         category: categoryOfType(row.type),
         executionSystemId: row.executionSystemId ?? null,
-        executionSystemName
+        executionSystemName,
+        resolvedVia
       });
     }
 

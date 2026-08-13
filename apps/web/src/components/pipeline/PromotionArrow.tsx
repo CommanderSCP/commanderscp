@@ -23,7 +23,10 @@ const STATE_STYLES: Record<PromotionState, { bar: string; triangle: string; text
 };
 
 /**
- * A wide, top-to-bottom promotion arrow drawn between two vertically-stacked wave cards. Purely
+ * A wide, top-to-bottom promotion arrow drawn between two vertically-stacked wave cards — THE ONLY
+ * renderer of wave-to-wave connectors app-wide (design spec §2.13; the `→` literals died with it).
+ * `pending` is the plain no-verdict style: connectors with no gate verdict pass it rather than
+ * inventing one. Purely
  * presentational: the parent computes `state`/`label`/`detail`/`why` from real change data (wave
  * status, gate reasonTree, control-run evidence, freeze window, approval quorum) — this component
  * only paints it. `detail` is an optional one-line "why" the parent assembles from that real data

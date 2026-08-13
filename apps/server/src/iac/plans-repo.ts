@@ -779,12 +779,10 @@ export async function prepareApplyChecks(
     // `POST /relationships` endpoint (`routes/relationships.ts`) — must refuse an engine-owned
     // system-managed type (`coordinates`/`approves`) outright. Otherwise IaC apply becomes a second
     // injection vector for a `coordinates` membership edge that only needs `relationship:write`,
-    // bypassing the authority-checked campaign/initiative membership paths
+    // bypassing the authority-checked campaign membership path
     // (`graph/system-managed-relationships.ts` has the full rationale). Legitimate campaign IaC
     // membership goes exclusively through the authority-checked `campaign.properties.targets`
-    // declaration (`assertCampaignTargetsWithinAuthority`, above); initiative IaC membership is not
-    // supported (add members via `POST /initiatives/{id}/campaigns` / `scp initiative add-campaign`,
-    // which run the both-endpoint authority check).
+    // declaration (`assertCampaignTargetsWithinAuthority`, above).
     if (isSystemManagedRelationshipType(entry.typeId)) {
       throw forbidden(
         `relationship type '${entry.typeId}' is system-managed and cannot be created or deleted via an IaC plan/apply — ` +

@@ -369,6 +369,51 @@ describe("a component's pipeline is continuous", () => {
     ).toBe("configuration");
   });
 
+  it("resolves a COMPONENT-rung binding into the stage — the projection uses the engine's ladder", async () => {
+    // The owner's own-infra case (2026-08-12): checkout-api carried an `infrastructure` binding on
+    // the COMPONENT while running on a shared cluster — the engine's ladder (ADR-0027/0029,
+    // binding-resolution.ts) resolves it for every wave target, but the projection listed
+    // placement-rung rows only, so the journey said "No executor" / "no infrastructure pipeline is
+    // bound" about a pipeline that would in fact trigger. The projection must answer what the
+    // ENGINE would do, and say where the answer came from (resolvedVia, read off the resolver's
+    // own provenance — never inferred).
+    const component = await createOrphanComponent(admin, `component-rung-${uuidv7()}`);
+    await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
+    await admin.executors.putBinding(component.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${uuidv7()}`,
+      externalRef: "own-bucket-iac",
+      type: "infrastructure"
+    });
+
+    const p = await pipelineOf(component.id);
+    const infra = p.stages[0]!.bindings.find((b) => b.type === "infrastructure");
+    expect(infra, "the component-rung infrastructure binding must surface at the stage").toBeDefined();
+    expect(infra!.externalRef).toBe("own-bucket-iac");
+    expect(
+      (infra as { resolvedVia?: string }).resolvedVia,
+      "provenance is the resolver's own label for the rung that answered"
+    ).toBe("component");
+  });
+
+  it("labels a binding on the stage's own placement as resolvedVia 'placement'", async () => {
+    const component = await createOrphanComponent(admin, `placement-rung-${uuidv7()}`);
+    const placement = await admin.placements.create({
+      component: component.id,
+      deploymentTarget: gamma.id
+    });
+    await admin.executors.putBinding(placement.id, {
+      pluginModule: "fake-executor",
+      pluginInstanceId: `inst-${uuidv7()}`,
+      externalRef: "deploy-here",
+      type: "configuration"
+    });
+
+    const p = await pipelineOf(component.id);
+    const config = p.stages[0]!.bindings.find((b) => b.type === "configuration");
+    expect((config as { resolvedVia?: string })?.resolvedVia).toBe("placement");
+  });
+
   it("carries the SOURCE RULES that feed the component — the head of its journey", async () => {
     // Owner, 2026-08-03: "Still not seeing any repos." A `source_mappings` row is the durable answer
     // to "does a push there affect this?", so it renders for a component that has never released —

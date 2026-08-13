@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { CampaignStatus, ChangeState } from "@scp/schemas";
+import type { ChangeState } from "@scp/schemas";
 import {
   computeCampaignStatus,
-  computeInitiativeRollup,
   type CampaignWaveStatusInput
 } from "./campaign-status.js";
 
@@ -108,38 +107,5 @@ describe("computeCampaignStatus (pure, table-driven — BUILD_AND_TEST.md §4.1/
       waves: [wave(0, "succeeded", ["rolled_back", "rolled_back"]), wave(1, "blocked", [null])]
     });
     expect(status).toBe("rolled_back");
-  });
-});
-
-describe("computeInitiativeRollup (pure, table-driven — BUILD_AND_TEST.md §4.1/§8 M5)", () => {
-  it("no member campaigns -> proposed", () => {
-    expect(computeInitiativeRollup([])).toBe("proposed");
-  });
-
-  it("single campaign -> mirrors its own status", () => {
-    const statuses: CampaignStatus[] = ["completed"];
-    expect(computeInitiativeRollup(statuses)).toBe("completed");
-  });
-
-  it("one blocked campaign among several completed ones -> blocked (most actionable wins)", () => {
-    const statuses: CampaignStatus[] = ["completed", "blocked", "completed"];
-    expect(computeInitiativeRollup(statuses)).toBe("blocked");
-  });
-
-  it("failed outranks active/proposed but not blocked", () => {
-    expect(computeInitiativeRollup(["active", "failed", "proposed"])).toBe("failed");
-    expect(computeInitiativeRollup(["blocked", "failed"])).toBe("blocked");
-  });
-
-  it("mixed completed/rolled_back -> rolled_back (something reverted is worth surfacing)", () => {
-    expect(computeInitiativeRollup(["completed", "rolled_back", "completed"])).toBe("rolled_back");
-  });
-
-  it("all completed -> completed", () => {
-    expect(computeInitiativeRollup(["completed", "completed"])).toBe("completed");
-  });
-
-  it("mixed active/proposed -> active (something is moving)", () => {
-    expect(computeInitiativeRollup(["proposed", "active", "proposed"])).toBe("active");
   });
 });

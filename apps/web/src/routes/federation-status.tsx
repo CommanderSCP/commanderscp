@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Info } from "lucide-react";
 import { client } from "../lib/client";
 import { Badge } from "../components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "../components/ui/card";
@@ -10,28 +11,27 @@ import {
   TableHeader,
   TableRow
 } from "../components/ui/table";
+import { PageHeader } from "../components/ui/page-header";
+import { KeyValueList } from "../components/ui/key-value-list";
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { federationSelfKey, federationStatusKey } from "../lib/query-client";
+import { roleBadge } from "./outposts";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
+import { Notice } from "../components/ui/notice";
 import { QueryErrorNotice } from "../components/query-error";
+import { ObservationScopeNote } from "./outposts";
 
 function formatDateTime(value: string | null): string {
   if (!value) return "never";
   return new Date(value).toLocaleString();
 }
 
-function roleBadge(role: string): React.JSX.Element {
-  // "commander" (the single coordinating instance, DESIGN §13) gets the highlighted variant;
-  // "outpost", "retrans", and "unset" all render as the same plain badge — this page doesn't
-  // (yet) treat retrans as visually distinct, matching its minimal, not-yet-built-out semantics
-  // (ADR-0004).
-  return (
-    <Badge variant={role === "commander" ? "info" : "secondary"} className="capitalize">
-      {role}
-    </Badge>
-  );
-}
+
 
 function transferStatusBadge(status: string): React.JSX.Element {
-  const variant = status === "confirmed" ? "success" : status === "submitted" ? "info" : "outline";
+  const variant = status === "confirmed" ? "success" : status === "submitted" ? "info" : "neutral";
   return (
     <Badge variant={variant} className="capitalize">
       {status}
@@ -94,14 +94,22 @@ export function FederationStatusPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Federation</h1>
-        <p className="text-sm text-slate-500">
-          This domain&apos;s identity and its sync status with every paired peer. All figures are as
-          of this domain&apos;s own last-applied journal cursor, never a live probe of a peer
-          (DESIGN §13) — federated peers, especially air-gapped ones, may not be reachable at all.
-        </p>
-      </div>
+      <PageHeader
+        title="Federation status"
+        description="Snapshot as of this domain's last sync — not a live probe."
+        meta={
+          <span
+            className="inline-flex items-center gap-1 text-xs text-slate-500"
+            title={
+              "Every figure below is this domain's own last-applied journal cursor, never a live " +
+              "probe of a peer — federated peers, especially air-gapped ones, may not be reachable " +
+              "at all."
+            }
+          >
+            <Info className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
+          </span>
+        }
+      />
 
       <Card>
         <CardHeader>
@@ -112,6 +120,8 @@ export function FederationStatusPage(): React.JSX.Element {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {/* Literal "Loading…" text, not a Skeleton — `federation-status-crash.test.tsx`'s render
+              helper polls the HTML for this exact string to know when React Query has settled. */}
           {selfQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
           {selfQuery.isError && (
             <QueryErrorNotice
@@ -120,40 +130,17 @@ export function FederationStatusPage(): React.JSX.Element {
               testId="federation-self-error"
             />
           )}
-          {notInitialized && (
-            <p className="text-sm text-slate-500" data-testid="federation-not-initialized">
-              This domain has not been initialized for federation yet. Run{" "}
-              <code className="rounded bg-slate-100 px-1 py-0.5">scp federation init</code>.
-            </p>
-          )}
+          {notInitialized && <FederationInitForm />}
           {selfQuery.data && (
-            <dl className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">Name</dt>
-                <dd className="text-sm text-slate-900">{selfQuery.data.name}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">Role</dt>
-                <dd className="text-sm">{roleBadge(selfQuery.data.role)}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                  Domain ID
-                </dt>
-                <dd className="font-mono text-xs text-slate-700">{selfQuery.data.domainId}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                  Public key
-                </dt>
-                <dd
-                  className="truncate font-mono text-xs text-slate-700"
-                  title={selfQuery.data.publicKey}
-                >
-                  {selfQuery.data.publicKey}
-                </dd>
-              </div>
-            </dl>
+            <KeyValueList
+              columns={2}
+              items={[
+                { label: "Name", value: selfQuery.data.name },
+                { label: "Role", value: roleBadge(selfQuery.data.role) },
+                { label: "Domain ID", value: selfQuery.data.domainId, mono: true },
+                { label: "Public key", value: selfQuery.data.publicKey, mono: true }
+              ]}
+            />
           )}
         </CardContent>
       </Card>
@@ -162,7 +149,7 @@ export function FederationStatusPage(): React.JSX.Element {
         <CardHeader>
           <CardTitle>Peers</CardTitle>
           <CardDescription>
-            Sync freshness and recent bundle transfers per paired domain.
+            <ObservationScopeNote />
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -224,7 +211,7 @@ export function FederationStatusPage(): React.JSX.Element {
                         <div className="flex flex-col gap-1">
                           {(recentTransfers ?? []).slice(0, 5).map((transfer) => (
                             <div key={transfer.id} className="flex items-center gap-1.5 text-xs">
-                              <Badge variant="outline" className="capitalize">
+                              <Badge variant="neutral" className="capitalize">
                                 {transfer.direction}
                               </Badge>
                               <span className="text-slate-500">{transfer.kind}</span>
@@ -244,6 +231,91 @@ export function FederationStatusPage(): React.JSX.Element {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+/**
+ * The one write surface this page owns: `POST /federation/init` — the commander-config gap the
+ * owner flagged (2026-08-11). Everything else about "the commander's own config" deliberately
+ * lives elsewhere: per-outpost config is authored on each outpost's detail page and syncs down as
+ * commander-origin data, and instance-level operator settings (scan floors, tokens) are
+ * deployment env — not a tenant surface. The federation IDENTITY is the one self-config fact in
+ * the graph, it is set exactly once, and API-first parity (charter principle 3) says the UI must
+ * be able to do what `scp federation init` does.
+ *
+ * Once initialized the identity renders read-only above — the API exposes no rename/re-role, and
+ * offering an edit the server would refuse is the "UI offers writes the server 403s" defect class
+ * (M16.3) this repo already paid for once.
+ */
+function FederationInitForm(): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [role, setRole] = useState<"commander" | "outpost" | "retrans">("commander");
+  const initMutation = useMutation({
+    mutationFn: () => client.federation.init({ name: name.trim(), role }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: federationSelfKey() });
+      await queryClient.invalidateQueries({ queryKey: federationStatusKey() });
+    }
+  });
+
+  return (
+    <div className="flex flex-col gap-3" data-testid="federation-not-initialized">
+      <p className="text-sm text-slate-500">
+        This domain has no federation identity yet. Initializing names it and declares its role —
+        done once, before any pairing.
+      </p>
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (name.trim().length > 0) initMutation.mutate();
+        }}
+      >
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="federation-init-name" className="text-xs font-medium text-slate-600">
+            Domain name
+          </label>
+          <Input
+            id="federation-init-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="hq-commander"
+            className="w-56"
+            data-testid="federation-init-name"
+          />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="federation-init-role" className="text-xs font-medium text-slate-600">
+            Role
+          </label>
+          {/* Native select, deliberately: three fixed options and the ui Select is a heavier
+              Radix surface than this one-shot form warrants. */}
+          <select
+            id="federation-init-role"
+            value={role}
+            onChange={(e) => setRole(e.target.value as typeof role)}
+            className="h-9 rounded-md border border-slate-300 bg-white px-2 text-sm"
+            data-testid="federation-init-role"
+          >
+            <option value="commander">commander</option>
+            <option value="outpost">outpost</option>
+            <option value="retrans">retrans</option>
+          </select>
+        </div>
+        <Button type="submit" disabled={name.trim().length === 0 || initMutation.isPending}>
+          Initialize
+        </Button>
+      </form>
+      {initMutation.isError && (
+        <Notice tone="danger">
+          {initMutation.error instanceof Error ? initMutation.error.message : "Initialization failed"}
+        </Notice>
+      )}
+      <p className="text-xs text-slate-500">
+        Also available as <code className="rounded bg-slate-100 px-1 py-0.5">scp federation init</code>.
+      </p>
     </div>
   );
 }

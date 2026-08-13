@@ -180,16 +180,12 @@ import {
   listFreezes as listFreezesRequest,
   getFreeze as getFreezeRequest,
   policyEvaluate as policyEvaluateRequest,
-  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
+  // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
   proposeCampaign as proposeCampaignRequest,
   listCampaigns as listCampaignsRequest,
   getCampaign as getCampaignRequest,
   explainCampaign as explainCampaignRequest,
   rollbackCampaign as rollbackCampaignRequest,
-  proposeInitiative as proposeInitiativeRequest,
-  listInitiatives as listInitiativesRequest,
-  getInitiative as getInitiativeRequest,
-  addInitiativeCampaign as addInitiativeCampaignRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
   initFederation as initFederationRequest,
   getFederationSelf as getFederationSelfRequest,
@@ -320,19 +316,13 @@ import type {
   CreateFreezeRequest,
   FreezeListResponse,
   PolicyEvaluateResponse,
-  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
+  // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
   Campaign,
   CampaignListQuery,
   CampaignListResponse,
   CampaignExplainResponse,
   CreateCampaignRequest,
   RollbackCampaignResponse,
-  Initiative,
-  InitiativeListQuery,
-  InitiativeListResponse,
-  InitiativeRollupResponse,
-  CreateInitiativeRequest,
-  AddInitiativeCampaignRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
   FederationSelfInfo,
   InitFederationRequest,
@@ -1597,7 +1587,7 @@ export class ScpClient {
   }
 
   // -----------------------------------------------------------------------------------------
-  // M5 Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5) — `scp campaign
+  // M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5) — `scp campaign
   // create/status` (packages/cli) are thin callers of these, same layering as `changes` above.
   // No `accept`/`cancel` verbs: a campaign has no transition-guarded state machine of its own
   // (coordination/campaign-status.ts's module doc) — `status` is always derived live by `get`.
@@ -1639,30 +1629,6 @@ export class ScpClient {
     }
   };
 
-  readonly initiatives = {
-    propose: async (req: CreateInitiativeRequest): Promise<Initiative> => {
-      const result = await proposeInitiativeRequest({ client: this.client, body: req });
-      return unwrap(result);
-    },
-    list: async (query: InitiativeListQuery = { limit: 20 }): Promise<InitiativeListResponse> => {
-      const result = await listInitiativesRequest({ client: this.client, query });
-      return unwrap(result);
-    },
-    /** The initiative plus its member campaigns and the traversal-derived `rollupStatus`
-     *  (DESIGN §9.5) — always computed live, never stored. */
-    get: async (id: string): Promise<InitiativeRollupResponse> => {
-      const result = await getInitiativeRequest({ client: this.client, path: { id } });
-      return unwrap(result);
-    },
-    addCampaign: async (id: string, req: AddInitiativeCampaignRequest): Promise<void> => {
-      const result = await addInitiativeCampaignRequest({
-        client: this.client,
-        path: { id },
-        body: req
-      });
-      unwrap(result);
-    }
-  };
 
   // -----------------------------------------------------------------------------------------
   // M17.5: instance-scoped scan-requirement floors (ADR-0016 §3) — the two ABOVE-org tiers of the

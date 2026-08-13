@@ -1,14 +1,8 @@
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  ScpApiError,
-  type Change,
-  type ChangeState,
-  type ChangeWave,
-  type ChangeWaveTarget,
-  type Decision
-} from "@scp/sdk";
+import { ArrowRight } from "lucide-react";
+import type { Change, ChangeState } from "@scp/sdk";
 // M4 governance types: @scp/schemas, not @scp/sdk — @scp/sdk's index.ts only re-exports the M3
 // (and earlier) wire types; M4 never added ApprovalRequest/Freeze/etc. there. Importing
 // @scp/schemas directly here is within bounds (eslint.config.mjs's own restricted-imports rule:
@@ -20,18 +14,23 @@ import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query
 import { useIdParam } from "../lib/use-route-params";
 import { ForeignOriginNotice, isForeignOriginObject, useOwnDomainId } from "../lib/replica-origin";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Badge, type BadgeProps } from "../components/ui/badge";
+import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from "../components/ui/dialog";
-import { stateBadgeVariant } from "./change-list";
+import { PageHeader } from "../components/ui/page-header";
+import { Skeleton } from "../components/ui/skeleton";
+import { QueryErrorNotice } from "../components/query-error";
+import { stateBadgeVariant } from "../lib/change-format";
+import { PipelineWaveCard } from "../components/pipeline/PipelineWaveCard";
+import { useObjectNames } from "../lib/use-object-names";
+import { PromotionArrow } from "../components/pipeline/PromotionArrow";
+import { formatDate, wavePromotion } from "../components/pipeline/wave-status";
+import { WhyLink } from "../components/decision/WhyLink";
+import { ReasonDialog } from "../components/decision/ReasonDialog";
+import { decisionIdOf, decisionSummary } from "../components/decision/decision-format";
+
+// Legacy re-exports: service-board.tsx (group B) still imports these from here; the canonical home
+// is the shared pipeline module (design spec §2.13). Deleted once every importer migrates.
+export { formatDate, waveStatusVariant } from "../components/pipeline/wave-status";
 
 // States from which each guarded transition (coordination/transitions.ts LEGAL_TRANSITIONS) is
 // legal — mirrored here so the UI never offers an action the server would reject.
@@ -49,218 +48,6 @@ const CANCELLABLE_STATES: ChangeState[] = [
 const ACCEPTABLE_STATES: ChangeState[] = ["validating"];
 const ROLLBACKABLE_STATES: ChangeState[] = ["executing", "validating", "accepted"];
 
-export function formatDate(iso: string | null | undefined): string {
-  return iso ? new Date(iso).toLocaleString() : "—";
-}
-
-/** Wave/wave-target `status` -> Badge variant. Values are free-form strings server-side
- *  (ChangeWaveSchema/ChangeWaveTargetSchema), but the reconciliation loop only ever writes
- *  pending/running/succeeded/failed (DESIGN.md §9.3) — anything else falls back to `secondary`.
- *  Exported so the component-pipeline view (routes/change-pipeline.tsx) colors wave status the
- *  same way as the wave-progression strip here — single source of truth for the mapping. */
-export function waveStatusVariant(status: string): BadgeProps["variant"] {
-  switch (status) {
-    case "running":
-      return "info";
-    case "succeeded":
-      return "success";
-    case "failed":
-      return "destructive";
-    case "pending":
-      return "outline";
-    default:
-      return "secondary";
-  }
-}
-
-/** The currently-active wave (`running`) gets a highlighted border; `failed` a red one; others muted. */
-function waveCardClass(status: string): string {
-  switch (status) {
-    case "running":
-      return "border-blue-500 ring-1 ring-blue-500";
-    case "failed":
-      return "border-red-400";
-    case "succeeded":
-      return "border-green-300";
-    default:
-      return "border-slate-200 opacity-75";
-  }
-}
-
-function WaveCard({ wave }: { wave: ChangeWave }): React.JSX.Element {
-  return (
-    <Card className={`w-80 shrink-0 ${waveCardClass(wave.status)}`} data-testid="wave-card">
-      <CardHeader>
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="text-base">
-            Wave {wave.waveIndex}
-            {wave.name ? `: ${wave.name}` : ""}
-          </CardTitle>
-          <Badge variant={waveStatusVariant(wave.status)} data-testid="wave-status-badge">
-            {wave.status}
-          </Badge>
-        </div>
-        <p className="text-xs text-slate-500">
-          Started {formatDate(wave.startedAt)} · Completed {formatDate(wave.completedAt)}
-          {wave.requiresFanIn ? " · requires fan-in" : ""}
-        </p>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        {wave.targets.length === 0 && <p className="text-sm text-slate-500">No targets.</p>}
-        {wave.targets.map((target: ChangeWaveTarget) => (
-          <div
-            key={target.id}
-            className="rounded border border-slate-200 p-2 text-xs"
-            data-testid="wave-target-row"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-medium text-slate-900">
-                {target.targetName ?? target.targetUrn ?? target.targetObjectId}
-              </span>
-              <Badge variant={waveStatusVariant(target.status)}>{target.status}</Badge>
-            </div>
-            <p className="mt-1 text-slate-500">
-              attempt {target.attempt} · last observed {formatDate(target.lastObservedAt)}
-            </p>
-          </div>
-        ))}
-      </CardContent>
-    </Card>
-  );
-}
-
-function decisionSummary(decision: Decision): string {
-  const summary = decision.reasonTree.summary;
-  if (typeof summary === "string") return summary;
-  return JSON.stringify(decision.reasonTree);
-}
-
-/** Every gate/policy block surfaces as a 4xx carrying `decision_id` (DESIGN §6/§10.4) — this is
- *  the UI's one "Why?" plumbing point: pull it back out of a thrown `ScpApiError` so a failed
- *  accept/cancel/rollback can link straight to the Decision record that explains it, instead of
- *  just showing an opaque error string. */
-function decisionIdOf(error: unknown): string | undefined {
-  return error instanceof ScpApiError ? error.problem?.decision_id : undefined;
-}
-
-/** Anchors to the matching row already rendered in the Decisions timeline below (never a
- *  separate page — every Decision this change could ever be blocked by is already in that list)
- *  and gives it a moment of highlight so "Why?" visibly lands somewhere. */
-function WhyLink({ decisionId }: { decisionId: string }): React.JSX.Element {
-  return (
-    <a
-      href={`#decision-${decisionId}`}
-      className="font-medium text-red-700 underline hover:text-red-900"
-      data-testid="why-link"
-      onClick={() => {
-        document
-          .getElementById(`decision-${decisionId}`)
-          ?.scrollIntoView({ behavior: "smooth", block: "center" });
-      }}
-    >
-      Why?
-    </a>
-  );
-}
-
-/**
- * Small reusable dialog for the two reason-carrying transitions (cancel/rollback). `reasonRequired`
- * drives client-side enforcement of `RollbackChangeRequestSchema`'s `reason: z.string().min(1)`
- * (packages/schemas/src/changes.ts) — cancel's reason is optional server-side, so it stays
- * submittable empty.
- */
-function TransitionReasonDialog({
-  open,
-  title,
-  description,
-  reasonRequired,
-  pending,
-  errorMessage,
-  errorDecisionId,
-  onOpenChange,
-  onSubmit,
-  submitLabel,
-  testIdPrefix
-}: {
-  open: boolean;
-  title: string;
-  description: string;
-  reasonRequired: boolean;
-  pending: boolean;
-  errorMessage: string | null;
-  errorDecisionId?: string | undefined;
-  onOpenChange: (open: boolean) => void;
-  onSubmit: (reason: string) => void;
-  submitLabel: string;
-  testIdPrefix: string;
-}): React.JSX.Element {
-  const [reason, setReason] = useState("");
-
-  function handleSubmit(event: FormEvent<HTMLFormElement>): void {
-    event.preventDefault();
-    const trimmed = reason.trim();
-    if (reasonRequired && !trimmed) return;
-    onSubmit(trimmed);
-  }
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) setReason("");
-        onOpenChange(next);
-      }}
-    >
-      <DialogContent data-testid={`${testIdPrefix}-dialog`}>
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
-        </DialogHeader>
-        <form className="flex flex-col gap-3" onSubmit={handleSubmit}>
-          <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor={`${testIdPrefix}-reason`}
-              className="text-sm font-medium text-slate-700"
-            >
-              Reason{reasonRequired ? "" : " (optional)"}
-            </label>
-            <Input
-              id={`${testIdPrefix}-reason`}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              required={reasonRequired}
-              data-testid={`${testIdPrefix}-reason-input`}
-            />
-          </div>
-          {errorMessage && (
-            <p className="text-sm text-red-600">
-              {errorMessage}
-              {errorDecisionId && (
-                <>
-                  {" "}
-                  <WhyLink decisionId={errorDecisionId} />
-                </>
-              )}
-            </p>
-          )}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button
-              type="submit"
-              disabled={pending || (reasonRequired && reason.trim().length === 0)}
-              data-testid={`${testIdPrefix}-submit`}
-            >
-              {pending ? "Submitting…" : submitLabel}
-            </Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 /**
  * `/changes/{id}` (BUILD_AND_TEST.md §8 M3 UI requirement: "...+ wave progression view") — one
  * `client.changes.explain()` call gets the change, its compiled plan/waves, and every Decision
@@ -268,6 +55,9 @@ function TransitionReasonDialog({
  * the server-side reconciliation loop, not user action — `scp.change.transitioned` (SSE,
  * lib/use-event-stream.ts) only fires on whole-change state transitions, not intra-wave progress,
  * so polling is the only mechanism that reliably surfaces live wave movement here.
+ *
+ * Body order (design spec §4C): wave progression, then Decisions — the explainability core —
+ * directly after it, then Approvals/Control runs as compact cards.
  */
 export function ChangeDetailPage(): React.JSX.Element {
   const id = useIdParam();
@@ -346,18 +136,20 @@ export function ChangeDetailPage(): React.JSX.Element {
     }
   });
 
+  // Wave targets arrive as bare object ids (no name, no URN) — resolve them before the early
+  // returns so the hook order is stable (spec §4C; supply side of PipelineWaveCard's `nameOf`).
+  const targetNames = useObjectNames(
+    (explainQuery.data?.plan?.waves ?? []).flatMap((w) => w.targets.map((t) => t.targetObjectId))
+  );
+
   if (!id) {
     return <p className="text-sm text-red-600">Not found.</p>;
   }
   if (explainQuery.isLoading) {
-    return <p className="text-sm text-slate-500">Loading…</p>;
+    return <Skeleton className="h-24 w-full" />;
   }
   if (explainQuery.isError || !explainQuery.data) {
-    return (
-      <p className="text-sm text-red-600">
-        {explainQuery.error instanceof Error ? explainQuery.error.message : "Not found"}
-      </p>
-    );
+    return <QueryErrorNotice error={explainQuery.error ?? "Not found"} what="this change" />;
   }
 
   const { change, plan, decisions, controlRuns, waitStatus } = explainQuery.data;
@@ -385,78 +177,84 @@ export function ChangeDetailPage(): React.JSX.Element {
   const canRollback = ROLLBACKABLE_STATES.includes(change.state);
   // Provenance badge only — never a gate (see above).
   const foreign = isForeignOriginObject(change.originDomainId, ownDomainId);
+  const waves = plan?.waves ?? [];
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold text-slate-900" data-testid="change-name">
-              {change.name}
-            </h1>
+      <PageHeader
+        title={<span data-testid="change-name">{change.name}</span>}
+        description={
+          <>
+            {change.sourceKind ? `Source: ${change.sourceKind}` : "No source kind"}
+            {change.correlationKey && (
+              <>
+                {" · Correlation key: "}
+                <span className="break-all font-mono text-xs text-slate-600">{change.correlationKey}</span>
+              </>
+            )}
+          </>
+        }
+        meta={
+          <>
             <Badge variant={stateBadgeVariant(change.state)} data-testid="change-state-badge">
               {change.state}
             </Badge>
-            {change.emergency && <Badge variant="destructive">Emergency</Badge>}
+            {change.emergency && <Badge variant="danger">Emergency</Badge>}
             {foreign && change.originDomainId && (
               <ForeignOriginNotice originDomainId={change.originDomainId} />
             )}
-          </div>
-          <p className="text-sm text-slate-500">
-            {change.sourceKind ? `Source: ${change.sourceKind}` : "No source kind"}
-            {change.correlationKey ? ` · Correlation key: ${change.correlationKey}` : ""}
-          </p>
-          {change.rollbackOfObjectId && (
-            <p className="text-sm text-slate-500">
-              Rollback of{" "}
-              <Link
-                to="/changes/$id"
-                params={{ id: change.rollbackOfObjectId }}
-                className="font-mono text-xs text-slate-700 hover:underline"
+            {change.rollbackOfObjectId && (
+              <span className="text-xs text-slate-500">
+                Rollback of{" "}
+                <Link
+                  to="/changes/$id"
+                  params={{ id: change.rollbackOfObjectId }}
+                  className="font-mono text-slate-700 hover:underline"
+                >
+                  {change.rollbackOfObjectId}
+                </Link>
+              </span>
+            )}
+          </>
+        }
+        actions={
+          <>
+            <Link to="/changes/$id/pipeline" params={{ id }} data-testid="view-pipeline-link">
+              <Button variant="outline" size="sm">
+                Pipeline view
+                <ArrowRight className="size-4" strokeWidth={2} aria-hidden="true" />
+              </Button>
+            </Link>
+            {canAccept && (
+              <Button
+                onClick={() => acceptMutation.mutate()}
+                disabled={acceptMutation.isPending}
+                data-testid="accept-change-button"
               >
-                {change.rollbackOfObjectId}
-              </Link>
-            </p>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Link
-            to="/changes/$id/pipeline"
-            params={{ id }}
-            className="text-sm font-medium text-slate-600 underline hover:text-slate-900"
-            data-testid="view-pipeline-link"
-          >
-            Pipeline view →
-          </Link>
-          {canAccept && (
-            <Button
-              onClick={() => acceptMutation.mutate()}
-              disabled={acceptMutation.isPending}
-              data-testid="accept-change-button"
-            >
-              {acceptMutation.isPending ? "Accepting…" : "Accept"}
-            </Button>
-          )}
-          {canRollback && (
-            <Button
-              variant="outline"
-              onClick={() => setRollbackOpen(true)}
-              data-testid="rollback-change-button"
-            >
-              Rollback
-            </Button>
-          )}
-          {canCancel && (
-            <Button
-              variant="destructive"
-              onClick={() => setCancelOpen(true)}
-              data-testid="cancel-change-button"
-            >
-              Cancel
-            </Button>
-          )}
-        </div>
-      </div>
+                {acceptMutation.isPending ? "Accepting…" : "Accept"}
+              </Button>
+            )}
+            {canRollback && (
+              <Button
+                variant="outline"
+                onClick={() => setRollbackOpen(true)}
+                data-testid="rollback-change-button"
+              >
+                Rollback
+              </Button>
+            )}
+            {canCancel && (
+              <Button
+                variant="destructive"
+                onClick={() => setCancelOpen(true)}
+                data-testid="cancel-change-button"
+              >
+                Cancel
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {acceptMutation.isError && (
         <p className="text-sm text-red-600" data-testid="accept-error">
@@ -473,11 +271,15 @@ export function ChangeDetailPage(): React.JSX.Element {
       )}
 
       {waitStatus && (
-        <Card data-testid="wait-status-card">
+        <Card size="compact" data-testid="wait-status-card">
           <CardHeader>
             <CardTitle>
               {waitStatus.waiting
-                ? `Waiting on ${waitStatus.requirements.filter((r) => !r.satisfied).length} prerequisite(s)`
+                ? (() => {
+                    const outstanding = waitStatus.requirements.filter((r) => !r.satisfied).length;
+                    // Real pluralization (copy rule 6) — never "(s)".
+                    return `Waiting on ${outstanding} prerequisite${outstanding === 1 ? "" : "s"}`;
+                  })()
                 : "Coupled prerequisites"}
             </CardTitle>
           </CardHeader>
@@ -508,7 +310,7 @@ export function ChangeDetailPage(): React.JSX.Element {
                     )}
                   </Badge>
                 ) : (
-                  <Badge variant="secondary">outstanding</Badge>
+                  <Badge variant="neutral">outstanding</Badge>
                 )}
               </div>
             ))}
@@ -526,21 +328,26 @@ export function ChangeDetailPage(): React.JSX.Element {
               No plan compiled yet.
             </p>
           )}
-          {plan && plan.waves.length === 0 && (
+          {plan && waves.length === 0 && (
             <p className="text-sm text-slate-500">Plan compiled with no waves.</p>
           )}
-          {plan && plan.waves.length > 0 && (
-            <div className="flex gap-4 overflow-x-auto pb-2" data-testid="wave-progression">
-              {plan.waves.map((wave, index) => (
-                <div key={wave.id} className="flex items-center gap-4">
-                  <WaveCard wave={wave} />
-                  {index < plan.waves.length - 1 && (
-                    <span className="shrink-0 text-xl text-slate-300" aria-hidden="true">
-                      →
-                    </span>
-                  )}
-                </div>
-              ))}
+          {plan && waves.length > 0 && (
+            // Vertical, with PromotionArrow connectors — the same shape as the pipeline tab
+            // (§2.13: PromotionArrow is the only wave connector; the generalized PipelineWaveCard
+            // means this tab never shows less than the pipeline tab).
+            <div className="flex flex-col items-center gap-1" data-testid="wave-progression">
+              {waves.map((wave, index) => {
+                const next = waves[index + 1];
+                const promo = next ? wavePromotion(wave, next) : undefined;
+                return (
+                  <div key={wave.id} className="flex w-full flex-col items-center gap-1">
+                    {/* `testIdPrefix="wave"` keeps this tab's historical `wave-card` /
+                        `wave-status-badge` / `wave-target-row` testids on the same elements. */}
+                    <PipelineWaveCard wave={wave} waveNumber={index + 1} testIdPrefix="wave" nameOf={(tid) => targetNames.get(tid)?.name} />
+                    {promo && <PromotionArrow state={promo.state} label={promo.label} />}
+                  </div>
+                );
+              })}
             </div>
           )}
         </CardContent>
@@ -552,7 +359,7 @@ export function ChangeDetailPage(): React.JSX.Element {
         </CardHeader>
         <CardContent>
           {decisions.length === 0 ? (
-            <p className="text-sm text-slate-500">No decisions recorded yet.</p>
+            <p className="text-sm text-slate-500">No decisions yet.</p>
           ) : (
             <ul className="flex flex-col gap-3" data-testid="decision-timeline">
               {decisions.map((decision) => {
@@ -567,14 +374,14 @@ export function ChangeDetailPage(): React.JSX.Element {
                   <li
                     key={decision.id}
                     id={`decision-${decision.id}`}
-                    className={`rounded border p-3 text-sm ${
+                    className={`rounded-md border p-3 text-sm ${
                       isLinkedFromError ? "border-red-400 ring-2 ring-red-300" : "border-slate-200"
                     }`}
                     data-testid="decision-row"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium text-slate-900">{decision.kind}</span>
-                      <Badge variant={decision.verdict === "allow" ? "success" : "destructive"}>
+                      <Badge variant={decision.verdict === "allow" ? "success" : "danger"}>
                         {decision.verdict}
                       </Badge>
                     </div>
@@ -589,7 +396,7 @@ export function ChangeDetailPage(): React.JSX.Element {
       </Card>
 
       {approvalsQuery.data && approvalsQuery.data.items.length > 0 && (
-        <Card>
+        <Card size="compact">
           <CardHeader>
             <CardTitle>Approvals</CardTitle>
           </CardHeader>
@@ -603,7 +410,7 @@ export function ChangeDetailPage(): React.JSX.Element {
               {approvalsQuery.data.items.map((approval: ApprovalRequest) => (
                 <li
                   key={approval.id}
-                  className="flex items-center justify-between gap-3 rounded border border-slate-200 p-3 text-sm"
+                  className="flex items-center justify-between gap-3 rounded-md border border-slate-200 p-3 text-sm"
                   data-testid="approval-row"
                 >
                   <div>
@@ -611,7 +418,7 @@ export function ChangeDetailPage(): React.JSX.Element {
                       <span className="font-medium text-slate-900">
                         {approval.voteCount} / {approval.requiredCount} from {approval.fromRole}
                       </span>
-                      <Badge variant={approval.status === "satisfied" ? "success" : "outline"}>
+                      <Badge variant={approval.status === "satisfied" ? "success" : "neutral"}>
                         {approval.status}
                       </Badge>
                     </div>
@@ -637,7 +444,7 @@ export function ChangeDetailPage(): React.JSX.Element {
       )}
 
       {controlRuns.length > 0 && (
-        <Card>
+        <Card size="compact">
           <CardHeader>
             <CardTitle>Control runs</CardTitle>
           </CardHeader>
@@ -650,18 +457,18 @@ export function ChangeDetailPage(): React.JSX.Element {
               {controlRuns.map((run) => (
                 <li
                   key={run.id}
-                  className="rounded border border-slate-200 p-3 text-sm"
+                  className="rounded-md border border-slate-200 p-3 text-sm"
                   data-testid="control-run-row"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono text-xs text-slate-900">{run.controlObjectId}</span>
+                  <div className="flex min-w-0 items-center justify-between gap-2">
+                    <span className="break-all font-mono text-xs text-slate-900">{run.controlObjectId}</span>
                     <Badge
                       variant={
                         run.status === "pass"
                           ? "success"
                           : run.status === "warning"
-                            ? "info"
-                            : "destructive"
+                            ? "warning"
+                            : "danger"
                       }
                     >
                       {run.status}
@@ -670,7 +477,7 @@ export function ChangeDetailPage(): React.JSX.Element {
                   <p className="mt-1 text-xs text-slate-500">{formatDate(run.createdAt)}</p>
                   {run.detail && <p className="mt-1 text-slate-600">{run.detail}</p>}
                   {Object.keys(run.evidence).length > 0 && (
-                    <pre className="mt-1 overflow-x-auto rounded bg-slate-50 p-2 text-xs text-slate-600">
+                    <pre className="mt-1 overflow-x-auto rounded-md bg-slate-50 p-2 text-xs text-slate-600">
                       {JSON.stringify(run.evidence, null, 2)}
                     </pre>
                   )}
@@ -681,7 +488,7 @@ export function ChangeDetailPage(): React.JSX.Element {
         </Card>
       )}
 
-      <TransitionReasonDialog
+      <ReasonDialog
         open={cancelOpen}
         title="Cancel change"
         description="Cancelling stops this change before it is accepted. This cannot be undone."
@@ -701,7 +508,7 @@ export function ChangeDetailPage(): React.JSX.Element {
         testIdPrefix="cancel-change"
       />
 
-      <TransitionReasonDialog
+      <ReasonDialog
         open={rollbackOpen}
         title="Rollback change"
         description="Creates a new Change that rolls back this one. A reason is required."

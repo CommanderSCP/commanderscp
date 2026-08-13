@@ -1,10 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { ArrowRight } from "lucide-react";
 import type {
   ApprovalRequest,
   Change,
-  ChangeWave,
-  ChangeWaveTarget,
   ControlRun,
   Decision,
   ExecutorBinding,
@@ -20,8 +19,13 @@ import {
 import { useIdParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
-import { stateBadgeVariant } from "./change-list";
-import { formatDate } from "./change-detail";
+import { Button } from "../components/ui/button";
+import { PageHeader } from "../components/ui/page-header";
+import { Skeleton } from "../components/ui/skeleton";
+import { QueryErrorNotice } from "../components/query-error";
+import { stateBadgeVariant } from "../lib/change-format";
+import { formatDate, wavePromotion } from "../components/pipeline/wave-status";
+import { WhyLink } from "../components/decision/WhyLink";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
 import {
   BoundarySegmentStrip,
@@ -29,6 +33,7 @@ import {
 } from "../components/pipeline/BoundarySegmentStrip";
 import {
   PipelineWaveCard,
+  type PipelineWaveTargetLike,
   type PipelineWaveTargetLinks
 } from "../components/pipeline/PipelineWaveCard";
 
@@ -118,25 +123,6 @@ function blockDetail(
   return parts.length > 0 ? parts.join(" — ") : undefined;
 }
 
-/**
- * Inter-wave promotion state, derived ONLY from wave status (coordination-ui-views.md Layer A).
- * Wave-to-wave promotion is automatic server-side reconcile — the gate/approval machinery is a
- * change-level concern surfaced on the FINAL arrow, so we do not attribute an approval/deny to a
- * specific inter-wave arrow (that would be inventing a per-wave gate the model does not have).
- */
-function wavePromotion(upstream: ChangeWave, downstream: ChangeWave): PromotionVerdict {
-  if (upstream.status === "failed") return { state: "blocked", label: "upstream wave failed" };
-  if (downstream.status === "failed") return { state: "blocked", label: "wave failed" };
-  // KEEP-SENSE (ADR-0021 D2): this is an artifact advancing wave-to-wave — a *promotion*, the
-  // genus. It is NOT the change-lifecycle `accept` gate (that is `finalGate` below).
-  if (downstream.status === "running" || downstream.status === "succeeded")
-    return { state: "open", label: "promoted" };
-  if (downstream.status === "skipped") return { state: "pending", label: "skipped" };
-  if (upstream.status === "succeeded" && downstream.status === "pending")
-    return { state: "pending", label: "awaiting promotion" };
-  return { state: "pending" };
-}
-
 /** The awaiting-approval quorum, in the spec's "N/M · <role>" shape (observe-enrichment.md signal
  *  3), from the ApprovalRequest the view already loads — voteCount/requiredCount/fromRole. */
 function approvalQuorum(approval: ApprovalRequest): string {
@@ -195,36 +181,15 @@ function finalGate(
   return { state: "pending", label: "not yet at final gate" };
 }
 
-/** A "Why?" link into the change-detail Decisions timeline (its `#decision-<id>` anchor). Keeps the
- *  full explainability surface in one place rather than duplicating the timeline on this view. */
-function WhyLink({
-  changeId,
-  decisionId
-}: {
-  changeId: string;
-  decisionId: string;
-}): React.JSX.Element {
-  return (
-    <Link
-      to="/changes/$id"
-      params={{ id: changeId }}
-      hash={`decision-${decisionId}`}
-      className="font-medium text-red-700 underline hover:text-red-900"
-      data-testid="pipeline-why-link"
-    >
-      Why?
-    </Link>
-  );
-}
-
 /**
- * `/changes/{id}/pipeline` — the component pipeline view (coordination-ui-views.md view 2, phase 1,
- * Layer A). Renders the change's compiled plan as top-to-bottom wave cards with wide
- * promotion arrows between them colored by real gate/approval state. Layer A plus the first Layer B
- * signal: the per-wave version now renders the REAL synced revision reconcile observed from status()
- * (ADR-0008 decision 1), or an explicit placeholder until observed — never a fabricated version. Other
- * Layer B signals (canary %, scan verdicts, health) remain explicit placeholders. Reuses the same
- * `explain()` cache key as change-detail so the two views stay in sync.
+ * `/changes/{id}/pipeline` — the component pipeline view (coordination-ui-views.md view 2, phase 1;
+ * everything rendered is real Layer A data — the "Layer A (real data only)" caveat that used to sit
+ * in the subtitle lives here now, not in chrome (copy rule 2)). Renders the change's compiled plan
+ * as top-to-bottom wave cards with wide promotion arrows between them colored by real gate/approval
+ * state. The per-wave version renders the REAL synced revision reconcile observed from status()
+ * (ADR-0008 decision 1), or an explicit placeholder until observed — never a fabricated version.
+ * Other Layer B signals (canary %, scan verdicts, health) remain explicit placeholders. Reuses the
+ * same `explain()` cache key as change-detail so the two views stay in sync.
  */
 export function ChangePipelinePage(): React.JSX.Element {
   const id = useIdParam();
@@ -314,13 +279,9 @@ export function ChangePipelinePage(): React.JSX.Element {
   });
 
   if (!id) return <p className="text-sm text-red-600">Not found.</p>;
-  if (explainQuery.isLoading) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (explainQuery.isLoading) return <Skeleton className="h-24 w-full" />;
   if (explainQuery.isError || !explainQuery.data || !change) {
-    return (
-      <p className="text-sm text-red-600">
-        {explainQuery.error instanceof Error ? explainQuery.error.message : "Not found"}
-      </p>
-    );
+    return <QueryErrorNotice error={explainQuery.error ?? "Not found"} what="this change" />;
   }
 
   const { decisions, controlRuns, waitStatus } = explainQuery.data;
@@ -329,7 +290,7 @@ export function ChangePipelinePage(): React.JSX.Element {
   const boundarySegment = explainQuery.data.boundarySegment ?? null;
   const approvals = approvalsQuery.data?.items ?? [];
 
-  function linksFor(target: ChangeWaveTarget): PipelineWaveTargetLinks {
+  function linksFor(target: PipelineWaveTargetLike): PipelineWaveTargetLinks {
     const data = linksQuery.data;
     if (!data) return {};
     const bindings = data.bindingsByTarget[target.targetObjectId] ?? [];
@@ -351,39 +312,41 @@ export function ChangePipelinePage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1
-              className="text-2xl font-semibold text-slate-900"
-              data-testid="pipeline-change-name"
-            >
-              {change.name}
-            </h1>
+      <PageHeader
+        title={<span data-testid="pipeline-change-name">{change.name}</span>}
+        description={
+          <>
+            Component pipeline
+            {change.correlationKey && (
+              <>
+                {" · Correlation key: "}
+                <span className="break-all font-mono text-xs text-slate-600">{change.correlationKey}</span>
+              </>
+            )}
+          </>
+        }
+        meta={
+          <>
             <Badge variant={stateBadgeVariant(change.state)}>{change.state}</Badge>
-            {change.emergency && <Badge variant="destructive">Emergency</Badge>}
-          </div>
-          <p className="text-sm text-slate-500">
-            Component pipeline · Layer A (real data only)
-            {change.correlationKey ? ` · Correlation key: ${change.correlationKey}` : ""}
-          </p>
-        </div>
-        <Link
-          to="/changes/$id"
-          params={{ id }}
-          className="text-sm font-medium text-slate-600 underline hover:text-slate-900"
-          data-testid="pipeline-to-detail-link"
-        >
-          Full change detail →
-        </Link>
-      </div>
+            {change.emergency && <Badge variant="danger">Emergency</Badge>}
+          </>
+        }
+        actions={
+          <Link to="/changes/$id" params={{ id }} data-testid="pipeline-to-detail-link">
+            <Button variant="outline" size="sm">
+              Full change detail
+              <ArrowRight className="size-4" strokeWidth={2} aria-hidden="true" />
+            </Button>
+          </Link>
+        }
+      />
 
       {/* Upstream cross-change prerequisites (provides/requires + correlationKey). Real edges from
           explain.waitStatus — each links to the upstream change that satisfies it. */}
       {waitStatus && waitStatus.requirements.length > 0 && (
-        <Card data-testid="pipeline-upstream-card">
+        <Card size="compact" data-testid="pipeline-upstream-card">
           <CardHeader>
-            <CardTitle className="text-base">
+            <CardTitle>
               Upstream prerequisites {waitStatus.waiting ? "· waiting" : "· satisfied"}
             </CardTitle>
           </CardHeader>
@@ -391,10 +354,10 @@ export function ChangePipelinePage(): React.JSX.Element {
             {waitStatus.requirements.map((req) => (
               <div
                 key={`${req.key}@${req.at}`}
-                className="flex items-center justify-between gap-4 text-sm"
+                className="flex min-w-0 items-center justify-between gap-4 text-sm"
                 data-testid="pipeline-upstream-req"
               >
-                <span className="font-mono text-slate-700">
+                <span className="min-w-0 break-all font-mono text-slate-700">
                   {req.key} @ {req.atName ?? req.at}
                 </span>
                 {req.satisfied ? (
@@ -414,7 +377,7 @@ export function ChangePipelinePage(): React.JSX.Element {
                     )}
                   </Badge>
                 ) : (
-                  <Badge variant="secondary">outstanding</Badge>
+                  <Badge variant="neutral">outstanding</Badge>
                 )}
               </div>
             ))}
@@ -428,7 +391,14 @@ export function ChangePipelinePage(): React.JSX.Element {
           drives nothing. Every state comes from the server's real ledger rows and Decisions. */}
       <Card data-testid="pipeline-boundary-card">
         <CardHeader>
-          <CardTitle className="text-base">Domain boundary · transferred → validated</CardTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle>Domain boundary</CardTitle>
+            <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+              transferred
+              <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
+              validated
+            </span>
+          </div>
         </CardHeader>
         <CardContent>
           {boundarySegment ? (
@@ -437,7 +407,11 @@ export function ChangePipelinePage(): React.JSX.Element {
               why={
                 boundarySegment.validate.decisionId ? (
                   boundarySegment.validate.state === "refused" ? (
-                    <WhyLink changeId={id} decisionId={boundarySegment.validate.decisionId} />
+                    <WhyLink
+                      changeId={id}
+                      decisionId={boundarySegment.validate.decisionId}
+                      data-testid="pipeline-why-link"
+                    />
                   ) : (
                     <Link
                       to="/changes/$id"
@@ -460,7 +434,7 @@ export function ChangePipelinePage(): React.JSX.Element {
 
       {!plan && (
         <p className="text-sm text-slate-500" data-testid="pipeline-no-plan">
-          No plan compiled yet — nothing to render as pipeline waves.
+          No plan compiled yet.
         </p>
       )}
       {plan && waves.length === 0 && (
@@ -491,7 +465,11 @@ export function ChangePipelinePage(): React.JSX.Element {
                     detail={gate.detail}
                     why={
                       gate.decisionId ? (
-                        <WhyLink changeId={id} decisionId={gate.decisionId} />
+                        <WhyLink
+                          changeId={id}
+                          decisionId={gate.decisionId}
+                          data-testid="pipeline-why-link"
+                        />
                       ) : undefined
                     }
                   />
@@ -501,7 +479,7 @@ export function ChangePipelinePage(): React.JSX.Element {
           })}
           {/* Terminal marker so the final gate arrow reads as "→ Accepted". */}
           <Badge
-            variant={change.state === "accepted" ? "success" : "outline"}
+            variant={change.state === "accepted" ? "success" : "neutral"}
             data-testid="pipeline-terminal"
           >
             {change.state === "accepted" ? "Accepted" : "Acceptance target"}

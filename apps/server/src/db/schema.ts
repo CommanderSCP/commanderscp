@@ -954,11 +954,11 @@ export const instanceCosignKeys = pgTable(
 );
 
 // -------------------------------------------------------------------------------------------
-// M5 Campaigns & Initiatives (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Hand-authored
+// M5 Campaigns (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Hand-authored
 // grants/RLS/seed data in drizzle/0011_campaigns.sql (same pattern as 0002/0005/0007/0010).
 //
 // KEY DESIGN DECISION (documented at length in 0011's own header): a Campaign is NOT a second
-// transition-guarded state machine. `campaign`/`initiative` are graph objects (pre-seeded
+// transition-guarded state machine. `campaign` is a graph object (pre-seeded
 // built-in types, 0002 §5); what they need beyond the generic object model is exactly what a
 // Change needed — a compiled plan -> waves -> wave_targets shape, over the SAME
 // `coordination/plan-compiler.ts` pure function `change_plans`/`change_waves`/

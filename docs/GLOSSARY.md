@@ -517,7 +517,7 @@ How wide that is — how many non-test source lines and files, with the exact co
 
 ### commander
 
-**Definition.** The federation role designating the single instance that is the **source of truth for global configuration** — the domain registry, org structure, global policies, release topologies, campaign and initiative definitions. The charter's Global Coordination Layer. It also owns the **cross-boundary gate**: it consumes the scan verdict and cosign-signs its own promotion manifest.
+**Definition.** The federation role designating the single instance that is the **source of truth for global configuration** — the domain registry, org structure, global policies, release topologies, and campaign definitions. The charter's Global Coordination Layer. It also owns the **cross-boundary gate**: it consumes the scan verdict and cosign-signs its own promotion manifest.
 
 The commander **never runs build** ([ADR-0017](adr/0017-ownership-refinement.md) §2) and **never dials an outpost** for data (see `poke` for the one narrow, opt-in, contentless exception).
 

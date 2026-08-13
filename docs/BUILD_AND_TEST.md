@@ -429,7 +429,7 @@ The **workflow itself concluded `failure` on every one of those ten runs** (and 
 
 ## 8. Milestone Plan
 
-Ordered milestones from empty repo to MVP. Each is independently verifiable; its verification lands as permanent CI tests, so "done" is machine-checked from then on. Sequencing follows the charter's adoption phases (graph → services/relationships → changes+coordination → governance → campaigns/initiatives → federation → integrations); real executor integrations come last because the fake executor and webhook escape hatches let every engine milestone be fully exercised without them.
+Ordered milestones from empty repo to MVP. Each is independently verifiable; its verification lands as permanent CI tests, so "done" is machine-checked from then on. Sequencing follows the charter's adoption phases (graph → services/relationships → changes+coordination → governance → campaigns → federation → integrations); real executor integrations come last because the fake executor and webhook escape hatches let every engine milestone be fully exercised without them.
 
 ### M0 — Walking Skeleton
 - **Goal:** the smallest thing that is end-to-end real: compose up → API + DB + UI stub + one object registered via CLI, with the full contract pipeline already in place.
@@ -456,10 +456,10 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 - **Contents:** policy documents (CEL conditions, scope selectors, advisory/recommended/required, containment inheritance, stricter-wins); control objects + ControlPlugin bindings; webhook-control escape-hatch plugin; approval controls (N-of-M quorum, `approves` relationships, Ed25519 attestation signed at creation — design §10.2) actionable via API/UI/CLI; freeze windows + audited `freeze:override` with mandatory reason; emergency-change path; gates bound to wave boundaries and lifecycle edges; `decision_id` on every blocked 4xx; `scp policy evaluate`; UI "Why?" links everywhere.
 - **Done / verified by:** the **full golden path** becomes CI's flagship E2E: register → propose → required gate blocks (response carries `decision_id`) → approve via CLI → accept → `scp change explain` reconstructs policy version + control outcome + evidence → `scp audit verify`. Integration: stricter-wins resolution matrix; freeze blocks then override audits with reason; hybrid (scan AND approval) gate; policy evaluation is pure (same context snapshot → same verdict, property-tested).
 
-### M5 — Campaigns & Initiatives
-- **Goal:** coordinated multi-change activity and strategic roll-up over the existing engine — no new machinery.
-- **Contents:** Campaign objects that `coordinate` many Changes with their own plan/waves/gates; Initiative objects grouping campaigns with traversal-derived roll-up status; campaign-scoped rollback; `scp campaign create/status`; IaC constructs for Campaign/Initiative/ReleaseTopology; UI campaign board + initiative roll-up.
-- **Done / verified by:** E2E: a "patch 3 services" campaign compiles to per-target changes, wave 2 blocked by one target's failing control while wave 1 is accepted; campaign status aggregates correctly; initiative roll-up reflects it; campaign-level rollback reverts accepted targets. All engine invariants from M3/M4 re-verified at campaign scope in integration tests.
+### M5 — Campaigns
+- **Goal:** coordinated multi-change activity over the existing engine — no new machinery.
+- **Contents:** Campaign objects that `coordinate` many Changes with their own plan/waves/gates; campaign-scoped rollback; `scp campaign create/status`; IaC constructs for Campaign/ReleaseTopology; UI campaign board. *(An Initiative rung shipped in M5 and was removed in full on 2026-08-10 — [ADR-0030](adr/0032-remove-initiative.md).)*
+- **Done / verified by:** E2E: a "patch 3 services" campaign compiles to per-target changes, wave 2 blocked by one target's failing control while wave 1 is accepted; campaign status aggregates correctly; campaign-level rollback reverts accepted targets. All engine invariants from M3/M4 re-verified at campaign scope in integration tests.
 
 ### M6 — Federation Basics
 - **Goal:** the charter's Basic Federation: two domains exchanging signed journals, offline-first, with promotion-as-evidence semantics.
@@ -679,7 +679,6 @@ Every MVP Scope item from the charter, the milestone that delivers it, and the t
 | Controls | M4 | Integration: outcome taxonomy + evidence persistence; plugin-testkit conformance (webhook control) |
 | Change Model | M3 | Unit: exhaustive transition table; integration: full loop with fake executor |
 | Campaigns | M5 | E2E: multi-service campaign with blocked wave + campaign rollback |
-| Initiatives | M5 | Integration: traversal-derived roll-up status |
 | Governance Engine | M4 | E2E: golden path (block → approve → accept → explain); integration: freezes, emergency, hybrid gates |
 | REST API | M0 (contract pipeline) → all | Contract: committed OpenAPI + oasdiff gate + SDK-vs-live-server + idempotency fuzz |
 | Web UI | M0 stub / M2 v1 / M3–M5 views | E2E: Playwright suite incl. "Why?" Decision links; lint gate: UI imports only `@scp/sdk` |

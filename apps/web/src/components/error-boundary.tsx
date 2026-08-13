@@ -1,5 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { isResponseValidationError, queryErrorMessage } from "./query-error";
+import { Alert } from "./ui/alert";
+import { Button } from "./ui/button";
 
 /**
  * THE CONTAINMENT HALF OF ADR-0023 — `apps/web` HAD NO ERROR BOUNDARY AT ALL.
@@ -50,15 +52,18 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
     if (error === undefined) return this.props.children;
 
     const isContract = isResponseValidationError(error);
+    // Rendered through the shared Alert (design spec §2.3) — the diagnostic CONTENT below and the
+    // three testids are behaviour pinned by `error-boundary.test.tsx` and must not change.
     return (
       <div className="flex min-h-[60vh] items-center justify-center p-6">
-        <div
+        <Alert
+          tone="danger"
           role="alert"
           data-testid="app-error-boundary"
           data-error-kind={isContract ? "contract" : "render"}
-          className="w-full max-w-2xl rounded border border-red-300 bg-red-50 p-4 text-sm text-red-800"
+          className="w-full max-w-2xl p-4"
+          title="This page failed to render."
         >
-          <h1 className="text-base font-semibold">This page failed to render.</h1>
           {isContract ? (
             <p className="mt-2">
               This instance answered <code className="font-mono">{error.operation}</code> with a
@@ -84,15 +89,17 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBound
               ))}
             </ul>
           )}
-          <button
+          <Button
             type="button"
+            variant="outline"
+            size="sm"
             onClick={this.reset}
             data-testid="app-error-retry"
-            className="mt-3 rounded border border-red-400 bg-white px-3 py-1.5 text-sm font-medium text-red-800 hover:bg-red-100"
+            className="mt-3 border-red-400 text-red-800 hover:bg-red-100"
           >
             Try again
-          </button>
-        </div>
+          </Button>
+        </Alert>
       </div>
     );
   }

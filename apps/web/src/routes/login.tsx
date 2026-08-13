@@ -6,8 +6,9 @@ import { useAuth } from "../lib/auth-context";
 import { authConfigKey } from "../lib/query-client";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Card, CardContent } from "../components/ui/card";
 import { QueryErrorNotice } from "../components/query-error";
+import { BrandMark } from "../components/layout/BrandMark";
 
 /** `/login` (BUILD_AND_TEST.md §8 M2 item 2) — local-auth form, plus an OIDC "Continue with SSO" link. */
 export function LoginPage(): React.JSX.Element {
@@ -42,13 +43,17 @@ export function LoginPage(): React.JSX.Element {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle>CommanderSCP</CardTitle>
-          <CardDescription>Sign in to continue</CardDescription>
-        </CardHeader>
-        <CardContent>
+    <div className="flex min-h-screen items-center justify-center bg-army-50 p-4">
+      {/* §3.4: an accent top edge, no split layout / imagery — restraint keeps air-gap trivially
+          satisfied. The brand mark + wordmark replace the old CardHeader title, so this card is
+          `flush` at the top and pads its own content. */}
+      <Card className="w-full max-w-sm border-t-2 border-t-army-700 p-8 shadow-sm">
+        <div className="flex flex-col items-center gap-2 pb-6 text-center">
+          <BrandMark size="lg" />
+          <span className="text-lg font-semibold text-slate-900">CommanderSCP</span>
+          <p className="text-xs text-slate-500">Federated systems coordination.</p>
+        </div>
+        <CardContent className="p-0">
           <form className="flex flex-col gap-4" onSubmit={(e) => void handleSubmit(e)}>
             <div className="flex flex-col gap-1.5">
               <label htmlFor="username" className="text-sm font-medium text-slate-700">

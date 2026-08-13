@@ -1,5 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { ArrowRight, CircleHelp, Info } from "lucide-react";
+import { ComponentCrate } from "../components/icons/catalog-marks";
 import type {
   ServiceBoardAsOf,
   ServiceBoardAssembly,
@@ -11,9 +13,12 @@ import { client } from "../lib/client";
 import { declaredUnknowns, isAbsent } from "../lib/absent";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
+import { cn, focusRing } from "../lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { StatCard } from "../components/ui/stat-card";
+import { EmptyState } from "../components/ui/empty-state";
 import {
   Table,
   TableBody,
@@ -22,9 +27,52 @@ import {
   TableHeader,
   TableRow
 } from "../components/ui/table";
-import { stateBadgeVariant } from "./change-list";
+import { stateBadgeVariant } from "../lib/change-format";
 import { waveStatusVariant, formatDate } from "./change-detail";
 import type { ChangeState } from "@scp/schemas";
+
+type RouterLinkProps = React.ComponentProps<typeof Link>;
+
+/**
+ * An outline `Button`-styled router `Link` (spec §2.12/§4B: every `→` literal dies, replaced by
+ * `ArrowRight` on an outline Button). `Button` itself renders a `<button>`, so a navigating control
+ * cannot use it directly — this mirrors its `outline size="sm"` classes plus the shared focus ring
+ * (§2.10) onto a `Link` instead of duplicating a second visual treatment.
+ */
+function LinkButton({
+  to,
+  params,
+  hash,
+  children,
+  className,
+  "data-testid": testId
+}: {
+  to: RouterLinkProps["to"];
+  params?: Record<string, string>;
+  hash?: string;
+  children: React.ReactNode;
+  className?: string;
+  "data-testid"?: string;
+}): React.JSX.Element {
+  return (
+    <Link
+      to={to}
+      // Same cast as PageHeader/StatCard: the non-generic Link props extraction drops the
+      // object-params arm of the union; the object form is what TanStack accepts at runtime.
+      params={params as unknown as RouterLinkProps["params"]}
+      hash={hash}
+      data-testid={testId}
+      className={cn(
+        "inline-flex h-8 items-center justify-center gap-2 whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 text-xs font-medium text-slate-900 transition-colors hover:bg-slate-100",
+        focusRing,
+        className
+      )}
+    >
+      {children}
+      <ArrowRight className="size-4 shrink-0" strokeWidth={2} aria-hidden="true" />
+    </Link>
+  );
+}
 
 /** A "Why?" link into the blocked change's Decisions timeline (its `#decision-<id>` anchor) —
  *  same explainability surface the Phase-1 pipeline view links to (charter principle 6). */
@@ -57,16 +105,13 @@ function isUnknown(row: ServiceBoardRow, field: string): boolean {
 
 /** The honest-unknown marker. Deliberately NOT the muted dash used for observed-and-empty, and
  *  deliberately not a success colour — an operator must be able to tell "nothing to report" from
- *  "this instance cannot see". */
+ *  "this instance cannot see". Badge `unknown` is the ONLY sanctioned rendering of an unobservable
+ *  pill (spec §1.5/§2.2) — its `text-amber-700` + dashed border are test-pinned. */
 function UnknownHere({ title }: { title: string }): React.JSX.Element {
   return (
-    <span
-      className="inline-flex items-center gap-1 rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
-      title={title}
-      data-testid="board-unknown"
-    >
+    <Badge variant="unknown" icon={CircleHelp} title={title} data-testid="board-unknown">
       unknown here
-    </span>
+    </Badge>
   );
 }
 
@@ -121,12 +166,12 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
         </span>
       )}
       {attention.awaitingApproval && (
-        <Badge variant="secondary" data-testid="board-awaiting">
+        <Badge variant="warning" data-testid="board-awaiting">
           Awaiting approval
         </Badge>
       )}
       {attention.emergency && (
-        <Badge variant="destructive" data-testid="board-emergency">
+        <Badge variant="danger" data-testid="board-emergency">
           Emergency
         </Badge>
       )}
@@ -150,41 +195,59 @@ function AttentionCell({ row }: { row: ServiceBoardRow }): React.JSX.Element {
  * an absent chip would read as "this board does not show infra". Same rule as the component
  * pipeline's lanes.
  */
+/** The exact ADR-0007 Category spellings — the owner's consistency rule (2026-08-11): rendered
+ *  copy uses the wire vocabulary verbatim; "infra"/"config" abbreviations were drift. */
 export const CATEGORY_LABEL: Record<string, string> = {
   build: "build",
-  infrastructure: "infra",
-  configuration: "config"
+  infrastructure: "infrastructure",
+  configuration: "configuration"
 };
 
 export function PipelineChips({ row }: { row: ServiceBoardRow }): React.JSX.Element {
   return (
-    <div className="flex flex-wrap gap-1" data-testid="board-pipelines">
+    <div className="flex flex-wrap items-center gap-1.5" data-testid="board-pipelines">
       {row.pipelines.map((p) => {
-        const tone = !p.bound
-          ? "bg-slate-50 text-slate-400"
-          : p.status === "succeeded"
-            ? "bg-green-50 text-green-700"
+        const label = CATEGORY_LABEL[p.category] ?? p.category;
+        // Not-bound and bound-but-never-run are EXPECTED states, not signals — they recede as plain
+        // text instead of an actionable Badge competing for the same attention (spec §4B PIPELINES
+        // column). Only a real run outcome earns a tone.
+        if (!p.bound || p.status === null) {
+          const state = !p.bound ? "not bound" : "never run";
+          return (
+            <span
+              key={p.category}
+              className="whitespace-nowrap text-xs text-slate-400"
+              data-testid="board-pipeline-chip"
+              data-category={p.category}
+              data-bound={String(p.bound)}
+              title={
+                p.bound
+                  ? undefined
+                  : `no ${p.category} executor is bound for this component, so nothing can run it`
+              }
+            >
+              {label} · {state}
+            </span>
+          );
+        }
+        const tone =
+          p.status === "succeeded"
+            ? "success"
             : p.status === "failed" || p.status === "blocked"
-              ? "bg-red-50 text-red-700"
-              : p.status
-                ? "bg-amber-50 text-amber-700"
-                : "bg-slate-100 text-slate-500";
-        const state = !p.bound ? "not bound" : (p.status ?? "never run");
+              ? "danger"
+              : "info";
         return (
-          <span
+          <Badge
             key={p.category}
-            className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-medium ${tone}`}
+            variant={tone}
+            className="whitespace-nowrap"
             data-testid="board-pipeline-chip"
             data-category={p.category}
-            data-bound={String(p.bound)}
-            title={
-              p.bound
-                ? `${p.category} pipeline — ${state}`
-                : `no ${p.category} executor is bound for this component, so nothing can run it`
-            }
+            data-bound="true"
+            title={`${p.category} pipeline — ${p.status}`}
           >
-            {CATEGORY_LABEL[p.category] ?? p.category} · {state}
-          </span>
+            {label} · {p.status}
+          </Badge>
         );
       })}
     </div>
@@ -223,7 +286,7 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
         </Link>
         {row.activeFreeze && (
           <Badge
-            variant="secondary"
+            variant="warning"
             className="ml-2"
             title={`Frozen until ${formatDate(row.activeFreeze.endsAt)}: ${row.activeFreeze.reason}`}
             data-testid="board-component-freeze"
@@ -239,25 +302,26 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
         {/* The pipeline link points at the COMPONENT, always — a pipeline is durable and exists with
             nothing in flight. It used to be conditional on `latestChangeId`, which is how a stable
             component ended up with no pipeline to open at all (coordination-ui-views.md §2). */}
-        <div className="flex flex-col gap-0.5">
-          <Link
+        <div className="flex flex-col gap-1">
+          <LinkButton
             to="/components/$idOrUrn"
             params={{ idOrUrn: row.component.id }}
-            className="font-medium text-slate-700 underline hover:text-slate-900"
+            className="w-fit"
             data-testid="board-pipeline-link"
           >
-            Open pipeline →
-          </Link>
+            Open pipeline
+          </LinkButton>
         </div>
         {row.latestChangeId ? (
-          <div className="flex flex-col gap-0.5">
+          <div className="mt-1 flex flex-col gap-0.5">
             <Link
               to="/changes/$id/pipeline"
               params={{ id: row.latestChangeId }}
-              className="text-xs text-slate-600 underline hover:text-slate-900"
+              className="inline-flex items-center gap-1 text-xs text-slate-600 underline hover:text-slate-900"
               data-testid="board-run-link"
             >
-              {row.changeName ?? "Latest run"} →
+              {row.changeName ?? "Latest run"}
+              <ArrowRight className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
             </Link>
             {isUnknown(row, "changeState") ? (
               // The driving domain has not reported a lifecycle state for this
@@ -277,13 +341,14 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
               )
             )}
             {row.driver && !row.driver.drivenHere && (
-              <span
-                className="inline-flex w-fit items-center rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+              <Badge
+                variant="unknown"
+                className="w-fit"
                 title={`This change is driven by domain ${row.driver.originDomainId ?? "(unknown)"} and replicated here read-only. Its state above is what that domain last reported; its waves, blocked state, approvals${isUnknown(row, "activeFreeze") ? " and any freeze it declared" : ""} are not observable from this instance.`}
                 data-testid="board-not-driven-here"
               >
                 Not driven here
-              </span>
+              </Badge>
             )}
           </div>
         ) : changeUnknown ? (
@@ -312,12 +377,6 @@ export function BoardRow({ row }: { row: ServiceBoardRow }): React.JSX.Element {
       </TableCell>
       <TableCell>
         <AttentionCell row={row} />
-      </TableCell>
-      <TableCell>
-        {/* Layer B — never a fabricated version/health. */}
-        <span className="text-slate-400" title="Not captured yet (Layer B)">
-          —
-        </span>
       </TableCell>
     </TableRow>
   );
@@ -407,34 +466,78 @@ export function BoardAsOfLabel({
 
 export function BoardSummary({
   summary,
-  stableUnknown
+  stableUnknown,
+  componentsBelowAssemblies = 0
 }: {
   summary: ServiceBoardSummary;
   stableUnknown: boolean;
+  /**
+   * How many components sit under an ASSEMBLY of this service rather than directly under it.
+   *
+   * The four buckets are computed over `rows`, and `rows` is deliberately direct-children-only
+   * (intermediate-grouping D3 — an assembly is reported separately, never flattened into its
+   * descendants). That is a decided model, and this does not change it. What it changes is the
+   * READING: a service whose components all live in an assembly renders four honest zeroes, and
+   * four zeroes with no qualifier says "nothing here" when the true statement is "nothing HELD
+   * DIRECTLY here". Same class as `stableUnknown` above — a number that is arithmetically right
+   * and, unlabelled, tells the operator something false.
+   */
+  componentsBelowAssemblies?: number;
 }): React.JSX.Element {
   return (
-    <div className="flex flex-wrap gap-3" data-testid="board-summary">
-      <SummaryStat label="Releasing" value={summary.releasing} variant="info" />
-      <SummaryStat label="Blocked" value={summary.blocked} variant="destructive" />
+    <div className="flex flex-wrap items-center gap-3" data-testid="board-summary">
+      <StatCard
+        data-testid="board-summary-releasing"
+        label={<Badge variant="info">Releasing</Badge>}
+        value={summary.releasing}
+      />
+      <StatCard
+        data-testid="board-summary-blocked"
+        label={<Badge variant="danger">Blocked</Badge>}
+        value={summary.blocked}
+      />
       {/* `success` ONLY while the count is a real observation. When a peer's sync scope withholds
           change objects, this number mixes settled components with components whose change simply
           never arrived — a green badge over it is the fabricated all-clear in its purest form. */}
-      <SummaryStat
-        label="Stable"
-        value={summary.stable}
-        variant={stableUnknown ? "outline" : "success"}
-        title={
-          stableUnknown
-            ? "NOT an all-clear on this deployment. Either a federation peer is not sending this instance the change objects it would need (its own scope, or the sending side's), or the upstream this board depends on is overdue by its own sync cadence — see the 'as of' line under the service name. Counted for shape, not asserted as fact."
-            : undefined
+      <StatCard
+        data-testid="board-summary-stable"
+        label={
+          <Badge
+            variant={stableUnknown ? "unknown" : "success"}
+            icon={stableUnknown ? CircleHelp : undefined}
+            title={
+              stableUnknown
+                ? "NOT an all-clear on this deployment. Either a federation peer is not sending this instance the change objects it would need (its own scope, or the sending side's), or the upstream this board depends on is overdue by its own sync cadence — see the 'as of' line under the service name. Counted for shape, not asserted as fact."
+                : undefined
+            }
+          >
+            Stable
+          </Badge>
         }
+        value={summary.stable}
       />
-      <SummaryStat
-        label="Not driven here"
+      <StatCard
+        data-testid="board-summary-not-driven-here"
+        label={
+          <Badge
+            variant="warning"
+            title="Rows whose latest change is another domain's — replicated here read-only. Their waves, blocked state and approvals are NOT observable from this instance; they are deliberately not counted as stable."
+          >
+            Not driven here
+          </Badge>
+        }
         value={summary.notDrivenHere}
-        variant="outline"
-        title="Rows whose latest change is another domain's — replicated here read-only. Their waves, blocked state and approvals are NOT observable from this instance; they are deliberately not counted as stable."
       />
+      {componentsBelowAssemblies > 0 && (
+        <span
+          className="inline-flex items-center gap-1 text-xs text-amber-700"
+          data-testid="board-summary-scope-note"
+          title="These four counts are computed over components held DIRECTLY by this service. Components inside an assembly are counted on that assembly's own board, not here."
+        >
+          <Info className="size-3.5 shrink-0" strokeWidth={1.75} aria-hidden="true" />
+          {componentsBelowAssemblies} more in assemblies below (directly-held components only)
+        </span>
+      )}
     </div>
   );
 }
@@ -467,25 +570,35 @@ export function BoardSummary({
 export function BoardAssemblies({ assemblies }: { assemblies: ServiceBoardAssembly[] }) {
   if (assemblies.length === 0) return null;
   return (
-    <Card data-testid="board-assemblies">
+    <Card size="compact" data-testid="board-assemblies">
       <CardHeader>
         <CardTitle className="text-base">Assemblies ({assemblies.length})</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-1">
-        {assemblies.map((a) => (
-          <div key={a.id} className="text-sm" data-testid="board-assembly">
-            <Link
-              to="/$basePath/$idOrUrn"
-              params={{ basePath: "assemblies", idOrUrn: a.id }}
-              className="font-medium text-slate-900 hover:underline"
-            >
-              {a.name}
-            </Link>{" "}
-            <span className="text-xs text-slate-500">
-              {a.componentCount} component{a.componentCount === 1 ? "" : "s"}
-            </span>
-          </div>
-        ))}
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Name</TableHead>
+              <TableHead>Components</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {assemblies.map((a) => (
+              <TableRow key={a.id} data-testid="board-assembly">
+                <TableCell className="font-medium text-slate-900">{a.name}</TableCell>
+                <TableCell className="text-slate-600">
+                  {a.componentCount} component{a.componentCount === 1 ? "" : "s"}
+                </TableCell>
+                <TableCell className="text-right">
+                  <LinkButton to="/$basePath/$idOrUrn" params={{ basePath: "assemblies", idOrUrn: a.id }}>
+                    Open
+                  </LinkButton>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </CardContent>
     </Card>
   );
@@ -513,6 +626,10 @@ export function ServiceBoardPage(): React.JSX.Element {
 
   const board = boardQuery.data;
   const { service, rows, summary, serviceFreeze } = board;
+  const componentsBelowAssemblies = board.childAssemblies.reduce(
+    (n, a) => n + a.componentCount,
+    0
+  );
   // BOARD-LEVEL unknowns (as opposed to a row's own): today, freeze visibility on a federated
   // deployment. Freezes never ride the sync journal in either direction, so on an instance with a
   // federation peer NO row's "not frozen" — driven here or not — can be read as "no freeze applies".
@@ -526,14 +643,17 @@ export function ServiceBoardPage(): React.JSX.Element {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold text-slate-900" data-testid="board-service-name">
+            <h1
+              className="text-2xl font-semibold tracking-tight text-slate-900"
+              data-testid="board-service-name"
+            >
               {service.name}
             </h1>
             {serviceFreeze && (
               <Badge
-                variant="secondary"
+                variant="warning"
                 title={`Frozen until ${formatDate(serviceFreeze.endsAt)}: ${serviceFreeze.reason}`}
                 data-testid="board-service-freeze"
               >
@@ -541,26 +661,24 @@ export function ServiceBoardPage(): React.JSX.Element {
               </Badge>
             )}
           </div>
-          <p className="font-mono text-xs text-slate-500">{service.urn}</p>
-          <p className="mt-1 text-sm text-slate-500">
-            Service release board · Layer A (real data only)
-          </p>
+          <p className="break-all font-mono text-xs text-slate-500">{service.urn}</p>
+          <p className="mt-1 text-sm text-slate-500">Service release board</p>
           {/* DESIGN §13: label the upstream the board depends on, never present it as live status. */}
           <BoardAsOfLabel asOf={board.asOf} />
         </div>
         <div className="flex items-center gap-2">
-          <Link
+          <LinkButton
             to="/$basePath/$idOrUrn"
             params={{ basePath: "services", idOrUrn: service.id }}
-            className="text-sm font-medium text-slate-600 underline hover:text-slate-900"
             data-testid="board-to-detail-link"
           >
-            Service detail →
-          </Link>
+            Service detail
+          </LinkButton>
           {/* Operator control — deferred to the controls phase (Phase 5). Present to match the
               mockup, but intentionally NOT wired to a mutation here (honesty over completeness). */}
           <Button
             variant="outline"
+            size="sm"
             disabled
             title="Declaring a freeze window is a controls-phase feature (Phase 5) — not available on the read board yet."
             data-testid="board-freeze-service"
@@ -573,35 +691,55 @@ export function ServiceBoardPage(): React.JSX.Element {
       {/* Summary strip: releasing / blocked / stable / not driven here. The fourth is NOT a fourth
           flavour of fine — it is the count of rows whose latest change this instance does not drive
           and therefore cannot assess, so it carries a warning (never `success`) treatment. */}
-      <BoardSummary summary={summary} stableUnknown={changeVisibilityUnknown} />
+      <BoardSummary
+        summary={summary}
+        stableUnknown={changeVisibilityUnknown}
+        componentsBelowAssemblies={componentsBelowAssemblies}
+      />
 
       <BoardAssemblies assemblies={board.childAssemblies} />
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Components ({rows.length})</CardTitle>
+          <CardTitle className="flex items-center gap-1.5 text-base">
+            Components ({rows.length})
+            {/* Layer B — never a fabricated version/health. The column this used to be a header
+                tooltip on is gone; the one honest fact left about it lives here instead. */}
+            <span title="Per-wave image version/digest and component health are not captured yet.">
+              <Info className="size-3.5 text-slate-400" strokeWidth={1.75} aria-hidden="true" />
+            </span>
+          </CardTitle>
         </CardHeader>
         <CardContent>
           {rows.length === 0 ? (
-            <p className="text-sm text-slate-500" data-testid="board-empty">
-              This service contains no components.
-            </p>
+            <EmptyState
+              icon={ComponentCrate}
+              data-testid="board-empty"
+              message={
+                componentsBelowAssemblies > 0
+                  ? /* "This service contains no components" was simply FALSE here: the service has
+                       components, they sit one rung down inside an assembly. A board that reports a
+                       service as empty while the graph holds its components is the same failure as
+                       a fabricated all-clear — it is just the emptier direction. */
+                    `No components are held directly by this service — ${componentsBelowAssemblies} ` +
+                    `${componentsBelowAssemblies === 1 ? "component sits" : "components sit"} in the ` +
+                    `${board.childAssemblies.length === 1 ? "assembly" : "assemblies"} above.`
+                  : "No components yet."
+              }
+            />
           ) : (
             <Table data-testid="board-table">
               <TableHeader>
                 <TableRow>
                   <TableHead>Component</TableHead>
-                  <TableHead title="One chip per pipeline this component runs (ADR-0007 Category)">
-                    Pipelines
-                  </TableHead>
+                  {/* The ADR-0007 Category grouping is explained in the PipelineChips doc comment
+                      above, not repeated here — copy rule 2 keeps ADR citations out of rendered
+                      (including hover) copy. */}
+                  <TableHead title="One chip per pipeline this component runs">Pipelines</TableHead>
                   <TableHead>Latest change</TableHead>
                   <TableHead>Current wave</TableHead>
                   <TableHead>Waves</TableHead>
                   <TableHead>Attention</TableHead>
-                  {/* Layer B — not modeled today; explicit placeholder header. */}
-                  <TableHead title="Per-wave image version/digest and health are not captured yet (Layer B)">
-                    Version / Health
-                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -615,57 +753,28 @@ export function ServiceBoardPage(): React.JSX.Element {
       </Card>
 
       {changeVisibilityUnknown && (
-        <p
-          className="w-fit rounded border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
+        <Badge
+          variant="unknown"
+          icon={Info}
+          className="w-fit"
           data-testid="board-change-visibility-unknown"
+          title="Change visibility is limited on this instance: a federation peer's sync scope does not carry change objects, so a component with no change here may simply be one whose change was never sent. The Stable count is not an all-clear."
         >
-          Change visibility is limited on this instance: a federation peer&apos;s sync scope does
-          not carry change objects, so a component with no change here may simply be one whose
-          change was never sent. The Stable count is not an all-clear.
-        </p>
+          Change visibility limited
+        </Badge>
       )}
 
       {freezeVisibilityUnknown && (
-        <p
-          className="w-fit rounded border border-dashed border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800"
+        <Badge
+          variant="unknown"
+          icon={Info}
+          className="w-fit"
           data-testid="board-freeze-visibility-unknown"
+          title={`Freeze visibility is limited to this domain: freezes are never replicated between federated instances, so an unfrozen row means "no freeze declared here" — not "no freeze applies".`}
         >
-          Freeze visibility is limited to this domain: freezes are never replicated between
-          federated instances, so an unfrozen row means &quot;no freeze declared here&quot; — not
-          &quot;no freeze applies&quot;.
-        </p>
+          Freeze visibility limited
+        </Badge>
       )}
-
-      <p className="text-xs text-slate-400">
-        Per-wave image version/digest and component health are not modeled yet (Layer B) and are
-        shown as &quot;—&quot;. Freezes are read-only here; declaring or lifting one lands in a
-        later controls phase. A change driven by another domain is replicated here read-only: this
-        instance can show the state that domain last reported, but its waves, blocked state and
-        approvals are marked &quot;unknown here&quot; rather than rendered as clear.
-      </p>
-    </div>
-  );
-}
-
-function SummaryStat({
-  label,
-  value,
-  variant,
-  title
-}: {
-  label: string;
-  value: number;
-  variant: "info" | "destructive" | "success" | "outline";
-  title?: string;
-}): React.JSX.Element {
-  return (
-    <div
-      className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2"
-      data-testid={`board-summary-${label.toLowerCase().replace(/\s+/g, "-")}`}
-      title={title}
-    >
-      <span className="text-2xl font-semibold text-slate-900">{value}</span>
-      <Badge variant={variant}>{label}</Badge>
     </div>
   );
 }

@@ -29,7 +29,7 @@ export interface CreateComponentInServiceInput {
  * overlay) call `createObject` directly and never reach this path, so they stay permissive by
  * construction.
  *
- * Modeled on `coordination/initiative-repo.ts`'s `proposeInitiative` — the same object +
+ * Modeled on `coordination/campaign-repo.ts`'s `proposeCampaign` — the same object +
  * both-endpoint authz + edge + Decision shape (NOT campaign/change, which store targets as a
  * properties array). The `contains` cardinality (one_to_many) plus migration 0022's partial unique
  * index enforce one-service-per-component for free, and `createRelationship`'s endpoint-type check

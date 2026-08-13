@@ -40,7 +40,6 @@ import { registerPlacementRoutes } from "./routes/placements.js";
 import { registerServiceRoutes } from "./routes/services.js";
 import { registerChangeSourceRoutes } from "./routes/change-sources.js";
 import { registerCampaignRoutes } from "./routes/campaigns.js";
-import { registerInitiativeRoutes } from "./routes/initiatives.js";
 import { registerFederationRoutes } from "./routes/federation.js";
 import { registerExecutorRoutes } from "./routes/executors.js";
 import { registerHealthRoutes } from "./routes/health.js";
@@ -232,10 +231,9 @@ export async function buildApp(
   registerInstanceScanFloorRoutes(app, deps); // M17.5 instance-scoped scan floors (ADR-0016)
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)
-  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — coordinate many
+  // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — coordinate many
   // Changes over the same M3/M4 machinery; no new engine, see coordination/campaign-status.ts.
   registerCampaignRoutes(app, deps);
-  registerInitiativeRoutes(app, deps);
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN.md §13) — sync journal export/import,
   // peer pairing, Promotion Bundles, overlays, hand-fill. See routes/federation.ts's module doc.
   registerFederationRoutes(app, deps);
@@ -280,7 +278,6 @@ export async function buildApp(
     });
 
     const webIndexHtmlPath = path.join(webDistRoot, "index.html");
-    let cachedIndexHtml: string | undefined;
 
     // Low-priority catch-all: find-my-way (Fastify's router) always prefers the exact/static
     // routes @fastify/static just registered over this wildcard, for any request that lands here
@@ -288,6 +285,22 @@ export async function buildApp(
     // client-side routes (`/services`, `/graph/abc`, ...) that have no matching file on disk. The
     // explicit `/api/`, `/static/`, `/healthz` guard is belt-and-braces on top of that route
     // precedence, so an unmatched API path still 404s as JSON rather than getting served HTML.
+    //
+    // READ FROM DISK EVERY TIME, DELIBERATELY. This used to memoize into a
+    // `let cachedIndexHtml: string | undefined` for the lifetime of the process, which made ONE
+    // document served from TWO sources under TWO different caching policies: `GET /` comes from
+    // @fastify/static, which reads the file per request, while every SPA deep link came from a
+    // snapshot taken at the first such request. Rebuild the web app under a running server — the
+    // ordinary local loop — and Vite emits new content-hashed asset names and deletes the old
+    // ones, so `/` correctly referenced the new bundle while `/services/anything` kept handing out
+    // HTML pointing at files that no longer existed: two 404s and a blank page, with nothing in
+    // the server log. The asymmetry was the defect, not the staleness; the fix is to make both
+    // paths agree, and agreeing on "fresh" is the only option that is never wrong.
+    //
+    // The cost is one ~400-byte `readFile` per SPA DOCUMENT request — not per client-side
+    // navigation (those never reach the server) and not per asset (@fastify/static already reads
+    // those from disk per request). Next to the DB-backed API calls the page makes on load it does
+    // not register. Pinned by `routes/spa-index-freshness.integration.test.ts`.
     app.get("/*", async (request, reply) => {
       if (
         request.url.startsWith("/api/") ||
@@ -297,8 +310,9 @@ export async function buildApp(
         reply.callNotFound();
         return;
       }
+      let indexHtml: string;
       try {
-        cachedIndexHtml ??= await readFile(webIndexHtmlPath, "utf8");
+        indexHtml = await readFile(webIndexHtmlPath, "utf8");
       } catch {
         reply
           .status(503)
@@ -307,7 +321,7 @@ export async function buildApp(
           );
         return;
       }
-      reply.type("text/html").send(cachedIndexHtml);
+      reply.type("text/html").send(indexHtml);
     });
   } else {
     // A retrans instance still needs the API (`/api/*`) and `/healthz` to work — only the UI/static

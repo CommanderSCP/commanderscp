@@ -5,6 +5,7 @@ import { useUserCodeSearch } from "../lib/use-route-params";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Notice } from "../components/ui/notice";
 
 /**
  * `/device` (BUILD_AND_TEST.md §8 M2 item 2) — browser approval page for the CLI's device-
@@ -27,8 +28,10 @@ export function DevicePage(): React.JSX.Element {
   }
 
   return (
-    <div className="mx-auto max-w-sm">
-      <Card>
+    // Same canvas + accent-edge card treatment as `/login` (spec §4E) — device approval is another
+    // pre-auth-chrome page.
+    <div className="flex min-h-screen items-center justify-center bg-army-50 p-4">
+      <Card className="w-full max-w-sm border-t-2 border-t-army-700 shadow-sm">
         <CardHeader>
           <CardTitle>Approve device sign-in</CardTitle>
           <CardDescription>
@@ -55,16 +58,16 @@ export function DevicePage(): React.JSX.Element {
             </Button>
           </form>
           {approveMutation.isSuccess && (
-            <p className="mt-4 text-sm text-green-700" data-testid="device-approve-success">
+            <Notice tone="success" className="mt-4" data-testid="device-approve-success">
               Approved — you can return to the other device.
-            </p>
+            </Notice>
           )}
           {approveMutation.isError && (
-            <p className="mt-4 text-sm text-red-600" data-testid="device-approve-error">
+            <Notice tone="danger" className="mt-4" data-testid="device-approve-error">
               {approveMutation.error instanceof Error
                 ? approveMutation.error.message
                 : "Approval failed — the code may be invalid or expired."}
-            </p>
+            </Notice>
           )}
         </CardContent>
       </Card>

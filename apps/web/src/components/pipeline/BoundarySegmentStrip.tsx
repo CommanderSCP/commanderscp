@@ -120,7 +120,7 @@ function TransferPhase({ segment }: { segment: BoundarySegment }): React.JSX.Ele
         exported
       </Badge>
     ) : (
-      <Badge variant="outline" data-testid="boundary-transfer-badge">
+      <Badge variant="neutral" data-testid="boundary-transfer-badge">
         no transfer observed
       </Badge>
     );
@@ -193,7 +193,7 @@ function ValidatePhase({
     );
   } else if (validate.state === "refused") {
     badge = (
-      <Badge variant="destructive" data-testid="boundary-validate-badge">
+      <Badge variant="danger" data-testid="boundary-validate-badge">
         verification refused
       </Badge>
     );
@@ -201,7 +201,7 @@ function ValidatePhase({
     // `not_yet_verified` — a REAL local observation (we received it; no verdict yet). Deliberately
     // not the amber unknown marker: this instance can see the absence, it is not blind to it.
     badge = (
-      <Badge variant="outline" data-testid="boundary-validate-badge">
+      <Badge variant="neutral" data-testid="boundary-validate-badge">
         not yet verified
       </Badge>
     );

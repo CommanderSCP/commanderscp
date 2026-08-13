@@ -35,7 +35,6 @@ CommanderSCP provides a unified graph of:
 - Contracts
 - Changes
 - Campaigns
-- Initiatives
 - Domains
 - Deployment Targets
 
@@ -1205,7 +1204,6 @@ CommanderSCP owns:
 - Governance Metadata
 - Change Metadata
 - Campaign Metadata
-- Initiative Metadata
 
 CommanderSCP does not replace:
 
@@ -1232,7 +1230,6 @@ The following concepts are expected to remain stable:
 - Relationship
 - Policy
 - Campaign
-- Initiative
 - Change
 
 New capabilities should primarily be introduced through:
@@ -1956,7 +1953,6 @@ Controls may apply to:
 - Component
 - Change
 - Campaign
-- Initiative
 
 ---
 
@@ -2193,36 +2189,6 @@ Campaigns coordinate multiple related changes.
 
 ---
 
-# Initiative Model
-
-An Initiative represents a strategic objective.
-
-Examples:
-
-Cloud Modernization
-
-FedRAMP Certification
-
-Data Center Exit
-
-Platform Standardization
-
----
-
-# Initiative Structure
-
-Initiative
-
-↓
-
-Campaigns
-
-↓
-
-Changes
-
----
-
 # Organizational Coordination
 
 CommanderSCP should coordinate work across:
@@ -2344,7 +2310,6 @@ The Global Coordination Layer provides:
 
 - Organizational visibility
 - Cross-domain coordination
-- Initiative management
 - Campaign management
 - Governance
 
@@ -2897,7 +2862,7 @@ What changes affect this?
 
 ## Campaign Analysis
 
-What initiatives are affected?
+What campaigns are affected?
 
 ---
 
@@ -3025,7 +2990,6 @@ Services
 
 Campaigns
 
-Initiatives
 
 Controls
 
@@ -3177,7 +3141,6 @@ Governance
 
 Campaigns
 
-Initiatives
 
 ---
 
@@ -3259,7 +3222,6 @@ Change Model
 
 Campaigns
 
-Initiatives
 
 Governance Engine
 

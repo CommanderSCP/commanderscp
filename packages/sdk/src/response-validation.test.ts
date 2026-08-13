@@ -342,8 +342,8 @@ describe("SDK response validation (ADR-0023)", () => {
   });
 
   it("still lets the genuinely body-less operations through (204 No Content)", async () => {
-    // `zLogoutResponse` is `z.void()`; so are `zAddInitiativeCampaignResponse`,
-    // `zDeleteSecretResponse` and `zDeleteNotificationBindingResponse`. Recognised by asking the
+    // `zLogoutResponse` is `z.void()`; so are `zDeleteSecretResponse` and
+    // `zDeleteNotificationBindingResponse`. Recognised by asking the
     // operation's own validator whether an absent body satisfies it — not by an allowlist.
     serve(204, {});
 

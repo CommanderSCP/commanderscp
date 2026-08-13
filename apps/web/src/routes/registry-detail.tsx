@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExecutorTypeSchema, type ExecutorType } from "@scp/schemas";
+import { Unlink } from "lucide-react";
+import { ExecutorTypeSchema, type ExecutorType, type TraverseResult } from "@scp/schemas";
 import { client } from "../lib/client";
-import { findRegistry, getEdgeClient, getOwnerClient, getRegistryClient } from "../lib/registries";
+import { findRegistry, findRegistryByTypeId, getRegistryClient } from "../lib/registries";
 import { registryDetailKey, registryListKey } from "../lib/query-client";
 import { useBasePathParam, useIdOrUrnParam } from "../lib/use-route-params";
 import {
@@ -17,6 +18,11 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { Alert } from "../components/ui/alert";
+import { Notice } from "../components/ui/notice";
+import { KeyValueList } from "../components/ui/key-value-list";
+import { SkeletonRows } from "../components/ui/skeleton";
+import { PageHeader } from "../components/ui/page-header";
 import {
   Select,
   SelectContent,
@@ -43,35 +49,55 @@ export function RegistryDetailPage(): React.JSX.Element {
     enabled: !!registry && !!idOrUrn
   });
 
-  const ownersQuery = useQuery({
-    queryKey: [...detailKey, "owners"],
-    queryFn: () => getOwnerClient(client, registry!).listOwners(idOrUrn!),
-    enabled: !!registry?.ownable && !!idOrUrn
+  // Owners/consumes/depends-on resolved to full objects (name + type), not bare relationship rows
+  // — `client.graph.traverse` returns the neighbor GraphObjects directly, the same pattern
+  // `component-graph.tsx` uses to name external nodes. Gated on `objectQuery.data` rather than
+  // `idOrUrn` because `traverse`'s `objectId` is a strict UUID and the route param may be a URN.
+  const objectId = objectQuery.data?.id;
+  const ownersRelatedQuery = useQuery({
+    queryKey: [...detailKey, "owners-related"],
+    queryFn: () =>
+      client.graph.traverse({ objectId: objectId!, direction: "in", relTypes: ["owns"], maxDepth: 1 }),
+    enabled: !!registry?.ownable && !!objectId
   });
-
-  const consumesQuery = useQuery({
-    queryKey: [...detailKey, "consumes"],
-    queryFn: () => getEdgeClient(client, registry!).listConsumes(idOrUrn!),
-    enabled: !!registry?.edges && !!idOrUrn
+  const consumesRelatedQuery = useQuery({
+    queryKey: [...detailKey, "consumes-related"],
+    queryFn: () =>
+      client.graph.traverse({
+        objectId: objectId!,
+        direction: "out",
+        relTypes: ["consumes"],
+        maxDepth: 1
+      }),
+    enabled: !!registry?.edges && !!objectId
   });
-
-  const dependsOnQuery = useQuery({
-    queryKey: [...detailKey, "depends-on"],
-    queryFn: () => getEdgeClient(client, registry!).listDependsOn(idOrUrn!),
-    enabled: !!registry?.edges && !!idOrUrn
+  const dependsOnRelatedQuery = useQuery({
+    queryKey: [...detailKey, "depends-on-related"],
+    queryFn: () =>
+      client.graph.traverse({
+        objectId: objectId!,
+        direction: "out",
+        relTypes: ["depends_on"],
+        maxDepth: 1
+      }),
+    enabled: !!registry?.edges && !!objectId
   });
 
   if (!registry || !idOrUrn) {
-    return <p className="text-sm text-red-600">Not found.</p>;
+    return (
+      <Alert tone="danger" title="Not found">
+        This route names no registry object.
+      </Alert>
+    );
   }
   if (objectQuery.isLoading) {
-    return <p className="text-sm text-slate-500">Loading…</p>;
+    return <SkeletonRows n={4} />;
   }
   if (objectQuery.isError || !objectQuery.data) {
     return (
-      <p className="text-sm text-red-600">
+      <Alert tone="danger" title="Not found">
         {objectQuery.error instanceof Error ? objectQuery.error.message : "Not found"}
-      </p>
+      </Alert>
     );
   }
 
@@ -87,42 +113,33 @@ export function RegistryDetailPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold text-slate-900" data-testid="object-name">
-              {object.name}
-            </h1>
-            {foreign && <ForeignOriginNotice originDomainId={object.originDomainId} />}
-          </div>
-          <p className="font-mono text-xs text-slate-500">{object.urn}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* Service release board (coordination-ui-views.md Phase 2) — the scannable per-component
-              status table for this service. Only meaningful for `service` objects. */}
-          {object.typeId === "service" && (
-            <Link to="/services/$idOrUrn" params={{ idOrUrn: object.id }}>
-              <Button data-testid="open-release-board">Release board</Button>
+      <PageHeader
+        title={<span data-testid="object-name">{object.name}</span>}
+        description={<span className="font-mono text-xs break-all">{object.urn}</span>}
+        meta={foreign ? <ForeignOriginNotice originDomainId={object.originDomainId} /> : undefined}
+        actions={
+          <>
+            {/* Service release board (coordination-ui-views.md Phase 2) — the scannable
+                per-component status table for this service. Only meaningful for `service`
+                objects. */}
+            {object.typeId === "service" && (
+              <Link to="/services/$idOrUrn" params={{ idOrUrn: object.id }}>
+                <Button data-testid="open-release-board">Release board</Button>
+              </Link>
+            )}
+            <Link to="/graph/$idOrUrn" params={{ idOrUrn: object.id }}>
+              <Button variant="outline">Open in graph explorer</Button>
             </Link>
-          )}
-          <Link to="/graph/$idOrUrn" params={{ idOrUrn: object.id }}>
-            <Button variant="outline">Open in graph explorer</Button>
-          </Link>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <Card>
         <CardHeader>
           <CardTitle>Properties</CardTitle>
         </CardHeader>
         <CardContent>
-          {Object.keys(object.properties).length === 0 ? (
-            <p className="text-sm text-slate-500">No properties set.</p>
-          ) : (
-            <pre className="overflow-auto rounded bg-slate-50 p-3 text-xs">
-              {JSON.stringify(object.properties, null, 2)}
-            </pre>
-          )}
+          <PropertiesView properties={object.properties} />
         </CardContent>
       </Card>
 
@@ -136,7 +153,7 @@ export function RegistryDetailPage(): React.JSX.Element {
           ) : (
             <div className="flex flex-wrap gap-2">
               {Object.entries(object.labels).map(([key, value]) => (
-                <Badge key={key} variant="secondary">
+                <Badge key={key} variant="neutral">
                   {key}={String(value)}
                 </Badge>
               ))}
@@ -155,17 +172,12 @@ export function RegistryDetailPage(): React.JSX.Element {
             <CardTitle>Owners</CardTitle>
           </CardHeader>
           <CardContent>
-            {(ownersQuery.data?.items.length ?? 0) === 0 ? (
-              <p className="text-sm text-slate-500">No owners.</p>
-            ) : (
-              <ul className="flex flex-col gap-1 text-sm">
-                {ownersQuery.data?.items.map((rel) => (
-                  <li key={rel.id} className="font-mono text-xs text-slate-600">
-                    {rel.fromId}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <RelatedObjectList
+              query={ownersRelatedQuery}
+              selfId={object.id}
+              direction="in"
+              emptyMessage="No owners."
+            />
           </CardContent>
         </Card>
       )}
@@ -177,17 +189,12 @@ export function RegistryDetailPage(): React.JSX.Element {
               <CardTitle>Consumes</CardTitle>
             </CardHeader>
             <CardContent>
-              {(consumesQuery.data?.items.length ?? 0) === 0 ? (
-                <p className="text-sm text-slate-500">Nothing.</p>
-              ) : (
-                <ul className="flex flex-col gap-1 text-sm">
-                  {consumesQuery.data?.items.map((rel) => (
-                    <li key={rel.id} className="font-mono text-xs text-slate-600">
-                      {rel.toId}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <RelatedObjectList
+                query={consumesRelatedQuery}
+                selfId={object.id}
+                direction="out"
+                emptyMessage="No consumed components."
+              />
             </CardContent>
           </Card>
           <Card>
@@ -195,17 +202,12 @@ export function RegistryDetailPage(): React.JSX.Element {
               <CardTitle>Depends on</CardTitle>
             </CardHeader>
             <CardContent>
-              {(dependsOnQuery.data?.items.length ?? 0) === 0 ? (
-                <p className="text-sm text-slate-500">Nothing.</p>
-              ) : (
-                <ul className="flex flex-col gap-1 text-sm">
-                  {dependsOnQuery.data?.items.map((rel) => (
-                    <li key={rel.id} className="font-mono text-xs text-slate-600">
-                      {rel.toId}
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <RelatedObjectList
+                query={dependsOnRelatedQuery}
+                selfId={object.id}
+                direction="out"
+                emptyMessage="No dependencies."
+              />
             </CardContent>
           </Card>
         </div>
@@ -222,12 +224,122 @@ export function RegistryDetailPage(): React.JSX.Element {
       {object.typeId === "component" && (
         <MergeComponentCard survivorId={object.id} detailKey={detailKey} />
       )}
-
-      <p className="text-xs text-slate-400">
-        &quot;Why?&quot; / Decision links aren&apos;t available yet — the Decision Engine lands in a
-        later milestone (M4).
-      </p>
     </div>
+  );
+}
+
+/**
+ * Properties, type-aware (spec §4E): scalar values (string/number/boolean/null) render plainly in a
+ * KeyValueList; nested objects/arrays collapse behind one "view raw" toggle rather than always
+ * dumping the whole bag as JSON. No default JSON dump for an object with only scalar properties.
+ */
+function PropertiesView({ properties }: { properties: Record<string, unknown> }): React.JSX.Element {
+  const [showRaw, setShowRaw] = useState(false);
+  const entries = Object.entries(properties);
+  if (entries.length === 0) return <p className="text-sm text-slate-500">No properties set.</p>;
+
+  const scalarEntries = entries.filter(([, value]) => value === null || typeof value !== "object");
+  const nestedCount = entries.length - scalarEntries.length;
+
+  return (
+    <div className="flex flex-col gap-3">
+      {scalarEntries.length > 0 && (
+        <KeyValueList
+          columns={2}
+          items={scalarEntries.map(([key, value]) => ({
+            label: key,
+            value: value === null ? "null" : String(value)
+          }))}
+        />
+      )}
+      {nestedCount > 0 && (
+        <div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setShowRaw((v) => !v)}
+            data-testid="properties-view-raw-toggle"
+          >
+            {showRaw ? "Hide raw" : "View raw"} ({nestedCount} nested {nestedCount === 1 ? "value" : "values"})
+          </Button>
+          {showRaw && (
+            <pre className="mt-2 overflow-auto rounded bg-slate-50 p-3 text-xs">
+              {JSON.stringify(properties, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Owners/consumes/depends-on, resolved to name + type badge + link (spec §4E) — driven by
+ * `client.graph.traverse`'s resolved neighbor objects rather than bare relationship rows. An edge
+ * `traverse` could not resolve to an object (its endpoint exists but was not returned — e.g. a
+ * foreign domain that does not replicate it here) falls back to the raw id in mono, per spec, rather
+ * than silently dropping the edge.
+ */
+function RelatedObjectList({
+  query,
+  selfId,
+  direction,
+  emptyMessage
+}: {
+  query: { isLoading: boolean; data?: TraverseResult };
+  selfId: string;
+  /** Which end of each edge is "the other object" — `in` edges point INTO self (owners), `out`
+   *  edges point OUT of self (consumes/depends-on). */
+  direction: "in" | "out";
+  emptyMessage: string;
+}): React.JSX.Element {
+  if (query.isLoading) return <SkeletonRows n={2} />;
+  const objects = query.data?.objects ?? [];
+  const edges = query.data?.edges ?? [];
+  const byId = new Map(objects.map((o) => [o.id, o]));
+  const otherIds = [
+    ...new Set(edges.map((e) => (direction === "in" ? e.fromId : e.toId)))
+  ].filter((id) => id !== selfId);
+
+  if (otherIds.length === 0) {
+    return <p className="text-sm text-slate-500">{emptyMessage}</p>;
+  }
+  return (
+    <ul className="flex flex-col gap-2 text-sm">
+      {otherIds.map((id) => {
+        const o = byId.get(id);
+        if (!o) {
+          // The edge exists but `traverse` did not return its endpoint object — raw id, mono,
+          // rather than a name this side cannot vouch for.
+          return (
+            <li key={id} className="font-mono text-xs text-slate-600">
+              {id}
+            </li>
+          );
+        }
+        const relatedRegistry = findRegistryByTypeId(o.typeId);
+        return (
+          <li key={id} className="flex items-center gap-2">
+            <Badge variant="neutral" className="capitalize">
+              {relatedRegistry?.label ?? o.typeId}
+            </Badge>
+            {relatedRegistry ? (
+              <Link
+                to="/$basePath/$idOrUrn"
+                params={{ basePath: relatedRegistry.basePath, idOrUrn: o.id }}
+                className="font-medium text-slate-900 hover:underline"
+              >
+                {o.name}
+              </Link>
+            ) : (
+              // No registry maps this typeId — still name it, just not as a link.
+              <span className="text-slate-900">{o.name}</span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -336,11 +448,11 @@ function ComponentServiceCard({
           </Button>
         </div>
         {setServiceMutation.isError && (
-          <p className="text-sm text-red-600">
+          <Alert tone="danger">
             {setServiceMutation.error instanceof Error
               ? setServiceMutation.error.message
               : "Failed"}
-          </p>
+          </Alert>
         )}
       </CardContent>
     </Card>
@@ -411,12 +523,12 @@ function TargetBindingsCard({
                 key={b.id}
                 className="flex items-center justify-between gap-3 rounded border border-slate-200 p-2"
               >
-                <div className="flex flex-col">
+                <div className="flex min-w-0 flex-col">
                   <span className="text-sm font-medium text-slate-900">
-                    <Badge variant="secondary">{b.type}</Badge>{" "}
-                    <Badge variant="outline">{b.category}</Badge> {b.pluginModule}
+                    <Badge variant="neutral">{b.type}</Badge>{" "}
+                    <Badge variant="neutral">{b.category}</Badge> {b.pluginModule}
                   </span>
-                  <span className="font-mono text-xs text-slate-500">{b.pluginInstanceId}</span>
+                  <span className="break-all font-mono text-xs text-slate-500">{b.pluginInstanceId}</span>
                 </div>
                 <div className="flex gap-2">
                   {/* Relabel this binding to any other routing Type (ADR-0007). */}
@@ -440,6 +552,7 @@ function TargetBindingsCard({
                   </Select>
                   <Button
                     variant="outline"
+                    icon={Unlink}
                     disabled={pending}
                     onClick={() => deleteMutation.mutate(b.type)}
                     data-testid={`unbind-${b.type}`}
@@ -452,9 +565,7 @@ function TargetBindingsCard({
           </ul>
         )}
         {error && (
-          <p className="text-sm text-red-600">
-            {error instanceof Error ? error.message : "Failed"}
-          </p>
+          <Alert tone="danger">{error instanceof Error ? error.message : "Failed"}</Alert>
         )}
       </CardContent>
     </Card>
@@ -555,14 +666,19 @@ function MergeComponentCard({
           </Button>
         </div>
         {mergeMutation.isError && (
-          <p className="text-sm text-red-600">
+          <Alert tone="danger">
             {mergeMutation.error instanceof Error ? mergeMutation.error.message : "Failed"}
-          </p>
+          </Alert>
         )}
         {mergeMutation.isSuccess && (
-          <p className="text-sm text-green-700" data-testid="merge-success">
-            Merged — moved {mergeMutation.data.movedBindingTypes.join(", ") || "no"} binding(s).
-          </p>
+          <Notice tone="success" data-testid="merge-success">
+            {mergeMutation.data.movedBindingTypes.length === 0
+              ? "Merged — no bindings moved."
+              : // Real pluralization (copy rule 6) — "binding(s)" is banned.
+                `Merged — moved ${mergeMutation.data.movedBindingTypes.length} binding${
+                  mergeMutation.data.movedBindingTypes.length === 1 ? "" : "s"
+                } (${mergeMutation.data.movedBindingTypes.join(", ")}).`}
+          </Notice>
         )}
       </CardContent>
     </Card>

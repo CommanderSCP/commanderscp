@@ -35,7 +35,10 @@ const DECISION_ID = "1b2c3d4e-5f6a-4b8c-9d0e-1f2a3b4c5d6e";
 
 /** The one success paint in the whole component. Asserted as a PREMISE wherever a test claims its
  *  absence, so a renamed success variant fails loudly instead of passing vacuously. */
-const SUCCESS_CLASS = "bg-green-600";
+// The soft-tint Badge `success` tone (components/ui/badge.tsx, design spec §1.5) — this premise
+// assertion is exactly what fired when the solid `bg-green-600` fill was retired, and it gets
+// updated (not deleted) on any future rename.
+const SUCCESS_CLASS = "bg-emerald-50";
 
 function render(segment: BoundarySegment): string {
   return renderToStaticMarkup(<BoundarySegmentStrip segment={segment} />);

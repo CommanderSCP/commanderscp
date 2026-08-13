@@ -20,8 +20,6 @@ import type {
   ExecutorType,
   Freeze,
   GraphObject,
-  Initiative,
-  InitiativeRollupResponse,
   NamedGraphQuery,
   ObjectListResponse,
   Pat,
@@ -232,7 +230,7 @@ function decisionRow(d: Decision): Record<string, string> {
 }
 
 // -------------------------------------------------------------------------------------
-// M5 Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — row formatters.
+// M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — row formatters.
 // Campaign `status` is a pure derived field (no accept/cancel verbs), so it's surfaced
 // prominently in both the compact and detail rows.
 // -------------------------------------------------------------------------------------
@@ -262,16 +260,6 @@ export function campaignDetailRow(c: Campaign): Record<string, string> {
     topologyVersion: isAbsent(c.topologyVersion) ? "" : String(c.topologyVersion),
     createdAt: c.createdAt,
     updatedAt: c.updatedAt
-  };
-}
-
-function initiativeRow(i: Initiative): Record<string, string> {
-  return {
-    id: i.id,
-    name: i.name,
-    urn: i.urn,
-    description: i.description ?? "",
-    createdAt: i.createdAt
   };
 }
 
@@ -990,27 +978,6 @@ function printCampaignExplainResult(result: CampaignExplainResponse, output: Out
         : JSON.stringify(decision.reasonTree);
     console.log(`  [${decision.createdAt}] ${decision.kind} -> ${decision.verdict}: ${summary}`);
   }
-}
-
-/**
- * Prints an Initiative's roll-up (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5): the initiative, each
- * member campaign's name + derived status, then the traversal-derived overall `rollupStatus`.
- */
-function printInitiativeRollupResult(result: InitiativeRollupResponse, output: OutputFormat): void {
-  if (output === "json") {
-    console.log(JSON.stringify(result, null, 2));
-    return;
-  }
-
-  const { initiative, campaigns, rollupStatus } = result;
-  console.log(`Initiative ${initiative.id} '${initiative.name}'`);
-
-  console.log(`\nCampaigns (${campaigns.length}):`);
-  for (const member of campaigns) {
-    console.log(`  - ${member.campaign.name} (${member.campaign.id}): ${member.status}`);
-  }
-
-  console.log(`\nRoll-up status: ${rollupStatus}`);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -2617,11 +2584,10 @@ export function buildProgram(): Command {
     });
 
   // -------------------------------------------------------------------------------------
-  // campaign / initiative (M5 Campaigns & Initiatives — DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5).
+  // campaign (M5 Campaigns — DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5).
   // A Campaign coordinates many Changes across targets, wave by wave, over the SAME plan compiler
   // a Change uses; unlike Change, it has no accept/cancel verbs — `status` is always a pure
-  // derived field, so `campaign status <id>` (its `get`) IS the CLI's window into that field. An
-  // Initiative groups Campaigns and exposes a derived roll-up status over its members.
+  // derived field, so `campaign status <id>` (its `get`) IS the CLI's window into that field.
   // -------------------------------------------------------------------------------------
   const campaignCmd = program
     .command("campaign")
@@ -2743,79 +2709,6 @@ export function buildProgram(): Command {
         opts.output,
         (item) => item as Record<string, string>
       );
-    });
-
-  const initiativeCmd = program
-    .command("initiative")
-    .description(
-      "Manage Initiatives (DESIGN.md §9.5 — group Campaigns with a derived roll-up status)"
-    );
-
-  initiativeCmd
-    .command("create")
-    .description("Create a new Initiative")
-    .requiredOption("--name <name>", "initiative name")
-    .option("--campaigns <list>", "comma-separated campaign ids/URNs to include")
-    .option("--description <text>", "initiative description")
-    .option("--labels <json>", "JSON object")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(
-      async (
-        opts: BaseCliOpts & {
-          name: string;
-          campaigns?: string;
-          description?: string;
-          labels?: string;
-        }
-      ) => {
-        const client = await clientFromStoredCredentials(opts);
-        const created = await client.initiatives.propose({
-          name: opts.name,
-          campaigns: parseList(opts.campaigns) ?? [],
-          description: opts.description,
-          labels: parseJsonOption(opts.labels, "--labels")
-        });
-        printResult(created, opts.output, (item) => initiativeRow(item as Initiative));
-      }
-    );
-
-  initiativeCmd
-    .command("list")
-    .description("List Initiatives")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (opts: BaseCliOpts) => {
-      const client = await clientFromStoredCredentials(opts);
-      const page = await client.initiatives.list({ limit: 100 });
-      printResult(page.items, opts.output, (item) => initiativeRow(item as Initiative));
-    });
-
-  initiativeCmd
-    .command("status <id>")
-    .description("Get an Initiative's member Campaigns and derived roll-up status")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (id: string, opts: BaseCliOpts) => {
-      const client = await clientFromStoredCredentials(opts);
-      const result = await client.initiatives.get(id);
-      printInitiativeRollupResult(result, opts.output);
-    });
-
-  initiativeCmd
-    .command("add-campaign <id>")
-    .description("Add a Campaign to an Initiative")
-    .requiredOption("--campaign <idOrUrn>", "campaign id or URN to add")
-    .option("--base-url <url>", "API base URL override")
-    .option("--output <format>", "json|table", "table")
-    .action(async (id: string, opts: BaseCliOpts & { campaign: string }) => {
-      const client = await clientFromStoredCredentials(opts);
-      await client.initiatives.addCampaign(id, { campaign: opts.campaign });
-      if (opts.output === "json") {
-        console.log(JSON.stringify({ ok: true }, null, 2));
-        return;
-      }
-      console.log(`Added campaign ${opts.campaign} to initiative ${id}`);
     });
 
   // -------------------------------------------------------------------------------------

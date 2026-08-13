@@ -6,6 +6,7 @@ import { REGISTRIES, getRegistryClient, type RegistryConfig } from "../lib/regis
 import { registryListKey } from "../lib/query-client";
 import { GraphCanvas, type GraphCanvasData } from "../components/graph/GraphCanvas";
 import { GraphLegend } from "../components/graph/GraphLegend";
+import { QueryErrorNotice } from "../components/query-error";
 import {
   Select,
   SelectContent,
@@ -14,6 +15,8 @@ import {
   SelectValue
 } from "../components/ui/select";
 import { Input } from "../components/ui/input";
+import { Button } from "../components/ui/button";
+import { PageHeader } from "../components/ui/page-header";
 
 /**
  * `/graph` landing — the discoverable entry point for the graph explorer (previously reachable
@@ -78,7 +81,9 @@ export function GraphLandingPage(): React.JSX.Element {
       }
       return {
         objects,
-        edges: sub ? sub.edges.map((e) => ({ id: e.id, fromId: e.fromId, toId: e.toId })) : []
+        edges: sub
+          ? sub.edges.map((e) => ({ id: e.id, fromId: e.fromId, toId: e.toId, typeId: e.typeId }))
+          : []
       };
     }
   });
@@ -89,15 +94,14 @@ export function GraphLandingPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Graph</h1>
-        <p className="text-sm text-slate-500">
-          Explore ownership, dependencies and blast radius across the graph.
-        </p>
-      </div>
+      <PageHeader
+        title="Graph"
+        description="Explore ownership, dependencies and blast radius across the graph."
+      />
 
       <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-semibold text-slate-700">Explore an object</h2>
+        {/* Section-heading type (§1.3) — SectionLabel is the eyebrow, not this. */}
+        <h2 className="text-sm font-semibold text-slate-900">Explore an object</h2>
         <div className="flex flex-wrap items-end gap-2">
           <div className="flex w-56 flex-col gap-1.5">
             <label className="text-xs font-medium text-slate-600">Registry</label>
@@ -136,9 +140,7 @@ export function GraphLandingPage(): React.JSX.Element {
 
         {pickerQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
         {pickerQuery.isError && (
-          <p className="text-sm text-red-600">
-            {pickerQuery.error instanceof Error ? pickerQuery.error.message : "Failed to load"}
-          </p>
+          <QueryErrorNotice error={pickerQuery.error} what={registry.label.toLowerCase()} />
         )}
         {pickerQuery.data && filteredItems.length === 0 && (
           <p className="text-sm text-slate-500">No matching {registry.label.toLowerCase()}.</p>
@@ -147,15 +149,16 @@ export function GraphLandingPage(): React.JSX.Element {
           <ul className="max-h-56 divide-y divide-slate-100 overflow-y-auto rounded border border-slate-100">
             {filteredItems.map((item) => (
               <li key={item.id}>
-                <button
+                <Button
                   type="button"
+                  variant="ghost"
                   onClick={() => openObject(item.id)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-left text-sm hover:bg-slate-50"
+                  className="h-auto w-full justify-between rounded-none px-3 py-2 font-normal"
                   data-testid="graph-picker-item"
                 >
                   <span className="font-medium text-slate-900">{item.name}</span>
                   <span className="font-mono text-xs text-slate-400">{item.urn}</span>
-                </button>
+                </Button>
               </li>
             ))}
           </ul>
@@ -165,7 +168,7 @@ export function GraphLandingPage(): React.JSX.Element {
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h2 className="text-sm font-semibold text-slate-700">Service graph</h2>
+            <h2 className="text-sm font-semibold text-slate-900">Service graph</h2>
             <p className="text-xs text-slate-500">
               Services and their <code className="text-slate-600">depends_on</code>/
               <code className="text-slate-600">consumes</code> edges. Click a service to open its
@@ -183,17 +186,18 @@ export function GraphLandingPage(): React.JSX.Element {
               Health
             </label>
             <GraphLegend
+              shapes={[{ label: "Service", typeId: "service" }]}
               nodes={
                 showHealth
                   ? [
-                      { label: "Service", color: "#2563eb" },
                       { label: "Healthy", color: "#16a34a", dashed: true },
                       { label: "Degraded", color: "#d97706", dashed: true },
                       { label: "Down", color: "#dc2626", dashed: true },
                       { label: "Unknown", color: "#94a3b8", dashed: true }
                     ]
-                  : [{ label: "Service", color: "#2563eb" }]
+                  : undefined
               }
+              note="At org level each service is its own colour."
             />
           </div>
         </div>
@@ -204,10 +208,8 @@ export function GraphLandingPage(): React.JSX.Element {
             </div>
           )}
           {overviewQuery.isError && (
-            <div className="absolute inset-0 flex items-center justify-center text-sm text-red-600">
-              {overviewQuery.error instanceof Error
-                ? overviewQuery.error.message
-                : "Failed to load service graph"}
+            <div className="absolute inset-0 flex items-center justify-center p-4">
+              <QueryErrorNotice error={overviewQuery.error} what="the service graph" />
             </div>
           )}
           {overviewQuery.data && overviewQuery.data.objects.length === 0 && (

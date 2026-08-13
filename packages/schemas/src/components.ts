@@ -58,7 +58,13 @@ export const ComponentPipelineBindingSchema = z.object({
    *  the duplication ADR-0007 kept out of the database in the first place. */
   category: ExecutorCategorySchema,
   executionSystemId: z.string().uuid().nullable(),
-  executionSystemName: z.string().nullable()
+  executionSystemName: z.string().nullable(),
+  /** WHERE the ladder found it (ADR-0027/0029): "placement" when bound on the stage's own
+   *  placement, else the ancestor's `object_types.id` verbatim ("component", "assembly",
+   *  "service", "organization"). READ from the resolver's own provenance, never inferred
+   *  (resolution-provenance.test.ts is the cautionary tale). Optional: absent on responses
+   *  emitted before this field existed. */
+  resolvedVia: z.string().optional()
 });
 export type ComponentPipelineBinding = z.infer<typeof ComponentPipelineBindingSchema>;
 

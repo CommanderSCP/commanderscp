@@ -93,6 +93,12 @@ export function serviceBoardKey(id: string): unknown[] {
   return ["service", "board", id];
 }
 
+/** Query keys for one assembly's board — `part` separates the assembly object itself from the
+ *  `contains` traversal that lists its components, so the two refetch independently. */
+export function assemblyBoardKey(idOrUrn: string, part: "self" | "members"): unknown[] {
+  return ["assembly", "board", idOrUrn, part];
+}
+
 /** Query key for the Campaigns list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
 export function campaignListKey(): unknown[] {
   return ["campaign", "list"];
@@ -101,16 +107,6 @@ export function campaignListKey(): unknown[] {
 /** Query key for a single campaign's `:explain` detail view (campaign + plan/waves + decisions). */
 export function campaignDetailKey(id: string): unknown[] {
   return ["campaign", "detail", id];
-}
-
-/** Query key for the Initiatives list view (M5, BUILD_AND_TEST.md §8 M5 UI requirement). */
-export function initiativeListKey(): unknown[] {
-  return ["initiative", "list"];
-}
-
-/** Query key for a single initiative's roll-up view (initiative + member campaigns + rollupStatus). */
-export function initiativeDetailKey(id: string): unknown[] {
-  return ["initiative", "detail", id];
 }
 
 export const authMeKey = ["auth", "me"];

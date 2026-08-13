@@ -145,7 +145,8 @@ describe("change pipeline page: the boundary segment is ALWAYS shown", () => {
     expect(html).toContain("has not crossed a domain boundary");
     // An absent segment is not a green one.
     expect(html).not.toContain("signatures verified");
-    expect(html).not.toContain("bg-green-600");
+    // `bg-emerald-50` is the Badge `success` tone (components/ui/badge.tsx, design spec §1.5).
+    expect(html).not.toContain("bg-emerald-50");
   });
 
   it("renders the card for a pre-M16.1 server that omits the field entirely (undefined, not null)", () => {

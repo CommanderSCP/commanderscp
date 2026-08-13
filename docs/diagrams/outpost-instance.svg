@@ -48,7 +48,7 @@
     <rect x="940" y="118" width="136" height="28" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="1008" y="136" text-anchor="middle">release topologies</text>
     <rect x="812" y="150" width="168" height="28" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
-    <text x="896" y="168" text-anchor="middle">campaigns · initiatives</text>
+    <text x="896" y="168" text-anchor="middle">campaigns</text>
     <rect x="988" y="150" width="122" height="28" rx="6" fill="#ffffff" opacity="0.8" stroke="#fde68a"/>
     <text x="1049" y="168" text-anchor="middle">domain registry</text>
   </g>

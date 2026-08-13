@@ -23,7 +23,11 @@ import {
   TableHeader,
   TableRow
 } from "../components/ui/table";
-import { Badge } from "../components/ui/badge";
+import { PageHeader } from "../components/ui/page-header";
+import { Alert } from "../components/ui/alert";
+import { EmptyState } from "../components/ui/empty-state";
+import { SkeletonRows } from "../components/ui/skeleton";
+import { QueryErrorNotice } from "../components/query-error";
 
 /** `/{basePath}` (BUILD_AND_TEST.md §8 M2 item 2) — list view + create-new affordance. */
 export function RegistryListPage(): React.JSX.Element {
@@ -63,7 +67,11 @@ export function RegistryListPage(): React.JSX.Element {
   });
 
   if (!registry) {
-    return <p className="text-sm text-red-600">Unknown registry &quot;{basePath}&quot;.</p>;
+    return (
+      <Alert tone="danger" title="Unknown registry">
+        &quot;{basePath}&quot; is not a registry this instance knows about.
+      </Alert>
+    );
   }
 
   function handleCreate(event: FormEvent<HTMLFormElement>): void {
@@ -79,13 +87,15 @@ export function RegistryListPage(): React.JSX.Element {
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-slate-900">{registry.label}</h1>
-        <Button onClick={() => setShowCreate((v) => !v)} data-testid="toggle-create">
-          {showCreate ? "Cancel" : "New"}
-        </Button>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title={registry.label}
+        actions={
+          <Button onClick={() => setShowCreate((v) => !v)} data-testid="toggle-create">
+            {showCreate ? "Cancel" : "New"}
+          </Button>
+        }
+      />
 
       {showCreate && (
         <form
@@ -138,23 +148,27 @@ export function RegistryListPage(): React.JSX.Element {
         </form>
       )}
       {createMutation.isError && (
-        <p className="text-sm text-red-600">
+        <Alert tone="danger">
           {createMutation.error instanceof Error
             ? createMutation.error.message
             : "Failed to create"}
-        </p>
+        </Alert>
       )}
 
-      {listQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      {listQuery.isLoading && <SkeletonRows n={5} />}
       {listQuery.isError && (
-        <p className="text-sm text-red-600">
-          {listQuery.error instanceof Error ? listQuery.error.message : "Failed to load"}
-        </p>
+        <QueryErrorNotice
+          error={listQuery.error}
+          what={registry.label.toLowerCase()}
+          testId="registry-list-error"
+        />
       )}
       {listQuery.data && listQuery.data.items.length === 0 && (
-        <p className="text-sm text-slate-500" data-testid="empty-state">
-          No {registry.label.toLowerCase()} yet.
-        </p>
+        <EmptyState
+          icon={registry.icon}
+          message={`No ${registry.label.toLowerCase()} yet.`}
+          data-testid="empty-state"
+        />
       )}
       {listQuery.data && listQuery.data.items.length > 0 && (
         <Table data-testid="registry-table">
@@ -178,8 +192,9 @@ export function RegistryListPage(): React.JSX.Element {
                   </Link>
                 </TableCell>
                 <TableCell className="font-mono text-xs text-slate-500">{item.urn}</TableCell>
-                <TableCell>
-                  <Badge variant="secondary">{new Date(item.updatedAt).toLocaleDateString()}</Badge>
+                {/* A date is not a status (spec §4E) — plain caption text, not a Badge. */}
+                <TableCell className="text-xs text-slate-500">
+                  {new Date(item.updatedAt).toLocaleDateString()}
                 </TableCell>
               </TableRow>
             ))}

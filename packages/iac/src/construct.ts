@@ -370,16 +370,14 @@ export class ResourceConstruct extends Construct {
   }
 
   // NOTE — there is deliberately NO `coordinates()` fluent method (M5 CRITICAL, adversarial
-  // review). `coordinates` is a system-managed relationship type (campaign/initiative MEMBERSHIP):
+  // review). `coordinates` is a system-managed relationship type (campaign MEMBERSHIP):
   // the server refuses it on BOTH the generic `POST /relationships` endpoint AND the IaC plan/apply
   // path (`apps/server/src/graph/system-managed-relationships.ts`), because a `coordinates` edge
   // injected by any actor with `relationship:write` could sweep an arbitrary Change into a victim
   // campaign's rollback. Legitimate campaign IaC membership is declared through a `Campaign`'s
   // authority-checked `targets` (which the server binds to the applying actor's own authority at
-  // apply time via `assertCampaignTargetsWithinAuthority`); initiative membership is added via the
-  // authority-checked `POST /initiatives/{id}/campaigns` API (`scp initiative add-campaign`), NOT
-  // through IaC. Offering a `.coordinates()` synth method here would just produce a manifest that
-  // fails at apply — so it doesn't exist.
+  // apply time via `assertCampaignTargetsWithinAuthority`). Offering a `.coordinates()` synth
+  // method here would just produce a manifest that fails at apply — so it doesn't exist.
 
   /** @internal */
   _toManifestObject(): ManifestObject {
@@ -538,7 +536,7 @@ export const User = defineResourceConstruct("user");
 export const ServiceAccount = defineResourceConstruct("service-account");
 
 // -------------------------------------------------------------------------------------------
-// Campaign / Initiative / Release Topology constructs (M5, BUILD_AND_TEST.md §8) — written as
+// Campaign / Release Topology constructs (M5, BUILD_AND_TEST.md §8) — written as
 // real `ResourceConstruct` subclasses rather than via `defineResourceConstruct`, because each
 // needs custom constructor logic (resolving construct references to URN strings, typed
 // `waves`/`targets` props) that plain `ResourceProps` doesn't support.
@@ -643,36 +641,6 @@ export class Campaign extends ResourceConstruct {
       domainId: props.domainId,
       labels: props.labels,
       properties
-    });
-  }
-}
-
-export interface InitiativeProps extends Omit<ResourceProps, "properties"> {
-  description?: string;
-}
-
-/**
- * A named grouping of campaigns (server-side object type `"initiative"`, pre-seeded —
- * `drizzle/0011_campaigns.sql`).
- *
- * MEMBERSHIP IS NOT DECLARED IN IaC (M5 CRITICAL, adversarial review). An initiative's member
- * campaigns are `coordinates` relationships (initiative -> campaign), a system-managed type the
- * server refuses on the IaC apply path (see `ResourceConstruct`'s note where `owns`/`dependsOn`
- * live, and `apps/server/src/graph/system-managed-relationships.ts`). Create the initiative in IaC
- * for its identity/description, then add member campaigns through the authority-checked
- * `POST /initiatives/{id}/campaigns` API (`scp initiative add-campaign`), which enforces
- * `relationship:write` at BOTH the initiative and each campaign's scope. (Campaign membership is
- * different: a `Campaign`'s `targets` ARE declarable in IaC, because the server binds them to the
- * applying actor's own authority at apply time — `assertCampaignTargetsWithinAuthority`.)
- */
-export class Initiative extends ResourceConstruct {
-  constructor(scope: Stack, id: string, props: InitiativeProps) {
-    super(scope, id, "initiative", {
-      name: props.name,
-      urn: props.urn,
-      domainId: props.domainId,
-      labels: props.labels,
-      properties: props.description !== undefined ? { description: props.description } : {}
     });
   }
 }

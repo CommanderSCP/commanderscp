@@ -1,5 +1,6 @@
 import { Link, Outlet } from "@tanstack/react-router";
 import { useIdOrUrnParam } from "../lib/use-route-params";
+import { cn, focusRing } from "../lib/utils";
 
 /**
  * The chrome shared by every view of ONE component — today Pipeline and Settings.
@@ -29,7 +30,11 @@ import { useIdOrUrnParam } from "../lib/use-route-params";
  * so every existing link keeps landing on a component's usual view.
  */
 
-const TAB_BASE = "border-b-2 px-3 py-2 text-sm font-medium transition-colors hover:text-slate-900";
+// Every interactive element carries the shared focus ring (design spec §2.10).
+const TAB_BASE = cn(
+  "border-b-2 px-3 py-2 text-sm font-medium transition-colors hover:text-army-800",
+  focusRing
+);
 
 export function ComponentDetailLayout(): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
@@ -37,12 +42,12 @@ export function ComponentDetailLayout(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
-      <nav className="flex gap-1 border-b border-slate-200" data-testid="component-tabs">
+      <nav className="flex gap-1 border-b border-army-200" data-testid="component-tabs">
         <Link
           to="/components/$idOrUrn/infrastructure"
           params={{ idOrUrn }}
           className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-slate-900 text-slate-900` }}
+          activeProps={{ className: `${TAB_BASE} border-army-700 text-army-800` }}
           data-testid="component-tab-infrastructure"
         >
           Infrastructure
@@ -54,16 +59,20 @@ export function ComponentDetailLayout(): React.JSX.Element {
           // showing, since its path is a prefix of every child's.
           activeOptions={{ exact: true }}
           className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-slate-900 text-slate-900` }}
+          activeProps={{ className: `${TAB_BASE} border-army-700 text-army-800` }}
           data-testid="component-tab-software"
         >
-          Software
+          {/* "Delivery", not "Software": this journey carries BOTH the build (application
+              artifact) and configuration pipelines, and calling helm values/k8s manifests
+              "software" is the Category error ADR-0007 exists to prevent. The testid keeps its
+              historical name — it is a machine id, not copy. Owner taxonomy ruling 2026-08-11. */}
+          Delivery
         </Link>
         <Link
           to="/components/$idOrUrn/settings"
           params={{ idOrUrn }}
           className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-slate-900 text-slate-900` }}
+          activeProps={{ className: `${TAB_BASE} border-army-700 text-army-800` }}
           data-testid="component-tab-settings"
         >
           Settings

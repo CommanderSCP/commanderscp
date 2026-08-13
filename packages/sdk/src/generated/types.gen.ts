@@ -6027,6 +6027,7 @@ export type GetComponentPipelineResponses = {
                 category: 'build' | 'infrastructure' | 'configuration';
                 executionSystemId: string | null;
                 executionSystemName: string | null;
+                resolvedVia?: string;
             } | null;
             bindings: Array<{
                 externalRef: string | null;
@@ -6035,6 +6036,7 @@ export type GetComponentPipelineResponses = {
                 category: 'build' | 'infrastructure' | 'configuration';
                 executionSystemId: string | null;
                 executionSystemName: string | null;
+                resolvedVia?: string;
             }>;
             current: {
                 changeId: string;
@@ -9574,7 +9576,7 @@ export type RemoveComponentDependsOnResponse = RemoveComponentDependsOnResponses
 export type GraphQueryData = {
     body?: never;
     path: {
-        name: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted' | 'initiative-rollup';
+        name: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
     };
     query: {
         objectId: string;
@@ -9639,7 +9641,7 @@ export type GraphQueryResponses = {
      * Success
      */
     200: {
-        query: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted' | 'initiative-rollup';
+        query: 'owners-of' | 'dependents-of' | 'consumers-of' | 'impact-of' | 'blast-radius' | 'paths-between' | 'domains-impacted';
         objects: Array<{
             id: string;
             orgId: string;
@@ -14592,287 +14594,6 @@ export type RollbackCampaignResponses = {
 };
 
 export type RollbackCampaignResponse = RollbackCampaignResponses[keyof RollbackCampaignResponses];
-
-export type ListInitiativesData = {
-    body?: never;
-    path?: never;
-    query?: {
-        cursor?: string;
-        limit?: number;
-    };
-    url: '/initiatives';
-};
-
-export type ListInitiativesErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type ListInitiativesError = ListInitiativesErrors[keyof ListInitiativesErrors];
-
-export type ListInitiativesResponses = {
-    /**
-     * Success
-     */
-    200: {
-        items: Array<{
-            id: string;
-            orgId: string;
-            urn: string;
-            name: string;
-            description: string | null;
-            createdAt: string;
-            updatedAt: string;
-        }>;
-        nextCursor: string | null;
-    };
-};
-
-export type ListInitiativesResponse = ListInitiativesResponses[keyof ListInitiativesResponses];
-
-export type ProposeInitiativeData = {
-    body: {
-        name: string;
-        id?: string;
-        urn?: string;
-        domainId?: string | null;
-        description?: string;
-        labels?: {
-            [key: string]: unknown;
-        };
-        campaigns: Array<string>;
-    };
-    path?: never;
-    query?: never;
-    url: '/initiatives';
-};
-
-export type ProposeInitiativeErrors = {
-    /**
-     * Error
-     */
-    400: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type ProposeInitiativeError = ProposeInitiativeErrors[keyof ProposeInitiativeErrors];
-
-export type ProposeInitiativeResponses = {
-    /**
-     * Success
-     */
-    201: {
-        id: string;
-        orgId: string;
-        urn: string;
-        name: string;
-        description: string | null;
-        createdAt: string;
-        updatedAt: string;
-    };
-};
-
-export type ProposeInitiativeResponse = ProposeInitiativeResponses[keyof ProposeInitiativeResponses];
-
-export type GetInitiativeData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/initiatives/{id}';
-};
-
-export type GetInitiativeErrors = {
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    404: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type GetInitiativeError = GetInitiativeErrors[keyof GetInitiativeErrors];
-
-export type GetInitiativeResponses = {
-    /**
-     * Success
-     */
-    200: {
-        initiative: {
-            id: string;
-            orgId: string;
-            urn: string;
-            name: string;
-            description: string | null;
-            createdAt: string;
-            updatedAt: string;
-        };
-        campaigns: Array<{
-            campaign: {
-                id: string;
-                orgId: string;
-                urn: string;
-                name: string;
-                description: string | null;
-                targets: Array<string>;
-                topologyObjectId: string | null;
-                topologyVersion: number | null;
-                status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
-                createdAt: string;
-                updatedAt: string;
-            };
-            status: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
-        }>;
-        rollupStatus: 'proposed' | 'active' | 'blocked' | 'failed' | 'completed' | 'partially_rolled_back' | 'rolled_back';
-    };
-};
-
-export type GetInitiativeResponse = GetInitiativeResponses[keyof GetInitiativeResponses];
-
-export type AddInitiativeCampaignData = {
-    body: {
-        campaign: string;
-    };
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/initiatives/{id}/campaigns';
-};
-
-export type AddInitiativeCampaignErrors = {
-    /**
-     * Error
-     */
-    400: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    401: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    403: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-    /**
-     * Error
-     */
-    404: {
-        type: string;
-        title: string;
-        status: number;
-        detail?: string;
-        instance?: string;
-        decision_id?: string;
-    };
-};
-
-export type AddInitiativeCampaignError = AddInitiativeCampaignErrors[keyof AddInitiativeCampaignErrors];
-
-export type AddInitiativeCampaignResponses = {
-    /**
-     * Success
-     */
-    204: void;
-};
-
-export type AddInitiativeCampaignResponse = AddInitiativeCampaignResponses[keyof AddInitiativeCampaignResponses];
 
 export type InitFederationData = {
     body: {

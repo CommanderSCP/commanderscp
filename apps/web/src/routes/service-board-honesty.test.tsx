@@ -207,8 +207,8 @@ describe("service board summary: an unassessable count is never dressed as a suc
     expect(
       statMarkup(html, "board-summary-stable"),
       "premise: Stable really is the success variant"
-    ).toContain("bg-green-600");
-    expect(statMarkup(html, "board-summary-not-driven-here")).not.toContain("bg-green-600");
+    ).toContain("bg-emerald-50");
+    expect(statMarkup(html, "board-summary-not-driven-here")).not.toContain("bg-emerald-50");
     expect(html).toContain(">Not driven here</div>");
   });
 
@@ -218,8 +218,8 @@ describe("service board summary: an unassessable count is never dressed as a suc
     // On a change-blind deployment the stable count mixes settled components with components whose
     // change was simply never sent — a green badge over it is the fabricated all-clear in its
     // purest form.
-    expect(statMarkup(html, "board-summary-stable")).not.toContain("bg-green-600");
-    expect(html).not.toContain("bg-green-600");
+    expect(statMarkup(html, "board-summary-stable")).not.toContain("bg-emerald-50");
+    expect(html).not.toContain("bg-emerald-50");
   });
 
   // THE WIRING, not just the components it feeds. `stableUnknown` and the caveat banner are only as
@@ -275,6 +275,34 @@ describe("service board summary: an unassessable count is never dressed as a suc
  * needs the same PR-visible gate everything above does — the server can compute an honest `asOf` and
  * a browser that never paints it puts the operator back exactly where they started.
  */
+describe("a service whose components live in an assembly is never reported as empty", () => {
+  const zero: ServiceBoardSummary = { releasing: 0, blocked: 0, stable: 0, notDrivenHere: 0 };
+
+  /**
+   * `rows` is direct-children-only by decision (intermediate-grouping D3), so a service holding its
+   * components inside an assembly legitimately has zero rows. The counts are arithmetically right —
+   * and unqualified they say "nothing here" about a service that has components one rung down.
+   * That is the same failure as a fabricated all-clear, in the emptier direction, so it is pinned
+   * in the same file.
+   */
+  it("qualifies the four zeroes instead of letting them read as 'nothing here'", () => {
+    const html = renderToStaticMarkup(
+      <BoardSummary summary={zero} stableUnknown={false} componentsBelowAssemblies={2} />
+    );
+    expect(html).toContain("board-summary-scope-note");
+    expect(html).toMatch(/directly-held components only/);
+    expect(html).toContain("2 more in");
+  });
+
+  it("adds NO qualifier when every component really is held directly", () => {
+    const html = renderToStaticMarkup(
+      <BoardSummary summary={zero} stableUnknown={false} componentsBelowAssemblies={0} />
+    );
+    expect(html).not.toContain("board-summary-scope-note");
+    expect(html).not.toMatch(/directly-held components only/);
+  });
+});
+
 describe("service board as-of label: a snapshot is never painted as live status", () => {
   const base = {
     peerDomainId: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",

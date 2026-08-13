@@ -10,7 +10,6 @@ import { RegistryDetailPage } from "./routes/registry-detail";
 import { GraphExplorerPage } from "./routes/graph-explorer";
 import { GraphLandingPage } from "./routes/graph-landing";
 import { ComponentGraphPage } from "./routes/component-graph";
-import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
 import { ChangePipelinePage } from "./routes/change-pipeline";
 import { ComponentInfrastructurePage, ComponentPipelinePage } from "./routes/component-pipeline";
@@ -20,12 +19,12 @@ import { ServiceDetailLayout } from "./routes/service-detail";
 import { ServiceInfrastructurePage } from "./routes/service-infrastructure";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
-import { InitiativeListPage } from "./routes/initiative-list";
-import { InitiativeDetailPage } from "./routes/initiative-detail";
 import { FederationStatusPage } from "./routes/federation-status";
 import { OutpostsPage } from "./routes/outposts";
 import { OutpostDetailPage } from "./routes/outpost-detail";
 import { PluginsPage } from "./routes/plugins";
+import { AssemblyBoardPage, AssemblyDetailLayout } from "./routes/assembly-detail";
+import { IdentityPage } from "./routes/identity";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -94,12 +93,6 @@ const componentGraphRoute = createRoute({
   component: ComponentGraphPage
 });
 
-const changeListRoute = createRoute({
-  getParentRoute: () => authenticatedLayoutRoute,
-  path: "/changes",
-  component: ChangeListPage
-});
-
 const changeDetailRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/changes/$id",
@@ -154,6 +147,34 @@ const componentSettingsRoute = createRoute({
 // pipelines are bound — sat at a URL only one button linked to. The board is what a service IS
 // operationally, so it is the default; the properties table becomes the Settings tab, mounting the
 // same `RegistryDetailPage` (not a copy), exactly as `/components/$idOrUrn` does.
+// ONE ASSEMBLY — the same layout/index-child shape as a service, two tabs instead of three (see
+// routes/assembly-detail.tsx). The static `/assemblies/$idOrUrn` segment out-ranks the dynamic
+// `/$basePath/$idOrUrn` registry route, so an assembly lands on its board; `settings` mounts the
+// generic RegistryDetailPage, which resolves `assemblies` from the pathname.
+const assemblyDetailRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/assemblies/$idOrUrn",
+  component: AssemblyDetailLayout
+});
+
+const assemblyBoardRoute = createRoute({
+  getParentRoute: () => assemblyDetailRoute,
+  path: "/",
+  component: AssemblyBoardPage
+});
+
+const assemblySettingsRoute = createRoute({
+  getParentRoute: () => assemblyDetailRoute,
+  path: "/settings",
+  component: RegistryDetailPage
+});
+
+const identityRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/identity",
+  component: IdentityPage
+});
+
 const serviceDetailRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/services/$idOrUrn",
@@ -190,18 +211,6 @@ const campaignDetailRoute = createRoute({
   component: CampaignDetailPage
 });
 
-const initiativeListRoute = createRoute({
-  getParentRoute: () => authenticatedLayoutRoute,
-  path: "/initiatives",
-  component: InitiativeListPage
-});
-
-const initiativeDetailRoute = createRoute({
-  getParentRoute: () => authenticatedLayoutRoute,
-  path: "/initiatives/$id",
-  component: InitiativeDetailPage
-});
-
 const federationStatusRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/federation",
@@ -232,7 +241,7 @@ const pluginsRoute = createRoute({
 });
 
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
-// `/campaigns`, `/campaigns/...`, `/initiatives`, `/initiatives/...`, `/federation`) always
+// `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
 // precedence — so those pages never get shadowed by "an unknown registry named 'device'".
 const registryListRoute = createRoute({
@@ -256,7 +265,6 @@ const routeTree = rootRoute.addChildren([
     graphLandingRoute,
     graphExplorerRoute,
     componentGraphRoute,
-    changeListRoute,
     changeDetailRoute,
     changePipelineRoute,
     componentDetailRoute.addChildren([
@@ -264,6 +272,8 @@ const routeTree = rootRoute.addChildren([
       componentInfrastructureRoute,
       componentSettingsRoute
     ]),
+    assemblyDetailRoute.addChildren([assemblyBoardRoute, assemblySettingsRoute]),
+    identityRoute,
     serviceDetailRoute.addChildren([
       serviceBoardRoute,
       serviceInfrastructureRoute,
@@ -271,8 +281,6 @@ const routeTree = rootRoute.addChildren([
     ]),
     campaignListRoute,
     campaignDetailRoute,
-    initiativeListRoute,
-    initiativeDetailRoute,
     federationStatusRoute,
     outpostsRoute,
     outpostDetailRoute,

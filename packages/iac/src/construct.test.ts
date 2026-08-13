@@ -8,7 +8,6 @@ import {
   Campaign,
   Component,
   DeploymentTarget,
-  Initiative,
   Placement,
   ReleaseTopology,
   Service,
@@ -199,11 +198,11 @@ describe("@scp/iac: example stack synth", () => {
 });
 
 /**
- * M5 constructs (Campaign, Initiative, ReleaseTopology) — same example-based style as above: the
+ * M5 constructs (Campaign, ReleaseTopology) — same example-based style as above: the
  * fast-check property test in `construct.determinism.test.ts` covers the general determinism
  * guarantee, this file pins down the exact expected manifest shape.
  */
-describe("@scp/iac: campaign/initiative/release-topology synth", () => {
+describe("@scp/iac: campaign/release-topology synth", () => {
   it("a ReleaseTopology with a parallel wave and a sequential wave resolves construct-reference targets to URN strings", () => {
     const app = new App();
     const stack = new Stack(app, "release-platform");
@@ -297,41 +296,29 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
     });
   });
 
-  it("an Initiative construct exposes NO membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
+  it("no construct exposes a membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
     const app = new App();
     const stack = new Stack(app, "modernization-platform");
 
     const svcA = new Service(stack, "svc-a", { name: "Svc A" });
     const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
-    const initiative = new Initiative(stack, "modernization", {
-      name: "Cloud Modernization",
-      description: "Multi-year modernization effort"
-    });
 
     // `coordinates` is a system-managed relationship the server refuses on the IaC apply path
-    // (apps/server/src/graph/system-managed-relationships.ts) — so there is deliberately no
-    // `.coordinates()` synth method to declare initiative membership in IaC (it would only ever
-    // produce a manifest that 403s at apply). Initiative membership is added via the
-    // authority-checked `POST /initiatives/{id}/campaigns` API instead.
-    expect((initiative as unknown as { coordinates?: unknown }).coordinates).toBeUndefined();
+    // (apps/server/src/graph/system-managed-relationships.ts) — an edge injected by any actor
+    // holding `relationship:write` could sweep an arbitrary Change into a victim campaign's
+    // rollback. So there is deliberately no `.coordinates()` synth method; a manifest declaring
+    // one would only ever 403 at apply. The campaign -> member-change edges are written by the
+    // reconciler's own authority-checked path instead.
+    //
+    // This guarantee used to be asserted through the removed grouping construct (ADR-0032). The
+    // property is about `coordinates`, not about what sat above a campaign, so it moved here
+    // rather than being deleted alongside it.
+    expect((campaignA as unknown as { coordinates?: unknown }).coordinates).toBeUndefined();
 
     const manifest = stack.synth();
-    // No `coordinates` edge is synthesizable — the manifest carries only the objects and any
-    // NON-system-managed edges (none here).
     expect(manifest.relationships.filter((r) => r.typeId === "coordinates")).toEqual([]);
-    const initiativeObject = manifest.objects.find((o) => o.urn === initiative.urn);
-    expect(initiativeObject?.properties).toEqual({
-      description: "Multi-year modernization effort"
-    });
-    expect(campaignA.urn).toBeTruthy(); // campaign is still a valid standalone construct
+    expect(campaignA.urn).toBeTruthy();
     expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
-  });
-
-  it("an Initiative with no description synthesizes empty properties", () => {
-    const app = new App();
-    const stack = new Stack(app, "modernization-platform-2");
-    new Initiative(stack, "bare-initiative", { name: "Bare Initiative" });
-    expect(stack.synth().objects[0]?.properties).toEqual({});
   });
 });
 

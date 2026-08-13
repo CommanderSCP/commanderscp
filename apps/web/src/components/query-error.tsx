@@ -1,4 +1,5 @@
 import type { ResponseValidationIssue } from "@scp/sdk";
+import { Alert } from "./ui/alert";
 
 /**
  * THE HUMAN END OF THE SDK RESPONSE-VALIDATION BOUNDARY (ADR-0023).
@@ -63,17 +64,19 @@ export function QueryErrorNotice({
   testId?: string;
 }): React.JSX.Element {
   const isContract = isResponseValidationError(error);
+  // Rendered through the shared Alert (design spec §2.3); the diagnosis content, the testids and
+  // the `data-error-kind` attribute are the pinned behaviour and stay exactly as they were.
   return (
-    <div
+    <Alert
+      tone="danger"
       role="alert"
       data-testid={testId ?? "query-error"}
       data-error-kind={isContract ? "contract" : "request"}
-      className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
+      title={<>Could not load {what}.</>}
     >
-      <p className="font-medium">Could not load {what}.</p>
       {isContract && (
         <p className="mt-1" data-testid="query-error-contract">
-          This instance answered <code className="font-mono">{error.operation}</code> with a body
+          This instance answered <code className="break-words font-mono">{error.operation}</code> with a body
           that does not match the API contract this UI was built from — most likely a version skew
           between this UI and the instance. Nothing below is a network or permission failure.
         </p>
@@ -82,7 +85,7 @@ export function QueryErrorNotice({
         {queryErrorMessage(error)}
       </p>
       {isContract && error.issues.length > 0 && (
-        <ul className="mt-1 list-disc pl-5 font-mono text-xs" data-testid="query-error-fields">
+        <ul className="mt-1 list-disc break-words pl-5 font-mono text-xs" data-testid="query-error-fields">
           {error.issues.map((issue) => (
             <li key={`${issue.path}:${issue.code ?? ""}:${issue.message}`}>
               {issue.path} — {issue.code ?? "invalid"}: {issue.message}
@@ -90,6 +93,6 @@ export function QueryErrorNotice({
           ))}
         </ul>
       )}
-    </div>
+    </Alert>
   );
 }

@@ -38,7 +38,7 @@ function idempotencyKey(request: FastifyRequest): string | undefined {
 function assertNotSystemManagedRelationship(typeId: string): void {
   if (isSystemManagedRelationshipType(typeId)) {
     throw forbidden(
-      `relationship type '${typeId}' is system-managed (created only by the engine's own authority-checked paths — e.g. approval voting, or campaign/initiative membership) and cannot be created or deleted via /relationships`
+      `relationship type '${typeId}' is system-managed (created only by the engine's own authority-checked paths — e.g. approval voting, or campaign membership) and cannot be created or deleted via /relationships`
     );
   }
 }

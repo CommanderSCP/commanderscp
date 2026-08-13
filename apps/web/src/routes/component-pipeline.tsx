@@ -1,5 +1,20 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import {
+  ArrowRight,
+  Check,
+  Circle,
+  CircleAlert,
+  CircleDashed,
+  ExternalLink,
+  GitBranch,
+  Package,
+  Server,
+  SlidersHorizontal,
+  Wrench,
+  X,
+  type LucideIcon
+} from "lucide-react";
 import type {
   ComponentPipelineResponse,
   ComponentPipelineStage,
@@ -8,9 +23,14 @@ import type {
 import { client } from "../lib/client";
 import { componentPipelineKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
+import { cn, focusRing } from "../lib/utils";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
+import { PageHeader } from "../components/ui/page-header";
+import { SectionLabel } from "../components/ui/section-label";
+import { Skeleton } from "../components/ui/skeleton";
+import { QueryErrorNotice } from "../components/query-error";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
 
 /**
@@ -85,13 +105,13 @@ interface Lane {
 export const LANES: readonly Lane[] = [
   {
     key: "software",
-    label: "Software pipeline",
+    label: "Delivery pipeline",
     categories: ["build", "configuration"],
     stageCategories: ["configuration"],
     buildCategories: ["build"],
     hasRegistry: true,
     absent:
-      "No build or configuration pipeline is bound for this component, so nothing releases its software."
+      "No build or configuration pipeline is bound for this component, so nothing delivers its application or configuration."
   },
   {
     key: "infrastructure",
@@ -253,21 +273,20 @@ function StatusPill({
   current: ComponentPipelineStage["current"];
 }): React.JSX.Element {
   const status = current?.targetStatus ?? null;
-  const style =
+  // Deployment outcome -> §1.5 tone. An in-flight/unrecognised status is `warning` (needs a look),
+  // and "never deployed" is `neutral` — it is a real and ordinary state, not an alarm.
+  const tone =
     status === "succeeded"
-      ? "bg-green-50 text-green-700"
+      ? "success"
       : status === "failed" || status === "blocked"
-        ? "bg-red-50 text-red-700"
+        ? "danger"
         : status
-          ? "bg-amber-50 text-amber-700"
-          : "bg-slate-100 text-slate-500";
+          ? "warning"
+          : "neutral";
   return (
-    <span
-      className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-medium ${style}`}
-      data-testid="stage-status-pill"
-    >
+    <Badge variant={tone} className="whitespace-nowrap" data-testid="stage-status-pill">
       {status ?? "never deployed"}
-    </span>
+    </Badge>
   );
 }
 
@@ -298,7 +317,7 @@ function StageCard({
                 // while a stage bound to NOTHING is the alarm. Also never gated on `binding`, which is
                 // merely `bindings[0]` — reading it would be the same mistake this file just stopped
                 // making.
-                <Badge variant="destructive" data-testid="stage-unbound">
+                <Badge variant="danger" data-testid="stage-unbound">
                   No executor
                 </Badge>
               )}
@@ -320,6 +339,19 @@ function StageCard({
               <span className="font-mono">{binding.externalRef || "—"}</span>
               {binding.executionSystemName ? ` @ ${binding.executionSystemName}` : ""}
             </ConsoleLink>
+            {/* The ladder's provenance (ADR-0029), rendered verbatim — "via component" is the
+                owner's own-infra case, "via service"/"via assembly" the inherited rungs (shared-
+                infrastructure proposal §5's attribution). Silent when bound on the placement
+                itself: that is the unremarkable direct case. */}
+            {binding.resolvedVia && binding.resolvedVia !== "placement" && (
+              <span
+                className="ml-1 text-slate-400"
+                data-testid="stage-executor-provenance"
+                title={`This pipeline is not bound on this stage's placement — the resolver found it ${binding.resolvedVia === "organization" ? "at the org rung" : `on the ${binding.resolvedVia}`} (nearest-wins ancestor ladder), and a release here will use it.`}
+              >
+                via {binding.resolvedVia}
+              </span>
+            )}
           </div>
         ))}
         {stage.bindings.length > 0 && bindings.length === 0 && (
@@ -373,10 +405,14 @@ function StageCard({
             <Link
               to="/changes/$id/pipeline"
               params={{ id: current.changeId }}
-              className="underline hover:text-slate-900"
+              className={cn(
+                "inline-flex items-center gap-1 rounded underline hover:text-slate-900",
+                focusRing
+              )}
               data-testid="stage-run-link"
             >
-              {current.changeName ?? current.changeId.slice(0, 8)} →
+              {current.changeName ?? current.changeId.slice(0, 8)}
+              <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
             </Link>
           ) : (
             <span className="text-slate-400">nothing has released here</span>
@@ -413,7 +449,7 @@ function UnplacedStageCard({
           hint={`declared at ${stage.deploymentTarget.name}`}
           muted
           right={
-            <Badge variant="outline" className="text-slate-500" data-testid="stage-not-placed">
+            <Badge variant="neutral" className="text-slate-500" data-testid="stage-not-placed">
               Not placed
             </Badge>
           }
@@ -549,114 +585,50 @@ function ConsoleLink({
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900"
+      className={cn(
+        "inline-flex items-center gap-1 rounded underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900",
+        focusRing
+      )}
       data-testid={testid}
       title={href}
     >
-      {children} ↗
+      {children}
+      {/* §1.6: this leaves CommanderSCP — ExternalLink at size-3.5, always after the text. */}
+      <ExternalLink className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
     </a>
   );
 }
 
 /**
- * PIPELINE NODE ICONS — one distinct glyph per node KIND.
- *
- * Inline SVG rather than an icon package: adding a dependency for six glyphs means a lockfile
- * change and another thing to vendor for an air-gapped build (charter principle 5), and these never
- * need to change independently of this file. Stroke-based at 16px to sit with the existing type.
+ * PIPELINE NODE ICONS — one distinct glyph per node KIND, from the lucide vocabulary (design spec
+ * §1.6/§4C's kinds map; the hand-rolled inline SVG set this replaces is gone — one icon system).
  *
  * Every node previously rendered as an identical white rectangle, so the chain read as a stack of
  * boxes and the KIND of each step was carried only by its title text. The glyph is what makes
- * "repo, build, registry, deploy" legible at a glance (owner, 2026-08-10).
+ * "repo, build, registry, deploy" legible at a glance (owner, 2026-08-10). The `data-node-icon`
+ * attribute is the distinctness contract `component-pipeline-continuous.test.tsx` pins.
  */
 type NodeKind = "source" | "config" | "build" | "registry" | "stage" | "unplaced";
 
-const NODE_ICON: Record<NodeKind, { path: React.ReactNode; tint: string }> = {
-  // a git branch
-  source: {
-    path: (
-      <>
-        <circle cx="6" cy="4" r="2" />
-        <circle cx="6" cy="16" r="2" />
-        <circle cx="15" cy="8" r="2" />
-        <path d="M6 6v8M8 16h3a4 4 0 0 0 4-4v-2" />
-      </>
-    ),
-    tint: "bg-sky-50 text-sky-700"
-  },
-  // sliders — a config change
-  config: {
-    path: (
-      <>
-        <path d="M3 6h7M14 6h4M3 14h4M11 14h7" />
-        <circle cx="12" cy="6" r="2" />
-        <circle cx="9" cy="14" r="2" />
-      </>
-    ),
-    tint: "bg-teal-50 text-teal-700"
-  },
-  // a hammer
-  build: {
-    path: (
-      <>
-        <path d="M11 4l5 5-2 2-5-5z" />
-        <path d="M9 8l-5 5 3 3 5-5" />
-      </>
-    ),
-    tint: "bg-amber-50 text-amber-700"
-  },
-  // a box / package
-  registry: {
-    path: (
-      <>
-        <path d="M10 3l7 4v6l-7 4-7-4V7z" />
-        <path d="M3 7l7 4 7-4M10 11v7" />
-      </>
-    ),
-    tint: "bg-violet-50 text-violet-700"
-  },
-  // a server
-  stage: {
-    path: (
-      <>
-        <rect x="3" y="4" width="14" height="5" rx="1" />
-        <rect x="3" y="11" width="14" height="5" rx="1" />
-        <path d="M6 6.5h.01M6 13.5h.01" />
-      </>
-    ),
-    tint: "bg-slate-100 text-slate-600"
-  },
-  // a crossed-out circle — declared, never reached
-  unplaced: {
-    path: (
-      <>
-        <circle cx="10" cy="10" r="7" strokeDasharray="3 2" />
-        <path d="M6 14L14 6" />
-      </>
-    ),
-    tint: "bg-slate-50 text-slate-400"
-  }
+const NODE_ICON: Record<NodeKind, { icon: LucideIcon; tint: string }> = {
+  source: { icon: GitBranch, tint: "bg-sky-50 text-sky-700" },
+  config: { icon: SlidersHorizontal, tint: "bg-teal-50 text-teal-700" },
+  build: { icon: Wrench, tint: "bg-amber-50 text-amber-700" },
+  registry: { icon: Package, tint: "bg-violet-50 text-violet-700" },
+  stage: { icon: Server, tint: "bg-slate-100 text-slate-600" },
+  // dashed circle — declared, never reached (§1.6's "structurally not-yet" family)
+  unplaced: { icon: CircleDashed, tint: "bg-slate-50 text-slate-400" }
 };
 
 function PipelineIcon({ kind }: { kind: NodeKind }): React.JSX.Element {
-  const icon = NODE_ICON[kind];
+  const { icon: Icon, tint } = NODE_ICON[kind];
   return (
     <span
-      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${icon.tint}`}
+      className={`flex size-7 shrink-0 items-center justify-center rounded-md ${tint}`}
       aria-hidden="true"
       data-node-icon={kind}
     >
-      <svg
-        viewBox="0 0 20 20"
-        className="h-4 w-4"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        {icon.path}
-      </svg>
+      <Icon className="size-4" strokeWidth={2} />
     </span>
   );
 }
@@ -686,7 +658,7 @@ function NodeHeading({
           </span>
           {right}
         </div>
-        <p className="text-[11px] leading-snug text-slate-400">{hint}</p>
+        <p className="text-xs leading-snug text-slate-500">{hint}</p>
       </div>
     </div>
   );
@@ -767,7 +739,11 @@ function SourceNode({
                 whole repo
               </span>
             )}{" "}
-            <span className="text-slate-400">→ {source.type}</span>
+            {/* §1.6: the forward glyph is ArrowRight — the last rendered `→` literal died here. */}
+            <span className="inline-flex items-center gap-1 text-slate-400">
+              <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
+              {source.type}
+            </span>
           </div>
         ))
       )}
@@ -894,19 +870,26 @@ const CHECK_LABEL: Record<string, string> = {
 };
 
 function CheckMark({ status }: { status: string }): React.JSX.Element {
-  const mark =
+  // Lucide per §1.6/§4C (the unicode ✓ ✗ ! ◐ ○ set is gone): pass Check, fail X, warning
+  // CircleAlert, in-progress CircleDashed, not-started Circle — same state colors as before.
+  const mark: { icon: LucideIcon; className: string } =
     status === "pass"
-      ? { glyph: "✓", className: "text-green-600" }
+      ? { icon: Check, className: "text-green-600" }
       : status === "fail" || status === "timed_out"
-        ? { glyph: "✗", className: "text-red-600" }
+        ? { icon: X, className: "text-red-600" }
         : status === "warning"
-          ? { glyph: "!", className: "text-amber-600" }
+          ? { icon: CircleAlert, className: "text-amber-600" }
           : status === "pending"
-            ? { glyph: "◐", className: "text-slate-500" }
-            : { glyph: "○", className: "text-slate-300" };
+            ? { icon: CircleDashed, className: "text-slate-500" }
+            : { icon: Circle, className: "text-slate-300" };
+  const Icon = mark.icon;
   return (
-    <span className={`font-medium ${mark.className}`} aria-label={status} data-status={status}>
-      {mark.glyph}
+    <span
+      className={`inline-flex align-middle ${mark.className}`}
+      aria-label={status}
+      data-status={status}
+    >
+      <Icon className="size-3.5" strokeWidth={2} aria-hidden="true" />
     </span>
   );
 }
@@ -917,7 +900,7 @@ function GateSubnode({ gate }: { gate: ComponentPipelineStage["gate"] }): React.
 
   return (
     <div
-      className="border-l-2 border-slate-200 pl-2 text-[11px] leading-snug text-slate-500"
+      className="border-l-2 border-slate-200 pl-2 text-xs leading-snug text-slate-500"
       data-testid="stage-gate"
     >
       <span className="text-slate-400">Entry gate</span>{" "}
@@ -926,17 +909,24 @@ function GateSubnode({ gate }: { gate: ComponentPipelineStage["gate"] }): React.
           none — a release enters as soon as the previous stage succeeds
         </span>
       ) : (
-        <>
+        // The 2-column mini key-value list (spec §4C): requirement | verdict-with-icon, replacing
+        // the ` · `/`; `-joined prose block. Rows, not a paragraph, so each requirement and its
+        // state line up and scan.
+        <div className="mt-0.5 grid grid-cols-[auto_1fr] items-baseline gap-x-3 gap-y-0.5">
           {approvals.length > 0 && (
-            <span data-testid="gate-approval">
-              {approvals.map((a) => `${a.count}× ${a.fromRole} approval (${a.scope})`).join(", ")}
-            </span>
+            <>
+              <span className="text-slate-400">Approval</span>
+              <span data-testid="gate-approval">
+                {approvals.map((a) => `${a.count}× ${a.fromRole} approval (${a.scope})`).join(", ")}
+              </span>
+            </>
           )}
-          {approvals.length > 0 && " · "}
-          <span className="text-slate-400" data-testid="gate-policies">
-            ({policies.map((p) => `${p.name} · ${p.enforcement}`).join("; ")})
+          <span className="text-slate-400">Policy</span>
+          <span data-testid="gate-policies">
+            {policies.map((p) => `${p.name} · ${p.enforcement}`).join("; ")}
           </span>
-          <div data-testid="gate-checks" className="mt-0.5">
+          <span className="text-slate-400">Checks</span>
+          <span data-testid="gate-checks" className="flex flex-col gap-0.5">
             {gate.checks.length === 0 ? (
               // Measured 2026-08-10: EVERY live policy is like this, and the estate holds 0 control
               // bindings and 0 control runs. Said out loud, because a missing list would read as
@@ -944,7 +934,7 @@ function GateSubnode({ gate }: { gate: ComponentPipelineStage["gate"] }): React.
               <span className="italic text-slate-400">no automated check required</span>
             ) : (
               gate.checks.map((check) => (
-                <div key={check.controlId} data-testid="gate-check">
+                <span key={check.controlId} data-testid="gate-check">
                   <CheckMark status={check.status} />{" "}
                   <span className={check.status === "fail" ? "text-red-700" : undefined}>
                     {check.name ?? (
@@ -955,11 +945,11 @@ function GateSubnode({ gate }: { gate: ComponentPipelineStage["gate"] }): React.
                     )}
                   </span>{" "}
                   <span className="text-slate-400">{CHECK_LABEL[check.status]}</span>
-                </div>
+                </span>
               ))
             )}
-          </div>
-        </>
+          </span>
+        </div>
       )}
     </div>
   );
@@ -968,7 +958,7 @@ function GateSubnode({ gate }: { gate: ComponentPipelineStage["gate"] }): React.
 function WaveRow({ wave, lane }: { wave: JourneyWave; lane: Lane }): React.JSX.Element {
   return (
     <div className="w-full" data-testid="pipeline-wave">
-      <p className="mb-1 text-center text-xs font-medium uppercase tracking-wide text-slate-400">
+      <SectionLabel className="mb-1 text-center">
         {wave.waveIndex === null ? (
           // Placed somewhere the topology never mentions. Real state — hidden by neither the server
           // nor here — but honestly separated from the declared journey, which is the ordered part.
@@ -981,7 +971,7 @@ function WaveRow({ wave, lane }: { wave: JourneyWave; lane: Lane }): React.JSX.E
             {wave.name ? ` · ${wave.name}` : ""}
           </>
         )}
-      </p>
+      </SectionLabel>
       <div className="flex flex-wrap items-stretch justify-center gap-2">
         {wave.entries.map((entry) =>
           entry.placed ? (
@@ -1013,66 +1003,83 @@ export function ComponentPipelinePage({
     enabled: Boolean(idOrUrn)
   });
 
-  if (query.isLoading) return <p className="text-sm text-slate-500">Loading pipeline…</p>;
+  if (query.isLoading) return <Skeleton className="h-24 w-full" />;
   if (query.error) {
     return (
-      <p className="text-sm text-red-600" data-testid="pipeline-error">
-        {(query.error as Error).message}
-      </p>
+      <QueryErrorNotice
+        error={query.error}
+        what="this component's pipeline"
+        testId="pipeline-error"
+      />
     );
   }
   const data = query.data;
-  if (!data) return <p className="text-sm text-slate-500">No pipeline.</p>;
+  if (!data) return <p className="text-sm text-slate-500">No pipeline yet.</p>;
 
   const waves = buildJourney(data);
   const reaches = data.stages.filter((s) => s.wave !== null).length;
   const declared = reaches + data.unplacedStages.length;
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold" data-testid="component-name">
-            {data.component.name}
-          </h1>
-          <p className="font-mono text-xs text-slate-500">{data.component.urn}</p>
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        title={<span data-testid="component-name">{data.component.name}</span>}
+        description={
+          <span className="font-mono text-xs text-slate-500">{data.component.urn}</span>
+        }
+        actions={
           <Link to="/graph/$idOrUrn" params={{ idOrUrn: data.component.id }}>
-            <Button variant="outline">Open in graph explorer</Button>
+            <Button variant="outline" size="sm">
+              Open in graph explorer
+              <ArrowRight className="size-4" strokeWidth={2} aria-hidden="true" />
+            </Button>
           </Link>
-        </div>
-      </div>
-
-      {/* WHY this component releases this way (charter principle 6). Without it, someone attaching a
-          topology to a SERVICE silently changes every component under it and nothing says so. */}
-      <p className="text-xs text-slate-500" data-testid="pipeline-source">
-        {data.pipeline ? (
-          <>
-            Pipeline{" "}
-            <span className="font-medium">{data.pipeline.topologyName ?? "(unnamed)"}</span>,
-            inherited from the {data.pipeline.rung}
-            {data.pipeline.attachedToName ? ` “${data.pipeline.attachedToName}”` : ""}.
-            {data.stageSource === "topology" ? (
+        }
+        meta={
+          // WHY this component releases this way (charter principle 6). Without it, someone
+          // attaching a topology to a SERVICE silently changes every component under it and nothing
+          // says so. Compressed to fragments per §4C/copy rule 1 — each full sentence lives in the
+          // fragment's `title` tooltip.
+          <span
+            className="flex flex-wrap items-center gap-2 text-xs text-slate-500"
+            data-testid="pipeline-source"
+          >
+            {data.pipeline ? (
               <>
-                {" "}
-                Reaches {reaches} of its {declared} declared stage
-                {declared === 1 ? "" : "s"}.
+                <Badge
+                  variant="neutral"
+                  title={`Pipeline ${data.pipeline.topologyName ?? "(unnamed)"}, inherited from the ${data.pipeline.rung}${data.pipeline.attachedToName ? ` “${data.pipeline.attachedToName}”` : ""}.`}
+                >
+                  Topology: {data.pipeline.topologyName ?? "(unnamed)"}
+                </Badge>
+                <span>
+                  inherited from the {data.pipeline.rung}
+                  {data.pipeline.attachedToName ? ` “${data.pipeline.attachedToName}”` : ""}
+                </span>
+                {data.stageSource === "topology" ? (
+                  <span
+                    title={`Reaches ${reaches} of its ${declared} declared stage${declared === 1 ? "" : "s"}.`}
+                  >
+                    reaches {reaches}/{declared} declared stage{declared === 1 ? "" : "s"}
+                  </span>
+                ) : (
+                  // The topology resolved but declares no journey over PLACES, so the stages below
+                  // are just the placements. Saying so is the difference between "reaches
+                  // everything" and "we cannot tell" — the response's `stageSource` exists for
+                  // exactly this fragment.
+                  <span title="Its waves name no deployment-targets, so the stages below are its placements only.">
+                    waves name no deployment-targets — placements only
+                  </span>
+                )}
               </>
             ) : (
-              // The topology resolved but declares no journey over PLACES, so the stages below are
-              // just the placements. Saying so is the difference between "reaches everything" and
-              // "we cannot tell" — the response's `stageSource` exists for exactly this sentence.
-              <>
-                {" "}
-                Its waves name no deployment-targets, so the stages below are its placements only.
-              </>
+              <span title="No release topology is attached — releases compile to a single anonymous wave.">
+                no release topology attached — single anonymous wave
+              </span>
             )}
-          </>
-        ) : (
-          <>No release topology is attached — releases compile to a single anonymous wave.</>
-        )}
-      </p>
+          </span>
+        }
+      />
 
       {waves.length === 0 ? (
         // Not an error, and deliberately explicit about the consequence: a component placed nowhere,
