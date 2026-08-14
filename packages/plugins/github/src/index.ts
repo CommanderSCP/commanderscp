@@ -792,7 +792,7 @@ async function readFileAtRef(
     encoding: entry.encoding,
     declaredSizeBytes: entry.size,
     maxBytes,
-    blobSha: entry.sha ?? "unknown"
+    blobSha: entry.sha
   });
 }
 

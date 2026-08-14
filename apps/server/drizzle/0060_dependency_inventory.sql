@@ -6,6 +6,27 @@
 -- is a graph object, nothing here is a relationship, and nothing here federates.
 --
 -- ===========================================================================================
+-- THE NUMBER 0060 IS CONTESTED — RENUMBER BEFORE MERGING, AND BUMP `when` WHEN YOU DO
+--
+-- Three branches each took 0060 off a `main` whose highest was 0059, so each checked correctly and
+-- still collided: this one, `0060_remove_initiative` (UI branch) and `0060_domain_local_inherited_from`
+-- (M20.7, PR #235). Git will NOT flag this at merge — the filenames differ, so both files simply
+-- arrive and `meta/_journal.json` ends up with two entries at `idx: 60`. The conflict is silent by
+-- construction; only a human checking the number will catch it.
+--
+-- Renumbering is NOT just a filename + `idx` change. `meta/_journal.json` carries a hand-set `when`
+-- epoch-ms, and drizzle SILENTLY SKIPS an entry whose `when` is not strictly greater than what a
+-- database has already applied — no error, no warning, and the failure surfaces much later as a
+-- missing table. This is not hypothetical here: this entry's original `when` (1788036400000) was
+-- BYTE-IDENTICAL to `0060_remove_initiative`'s, because both were derived by adding the customary
+-- +10,000,000 ms to 0059. It has been moved to 1788059137000, chosen to sit strictly above all three
+-- known claimants (M20.7 deliberately took 1788039137000 to dodge the same arithmetic; the UI branch
+-- plans 1788049137000 for its renumbered 0061).
+--
+-- So: when you renumber this file, bump `idx` AND `when` together, and verify `when` is strictly
+-- greater than every entry that now precedes it — not merely different from them.
+--
+-- ===========================================================================================
 -- WHY TABLES AND NOT THE GRAPH — a scoped, deliberate bend of charter principle 2
 --
 -- ADR-0032 §3 records this as a bend, not an oversight, on four things measured at HEAD 2026-08-13:
@@ -157,7 +178,7 @@ CREATE TABLE IF NOT EXISTS "dependency_lines" (
   -- A producer link cannot exist without its declaration timestamp, and vice versa. This is the
   -- "declared, never inferred" rule made structural rather than conventional.
   CONSTRAINT "dependency_lines_internal_is_declared"
-    CHECK (true)
+    CHECK (("produced_by_object_id" IS NULL) = ("produced_by_declared_at" IS NULL))
 );
 --> statement-breakpoint
 
@@ -212,7 +233,7 @@ CREATE TABLE IF NOT EXISTS "component_dependencies" (
     PRIMARY KEY ("org_id","component_object_id","line_id","manifest_path"),
   -- Barrier 2 (see header): a row cannot reference another org's line.
   CONSTRAINT "component_dependencies_line_fk"
-    FOREIGN KEY ("line_id") REFERENCES "dependency_lines" ("id")
+    FOREIGN KEY ("org_id","line_id") REFERENCES "dependency_lines" ("org_id","id")
 );
 --> statement-breakpoint
 
@@ -233,7 +254,7 @@ GRANT DELETE ON component_dependencies TO scp_app;
 -- Explicit and intentionally redundant (0035 uses the same belt-and-braces form): a future
 -- migration that blanket-grants on this schema should have to step over this line to break the
 -- "lines are append-and-observe" property.
-GRANT DELETE ON dependency_lines TO scp_app;
+REVOKE DELETE ON dependency_lines FROM scp_app;
 --> statement-breakpoint
 
 -- ===========================================================================================
@@ -247,7 +268,8 @@ ALTER TABLE dependency_lines FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS org_isolation ON dependency_lines;
 --> statement-breakpoint
 CREATE POLICY org_isolation ON dependency_lines
-  USING (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid);
+  USING (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid)
+  WITH CHECK (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid);
 --> statement-breakpoint
 
 ALTER TABLE component_dependencies ENABLE ROW LEVEL SECURITY;
@@ -257,7 +279,8 @@ ALTER TABLE component_dependencies FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS org_isolation ON component_dependencies;
 --> statement-breakpoint
 CREATE POLICY org_isolation ON component_dependencies
-  USING (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid);
+  USING (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid)
+  WITH CHECK (org_id = NULLIF(current_setting('app.current_org_id', true), '')::uuid);
 --> statement-breakpoint
 
 COMMENT ON TABLE dependency_lines IS
