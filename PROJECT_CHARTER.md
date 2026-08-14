@@ -1348,6 +1348,40 @@ Scan evidence and signing live at the commander only; outposts and boundary rela
 
 Extending this class allowlist further requires owner sign-off.
 
+Amendment approved 2026-08-13.
+
+CommanderSCP may author a dependency version bump into a source repository on behalf of a component that has enabled dependency subscriptions.
+
+This is the `scp-managed-dep` class, and it joins the enumerated managed-class allowlist.
+
+The class is narrowly defined as editing the declared version of an already-declared dependency in a manifest the component already contains.
+
+Manifests include language dependency manifests and the base-image reference of a container build file.
+
+`scp-managed-dep` never authors any other content, never adds or removes a dependency, and never edits a file that declares no dependency.
+
+`scp-managed-dep` is manifest-only: it never runs a package manager, never resolves or regenerates a lockfile, and never builds, compiles, or tests.
+
+A class that requires lockfile resolution is CI by definition and is coordinated, never managed.
+
+`scp-managed-dep` holds scoped, per-run, short-lived repository-write credentials, which is a credential class CommanderSCP has not previously held.
+
+Repository-write credentials are issued per run, scoped to the single repository under change, and are never standing credentials.
+
+`scp-managed-dep` implements the standard executor interface, runs in isolated single-shot ephemeral runners from a separate `scp-runner-dep` image, and reaches no hosts.
+
+The executor verb set is unchanged; no write or execute verb is added.
+
+Enabling dependency subscriptions for a component declares CommanderSCP the execution system for this class in that domain, which is the gate-1 flip for this class.
+
+CommanderSCP refuses to enable dependency subscriptions for a component whose repository already delegates the same manifests to another dependency-update system.
+
+Delivery is a pull request by default, and automatic merge is permitted only where a governed control evidences that the component's own checks passed.
+
+Dependency subscriptions are never enabled by default, and an instance-level enablement grants only the ability for a component team to enable it.
+
+Extending this class allowlist further requires owner sign-off.
+
 ---
 
 ## Bundled Executor Backends
