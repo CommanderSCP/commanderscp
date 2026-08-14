@@ -515,6 +515,22 @@ async function main() {
     "partition-route-tables (inherits locality from secure-partition — flag never sent)"
   );
 
+  // ------------------------------------------------ nested domains (outpost-ui.md §5(b))
+  // Owner decision 2026-08-13: containment domains nest. One top-level domain and one SUBDOMAIN
+  // created inside it (domainId parent — route 1), so the domains registry shows the nesting and
+  // the create form's parent-domain picker has real rows to offer. Both shared (not domain-local):
+  // the locality-inheritance demo already lives on secure-partition above, and mixing the two here
+  // would make it unclear which property the pair demonstrates.
+  const usRegion = await put("domains", urn("domain", "us-region"), { name: "us-region" });
+  if (usRegion) {
+    await put(
+      "domains",
+      urn("domain", "us-east-enclave"),
+      { name: "us-east-enclave", domainId: usRegion.id },
+      "us-east-enclave (subdomain of us-region)"
+    );
+  }
+
   // --------------------------------------------------------------- federation
   // Federation status and Outposts render nothing until this instance has an identity and at
   // least one peer. Three peers across three TRUST TIERS (a commercial one, a FedRAMP one and an
