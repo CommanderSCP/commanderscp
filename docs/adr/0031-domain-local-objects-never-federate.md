@@ -1,6 +1,6 @@
 # ADR-0031: Domain-local objects never federate — locality is declared on the object, stamped into the journal, and is not an enforcement input
 
-**Status:** **Accepted** (owner sign-off 2026-08-11, including the six decision points in the context doc's §10 — §6 below is amended by that sign-off, per Q2). **Amended 2026-08-13 (owner-decided): §6a adds containment-subtree declaration as inheritance at create**, resolving the layer §1 deferred and correcting a conflict between §1's "materialize at declaration time" wording and §6's permanent refusal of shared → domain-local. §1's constraint is preserved in substance — the bit is still written onto the row, never resolved by a walk — and §1's own text now points forward to §6a.
+**Status:** **Accepted** (owner sign-off 2026-08-11, including the six decision points in the context doc's §10 — §6 below is amended by that sign-off, per Q2). **Amended 2026-08-13 (owner-decided): §6a adds containment-subtree declaration as inheritance at create**, resolving the layer §1 deferred and correcting a conflict between §1's "materialize at declaration time" wording and §6's permanent refusal of shared → domain-local. §1's constraint is preserved in substance — the bit is still written onto the row, never resolved by a walk — and §1's own text now points forward to §6a. **Amended again 2026-08-13 (owner-decided): §6b refuses publishing an object out of a still-domain-local container** — an interaction M20.4's publish verb and M20.5's subtrees create between them, which neither clause anticipated. **§6b is BUILT** (M20.6, 2026-08-13) — the refusal it describes is enforced in `federation/publish-domain-local.ts` and pinned by `domain-local-invisibility.integration.test.ts`.
 **Context doc:** [docs/proposals/domain-local-config-and-infra.md](../proposals/domain-local-config-and-infra.md)
 **Relates to:** [ADR-0017](0017-ownership-refinement.md) (§2 — domain-specific config/infra is outpost-owned; this supplies the tracking model it assumed); [ADR-0022](0022-outpost-config-authority-split.md) (the commander→outpost declared-config replica — this is its mirror image, and the "journal cannot carry a peer" reasoning is reused); [ADR-0018](0018-domain-local-dev-pipelines.md) / [ADR-0030](0030-dev-branch-pipelines.md) (M18 dev pipelines — adjacent mechanism, different intent; §"Relationship to M18"); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0011](0011-universal-outpost-validation.md) (§1 — domain-local artifacts have no transfer phase); [ADR-0010](0010-outpost-local-artifact-infra.md) (outpost-local Gitea); charter principle 1 (coordinate, not execute), 2 (graph-native), 3 (API-first parity), 6 (explainability), 7 (Simplicity first)
 
@@ -276,6 +276,58 @@ whose members already federate there is no remedy — and there should not be on
 would be a lie. This is the same asymmetry §6 already imposes on individual objects, applied one level
 up; it is not a new limitation, only a newly visible one.
 
+### 6b. Publishing an object out of a still-domain-local container is **refused** (M20.6)
+
+> **Added 2026-08-13 (owner-decided); BUILT the same day as M20.6.** This clause was deliberately
+> merged ahead of its implementation and said so; that gap is now closed, and the as-built note at
+> the end of the clause records what enforces it.
+
+M20.4's publication verb predates M20.5's subtrees, and the two interact in a case neither clause
+anticipated: `publishDomainLocalObject` checks **only the object's own** `domain_local`. It never
+looks at what contains it. So an object inside a still-domain-local container can be published out of
+that container.
+
+**Decision: refuse it.** Publication requires that **every containment parent already federates** —
+both routes, `domain_id` and `contains`, mirroring the either-route rule §6a uses for inheritance and
+§4 uses for edges. An operator who wants a component out of a domain-local grouping publishes the
+**container first**, then the component.
+
+**The reason is not tidiness — it is a shape this repo has already been burned by.** A published child
+whose container stays local arrives at the commander with **no containment edge at all**: the child's
+`object_upsert` crosses, the container's does not, and §4 withholds the edge between them. Every
+consumer that derives authority or scope from containment — policy resolution, RBAC scope expansion,
+freeze scoping, approval scope, all of which walk `graph/containment.ts` — then sees an object
+attached to nothing.
+
+[ADR-0026](0026-placements-and-derived-stage-names.md) measured exactly what that costs. A `placement`
+whose containment chain was `[org root, placement]` and nothing else silently stopped **11 `required`
+component-scoped prod-gate policies** on the live estate and made every service-scoped freeze **fail
+open**. That was the same shape reached by a different route, and it was called a defect and fixed
+without asking. Publishing an orphan into a commander is a supported API deliberately producing it.
+
+**Publishing the container does not publish its children**, and that is what makes the required order
+workable rather than coercive: `publish`'s edge sweep re-journals only edges whose other endpoint is
+already shared, so a container's still-local children keep their locality and their edges stay
+withheld. The operator then publishes each child it actually wants, one explicit decision at a time.
+
+**Cost, stated plainly:** an operator who wants exactly one component out of a local grouping must
+publish the grouping too, which discloses the **container's name**. If the container's name is itself
+the sensitive fact, there is no path — and the honest remedy is modelling, not a flag: create that
+component under a shared container in the first place. This is a real narrowing of what M20.4 allowed
+on the day it shipped, taken knowingly.
+
+**As built (M20.6):** enforced in `federation/publish-domain-local.ts` by
+`domainLocalContainersOf`, which resolves both containment routes — the `domain_id` parent and live
+`contains` parents — and refuses **before any write**, alongside the existing single-writer and
+already-shared refusals. **One hop**, for the same reason §6a inherits one hop: by induction an
+object cannot sit under a domain-local ancestor without its immediate parent being domain-local too,
+so a recursive walk would answer the same question at the cost of a CTE in a write path. The refusal
+**names the offending containers** (name and urn, de-duplicated across the two routes), because the
+operator's next action is to publish them. Pinned by
+`domain-local-invisibility.integration.test.ts` — both routes, the untouched-object assertion, and
+the container-then-child ordering including the control that publishing a container does **not**
+publish its children.
+
 ### 7. `domain_local` is **visibility only** — never an enforcement input
 
 It grants **no** scan exemption, relaxes **no** gate, and is read by **no** governance code path. E6
@@ -389,6 +441,18 @@ rejected alternative would be back, and this ADR would be wrong.
   own wording read literally, and it is a **shared → domain-local flip**, which §6 refuses
   permanently. A descendant that already federates may already have reached a peer; no write on this
   side can retract that, so the operation would claim a guarantee the system cannot deliver.
+- **Let publish ignore containment, as M20.4 shipped it — rejected by §6b.** It produces a published
+  object with no containment edge at the receiver, which [ADR-0026](0026-placements-and-derived-stage-names.md)
+  already measured as silently disabling 11 `required` policies and failing service-scoped freezes
+  open. A supported API should not deliberately produce a shape the project has already called a
+  defect when it arose accidentally.
+- **Auto-publish the ancestors when publishing a child — rejected.** It would make one explicit
+  decision (expose this component) silently perform a larger one (expose the grouping that contains
+  it, and its name). Implicit widening of a boundary decision is the thing this ADR refuses
+  everywhere else; it would be strange to adopt it here.
+- **Allow it but warn — rejected.** A warning that does not stop the write still produces the orphan,
+  and puts the consequence on whoever reads the commander months later rather than on the operator
+  who has the context now.
 - **Bulk-materialize, but REFUSE when any descendant is already shared — rejected as a different
   feature, not as a bad idea.** It is honest where the previous option is not, and it may be worth
   building later. It was not adopted now for two reasons: it is a **bulk verb with its own failure

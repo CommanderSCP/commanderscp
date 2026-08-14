@@ -68,6 +68,66 @@ export interface PublishDomainLocalResult {
  * reported as `withheldRelationshipIds` — a partial sweep is the correct outcome, but a silent one
  * would be indistinguishable from a bug.
  */
+/**
+ * M20.6 (ADR-0031 §6b) — the containment parents of `objectId` that are THEMSELVES still
+ * domain-local, along both routes `graph/containment.ts` walks.
+ *
+ * ONE HOP, deliberately, and for the same reason §6a inherits one hop: by induction an object cannot
+ * be under a domain-local ancestor without its immediate parent being domain-local too, because
+ * locality is inherited at create all the way down. Walking the full chain would answer the same
+ * question at the cost of a recursive CTE in a write path.
+ *
+ * Returns the offending parents DESCRIBED, not merely counted — the operator's next action is
+ * "publish that container first", and a refusal that does not name it makes them go looking.
+ */
+async function domainLocalContainersOf(
+  tx: TenantTx,
+  orgId: string,
+  objectId: string,
+  containmentDomainId: string | null
+): Promise<{ id: string; urn: string; name: string }[]> {
+  const found: { id: string; urn: string; name: string }[] = [];
+
+  // Route 1 — the `domain_id` parent. NULL only for the org root itself, which has no container.
+  if (containmentDomainId) {
+    const rows = await tx
+      .select({ id: objects.id, urn: objects.urn, name: objects.name })
+      .from(objects)
+      .where(
+        and(
+          eq(objects.orgId, orgId),
+          eq(objects.id, containmentDomainId),
+          eq(objects.domainLocal, true)
+        )
+      )
+      .limit(1);
+    found.push(...rows);
+  }
+
+  // Route 2 — live `contains` parents, the edge walked backwards (to_id = this object).
+  const containers = await tx
+    .select({ id: objects.id, urn: objects.urn, name: objects.name })
+    .from(relationships)
+    .innerJoin(objects, eq(objects.id, relationships.fromId))
+    .where(
+      and(
+        eq(relationships.orgId, orgId),
+        eq(relationships.typeId, "contains"),
+        eq(relationships.toId, objectId),
+        isNull(relationships.deletedAt),
+        eq(objects.orgId, orgId),
+        isNull(objects.deletedAt),
+        eq(objects.domainLocal, true)
+      )
+    );
+  // De-duplicated on id: an object whose `domain_id` parent ALSO contains it via an edge would
+  // otherwise be named twice in the refusal, which reads like two problems.
+  for (const container of containers) {
+    if (!found.some((f) => f.id === container.id)) found.push(container);
+  }
+  return found;
+}
+
 export async function publishDomainLocalObject(
   tx: TenantTx,
   input: PublishDomainLocalInput
@@ -104,6 +164,40 @@ export async function publishDomainLocalObject(
     throw conflict(
       `object '${existing.id}' is not domain-local — it already federates, and publishing it again ` +
         `would emit a redundant revision to every peer`
+    );
+  }
+
+  // M20.6 (ADR-0031 §6b) — REFUSE PUBLISHING OUT OF A STILL-DOMAIN-LOCAL CONTAINER, before any write.
+  //
+  // Publishing a child whose container stays local lands it at the commander with NO containment edge
+  // at all: the child's `object_upsert` crosses, the container's does not, and §4 withholds the edge
+  // between them. Every consumer that derives authority from containment — policy resolution, RBAC
+  // scope expansion, freeze scoping, approval scope, all walking `graph/containment.ts` — then reads
+  // it as attached to nothing.
+  //
+  // That is not a hypothetical shape. ADR-0026 MEASURED it, reached by a different route: a placement
+  // whose chain was `[org root, placement]` silently stopped ELEVEN `required` component-scoped
+  // prod-gate policies on the live estate and made every service-scoped freeze FAIL OPEN. It was
+  // called a defect there and fixed without asking; a supported API deliberately producing it would
+  // be worse than the accident was.
+  //
+  // The required order is publish-the-container-then-the-child, and it stays one explicit decision at
+  // a time because publishing a container does NOT publish its children — the edge sweep below
+  // re-journals only edges whose other endpoint is already shared.
+  const blockingContainers = await domainLocalContainersOf(
+    tx,
+    input.orgId,
+    existing.id,
+    existing.domainId
+  );
+  if (blockingContainers.length > 0) {
+    const named = blockingContainers.map((c) => `'${c.name}' (${c.urn})`).join(", ");
+    throw conflict(
+      `object '${existing.id}' cannot be published while it is contained by domain-local ` +
+        `object(s) ${named}: it would arrive at a peer with no containment edge, and every check ` +
+        `that derives scope from containment — policies, freezes, approvals, RBAC — would read it ` +
+        `as attached to nothing (ADR-0031 §6b). Publish the container(s) first, then this object; ` +
+        `publishing a container does not publish its children.`
     );
   }
 
