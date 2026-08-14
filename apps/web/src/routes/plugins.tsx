@@ -3,7 +3,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Bell, Search, type LucideIcon } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { ScpApiError } from "@scp/sdk";
-import type { DiscoveryProposal, PluginManifest } from "@scp/schemas";
+// A2 (docs/proposals/outpost-ui.md §3): `ExecutorTypeSchema` is a value (its `.options` drives the
+// Select below), not just a type — same direct `@scp/schemas` import `registry-detail.tsx`'s own
+// repurpose control already uses (eslint's restricted-imports rule allows it: "apps/web/src may
+// import only @scp/sdk and @scp/schemas").
+import {
+  ExecutorTypeSchema,
+  type CreateExecutorBindingRequest,
+  type DiscoveryProposal,
+  type ExecutorType,
+  type PluginManifest
+} from "@scp/schemas";
 import { client } from "../lib/client";
 import { cn, focusRing } from "../lib/utils";
 import { Badge, type BadgeProps } from "../components/ui/badge";
@@ -14,6 +24,7 @@ import { PageHeader } from "../components/ui/page-header";
 import { Alert } from "../components/ui/alert";
 import { SectionLabel } from "../components/ui/section-label";
 import { SkeletonRows } from "../components/ui/skeleton";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
 import {
   Table,
   TableBody,
@@ -230,6 +241,72 @@ function DiscoveryProposalReview({
   );
 }
 
+/**
+ * Shapes `PUT /executors/{idOrUrn}/binding`'s body (A2, docs/proposals/outpost-ui.md §3) — pure so
+ * the Type wiring is testable without a live Dialog/mutation. `type` is now ALWAYS included,
+ * deliberately: the bug this closes was never that `configuration` was a bad default, it was that
+ * `putBinding` sent no `type` at all — so an operator reading their own binding back could not
+ * tell whether "configuration" was a choice or a silence. Sending it explicitly, every time, is
+ * the fix; the Select just makes the value the operator's own instead of the server's guess.
+ */
+export function buildExecutorBindingPayload(args: {
+  pluginModule: string;
+  pluginInstanceId: string;
+  config: Record<string, unknown>;
+  allowedHosts: string[];
+  type: ExecutorType;
+}): CreateExecutorBindingRequest {
+  return {
+    pluginModule: args.pluginModule,
+    pluginInstanceId: args.pluginInstanceId,
+    config: args.config,
+    allowedHosts: args.allowedHosts.length > 0 ? args.allowedHosts : undefined,
+    type: args.type
+  };
+}
+
+/**
+ * THE BINDING'S ROUTING TYPE — A2. Extracted out of `ConfigureDialog` so it (and its option set)
+ * can be exercised directly: Radix's `SelectContent` portals its items, so the option list itself
+ * cannot be asserted from a static render (`domain-local.test.tsx`'s precedent) — this component
+ * at least makes the field's PRESENCE, label, and help copy testable without a live Dialog, and
+ * `buildExecutorBindingPayload` above covers the value actually reaching the request.
+ *
+ * `ExecutorTypeSchema.options` — never a hand-copied literal list — so a future Type (D4, ADR-0007)
+ * appears here automatically instead of needing a second edit.
+ */
+export function ExecutorBindingTypeField({
+  value,
+  onChange
+}: {
+  value: ExecutorType;
+  onChange: (value: ExecutorType) => void;
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label htmlFor="executor-binding-type" className="text-sm font-medium text-slate-700">
+        Type
+      </label>
+      <Select value={value} onValueChange={(v) => onChange(v as ExecutorType)}>
+        <SelectTrigger id="executor-binding-type" data-testid="executor-binding-type-select">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {ExecutorTypeSchema.options.map((t) => (
+            <SelectItem key={t} value={t}>
+              {t}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-slate-500">
+        Routes which pipeline this binding drives: build turns source into an artifact (image,
+        rpm, deb, npm), infrastructure stands up substrate, configuration applies a GitOps sync.
+      </p>
+    </div>
+  );
+}
+
 function ConfigureDialog({
   manifest,
   open,
@@ -243,6 +320,9 @@ function ConfigureDialog({
   const [configValues, setConfigValues] = useState<Record<string, string>>({});
   const [targetIdOrUrn, setTargetIdOrUrn] = useState("");
   const [instanceId, setInstanceId] = useState("");
+  // A2 — defaulted to the server's own pre-A2 default ('configuration'), but now a VISIBLE,
+  // operator-owned choice instead of a silent one (docs/proposals/outpost-ui.md §3).
+  const [bindingType, setBindingType] = useState<ExecutorType>("configuration");
   const [allowedHosts, setAllowedHosts] = useState("");
   const [minSeverity, setMinSeverity] = useState<"info" | "warning" | "critical">("info");
   const [discoveryProposal, setDiscoveryProposal] = useState<DiscoveryProposal | null>(null);
@@ -259,12 +339,16 @@ function ConfigureDialog({
         .map((h) => h.trim())
         .filter(Boolean);
       if (isExecutor) {
-        return client.executors.putBinding(targetIdOrUrn, {
-          pluginModule: manifest.id,
-          pluginInstanceId: instanceId,
-          config,
-          allowedHosts: hosts.length > 0 ? hosts : undefined
-        });
+        return client.executors.putBinding(
+          targetIdOrUrn,
+          buildExecutorBindingPayload({
+            pluginModule: manifest.id,
+            pluginInstanceId: instanceId,
+            config,
+            allowedHosts: hosts,
+            type: bindingType
+          })
+        );
       }
       return client.notifications.putBinding(instanceId, {
         pluginModule: manifest.id,
@@ -346,6 +430,9 @@ function ConfigureDialog({
                     data-testid="executor-target-input"
                   />
                 </div>
+              )}
+              {isExecutor && (
+                <ExecutorBindingTypeField value={bindingType} onChange={setBindingType} />
               )}
               <div className="flex flex-col gap-1.5">
                 <label htmlFor="instance-id" className="text-sm font-medium text-slate-700">

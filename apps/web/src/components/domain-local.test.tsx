@@ -172,4 +172,15 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
     expect(html).toContain("withheld");
     expect(html).toContain("until that endpoint is published");
   });
+
+  it("confirm copy states M20.6's publish order and, critically, the ABSENCE of cascade", () => {
+    const html = renderToStaticMarkup(<PublishConfirmBody />);
+    // Container-first ordering: a child inside a still-local container is refused.
+    expect(html).toContain("publish its containers first");
+    // The M20.6 author's explicit warning: never imply that publishing a container publishes
+    // what's under it — each child is its own decision. This claim going missing is exactly the
+    // copy drift that would promise something the system refuses to do.
+    expect(html).toContain("does not publish its children");
+    expect(html).toContain("its own explicit decision");
+  });
 });

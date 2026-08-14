@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   Check,
@@ -9,8 +10,11 @@ import {
   ExternalLink,
   GitBranch,
   Package,
+  Plus,
   Server,
   SlidersHorizontal,
+  Trash2,
+  Unlink,
   Wrench,
   X,
   type LucideIcon
@@ -18,8 +22,23 @@ import {
 import type {
   ComponentPipelineResponse,
   ComponentPipelineStage,
-  ComponentPipelineUnplacedStage
+  ComponentPipelineUnplacedStage,
+  CreateSourceMappingRequest
 } from "@scp/sdk";
+// A1/B2 (docs/proposals/outpost-ui.md §3/§4): `@scp/sdk`'s index only re-exports the M3-era
+// change-sources types (`CreateSourceMappingRequest`); the delete-tuple and placement-create
+// shapes never got an SDK re-export block. `@scp/schemas` directly is within eslint's own
+// restricted-imports allowance ("apps/web/src may import only @scp/sdk and @scp/schemas"),
+// matching `registry-detail.tsx`'s `ExecutorTypeSchema` import.
+import {
+  ExecutorTypeSchema,
+  PipelineClassificationSchema,
+  type CreatePlacementRequest,
+  type DeleteSourceMappingRequest,
+  type ExecutorType,
+  type GraphObject,
+  type PipelineClassification
+} from "@scp/schemas";
 import { client } from "../lib/client";
 import { componentPipelineKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
@@ -30,6 +49,17 @@ import { Button } from "../components/ui/button";
 import { PageHeader } from "../components/ui/page-header";
 import { SectionLabel } from "../components/ui/section-label";
 import { Skeleton } from "../components/ui/skeleton";
+import { Alert } from "../components/ui/alert";
+import { Input } from "../components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger
+} from "../components/ui/dialog";
 import { QueryErrorNotice } from "../components/query-error";
 import { PromotionArrow, type PromotionState } from "../components/pipeline/PromotionArrow";
 
@@ -245,24 +275,35 @@ function currentFor(stage: ComponentPipelineStage, lane: Lane): ComponentPipelin
 
 /** Exported ONLY for `component-pipeline-continuous.test.tsx`, which renders it directly: the
  *  presentational contract (unknown-vs-blank, unbound-is-loud) is what that test owns, and rendering
- *  the whole page would drag in the query client for no added coverage. */
+ *  the whole page would drag in the query client for no added coverage. `pipelineKey` is optional
+ *  and defaults to absent, same reason: a caller that never passes it (every pre-B2 test) gets
+ *  the exact pre-B2 markup back, with no query client required — the remove-placement affordance
+ *  (B2) only mounts, and only then needs `useMutation`'s context, once a caller opts in. */
 export function StageCardForTest({
   stage,
-  lane = LANES[0]!
+  lane = LANES[0]!,
+  pipelineKey
 }: {
   stage: ComponentPipelineStage;
   lane?: Lane;
+  pipelineKey?: unknown[];
 }): React.JSX.Element {
-  return <StageCard stage={stage} lane={lane} />;
+  return <StageCard stage={stage} lane={lane} pipelineKey={pipelineKey} />;
 }
 
-/** Exported for the same reason as `StageCardForTest` — the "not placed" treatment is a contract. */
+/** Exported for the same reason as `StageCardForTest` — the "not placed" treatment is a contract.
+ *  `componentId`/`pipelineKey` are optional for the same backward-compatibility reason: absent,
+ *  the B2 "Place at target…" affordance does not mount and no query client is required. */
 export function UnplacedStageCardForTest({
-  stage
+  stage,
+  componentId,
+  pipelineKey
 }: {
   stage: ComponentPipelineUnplacedStage;
+  componentId?: string;
+  pipelineKey?: unknown[];
 }): React.JSX.Element {
-  return <UnplacedStageCard stage={stage} />;
+  return <UnplacedStageCard stage={stage} componentId={componentId} pipelineKey={pipelineKey} />;
 }
 
 /** THE STAGE'S CURRENT STATE AT A GLANCE — the deployment outcome as a pill beside its name.
@@ -395,12 +436,104 @@ function HoldSubnode({
   );
 }
 
+/**
+ * THE REMOVE-PLACEMENT CONFIRM'S COPY (B2) — exported for the same portal reason as
+ * `DeleteMappingConfirmBody`. Names the actual consequence rather than a euphemism: the component
+ * loses this stage (no release reaches it until placed again), and states the coordination/
+ * execution boundary explicitly (charter principle 1) — removing the placement withdraws SCP's
+ * OWN coordination record, it does not touch whatever is already running at the target.
+ */
+export function RemovePlacementConfirmBody({ stageName }: { stageName: string }): React.JSX.Element {
+  // Plain `<p>`, not Radix's `DialogDescription` (house pattern: `domain-local.tsx`'s
+  // `PublishConfirmBody`) — `DialogDescription` reads Radix's Dialog context, which is absent when
+  // this renders standalone under `renderToStaticMarkup` for the confirm-copy tests.
+  return (
+    <p className="text-sm text-slate-500" data-testid="remove-placement-confirm-body">
+      This component loses its {stageName} stage — no release reaches it here again until it is
+      placed once more. Nothing here is undeployed: SCP coordinates deploys, it does not run them,
+      so whatever is already running at {stageName} keeps running until something else changes it.
+    </p>
+  );
+}
+
+/** The quiet remove-placement affordance on a PLACED stage (B2) — `placements.delete` matches the
+ *  placement by id, so (unlike the source-mapping delete) this is never ambiguous about which row
+ *  it removes; the Dialog confirm exists because the CONSEQUENCE, not the target, needs stating. */
+function RemovePlacementButton({
+  stage,
+  pipelineKey
+}: {
+  stage: ComponentPipelineStage;
+  pipelineKey: unknown[];
+}): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const stageName = stage.stageName ?? stage.deploymentTarget.name;
+  const deleteMutation = useMutation({
+    mutationFn: () => client.placements.delete(stage.placement.id),
+    onSuccess: async () => {
+      setOpen(false);
+      await queryClient.invalidateQueries({ queryKey: pipelineKey });
+    }
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex items-center gap-1 pt-1 text-slate-400 hover:text-red-700",
+            focusRing
+          )}
+          data-testid="remove-placement-button"
+        >
+          <Unlink className="size-3.5" strokeWidth={2} aria-hidden="true" />
+          Remove placement
+        </button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Remove this placement?</DialogTitle>
+        </DialogHeader>
+        <RemovePlacementConfirmBody stageName={stageName} />
+        {deleteMutation.isError && (
+          <Alert tone="danger">
+            {deleteMutation.error instanceof Error
+              ? deleteMutation.error.message
+              : "Failed to remove the placement."}
+          </Alert>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={deleteMutation.isPending}
+            onClick={() => deleteMutation.mutate()}
+            data-testid="remove-placement-confirm"
+          >
+            {deleteMutation.isPending ? "Removing…" : "Remove"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function StageCard({
   stage,
-  lane
+  lane,
+  pipelineKey
 }: {
   stage: ComponentPipelineStage;
   lane: Lane;
+  /** B2 (docs/proposals/outpost-ui.md §4) — optional so the pre-B2 test callers (no query client
+   *  in scope) keep rendering exactly as before; the remove-placement affordance mounts only when
+   *  the real page supplies it. */
+  pipelineKey?: unknown[];
 }): React.JSX.Element {
   const versionUnknown = stage.unknownFields.includes("version");
   const bindings = bindingsFor(stage, lane);
@@ -533,8 +666,110 @@ function StageCard({
             <span className="text-slate-400">nothing has released here</span>
           )}
         </div>
+        {/* B2: a quiet, deliberately unobtrusive removal — this is not the primary action on a
+            placed, healthy stage, so it does not compete with the rows above for attention. */}
+        {pipelineKey && <RemovePlacementButton stage={stage} pipelineKey={pipelineKey} />}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * PLACE AT TARGET (B2, docs/proposals/outpost-ui.md §4) — the affordance that replaces the
+ * formerly-inert "Declare a placement…" prose. Two call sites, two shapes of the same picker:
+ *
+ *   - `UnplacedStageCard` already knows its own `deploymentTarget` (that IS the stage), so it
+ *     pre-selects it — the picker still lists every target, because an operator opening it here
+ *     may want a DIFFERENT one, but the common case is one click.
+ *   - The whole-page empty state (`pipeline-empty`) knows no target at all, so it opens blank.
+ *
+ * Closed by default (just the button) — the list of deployment targets is fetched lazily
+ * (`enabled: open`) so a page with several unplaced stages does not fire the query once per card.
+ */
+export function PlaceAtTargetPicker({
+  componentId,
+  pipelineKey,
+  defaultTargetId
+}: {
+  componentId: string;
+  pipelineKey: unknown[];
+  defaultTargetId?: string;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [targetId, setTargetId] = useState(defaultTargetId ?? "");
+  const queryClient = useQueryClient();
+
+  const targetsQuery = useQuery({
+    queryKey: ["deployment-targets", "place-at-target-picker"],
+    queryFn: () => client.deploymentTargets.list({ limit: 100 }),
+    enabled: open
+  });
+
+  const createMutation = useMutation({
+    mutationFn: () => {
+      const req: CreatePlacementRequest = { component: componentId, deploymentTarget: targetId };
+      return client.placements.create(req);
+    },
+    onSuccess: async () => {
+      setOpen(false);
+      await queryClient.invalidateQueries({ queryKey: pipelineKey });
+    }
+  });
+
+  if (!open) {
+    return (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        icon={Plus}
+        onClick={() => setOpen(true)}
+        data-testid="place-at-target-button"
+      >
+        Place at target…
+      </Button>
+    );
+  }
+
+  const targets: GraphObject[] = targetsQuery.data?.items ?? [];
+  return (
+    <div className="flex flex-col gap-2" data-testid="place-at-target-form">
+      <Select value={targetId} onValueChange={setTargetId}>
+        <SelectTrigger data-testid="place-at-target-select">
+          <SelectValue
+            placeholder={targetsQuery.isLoading ? "Loading targets…" : "Select a deployment target…"}
+          />
+        </SelectTrigger>
+        <SelectContent>
+          {targets.map((t) => (
+            <SelectItem key={t.id} value={t.id}>
+              {t.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {createMutation.isError && (
+        <Alert tone="danger">
+          {createMutation.error instanceof Error
+            ? createMutation.error.message
+            : "Failed to create the placement."}
+        </Alert>
+      )}
+      <div className="flex gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          disabled={!targetId || createMutation.isPending}
+          onClick={() => createMutation.mutate()}
+          data-testid="place-at-target-submit"
+        >
+          {createMutation.isPending ? "Placing…" : "Place"}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -548,9 +783,15 @@ function StageCard({
  * nothing, would fake-succeed") over what is only an absence of a placement.
  */
 function UnplacedStageCard({
-  stage
+  stage,
+  componentId,
+  pipelineKey
 }: {
   stage: ComponentPipelineUnplacedStage;
+  /** B2 — optional so pre-B2 callers (no query client in scope) render exactly as before; see
+   *  `UnplacedStageCardForTest`. */
+  componentId?: string;
+  pipelineKey?: unknown[];
 }): React.JSX.Element {
   return (
     <Card
@@ -572,9 +813,14 @@ function UnplacedStageCard({
       </CardHeader>
       <CardContent className="space-y-2 pl-[3.4rem] text-xs text-slate-400">
         <MaintainerLine maintainedBy={stage.maintainedBy} />
-        <p title="Declare a placement for this component at this deployment-target to give it a stage here.">
-          This component has no placement here, so its releases never reach this stage.
-        </p>
+        <p>This component has no placement here, so its releases never reach this stage.</p>
+        {componentId && pipelineKey && (
+          <PlaceAtTargetPicker
+            componentId={componentId}
+            pipelineKey={pipelineKey}
+            defaultTargetId={stage.deploymentTarget.id}
+          />
+        )}
       </CardContent>
     </Card>
   );
@@ -837,15 +1083,348 @@ function NodeShell({
   );
 }
 
+/**
+ * THE CHANGE-SOURCE KINDS THIS PAGE OFFERS (A1, docs/proposals/outpost-ui.md §3). `sourceKind` is
+ * an open string on the wire (`ChangeSourceEventParamSchema` is `z.string().min(1)`) — but only
+ * these three carry a signature verifier in the webhook-adapter registry
+ * (`apps/server/src/coordination/webhook-adapters.ts`'s `ADAPTERS`), so offering a fourth here
+ * would create a mapping whose deliveries can never authenticate (falls back to the generic HMAC
+ * scheme, which is a real but DIFFERENT configuration step, not "this kind works out of the box").
+ */
+const SOURCE_KINDS = ["github", "gitea", "gitlab"] as const;
+type SourceKind = (typeof SOURCE_KINDS)[number];
+
+/**
+ * Shapes the `POST /change-sources/{sourceKind}/mappings` body — pure so the omit-blanks rule is
+ * testable without a live mutation. Optional patterns are OMITTED, never sent as `""`: the schema
+ * distinguishes "no filter" (omitted) from an actual empty-string pattern, and a blank input means
+ * the operator left the field alone, not that they declared an empty rule. `type` is always sent,
+ * deliberately — the whole point of A1/A2 is that "which pipeline" stops being a silent default.
+ */
+export function buildCreateMappingPayload(form: {
+  repoPattern: string;
+  pathPattern: string;
+  refPattern: string;
+  component: string;
+  type: ExecutorType;
+  classification: PipelineClassification | "";
+}): Omit<CreateSourceMappingRequest, "sourceKind"> {
+  return {
+    component: form.component,
+    repoPattern: form.repoPattern.trim() || undefined,
+    pathPattern: form.pathPattern.trim() || undefined,
+    refPattern: form.refPattern.trim() || undefined,
+    type: form.type,
+    classification: form.classification || undefined
+  };
+}
+
+/**
+ * ADD SOURCE MAPPING (A1) — offers exactly `CreateSourceMappingRequestSchema`'s fields, minus
+ * `component`: this page already IS the component, so asking for it again would be asking the
+ * operator to re-type something the URL already answers. `sourceKind` is a path segment on the
+ * wire, not free text — see `SOURCE_KINDS`.
+ */
+export function SourceMappingForm({
+  componentId,
+  pipelineKey,
+  onDone
+}: {
+  componentId: string;
+  pipelineKey: unknown[];
+  onDone: () => void;
+}): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [sourceKind, setSourceKind] = useState<SourceKind>("github");
+  const [repoPattern, setRepoPattern] = useState("");
+  const [pathPattern, setPathPattern] = useState("");
+  const [refPattern, setRefPattern] = useState("");
+  const [type, setType] = useState<ExecutorType>("configuration");
+  const [classification, setClassification] = useState<PipelineClassification | "">("");
+
+  const createMutation = useMutation({
+    mutationFn: () =>
+      client.changeSources.createMapping(
+        sourceKind,
+        buildCreateMappingPayload({
+          repoPattern,
+          pathPattern,
+          refPattern,
+          component: componentId,
+          type,
+          classification
+        })
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: pipelineKey });
+      onDone();
+    }
+  });
+
+  return (
+    <form
+      className="flex flex-col gap-3 rounded-md border border-slate-200 bg-white p-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        createMutation.mutate();
+      }}
+      data-testid="source-mapping-form"
+    >
+      <div className="grid grid-cols-2 gap-2">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="mapping-source-kind" className="text-xs font-medium text-slate-600">
+            Source kind
+          </label>
+          <Select value={sourceKind} onValueChange={(v) => setSourceKind(v as SourceKind)}>
+            <SelectTrigger id="mapping-source-kind" data-testid="mapping-source-kind-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SOURCE_KINDS.map((k) => (
+                <SelectItem key={k} value={k}>
+                  {k}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor="mapping-type" className="text-xs font-medium text-slate-600">
+            Type
+          </label>
+          <Select value={type} onValueChange={(v) => setType(v as ExecutorType)}>
+            <SelectTrigger id="mapping-type" data-testid="mapping-type-select">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {ExecutorTypeSchema.options.map((t) => (
+                <SelectItem key={t} value={t}>
+                  {t}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="mapping-repo" className="text-xs font-medium text-slate-600">
+          Repo pattern
+        </label>
+        <Input
+          id="mapping-repo"
+          value={repoPattern}
+          onChange={(e) => setRepoPattern(e.target.value)}
+          placeholder="org/repo"
+          data-testid="mapping-repo-input"
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="mapping-path" className="text-xs font-medium text-slate-600">
+          Path pattern
+        </label>
+        <Input
+          id="mapping-path"
+          value={pathPattern}
+          onChange={(e) => setPathPattern(e.target.value)}
+          placeholder="empty matches the whole repo"
+          data-testid="mapping-path-input"
+        />
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="mapping-ref" className="text-xs font-medium text-slate-600">
+          Ref pattern
+        </label>
+        <Input
+          id="mapping-ref"
+          value={refPattern}
+          onChange={(e) => setRefPattern(e.target.value)}
+          placeholder="refs/heads/main"
+          data-testid="mapping-ref-input"
+        />
+        <p className="text-xs text-slate-500">
+          Empty matches any branch — the amber &ldquo;any branch&rdquo; warning below exists
+          because that is a genuinely broad rule, not a display quirk. There is no edit for a
+          mapping once created: to narrow this later, delete it and add the narrower one.
+        </p>
+      </div>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="mapping-classification" className="text-xs font-medium text-slate-600">
+          Classification
+        </label>
+        <Select
+          value={classification || "__unclassified"}
+          onValueChange={(v) =>
+            setClassification(v === "__unclassified" ? "" : (v as PipelineClassification))
+          }
+        >
+          <SelectTrigger id="mapping-classification" data-testid="mapping-classification-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__unclassified">unclassified</SelectItem>
+            {PipelineClassificationSchema.options.map((c) => (
+              <SelectItem key={c} value={c}>
+                {c}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      {createMutation.isError && (
+        <Alert tone="danger">
+          {createMutation.error instanceof Error
+            ? createMutation.error.message
+            : "Failed to create the mapping."}
+        </Alert>
+      )}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="outline" size="sm" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={createMutation.isPending}
+          data-testid="mapping-create-submit"
+        >
+          {createMutation.isPending ? "Adding…" : "Add mapping"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/**
+ * Shapes the `DELETE /change-sources/{sourceKind}/mappings` body — the full IDENTITY TUPLE
+ * (`DeleteSourceMappingRequestSchema`'s own doc: the table has no unique constraint, so a by-id
+ * delete would leave a byte-identical survivor still correlating). Pure, so the tuple-not-id claim
+ * is testable without a live mutation.
+ */
+export function buildDeleteMappingPayload(
+  source: Pick<
+    ComponentPipelineResponse["sources"][number],
+    "repoPattern" | "pathPattern" | "refPattern" | "type"
+  >,
+  componentId: string
+): DeleteSourceMappingRequest {
+  return {
+    component: componentId,
+    repoPattern: source.repoPattern,
+    pathPattern: source.pathPattern,
+    refPattern: source.refPattern,
+    // The pipeline projection widens Type to a plain string (components.ts's own comment: it
+    // "carries the same type/category as a binding"); the server only ever writes a validated
+    // ExecutorType into this column, so narrowing it back here is safe.
+    type: source.type as ExecutorType
+  };
+}
+
+/**
+ * THE DELETE CONFIRM'S COPY — exported so the honesty claim is assertable directly (Radix's
+ * `DialogContent` portals its children, which render nothing under `renderToStaticMarkup`; see
+ * `domain-local.test.tsx`'s precedent). States the server's actual behavior rather than a
+ * comfortable simplification: EVERY row matching this tuple goes, including duplicates
+ * `discovery accept` can leave behind, and there is no edit — only delete and recreate.
+ */
+export function DeleteMappingConfirmBody({
+  source
+}: {
+  source: Pick<ComponentPipelineResponse["sources"][number], "sourceKind" | "type">;
+}): React.JSX.Element {
+  // Plain `<p>`, not Radix's `DialogDescription` — see `RemovePlacementConfirmBody`'s comment.
+  return (
+    <p className="text-sm text-slate-500" data-testid="delete-mapping-confirm-body">
+      Deletes every {source.sourceKind} mapping with this exact repo, path, ref, and{" "}
+      {source.type} Type — if duplicate rows exist (discovery-accepted mappings can leave them),
+      ALL of them go at once, not just this one. This cannot be undone, and there is no edit: to
+      change a pattern, delete it and add the new one.
+    </p>
+  );
+}
+
+/** A single mapping row's delete affordance — a Dialog confirm, never a bare click-to-delete,
+ *  because the consequence (`DeleteMappingConfirmBody`) is not obvious from the row alone. */
+function DeleteMappingButton({
+  source,
+  componentId,
+  pipelineKey
+}: {
+  source: ComponentPipelineResponse["sources"][number];
+  componentId: string;
+  pipelineKey: unknown[];
+}): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const deleteMutation = useMutation({
+    mutationFn: () =>
+      client.changeSources.deleteMapping(source.sourceKind, buildDeleteMappingPayload(source, componentId)),
+    onSuccess: async () => {
+      setOpen(false);
+      await queryClient.invalidateQueries({ queryKey: pipelineKey });
+    }
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            "ml-1 inline-flex items-center gap-0.5 rounded text-slate-400 hover:text-red-700",
+            focusRing
+          )}
+          title="There is no edit for a mapping — to change its pattern, delete it and add the new one."
+          data-testid="delete-mapping-button"
+        >
+          <Trash2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
+          <span className="sr-only">Delete this mapping</span>
+        </button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete source mapping</DialogTitle>
+        </DialogHeader>
+        <DeleteMappingConfirmBody source={source} />
+        {deleteMutation.isError && (
+          <Alert tone="danger">
+            {deleteMutation.error instanceof Error
+              ? deleteMutation.error.message
+              : "Failed to delete the mapping."}
+          </Alert>
+        )}
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            disabled={deleteMutation.isPending}
+            onClick={() => deleteMutation.mutate()}
+            data-testid="delete-mapping-confirm"
+          >
+            {deleteMutation.isPending ? "Deleting…" : "Delete"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** A SOURCE NODE — the repos a push to which starts this pipeline. Durable rules, so it answers
  *  "does a change there affect this?" for a component that has never released. */
 function SourceNode({
   label,
-  sources
+  sources,
+  componentId,
+  pipelineKey
 }: {
   label: string;
   sources: ComponentPipelineResponse["sources"];
+  componentId: string;
+  pipelineKey: unknown[];
 }): React.JSX.Element {
+  const [adding, setAdding] = useState(false);
   return (
     <NodeShell
       kind={label === "Config" ? "config" : "source"}
@@ -915,8 +1494,29 @@ function SourceNode({
               <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
               {source.type}
             </span>
+            {/* A1: no edit exists on this table, so the row's only write is delete (see the
+                confirm's own copy for why it is never a bare click). */}
+            <DeleteMappingButton source={source} componentId={componentId} pipelineKey={pipelineKey} />
           </div>
         ))
+      )}
+      {adding ? (
+        <SourceMappingForm
+          componentId={componentId}
+          pipelineKey={pipelineKey}
+          onDone={() => setAdding(false)}
+        />
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          icon={Plus}
+          onClick={() => setAdding(true)}
+          data-testid="add-source-mapping-button"
+        >
+          Add source mapping
+        </Button>
       )}
     </NodeShell>
   );
@@ -1126,7 +1726,17 @@ function GateSubnode({ gate }: { gate: ComponentPipelineStage["gate"] }): React.
   );
 }
 
-function WaveRow({ wave, lane }: { wave: JourneyWave; lane: Lane }): React.JSX.Element {
+function WaveRow({
+  wave,
+  lane,
+  componentId,
+  pipelineKey
+}: {
+  wave: JourneyWave;
+  lane: Lane;
+  componentId: string;
+  pipelineKey: unknown[];
+}): React.JSX.Element {
   return (
     <div className="w-full" data-testid="pipeline-wave">
       <SectionLabel className="mb-1 text-center">
@@ -1146,9 +1756,19 @@ function WaveRow({ wave, lane }: { wave: JourneyWave; lane: Lane }): React.JSX.E
       <div className="flex flex-wrap items-stretch justify-center gap-2">
         {wave.entries.map((entry) =>
           entry.placed ? (
-            <StageCard key={`p-${entry.stage.placement.id}`} stage={entry.stage} lane={lane} />
+            <StageCard
+              key={`p-${entry.stage.placement.id}`}
+              stage={entry.stage}
+              lane={lane}
+              pipelineKey={pipelineKey}
+            />
           ) : (
-            <UnplacedStageCard key={`u-${entry.stage.deploymentTarget.id}`} stage={entry.stage} />
+            <UnplacedStageCard
+              key={`u-${entry.stage.deploymentTarget.id}`}
+              stage={entry.stage}
+              componentId={componentId}
+              pipelineKey={pipelineKey}
+            />
           )
         )}
       </div>
@@ -1168,8 +1788,9 @@ export function ComponentPipelinePage({
   lane = LANES[0]!
 }: { lane?: Lane } = {}): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
+  const pipelineKey = componentPipelineKey(idOrUrn ?? "");
   const query = useQuery({
-    queryKey: componentPipelineKey(idOrUrn ?? ""),
+    queryKey: pipelineKey,
     queryFn: () => client.components.pipeline(idOrUrn!),
     enabled: Boolean(idOrUrn)
   });
@@ -1254,11 +1875,16 @@ export function ComponentPipelinePage({
 
       {waves.length === 0 ? (
         // Not an error, and deliberately explicit about the consequence: a component placed nowhere,
-        // with no topology to declare where it should go, cannot be deployed by anything.
+        // with no topology to declare where it should go, cannot be deployed by anything. B2: the
+        // old "Declare a placement to give it a stage." sentence — the exact inert prose
+        // docs/proposals/outpost-ui.md §4 names — is gone, replaced by the actual write.
         <Card data-testid="pipeline-empty">
-          <CardContent className="py-6 text-sm text-slate-600">
-            This component has no placements and no release topology declaring any stages, so it
-            runs nowhere and nothing can deploy it. Declare a placement to give it a stage.
+          <CardContent className="flex flex-col items-start gap-3 py-6 text-sm text-slate-600">
+            <p>
+              This component has no placements and no release topology declaring any stages, so
+              it runs nowhere and nothing can deploy it.
+            </p>
+            <PlaceAtTargetPicker componentId={data.component.id} pipelineKey={pipelineKey} />
           </CardContent>
         </Card>
       ) : (
@@ -1300,11 +1926,23 @@ export function ComponentPipelinePage({
                       />
                     )}
                     {node.kind === "source" && (
-                      <SourceNode label={node.label} sources={node.sources} />
+                      <SourceNode
+                        label={node.label}
+                        sources={node.sources}
+                        componentId={data.component.id}
+                        pipelineKey={pipelineKey}
+                      />
                     )}
                     {node.kind === "build" && <BuildNode bindings={node.bindings} />}
                     {node.kind === "registry" && <RegistryNode />}
-                    {node.kind === "wave" && <WaveRow wave={node.wave} lane={lane} />}
+                    {node.kind === "wave" && (
+                      <WaveRow
+                        wave={node.wave}
+                        lane={lane}
+                        componentId={data.component.id}
+                        pipelineKey={pipelineKey}
+                      />
+                    )}
                   </div>
                 );
               })}

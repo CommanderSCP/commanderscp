@@ -109,6 +109,11 @@ export function PublishConfirmBody(): React.JSX.Element {
         home until that endpoint is published too. Peers will see no history from before this
         moment.
       </p>
+      <p>
+        Order matters (M20.6): an object inside a still-domain-local container cannot be published
+        — publish its containers first; a refused publish names them. And publishing a container
+        does not publish its children — each child is its own explicit decision.
+      </p>
     </div>
   );
 }
@@ -207,6 +212,19 @@ export function DomainLocalPublishCard({
               <DialogTitle>Publish {object.name}?</DialogTitle>
             </DialogHeader>
             <PublishConfirmBody />
+            {/* M20.6: a publish refused for a still-local container 409s with the offending
+                containers NAMED (name + urn) in the detail — rendered here verbatim, at the point
+                of action, so "publish secure-networking first" is guidance rather than a mystery.
+                Deliberately NOT pre-blocked: whether every containment parent (both routes) still
+                federates is the server's census to run, not a per-row client derivation — M16.3's
+                offer-the-write rule and the read-never-infer discipline both apply. */}
+            {publishMutation.isError && (
+              <Alert tone="danger" data-testid="publish-refused">
+                {publishMutation.error instanceof Error
+                  ? publishMutation.error.message
+                  : "Publish refused"}
+              </Alert>
+            )}
             <DialogFooter>
               <Button variant="outline" onClick={() => setConfirmOpen(false)}>
                 Cancel

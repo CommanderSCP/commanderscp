@@ -13,6 +13,7 @@ import { client } from "../lib/client";
 import { changeApprovalsKey, changeDetailKey, changeListKey } from "../lib/query-client";
 import { useIdParam } from "../lib/use-route-params";
 import { ForeignOriginNotice, isForeignOriginObject, useOwnDomainId } from "../lib/replica-origin";
+import { DomainLocalBadge } from "../components/domain-local";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -200,6 +201,9 @@ export function ChangeDetailPage(): React.JSX.Element {
               {change.state}
             </Badge>
             {change.emergency && <Badge variant="danger">Emergency</Badge>}
+            {/* M20-A3 (ADR-0031 §5) — the same badge every domain-local object wears, keyed on this
+                change's own wire `domainLocal` (inherited from its targets at propose). */}
+            {change.domainLocal && <DomainLocalBadge />}
             {foreign && change.originDomainId && (
               <ForeignOriginNotice originDomainId={change.originDomainId} />
             )}

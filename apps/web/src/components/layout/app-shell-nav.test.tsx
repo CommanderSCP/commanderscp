@@ -103,6 +103,15 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     }
   });
 
+  /** G5 (outpost-ui.md §4 close) — "Setup" lives under the pre-existing FEDERATION section
+   *  (with Outposts and Federation status), not a new heading; both survive alongside it. */
+  it("links to the setup landing, under the pre-existing Federation section", () => {
+    expect(navHrefs(html)).toContain("/setup");
+    expect(html).toContain(">Setup</a>");
+    expect(navHrefs(html)).toContain("/federation/outposts");
+    expect(navHrefs(html)).toContain("/federation");
+  });
+
   /** The registry links go through `Link params={{basePath}}`, and the router mock at the top of
    *  this file renders `to` verbatim — so every one of them serializes to `href="/$basePath"` and
    *  the href tells us NOTHING about which registries are in the nav. Asserting hrefs here would
@@ -149,6 +158,10 @@ describe("app router: every nav destination this milestone adds actually resolve
     expect(paths).toContain("/assemblies/$idOrUrn");
     expect(paths).toContain("/assemblies/$idOrUrn/settings");
     expect(paths).toContain("/identity");
+  });
+
+  it("registers the setup landing the new nav link points at (G5)", () => {
+    expect(routePaths()).toContain("/setup");
   });
 
   /** The Changes LIST route is gone; the DETAIL route must not have gone with it — it holds the

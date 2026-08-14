@@ -122,7 +122,26 @@ export const ChangeSchema = z.object({
    * `/v1` field (CLAUDE.md: "every new field must be OPTIONAL") — rather than forcing every
    * existing caller that builds a `Change`-shaped object by hand (tests, fixtures) to supply it.
    */
-  originDomainId: z.string().uuid().optional()
+  originDomainId: z.string().uuid().optional(),
+  /**
+   * M20-A3 (ADR-0031 §5) — mirrors `GraphObjectSchema.domainLocal`: `true` when this change's own
+   * existence stays inside its own security domain (INHERITED from its targets at `proposeChange`,
+   * never declared on the change itself — a change has no create-time locality checkbox of its
+   * own). Gates every journal writer this change touches (`change_status`, the underlying object's
+   * `object_upsert`), so a domain-local change never reaches a peer to be asked about.
+   *
+   * REQUIRED, not optional, following `GraphObjectSchema.domainLocal`'s exact precedent: a boundary
+   * predicate has no unknown case, and every change row this instance can return already has this
+   * computed at propose time — there is no legacy row lacking it the way `originDomainId` had to
+   * accommodate.
+   *
+   * What it is FOR on the wire: disambiguating an absent `boundarySegment` (M16.1) — "no boundary
+   * segment" is genuinely ambiguous between "domain-local, so there is nothing to cross" and
+   * "ordinary change, just not promoted yet" without it. `change-detail.tsx`/`change-pipeline.tsx`
+   * read it to render the same `DomainLocalBadge` objects already carry, and to branch the
+   * `NoBoundarySegment` copy onto the honest reason instead of the generic one.
+   */
+  domainLocal: z.boolean()
 });
 export type Change = z.infer<typeof ChangeSchema>;
 

@@ -11,6 +11,7 @@ import type {
   PolicyEvaluateResponse
 } from "@scp/sdk";
 import { client } from "../lib/client";
+import { DomainLocalBadge } from "../components/domain-local";
 import {
   changeApprovalsKey,
   changeDetailKey,
@@ -352,6 +353,8 @@ export function ChangePipelinePage(): React.JSX.Element {
           <>
             <Badge variant={stateBadgeVariant(change.state)}>{change.state}</Badge>
             {change.emergency && <Badge variant="danger">Emergency</Badge>}
+            {/* M20-A3 (ADR-0031 §5) — mirrors change-detail.tsx's header badge. */}
+            {change.domainLocal && <DomainLocalBadge />}
           </>
         }
         actions={
@@ -450,7 +453,7 @@ export function ChangePipelinePage(): React.JSX.Element {
               }
             />
           ) : (
-            <NoBoundarySegment />
+            <NoBoundarySegment domainLocal={change.domainLocal} />
           )}
         </CardContent>
       </Card>

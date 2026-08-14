@@ -43,6 +43,11 @@ type ObjectRow = typeof objects.$inferSelect;
 type ObjectLike = Pick<ObjectRow, "id" | "urn" | "name"> & {
   properties: unknown;
   originDomainId: string;
+  // M20-A3 (ADR-0031 §5) — the change's locality lives on the underlying graph OBJECT's own
+  // `domain_local` column (stamped there by `createObject`, inherited from the change's targets at
+  // `proposeChange` above), not on the `changes` projection row — mirroring `originDomainId` right
+  // above, which reads off the same object for the same reason.
+  domainLocal: boolean;
 };
 
 export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
@@ -72,7 +77,11 @@ export function toChangeShape(change: ChangeRow, object: ObjectLike): Change {
     // module doc) — same field every other typed resource's `GraphObjectSchema.originDomainId`
     // carries, and what `coordination/service-board.ts`'s `drivenHere` is derived from. Distinct
     // from `importedFromDomain` above (promotion-bundle provenance only).
-    originDomainId: object.originDomainId
+    originDomainId: object.originDomainId,
+    // M20-A3 (ADR-0031 §5) — read straight off the underlying object, exactly like `originDomainId`
+    // just above: `proposeChange` already computed this once (`changeIsDomainLocal`, inherited from
+    // targets) and stamped it onto the object at create; this is not a second computation.
+    domainLocal: object.domainLocal
   };
 }
 

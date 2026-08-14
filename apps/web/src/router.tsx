@@ -26,6 +26,8 @@ import { PluginsPage } from "./routes/plugins";
 import { AssemblyBoardPage, AssemblyDetailLayout } from "./routes/assembly-detail";
 import { IdentityPage } from "./routes/identity";
 import { ConnectArgoCdPage } from "./routes/connect-argocd";
+import { ConnectKindPage } from "./routes/connect";
+import { SetupPage } from "./routes/setup";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -267,6 +269,29 @@ const connectArgoCdRoute = createRoute({
   component: ConnectArgoCdPage
 });
 
+// B1 (docs/proposals/outpost-ui.md §4 Lane B) — generalizes the wizard above over the server's own
+// discovery-module catalog instead of one Argo-CD-shaped page (routes/connect.tsx). Registered
+// BESIDE `connectArgoCdRoute` rather than replacing it: this router's own static-outranks-dynamic
+// precedence (the same rule `serviceBoardLegacyRoute` above relies on) means `/connect/argocd`
+// always resolves to THAT route first, so its pinned testids are never at risk from this one —
+// `/connect/$kind` only ever serves a kind other than "argocd" in normal navigation (gitea, gitlab
+// today). See routes/connect.tsx's file-level comment for why "argocd" is still handled
+// defensively inside it.
+const connectKindRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/connect/$kind",
+  component: ConnectKindPage
+});
+
+// G5 (outpost-ui.md §4 close, owner decision 2026-08-13: "both" — a setup landing ALONGSIDE the
+// in-place affordances) — a static 1-segment path, so it out-ranks nothing and needs no precedence
+// reasoning beyond "it isn't `$basePath`" (the same fact `/pats`, `/identity`, etc. already rely on).
+const setupRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/setup",
+  component: SetupPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -314,6 +339,8 @@ const routeTree = rootRoute.addChildren([
     outpostDetailRoute,
     pluginsRoute,
     connectArgoCdRoute,
+    connectKindRoute,
+    setupRoute,
     registryListRoute,
     registryDetailRoute
   ])

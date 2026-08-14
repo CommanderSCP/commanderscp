@@ -10962,6 +10962,7 @@ export type ListChangesResponses = {
             createdAt: string;
             updatedAt: string;
             originDomainId?: string;
+            domainLocal: boolean;
         }>;
         nextCursor: string | null;
     };
@@ -11075,6 +11076,7 @@ export type ProposeChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -11158,6 +11160,7 @@ export type GetChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -11242,6 +11245,7 @@ export type ExplainChangeResponses = {
             createdAt: string;
             updatedAt: string;
             originDomainId?: string;
+            domainLocal: boolean;
         };
         plan: {
             id: string;
@@ -11471,6 +11475,7 @@ export type CancelChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -11568,6 +11573,7 @@ export type AcceptChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -11675,6 +11681,7 @@ export type RollbackChangeResponses = {
         createdAt: string;
         updatedAt: string;
         originDomainId?: string;
+        domainLocal: boolean;
     };
 };
 
@@ -14881,6 +14888,7 @@ export type RollbackCampaignResponses = {
                 createdAt: string;
                 updatedAt: string;
                 originDomainId?: string;
+                domainLocal: boolean;
             };
         }>;
         skipped: Array<{

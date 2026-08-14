@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleUser, Flag, Globe, KeyRound, LayoutDashboard, Puzzle, Users, Waypoints, type LucideIcon } from "lucide-react";
+import { CircleUser, Flag, Globe, KeyRound, LayoutDashboard, ListChecks, Puzzle, Users, Waypoints, type LucideIcon } from "lucide-react";
 import { client } from "../../lib/client";
 import { useAuth } from "../../lib/auth-context";
 import { cn, focusRing } from "../../lib/utils";
@@ -154,6 +154,17 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
           >
             <NavIcon icon={Globe} />
             Federation status
+          </Link>
+          {/* G5 (outpost-ui.md §4 close) — the setup landing, kept under FEDERATION rather than a
+              new section: it is domain-scoped setup work (connect/place/map/freeze), the same
+              rung Outposts and Federation status already occupy, not a Catalog or Admin concern. */}
+          <Link
+            to="/setup"
+            className={navLinkClass}
+            activeProps={{ className: navLinkActiveClass }}
+          >
+            <NavIcon icon={ListChecks} />
+            Setup
           </Link>
 
           <SectionLabel className="mb-1 mt-5 px-2 text-army-300">Admin</SectionLabel>

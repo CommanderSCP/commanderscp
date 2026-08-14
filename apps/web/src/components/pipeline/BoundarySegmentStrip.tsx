@@ -254,14 +254,28 @@ export function BoundarySegmentStrip({
  * crossed a domain boundary. Stated explicitly rather than rendered as an empty/green segment: the
  * segment is ALWAYS SHOWN, and its absence is itself the honest answer (ADR-0013's domain-local
  * exemption / "domain-local changes have a shorter pipeline").
+ *
+ * M20-A3 (ADR-0031 §5, docs/proposals/outpost-ui.md) — `boundarySegment: null` used to be
+ * AMBIGUOUS between two genuinely different reasons: an ordinary change that just hasn't been
+ * promoted yet, and a domain-local change that structurally never crosses a boundary at all. Now
+ * that `Change.domainLocal` is on the wire, the caller passes it through and this renders the
+ * honest one of the two — never the generic "not yet promoted" reading for a change that in fact
+ * has nowhere to be promoted TO.
  */
-export function NoBoundarySegment(): React.JSX.Element {
+export function NoBoundarySegment({
+  domainLocal = false
+}: {
+  domainLocal?: boolean;
+} = {}): React.JSX.Element {
   return (
     <div
       className="flex items-center justify-center rounded border border-dashed border-slate-300 px-3 py-2 text-xs text-slate-500"
       data-testid="boundary-segment-absent"
+      data-domain-local={domainLocal}
     >
-      No boundary segment — this change has not crossed a domain boundary.
+      {domainLocal
+        ? "No boundary segment — this change never leaves its domain, so there is no boundary to cross."
+        : "No boundary segment — this change has not crossed a domain boundary."}
     </div>
   );
 }
