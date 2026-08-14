@@ -207,7 +207,16 @@ export async function publishDomainLocalObject(
     // a real, observable state change to the row; `revision` is NOT, because that is the federation
     // author-assigned counter the peer orders replicas by, and this object's first entry at any peer
     // must not claim to be a later revision of something they never received.
-    .set({ domainLocal: false, version: existing.version + 1, updatedAt: new Date() })
+    // M20.7 (ADR-0031 §6c): the provenance is cleared alongside the flag. It answers "why is this
+    // domain-local", so on an object that no longer is, keeping it would leave a field asserting a
+    // reason for a state that has ended. Both columns go together, as they are written together.
+    .set({
+      domainLocal: false,
+      domainLocalInheritedFrom: null,
+      domainLocalInheritedFromUrn: null,
+      version: existing.version + 1,
+      updatedAt: new Date()
+    })
     .where(and(eq(objects.orgId, input.orgId), eq(objects.id, existing.id)))
     .returning();
   if (!row) throw notFound(`object '${existing.id}' disappeared during publish`);

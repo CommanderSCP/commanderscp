@@ -97,6 +97,10 @@ function wellFormedObject(): JsonObject {
     // widening the expectation instead would have quietly turned it into a test that also
     // tracks the object's field count.
     domainLocal: false,
+    // M20.7 (ADR-0031 §6c). Added HERE, in the shared well-formed fixture, for the same reason
+    // `domainLocal` was: the union-dedup test names its omissions by `delete`-ing them, so its
+    // missing set must stay exactly {revision, urn}.
+    domainLocalInheritedFrom: null,
     version: 1,
     createdAt: "2026-07-30T12:00:00Z",
     updatedAt: "2026-07-30T12:00:00Z",

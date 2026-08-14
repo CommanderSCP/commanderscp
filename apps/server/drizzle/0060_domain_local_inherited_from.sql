@@ -1,0 +1,64 @@
+-- ===========================================================================================
+-- `objects.domain_local_inherited_from` — WHY an object is domain-local: because an operator
+-- declared it, or because it inherited from the container it was created under (ADR-0031 §6a/§6c).
+--
+-- ## What it answers, and why a boolean could not
+--
+-- M20.5 made locality inherit at create, so `domain_local = true` stopped meaning "someone chose
+-- this". A UI showing a domain-local badge cannot say whether the operator declared it or whether it
+-- follows its container — and for the second case the operator's next question is always "follows
+-- WHICH container", because that is the object they would have to publish first (§6b).
+--
+-- NULL carries both of the other two states, and they are distinguishable without a second column:
+--   domain_local = false                            -> federates normally (this column is NULL)
+--   domain_local = true,  inherited_from IS NULL    -> DECLARED by an operator
+--   domain_local = true,  inherited_from IS NOT NULL -> INHERITED from that container
+-- A consumer therefore needs no discriminator field; the pair is already exhaustive.
+--
+-- ## DECLARED WINS when both are true
+--
+-- An operator can pass `domainLocal: true` while creating under an already-local container. The row
+-- records DECLARED (NULL), because that is what the operator actually did — even though the object
+-- would have been local anyway. Recording it as inherited would erase an act that happened.
+--
+-- ## HISTORICAL, not a live claim — the one thing a reader can get wrong
+--
+-- This records the container as it was AT CREATE. It is not maintained afterwards, and deliberately
+-- so: after §6b's publish-the-container-then-the-child flow, a still-local child legitimately points
+-- at a container that has since become shared. That is not staleness to be repaired — it is the true
+-- answer to "how did this object become domain-local". Anything that re-derived it live would answer
+-- a different question and would need a containment walk to do it, which §6a exists to avoid.
+--
+-- No FK constraint, for the same reason: the referenced container may later be deleted, and losing
+-- the provenance because its source was tombstoned would be worse than a dangling id. Readers treat
+-- an unresolvable id as "inherited, source no longer present".
+--
+-- ## Why the URN is stored alongside the id, and why the NAME is not
+--
+-- The consumer's actual question is "inherited from WHAT", answered on a badge — so an id alone
+-- would force a lookup per row on any list, which is the bare-id problem this project already fixed
+-- once in the publish sweep report. `objects.urn` is IMMUTABLE (`updateObject` writes
+-- `urn: existing.urn`), so denormalizing it cannot go stale, and it is accepted anywhere an id is —
+-- every `idOrUrn` route resolves it — so it serves display AND linking with no join.
+--
+-- `name` is deliberately NOT stored: it IS mutable, so a copy would drift. The urn's last segment is
+-- the name AS AT CREATE, which for a field whose whole purpose is historical provenance is the more
+-- honest label anyway — it says what the container was called when the inheritance happened.
+--
+-- ## Additive expand
+--
+-- Nullable, no default, no backfill. Every existing row reads NULL, which for an already-declared
+-- domain-local object is exactly right: nothing before M20.5 could have inherited, so every
+-- pre-existing `domain_local = true` row WAS declared. The migration is honest by construction
+-- rather than by a backfill guess.
+--
+-- `IF NOT EXISTS` per the convention 44 other migrations here follow — drizzle applies strictly
+-- increasing `when`, so a re-run on a database that took this migration under a different ordering
+-- must be a no-op rather than a hard failure.
+-- ===========================================================================================
+
+ALTER TABLE objects ADD COLUMN IF NOT EXISTS domain_local_inherited_from uuid;
+ALTER TABLE objects ADD COLUMN IF NOT EXISTS domain_local_inherited_from_urn text;
+
+COMMENT ON COLUMN objects.domain_local_inherited_from IS
+  'ADR-0031 §6c: the container this object INHERITED domain-locality from at create (M20.5), or NULL when locality was DECLARED or the object is not domain-local. Historical — records the container at create time and is never updated to follow it. Cleared by the publish verb, which is the only writer besides the create path. No FK: a deleted source must not take the provenance with it.';

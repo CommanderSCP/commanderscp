@@ -1,6 +1,6 @@
 # ADR-0031: Domain-local objects never federate — locality is declared on the object, stamped into the journal, and is not an enforcement input
 
-**Status:** **Accepted** (owner sign-off 2026-08-11, including the six decision points in the context doc's §10 — §6 below is amended by that sign-off, per Q2). **Amended 2026-08-13 (owner-decided): §6a adds containment-subtree declaration as inheritance at create**, resolving the layer §1 deferred and correcting a conflict between §1's "materialize at declaration time" wording and §6's permanent refusal of shared → domain-local. §1's constraint is preserved in substance — the bit is still written onto the row, never resolved by a walk — and §1's own text now points forward to §6a. **Amended again 2026-08-13 (owner-decided): §6b refuses publishing an object out of a still-domain-local container** — an interaction M20.4's publish verb and M20.5's subtrees create between them, which neither clause anticipated. **§6b is BUILT** (M20.6, 2026-08-13) — the refusal it describes is enforced in `federation/publish-domain-local.ts` and pinned by `domain-local-invisibility.integration.test.ts`.
+**Status:** **Accepted** (owner sign-off 2026-08-11, including the six decision points in the context doc's §10 — §6 below is amended by that sign-off, per Q2). **Amended 2026-08-13 (owner-decided): §6a adds containment-subtree declaration as inheritance at create**, resolving the layer §1 deferred and correcting a conflict between §1's "materialize at declaration time" wording and §6's permanent refusal of shared → domain-local. §1's constraint is preserved in substance — the bit is still written onto the row, never resolved by a walk — and §1's own text now points forward to §6a. **Amended again 2026-08-13 (owner-decided): §6b refuses publishing an object out of a still-domain-local container** — an interaction M20.4's publish verb and M20.5's subtrees create between them, which neither clause anticipated. **§6b is BUILT** (M20.6, 2026-08-13) — the refusal it describes is enforced in `federation/publish-domain-local.ts` and pinned by `domain-local-invisibility.integration.test.ts`. **Amended 2026-08-13: §6c adds locality PROVENANCE** (M20.7, BUILT) — `domainLocalInheritedFrom` records *why* an object is domain-local (declared vs inherited, and from which container), which §6a's inheritance had made unanswerable from the boolean alone.
 **Context doc:** [docs/proposals/domain-local-config-and-infra.md](../proposals/domain-local-config-and-infra.md)
 **Relates to:** [ADR-0017](0017-ownership-refinement.md) (§2 — domain-specific config/infra is outpost-owned; this supplies the tracking model it assumed); [ADR-0022](0022-outpost-config-authority-split.md) (the commander→outpost declared-config replica — this is its mirror image, and the "journal cannot carry a peer" reasoning is reused); [ADR-0018](0018-domain-local-dev-pipelines.md) / [ADR-0030](0030-dev-branch-pipelines.md) (M18 dev pipelines — adjacent mechanism, different intent; §"Relationship to M18"); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0011](0011-universal-outpost-validation.md) (§1 — domain-local artifacts have no transfer phase); [ADR-0010](0010-outpost-local-artifact-infra.md) (outpost-local Gitea); charter principle 1 (coordinate, not execute), 2 (graph-native), 3 (API-first parity), 6 (explainability), 7 (Simplicity first)
 
@@ -327,6 +327,51 @@ operator's next action is to publish them. Pinned by
 `domain-local-invisibility.integration.test.ts` — both routes, the untouched-object assertion, and
 the container-then-child ordering including the control that publishing a container does **not**
 publish its children.
+
+### 6c. Locality records **why**, not only whether (M20.7)
+
+> **Added 2026-08-13 (owner-decided), on a request from the UI consumer.** §6a made locality inherit,
+> which quietly cost something: `domain_local = true` stopped meaning "someone chose this".
+
+`objects.domain_local_inherited_from` (+ `_urn`) records the container an object inherited locality
+from at create. With the existing boolean the three states are exhaustive and need **no discriminator
+field**:
+
+| `domainLocal` | `domainLocalInheritedFrom` | meaning |
+|---|---|---|
+| `false` | `null` | federates normally |
+| `true` | `null` | **declared** by an operator |
+| `true` | present | **inherited** from that container |
+
+**Declared wins when both apply.** Creating with `domainLocal: true` under an already-local container
+records *declared*. The object would have been local either way, but the operator did declare it, and
+recording inheritance instead would report something that did not happen. This is why
+`createComponentInService` now passes the container **separately** from the boolean rather than
+folding them together as M20.5 did — folding still produced a local component but destroyed the very
+distinction this clause exists to make.
+
+**The URN is stored alongside the id; the NAME is not.** `objects.urn` is immutable (`updateObject`
+writes `urn: existing.urn`), so denormalizing it cannot drift, and it resolves on every `idOrUrn`
+route — so a badge can name *and* link the container with **no extra request**. That matters: an id
+alone would force a lookup per row on any list, which is the bare-id problem this project already
+fixed once in the publish sweep report. `name` is mutable and would drift; the urn's last segment is
+the name **as at create**, which for historical provenance is the more honest label anyway.
+
+**It is HISTORICAL, and this is the one thing a reader can get wrong.** It records the container as it
+was at create and is never updated to follow it, so after §6b's publish-container-then-child flow a
+still-local child legitimately points at a container that has since become shared. That is the true
+answer to *"how did this object become domain-local"* — it is **not** a claim that its container is
+currently local, and it must **not** be used to predict whether a publish will be refused. §6b's
+refusal is the server's census over **live** state along both routes; a consumer deriving it from this
+field would be inferring a server decision from a stale input, which is the failure mode both M16.3's
+pre-block trap and the read-never-infer rule exist to prevent.
+
+**Cleared by the publish verb**, which is its only writer besides the create path: the field answers
+"why is this domain-local", so on an object that no longer is, a surviving value would assert a reason
+for a state that has ended.
+
+**No FK.** A container that is later deleted must not take its children's provenance with it; readers
+treat an unresolvable reference as *"inherited, source no longer present"* rather than as an error.
 
 ### 7. `domain_local` is **visibility only** — never an enforcement input
 

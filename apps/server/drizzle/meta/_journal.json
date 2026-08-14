@@ -421,6 +421,13 @@
       "when": 1788026400000,
       "tag": "0059_objects_domain_local",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1788039137000,
+      "tag": "0060_domain_local_inherited_from",
+      "breakpoints": true
     }
   ]
 }

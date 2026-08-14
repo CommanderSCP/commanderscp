@@ -84,6 +84,12 @@ export function toGraphObject(row: typeof objects.$inferSelect): GraphObject {
     revision: row.revision,
     provenance: row.provenance as GraphObject["provenance"],
     domainLocal: row.domainLocal,
+    // M20.7 (ADR-0031 §6c) — present only when locality was INHERITED. The two columns are written
+    // and cleared together, so `id` present without `urn` is unreachable; the `?? ""` is a type
+    // narrowing, not a fallback with meaning.
+    domainLocalInheritedFrom: row.domainLocalInheritedFrom
+      ? { id: row.domainLocalInheritedFrom, urn: row.domainLocalInheritedFromUrn ?? "" }
+      : null,
     version: row.version,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -138,6 +144,16 @@ export interface CreateObjectInput {
    * defense-in-depth half, not the primary guard.
    */
   domainLocal?: boolean;
+  /**
+   * M20.7 (ADR-0031 §6c) — provenance for the `contains` containment route, which `createObject`
+   * cannot see for itself: the edge to the container does not exist yet when this runs.
+   * `graph/components-repo.ts::createComponentInService` supplies it.
+   *
+   * Passed SEPARATELY from `domainLocal` on purpose. Folding it into the boolean (as M20.5 did)
+   * still makes the object local, but destroys the distinction between "the operator declared this"
+   * and "it followed its container" — which is the entire question this field exists to answer.
+   */
+  domainLocalInheritedFrom?: { id: string; urn: string };
 }
 
 /**
@@ -184,7 +200,7 @@ export async function resolveContainmentParent(
   tx: TenantTx,
   orgId: string,
   domainId: ContainmentDomainId | null | undefined
-): Promise<{ id: ContainmentDomainId | null; domainLocal: boolean }> {
+): Promise<{ id: ContainmentDomainId | null; urn: string | null; domainLocal: boolean }> {
   // BOUNDARY (ADR-0021 D4): the org root is an ordinary object id being promoted into the
   // containment-parent role — this is the one place that answer becomes a containment domain id.
   if (domainId === undefined) {
@@ -194,15 +210,15 @@ export async function resolveContainmentParent(
     });
     if (!root)
       throw new Error(`org ${orgId} has no root 'organization' object — bootstrap incomplete`);
-    return { id: asContainmentDomainId(root.id), domainLocal: root.domainLocal };
+    return { id: asContainmentDomainId(root.id), urn: root.urn, domainLocal: root.domainLocal };
   }
   // The org root itself (bootstrap): no parent, so nothing to inherit.
-  if (domainId === null) return { id: null, domainLocal: false };
+  if (domainId === null) return { id: null, urn: null, domainLocal: false };
   const parent = await tx.query.objects.findFirst({
     where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId))
   });
   if (!parent) throw badRequest(`domainId '${domainId}' does not reference an object in this org`);
-  return { id: domainId, domainLocal: parent.domainLocal };
+  return { id: domainId, urn: parent.urn, domainLocal: parent.domainLocal };
 }
 
 export async function createObject(tx: TenantTx, input: CreateObjectInput): Promise<GraphObject> {
@@ -277,9 +293,26 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // locality reaches its children without the child restating it, which is the whole ergonomic point
   // of the subtree layer. `containmentParent.domainLocal` is `false` on the import path by
   // construction (a replica's parent is a replica), and the ternary forces `false` there anyway.
-  const domainLocal = input.federationImport
-    ? false
-    : (input.domainLocal ?? false) || containmentParent.domainLocal;
+  const declared = input.domainLocal === true;
+  const inheritedContainer =
+    input.domainLocalInheritedFrom ??
+    (containmentParent.domainLocal && containmentParent.id && containmentParent.urn
+      ? { id: containmentParent.id, urn: containmentParent.urn }
+      : undefined);
+  const domainLocal = input.federationImport ? false : declared || inheritedContainer !== undefined;
+
+  // M20.7 (ADR-0031 §6c) — record WHY, not just whether.
+  //
+  // DECLARED WINS. A caller can pass `domainLocal: true` while creating under an already-local
+  // container; the row records DECLARED (null provenance) because that is what the operator actually
+  // did, even though the object would have been local anyway. Recording it as inherited would erase
+  // an act that happened.
+  //
+  // `inheritedFrom` is therefore set ONLY when inheritance is what made it local — the caller did not
+  // declare, and a container did. The two columns are written together and cleared together, so the
+  // "id without urn" state is unreachable.
+  const inheritedFrom =
+    !input.federationImport && domainLocal && !declared ? (inheritedContainer ?? null) : null;
 
   let row: typeof objects.$inferSelect | undefined;
   try {
@@ -299,6 +332,8 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
         contentHash,
         provenance,
         domainLocal,
+        domainLocalInheritedFrom: inheritedFrom?.id ?? null,
+        domainLocalInheritedFromUrn: inheritedFrom?.urn ?? null,
         version
       })
       .returning();
