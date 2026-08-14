@@ -19,6 +19,7 @@ import nock from "nock";
 import {
   createGiteaDiscoveryPlugin,
   createGiteaExecutorPlugin,
+  giteaAdapter,
   mapGiteaWebhookEventToHint,
   verifyGiteaWebhookSignature,
   type GiteaConfig
@@ -732,3 +733,274 @@ describe("discover() (DiscoveryPlugin)", () => {
 function randomKey(): string {
   return Math.random().toString(36).slice(2);
 }
+
+// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4) — the first file-body read in this package. Gitea's contents
+// API is deliberately GITHUB-COMPATIBLE, so the fixtures below carry Gitea's documented
+// `ContentsResponse` fields (`type`/`encoding`/`size`/`content`/`sha`, with `sha` being the BLOB
+// sha) and a directory comes back from the same route as an array — the same shapes github's suite
+// asserts. What is NOT github-shaped, and is asserted here, is the ref resolution: Gitea's contents
+// response has no commit sha, so the commit comes from `GET /repos/{o}/{r}/commits?sha=<ref>&limit=1`
+// (the same documented list-commits endpoint `pollCommits` already uses).
+// -------------------------------------------------------------------------------------------
+
+describe("readFileAtRef()", () => {
+  const REF_COMMIT_SHA = "7c".repeat(20);
+
+  function nockResolveRef(
+    base: string,
+    authHeader: string,
+    config: GiteaConfig,
+    ref = "main",
+    sha: string | null = REF_COMMIT_SHA
+  ) {
+    return nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: ref, limit: "1" })
+      .reply(200, sha === null ? [] : [{ sha, commit: { message: "chore: bump" } }]);
+  }
+
+  it("reads a manifest and reports the commit the ref resolved to (from the commits list, NOT the blob sha)", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const manifest = "module example.com/widgets\n\ngo 1.22\n";
+    const refScope = nockResolveRef(base, authHeader, config);
+    const contentsScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        name: "go.mod",
+        path: "go.mod",
+        sha: "blobgomod",
+        // Present in Gitea's response and deliberately NOT used as `commitSha` — it means "last
+        // commit that touched this file", a different fact from "what the ref resolved to".
+        last_commit_sha: "ff".repeat(20),
+        type: "file",
+        size: Buffer.byteLength(manifest, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(manifest, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" });
+
+    expect(result).toEqual({
+      outcome: "found",
+      path: "go.mod",
+      requestedRef: "main",
+      commitSha: REF_COMMIT_SHA,
+      content: manifest,
+      sizeBytes: Buffer.byteLength(manifest, "utf8"),
+      blobSha: "blobgomod"
+    });
+    // NEGATIVE CONTROL: `last_commit_sha` is present in the fixture and must NOT be what was picked.
+    expect((result as { commitSha: string }).commitSha).not.toBe("ff".repeat(20));
+    refScope.done();
+    contentsScope.done();
+  });
+
+  it("round-trips MULTI-BYTE UTF-8 content (sizeBytes counts bytes, not UTF-16 units)", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const text = 'FROM alpine:1.0\nLABEL org.opencontainers.image.authors="Ada — 日本語 🎉"\n';
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/Dockerfile`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "Dockerfile",
+        sha: "blobdock",
+        type: "file",
+        size: Buffer.byteLength(text, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(text, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "Dockerfile", ref: "main" });
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.content).toBe(text);
+    expect(result.sizeBytes).toBe(Buffer.byteLength(text, "utf8"));
+    expect(result.sizeBytes).not.toBe(result.content.length);
+  });
+
+  it("a 404 on the FILE is a routine not_found (missing: 'path'), not a throw", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/pom.xml`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(404, { message: "object does not exist [id: , rel_path: pom.xml]" });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "pom.xml", ref: "main" });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "path" });
+  });
+
+  it("an EMPTY commits list for an unknown ref is not_found (missing: 'ref') — Gitea 200s that case", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config, "no-such-branch", null);
+    // NEGATIVE CONTROL: no contents interceptor is registered. Falling through to the contents call
+    // would hit `nock.disableNetConnect()` and reject, failing this test rather than passing quietly.
+
+    const result = await giteaAdapter.readFileAtRef(ctx, {
+      path: "go.mod",
+      ref: "no-such-branch"
+    });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "ref" });
+  });
+
+  it("refuses an OVERSIZE file on Gitea's declared `size`, without decoding it", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/package.json`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "package.json",
+        sha: "blobbig",
+        type: "file",
+        size: 9_000_000,
+        encoding: "base64",
+        content: Buffer.from("{}", "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "package.json", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 9_000_000 });
+    expect(result.outcome).not.toBe("found");
+  });
+
+  it("refuses on the COMPUTED payload size when the declared size understates it", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const big = "x".repeat(4096);
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/requirements.txt`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "requirements.txt",
+        sha: "blobreq",
+        type: "file",
+        size: 12,
+        encoding: "base64",
+        content: Buffer.from(big, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, {
+      path: "requirements.txt",
+      ref: "main",
+      maxBytes: 1024
+    });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
+  });
+
+  it("refuses a DIRECTORY (array response) and a SUBMODULE (type != 'file')", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/services`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, [{ name: "api", path: "services/api", type: "dir" }]);
+
+    const dir = await giteaAdapter.readFileAtRef(ctx, { path: "services", ref: "main" });
+    expect(dir).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/vendor/lib`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "vendor/lib",
+        sha: "submod",
+        type: "submodule",
+        submodule_git_url: "https://gitea.example.com/acme/lib.git"
+      });
+
+    const sub = await giteaAdapter.readFileAtRef(ctx, { path: "vendor/lib", ref: "main" });
+    expect(sub).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+  });
+
+  it("refuses a BINARY file rather than returning replacement-character mojibake", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/logo.png`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "logo.png",
+        sha: "blobpng",
+        type: "file",
+        size: png.byteLength,
+        encoding: "base64",
+        content: png.toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "logo.png", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "not_text" });
+  });
+
+  it("makes a REDIRECT legible — the failure a self-hosted Gitea behind a proxy actually produces", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: "main", limit: "1" })
+      .reply(302, "", { location: "https://gitea.example.com/api/v1/" });
+
+    await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 302.*redirects are refused/s
+    );
+  });
+
+  it("throws a status-bearing error for a non-2xx that is neither 404 nor a redirect", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: "main", limit: "1" })
+      .reply(500, { message: "internal server error" });
+
+    await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 500/
+    );
+  });
+
+  it("surfaces an egress-guard denial as an actionable error naming the self-hosted case (the guard is NOT relaxed)", async () => {
+    // This is the failure an in-cluster Gitea on a private address produces: the guard blocks
+    // loopback/private egress for every tenant-configurable plugin (subprocess-entry.ts:210-215,
+    // egress-guard.ts:83) and `gitea` is deliberately not an operator-plane module. The adapter's
+    // job is to make that legible, never to bypass it — so this test injects a ctx whose http client
+    // throws exactly what the guard throws, and asserts only on the message.
+    const config = buildGiteaConfig();
+    const ctx = {
+      ...buildTestCtx(config),
+      http: {
+        request: async () => {
+          throw Object.assign(
+            new Error(
+              "egress guard: host 'gitea.internal' resolves to private 10.42.0.7 — internal egress blocked for this plugin (SSRF)"
+            ),
+            { egressBlocked: true as const }
+          );
+        }
+      }
+    };
+
+    await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /refused by the plugin egress guard.*10\.42\.0\.7.*self-hosted gitea/s
+    );
+  });
+
+  it("refuses a path-traversal BEFORE any HTTP happens", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { path: "a/../../etc/passwd", ref: "main" })
+    ).rejects.toThrow(/^gitea readFileAtRef: path .* contains a '\.'\/'\.\.' segment/);
+  });
+});

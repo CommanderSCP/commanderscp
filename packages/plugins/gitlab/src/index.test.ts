@@ -20,6 +20,7 @@ import nock from "nock";
 import {
   createGitlabDiscoveryPlugin,
   createGitlabExecutorPlugin,
+  gitlabAdapter,
   mapGitlabWebhookEventToHint,
   verifyGitlabWebhookToken,
   type GitlabConfig
@@ -608,3 +609,306 @@ describe("discover() (DiscoveryPlugin)", () => {
 function randomKey(): string {
   return Math.random().toString(36).slice(2);
 }
+
+// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4) — the first file-body read in this package, and the one place
+// where GitLab is genuinely NOT github/gitea-compatible. Three differences are asserted directly:
+//
+//   1. a different endpoint — `GET /projects/:id/repository/files/:file_path?ref=`, not `contents/`;
+//   2. WHOLE-string path encoding (`services%2Fapi%2Fgo.mod`), not per-segment — a per-segment
+//      encoding produces a different (non-existent) route, so the nested-path test below is the
+//      proof, not decoration;
+//   3. ONE call, not two — `commit_id` in the same response IS the resolved commit, so no separate
+//      ref-resolution request is made (asserted by nock consuming exactly one interceptor).
+//
+// Field names are GitLab's documented repository-file response.
+// -------------------------------------------------------------------------------------------
+
+describe("readFileAtRef()", () => {
+  const COMMIT_ID = "3d".repeat(20);
+  const LAST_COMMIT_ID = "ee".repeat(20);
+
+  it("reads a manifest in ONE call and takes `commit_id` (not `last_commit_id`) as the resolved commit", async () => {
+    const { ctx, token, base, pid } = setup();
+    const manifest = '{\n  "dependencies": { "left-pad": "^1.3.0" }\n}\n';
+    const scope = nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/package.json`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_name: "package.json",
+        file_path: "package.json",
+        size: Buffer.byteLength(manifest, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(manifest, "utf8").toString("base64"),
+        content_sha256: "d0".repeat(32),
+        ref: "main",
+        blob_id: "blob0011",
+        commit_id: COMMIT_ID,
+        last_commit_id: LAST_COMMIT_ID,
+        execute_filemode: false
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, { path: "package.json", ref: "main" });
+
+    expect(result).toEqual({
+      outcome: "found",
+      path: "package.json",
+      requestedRef: "main",
+      commitSha: COMMIT_ID,
+      content: manifest,
+      sizeBytes: Buffer.byteLength(manifest, "utf8"),
+      blobSha: "blob0011"
+    });
+    // NEGATIVE CONTROL: `last_commit_id` is present in the fixture and is a DIFFERENT fact ("last
+    // commit that touched this file"); picking it would still look like a sha and still pass a
+    // loose assertion.
+    expect((result as { commitSha: string }).commitSha).not.toBe(LAST_COMMIT_ID);
+    // ONE call: the scope is fully consumed, and the file-wide afterEach proves nothing else was
+    // registered or needed — there is no separate ref-resolution request on this provider.
+    scope.done();
+  });
+
+  it("encodes a NESTED path WHOLE (slashes as %2F) — the per-segment form github/gitea use would be a different route", async () => {
+    const { ctx, token, base, pid } = setup();
+    const scope = nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/services%2Fapi%2Fgo.mod`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "services/api/go.mod",
+        size: 21,
+        encoding: "base64",
+        content: Buffer.from("module example.com/x\n", "utf8").toString("base64"),
+        blob_id: "blobgo",
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, {
+      path: "services/api/go.mod",
+      ref: "main"
+    });
+    expect(result).toMatchObject({ outcome: "found", content: "module example.com/x\n" });
+    scope.done();
+  });
+
+  it("round-trips MULTI-BYTE UTF-8 content (sizeBytes counts bytes, not UTF-16 units)", async () => {
+    const { ctx, token, base, pid } = setup();
+    const text = 'FROM alpine:1.0\nLABEL authors="Ada — 日本語 🎉"\n';
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/Dockerfile`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "Dockerfile",
+        size: Buffer.byteLength(text, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(text, "utf8").toString("base64"),
+        blob_id: "blobdock",
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, { path: "Dockerfile", ref: "main" });
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.content).toBe(text);
+    expect(result.sizeBytes).toBe(Buffer.byteLength(text, "utf8"));
+    expect(result.sizeBytes).not.toBe(result.content.length);
+  });
+
+  it("a 404 is a routine not_found reported as missing: 'unknown', carrying GitLab's own message rather than inferring a label from it", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/pom.xml`)
+      .query({ ref: "main" })
+      .reply(404, { message: "404 File Not Found" });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, { path: "pom.xml", ref: "main" });
+    expect(result).toMatchObject({
+      outcome: "not_found",
+      // NOT "path": GitLab 404s a missing file, a missing ref and an invisible project alike and
+      // separates them only in prose. Claiming "path" here would be a label derived from wording.
+      missing: "unknown",
+      detail: "gitlab: 404 File Not Found"
+    });
+  });
+
+  it("a 404 for a missing REF is the same not_found shape — the message differs, the claim does not", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/go.mod`)
+      .query({ ref: "no-such-branch" })
+      .reply(404, { message: "404 Commit Not Found" });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, {
+      path: "go.mod",
+      ref: "no-such-branch"
+    });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "unknown" });
+    expect((result as { detail?: string }).detail).toContain("Commit Not Found");
+  });
+
+  it("refuses an OVERSIZE file on GitLab's declared `size`, without decoding it", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/package.json`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "package.json",
+        size: 7_000_000,
+        encoding: "base64",
+        content: Buffer.from("{}", "utf8").toString("base64"),
+        blob_id: "blobbig",
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, { path: "package.json", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 7_000_000 });
+    expect(result.outcome).not.toBe("found");
+  });
+
+  it("refuses on the COMPUTED payload size when the declared size understates it", async () => {
+    const { ctx, token, base, pid } = setup();
+    const big = "x".repeat(4096);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/requirements.txt`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "requirements.txt",
+        size: 12,
+        encoding: "base64",
+        content: Buffer.from(big, "utf8").toString("base64"),
+        blob_id: "blobreq",
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, {
+      path: "requirements.txt",
+      ref: "main",
+      maxBytes: 1024
+    });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
+  });
+
+  it("refuses a BINARY file rather than returning replacement-character mojibake", async () => {
+    const { ctx, token, base, pid } = setup();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/logo.png`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "logo.png",
+        size: png.byteLength,
+        encoding: "base64",
+        content: png.toString("base64"),
+        blob_id: "blobpng",
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, { path: "logo.png", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "not_text" });
+  });
+
+  it("throws rather than reporting a commit it did not resolve, when the response carries no commit_id", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/go.mod`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "go.mod",
+        size: 2,
+        encoding: "base64",
+        content: Buffer.from("{}", "utf8").toString("base64"),
+        blob_id: "blobx"
+        // commit_id deliberately absent
+      });
+
+    await expect(gitlabAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /carried no commit_id/
+    );
+  });
+
+  it("makes a REDIRECT legible — the failure a self-hosted GitLab behind a proxy actually produces", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/go.mod`)
+      .query({ ref: "main" })
+      .reply(307, "", { location: "https://gitlab.example.com/api/v4/" });
+
+    await expect(gitlabAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 307.*redirects are refused/s
+    );
+  });
+
+  it("throws a status-bearing error for a non-2xx that is neither 404 nor a redirect", async () => {
+    const { ctx, token, base, pid } = setup();
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/go.mod`)
+      .query({ ref: "main" })
+      .reply(401, { message: "401 Unauthorized" });
+
+    await expect(gitlabAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 401/
+    );
+  });
+
+  it("surfaces an egress-guard denial as an actionable error naming the self-hosted case (the guard is NOT relaxed)", async () => {
+    const config = buildGitlabConfig();
+    const ctx = {
+      ...buildTestCtx(config),
+      http: {
+        request: async () => {
+          throw Object.assign(
+            new Error(
+              "egress guard: host 'gitlab.internal' resolves to private 10.42.0.9 — internal egress blocked for this plugin (SSRF)"
+            ),
+            { egressBlocked: true as const }
+          );
+        }
+      }
+    };
+
+    await expect(gitlabAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /refused by the plugin egress guard.*10\.42\.0\.9.*self-hosted gitlab/s
+    );
+  });
+
+  it("refuses a path-traversal BEFORE any HTTP happens", async () => {
+    const { ctx } = setup();
+    await expect(
+      gitlabAdapter.readFileAtRef(ctx, { path: "../../../etc/passwd", ref: "main" })
+    ).rejects.toThrow(/^gitlab readFileAtRef: path .* contains a '\.'\/'\.\.' segment/);
+  });
+
+  it("honors an explicit `repo` override, URL-encoding a full group/subgroup project path", async () => {
+    const { ctx, token, base } = setup({ projectPath: "acme/widgets" });
+    const otherPid = encodeURIComponent("acme/platform/base-images");
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${otherPid}/repository/files/Dockerfile`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "Dockerfile",
+        size: 16,
+        encoding: "base64",
+        content: Buffer.from("FROM alpine:1.0\n", "utf8").toString("base64"),
+        blob_id: "blobd",
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, {
+      repo: "acme/platform/base-images",
+      path: "Dockerfile",
+      ref: "main"
+    });
+    expect(result).toMatchObject({ outcome: "found", content: "FROM alpine:1.0\n" });
+  });
+});

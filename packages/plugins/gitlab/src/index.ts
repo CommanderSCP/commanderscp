@@ -14,11 +14,18 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import {
+  assertNoRedirect,
+  assertSafeRepoPath,
   createExecutorPluginFromAdapter,
+  decodeBoundedBase64,
   normalizeCorrelation,
+  resolveMaxBytes,
   resolveProviderBaseUrl,
+  wrapProviderRequestError,
   type GitProviderAdapter,
-  type GitProviderEventHint
+  type GitProviderEventHint,
+  type ReadFileAtRefRequest,
+  type ReadFileAtRefResult
 } from "@scp/git-provider-core";
 
 /**
@@ -175,7 +182,7 @@ async function api(
   method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
   path: string,
   body?: unknown
-): Promise<{ status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
   const headers = await gitlabApiHeaders(ctx, config);
   const response = await ctx.http.request({
     method,
@@ -183,7 +190,10 @@ async function api(
     headers,
     body
   });
-  return { status: response.status, body: response.body };
+  // Response headers are carried through (additively — every pre-M21.2 call site destructures only
+  // `{ status, body }` and is unaffected) so the read path can name a redirect's `Location` in its
+  // error. See `readGet`'s `assertNoRedirect` call.
+  return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
 // -------------------------------------------------------------------------------------------
@@ -481,6 +491,130 @@ function gitlabCapabilities(): ExecutorCapabilities {
   };
 }
 
+// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)) — reading a file BODY. `discover()` below
+// walks `repository/tree` and reads only `name`/`type`; it never fetches a blob.
+//
+// GITLAB IS THE ONE THAT IS *NOT* GITHUB-COMPATIBLE HERE. Three concrete differences, each of which
+// would be a bug if this had been copied from the github/gitea adapters:
+//
+//  1. DIFFERENT ENDPOINT. There is no `contents/` route. The file lives at
+//     `GET /api/v4/projects/:id/repository/files/:file_path?ref=:ref`, returning
+//     `{ file_name, file_path, size, encoding: "base64", content, content_sha256, ref, blob_id,
+//        commit_id, last_commit_id, execute_filemode }`.
+//  2. DIFFERENT PATH ENCODING. `:file_path` is a SINGLE route parameter, so it must be encoded
+//     WHOLE with slashes turned into `%2F` (`encodeURIComponent`) — NOT per-segment like github's
+//     and gitea's routes. This is why the core's `encodePathSegments` is deliberately unused here;
+//     using it would produce `repository/files/svc/api/go.mod`, which GitLab reads as a different
+//     (non-existent) route rather than as a nested file.
+//  3. ONE CALL, NOT TWO. `commit_id` in that same response IS the commit the ref resolved to, so
+//     GitLab needs no separate resolve step — and, unlike the two-call providers, there is no
+//     branch-moves-between-calls window to close at all.
+//
+// One consequence of (3) is that a 404 covers both "no such file" and "no such ref/project", and
+// GitLab distinguishes them ONLY in a human-readable `message` ("404 File Not Found" vs "404 Commit
+// Not Found"). That message is not a structured discriminator, and a label derived from prose goes
+// false the moment the prose changes — the provenance-label lesson — so this reports
+// `missing: "unknown"` and carries GitLab's own message through in `detail` rather than inferring.
+// -------------------------------------------------------------------------------------------
+
+/** GitLab's repository-file response (documented, stable field names). `blob_id` is the blob sha;
+ *  `commit_id` is the commit the requested ref resolved to; `last_commit_id` is the last commit that
+ *  touched this file (a DIFFERENT fact, deliberately not used as `commitSha`). */
+interface GitlabRepositoryFile {
+  file_path?: string;
+  size?: number;
+  encoding?: string;
+  content?: string;
+  blob_id?: string;
+  commit_id?: string;
+  last_commit_id?: string;
+}
+
+/** A single authenticated GET on the read path, with the same two folded-in failure modes as the
+ *  github/gitea adapters: a 3xx arriving as a STATUS is refused with an explanation by
+ *  `assertNoRedirect`, and anything thrown by `ctx.http.request` is re-thrown by
+ *  `wrapProviderRequestError` naming whether it was a refused redirect (`redirect: "error"`,
+ *  subprocess-entry.ts:285,295) or an egress-guard denial. As with gitea, the egress case is the
+ *  live one — a self-hosted GitLab at a private address is blocked for every tenant-configurable
+ *  plugin (subprocess-entry.ts:210-215) and this only explains that, never relaxes it. */
+async function readGet(
+  ctx: PluginContext,
+  config: GitlabConfig,
+  path: string
+): Promise<{ status: number; body: unknown }> {
+  const url = `${apiBase(config)}${path}`;
+  try {
+    const response = await api(ctx, config, "GET", path);
+    assertNoRedirect("gitlab", url, response.status, response.headers.location);
+    return response;
+  } catch (err) {
+    throw wrapProviderRequestError("gitlab", url, err);
+  }
+}
+
+/** Adapter `readFileAtRef` hook — see `GitProviderAdapter.readFileAtRef` for the contract. */
+async function readFileAtRef(
+  ctx: PluginContext,
+  request: ReadFileAtRefRequest
+): Promise<ReadFileAtRefResult> {
+  const config = asConfig(ctx.config);
+  const maxBytes = resolveMaxBytes(request.maxBytes);
+  assertSafeRepoPath("gitlab", request.path);
+  // An explicit `request.repo` is a full project path (`group/subgroup/repo`) and is encoded to the
+  // REST `:id` exactly as `projectId()` does for the binding's own project.
+  const pid = request.repo ? encodeURIComponent(request.repo) : projectId(config);
+
+  // See difference (2) above: WHOLE-string encoding, slashes included. Not `encodePathSegments`.
+  const filePath = encodeURIComponent(request.path);
+  const response = await readGet(
+    ctx,
+    config,
+    `/projects/${pid}/repository/files/${filePath}?ref=${encodeURIComponent(request.ref)}`
+  );
+
+  if (response.status === 404) {
+    const message = (response.body as { message?: unknown } | undefined)?.message;
+    return {
+      outcome: "not_found",
+      // "unknown", not a guess: GitLab returns 404 for a missing file, a missing ref and a missing/
+      // invisible project alike, and separates them only in `message`. See the section comment.
+      missing: "unknown",
+      path: request.path,
+      requestedRef: request.ref,
+      detail: typeof message === "string" ? `gitlab: ${message}` : "gitlab: HTTP 404"
+    };
+  }
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`gitlab readFileAtRef: repository file returned HTTP ${response.status}`);
+  }
+
+  const file = (response.body ?? {}) as GitlabRepositoryFile;
+  const commitSha = file.commit_id;
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    throw new Error(
+      `gitlab readFileAtRef: repository-file response for '${request.path}' carried no commit_id — refusing to report a resolved commit this call did not actually resolve`
+    );
+  }
+
+  // No directory case to detect: unlike github/gitea, GitLab's files endpoint does not serve
+  // directories at all — a directory path simply 404s there (it is `repository/tree` that lists
+  // one). So `not_a_file` is unreachable for this provider, and there is nothing to fake.
+  return decodeBoundedBase64({
+    provider: "gitlab",
+    path: request.path,
+    requestedRef: request.ref,
+    commitSha,
+    base64: file.content ?? "",
+    encoding: file.encoding,
+    declaredSizeBytes: file.size,
+    maxBytes,
+    blobSha: file.blob_id
+  });
+}
+
+/** The GitLab `GitProviderAdapter`. `readFileAtRef` is an adapter-only hook (ADR-0032 §9) — the
+ *  core factory never turns it into a fifth executor verb. */
 export const gitlabAdapter: GitProviderAdapter = {
   sourceKind: "gitlab",
   authorize: (ctx) => gitlabApiHeaders(ctx, asConfig(ctx.config)),
@@ -494,7 +628,8 @@ export const gitlabAdapter: GitProviderAdapter = {
   capabilities: gitlabCapabilities,
   verifyWebhook: verifyGitlabWebhookToken,
   mapEvent: mapGitlabWebhookEventToHint,
-  mapStatusToPhase: mapGitlabStatusToPhase
+  mapStatusToPhase: mapGitlabStatusToPhase,
+  readFileAtRef
 };
 
 export const gitlabExecutorPlugin: ExecutorPlugin = createExecutorPluginFromAdapter(gitlabAdapter);

@@ -14,11 +14,19 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import {
+  assertNoRedirect,
+  assertSafeRepoPath,
   createExecutorPluginFromAdapter,
+  decodeBoundedBase64,
+  encodePathSegments,
   normalizeCorrelation,
+  resolveMaxBytes,
   resolveProviderBaseUrl,
+  wrapProviderRequestError,
   type GitProviderAdapter,
-  type GitProviderEventHint
+  type GitProviderEventHint,
+  type ReadFileAtRefRequest,
+  type ReadFileAtRefResult
 } from "@scp/git-provider-core";
 
 /**
@@ -150,7 +158,7 @@ async function api(
   method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
   path: string,
   body?: unknown
-): Promise<{ status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
   const headers = await giteaApiHeaders(ctx, config);
   const response = await ctx.http.request({
     method,
@@ -158,7 +166,10 @@ async function api(
     headers,
     body
   });
-  return { status: response.status, body: response.body };
+  // Response headers are carried through (additively — every pre-M21.2 call site destructures only
+  // `{ status, body }` and is unaffected) so the read path can name a redirect's `Location` in its
+  // error. See `readGet`'s `assertNoRedirect` call.
+  return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
 // -------------------------------------------------------------------------------------------
@@ -530,10 +541,169 @@ function giteaCapabilities(): ExecutorCapabilities {
   };
 }
 
+// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)) — reading a file BODY, which neither this
+// package nor github's could do before. `discover()` below hits the same contents route but reads
+// only `entry.name`/`entry.type` off a directory listing; it never decodes a blob.
+//
+// GITEA WIRE FACTS: Gitea's contents API is deliberately GITHUB-COMPATIBLE, which is why this
+// mirrors the github adapter's two-step shape rather than inventing one —
+//   - `GET /api/v1/repos/{owner}/{repo}/contents/{filepath}?ref={ref}` returns, for a blob, a
+//     `ContentsResponse` with `type: "file"`, `encoding: "base64"`, `size`, `content`, and `sha`
+//     (the BLOB sha, same as github — NOT a commit sha). A directory returns an ARRAY.
+//   - The commit a ref resolves to comes from `GET /api/v1/repos/{owner}/{repo}/commits?sha={ref}
+//     &limit=1`, the SAME documented, stable list-commits endpoint `pollCommits` above already
+//     uses — the first element's `sha`. This is preferred over the contents response's
+//     `last_commit_sha` field on two grounds: `last_commit_sha` means "last commit that TOUCHED
+//     THIS FILE", which is a different fact from "what the ref resolved to" (so using it would make
+//     gitea's `commitSha` mean something else than github's and gitlab's), and it is a
+//     comparatively recent addition whose presence varies by Gitea version.
+//
+// Everything else — the decode bound, the base64/UTF-8 gates, the redirect and egress-guard
+// classifiers — comes from `@scp/git-provider-core`, so all three providers refuse identically.
+// -------------------------------------------------------------------------------------------
+
+/** A Gitea `ContentsResponse` for a FILE path — GitHub-compatible field names; `sha` is the blob. */
+interface GiteaContentFile {
+  type?: string;
+  encoding?: string;
+  size?: number;
+  content?: string;
+  sha?: string;
+  path?: string;
+}
+
+/** A single authenticated GET on the read path. Same two folded-in failure modes as the github
+ *  adapter's `readGet`: a 3xx arriving as a STATUS is refused with an explanation by
+ *  `assertNoRedirect`, and anything thrown by `ctx.http.request` is re-thrown by
+ *  `wrapProviderRequestError` naming whether it was a refused redirect (`redirect: "error"`,
+ *  subprocess-entry.ts:285,295) or an egress-guard denial. The egress case matters MORE here than
+ *  for github: a Gitea instance is self-hosted by definition, and `gitea` is deliberately not in
+ *  `OPERATOR_PLANE_MODULES` (subprocess-entry.ts:210-215), so an in-cluster Gitea on a private
+ *  address is blocked. That control is not weakened here — only explained. */
+async function readGet(
+  ctx: PluginContext,
+  config: GiteaConfig,
+  path: string
+): Promise<{ status: number; body: unknown }> {
+  const url = `${apiBase(config)}${path}`;
+  try {
+    const response = await api(ctx, config, "GET", path);
+    assertNoRedirect("gitea", url, response.status, response.headers.location);
+    return response;
+  } catch (err) {
+    throw wrapProviderRequestError("gitea", url, err);
+  }
+}
+
+/** Adapter `readFileAtRef` hook — see `GitProviderAdapter.readFileAtRef` for the contract. */
+async function readFileAtRef(
+  ctx: PluginContext,
+  request: ReadFileAtRefRequest
+): Promise<ReadFileAtRefResult> {
+  const config = asConfig(ctx.config);
+  const repo = request.repo ?? `${config.owner}/${config.repo}`;
+  const maxBytes = resolveMaxBytes(request.maxBytes);
+  assertSafeRepoPath("gitea", request.path);
+
+  // STEP 1 — resolve the ref to a commit sha. Reading the blob at that SHA (step 2) rather than at
+  // the ref closes the window where a branch moves between the two calls: an inventory row that
+  // says "read at commit X" has to be true of the bytes that were actually parsed.
+  const resolved = await readGet(
+    ctx,
+    config,
+    `/repos/${repo}/commits?sha=${encodeURIComponent(request.ref)}&limit=1`
+  );
+  if (resolved.status === 404) {
+    return {
+      outcome: "not_found",
+      missing: "ref",
+      path: request.path,
+      requestedRef: request.ref,
+      detail: `gitea: no commits for ref '${request.ref}' in ${repo}`
+    };
+  }
+  if (resolved.status < 200 || resolved.status >= 300) {
+    throw new Error(`gitea readFileAtRef: resolving ref returned HTTP ${resolved.status}`);
+  }
+  const commits = Array.isArray(resolved.body)
+    ? (resolved.body as Array<{ sha?: unknown }>)
+    : undefined;
+  const commitSha = commits?.[0]?.sha;
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    // An EMPTY list is a real, non-error answer for a ref that exists nowhere — Gitea 200s the
+    // list endpoint for an unknown branch on some versions rather than 404ing, so this arm is the
+    // one that actually catches a bad ref most of the time. Reported as not_found, not as a crash.
+    return {
+      outcome: "not_found",
+      missing: "ref",
+      path: request.path,
+      requestedRef: request.ref,
+      detail: `gitea: ref '${request.ref}' resolved to no commit in ${repo}`
+    };
+  }
+
+  // STEP 2 — the blob, pinned to the sha from step 1.
+  const contents = await readGet(
+    ctx,
+    config,
+    `/repos/${repo}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
+  );
+  if (contents.status === 404) {
+    return {
+      outcome: "not_found",
+      missing: "path",
+      path: request.path,
+      requestedRef: request.ref,
+      detail: `gitea: no file at '${request.path}' in ${repo}@${commitSha}`
+    };
+  }
+  if (contents.status < 200 || contents.status >= 300) {
+    throw new Error(`gitea readFileAtRef: contents returned HTTP ${contents.status}`);
+  }
+
+  if (Array.isArray(contents.body)) {
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `gitea: '${request.path}' is a directory (contents returned a listing of ${contents.body.length} entries), not a file`,
+      path: request.path,
+      requestedRef: request.ref
+    };
+  }
+
+  const entry = (contents.body ?? {}) as GiteaContentFile;
+  if (entry.type !== "file") {
+    // Gitea's other documented `type` values are `dir`, `symlink` and `submodule`; none of them
+    // carries bytes this can honestly hand back as the file's content.
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `gitea: '${request.path}' has content type '${entry.type ?? "unknown"}', not 'file'`,
+      path: request.path,
+      requestedRef: request.ref,
+      sizeBytes: entry.size
+    };
+  }
+
+  return decodeBoundedBase64({
+    provider: "gitea",
+    path: request.path,
+    requestedRef: request.ref,
+    commitSha,
+    base64: entry.content ?? "",
+    encoding: entry.encoding,
+    declaredSizeBytes: entry.size,
+    maxBytes,
+    blobSha: entry.sha
+  });
+}
+
 /** observe() for gitea layers package/OCI pushes on top of the core's commits+runs poll — the core
  *  factory's built-in observe only calls `pollCommits`+`pollRuns`, so we assemble the plugin from
  *  the adapter and then WRAP `observe` to also fold in `pollPackages`. Everything else (trigger/
- *  status/abort/describeCapabilities) is the core's assembly untouched. */
+ *  status/abort/describeCapabilities) is the core's assembly untouched. `readFileAtRef` is an
+ *  adapter-only hook (ADR-0032 §9) — the factory never turns it into a fifth executor verb. */
 export const giteaAdapter: GitProviderAdapter = {
   sourceKind: "gitea",
   authorize: (ctx) => giteaApiHeaders(ctx, asConfig(ctx.config)),
@@ -547,7 +717,8 @@ export const giteaAdapter: GitProviderAdapter = {
   capabilities: giteaCapabilities,
   verifyWebhook: verifyGiteaWebhookSignature,
   mapEvent: mapGiteaWebhookEventToHint,
-  mapStatusToPhase: mapGiteaStatusToPhase
+  mapStatusToPhase: mapGiteaStatusToPhase,
+  readFileAtRef
 };
 
 const baseGiteaPlugin: ExecutorPlugin = createExecutorPluginFromAdapter(giteaAdapter);
