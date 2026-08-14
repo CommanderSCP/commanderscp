@@ -29,6 +29,9 @@ describe("service object schemas", () => {
       // to keep its own "every `GraphObject` field" claim true. `false` is the ordinary case: an
       // object that federates normally, which is what the rest of this fixture describes.
       domainLocal: false,
+      // M20.7 (ADR-0031 §6c) — required on the wire. `null` is the ordinary case for an object that
+      // federates normally: there is no inheritance to explain.
+      domainLocalInheritedFrom: null,
       version: 1,
       createdAt: "2026-07-08T12:00:00.000Z",
       updatedAt: "2026-07-08T12:00:00.000Z",

@@ -27,6 +27,9 @@ export type RawObjectRow = {
    *  without touching their SQL — but a future raw query that enumerates columns must include it,
    *  or this mapper would emit `undefined` for a field the wire schema requires. */
   domain_local: boolean;
+  /** M20.7 (ADR-0031 §6c). Both nullable and written together; all four raw call sites `SELECT *`. */
+  domain_local_inherited_from: string | null;
+  domain_local_inherited_from_urn: string | null;
   version: string | number;
   created_at: Date | string;
   updated_at: Date | string;
@@ -51,6 +54,9 @@ export function mapRawObjectRow(row: RawObjectRow): GraphObject {
     revision: Number(row.revision),
     provenance: row.provenance as GraphObject["provenance"],
     domainLocal: row.domain_local,
+    domainLocalInheritedFrom: row.domain_local_inherited_from
+      ? { id: row.domain_local_inherited_from, urn: row.domain_local_inherited_from_urn ?? "" }
+      : null,
     version: Number(row.version),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),

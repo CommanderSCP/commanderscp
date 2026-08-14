@@ -132,6 +132,36 @@ export const GraphObjectSchema = z.object({
    * "not declared" from "not sent".
    */
   domainLocal: z.boolean(),
+  /**
+   * M20.7 ([ADR-0031](../../../docs/adr/0031-domain-local-objects-never-federate.md) §6c) — **why**
+   * this object is domain-local.
+   *
+   * Since M20.5 locality inherits at create, so `domainLocal: true` alone no longer means "someone
+   * chose this". The three states are exhaustive and need no separate discriminator:
+   *
+   * | `domainLocal` | `domainLocalInheritedFrom` | meaning |
+   * |---|---|---|
+   * | `false` | `null` | federates normally |
+   * | `true` | `null` | **declared** by an operator |
+   * | `true` | present | **inherited** from that container |
+   *
+   * **Declared wins when both apply.** Creating with `domainLocal: true` under an already-local
+   * container records *declared*, because that is what the operator did — even though the object
+   * would have been local anyway.
+   *
+   * **HISTORICAL, not live.** It records the container as it was at create and is never updated to
+   * follow it, so after §6b's publish-container-then-child flow a still-local child legitimately
+   * points at a container that has since become shared. That is the true answer to "how did this
+   * become domain-local" — do not read it as "its container is currently domain-local", and do not
+   * use it to predict whether a publish will be refused (§6b's refusal is the server's census to run,
+   * over live state, along both containment routes).
+   *
+   * The `urn` is carried because it is immutable and resolvable on every `idOrUrn` route, so a badge
+   * can name and link the container with no extra request. A container that has since been deleted
+   * still resolves here as provenance — treat an unresolvable reference as "inherited, source no
+   * longer present" rather than as an error.
+   */
+  domainLocalInheritedFrom: z.object({ id: z.string().uuid(), urn: z.string() }).nullable(),
   version: z.number().int(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

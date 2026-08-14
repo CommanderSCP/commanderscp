@@ -86,7 +86,14 @@ export async function createComponentInService(
     // Note this is the reason `domainLocal` is threaded rather than inferred later: making the
     // component local when the EDGE is created would be a shared -> domain-local flip, which §6
     // refuses permanently. It has to be true at create or never.
-    domainLocal: input.domainLocal || service.domainLocal
+    // M20.5 kept only the caller's own declaration here; M20.7 (ADR-0031 §6c) passes the container
+    // SEPARATELY so `createObject` can tell "the operator declared this" from "it followed its
+    // service". Folding them into one boolean, as M20.5 did, still produced a domain-local component
+    // but lost which of the two made it one — the entire question the provenance field answers.
+    domainLocal: input.domainLocal,
+    ...(service.domainLocal
+      ? { domainLocalInheritedFrom: { id: service.id, urn: service.urn } }
+      : {})
   });
 
   await createRelationship(tx, {

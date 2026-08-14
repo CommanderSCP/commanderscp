@@ -433,6 +433,10 @@ export type ListServiceObjectsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -534,6 +538,10 @@ export type CreateServiceObjectResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -605,6 +613,10 @@ export type ListServiceObjectsForOrgResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -708,6 +720,10 @@ export type CreateServiceObjectForOrgResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1044,6 +1060,10 @@ export type ListObjectsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -1135,6 +1155,10 @@ export type CreateObjectResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1225,6 +1249,10 @@ export type PublishDomainLocalObjectResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -1320,6 +1348,10 @@ export type DeleteObjectResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1398,6 +1430,10 @@ export type GetObjectResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1497,6 +1533,10 @@ export type UpdateObjectResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1586,6 +1626,10 @@ export type UpsertObjectByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1611,6 +1655,10 @@ export type UpsertObjectByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -1985,6 +2033,10 @@ export type ListDomainsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -2074,6 +2126,10 @@ export type CreateDomainResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2151,6 +2207,10 @@ export type DeleteDomainResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2228,6 +2288,10 @@ export type GetDomainResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2326,6 +2390,10 @@ export type UpdateDomainResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2414,6 +2482,10 @@ export type UpsertDomainByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2439,6 +2511,10 @@ export type UpsertDomainByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2509,6 +2585,10 @@ export type ListServicesResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -2598,6 +2678,10 @@ export type CreateServiceResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2675,6 +2759,10 @@ export type DeleteServiceResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2752,6 +2840,10 @@ export type GetServiceResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2850,6 +2942,10 @@ export type UpdateServiceResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2938,6 +3034,10 @@ export type UpsertServiceByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -2963,6 +3063,10 @@ export type UpsertServiceByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3033,6 +3137,10 @@ export type ListAssembliesResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -3122,6 +3230,10 @@ export type CreateAssemblyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3199,6 +3311,10 @@ export type DeleteAssemblyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3276,6 +3392,10 @@ export type GetAssemblyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3374,6 +3494,10 @@ export type UpdateAssemblyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3462,6 +3586,10 @@ export type UpsertAssemblyByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3487,6 +3615,10 @@ export type UpsertAssemblyByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3557,6 +3689,10 @@ export type ListDeploymentTargetsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -3646,6 +3782,10 @@ export type CreateDeploymentTargetResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3723,6 +3863,10 @@ export type DeleteDeploymentTargetResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3800,6 +3944,10 @@ export type GetDeploymentTargetResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3898,6 +4046,10 @@ export type UpdateDeploymentTargetResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -3986,6 +4138,10 @@ export type UpsertDeploymentTargetByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4011,6 +4167,10 @@ export type UpsertDeploymentTargetByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4081,6 +4241,10 @@ export type ListTeamsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -4170,6 +4334,10 @@ export type CreateTeamResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4247,6 +4415,10 @@ export type DeleteTeamResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4324,6 +4496,10 @@ export type GetTeamResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4422,6 +4598,10 @@ export type UpdateTeamResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4510,6 +4690,10 @@ export type UpsertTeamByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4535,6 +4719,10 @@ export type UpsertTeamByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4605,6 +4793,10 @@ export type ListGroupsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -4694,6 +4886,10 @@ export type CreateGroupResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4771,6 +4967,10 @@ export type DeleteGroupResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4848,6 +5048,10 @@ export type GetGroupResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -4946,6 +5150,10 @@ export type UpdateGroupResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5034,6 +5242,10 @@ export type UpsertGroupByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5059,6 +5271,10 @@ export type UpsertGroupByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5129,6 +5345,10 @@ export type ListUsersResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -5218,6 +5438,10 @@ export type CreateUserResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5295,6 +5519,10 @@ export type DeleteUserResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5372,6 +5600,10 @@ export type GetUserResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5470,6 +5702,10 @@ export type UpdateUserResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5558,6 +5794,10 @@ export type UpsertUserByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5583,6 +5823,10 @@ export type UpsertUserByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5653,6 +5897,10 @@ export type ListServiceAccountsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -5742,6 +5990,10 @@ export type CreateServiceAccountResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5819,6 +6071,10 @@ export type DeleteServiceAccountResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5896,6 +6152,10 @@ export type GetServiceAccountResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -5994,6 +6254,10 @@ export type UpdateServiceAccountResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6082,6 +6346,10 @@ export type UpsertServiceAccountByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6107,6 +6375,10 @@ export type UpsertServiceAccountByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6377,6 +6649,10 @@ export type ListComponentsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -6478,6 +6754,10 @@ export type CreateComponentResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6555,6 +6835,10 @@ export type DeleteComponentResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6632,6 +6916,10 @@ export type GetComponentResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6730,6 +7018,10 @@ export type UpdateComponentResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6830,6 +7122,10 @@ export type UpsertComponentByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6855,6 +7151,10 @@ export type UpsertComponentByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -6956,6 +7256,10 @@ export type SetComponentServiceResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -7058,6 +7362,10 @@ export type MergeComponentsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -7143,6 +7451,10 @@ export type ListPlacementsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -7252,6 +7564,10 @@ export type CreatePlacementResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -7340,6 +7656,10 @@ export type DeletePlacementResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -7417,6 +7737,10 @@ export type GetPlacementResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -9887,6 +10211,10 @@ export type GraphQueryResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -9973,6 +10301,10 @@ export type GraphTraverseResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -12281,6 +12613,10 @@ export type ListPolicysResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -12370,6 +12706,10 @@ export type CreatePolicyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12447,6 +12787,10 @@ export type DeletePolicyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12524,6 +12868,10 @@ export type GetPolicyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12622,6 +12970,10 @@ export type UpdatePolicyResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12710,6 +13062,10 @@ export type UpsertPolicyByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12735,6 +13091,10 @@ export type UpsertPolicyByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12805,6 +13165,10 @@ export type ListControlsResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -12894,6 +13258,10 @@ export type CreateControlResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -12971,6 +13339,10 @@ export type DeleteControlResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -13048,6 +13420,10 @@ export type GetControlResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -13146,6 +13522,10 @@ export type UpdateControlResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -13234,6 +13614,10 @@ export type UpsertControlByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -13259,6 +13643,10 @@ export type UpsertControlByUrnResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -16269,6 +16657,10 @@ export type CreateOverlayResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;
@@ -16347,6 +16739,10 @@ export type GetMergedOverlayViewResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -16369,6 +16765,10 @@ export type GetMergedOverlayViewResponses = {
             revision: number;
             provenance: 'manual' | null;
             domainLocal: boolean;
+            domainLocalInheritedFrom: {
+                id: string;
+                urn: string;
+            } | null;
             version: number;
             createdAt: string;
             updatedAt: string;
@@ -16470,6 +16870,10 @@ export type HandFillObjectResponses = {
         revision: number;
         provenance: 'manual' | null;
         domainLocal: boolean;
+        domainLocalInheritedFrom: {
+            id: string;
+            urn: string;
+        } | null;
         version: number;
         createdAt: string;
         updatedAt: string;

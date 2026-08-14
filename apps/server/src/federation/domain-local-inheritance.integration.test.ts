@@ -243,6 +243,91 @@ describe("M20.5 (ADR-0031 §6a): locality is inherited at create, along both con
     expect(JSON.parse(res.body).domainLocal).toBe(false);
   });
 
+  // ---------------------------------------------------------------------------------------------
+  // M20.7 (ADR-0031 §6c) — WHY, not just whether. Three exhaustive states, no discriminator field.
+  // ---------------------------------------------------------------------------------------------
+
+  it("PROVENANCE: an INHERITED object names the container it inherited from, with a resolvable urn", async () => {
+    const res = await post("/api/v1/objects/service", {
+      name: uniq("prov-inherited"),
+      domainId: localDomainId
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.domainLocal).toBe(true);
+    expect(body.domainLocalInheritedFrom).not.toBeNull();
+    expect(body.domainLocalInheritedFrom.id).toBe(localDomainId);
+    // The urn is carried so a badge can NAME the container without a second request — the bare-id
+    // problem this project already fixed once in the publish sweep report.
+    expect(body.domainLocalInheritedFrom.urn).toContain("secure-partition");
+  });
+
+  it("PROVENANCE: a DECLARED object reports null — the two states are distinguishable", async () => {
+    const res = await post("/api/v1/objects/service", {
+      name: uniq("prov-declared"),
+      domainId: sharedDomainId,
+      domainLocal: true
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.domainLocal).toBe(true);
+    expect(body.domainLocalInheritedFrom).toBeNull();
+  });
+
+  it("PROVENANCE: an ordinary object reports null too — false/null is the third state", async () => {
+    const res = await post("/api/v1/objects/service", { name: uniq("prov-ordinary") });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.domainLocal).toBe(false);
+    expect(body.domainLocalInheritedFrom).toBeNull();
+  });
+
+  it("PROVENANCE: DECLARED WINS when both apply — the operator's act is not erased by inheritance", async () => {
+    // Creating with `domainLocal: true` UNDER a domain-local container. The object would have been
+    // local either way, but the operator did declare it, and recording it as inherited would report
+    // something that did not happen.
+    const res = await post("/api/v1/objects/service", {
+      name: uniq("prov-both"),
+      domainId: localDomainId,
+      domainLocal: true
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.domainLocal).toBe(true);
+    expect(body.domainLocalInheritedFrom).toBeNull();
+  });
+
+  it("PROVENANCE: the `contains` route names the SERVICE, not the domain_id parent", async () => {
+    // The two routes must not be confused: a component created into a domain-local service inherits
+    // from THAT service, even though its `domain_id` parent is the (non-local) org root.
+    const service = await admin
+      .object("service")
+      .create({ name: uniq("prov-container-service"), domainLocal: true });
+    const res = await post("/api/v1/components", {
+      name: uniq("prov-component"),
+      service: service.id
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body);
+    expect(body.domainLocal).toBe(true);
+    expect(body.domainLocalInheritedFrom.id).toBe(service.id);
+    expect(body.domainLocalInheritedFrom.urn).toBe(service.urn);
+  });
+
+  it("PROVENANCE: it survives an ordinary update — locality and its reason are both immutable", async () => {
+    const created = await admin.object("service").create({
+      name: uniq("prov-survives"),
+      domainId: localDomainId as never
+    });
+    expect(created.domainLocalInheritedFrom?.id).toBe(localDomainId);
+
+    const updated = await admin
+      .object("service")
+      .update(created.id, { properties: { touched: true } });
+    expect(updated.domainLocal).toBe(true);
+    expect(updated.domainLocalInheritedFrom?.id).toBe(localDomainId);
+  });
+
   it("declaring domainLocal:true under an ordinary container still works — inheritance ADDS, never restricts", async () => {
     const res = await post("/api/v1/objects/service", {
       name: uniq("declared-under-shared"),
