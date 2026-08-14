@@ -729,6 +729,67 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
     );
   });
 
+  it("PUBLISH (M20.7): publishing CLEARS the inheritance provenance — on an object that genuinely had one", async () => {
+    // The child must have INHERITED provenance for this to mean anything. Bolting the assertion onto
+    // the ordering test above would have been VACUOUS: that child is created with `domainLocal: true`
+    // explicitly, so its provenance is null from the start and "cleared" would pass trivially.
+    const container = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "domain",
+        actorObjectId: outpost.orgId,
+        requestId: "m207-container",
+        name: "prov-clearing-partition",
+        domainLocal: true
+      })
+    );
+    const child = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: container.id as never,
+        typeId: "service",
+        actorObjectId: outpost.orgId,
+        requestId: "m207-child",
+        name: "prov-clearing-child"
+      })
+    );
+    // Precondition, asserted rather than assumed: it really did inherit.
+    expect(child.domainLocal).toBe(true);
+    expect(child.domainLocalInheritedFrom?.id).toBe(container.id);
+
+    // §6b requires the container first.
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "domain",
+        idOrUrn: container.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m207-publish-container"
+      })
+    );
+    const published = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "service",
+        idOrUrn: child.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m207-publish-child"
+      })
+    );
+
+    // The field answers "why is this domain-local"; on an object that no longer is, a surviving
+    // value would assert a reason for a state that has ended.
+    expect(published.object.domainLocal).toBe(false);
+    expect(published.object.domainLocalInheritedFrom).toBeNull();
+    // BOTH columns, not just the wire view — they are written together and must clear together.
+    const rowAfter = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx.select().from(objects).where(eq(objects.id, child.id))
+    );
+    expect(rowAfter[0]!.domainLocalInheritedFrom).toBeNull();
+    expect(rowAfter[0]!.domainLocalInheritedFromUrn).toBeNull();
+  });
+
   it("PUBLISH (M20.6): the `domain_id` route blocks too — both containment routes, not just `contains`", async () => {
     // §6b mirrors §6a/§4's either-route rule. Testing only the `contains` route would leave an object
     // grouped under a domain-local containment DOMAIN publishable straight out of it.
