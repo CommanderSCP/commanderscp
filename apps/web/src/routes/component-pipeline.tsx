@@ -329,6 +329,25 @@ export function SourceNodeForTest(props: {
   );
 }
 
+/** Exported for `component-pipeline-continuous.test.tsx` — a wave's LABEL is a contract: a
+ *  declared wave says "Wave N", an unordered placement row must say it is NOT a wave (owner,
+ *  2026-08-14: side-by-side targets under a wave-looking label read as "released to all at once"). */
+export function WaveRowForTest(props: {
+  wave: JourneyWave;
+  lane?: Lane;
+  componentId?: string;
+  pipelineKey?: unknown[];
+}): React.JSX.Element {
+  return (
+    <WaveRow
+      wave={props.wave}
+      lane={props.lane ?? LANES[0]!}
+      componentId={props.componentId ?? "component"}
+      pipelineKey={props.pipelineKey ?? ["pipeline"]}
+    />
+  );
+}
+
 /** THE STAGE'S CURRENT STATE AT A GLANCE — the deployment outcome as a pill beside its name.
  *
  *  Deliberately says "never deployed" rather than rendering nothing: an empty header would read as
@@ -1924,8 +1943,17 @@ function WaveRow({
         {wave.waveIndex === null ? (
           // Placed somewhere the topology never mentions. Real state — hidden by neither the server
           // nor here — but honestly separated from the declared journey, which is the ordered part.
-          <span title="This component is placed here, but no wave of its release topology names this place.">
-            Outside the pipeline definition
+          //
+          // The label must carry the ORDER claim, not just the membership one (owner, 2026-08-14:
+          // "why would we deploy to gamma and prod in parallel?"). Several targets side by side
+          // read as one wave that fans out — which is a real and legitimate thing (us-east-1-prod ∥
+          // us-west-1-prod) — so a row that is NOT a wave has to say it is not: these are places
+          // the component is placed, with no declared ordering among them.
+          <span
+            title="This component is placed here, but no wave of its release topology names these places — so no ORDER among them is declared. Side by side here means 'placed at each', not 'released to all at once'. Attach a release topology to state the journey (e.g. gamma in its own wave, then prod fanning out to every prod region)."
+            data-testid="pipeline-wave-unordered"
+          >
+            Placed, no wave order declared
           </span>
         ) : (
           <>
@@ -2046,8 +2074,8 @@ export function ComponentPipelinePage({
                 )}
               </>
             ) : (
-              <span title="No release topology is attached — releases compile to a single anonymous wave.">
-                no release topology attached — single anonymous wave
+              <span title="No release topology is attached, so no journey is declared: releases compile to a single anonymous wave over every placement at once, and the stages below are shown as placements with no order among them. Attach a topology to state the order — typically gamma in its own wave, then prod fanning out to every prod region in parallel.">
+                no release topology attached — no wave order; releases go to every placement at once
               </span>
             )}
           </span>

@@ -121,6 +121,11 @@ async function main() {
   for (const [slug, name] of [
     ["gamma-cluster", "gamma-cluster (k8s)"],
     ["prod-cluster", "prod-cluster (k8s)"],
+    // Two prod REGIONS: the owner's example (2026-08-14) of what one wave legitimately fans out
+    // to in parallel — "us-east-1-prod & us-west-1-prod in a single wave" — as opposed to gamma,
+    // which is its OWN wave ahead of prod. Both are places checkout-api's prod wave deploys to.
+    ["us-east-1-prod", "us-east-1-prod (k8s)"],
+    ["us-west-1-prod", "us-west-1-prod (k8s)"],
     ["edge-eu", "edge-eu (region)"],
     ["build-host-01", "build-host-01 (host)"]
   ]) {
@@ -202,6 +207,8 @@ async function main() {
   const placements = [
     ["checkout-api", "gamma-cluster"],
     ["checkout-api", "prod-cluster"],
+    ["checkout-api", "us-east-1-prod"],
+    ["checkout-api", "us-west-1-prod"],
     ["checkout-worker", "gamma-cluster"],
     ["payments-gateway-api", "gamma-cluster"],
     ["payments-gateway-api", "prod-cluster"],
@@ -211,6 +218,44 @@ async function main() {
   for (const [c, t] of placements) {
     if (!components[c] || !targets[t]) continue;
     await post("/placements", { component: components[c], deploymentTarget: targets[t] }, `${c}@${t}`);
+  }
+
+  // ------------------------------------------------ release topology (waves, in order)
+  // Owner rule (2026-08-14): "we can deploy to multiple targets (us-east-1-prod & us-west-1-prod)
+  // in a single wave, but ideally gamma is in its own wave." Without a topology the pipeline view
+  // can only show PLACEMENTS — every target under one label, which reads as "deploy everywhere
+  // in parallel" and misled exactly that way. This is the honest journey: wave 1 = gamma alone;
+  // wave 2 = prod, mode parallel, fanning out to prod-cluster + both regions. Attached to
+  // checkout-api via releases_via (the same door component-pipeline.integration.test.ts uses).
+  // Authored HERE, at the commander — a topology is a graph object, so it replicates to outposts
+  // as a read-only replica like any other, which is what makes the outpost render the same
+  // ordered journey for its own targets.
+  if (components["checkout-api"] && targets["gamma-cluster"] && targets["us-east-1-prod"]) {
+    const topo = await put(
+      "objects/release-topology",
+      urn("release-topology", "checkout-gamma-then-prod"),
+      {
+        name: "checkout-gamma-then-prod",
+        properties: {
+          waves: [
+            { name: "gamma", mode: "parallel", targets: [targets["gamma-cluster"]] },
+            {
+              name: "prod",
+              mode: "parallel",
+              targets: [targets["prod-cluster"], targets["us-east-1-prod"], targets["us-west-1-prod"]]
+            }
+          ]
+        }
+      },
+      "release-topology checkout-gamma-then-prod (gamma → prod ∥ us-east-1 ∥ us-west-1)"
+    );
+    if (topo) {
+      await post(
+        "/relationships",
+        { typeId: "releases_via", fromId: components["checkout-api"], toId: topo.id },
+        "checkout-api releases_via checkout-gamma-then-prod"
+      );
+    }
   }
 
   // ------------------------------------------------------------------- health

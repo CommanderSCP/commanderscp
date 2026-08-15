@@ -55,6 +55,7 @@ const {
   StageCardForTest,
   UnplacedStageCardForTest,
   SourceNodeForTest,
+  WaveRowForTest,
   arrowInto,
   buildJourney,
   laneNodes,
@@ -1137,5 +1138,50 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     );
     expect(tiles(html, "pipeline-source-tile-none")).toBe(1);
     expect(html).toContain("No repo is mapped to this component here");
+  });
+});
+
+/**
+ * A WAVE LABEL STATES ITS ORDER CLAIM (owner, 2026-08-14: "why would we deploy to gamma and prod
+ * in parallel?"). Targets side by side are legitimately one wave that fans out (us-east-1-prod ∥
+ * us-west-1-prod) — so a row that is NOT a declared wave must say so, or side-by-side placements
+ * read as "released to all at once". Pinned: a declared wave labels itself "Wave N · name"; the
+ * off-topology row labels itself as unordered placements and never as a wave.
+ */
+describe("a wave label carries the ORDER claim, not just membership", () => {
+  const entry = (name: string, id: string, waveIndex: number | null = null) => ({
+    placed: true as const,
+    order: 0,
+    waveIndex,
+    stage: stage({
+      deploymentTarget: { id, name, environment: null, region: null },
+      placement: { id: `019f0000-0000-7000-8000-${id.slice(-12).padStart(12, "0")}`, urn: `urn:scp:o:placement:${name}` }
+    })
+  });
+
+  it("a declared wave says 'Wave N · name' — one wave, fanning out to its targets", () => {
+    const html = renderWithQueryClient(
+      <WaveRowForTest
+        wave={{ waveIndex: 1, name: "prod", entries: [entry("us-east-1-prod", "0000000000e1", 1), entry("us-west-1-prod", "0000000000e2", 1)] }}
+      />
+    );
+    expect(html).toContain("Wave 2");
+    expect(html).toContain("prod");
+    expect(html).not.toContain("no wave order declared");
+    // Two targets, two tiles, one wave — the sanctioned fan-out.
+    expect((html.match(/data-testid="pipeline-stage"/g) ?? []).length).toBe(2);
+  });
+
+  it("the off-topology row says the placements are UNORDERED — never 'Wave', never 'parallel'", () => {
+    const html = renderWithQueryClient(
+      <WaveRowForTest
+        wave={{ waveIndex: null, name: null, entries: [entry("gamma-cluster", "0000000000a1"), entry("prod-cluster", "0000000000a2")] }}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-wave-unordered"');
+    expect(html).toContain("no wave order declared");
+    expect(html).not.toMatch(/Wave \d/);
+    // The tooltip carries the remedy: attach a topology, gamma in its own wave, then prod fans out.
+    expect(html).toContain("gamma in its own wave");
   });
 });
