@@ -90,11 +90,22 @@ export interface MatchedPolicy {
   condition: string | undefined;
   effects: PolicyEffect[];
   /** How this policy matched (for the reason tree — DESIGN §10.1 "explainability is the return
-   *  value"): which ancestor object's scope declaration matched, and how. */
+   *  value"): which ancestor object's scope declaration matched, and how.
+   *
+   *  `group` and `ownerGroup` are the TWO HALVES of one `scope.group` declaration (DESIGN §10.1's
+   *  "acting **or** owning subject"), and they are labelled apart on purpose:
+   *   - `group` — the ACTING subject is transitively `member_of` the scoped group. Anchors at the
+   *     org root (depth 0); depends on WHO pushed the button.
+   *   - `ownerGroup` — an OWNING subject of the matched object (the group itself, or anything
+   *     transitively `member_of` it, holding an `owns` edge) is in the scoped group. Anchors at the
+   *     owned object's real depth; independent of who is acting. Added 2026-08-15 (ADR-0016 §2a) —
+   *     shipping only the `group` half was a fail-open for every CONSTRAINT effect.
+   *  Collapsing both onto `group` would make the label name a branch that covers two different
+   *  facts, which is how a provenance label goes quietly false. */
   matchedAt: {
     objectId: string;
     depth: number;
-    via: "objectRef" | "selector" | "group" | "unscoped";
+    via: "objectRef" | "selector" | "group" | "ownerGroup" | "unscoped";
   };
   emergencyPolicy: boolean;
   /** DESIGN §9.4: "Triggers: automatic (gate/control failure policy...) or manual" — when true,

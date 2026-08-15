@@ -49,6 +49,18 @@ import type { FiredPolicy } from "./evaluate.js";
  * org-and-below (charter principle 2 — new concepts arrive as policy data). Only the two above-org
  * tiers are new structure, and they share ONE table.
  *
+ * THE MATCHER THAT REUSE DEPENDS ON WAS FAIL-OPEN UNTIL 2026-08-15 (ADR-0016 §2a). `scope.group`
+ * implemented only DESIGN §10.1's ACTING-subject half, so a group-scoped scan CEILING contributed
+ * to the MIN below ONLY when the acting subject happened to be a member of that group. Since an
+ * absent contributor cannot tighten anything (see ABSENT NEVER MEANS ZERO), the effective threshold
+ * came out LOOSER than the operator authored — silently, for every non-member, and ALWAYS at the
+ * wave boundary, where the actor is `SYSTEM_ACTOR_ID` and is `member_of` nothing. This module was
+ * the live exposure of that defect, not its cause: nothing here needed to change. The matcher now
+ * also matches on the OWNING subject (`via: "ownerGroup"`), which is strictly additive, so this
+ * merge can only ever gain a contributor — never lose one. Note the knock-on for the tier LABEL
+ * below: an ownership match anchors at the OWNED object rather than the org root, so a
+ * service-owned ceiling is finally reported at the `service` tier instead of `org`.
+ *
  * ABSENT NEVER MEANS ZERO. A tier that sets no ceiling for a severity contributes NOTHING for that
  * severity. Reading "no floor" as 0 would make it the TIGHTEST possible ceiling and would block
  * everything — the exact inversion of the intended semantics.
@@ -106,6 +118,14 @@ const SEVERITY_KEYS = ["maxCritical", "maxHigh", "maxMedium", "maxLow"] as const
  * ceiling) — never for precedence, because there is no precedence in a MIN. An object type outside
  * the four org-and-below tiers is reported at the `component` (deepest) label with its real
  * `objectTypeId` carried alongside, so the mapping stays auditable instead of silently lying.
+ *
+ * THIS IS ONLY AS HONEST AS THE ANCHOR IT IS GIVEN. It reads `match.matchedAt.objectId`'s type, so a
+ * scope kind with no anchor of its own reports the tier of wherever it was parked. `scope.group`'s
+ * ACTING half parks at the org root (`typeId: "organization"`), so it is reported as `org` — which
+ * is the truthful answer for a ceiling that genuinely applies org-wide whenever a member acts. Its
+ * OWNING half (ADR-0016 §2a) anchors at the actually-owned object, so it reports that object's real
+ * tier. Before the owning half existed, EVERY group-scoped ceiling read `org` regardless of what it
+ * governed, quietly breaking ADR-0016 §5's promise that a block can show which tier set the floor.
  */
 function tierForObjectType(objectTypeId: string): ScanRequirementTier {
   switch (objectTypeId) {
