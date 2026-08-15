@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   ComponentPipelineResponse,
   ComponentPipelineStage,
@@ -43,8 +44,22 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
   Link: ({ children }: { children?: React.ReactNode }) => <a>{children}</a>
 }));
 
-const { StageCardForTest, UnplacedStageCardForTest, arrowInto, buildJourney, laneNodes, LANES } =
-  await import("./component-pipeline");
+/** SourceNode's mapping rows mount a delete mutation, so a QueryClient must be in scope even for a
+ *  static render — same helper the writes test uses. */
+function renderWithQueryClient(node: React.JSX.Element): string {
+  const queryClient = new QueryClient();
+  return renderToStaticMarkup(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>);
+}
+
+const {
+  StageCardForTest,
+  UnplacedStageCardForTest,
+  SourceNodeForTest,
+  arrowInto,
+  buildJourney,
+  laneNodes,
+  LANES
+} = await import("./component-pipeline");
 
 const SOFTWARE_LANE = LANES.find((l) => l.key === "software")!;
 
@@ -1049,5 +1064,78 @@ describe("a HELD stage is not a `pending` one", () => {
     const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
     expect(html).not.toContain('data-testid="stage-hold"');
     expect(html).toContain("never deployed");
+  });
+});
+
+/**
+ * ONE TILE PER SOURCE (owner rule, 2026-08-14: "each source and target must be in its own tile —
+ * commander and outposts alike; the only thing that ever shares a tile is a test with its target").
+ * The target side already obeyed it (one StageCard per target under a wave label). This pins the
+ * source side: N inputs → N tiles, side by side, and never two repos inside one tile. The
+ * commander-as-opaque-input is itself a tile when present.
+ */
+describe("the SOURCE side is a row of tiles — one per input", () => {
+  const SELF = { domainId: "d-self", name: "field-outpost", isSelf: true, role: "outpost" };
+  const COMMANDER = { domainId: "d-cmd", name: "hq-commander", isSelf: false, role: "commander" };
+  const src = (over: Partial<ComponentPipelineResponse["sources"][number]>) => ({
+    id: `019f0000-0000-7000-8000-${String(Math.random()).slice(2, 14).padEnd(12, "0")}`,
+    sourceKind: "gitea",
+    repoPattern: "field/repo",
+    pathPattern: null,
+    refPattern: "main",
+    type: "infrastructure",
+    category: "infrastructure" as const,
+    classification: null,
+    mirrorOfShared: false,
+    url: null,
+    ...over
+  });
+  const tiles = (html: string, testid: string) => (html.match(new RegExp(`data-testid="${testid}"`, "g")) ?? []).length;
+
+  it("three inputs (commander + mirror + domain-specific) render as THREE tiles, each its own card", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          src({ repoPattern: "field/mirror-of-shared-asg-iac", mirrorOfShared: true }),
+          src({ repoPattern: "field/checkout-network-cidr" })
+        ]}
+        upstream={COMMANDER}
+        domainLocal={false}
+      />
+    );
+    expect(tiles(html, "pipeline-source-commander-input")).toBe(1);
+    expect(tiles(html, "pipeline-source-tile-mirror")).toBe(1);
+    expect(tiles(html, "pipeline-source-tile-domain-specific")).toBe(1);
+    // Every mapping row lives in exactly one tile — the count of rows equals the count of repo tiles.
+    expect(tiles(html, "pipeline-source-mapping")).toBe(2);
+    // The commander tile shows NO repo — this domain does not know it (§9.3a).
+    const cmdTile = html.slice(html.indexOf('data-testid="pipeline-source-commander-input"'));
+    expect(cmdTile.slice(0, cmdTile.indexOf("</div></div>"))).not.toContain("field/");
+    expect(html).toContain("repos not visible in this domain");
+  });
+
+  it("N domain repos on a self-maintained component render as N unlabelled tiles (the commander's own site)", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[src({ repoPattern: "acme/asg" }), src({ repoPattern: "acme/network" }), src({ repoPattern: "acme/ebs" })]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    expect(tiles(html, "pipeline-source-tile")).toBe(3);
+    expect(tiles(html, "pipeline-source-commander-input")).toBe(0);
+    // No provenance eyebrows where they'd be noise: on its own site these are simply its repos.
+    expect(html).not.toContain("Mirror of global");
+    expect(html).not.toContain("Domain-specific — tracked only here");
+  });
+
+  it("zero inputs render ONE honest empty tile, not zero tiles", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest label="Source code" sources={[]} upstream={SELF} domainLocal={false} />
+    );
+    expect(tiles(html, "pipeline-source-tile-none")).toBe(1);
+    expect(html).toContain("No repo is mapped to this component here");
   });
 });

@@ -307,6 +307,28 @@ export function UnplacedStageCardForTest({
   return <UnplacedStageCard stage={stage} componentId={componentId} pipelineKey={pipelineKey} />;
 }
 
+/** Exported for `component-pipeline-continuous.test.tsx` — the ONE-TILE-PER-SOURCE rule (owner,
+ *  2026-08-14) is a contract: N inputs render as N tiles side by side, never as one list. */
+export function SourceNodeForTest(props: {
+  label: string;
+  sources: ComponentPipelineResponse["sources"];
+  componentId?: string;
+  pipelineKey?: unknown[];
+  upstream: ComponentPipelineResponse["component"]["maintainedBy"];
+  domainLocal: boolean;
+}): React.JSX.Element {
+  return (
+    <SourceNode
+      label={props.label}
+      sources={props.sources}
+      componentId={props.componentId ?? "component"}
+      pipelineKey={props.pipelineKey ?? ["pipeline"]}
+      upstream={props.upstream}
+      domainLocal={props.domainLocal}
+    />
+  );
+}
+
 /** THE STAGE'S CURRENT STATE AT A GLANCE — the deployment outcome as a pill beside its name.
  *
  *  Deliberately says "never deployed" rather than rendering nothing: an empty header would read as
@@ -1468,179 +1490,216 @@ function SourceNode({
   // domain-local component cannot have a commander input by construction (it never journaled),
   // so the data and the rule agree; the UI states the shape rather than deciding it.
   const hasCommanderInput = !upstream.isSelf && upstream.domainId !== null && !domainLocal;
+  // ONE TILE PER SOURCE (owner rule, 2026-08-14: "each source and target must be in its own tile
+  // — commander and outposts alike"). This mirrors what the wave side already does — one
+  // StageCard per target, side by side under a wave label — so a lane reads as a chain of tiles
+  // at BOTH ends: N source tiles → build → registry → M target tiles per wave. Grouped by declared
+  // provenance (mirror-of-shared before domain-specific), each tile carrying its own provenance
+  // eyebrow, so three kinds of input read as three tiles rather than one list.
+  const mirrors = sources.filter((s) => s.mirrorOfShared);
+  const domainSpecific = sources.filter((s) => !s.mirrorOfShared);
+  const showProvenance = hasCommanderInput || domainLocal;
+  const tileCount = (hasCommanderInput ? 1 : 0) + sources.length;
+
   return (
-    <NodeShell
-      kind={label === "Config" ? "config" : "source"}
-      title={label}
-      hint={
-        label === "Config"
-          ? "a commit here bumps the deployed configuration"
-          : "a push matching one of these rules starts a release"
-      }
-      testid="pipeline-node-source"
-      muted={sources.length === 0}
-    >
-      {hasCommanderInput && (
-        // The commander as an OPAQUE input: named from maintainedBy (name null = origin matches
-        // no known peer; say the id rather than guess). Deliberately NO repo, host, path or ref —
-        // this domain does not know them, and showing anything here would be an invention.
-        // Rendered as the FIRST of up to three provenance GROUPS (global / mirror / domain-
-        // specific), each with its own eyebrow and separated by hairline rules — three kinds of
-        // input must read as three kinds at a glance, not as one stacked block (owner review,
-        // 2026-08-14: "only seeing a single input").
-        <div
-          className="mb-2 border-b border-slate-100 pb-2"
-          data-testid="pipeline-source-commander-input"
-          title={`Shared inputs to this pipeline — the repos that are the same in every domain — are authored and tracked at ${upstream.name ?? upstream.domainId}. This domain does not see them; it only knows their source is the commander. The repos listed below are this domain's own inputs to the same pipeline.`}
-        >
-          <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
-            Global — source: the commander
-          </p>
-          <div className="flex items-center gap-1.5 text-slate-700">
-            {upstream.role === "commander" ? (
-              <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-            ) : (
-              <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-            )}
-            <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
-            <span className="text-slate-500">— repos not visible in this domain</span>
-          </div>
+    <div className="w-full" data-testid="pipeline-node-source">
+      <SectionLabel className="mb-1 text-center">
+        {label}
+        <span className="ml-1 font-normal normal-case tracking-normal text-slate-400">
+          {label === "Config"
+            ? "— a commit here bumps the deployed configuration"
+            : "— a push matching one of these rules starts a release"}
+        </span>
+      </SectionLabel>
+      {tileCount === 0 && !domainLocal ? (
+        // The source-side twin of an unplaced stage: no push to any repo can start this pipeline,
+        // so it only ever runs if someone raises a change by hand.
+        <Card className="w-full border-dashed bg-slate-50/60 shadow-none" data-testid="pipeline-source-tile-none">
+          <CardContent className="py-3 text-xs text-slate-400" data-testid="pipeline-no-sources">
+            No repo is mapped to this component here, so no push can trigger this pipeline.
+          </CardContent>
+        </Card>
+      ) : (
+        <div className="flex flex-wrap items-stretch justify-center gap-2">
+          {hasCommanderInput && (
+            // THE COMMANDER AS AN OPAQUE INPUT — its own tile, named from maintainedBy (name null
+            // = origin matches no known peer; say the id rather than guess). Deliberately NO repo,
+            // host, path or ref: this domain does not know them, and a tile that showed any would
+            // be an invention.
+            <Card
+              className="min-w-[14rem] flex-1 basis-[14rem]"
+              data-testid="pipeline-source-commander-input"
+              title={`Shared inputs to this pipeline — the repos that are the same in every domain — are authored and tracked at ${upstream.name ?? upstream.domainId}. This domain does not see them; it only knows their source is the commander.`}
+            >
+              <CardHeader className="pb-1">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                  Global — source: the commander
+                </p>
+                <div className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
+                  {upstream.role === "commander" ? (
+                    <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                  ) : (
+                    <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                  )}
+                  {upstream.name ?? upstream.domainId}
+                </div>
+              </CardHeader>
+              <CardContent className="pt-0 text-xs text-slate-500">
+                repos not visible in this domain
+              </CardContent>
+            </Card>
+          )}
+          {[...mirrors, ...domainSpecific].map((source) => (
+            <SourceTile
+              key={source.id}
+              source={source}
+              provenance={
+                !showProvenance ? null : source.mirrorOfShared ? "mirror" : domainLocal ? "local" : "domain"
+              }
+              componentId={componentId}
+              pipelineKey={pipelineKey}
+            />
+          ))}
         </div>
       )}
       {domainLocal && (
         // Domain-local component (ADR-0031, valid but rare): no commander input at all — its
         // repos are the whole source. Stated, so an operator comparing two pipelines sees WHY one
-        // has a commander input and the other does not.
-        <p className="mb-1.5 text-xs text-slate-500" data-testid="pipeline-source-no-upstream">
+        // has a commander tile and the other does not.
+        <p className="mt-1 text-center text-xs text-slate-500" data-testid="pipeline-source-no-upstream">
           Domain-local — this repo is the source of truth; nothing upstream of it.
         </p>
       )}
-      {sources.length === 0 ? (
-        // The source-side twin of an unplaced stage: no push to any repo can start this pipeline,
-        // so it only ever runs if someone raises a change by hand.
-        <p className="text-slate-400" data-testid="pipeline-no-sources">
-          No repo is mapped to this component here, so no push can trigger this pipeline.
-        </p>
-      ) : (
-        <>
-          {(() => {
-            // §9.3a — group by DECLARED provenance. Mirrors of a commander-shared source first
-            // (they exist only where the domain holds a copy; the commander is their source of
-            // truth), then this domain's own repos. Both groups feed the ONE pipeline. When the
-            // component has a commander input, the domain-specific group is labelled to say so;
-            // on the commander's own site (isSelf) the same rows are simply "its" repos and get
-            // no provenance headings at all — there, that distinction is not the operator's
-            // question.
-            const mirrors = sources.filter((s) => s.mirrorOfShared);
-            const domainSpecific = sources.filter((s) => !s.mirrorOfShared);
-            const renderRow = (source: (typeof sources)[number]) => (
-                  <div key={source.id} data-testid="pipeline-source-mapping">
-                    <span className="text-slate-400">{source.sourceKind}</span>{" "}
-                    <ConsoleLink href={source.url} testid="pipeline-source-link">
-                      <span className="font-mono">{source.repoPattern ?? "(any repo)"}</span>
-                    </ConsoleLink>{" "}
-                    {source.pathPattern ? (
-                      <span className="font-mono text-slate-500">{source.pathPattern}</span>
-                    ) : (
-                      // A null path matches EVERY file in the repo — a far broader rule than a blank cell
-                      // suggests, and on the live estate a real one worth noticing.
-                      <span
-                        className="text-amber-700"
-                        title="This mapping has no path filter, so any commit anywhere in the repo releases this component."
-                        data-testid="pipeline-source-whole-repo"
-                      >
-                        whole repo
-                      </span>
-                    )}{" "}
-                    {source.refPattern ? (
-                      <span className="font-mono text-slate-500">{source.refPattern}</span>
-                    ) : (
-                      // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
-                      // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
-                      // `main` to different pipelines from looking identical here (ADR-0030 §1 — the
-                      // dev-branch-pipelines ADR, not this branch's ADR-0032).
-                      <span
-                        className="text-amber-700"
-                        title="This mapping has no ref filter, so a push to any branch releases this component."
-                        data-testid="pipeline-source-any-branch"
-                      >
-                        any branch
-                      </span>
-                    )}{" "}
-                    {source.classification && (
-                      // Declared by the operator, never inferred from the branch name — and inert for
-                      // enforcement (ADR-0030 §3), so this is a label and nothing more.
-                      <span
-                        className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
-                        title="Operator-declared pipeline classification. UI/reporting only — it grants no scan exemption."
-                        data-testid="pipeline-source-classification"
-                      >
-                        {source.classification}
-                      </span>
-                    )}{" "}
-                    {/* §1.6: the forward glyph is ArrowRight — the rendered `→` literal stays dead. */}
-                    <span className="inline-flex items-center gap-1 text-slate-400">
-                      <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                      {source.type}
-                    </span>
-                    {/* A1: no edit exists on this table, so the row's only write is delete (see the
-                        confirm's own copy for why it is never a bare click). */}
-                    <DeleteMappingButton source={source} componentId={componentId} pipelineKey={pipelineKey} />
-                  </div>
-            );
-            if (!hasCommanderInput && !domainLocal) return sources.map(renderRow);
-            return (
-              <>
-                {mirrors.length > 0 && (
-                  <div
-                    className={domainSpecific.length > 0 ? "mb-2 border-b border-slate-100 pb-2" : "mb-1"}
-                    data-testid="pipeline-source-group-mirrors"
-                  >
-                    <p
-                      className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-400"
-                      title="These repos are local COPIES of sources the commander owns — declared by the operator at create, never inferred from the repo host. Their source of truth is the commander."
-                    >
-                      Mirror of global — held in this domain
-                    </p>
-                    {mirrors.map(renderRow)}
-                  </div>
-                )}
-                {domainSpecific.length > 0 && (
-                  <div data-testid="pipeline-source-group-domain-specific">
-                    <p
-                      className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-400"
-                      data-testid="pipeline-source-domain-specific-heading"
-                      title="Repos tracked only by this domain's outpost — network configuration, CIDR bands, anything that stays in-domain for classification. Their source of truth is here."
-                    >
-                      Domain-specific — tracked only in this domain
-                    </p>
-                    {domainSpecific.map(renderRow)}
-                  </div>
-                )}
-              </>
-            );
-          })()}
-        </>
+      <div className="mt-2 flex justify-center">
+        {adding ? (
+          <SourceMappingForm
+            componentId={componentId}
+            pipelineKey={pipelineKey}
+            onDone={() => setAdding(false)}
+          />
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            icon={Plus}
+            onClick={() => setAdding(true)}
+            data-testid="add-source-mapping-button"
+          >
+            Add source mapping
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * ONE SOURCE TILE — one repo rule, its own card, sitting beside its siblings in the source row.
+ * `provenance` is the declared kind (outpost-ui.md §9.3a): "mirror" = a local copy of a commander-
+ * shared repo; "domain" = domain-specific, tracked only here; "local" = a repo of a domain-local
+ * component (nothing upstream); null = don't label (the commander's own site, where these are
+ * simply its repos). The row body below is the pre-existing per-mapping rendering, unchanged —
+ * every testid it carried still carries.
+ */
+function SourceTile({
+  source,
+  provenance,
+  componentId,
+  pipelineKey
+}: {
+  source: ComponentPipelineResponse["sources"][number];
+  provenance: "mirror" | "domain" | "local" | null;
+  componentId: string;
+  pipelineKey: unknown[];
+}): React.JSX.Element {
+  const eyebrow =
+    provenance === "mirror"
+      ? { text: "Mirror of global — held in this domain", title: "A local COPY of a source the commander owns — declared by the operator at create, never inferred from the repo host. Its source of truth is the commander." }
+      : provenance === "domain"
+        ? { text: "Domain-specific — tracked only here", title: "Tracked only by this domain's outpost — network configuration, CIDR bands, anything that stays in-domain for classification. Its source of truth is here." }
+        : provenance === "local"
+          ? { text: "Domain-local", title: "A domain-local component's repo (ADR-0031): the whole source of truth, nothing upstream." }
+          : null;
+  const testid =
+    provenance === "mirror"
+      ? "pipeline-source-tile-mirror"
+      : provenance === "domain" || provenance === "local"
+        ? "pipeline-source-tile-domain-specific"
+        : "pipeline-source-tile";
+  return (
+    <Card className="min-w-[14rem] flex-1 basis-[14rem]" data-testid={testid}>
+      {eyebrow && (
+        <CardHeader className="pb-1">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400" title={eyebrow.title}>
+            {eyebrow.text}
+          </p>
+        </CardHeader>
       )}
-      {adding ? (
-        <SourceMappingForm
-          componentId={componentId}
-          pipelineKey={pipelineKey}
-          onDone={() => setAdding(false)}
-        />
-      ) : (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          icon={Plus}
-          onClick={() => setAdding(true)}
-          data-testid="add-source-mapping-button"
-        >
-          Add source mapping
-        </Button>
-      )}
-    </NodeShell>
+      <CardContent className={`text-xs text-slate-600 ${eyebrow ? "pt-0" : "pt-4"}`}>
+        {(() => {
+          const sources = [source];
+          void sources;
+          const renderRow = (source: ComponentPipelineResponse["sources"][number]) => (
+
+          <div key={source.id} data-testid="pipeline-source-mapping">
+            <span className="text-slate-400">{source.sourceKind}</span>{" "}
+            <ConsoleLink href={source.url} testid="pipeline-source-link">
+              <span className="font-mono">{source.repoPattern ?? "(any repo)"}</span>
+            </ConsoleLink>{" "}
+            {source.pathPattern ? (
+              <span className="font-mono text-slate-500">{source.pathPattern}</span>
+            ) : (
+              // A null path matches EVERY file in the repo — a far broader rule than a blank cell
+              // suggests, and on the live estate a real one worth noticing.
+              <span
+                className="text-amber-700"
+                title="This mapping has no path filter, so any commit anywhere in the repo releases this component."
+                data-testid="pipeline-source-whole-repo"
+              >
+                whole repo
+              </span>
+            )}{" "}
+            {source.refPattern ? (
+              <span className="font-mono text-slate-500">{source.refPattern}</span>
+            ) : (
+              // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
+              // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
+              // `main` to different pipelines from looking identical here (ADR-0030 §1 — the
+              // dev-branch-pipelines ADR, not this branch's ADR-0032).
+              <span
+                className="text-amber-700"
+                title="This mapping has no ref filter, so a push to any branch releases this component."
+                data-testid="pipeline-source-any-branch"
+              >
+                any branch
+              </span>
+            )}{" "}
+            {source.classification && (
+              // Declared by the operator, never inferred from the branch name — and inert for
+              // enforcement (ADR-0030 §3), so this is a label and nothing more.
+              <span
+                className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
+                title="Operator-declared pipeline classification. UI/reporting only — it grants no scan exemption."
+                data-testid="pipeline-source-classification"
+              >
+                {source.classification}
+              </span>
+            )}{" "}
+            {/* §1.6: the forward glyph is ArrowRight — the rendered `→` literal stays dead. */}
+            <span className="inline-flex items-center gap-1 text-slate-400">
+              <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
+              {source.type}
+            </span>
+            {/* A1: no edit exists on this table, so the row's only write is delete (see the
+                confirm's own copy for why it is never a bare click). */}
+            <DeleteMappingButton source={source} componentId={componentId} pipelineKey={pipelineKey} />
+          </div>
+          );
+          return renderRow(source);
+        })()}
+      </CardContent>
+    </Card>
   );
 }
 
