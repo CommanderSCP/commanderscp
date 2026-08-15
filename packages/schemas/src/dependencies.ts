@@ -571,8 +571,18 @@ export type DependencySubscriptionResolutionResponse = z.infer<
 export const ObserveDependencyLineHeadInputSchema = z.object({
   lineId: z.string().uuid(),
   latestVersion: z.string().min(1).max(256),
-  /** `oci` — the digest the observed tag resolved to. Required in spirit for images (a tag is not an
-   *  identity); `null` for the language ecosystems, which have no digest. */
-  latestDigest: z.string().max(256).nullable().optional()
+  /**
+   * The digest OF `latestVersion`, resolved in the SAME observation — `null` when it could not be
+   * (a language ecosystem has none, an operator-loaded air-gap feed carries none, a registry
+   * inspect can fail).
+   *
+   * REQUIRED, NOT OPTIONAL, and that is a defect fix rather than a style preference. While this key
+   * was optional a writer could move `latestVersion` and simply omit the digest, leaving the
+   * PREVIOUS version's digest standing beside the new tag — a (tag, digest) pair that never existed
+   * in any registry, in a column pair whose entire purpose is that "a mutable tag is not an
+   * identity" (ADR-0032 §7). The omission is now unrepresentable: the pair moves together or not at
+   * all. The whole meaning of the trio lives in `apps/server/src/dependencies/line-head.ts`.
+   */
+  latestDigest: z.string().max(256).nullable()
 });
 export type ObserveDependencyLineHeadInput = z.infer<typeof ObserveDependencyLineHeadInputSchema>;

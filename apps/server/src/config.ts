@@ -55,6 +55,24 @@ export interface ServerConfig {
    */
   federationRole: "commander" | "outpost" | "retrans";
   /**
+   * DID THE OPERATOR ACTUALLY SAY SO? True only when `SCP_FEDERATION_ROLE` was set; false when
+   * `federationRole` above is the `commander` DEFAULT (M21.4).
+   *
+   * The two are not the same fact, and one consumer needs the difference. `federationRole` defaults
+   * to `commander` so that every pre-M16.3 deployment keeps serving the SPA byte-for-byte — that
+   * default is right for a question about what to SERVE, because serving is what those deployments
+   * already did. It is the wrong default for a question about what to REACH: an outpost deployed
+   * before this env var existed, or a chart that simply does not set it, is indistinguishable from a
+   * declared commander, so a guard that only tests `federationRole === "commander"` is FAIL-OPEN for
+   * exactly the deployments most likely to be air-gapped.
+   *
+   * Consumers therefore pick per question: "may I serve the SPA?" reads `federationRole`, and "may I
+   * dial the public internet on a timer?" additionally requires this to be true (see
+   * `dependencies/version-poll.ts`'s `dependencyVersionPollRoleGuard`). Nothing about the pre-M16.3
+   * serve behaviour changes — this field ADDS a distinction rather than moving the default.
+   */
+  federationRoleDeclared: boolean;
+  /**
    * M17.5 (ADR-0016) — the INSTANCE OPERATOR's shared secret (`SCP_OPERATOR_TOKEN`). Authenticates
    * the one write surface that is deliberately NOT a tenant capability: authoring the
    * instance-scoped scan-requirement floors (`scan_requirement_floors` — platform + trust domain),
@@ -363,6 +381,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
       env.SCP_PGBOSS_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl, "scp_pgboss"),
     role: (env.SCP_ROLE as ServerConfig["role"] | undefined) ?? "all",
     federationRole: loadFederationRole(env),
+    // Whether the operator SET it, kept beside the value it resolved to — see the field's doc.
+    federationRoleDeclared: (env.SCP_FEDERATION_ROLE ?? "").trim() !== "",
     bootstrapOrgName: env.SCP_BOOTSTRAP_ORG ?? "default",
     bootstrapAdminUsername: env.SCP_BOOTSTRAP_ADMIN_USERNAME ?? "admin",
     cookieSecret: env.SCP_COOKIE_SECRET ?? randomSecret(),

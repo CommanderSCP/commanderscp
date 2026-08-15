@@ -131,29 +131,47 @@ an opted-out dependency is never polled.
 An instance-level unlock that silently activated authoring on any component would violate ADR-0006's
 "managed execution is never a default"; the AND makes that structurally impossible.
 
-### 6a. A GROUP-SCOPED OPT-OUT IS REFUSED AT AUTHORING TIME (2026-08-13, M21.3)
+### 6a. A GROUP-SCOPED `dependencySubscription` EFFECT IS REFUSED AT AUTHORING TIME (2026-08-13, M21.3; **widened to BOTH directions 2026-08-15, M21.4**)
 
 `matchPoliciesForTargets` returns a `scope.group` policy **only when the acting subject is a
 transitive `member_of` that group** (`governance/policy-resolve.ts:186-193`). That is right for "this
 rule governs work done BY this group" and wrong for a constraint, because a constraint that fails to
 match is a constraint that does not apply.
 
-The two directions of this feature's effect are **not symmetric**, and that asymmetry is the whole
-argument:
+The two directions of this feature's effect fail **differently**, and both failures are silent:
 
-- a group-scoped **enable** that fails to match yields NOT-enabled — the safe direction, and already
-  what §6's "absent never means enabled" guarantees. Nothing is lost, so it stays permitted.
 - a group-scoped **opt-out** that fails to match yields STILL-ENABLED. SCP then authors a bump for a
   dependency a team explicitly opted out of — which is precisely the case the opt-out exists to serve
   (proposal §1: "one or more dependencies are causing issues when upgraded and so they want to handle
   that manually"). It fails silently in both halves: fewer rows from the matcher, fewer contributions
   in the merge, and `enabled: true` is an ordinary-looking answer. An operator would learn about it
   from a pull request they explicitly asked never to receive.
+- a group-scoped **enable** that fails to match yields NOT-enabled. M21.3 read that as the safe
+  direction and permitted it — *"nothing is lost"*. **That reasoning was incomplete, and M21.4 is
+  where the missing half became measurable.** The jobs that ACT on a subscription resolve as
+  `SYSTEM_ACTOR_ID`, which by its own definition has **no `objects` row at all**
+  (`coordination/system-actor.ts:9`) and is therefore a transitive `member_of` nothing — so
+  `matchPoliciesForTargets` can never return a `scope.group` policy for them, and a group-scoped
+  enable is **permanently inert** on every path that fetches or bumps anything
+  (`dependencies/internal-release-detection.ts`'s subscriber gate and the third-party poll's
+  work-list both call `listSubscribedComponentLines` with that actor). Meanwhile the SAME policy
+  resolves `enabled: true` for a human team member who asks, because they *are* in the group. The
+  team sees a working subscription in the API and receives nothing, forever, with no error anywhere.
+  "Nothing is lost" is true of the enablement algebra and false of the feature: **a subscription that
+  silently never fires is its own footgun**, the mirror image of an opt-out that silently never
+  applies.
 
-**Decision: authoring a `dependencySubscription` opt-out at `group` scope is refused with a 400** that
-names `objectRef`/`selector` as the remedy. A silent fail-open at evaluation time becomes a loud
-refusal at authoring time — the same move `0061`'s declared-producer CHECK makes: render the unusable
-state unrepresentable rather than merely guarded.
+**Decision: authoring a `dependencySubscription` effect at `group` scope is refused with a 400 in
+BOTH directions**, with a message naming the direction's own failure and `objectRef`/`selector` as
+the remedy. A silent fail-open (opt-out) and a silent no-op (enable) at evaluation time both become a
+loud refusal at authoring time — the same move `0061`'s declared-producer CHECK makes: render the
+unusable state unrepresentable rather than merely guarded.
+
+**This can be relaxed for the enable direction** if a future design resolves a subscription **per
+owner** — evaluating each subscribing component's own team membership rather than the acting
+subject's — at which point a group-scoped enable becomes meaningful and only the opt-out's fail-open
+remains. Nothing in the tree does that today, and the relaxation must not be made by re-permitting the
+enable while the actor is still the system sentinel.
 
 **Why not fix the matcher instead.** The identical exposure exists for `scanThreshold` (ADR-0016,
 shipped): a group-scoped scan **ceiling** silently does not contribute for a non-member, leaving the
@@ -162,9 +180,10 @@ alter that shipped gate's behaviour as a side effect of a dependency feature —
 governance change gets made without anyone deciding to make one. This clause guards **this feature's
 use** of the matcher; the matcher itself is tracked separately, for both consumers at once.
 
-**Cost, accepted:** a team wanting a group-wide opt-out must express it as an `objectRef`/`selector`
-scope rather than a group. That is a real ergonomic loss and it is the correct trade, because the
-alternative is an opt-out that appears to work.
+**Cost, accepted:** a team wanting a group-wide subscription — in either direction — must express it
+as an `objectRef`/`selector` scope rather than a group. That is a real ergonomic loss, doubled by the
+widening, and it is the correct trade: the alternative is an opt-out that appears to work and an
+enable that appears to work.
 
 #### 6a-i. Amended during the M21.3 review round — WHERE the refusal lives, and HOW WIDE it is
 
@@ -206,7 +225,9 @@ objects that do not exist yet.
 
 ### 7. Detection has two ingresses and an air-gap shape
 
-- **Internal** — derived, because no event carries it: `scp.change.transitioned(toState=accepted)` → the
+- **Internal** — derived, because no event carries it, and driven by a ROUTER on the domain-event
+  queue rather than by a second worker on it (§7c clause 2, normative):
+  `scp.change.transitioned(toState=accepted)` → the
   change's wave targets → `deployment-target.properties.environment === 'prod'` → the component placed
   there → the lines it **declares** it publishes. Rollback changes auto-accept and are **not** releases.
   Domain-local changes do not journal (ADR-0031), so domain-local internal dependencies are
@@ -214,7 +235,10 @@ objects that do not exist yet.
 - **Third-party** — a daily self-rescheduling tick (there is no `boss.schedule` usage to copy) resolving
   versions through per-ecosystem **index plugins**, so the existing egress guard and host allowlist
   apply. The job is **explicitly role-guarded**: there is no trustworthy runtime commander/outpost
-  predicate, so an unguarded background job runs on air-gapped outposts too.
+  predicate, so an unguarded background job runs on air-gapped outposts too. That guard is
+  **fail-closed on an UNDECLARED deployment** — see §7c clause 3, which is normative. **The two
+  ingresses own disjoint sets of lines and the poll polls THIRD-PARTY LINES ONLY** — see §7b clause
+  1, which is normative.
 - **Air-gap** — the Trivy-DB shape (the only shipped external-feed pattern): an operator-loaded,
   cosign-signed feed with a fail-closed staleness policy. Where neither an index nor a feed exists,
   third-party detection reports **unavailable** rather than degrading silently.
@@ -225,6 +249,188 @@ objects that do not exist yet.
 
 Per-tick verdicts use `insertDecisionIfChanged`; a daily poll re-writing a byte-identical "no new
 version" Decision per dependency would reproduce the measured 1.44 GB/day amplification exactly.
+
+### 7b. WHAT `latest_version`/`latest_digest` MEAN, and WHO MAY WRITE THEM (2026-08-15, M21.4)
+
+§7 gives detection two ingresses and §7a says what version an internal release published. Neither says
+what the **column pair** those ingresses write means — and built without that, the two writers meant
+different things by it. Every clause below is a defect found by an adversarial review of the M21.4
+build, stated here normatively because "both writers should agree" is not enforceable by a type: both
+write a `string` into a `text` column.
+
+The meaning, in one sentence each. **`latest_version` is the HEAD of the line: the greatest version ON
+this line this domain has observed.** **`latest_digest` is the digest OF that version, observed in the
+same act.** NULL in either is "not observed", never "nothing newer exists" (§7's schema note).
+
+1. **THE INGRESS SPLIT IS STRUCTURAL, NOT A FILTER.** An **internal** line (`produced_by_object_id`
+   set) has its head DERIVED from the org's own accepted production releases and is **never** asked of
+   an index; a **third-party** line is polled and is never written by internal detection, because
+   nothing declares the org its producer. Polling an internal line is **dependency-confusion shaped**:
+   a stranger's package sharing the coordinate answers `9.9.9`, that overwrites the head the org's own
+   `2.1.0` release put there, and every subscriber is bumped onto it — delivered by a background job on
+   a daily timer, with no error anywhere. The split must therefore be **unrepresentable rather than
+   remembered**: the poll's hydration narrows in SQL *and* the index seam accepts only a value whose
+   sole constructor reads `produced_by_object_id`. A predicate the poll happens to apply is exactly the
+   shape this repo's incomplete-call-site-census failures take.
+
+2. **`tag_pattern` HAS ONE MEANING: the line's LITERAL VARIANT SUFFIX** (`-alpine`, `-slim`; absent =
+   the plain flavour). It is not a glob and it is not "the extractor's pattern" read differently by
+   different callers. One shared helper answers "is this version on this line?" — same major line at
+   the line's own precision, same variant — and **both** writers call it. The defect this fixes: an
+   `-alpine` line took a plain glibc tag as its head, because internal detection did not read the
+   column at all while the poll did. An operator who writes something that is not a literal suffix gets
+   NO eligible versions and a legible refusal, never a pattern quietly matching the wrong flavour.
+
+3. **A HEAD NEVER MOVES BACKWARDS.** A hotfix on an older minor of the same line (`1.9.10` after
+   `1.10.0`) is a genuine production release and is **not** that line's head: it is **refused with a
+   named reason and recorded in the Decision**, which is where "this release happened, at this version,
+   and the head did not move" belongs. The column holds the head; the Decision holds the history.
+   Ordering is the shared comparator and never string order. One bounded exception, stated rather than
+   discovered: a **stored value that is not on the line as it is defined now** (its variant no longer
+   matches, its text no longer parses) is not a head to regress from and is replaced — refusing on it
+   would wedge the line permanently, since no API can reset `latest_version`.
+
+4. **THE VERSION AND ITS DIGEST MOVE TOGETHER.** They are written from one observation, always both.
+   An unresolved digest is written as **NULL** — a true "this version's bytes were not resolved" — and
+   **never** inherited across a version change. The defect this fixes: an `oci` digest lookup that
+   failed left the previous version's digest standing beside the new tag, so the row asserted a
+   `(tag, digest)` pair that never existed in any registry, in the one column pair whose entire purpose
+   is that a mutable tag is not an identity. A restatement of the *same* version may fill a digest in,
+   and a null there does not discard one already resolved for that same version.
+   *Rejected alternative:* refusing to move the head at all until a digest resolves. It reads stricter
+   and is worse — the operator-loaded air-gap feed carries versions and **no digests at all**, so an
+   air-gapped estate could never record an image head, which is precisely §7's "an air-gapped estate
+   must not look like a fully up-to-date one".
+
+5. **TWO PROD PLACES THAT DISAGREE ARE REFUSED, NOT RESOLVED.** A component placed in several `prod`
+   deployment-targets is released to all of them by one change, and their observed images can differ.
+   A line has ONE head, so the evidence is weighed per LINE and not per place: identical claims record
+   once; **differing claims — a different version, or the same tag at a different digest — record
+   nothing**, with both places and both versions named in the Decision. Picking a winner meant picking
+   by wave-target UUID order, which could equally be the OLDER release, while the run reported "0 not
+   recorded" and the Decision asserted two contradictory versions for one line. A place that determined
+   nothing is reported as its own refusal and does not veto a version another place did state — "this
+   region reported no images" and "the regions disagree" are different facts.
+
+6. **EVERY REFUSAL NAMES ITS OWN CAUSE.** Two reasons in the M21.4 build named something other than
+   what happened, and both are the same class of error: an unrecognised **ecosystem** was reported as
+   `manifest_reader_unavailable`, whose stated remedy ("wire a `readFileAtRef` reader") would fix
+   nothing; and an index answering `available` with an **empty list** was reported as
+   `no_versions_on_line`, conflating "this package exists and has published nothing" with "its releases
+   are all on other majors" — two different operator actions. A reason named after the branch that
+   matched goes false the moment that branch covers a second case; this repo has shipped that failure
+   once already (ADR-0030 §2, charter principle 6). Each distinct cause gets its own reason.
+
+Clauses 2, 3 and 4 are enforced at the **single write door** both ingresses call
+(`recordDependencyLineHead`), not at each caller: the arrangement exists because the callers
+demonstrably disagreed, and a rule applied by each caller has one place per caller to regress.
+
+### 7a. WHICH VERSION did an internal release publish — one function, five strategies (2026-08-15, M21.4)
+
+§7 defines internal detection as a derivation but does not say what **version** the release put on the
+line, and **nothing in the derivation carries one**: the event is `{fromState, toState, trigger}` over
+a change id (`coordination/transition.ts:361-368`), and `changes.source_ref` carries
+`{repo, ref, commit, run_url, artifact_digest}` — a commit and a digest are *identities*, not versions.
+So the answer is per-ecosystem, and it is written as **one function with an explicit strategy table**
+(`dependencies/internal-release-version.ts`) so "which signal did we use, and why is that signal
+trustworthy" is answerable by reading the code rather than inferred from whichever branch ran.
+
+| ecosystem | signal | why it is trustworthy |
+|---|---|---|
+| `oci` | `change_wave_targets.observed.images` (ADR-0008) | the executor's own statement of what it deployed. Records the **tag AND the digest** — a mutable tag is not an identity (§7). |
+| `go` | `changes.source_ref.ref`, only when it is `refs/tags/…` | `go.mod` declares a module **path** and no version; a Go module's version **is** its git tag. |
+| `npm`, `python`, `maven` | the producing component's **own manifest**, read at the released commit with M21.2's `readFileAtRef` | the same "formulated via the users' code" ingress the inventory itself is built from. **Where** the manifest is comes from the component's already-recorded `component_dependencies.manifest_path`, never from a repo-root convention. |
+
+Three rules bind the whole table, and each exists because its violation is invisible:
+
+1. **A digest is not a version, a commit sha is not a version, a branch name is not a version.** Every
+   undeterminable case records **NOTHING** with a named reason in the Decision. A missed bump is
+   visible (`latest_version` stays null, which §7's schema already defines as "not yet observed" and
+   *not* "no newer version exists"); a wrong version is invisible and makes a component look
+   up-to-date at a release that never happened. A sha is the sharp case — roughly six in ten parse as
+   a version.
+2. **The released version must be proven to be ON THIS LINE.** A line is `(ecosystem, coordinate,
+   major)` and one component legitimately produces several at once, so a released `1.9.9` recorded
+   against the `2` line is not a wrong version but a version on the wrong line. The line's own major
+   must prefix-match the release at the line's **own precision** (`3.18` accepts `3.18.4`, refuses
+   `3.19.0`); a major line the grammar cannot compare is refused, never assumed.
+3. **Maven and PEP 621 `dynamic` versions are `unresolved`, not absent.** An inherited `<parent>`
+   version or a `${revision}` needs a second document or a build run — a closure walk (§4) and tooling
+   execution (§8) respectively — so both are reported as such.
+
+**Consequence, stated rather than discovered:** the language strategies need a server-side route to
+`readFileAtRef`, and there was none — the hook is a `GitProviderAdapter` hook deliberately absent
+from `ExecutorPlugin` (§9), and the subprocess plugin host exposed no file-read client. M21.4
+therefore takes the reader as an **injected port**: with none wired, every language ecosystem records
+nothing under the reason `manifest_reader_unavailable`, which is legible, rather than silently
+detecting nothing.
+
+**The port is now wired, and §7c records how.** Leaving it unwired would have made M21.2 dead code
+and this whole ingress an intention: three of the five ecosystems would have recorded
+`manifest_reader_unavailable` on every release, forever.
+
+### 7c. HOW THE FILE READ AND THE INTERNAL INGRESS ACTUALLY RUN (2026-08-15, M21.4)
+
+§7 and §7a define two derivations; neither says what CALLS them, and built without that, neither ran.
+Both facts below were found by an adversarial review of the M21.4 build and are recorded normatively,
+because "there is a function that does this" is not the same claim as "this happens".
+
+1. **`readFileAtRef` CROSSES THE PLUGIN HOST AS ITS OWN CLIENT, NOT AS A FIFTH EXECUTOR VERB.** The
+   route is `plugin-host/contract.ts`'s `GitFileReadPluginClient`, `host.ts`'s `gitFileRead()`, a
+   `readFileAtRef` method on the wire (`rpc-protocol.ts`), and a dispatch arm in
+   `subprocess-entry.ts` that resolves against the loaded **adapter** carried BESIDE the executor
+   plugin — never against the plugin itself. §9 is therefore intact in the strict sense: the object
+   an `ExecutorPlugin` instance exposes still has exactly observe/trigger/status/abort, and
+   `createExecutorPluginFromAdapter` still refuses to surface the hook. An instance whose module has
+   no adapter hook (every non-git-provider executor) **rejects the call by naming the missing hook**,
+   never by answering `not_found` — the latter would be a claim about the repo.
+
+   **WHICH instance is chosen is decided by the RELEASED REPO, never by "the org's first github
+   binding".** A binding holds credentials, and one team's installation token is not authority over
+   another team's repository, so the reader matches `changes.source_ref.repo` against each
+   git-provider binding's own configured repo identity (`projectPath`, else `owner/repo` — the same
+   fields the adapters themselves read) and refuses legibly when none matches.
+
+2. **INTERNAL DETECTION IS EVENT-DRIVEN, THROUGH A ROUTER, BECAUSE `boss.work()` IS A COMPETING
+   CONSUMER.** A second worker on `domain-events` does not add a listener, it splits the jobs — which
+   is why that queue's handler only logged and nothing in the tree consumed a domain event. So an
+   `scp.change.transitioned(toState=accepted)` is matched by a ROUTER on that queue, which makes one
+   cheap decision and enqueues onto this capability's OWN queue; the work happens in that queue's
+   worker. Doing the work inline would put a git fetch's latency and its retry budget on the shared
+   event stream.
+
+   Delivery is **at-least-once at two hops now**, and nothing on the path appends: the head goes
+   through `recordDependencyLineHead` (which re-reads `FOR UPDATE` and decides), the verdict through
+   `insertDecisionIfChanged`, and the change's state is **re-read** rather than trusted from the
+   event.
+
+   **The manifest fetch happens OUTSIDE any transaction**, in a middle phase between two write
+   phases. Holding an RLS-scoped pooled connection across a provider round trip — against a 5s
+   production `statement_timeout` and a bounded pool — is the failure the third-party poll already
+   avoids by design; the two ingresses do not differ on this.
+
+3. **THE TWO INGRESSES ARE ROLE-GUARDED DIFFERENTLY, AND THE DIFFERENCE IS THE REASONING, NOT AN
+   OVERSIGHT.** §7's guard on the poll exists because it **dials the public internet on a timer**.
+   Two consequences:
+
+   - **The poll is fail-CLOSED on an undeclared deployment.** `SCP_FEDERATION_ROLE` defaults to
+     `commander` (the right default for "may I serve the SPA?", which preserves every pre-M16.3
+     deployment) — so a guard testing only `federationRole === "commander"` let through exactly the
+     population most likely to be air-gapped: an outpost predating the setting, or a chart that omits
+     it. The poll therefore requires the role to be **explicitly declared**, and it logs when it
+     ALLOWS as well as when it refuses: a posture that sends traffic must not be the invisible one.
+   - **Internal detection runs on EVERY federation role.** It initiates no timed egress, and the
+     evidence it derives from — `change_wave_targets.status` / `observed_state.images` — exists only
+     where the change EXECUTED, while a commander receives only `change_status` journal entries.
+     Restricting it to a commander would make every outpost domain derive nothing forever, silently,
+     which is §3's "each domain derives its own" inverted.
+
+4. **PLUGIN INSTANCES DERIVED FROM A WORK-LIST NEED A LIFECYCLE.** Every other plugin-host caller
+   starts instances from operator CONFIGURATION, which persists; the version poll is the first to
+   start them from its own work-list — up to five per org, on demand. Nothing leaked per tick, so the
+   symptom was a standing subprocess count that grows with TENANCY and never falls, held by a job
+   that runs once a day. The sweep stops what it started, from a receipt reported by the code that
+   started it rather than from a second derivation of which instances "should" be running.
 
 ### 8. The actuator is a managed class — DECIDED, NOT YET BUILT
 
@@ -255,7 +461,11 @@ scoped vaulted credentials.
 ### 9. The executor interface does not change
 
 No fifth verb is added: the four-verb set **is** the structural enforcement of charter principle 1, so a
-`write` verb would remove the enforcement mechanism rather than extend it. Authored content is **not**
+`write` verb would remove the enforcement mechanism rather than extend it. M21.4's server-side
+`readFileAtRef` route does **not** breach this and §7c clause 1 says exactly how: it is a separate
+plugin-host client dispatched against the loaded ADAPTER, so the object an `ExecutorPlugin` instance
+exposes is unchanged and `createExecutorPluginFromAdapter` still refuses to surface the hook. It also
+only READS. Authored content is **not**
 threaded through `TriggerIntent.parameters` — nothing populates it today, and `managed-iac`'s
 `intent.parameters.sourceFiles` is **not** a precedent (nothing ever populates it, and it writes to an
 ephemeral workspace, never a repo).

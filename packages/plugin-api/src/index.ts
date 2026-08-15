@@ -382,13 +382,138 @@ export interface DiscoveryPlugin {
 }
 
 // -------------------------------------------------------------------------------------------
+// DependencyIndexPlugin (M21.4, ADR-0032 §7) — "a daily self-rescheduling tick resolving versions
+// through per-ecosystem INDEX PLUGINS, so the existing egress guard and host allowlist apply".
+//
+// WHY THIS IS A PLUGIN AT ALL, rather than a `fetch()` in the server. The registry URL an operator
+// points this at is CONFIGURABLE (a mirror, an Artifactory/Nexus proxy, an in-cluster Athens), and
+// the plugin host is the ONE seam that applies `egress-guard.ts`'s post-DNS internal-IP deny-list
+// and the per-instance `allowedHosts` allowlist to such a URL (plugin-host/contract.ts's
+// `allowedHosts`/`allowInternalEgress` doc comments). A server-side fetch would reach the same
+// registries with none of that, which is the SSRF exposure MAJOR #6 closed for every other
+// network-calling plugin.
+//
+// WHAT AN INDEX PLUGIN MUST NEVER DO (ADR-0032 §7, and the reason `listVersions` returns versions
+// rather than a verdict): it does not decide which version is "newest", does not order strings, and
+// does not skip or invent anything. It REPORTS what the index says, verbatim, or reports that it
+// could not ask. Ranking happens in exactly one place server-side
+// (`apps/server/src/dependencies/version-index.ts`), over `@scp/dependency-manifests`'s single
+// `parseComparableVersion`/`compareVersions` pair — a rule enforced in five plugins is a rule with
+// five places to regress.
+// -------------------------------------------------------------------------------------------
+
+/** MUST stay identical to `DependencyEcosystemSchema` in `@scp/schemas/dependencies` and to
+ *  `DependencyEcosystem` in `@scp/dependency-manifests`. Kept as a self-contained string union here
+ *  for the same reason `DiscoveryProposal.sourceMappings[].type` is: `@scp/plugin-api` stays free of
+ *  a `@scp/schemas` dependency. That is a THIRD copy of one vocabulary, and the first two drifted
+ *  already (`image` vs `oci`) precisely because no test crossed the boundary — so this copy is
+ *  pinned against the Zod enum at runtime by "the ecosystem vocabulary is the same list on all
+ *  THREE sides" in `apps/server/src/dependencies/version-index.test.ts`, via the total
+ *  `INDEX_MODULE_BY_ECOSYSTEM` record whose keys this type generates. */
+export type DependencyIndexEcosystem = "npm" | "go" | "maven" | "python" | "oci";
+
+export interface DependencyIndexQuery {
+  ecosystem: DependencyIndexEcosystem;
+  /** The coordinate in the ecosystem's OWN spelling, VERBATIM — `@acme/lib`,
+   *  `github.com/Masterminds/semver/v3`, `com.acme:lib`, `ghcr.io/acme/base`. Never slugified: SCP's
+   *  URN slug collapses `@acme/lib`, `acme/lib` and `acme-lib` into one identity (ADR-0032 Context
+   *  2), which is why the inventory keys on this string and why it must cross this seam unchanged. */
+  coordinate: string;
+  /** The major line as the ECOSYSTEM spells it (`3`, `v2`, `1.2`) — a HINT, not a filter contract.
+   *  A plugin uses it only where the index protocol demands it; the line membership test itself is
+   *  the server's, so two plugins can never disagree about what "on the line" means. */
+  majorLine: string;
+  /** `oci` only — the variant suffix this line follows (`-alpine`). Image tags are not semver and
+   *  `latest`/`1.2`/date stamps coexist in one repository (ADR-0032 §7). */
+  tagPattern?: string;
+}
+
+/** One version as the index spells it. `version` is verbatim index text; nothing normalises it. */
+export interface DependencyIndexVersion {
+  version: string;
+  /** Present only where the index reports content identity alongside the label — see
+   *  `resolveDigest`, and `DependencyIndexCapabilities.reportsDigest`. */
+  digest?: string;
+}
+
+/**
+ * WHY AN EXPLICIT `unavailable` EXISTS AT ALL, and why it is not an empty list.
+ *
+ * "The index said this coordinate has no versions" and "I could not reach an index" produce
+ * identical downstream behaviour — no bump — and mean opposite things. Collapsing them makes an
+ * air-gapped deployment (where four of the five ecosystems have no reachable index by design) look
+ * exactly like an estate that is fully up to date, which would silently stop every dependency
+ * subscription with nothing to read (ADR-0032 §7, charter principle 5). Every failure below is a
+ * distinct, operator-legible reason for that state.
+ */
+export type DependencyIndexUnavailableReason =
+  /** No index is configured for this ecosystem on this deployment — the air-gap default. */
+  | "not_configured"
+  /** The index answered, but does not know this coordinate (a 404 for the package itself). */
+  | "unknown_coordinate"
+  /** The request never completed: DNS, connect, TLS, timeout — INCLUDING a chart-deployed
+   *  instance's default-deny egress NetworkPolicy, which surfaces here as a connect failure. */
+  | "unreachable"
+  /** The index answered 3xx. Redirects are HARD-DISABLED on the plugin HTTP client
+   *  (`plugin-host/subprocess-entry.ts`, `redirect: "error"`) because a 3xx can re-point a request
+   *  at an internal host AFTER the pre-flight egress check — and public registries redirect
+   *  routinely. Its OWN reason so an operator reads "point me at the final URL", not "unreachable". */
+  | "redirected"
+  /** 401/403 — the index requires a credential this instance was not given. */
+  | "unauthorized"
+  /** 2xx, but the body is not the document this index is documented to return. */
+  | "malformed_response"
+  /** `resolveDigest` only: this index has no notion of content digest (every language ecosystem). */
+  | "no_digest";
+
+export type DependencyIndexResult =
+  | { status: "available"; versions: DependencyIndexVersion[] }
+  | {
+      status: "unavailable";
+      reason: DependencyIndexUnavailableReason;
+      /** Human-readable, never parsed — what an operator reads to fix the deployment. */
+      detail: string;
+    };
+
+export type DependencyIndexDigestResult =
+  | { status: "available"; digest: string }
+  | { status: "unavailable"; reason: DependencyIndexUnavailableReason; detail: string };
+
+export interface DependencyIndexCapabilities {
+  ecosystem: DependencyIndexEcosystem;
+  /** True only for indexes whose `resolveDigest` can ever succeed (`oci`). A MUTABLE TAG IS NOT AN
+   *  IDENTITY (ADR-0032 §7): an image line records the digest its tag resolved to, so this is what
+   *  tells the caller whether "the line is on 3.19" is a statement about bytes or about a pointer. */
+  reportsDigest: boolean;
+}
+
+export interface DependencyIndexPlugin {
+  /** Every version the index reports for `coordinate`. Reports, never ranks — see the section doc. */
+  listVersions(ctx: PluginContext, query: DependencyIndexQuery): Promise<DependencyIndexResult>;
+  /** The content digest `version` currently resolves to. `no_digest` for every language ecosystem. */
+  resolveDigest(
+    ctx: PluginContext,
+    ref: { ecosystem: DependencyIndexEcosystem; coordinate: string; version: string }
+  ): Promise<DependencyIndexDigestResult>;
+  describeIndex(): DependencyIndexCapabilities;
+}
+
+// -------------------------------------------------------------------------------------------
 // Plugin manifest (DESIGN.md §11) — every plugin is an npm package declaring this shape. Config
 // schemas auto-surface as validated config forms in API/CLI/UI; distribution is compile-time
 // only (bundled into the server image) — no runtime hot-loading, ever.
 // -------------------------------------------------------------------------------------------
 
+/** ADDITIVE ONLY. M21.4 adds `dependency-index` (ADR-0032 §7) as a seventh kind; the six before it
+ *  are unchanged, and nothing that switches on this union may have its existing arms altered. */
 export type PluginKind =
-  "executor" | "control" | "identity" | "notification" | "federation-transport" | "discovery";
+  | "executor"
+  | "control"
+  | "identity"
+  | "notification"
+  | "federation-transport"
+  | "discovery"
+  | "dependency-index";
 
 export interface PluginManifest {
   id: string;

@@ -43,7 +43,7 @@ import {
  * `/policies` routes are the surface an author actually types at, and "the refusal reaches the wire
  * with its remedy intact" is a property of the whole stack, not of a repo function.
  */
-describe("group-scoped dependency-subscription opt-outs are refused by the policy routes", () => {
+describe("group-scoped dependency-subscription effects are refused by the policy routes", () => {
   let server: TestServer;
 
   beforeAll(async () => {
@@ -142,7 +142,7 @@ describe("group-scoped dependency-subscription opt-outs are refused by the polic
     expect(res.body).toMatch(/objectRef/);
   });
 
-  it("PERMITS a group-scoped ENABLE — the negative control that keeps the guard narrow", async () => {
+  it("REFUSES a group-scoped ENABLE too — it would read enabled and never fire (M21.4, ADR-0032 §6a)", async () => {
     const org = await createTestOrg(server, "dep-sub-guard-enable");
 
     const res = await postPolicy(org, "group-scoped-enable", {
@@ -151,9 +151,41 @@ describe("group-scoped dependency-subscription opt-outs are refused by the polic
       effects: [{ dependencySubscription: { enabled: true, granularity: "patch" } }]
     });
 
-    // Failing to match leaves it not-enabled, which is the safe direction — so there is nothing to
-    // refuse. Without this case the refusal above is satisfied by a route that rejects every
-    // group-scoped policy, or every dependencySubscription effect.
+    // This case USED to be the guard's narrowness control, on M21.3's reasoning that failing to
+    // match leaves it not-enabled and nothing is lost. M21.4 measured the other half: the jobs that
+    // act on a subscription resolve as `SYSTEM_ACTOR_ID`, which has no `objects` row at all
+    // (`coordination/system-actor.ts:9`) and so is `member_of` nothing — the enable never
+    // contributes for them, while a team member reading the API sees `enabled: true`. The
+    // narrowness controls the direction axis no longer provides are supplied by the objectRef and
+    // no-scope cases below and beside it.
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.body).toMatch(/objectRef/);
+    // WHICH refusal — a bare 400 would pass equally against the opt-out branch, the URN check or
+    // the scope-authority guard, and this test would then be green for the wrong reason.
+    expect(res.body).toMatch(/enable \(enabled: true\)/);
+  });
+
+  it("PERMITS a group-scoped ENABLE that also carries an objectRef — the scope narrowing survived the widening", async () => {
+    const org = await createTestOrg(server, "dep-sub-guard-enable-objectref");
+    const service = await server.app.inject({
+      method: "POST",
+      url: "/api/v1/services",
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { name: "svc-guard-enable" }
+    });
+    expect(service.statusCode, service.body).toBe(201);
+
+    const res = await postPolicy(org, "group-and-objectref-enable", {
+      scope: { group: "team-platform", objectRef: service.json().id as string },
+      enforcement: "required",
+      effects: [{ dependencySubscription: { enabled: true, granularity: "patch" } }]
+    });
+
+    // THE NEGATIVE CONTROL THE WIDENING NEEDS. Without it, the refusal above is equally satisfied by
+    // a guard that rejects every group-scoped policy or every dependencySubscription enable —
+    // exactly the over-broad shape clause 6a-i(b) narrowed away, and the one a direction widening is
+    // most likely to reintroduce. The `objectRef` branch runs for the system actor too, so this
+    // enable is neither inert nor fail-open.
     expect(res.statusCode, res.body).toBe(201);
   });
 

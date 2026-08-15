@@ -2,7 +2,8 @@ import { badRequest } from "../errors.js";
 import { DependencySubscriptionEffectSchema } from "@scp/schemas";
 
 /**
- * A GROUP-SCOPED OPT-OUT IS REFUSED AT AUTHORING TIME, because it cannot be relied on to subtract.
+ * A GROUP-SCOPED `dependencySubscription` EFFECT IS REFUSED AT AUTHORING TIME — IN BOTH DIRECTIONS
+ * — because neither direction can be relied on to do what it says.
  *
  * ================================================================================================
  * WHY THIS GUARD EXISTS AND WHY IT LIVES HERE RATHER THAN IN THE MATCHER
@@ -13,20 +14,43 @@ import { DependencySubscriptionEffectSchema } from "@scp/schemas";
  * WRONG semantics for a constraint, because a constraint that fails to match is a constraint that
  * does not apply.
  *
- * For `dependencySubscription` the two directions are not symmetric, and that asymmetry is the whole
- * argument:
- *
- *   - a group-scoped ENABLE that fails to match yields NOT-enabled. That is the safe direction —
- *     it is exactly what `absent never means enabled` already guarantees, so nothing is lost.
- *   - a group-scoped OPT-OUT that fails to match yields STILL-ENABLED. SCP then authors a bump for
- *     a dependency a team explicitly opted out of, which is precisely the case the opt-out exists
- *     to serve: "one or more dependencies are causing issues when upgraded, so we want to handle
- *     that manually" (the owner's stated requirement, proposal §1).
+ * THE OPT-OUT DIRECTION — fails OPEN. A group-scoped OPT-OUT that fails to match yields
+ * STILL-ENABLED. SCP then authors a bump for a dependency a team explicitly opted out of, which is
+ * precisely the case the opt-out exists to serve: "one or more dependencies are causing issues when
+ * upgraded, so we want to handle that manually" (the owner's stated requirement, proposal §1).
  *
  * The failure is silent in both halves — the matcher returns fewer rows, the merge sees fewer
  * contributions, and `enabled: true` is a perfectly ordinary-looking answer. Nothing errors and
  * nothing logs. An operator would learn about it from a pull request they explicitly asked never to
  * receive.
+ *
+ * ================================================================================================
+ * THE ENABLE DIRECTION — INERT, AND M21.4 IS WHAT MADE THAT MEASURABLE (ADR-0032 §6a, 2026-08-15)
+ * ================================================================================================
+ * M21.3 permitted a group-scoped ENABLE on the reasoning that failing to match yields NOT-enabled,
+ * which is the safe direction, so nothing is lost. That reasoning was INCOMPLETE, and M21.4 is
+ * where the missing half became a fact rather than a worry.
+ *
+ * The background jobs that ACT on a subscription resolve as `SYSTEM_ACTOR_ID` — the all-zero
+ * sentinel, which by its own doc comment is "never a real graph object id (no `objects` row exists
+ * at this id)" (`coordination/system-actor.ts:9`). A principal with no `objects` row is a transitive
+ * `member_of` NOTHING, so `matchPoliciesForTargets` can never return a `scope.group` policy for it.
+ * A group-scoped ENABLE is therefore PERMANENTLY INERT on every path that does work:
+ * `internal-release-detection.ts`'s subscriber gate and the third-party poll's work-list both go
+ * through `listSubscribedComponentLines` with that actor.
+ *
+ * What makes it a footgun rather than merely a no-op is that the SAME policy resolves ENABLED for a
+ * human team member who asks — they are in the group, so the matcher hands it back, the merge
+ * enables the pair, and the API says `enabled: true`. The team sees a working subscription and
+ * receives nothing, forever, with no error anywhere. "Nothing is lost" is true only of the
+ * enablement algebra; it is false of the feature, and a subscription that silently never fires is
+ * its own kind of failure — the mirror image of an opt-out that silently never applies.
+ *
+ * So the refusal now covers BOTH directions, for two different reasons that happen to have the same
+ * remedy. THIS CAN BE RELAXED for the enable direction if a future design resolves subscriptions
+ * PER OWNER rather than per acting subject (evaluating each subscribing component's own team
+ * membership instead of the job's), at which point a group-scoped enable would be meaningful and
+ * only the opt-out's fail-open would remain. Nothing in the tree does that today.
  *
  * SO WHY NOT FIX THE MATCHER? Because that would be fixing the instance from the wrong end. The same
  * exposure exists for `scanThreshold` (ADR-0016, shipped): a group-scoped scan CEILING silently does
@@ -58,11 +82,11 @@ import { DependencySubscriptionEffectSchema } from "@scp/schemas";
  * choke point every local write door funnels through, following the M16.2 clause-(4) precedent that
  * already lives there. See those two call sites for the exemption and its census.
  *
- * DELIBERATELY NARROW, in three separate ways. Only the `policy` TYPE is inspected; only
- * `enabled: false` is refused; and only when `group` is the ONLY scope the policy carries. A
- * group-scoped ENABLE is untouched (safe direction), every other effect type is untouched, and every
- * other object type is untouched — this guard must not become the place where unrelated policy rules
- * accumulate.
+ * STILL DELIBERATELY NARROW, in two ways rather than the original three. Only the `policy` TYPE is
+ * inspected, and only when `group` is the ONLY scope the policy carries. Every other effect type is
+ * untouched and every other object type is untouched — this guard must not become the place where
+ * unrelated policy rules accumulate. What it no longer narrows on is the effect's DIRECTION: both
+ * `enabled: false` and `enabled: true` are refused, for the two different reasons above.
  *
  * ================================================================================================
  * WHY `group` MUST BE THE *ONLY* SCOPE FOR THIS TO REFUSE
@@ -126,15 +150,26 @@ export function assertEnforceableDependencySubscriptionScope(args: {
     // A malformed effect is NOT this guard's business — it contributes nothing at resolution time
     // and is reported there. Rejecting it here would make this guard a second, divergent validator
     // of the effect's shape, and the two would drift.
-    if (!parsed.success || parsed.data.enabled) continue;
+    if (!parsed.success) continue;
 
+    // BOTH DIRECTIONS, ONE REMEDY, TWO REASONS (ADR-0032 §6a) — the message names the direction's
+    // own failure, because "scope it differently" without the reason is an instruction an author
+    // has to take on faith.
     throw badRequest(
-      "A dependency-subscription opt-out (enabled: false) cannot be scoped to a group. " +
-        "A group-scoped policy is only matched when the acting subject belongs to that group, so " +
-        "an opt-out authored this way would silently fail to apply for everyone else and the " +
-        "dependency would keep being bumped. Scope the opt-out with `objectRef` or `selector` " +
-        "instead — those resolve against the graph and apply regardless of who is asking. " +
-        "(A group-scoped enable is permitted: failing to match simply leaves it not-enabled.)"
+      parsed.data.enabled
+        ? "A dependency-subscription enable (enabled: true) cannot be scoped to a group. " +
+            "A group-scoped policy is only matched when the acting subject belongs to that group, " +
+            "and the background job that acts on a subscription runs as the system actor, which " +
+            "belongs to no group — so an enable authored this way would read as enabled in the " +
+            "API for a team member and never actually fetch or bump anything. Scope it with " +
+            "`objectRef` or `selector` instead — those resolve against the graph and apply " +
+            "regardless of who is asking."
+        : "A dependency-subscription opt-out (enabled: false) cannot be scoped to a group. " +
+            "A group-scoped policy is only matched when the acting subject belongs to that group, " +
+            "so an opt-out authored this way would silently fail to apply for everyone else and " +
+            "the dependency would keep being bumped. Scope the opt-out with `objectRef` or " +
+            "`selector` instead — those resolve against the graph and apply regardless of who is " +
+            "asking."
     );
   }
 }

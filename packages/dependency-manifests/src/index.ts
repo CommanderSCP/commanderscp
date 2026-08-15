@@ -64,3 +64,13 @@ export { parseDockerfile } from "./dockerfile.js";
 export { parsePackageJson } from "./package-json.js";
 export { parsePyprojectToml, parseRequirementsTxt, parsePep508 } from "./python.js";
 export { parsePomXml } from "./pom-xml.js";
+
+/**
+ * The PRODUCER-side question — "what version does this manifest declare for ITSELF?" — which every
+ * export above answers the consumer-side of. Added for M21.4's internal-release detection, where a
+ * language ecosystem's released version has no other honest signal (`changes.source_ref` carries no
+ * version and `observed.images` is the `oci` signal). Its three-way outcome
+ * (`declared`/`absent`/`unresolved`) is deliberate: see own-version.ts.
+ */
+export { readDeclaredProjectVersion } from "./own-version.js";
+export type { ProjectVersionEcosystem, ProjectVersionOutcome } from "./own-version.js";

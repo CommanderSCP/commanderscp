@@ -35,6 +35,9 @@ import type {
   ControlPlugin,
   ControlRequest,
   Cursor,
+  DependencyIndexEcosystem,
+  DependencyIndexPlugin,
+  DependencyIndexQuery,
   DiscoveryPlugin,
   DomainCursor,
   ExecutorPlugin,
@@ -51,15 +54,37 @@ import type {
   SecretsAccessor,
   TriggerIntent
 } from "@scp/plugin-api";
+import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 import { encodeMessage, parseMessage, type RpcRequest } from "./rpc-protocol.js";
 import { assertEgressAllowed } from "./egress-guard.js";
 
+/**
+ * M21.4 (ADR-0032 §7a) — the file-read hook that rides ALONGSIDE an executor plugin, never ON it.
+ *
+ * `readFileAtRef` is a `GitProviderAdapter` hook and `createExecutorPluginFromAdapter` deliberately
+ * omits it (ADR-0032 §9): the four-verb `ExecutorPlugin` set IS the structural enforcement of
+ * charter principle 1, so a fifth verb would remove the enforcement mechanism rather than extend it.
+ * Carrying the hook as a SEPARATE field on the loaded record is what keeps that true — the `plugin`
+ * object below still exposes exactly observe/trigger/status/abort, and git-provider-core's "it does
+ * NOT surface readFileAtRef as an ExecutorPlugin verb" test is untouched — while giving the host a
+ * route to the adapter's read for the three modules that have one.
+ *
+ * Absent for every non-git-provider executor, which is why the dispatch below refuses by naming the
+ * MODULE rather than the method: "this instance's plugin has no file-read hook" is the operator's
+ * actual situation, where "unknown method" would send them hunting for a typo.
+ */
+type ReadFileHook = (
+  ctx: PluginContext,
+  request: ReadFileAtRefRequest
+) => Promise<ReadFileAtRefResult>;
+
 type LoadedPlugin =
-  | { kind: "executor"; plugin: ExecutorPlugin }
+  | { kind: "executor"; plugin: ExecutorPlugin; readFile?: ReadFileHook }
   | { kind: "control"; plugin: ControlPlugin }
   | { kind: "discovery"; plugin: DiscoveryPlugin }
   | { kind: "notification"; plugin: NotificationPlugin }
-  | { kind: "federation-transport"; plugin: FederationTransportPlugin };
+  | { kind: "federation-transport"; plugin: FederationTransportPlugin }
+  | { kind: "dependency-index"; plugin: DependencyIndexPlugin };
 
 /**
  * Static module map (DESIGN.md §11: "No runtime hot-loading, ever") — grows as M4/M7 ship more
@@ -86,9 +111,16 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-github-check");
       return { kind: "control", plugin: mod.createGithubCheckControlPlugin() };
     }
+    // The three git providers are the only modules that carry a `readFileAtRef` hook (M21.2). It is
+    // taken from the ADAPTER, not from the executor plugin — see {@link ReadFileHook} — and wrapped
+    // in an arrow rather than passed as a bare method reference so it can never depend on `this`.
     case "github": {
       const mod = await import("@scp/plugin-github");
-      return { kind: "executor", plugin: mod.createGithubExecutorPlugin() };
+      return {
+        kind: "executor",
+        plugin: mod.createGithubExecutorPlugin(),
+        readFile: (ctx, request) => mod.githubAdapter.readFileAtRef(ctx, request)
+      };
     }
     case "github-discovery": {
       const mod = await import("@scp/plugin-github");
@@ -96,7 +128,11 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
     }
     case "gitea": {
       const mod = await import("@scp/plugin-gitea");
-      return { kind: "executor", plugin: mod.createGiteaExecutorPlugin() };
+      return {
+        kind: "executor",
+        plugin: mod.createGiteaExecutorPlugin(),
+        readFile: (ctx, request) => mod.giteaAdapter.readFileAtRef(ctx, request)
+      };
     }
     case "gitea-discovery": {
       const mod = await import("@scp/plugin-gitea");
@@ -104,7 +140,11 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
     }
     case "gitlab": {
       const mod = await import("@scp/plugin-gitlab");
-      return { kind: "executor", plugin: mod.createGitlabExecutorPlugin() };
+      return {
+        kind: "executor",
+        plugin: mod.createGitlabExecutorPlugin(),
+        readFile: (ctx, request) => mod.gitlabAdapter.readFileAtRef(ctx, request)
+      };
     }
     case "gitlab-discovery": {
       const mod = await import("@scp/plugin-gitlab");
@@ -145,6 +185,29 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
     case "federation-https": {
       const mod = await import("@scp/plugin-federation-https");
       return { kind: "federation-transport", plugin: mod.default };
+    }
+    // M21.4 (ADR-0032 §7) — the five per-ecosystem version indexes. Four share one package under
+    // four module names (the `github`/`github-discovery` split), because one hosted instance loads
+    // exactly one plugin and each ecosystem gets its own operator-configured base URL.
+    case "dependency-index-go": {
+      const mod = await import("@scp/plugin-dependency-index-registries");
+      return { kind: "dependency-index", plugin: mod.createGoIndexPlugin() };
+    }
+    case "dependency-index-npm": {
+      const mod = await import("@scp/plugin-dependency-index-registries");
+      return { kind: "dependency-index", plugin: mod.createNpmIndexPlugin() };
+    }
+    case "dependency-index-pypi": {
+      const mod = await import("@scp/plugin-dependency-index-registries");
+      return { kind: "dependency-index", plugin: mod.createPypiIndexPlugin() };
+    }
+    case "dependency-index-maven": {
+      const mod = await import("@scp/plugin-dependency-index-registries");
+      return { kind: "dependency-index", plugin: mod.createMavenIndexPlugin() };
+    }
+    case "dependency-index-oci": {
+      const mod = await import("@scp/plugin-dependency-index-oci");
+      return { kind: "dependency-index", plugin: mod.createOciIndexPlugin() };
     }
     default:
       throw new Error(`subprocess-entry: unknown SCP_PLUGIN_MODULE "${moduleName}"`);
@@ -389,6 +452,40 @@ async function dispatch(
       default:
         throw new Error(`unknown method "${method}" for a FederationTransportPlugin instance`);
     }
+  }
+
+  if (loaded.kind === "dependency-index") {
+    switch (method) {
+      case "listVersions": {
+        const p = params as { query: DependencyIndexQuery };
+        return loaded.plugin.listVersions(ctx, p.query);
+      }
+      case "resolveDigest": {
+        const p = params as {
+          ref: { ecosystem: DependencyIndexEcosystem; coordinate: string; version: string };
+        };
+        return loaded.plugin.resolveDigest(ctx, p.ref);
+      }
+      case "describeIndex":
+        return loaded.plugin.describeIndex();
+      default:
+        throw new Error(`unknown method "${method}" for a DependencyIndexPlugin instance`);
+    }
+  }
+
+  // M21.4 (ADR-0032 §7a) — the git-provider file read. Handled BEFORE the four-verb switch below
+  // and against `loaded.readFile`, never against `loaded.plugin`, because that is what keeps
+  // ADR-0032 §9 true: the plugin object still has exactly four verbs and this is not one of them.
+  if (method === "readFileAtRef") {
+    if (!loaded.readFile) {
+      throw new Error(
+        `this instance's plugin has no readFileAtRef hook — only the git-provider adapters ` +
+          `(github/gitea/gitlab) carry one (ADR-0032 §9: it is a GitProviderAdapter hook, never a ` +
+          `fifth ExecutorPlugin verb)`
+      );
+    }
+    const p = params as { request: ReadFileAtRefRequest };
+    return loaded.readFile(ctx, p.request);
   }
 
   const plugin = loaded.plugin;

@@ -1,4 +1,4 @@
-import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   type ComponentDependency,
@@ -11,6 +11,12 @@ import {
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { componentDependencies, dependencyLines } from "../db/schema.js";
+import {
+  asThirdPartyLine,
+  evaluateHeadMovement,
+  type HeadRefusalReason,
+  type ThirdPartyLine
+} from "./line-head.js";
 
 /**
  * M21.2 — the DEPENDENCY INVENTORY repo (ADR-0032 §3/§4/§5/§7).
@@ -216,43 +222,96 @@ export async function declareDependencyLineProducer(
   return toDependencyLine(row);
 }
 
+/** What {@link recordDependencyLineHead} did, and why — the caller puts this in its Decision, so a
+ *  refusal is as legible as a move (charter principle 6). `line` is the row as it stands AFTER the
+ *  call in both branches, so a refused caller can report the head that actually survived. */
+export type RecordDependencyLineHeadOutcome =
+  | {
+      readonly recorded: true;
+      readonly movement: "advanced" | "restated";
+      readonly detail: string;
+      readonly line: DependencyLine;
+    }
+  | {
+      readonly recorded: false;
+      readonly reason: HeadRefusalReason;
+      readonly detail: string;
+      readonly line: DependencyLine;
+    };
+
 /**
- * Record the head of a line as OBSERVED by M21.4 detection. Writes only the `latest_*` trio, so it
- * cannot disturb the identity columns or the declared producer link.
+ * THE ONE WRITER OF THE `latest_*` TRIO — both M21.4 ingresses (internal detection and the
+ * third-party poll) reach those columns only through here.
  *
- * NOTE for the detection slice: this is an unconditional write of observation state, NOT a Decision.
- * Any per-tick VERDICT built on top of it must go through `insertDecisionIfChanged` — a daily poll
- * re-writing a byte-identical "no new version" Decision per dependency reproduces the measured
- * 1.44 GB/day amplification exactly (ADR-0032 §7, ADR-0024).
+ * It writes only that trio, so it cannot disturb the identity columns or the declared producer
+ * link. What is new in M21.4 is that it also DECIDES rather than obeying: every rule about what
+ * `latest_version`/`latest_digest` MEAN is applied here, once, instead of at each caller — because
+ * the two callers demonstrably meant different things by them. `line-head.ts` states the meaning in
+ * full; the three rules enforced here are:
+ *
+ *  1. THE VERSION MUST BE ON THIS LINE — the same major line at the line's own precision, and for
+ *     `oci` the same variant `tag_pattern` names. A `1.9.9` on the `2` line, or a plain tag on an
+ *     `-alpine` line, is refused rather than written.
+ *  2. THE HEAD NEVER MOVES BACKWARDS. A hotfix on an older minor of the same line is a real release
+ *     and is not its head: it is refused with `behind_head`, and it belongs in the caller's
+ *     Decision, which is where "this release happened and the head did not move" is recorded.
+ *  3. THE DIGEST BELONGS TO THE VERSION. It is written from the SAME observation as the version and
+ *     is never inherited across a version change, so the row cannot assert a (tag, digest) pair that
+ *     never existed in any registry. A restatement of the SAME version may fill a digest in, and a
+ *     null there does not erase the digest already resolved for that same version — nothing is
+ *     claimed that was not seen, and nothing true is discarded.
+ *
+ * The row is taken FOR UPDATE first, because the decision reads the current head and both ingresses
+ * can run at once (a daily tick, an accepted change): reading without the lock would let two
+ * transactions each decide "I am ahead" against the same stale value and let the loser land last.
  */
 export async function recordDependencyLineHead(
   tx: TenantTx,
   orgId: string,
   input: ObserveDependencyLineHeadInput
-): Promise<DependencyLine> {
+): Promise<RecordDependencyLineHeadOutcome> {
+  const [current] = await tx
+    .select()
+    .from(dependencyLines)
+    .where(and(eq(dependencyLines.orgId, orgId), eq(dependencyLines.id, input.lineId)))
+    .limit(1)
+    .for("update");
+  if (!current) throw new Error(`dependency line not found: ${input.lineId}`);
+  const before = toDependencyLine(current);
+
+  const movement = evaluateHeadMovement(before, input.latestVersion);
+  if (!movement.moves) {
+    return { recorded: false, reason: movement.reason, detail: movement.detail, line: before };
+  }
+
+  // THE PAIR MOVES TOGETHER. On an ADVANCE the digest is whatever THIS observation resolved —
+  // including `null`, which honestly says "this version's bytes were not resolved" and is the only
+  // way the previous version's digest cannot survive beside a new tag. On a RESTATEMENT the stored
+  // digest already belongs to this same version, so a null leaves it and a non-null (a repointed
+  // tag) replaces it.
+  const latestDigest =
+    movement.movement === "advanced"
+      ? input.latestDigest
+      : (input.latestDigest ?? before.latestDigest);
+
   const now = new Date();
-  // A mutable tag is not an identity (ADR-0032 §7) — for `oci` the digest is what the version claim
-  // actually means. An OMITTED `latestDigest` leaves the stored one alone (the key is absent from
-  // the SET list, not set to undefined, which drizzle would render as a literal NULL); an EXPLICIT
-  // `null` clears it, which is what a language ecosystem supplies.
-  //
-  // Both branches are pinned by "an omitted digest leaves the stored one alone, an explicit null
-  // clears it" in `dependency-inventory.integration.test.ts`. The inverted form
-  // (`{ latestDigest: input.latestDigest ?? null }`) type-checks identically, and under it a
-  // language-ecosystem poll that omits the field would silently erase an image line's digest.
-  const digestPatch = input.latestDigest === undefined ? {} : { latestDigest: input.latestDigest };
   const [row] = await tx
     .update(dependencyLines)
     .set({
       latestVersion: input.latestVersion,
-      ...digestPatch,
+      latestDigest,
       latestObservedAt: now,
       updatedAt: now
     })
     .where(and(eq(dependencyLines.orgId, orgId), eq(dependencyLines.id, input.lineId)))
     .returning();
   if (!row) throw new Error(`dependency line not found: ${input.lineId}`);
-  return toDependencyLine(row);
+  return {
+    recorded: true,
+    movement: movement.movement,
+    detail: movement.detail,
+    line: toDependencyLine(row)
+  };
 }
 
 /**
@@ -409,4 +468,45 @@ export async function listDependencyLinesByIds(
     .from(dependencyLines)
     .where(and(eq(dependencyLines.orgId, orgId), inArray(dependencyLines.id, lineIds)));
   return rows.map(toDependencyLine);
+}
+
+/**
+ * The same batched point lookup, NARROWED IN SQL TO THIRD-PARTY LINES — the poll's only door onto
+ * `dependency_lines` (ADR-0032 §7's ingress split).
+ *
+ * An INTERNAL line (`produced_by_object_id IS NOT NULL`) has its head DERIVED from the org's own
+ * production releases and must never be asked of a public index: a stranger's package sharing the
+ * coordinate would otherwise overwrite the org's own `2.1.0` with `9.9.9` and every subscriber would
+ * be bumped onto it. That is dependency confusion, delivered by a background job on a timer.
+ *
+ * TWO INDEPENDENT BARRIERS, deliberately, because a filter is precisely what a caller forgets:
+ *   1. this predicate, so an internal line is never even loaded into the work-list; and
+ *   2. the {@link ThirdPartyLine} brand this returns — `queryLineHead` accepts nothing else, so a
+ *      future caller that hydrates lines some other way does not compile rather than silently
+ *      polling.
+ * `isNull` is what makes barrier 1 real and `asThirdPartyLine` re-reads the same column for barrier
+ * 2, so removing either alone still leaves the other refusing.
+ */
+export async function listThirdPartyDependencyLinesByIds(
+  tx: TenantTx,
+  orgId: string,
+  lineIds: string[]
+): Promise<ThirdPartyLine[]> {
+  if (lineIds.length === 0) return [];
+  const rows = await tx
+    .select()
+    .from(dependencyLines)
+    .where(
+      and(
+        eq(dependencyLines.orgId, orgId),
+        inArray(dependencyLines.id, lineIds),
+        isNull(dependencyLines.producedByObjectId)
+      )
+    );
+  const out: ThirdPartyLine[] = [];
+  for (const row of rows) {
+    const line = asThirdPartyLine(toDependencyLine(row));
+    if (line !== null) out.push(line);
+  }
+  return out;
 }

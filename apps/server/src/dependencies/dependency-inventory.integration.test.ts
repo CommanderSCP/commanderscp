@@ -257,10 +257,10 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // A declaration row is a SNAPSHOT OF ONE MANIFEST READ, not an accumulator. The update branch
     // writes `resolvedVersion`/`resolvedDigest`/`observedRef` as `input ?? null`
     // (dependency-inventory-repo.ts:298-304), so a re-read that resolves nothing CLEARS what the
-    // last read resolved — deliberately the opposite of `recordDependencyLineHead`'s digest rule
-    // (omitted keeps, explicit null clears): the head is a fact about the LINE that must survive a
-    // manifest sweep, while these three are only what THIS manifest said THIS time, and a stale
-    // digest beside a fresh `declaredVersion` would claim bytes nobody resolved.
+    // last read resolved — the same instinct as `recordDependencyLineHead`'s digest rule (a digest
+    // always belongs to the version stored beside it) applied to the row that carries it: these
+    // three are only what THIS manifest said THIS time, and a stale digest beside a fresh
+    // `declaredVersion` would claim bytes nobody resolved.
     //
     // Pinned because nothing else did: deleting all three keys from that SET list left every other
     // test in this file green. If M21.3 ever wants preserve-on-omit here, this assertion is the
@@ -491,7 +491,11 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         ecosystem: "oci",
         coordinate: "registry.internal/base/node",
         major: "22",
-        tagPattern: "22.*"
+        // `tag_pattern` is the line's LITERAL VARIANT SUFFIX and nothing else — one meaning, read in
+        // one place (`line-head.ts`). A glob (`22.*`) matches no variant, so a line spelled that way
+        // has NO eligible tags and every observation of it is refused: legible, and the reason this
+        // fixture spells a real variant.
+        tagPattern: "-alpine"
       })
     );
     // NULL is "not yet observed", NOT "no newer version exists" — absent never means zero.
@@ -514,23 +518,28 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     const observed = await inA((tx) =>
       recordDependencyLineHead(tx, orgA.orgId, {
         lineId: line.id,
-        latestVersion: "22.6.0",
+        latestVersion: "22.6.0-alpine",
         latestDigest: "sha256:" + "b".repeat(64)
       })
     );
-    expect(observed.latestVersion).toBe("22.6.0");
-    expect(observed.latestDigest).toBe("sha256:" + "b".repeat(64));
-    expect(observed.latestObservedAt).not.toBeNull();
+    expect(
+      observed.recorded,
+      "the head must actually have moved for this test to mean anything"
+    ).toBe(true);
+    if (!observed.recorded) throw new Error("unreachable");
+    expect(observed.line.latestVersion).toBe("22.6.0-alpine");
+    expect(observed.line.latestDigest).toBe("sha256:" + "b".repeat(64));
+    expect(observed.line.latestObservedAt).not.toBeNull();
     // Identity columns are untouched by an observation.
-    expect(observed.coordinate).toBe("registry.internal/base/node");
-    expect(observed.major).toBe("22");
-    expect(observed.tagPattern).toBe("22.*");
+    expect(observed.line.coordinate).toBe("registry.internal/base/node");
+    expect(observed.line.major).toBe("22");
+    expect(observed.line.tagPattern).toBe("-alpine");
     // ...and so is the producer link, all three columns of it. Registry observation and operator
     // declaration are different ingresses (ADR-0032 §7); the observation's SET list reaching
     // `produced_by_*` is a one-key edit that no constraint and no type would catch.
-    expect(observed.producedByObjectId).toBe(producer);
-    expect(observed.producedByDeclaredAt).toBe(declared.producedByDeclaredAt);
-    expect(observed.producedByDeclaredByObjectId).toBe(adminObjectIdA);
+    expect(observed.line.producedByObjectId).toBe(producer);
+    expect(observed.line.producedByDeclaredAt).toBe(declared.producedByDeclaredAt);
+    expect(observed.line.producedByDeclaredByObjectId).toBe(adminObjectIdA);
   });
 
   it("declaring a producer AFTER the head was observed cannot clobber the observation", async () => {
@@ -554,19 +563,21 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       upsertDependencyLine(tx, orgA.orgId, {
         ecosystem: "oci",
         coordinate: "registry.internal/base/declare-after-observe",
-        major: "22",
-        tagPattern: "22.*"
+        major: "22"
       })
     );
 
     // OBSERVATION FIRST — this is the state the declaration must leave alone.
-    const observed = await inA((tx) =>
+    const written = await inA((tx) =>
       recordDependencyLineHead(tx, orgA.orgId, {
         lineId: line.id,
         latestVersion: "22.7.0",
         latestDigest: digest
       })
     );
+    expect(written.recorded).toBe(true);
+    if (!written.recorded) throw new Error("unreachable");
+    const observed = written.line;
     expect(observed.latestObservedAt).not.toBeNull();
 
     const declared = await inA((tx) =>
@@ -603,20 +614,23 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(retracted.latestObservedAt).toBe(observed.latestObservedAt);
   });
 
-  it("an omitted latestDigest leaves the stored one alone; an explicit null clears it", async () => {
+  // MUTATION LOG for the two tests below — applied, watched fail, reverted, watched pass:
+  // | `latestDigest: input.latestDigest ?? before.latestDigest` on an advance (the pre-fix inherit) | "the digest always belongs to the version stored beside it" FAILS |
+  // | `evaluateHeadMovement` never returns `behind_head` | "the write door REFUSES a version that would move the head backwards" FAILS |
+  it("the digest always belongs to the version stored beside it — never a previous version's", async () => {
     // For `oci`, the digest is what a version claim MEANS (ADR-0032 §7) — "we are on 3.20" is a
-    // statement about bytes. The two cases below are distinguished by `undefined` vs `null` in
-    // `recordDependencyLineHead`, which is a distinction TypeScript does not enforce anywhere: the
-    // inverted implementation (`latestDigest: input.latestDigest ?? null`) compiles identically, and
-    // under it a language-ecosystem poll that omits the field would silently wipe an image line's
-    // digest — a version claim that no longer says anything about bytes.
+    // statement about bytes. The defect this pins is what an OPTIONAL digest allowed: a writer that
+    // moved `latest_version` and omitted the digest left the PREVIOUS version's digest standing
+    // beside the new tag, so the row asserted a (tag, digest) pair that never existed in any
+    // registry. The field is required now, and this asserts the rule that makes it coherent: the
+    // pair moves TOGETHER on an advance, and a restatement of the SAME version may fill a digest in
+    // but a null does not throw away one already resolved for that same version.
     const digest = "sha256:" + "d".repeat(64);
     const line = await inA((tx) =>
       upsertDependencyLine(tx, orgA.orgId, {
         ecosystem: "oci",
         coordinate: "registry.internal/base/digest-semantics",
-        major: "3",
-        tagPattern: "3.*"
+        major: "3"
       })
     );
     const withDigest = await inA((tx) =>
@@ -626,27 +640,111 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         latestDigest: digest
       })
     );
-    expect(withDigest.latestDigest).toBe(digest);
+    expect(withDigest.recorded).toBe(true);
+    if (!withDigest.recorded) throw new Error("unreachable");
+    expect(withDigest.line.latestDigest).toBe(digest);
 
-    // OMITTED — the key never reaches the SET list, so the stored digest survives.
-    const omitted = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, { lineId: line.id, latestVersion: "3.20.1" })
-    );
-    // NEGATIVE CONTROL: the write happened, so the surviving digest is not "nothing was updated".
-    expect(omitted.latestVersion).toBe("3.20.1");
-    expect(omitted.latestDigest).toBe(digest);
-
-    // EXPLICIT null — the caller is saying this line has no digest, which is what the four language
-    // ecosystems supply. It clears.
-    const cleared = await inA((tx) =>
+    // RE-OBSERVING THE SAME VERSION with no digest keeps the one already resolved FOR THAT VERSION —
+    // it is still true, and discarding it would lose a fact for nothing.
+    const restated = await inA((tx) =>
       recordDependencyLineHead(tx, orgA.orgId, {
         lineId: line.id,
-        latestVersion: "3.20.2",
+        latestVersion: "3.20.0",
         latestDigest: null
       })
     );
-    expect(cleared.latestVersion).toBe("3.20.2");
-    expect(cleared.latestDigest).toBeNull();
+    expect(restated.recorded).toBe(true);
+    if (!restated.recorded) throw new Error("unreachable");
+    expect(restated.movement).toBe("restated");
+    expect(restated.line.latestDigest).toBe(digest);
+
+    // ADVANCING with no digest CLEARS it. This is the whole defect: `3.20.1` is not those bytes, and
+    // a row saying it is, is a false statement in an audit record.
+    const advanced = await inA((tx) =>
+      recordDependencyLineHead(tx, orgA.orgId, {
+        lineId: line.id,
+        latestVersion: "3.20.1",
+        latestDigest: null
+      })
+    );
+    expect(advanced.recorded).toBe(true);
+    if (!advanced.recorded) throw new Error("unreachable");
+    // NEGATIVE CONTROL: the write happened, so the cleared digest is not "nothing was updated".
+    expect(advanced.line.latestVersion).toBe("3.20.1");
+    expect(advanced.line.latestDigest).toBeNull();
+
+    // …and an advance WITH a digest carries the new one, so "clears" above is about this
+    // observation having none rather than about advances losing digests.
+    const next = "sha256:" + "e".repeat(64);
+    const advancedWithDigest = await inA((tx) =>
+      recordDependencyLineHead(tx, orgA.orgId, {
+        lineId: line.id,
+        latestVersion: "3.20.2",
+        latestDigest: next
+      })
+    );
+    expect(advancedWithDigest.recorded).toBe(true);
+    if (!advancedWithDigest.recorded) throw new Error("unreachable");
+    expect(advancedWithDigest.line.latestDigest).toBe(next);
+  });
+
+  it("the write door REFUSES a version that would move the head backwards or off the line", async () => {
+    // The door is the ONE place both M21.4 ingresses reach these columns through, so the rules live
+    // here rather than at each caller — the arrangement that exists because the two callers meant
+    // different things by `latest_version`. Refused writes leave every column alone.
+    const line = await inA((tx) =>
+      upsertDependencyLine(tx, orgA.orgId, {
+        ecosystem: "npm",
+        coordinate: "@acme/head-rules",
+        major: "1"
+      })
+    );
+    const head = await inA((tx) =>
+      recordDependencyLineHead(tx, orgA.orgId, {
+        lineId: line.id,
+        latestVersion: "1.10.0",
+        latestDigest: null
+      })
+    );
+    expect(head.recorded).toBe(true);
+
+    // A HOTFIX ON AN OLDER MINOR of the same line. A real release, and not this line's head.
+    const behind = await inA((tx) =>
+      recordDependencyLineHead(tx, orgA.orgId, {
+        lineId: line.id,
+        latestVersion: "1.9.10",
+        latestDigest: null
+      })
+    );
+    expect(behind.recorded).toBe(false);
+    if (behind.recorded) throw new Error("unreachable");
+    expect(behind.reason).toBe("behind_head");
+    expect(behind.line.latestVersion, "the column was left alone").toBe("1.10.0");
+
+    // A RELEASE FROM ANOTHER LINE, refused for its own reason.
+    const offLine = await inA((tx) =>
+      recordDependencyLineHead(tx, orgA.orgId, {
+        lineId: line.id,
+        latestVersion: "2.0.0",
+        latestDigest: null
+      })
+    );
+    expect(offLine.recorded).toBe(false);
+    if (offLine.recorded) throw new Error("unreachable");
+    expect(offLine.reason).toBe("different_major_line");
+
+    // POSITIVE CONTROL: a genuinely newer release on the line still lands, so the two refusals are
+    // about the versions and not about a door that refuses everything.
+    const ahead = await inA((tx) =>
+      recordDependencyLineHead(tx, orgA.orgId, {
+        lineId: line.id,
+        latestVersion: "1.11.0",
+        latestDigest: null
+      })
+    );
+    expect(ahead.recorded).toBe(true);
+    if (!ahead.recorded) throw new Error("unreachable");
+    expect(ahead.line.latestVersion).toBe("1.11.0");
   });
 
   it("manifest re-ingestion cannot clobber a declared producer or an observed head", async () => {
@@ -660,8 +758,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     const key = {
       ecosystem: "oci",
       coordinate: "registry.internal/base/reingest",
-      major: "3",
-      tagPattern: "3.*"
+      major: "3"
     } as const;
 
     const line = await inA((tx) => upsertDependencyLine(tx, orgA.orgId, key));
@@ -672,23 +769,26 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         declaredByObjectId: adminObjectIdA
       })
     );
-    const observed = await inA((tx) =>
+    const written = await inA((tx) =>
       recordDependencyLineHead(tx, orgA.orgId, {
         lineId: line.id,
         latestVersion: "3.20.1",
         latestDigest: "sha256:" + "c".repeat(64)
       })
     );
+    expect(written.recorded).toBe(true);
+    if (!written.recorded) throw new Error("unreachable");
+    const observed = written.line;
 
     // The manifest ingress runs again over the same natural key, carrying a NEW tag pattern — the
     // one column its update branch is allowed to touch.
     const reingested = await inA((tx) =>
-      upsertDependencyLine(tx, orgA.orgId, { ...key, tagPattern: "3.2*" })
+      upsertDependencyLine(tx, orgA.orgId, { ...key, tagPattern: "-alpine" })
     );
     expect(reingested.id).toBe(line.id);
     // NEGATIVE CONTROL: the update branch genuinely executed, so the six preserved fields below are
     // not "the upsert did nothing".
-    expect(reingested.tagPattern).toBe("3.2*");
+    expect(reingested.tagPattern).toBe("-alpine");
 
     // The operator's declaration survives an ingestion run. If it did not, a nightly manifest sweep
     // would quietly return every internal line to third-party.
@@ -717,7 +817,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       })
     );
     expect(withoutPattern.id).toBe(line.id);
-    expect(withoutPattern.tagPattern).toBe("3.2*");
+    expect(withoutPattern.tagPattern).toBe("-alpine");
   });
 
   // -----------------------------------------------------------------------------------------

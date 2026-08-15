@@ -45,6 +45,11 @@ import type {
   ControlRequest,
   Cursor,
   DeliveryResult,
+  DependencyIndexCapabilities,
+  DependencyIndexDigestResult,
+  DependencyIndexEcosystem,
+  DependencyIndexQuery,
+  DependencyIndexResult,
   DiscoveryProposal,
   DomainCursor,
   ExecutionStatus,
@@ -56,11 +61,14 @@ import type {
   NotificationMessage,
   TriggerIntent
 } from "@scp/plugin-api";
+import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 import type {
   ControlPluginClient,
+  DependencyIndexPluginClient,
   DiscoveryPluginClient,
   ExecutorPluginClient,
   FederationTransportPluginClient,
+  GitFileReadPluginClient,
   NotificationPluginClient,
   PluginHost,
   PluginHostInstanceConfig
@@ -290,12 +298,40 @@ export class SubprocessPluginHost implements PluginHost {
 
   async stop(): Promise<void> {
     for (const instance of this.instances.values()) {
-      instance.stopped = true;
-      if (instance.restartTimer) clearTimeout(instance.restartTimer);
-      this.rejectAllPending(instance, new Error("plugin host is stopping"));
-      instance.child?.kill("SIGTERM");
+      this.tearDown(instance, "plugin host is stopping");
     }
     this.instances.clear();
+  }
+
+  /**
+   * M21.4 — stop and FORGET a named subset, leaving every other instance running. See
+   * `PluginHost.stopInstances` for why a partial stop exists (the version poll's index instances are
+   * derived from a work-list, not from operator configuration, and accumulated per org forever).
+   *
+   * Teardown is byte-identical to `stop()`'s — the same `tearDown` both now call, so the two can
+   * never drift on what "stopped" means. `stopped = true` BEFORE the kill is what makes it a stop
+   * rather than a crash: `scheduleRestart` checks that flag, so the child's `exit` event does not
+   * respawn it. Deleting the id from the registry is what lets a later `start()` spawn it afresh —
+   * `start()` skips an id it already holds.
+   *
+   * Unknown ids are ignored: a sweep that threw before starting an instance must still be able to
+   * hand its whole intended set to this from a `finally`.
+   */
+  async stopInstances(instanceIds: readonly string[]): Promise<void> {
+    for (const id of instanceIds) {
+      const instance = this.instances.get(id);
+      if (!instance) continue;
+      this.tearDown(instance, `plugin instance ${id} is being stopped`);
+      this.instances.delete(id);
+    }
+  }
+
+  /** The one teardown, shared by `stop()` and `stopInstances()`. */
+  private tearDown(instance: Instance, why: string): void {
+    instance.stopped = true;
+    if (instance.restartTimer) clearTimeout(instance.restartTimer);
+    this.rejectAllPending(instance, new Error(why));
+    instance.child?.kill("SIGTERM");
   }
 
   /** Test-only: forcibly kills the currently-running child for `instanceId`, simulating a crash
@@ -358,6 +394,41 @@ export class SubprocessPluginHost implements PluginHost {
       pull: (cursor: DomainCursor) => call<JournalSegment[]>("pull", { cursor }),
       exportBundle: (opts: ExportOptions) => call<BundleRef>("exportBundle", { opts }),
       importBundle: (bundle: BundleRef) => call<ImportReport>("importBundle", { bundle })
+    };
+  }
+
+  /** M21.4 counterpart for a `DependencyIndexPlugin` instance (ADR-0032 §7) — same host, same
+   *  timeout/restart-with-backoff guarantees, same egress-guarded `ScopedHttpClient`. */
+  dependencyIndex(instanceId: string): DependencyIndexPluginClient {
+    const call = <T>(method: string, params?: unknown): Promise<T> =>
+      this.call(instanceId, method, params) as Promise<T>;
+    return {
+      listVersions: (query: DependencyIndexQuery) =>
+        call<DependencyIndexResult>("listVersions", { query }),
+      resolveDigest: (ref: {
+        ecosystem: DependencyIndexEcosystem;
+        coordinate: string;
+        version: string;
+      }) => call<DependencyIndexDigestResult>("resolveDigest", { ref }),
+      describeIndex: () => call<DependencyIndexCapabilities>("describeIndex")
+    };
+  }
+
+  /**
+   * M21.4 (ADR-0032 §7a) — the git-provider file read. Same host, same instance registry, same
+   * timeout/restart-with-backoff and the same egress-guarded `ScopedHttpClient` the executor verbs
+   * on this instance use, because it IS the same subprocess and the same binding's credentials.
+   *
+   * The instance id is an EXECUTOR instance's id — a git binding is one hosted instance, and the
+   * subprocess loads the adapter's hook beside the four-verb plugin (subprocess-entry.ts's
+   * `ReadFileHook`). Addressed through its own accessor rather than as a fifth method on
+   * `executor()` so the four-verb set stays the four-verb set (ADR-0032 §9). An instance whose
+   * module has no such hook rejects the call, from the subprocess, naming that.
+   */
+  gitFileRead(instanceId: string): GitFileReadPluginClient {
+    return {
+      readFileAtRef: (request: ReadFileAtRefRequest) =>
+        this.call(instanceId, "readFileAtRef", { request }) as Promise<ReadFileAtRefResult>
     };
   }
 
