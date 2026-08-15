@@ -41,7 +41,13 @@ import type { DependencyEcosystem } from "./types.js";
  * `DependencyEcosystem` without adding it here — so the two mechanisms cover different halves:
  * compile-time catches a missing member, the runtime comparison catches a renamed one.
  */
-const PARSER_ECOSYSTEMS = ["npm", "go", "maven", "python", "oci"] as const satisfies readonly DependencyEcosystem[];
+const PARSER_ECOSYSTEMS = [
+  "npm",
+  "go",
+  "maven",
+  "python",
+  "oci"
+] as const satisfies readonly DependencyEcosystem[];
 
 describe("ecosystem vocabulary", () => {
   it("is the identical set on both sides of the parser/schema boundary", () => {
