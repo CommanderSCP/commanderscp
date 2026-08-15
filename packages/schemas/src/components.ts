@@ -112,6 +112,10 @@ export const ComponentPipelineSourceMappingSchema = z.object({
   /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting ONLY, never an
    *  enforcement input. Rendered as a label; it grants and withholds nothing. */
   classification: PipelineClassificationSchema.nullable(),
+  /** DECLARED provenance (outpost-ui.md §9.3a): `true` = a local mirror of a commander-shared repo;
+   *  `false` = domain-specific, tracked only in this domain. The source lane groups by it. Read,
+   *  never inferred; never an enforcement input. */
+  mirrorOfShared: z.boolean(),
   /** The repo's web page, or null when it cannot be known — a GLOBBED `repoPattern` names a set of
    *  repos rather than a page, and a self-hosted provider's host is not recorded on a mapping. */
   url: z.string().nullable()

@@ -2065,6 +2065,7 @@ export const zGetComponentPipelineResponse = z.object({
             'configuration'
         ]),
         classification: z.enum(['dev', 'beta']).nullable(),
+        mirrorOfShared: z.boolean(),
         url: z.string().nullable()
     })),
     stages: z.array(z.object({
@@ -3385,7 +3386,8 @@ export const zCreatePlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]).optional(),
-            classification: z.enum(['dev', 'beta']).optional()
+            classification: z.enum(['dev', 'beta']).optional(),
+            mirrorOfShared: z.boolean().optional()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3465,6 +3467,7 @@ export const zCreatePlanResponse = z.object({
                 'configuration'
             ]),
             classification: z.enum(['dev', 'beta']).nullable(),
+            mirrorOfShared: z.boolean(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3561,7 +3564,8 @@ export const zGetPlanResponse = z.object({
                 'infrastructure',
                 'configuration'
             ]).optional(),
-            classification: z.enum(['dev', 'beta']).optional()
+            classification: z.enum(['dev', 'beta']).optional(),
+            mirrorOfShared: z.boolean().optional()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3641,6 +3645,7 @@ export const zGetPlanResponse = z.object({
                 'configuration'
             ]),
             classification: z.enum(['dev', 'beta']).nullable(),
+            mirrorOfShared: z.boolean(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3738,7 +3743,8 @@ export const zApplyPlanResponse = z.object({
                     'infrastructure',
                     'configuration'
                 ]).optional(),
-                classification: z.enum(['dev', 'beta']).optional()
+                classification: z.enum(['dev', 'beta']).optional(),
+                mirrorOfShared: z.boolean().optional()
             })).optional(),
             executorBindings: z.array(z.object({
                 targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3818,6 +3824,7 @@ export const zApplyPlanResponse = z.object({
                     'configuration'
                 ]),
                 classification: z.enum(['dev', 'beta']).nullable(),
+                mirrorOfShared: z.boolean(),
                 reason: z.string()
             })).optional(),
             placements: z.array(z.object({
@@ -4417,6 +4424,7 @@ export const zListSourceMappingsResponse = z.object({
             'configuration'
         ]),
         classification: z.enum(['dev', 'beta']).nullable(),
+        mirrorOfShared: z.boolean(),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
     })),
     nextCursor: z.string().nullable()
@@ -4447,6 +4455,7 @@ export const zCreateSourceMappingResponse = z.object({
         'configuration'
     ]),
     classification: z.enum(['dev', 'beta']).nullable(),
+    mirrorOfShared: z.boolean(),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
 });
 

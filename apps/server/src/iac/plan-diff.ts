@@ -79,6 +79,10 @@ export interface ResolvedManifestSourceMapping {
   refPattern: string | null;
   type: ExecutorType;
   classification: PipelineClassification | null;
+  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a) — descriptive like
+   *  `classification`, and like it NOT part of `sourceMappingKey`: a mapping whose declared
+   *  provenance changed is the same mapping, not a delete + create. */
+  mirrorOfShared: boolean;
 }
 
 /**
@@ -480,6 +484,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       refPattern: mapping.refPattern,
       type: mapping.type,
       classification: mapping.classification,
+      mirrorOfShared: mapping.mirrorOfShared,
       reason: exists ? "matches current state" : "no existing source mapping with this identity"
     });
     if (exists) noops++;
@@ -549,6 +554,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       refPattern: managed.refPattern,
       type: managed.type,
       classification: managed.classification,
+      mirrorOfShared: managed.mirrorOfShared,
       reason:
         "on an object this stack owns, no longer present in the desired manifest's sourceMappings"
     });

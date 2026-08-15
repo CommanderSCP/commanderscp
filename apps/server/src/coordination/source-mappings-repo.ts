@@ -25,6 +25,7 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     type,
     category: categoryOfType(type),
     classification: parsePipelineClassification(row.classification),
+    mirrorOfShared: row.mirrorOfShared,
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -38,6 +39,8 @@ export interface CreateSourceMappingInput {
   componentIdOrUrn: string;
   type?: ExecutorType;
   classification?: PipelineClassification;
+  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a); omitted = domain-specific. */
+  mirrorOfShared?: boolean;
 }
 
 export async function createSourceMapping(
@@ -56,7 +59,8 @@ export async function createSourceMapping(
       refPattern: input.refPattern ?? null,
       componentObjectId: component.id,
       type: input.type ?? "configuration",
-      classification: input.classification ?? null
+      classification: input.classification ?? null,
+      mirrorOfShared: input.mirrorOfShared ?? false
     })
     .returning();
   if (!row) throw new Error("failed to insert source mapping");
@@ -84,6 +88,8 @@ export interface BackfillSourceMappingInput {
   refPattern?: string;
   type?: ExecutorType;
   classification?: PipelineClassification;
+  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a); omitted = domain-specific. */
+  mirrorOfShared?: boolean;
 }
 
 export interface BackfillSourceMappingsResult {
@@ -162,7 +168,8 @@ export async function backfillSourceMappings(
       refPattern: m.refPattern,
       componentIdOrUrn: componentId,
       type: m.type,
-      classification: m.classification
+      classification: m.classification,
+      mirrorOfShared: m.mirrorOfShared
     });
     createdSourceMappingIds.push(created.id);
   }

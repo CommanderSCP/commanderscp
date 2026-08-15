@@ -90,7 +90,10 @@ export const ManifestSourceMappingSchema = z.object({
   type: ExecutorTypeSchema.optional(),
   /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting only, never an
    *  enforcement input, and deliberately outside the identity tuple above. */
-  classification: PipelineClassificationSchema.optional()
+  classification: PipelineClassificationSchema.optional(),
+  /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a). Like `classification`, NOT part
+   *  of the mapping's identity — a descriptive label; omitted means domain-specific. */
+  mirrorOfShared: z.boolean().optional()
 });
 export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
 
@@ -270,6 +273,7 @@ export const PlanSourceMappingDiffEntrySchema = z.object({
   /** Descriptive only, and outside the identity tuple — shown so a plan that introduces or clears a
    *  `dev` label is legible, not because it participates in matching. */
   classification: PipelineClassificationSchema.nullable(),
+  mirrorOfShared: z.boolean(),
   reason: z.string()
 });
 export type PlanSourceMappingDiffEntry = z.infer<typeof PlanSourceMappingDiffEntrySchema>;

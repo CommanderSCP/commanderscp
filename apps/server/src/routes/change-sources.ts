@@ -409,7 +409,8 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           refPattern: request.body.refPattern,
           componentIdOrUrn: request.body.component,
           type: request.body.type,
-          classification: request.body.classification
+          classification: request.body.classification,
+          mirrorOfShared: request.body.mirrorOfShared
         });
       });
       reply.status(201).send(mapping);

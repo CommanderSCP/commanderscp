@@ -22,6 +22,7 @@ describe("diffEntryRow: source-mapping entries carry the ref that identifies the
     refPattern: null,
     type: "configuration",
     classification: null,
+    mirrorOfShared: false,
     reason: "no longer declared"
   };
 

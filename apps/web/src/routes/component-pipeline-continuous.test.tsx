@@ -372,6 +372,7 @@ function source(over: Partial<ComponentPipelineResponse["sources"][number]> = {}
     type: "configuration",
     category: "configuration" as const,
     classification: null,
+    mirrorOfShared: false,
     url: "https://github.com/AgentKitProject/agentkit",
     ...over
   };

@@ -423,7 +423,8 @@ export async function computeDiffForManifest(
       // one that does, on every single run.
       refPattern: row.refPattern,
       type: row.type,
-      classification: row.classification
+      classification: row.classification,
+      mirrorOfShared: row.mirrorOfShared
     });
   }
 
@@ -485,7 +486,10 @@ export async function computeDiffForManifest(
       pathPattern: m.pathPattern ?? null,
       refPattern: m.refPattern ?? null,
       type: m.type ?? DEFAULT_BINDING_TYPE,
-      classification: m.classification ?? null
+      classification: m.classification ?? null,
+      // Descriptive, like classification — NOT part of the identity (iac.ts): a mapping that only
+      // changed its declared provenance is the same mapping, not a delete+create.
+      mirrorOfShared: m.mirrorOfShared ?? false
     })),
     placements: (manifest.placements ?? []).map((pl) => ({
       componentUrn: pl.componentUrn,
@@ -1172,7 +1176,8 @@ export async function executePlanDiff(
       ...(entry.refPattern !== null ? { refPattern: entry.refPattern } : {}),
       componentIdOrUrn: endpointId(entry.componentUrn),
       type: entry.type,
-      ...(entry.classification !== null ? { classification: entry.classification } : {})
+      ...(entry.classification !== null ? { classification: entry.classification } : {}),
+      ...(entry.mirrorOfShared ? { mirrorOfShared: true } : {})
     });
   }
 

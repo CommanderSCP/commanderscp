@@ -54,6 +54,7 @@ const MAPPING: ComponentPipelineResponse["sources"][number] = {
   type: "configuration",
   category: "configuration",
   classification: null,
+  mirrorOfShared: false,
   url: "https://github.com/jag8765/agentkit-bootstrap"
 };
 
@@ -133,6 +134,21 @@ describe("A1 — source-mapping authoring", () => {
     // The Type is a live choice on this form (A1's whole point), not a value worth omitting —
     // unlike the create-source-mapping wire schema, this builder always states it.
     expect(blank.type).toBe("configuration");
+    // mirrorOfShared (outpost-ui.md §9.3a): omitted when unticked — the wire's default is
+    // domain-specific, and an unticked box must change NOTHING on the wire (same rule as an empty
+    // classification). Present as `true` only when declared.
+    expect("mirrorOfShared" in blank).toBe(false);
+    expect("mirrorOfShared" in filled).toBe(false);
+    const declared = buildCreateMappingPayload({
+      repoPattern: "field/shared-asg-mirror",
+      pathPattern: "",
+      refPattern: "",
+      component: "comp-1",
+      type: "infrastructure",
+      classification: "",
+      mirrorOfShared: true
+    });
+    expect(declared.mirrorOfShared).toBe(true);
   });
 
   it("SourceMappingForm offers exactly the request schema's operator-facing fields — component is implicit (this page IS the component), nothing else is added or missing", () => {
@@ -143,6 +159,7 @@ describe("A1 — source-mapping authoring", () => {
       "mapping-source-kind-select",
       "mapping-type-select",
       "mapping-classification-select",
+      "mapping-mirror-of-shared",
       "mapping-repo-input",
       "mapping-path-input",
       "mapping-ref-input",
@@ -155,6 +172,10 @@ describe("A1 — source-mapping authoring", () => {
     expect(html).toContain("Path pattern");
     expect(html).toContain("Ref pattern");
     expect(html).toContain("Classification");
+    // §9.3a: the declaration is stated as what it is — a mirror of the commander's source — and
+    // the help copy names both the case it is for and its inertness.
+    expect(html).toContain("mirror of a commander-shared source");
+    expect(html).toContain("Declared, never inferred");
     // No operator-facing "component" field — CreateSourceMappingRequestSchema's `component` is
     // filled from the route param, never re-asked.
     expect(html).not.toMatch(/>\s*Component\s*</);

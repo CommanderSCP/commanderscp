@@ -4632,6 +4632,10 @@ export function buildProgram(): Command {
       "--classification <label>",
       "declared pipeline classification: dev|beta (UI/reporting ONLY — never an enforcement input, ADR-0030 §3)"
     )
+    .option(
+      "--mirror-of-shared",
+      "declare this repo a local MIRROR of a commander-shared source (outpost-ui.md §9.3a) — omit for a domain-specific repo; UI/reporting only, never an enforcement input"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -4644,6 +4648,7 @@ export function buildProgram(): Command {
           ref?: string;
           type?: ExecutorType;
           classification?: PipelineClassification;
+          mirrorOfShared?: boolean;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -4653,7 +4658,8 @@ export function buildProgram(): Command {
           pathPattern: opts.path,
           refPattern: opts.ref,
           type: opts.type,
-          classification: opts.classification
+          classification: opts.classification,
+          ...(opts.mirrorOfShared ? { mirrorOfShared: true } : {})
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }

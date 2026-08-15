@@ -636,6 +636,21 @@ export const sourceMappings = pgTable(
     // federation peer never reaches `exportPromotionBundle`. Plain text (no pg enum / CHECK), like
     // `type` above: the closed value set is enforced in packages/schemas (Zod).
     classification: text("classification"),
+    // The operator's DECLARED provenance of this mapping's repo, migration 0062 / outpost-ui.md
+    // §9.3a (owner, 2026-08-14). A component spans domains and its ONE pipeline has inputs of two
+    // provenances: globally SHARED repos authored at the commander, and DOMAIN-SPECIFIC repos
+    // tracked only by this domain's outpost. Where a domain holds a COPY of a shared repo (the
+    // owner's row 2 — "IaC shared source → IaC repo, domain-B copy → component (domain B)"), that
+    // mapping is physically local but its provenance is the commander. `true` declares exactly
+    // that: "this repo mirrors a commander-shared source". NULL/false = domain-specific (the
+    // owner's row 3), which is also every pre-0062 row's meaning unchanged.
+    //
+    // DECLARED, never inferred — same discipline as `classification` above and for the same
+    // charter-6 reason: guessing "shared" from the repo host or a name pattern would label a
+    // domain's classified network repo as shared the moment it lived on the same Gitea. And
+    // NEVER an enforcement input: it grants and withholds nothing; the UI groups the source lane
+    // by it and reporting may read it, and that is all.
+    mirrorOfShared: boolean("mirror_of_shared").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]

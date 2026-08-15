@@ -626,6 +626,11 @@ export const SourceMappingSchema = z.object({
   /** The operator's declared classification of this pipeline (ADR-0030 §2) — UI/reporting only,
    *  never an enforcement input. `null` for an ordinary pipeline. */
   classification: PipelineClassificationSchema.nullable(),
+  /** The operator's DECLARED provenance of this repo (outpost-ui.md §9.3a, migration 0062): `true`
+   *  = this repo mirrors a globally shared source authored at the commander (a domain's local COPY
+   *  of shared IaC); `false` = domain-specific, tracked only in this domain. Declared, never
+   *  inferred from the repo host; UI/reporting only, never an enforcement input. */
+  mirrorOfShared: z.boolean(),
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -645,7 +650,11 @@ export const CreateSourceMappingRequestSchema = z.object({
   /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting only. Omitted
    *  means unclassified. Accepting it here is what makes dev-ness DECLARED rather than inferred
    *  from the branch name. */
-  classification: PipelineClassificationSchema.optional()
+  classification: PipelineClassificationSchema.optional(),
+  /** Declare this repo a MIRROR of a commander-shared source (outpost-ui.md §9.3a). Omitted means
+   *  domain-specific — the pre-0062 meaning of every mapping, so existing callers are unaffected.
+   *  `.optional()` not `.default()` for the same request-shape reason as `type` above. */
+  mirrorOfShared: z.boolean().optional()
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 
