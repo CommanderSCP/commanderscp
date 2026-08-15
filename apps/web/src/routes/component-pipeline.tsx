@@ -1484,18 +1484,27 @@ function SourceNode({
         // The commander as an OPAQUE input: named from maintainedBy (name null = origin matches
         // no known peer; say the id rather than guess). Deliberately NO repo, host, path or ref —
         // this domain does not know them, and showing anything here would be an invention.
+        // Rendered as the FIRST of up to three provenance GROUPS (global / mirror / domain-
+        // specific), each with its own eyebrow and separated by hairline rules — three kinds of
+        // input must read as three kinds at a glance, not as one stacked block (owner review,
+        // 2026-08-14: "only seeing a single input").
         <div
-          className="mb-1.5 flex items-center gap-1.5 text-slate-700"
+          className="mb-2 border-b border-slate-100 pb-2"
           data-testid="pipeline-source-commander-input"
-          title={`Shared inputs to this pipeline — the repos that are the same in every domain — are authored and tracked at ${upstream.name ?? upstream.domainId}. This domain does not see them; it only knows their source is the commander. The repos listed below are this domain's own, domain-specific inputs to the same pipeline.`}
+          title={`Shared inputs to this pipeline — the repos that are the same in every domain — are authored and tracked at ${upstream.name ?? upstream.domainId}. This domain does not see them; it only knows their source is the commander. The repos listed below are this domain's own inputs to the same pipeline.`}
         >
-          {upstream.role === "commander" ? (
-            <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-          ) : (
-            <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-          )}
-          <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
-          <span className="text-slate-500">— shared inputs (source: the commander; repos not visible here)</span>
+          <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-400">
+            Global — source: the commander
+          </p>
+          <div className="flex items-center gap-1.5 text-slate-700">
+            {upstream.role === "commander" ? (
+              <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+            ) : (
+              <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+            )}
+            <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
+            <span className="text-slate-500">— repos not visible in this domain</span>
+          </div>
         </div>
       )}
       {domainLocal && (
@@ -1583,20 +1592,27 @@ function SourceNode({
             return (
               <>
                 {mirrors.length > 0 && (
-                  <div className="mb-2" data-testid="pipeline-source-group-mirrors">
+                  <div
+                    className={domainSpecific.length > 0 ? "mb-2 border-b border-slate-100 pb-2" : "mb-1"}
+                    data-testid="pipeline-source-group-mirrors"
+                  >
                     <p
-                      className="mb-1 text-xs text-slate-500"
+                      className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-400"
                       title="These repos are local COPIES of sources the commander owns — declared by the operator at create, never inferred from the repo host. Their source of truth is the commander."
                     >
-                      Shared — mirrors of the commander's source, held in this domain:
+                      Mirror of global — held in this domain
                     </p>
                     {mirrors.map(renderRow)}
                   </div>
                 )}
                 {domainSpecific.length > 0 && (
                   <div data-testid="pipeline-source-group-domain-specific">
-                    <p className="mb-1 text-xs text-slate-500" data-testid="pipeline-source-domain-specific-heading">
-                      Domain-specific inputs — tracked only in this domain:
+                    <p
+                      className="mb-1 text-[10px] font-medium uppercase tracking-wide text-slate-400"
+                      data-testid="pipeline-source-domain-specific-heading"
+                      title="Repos tracked only by this domain's outpost — network configuration, CIDR bands, anything that stays in-domain for classification. Their source of truth is here."
+                    >
+                      Domain-specific — tracked only in this domain
                     </p>
                     {domainSpecific.map(renderRow)}
                   </div>
