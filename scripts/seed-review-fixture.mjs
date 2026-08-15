@@ -514,6 +514,17 @@ async function main() {
     { name: "partition-route-tables", service: urn("service", "secure-partition") },
     "partition-route-tables (inherits locality from secure-partition — flag never sent)"
   );
+  // A second inheritor, created after M20.7 landed, so it carries the create-time provenance
+  // stamp (`domainLocalInheritedFrom` → secure-partition) and the badge tooltip's "Inherited at
+  // create from …" state is visible on the review instance. partition-route-tables predates the
+  // stamp and shows null — which the M20.7 contract defines as "declared", an accepted cost of
+  // stamping at create only (no invented history for legacy rows).
+  await put(
+    "components",
+    urn("component", "partition-nat-gateways"),
+    { name: "partition-nat-gateways", service: urn("service", "secure-partition") },
+    "partition-nat-gateways (inherits + carries the M20.7 provenance stamp)"
+  );
 
   // ------------------------------------------------ nested domains (outpost-ui.md §5(b))
   // Owner decision 2026-08-13: containment domains nest. One top-level domain and one SUBDOMAIN
