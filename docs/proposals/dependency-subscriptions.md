@@ -614,12 +614,26 @@ Auto-merge needs a merge credential and must express its CI-green condition as a
 Never bare *subscription*, which stays with `notification_bindings`. Lands as a GLOSSARY.md entry in
 M21.1 before any code, per CLAUDE.md, with the reasoning recorded on ADR-0032.
 
-### Q6 — Does the importer get a tolerance clause first? **OPEN, and it may be a prerequisite.**
+### Q6 — Does the importer get a tolerance clause first? **NO LONGER A PREREQUISITE (resolved 2026-08-13 by [ADR-0032 §3a](../adr/0032-dependency-subscriptions.md)); still open as general hardening.**
 
-If anything in this feature adds a built-in object type, the importer's `object_upsert` branch needs a
-skip-on-404 clause (matching `relationship_upsert`'s skip-on-400) **shipped and fleet-deployed first**,
-or the first journaled object wedges a not-yet-migrated outpost's channel. Under the §4.2 decision
-only the *subscription* object type is new, which narrows this but does not remove it.
+M21 ships **no new built-in object or relationship type**: a dependency subscription is a
+`dependencySubscription` effect on an ordinary `policy` object, mirroring `scanThreshold` (ADR-0016).
+`policy` exists on every instance and `policy_upsert` shares the importer's `object_upsert` case, so
+nothing in this feature can wedge an outpost's channel. The question below is now decoupled from M21.
+
+**Two corrections to it, measured while settling §3a.** The failure mode is a Postgres **foreign-key
+violation (23503)**, not a 404: `objects.type_id` references `object_types.id` and `objects-repo.ts`
+performs no type-existence check, so the constraint is what fires. Consequently the fix **cannot** be a
+copy of `relationship_upsert`'s skip-on-400 (`import-repo.ts:283`) — that catch tests
+`err instanceof ProblemError && err.status === 400`, and an FK violation is neither. Anyone picking
+this up should start from `isForeignKeyViolation` (`db/pg-errors.ts:45`), and should decide
+deliberately whether skipping is even the right behaviour: unlike a one-sided edge, a skipped **object**
+leaves every edge referencing it dangling — which is the shape [ADR-0026](../adr/0026-placements-and-derived-stage-names.md)
+measured silently disabling 11 required prod-gate policies.
+
+*Original question, retained:* if anything in this feature adds a built-in object type, the importer's
+`object_upsert` branch needs a tolerance clause **shipped and fleet-deployed first**, or the first
+journaled object wedges a not-yet-migrated outpost's channel.
 
 ---
 

@@ -109,8 +109,30 @@ export const GOVERNANCE_TYPED_REGISTRY_RESOURCES: TypedRegistryConfig[] = [
     basePath: "policies",
     resourceName: "Policy",
     writePermission: "policy:write",
-    // CRITICAL #1b: bind the policy's DECLARED scope to the author's own authority.
-    validateWrite: assertPolicyScopeWithinAuthority
+    // CRITICAL #1b — bind the policy's DECLARED scope to the author's own authority. All three
+    // write paths (POST / PATCH-with-properties / PUT) call `validateWrite`, so declaring it at the
+    // config covers every door THIS FILE opens.
+    //
+    // "Every door this file opens" is the limit of what a route-level hook can claim, and it is why
+    // ADR-0032 §6a's sibling refusal is NOT here. That one shipped in this exact spot, and the census
+    // of where `assertPolicyScopeWithinAuthority` is ALSO installed — `iac/plans-repo.ts:733` and
+    // `:758` — is what showed the spot to be the wrong altitude: `POST /plans` + `/plans/{id}/apply`,
+    // `POST /federation/hand-fill` and `POST /federation/overlays` all reach `createObject` without
+    // passing through here. It now lives at `graph/objects-repo.ts`'s `createObject`/`updateObject`,
+    // the one choke point every local write door funnels through, and this route inherits it there.
+    //
+    // This check has NOT moved with it, and that is a distinction rather than an omission — it is
+    // `federation/domain-local.ts`'s "authorization at the door, invariant at the repo" split.
+    // ADR-0032 §6a's refusal is an INVARIANT: it reads only the document, needs no subject, and is
+    // the same answer for every caller, so the repo is where it belongs. This one is AUTHORIZATION:
+    // it resolves the author's `policy:write` at the DECLARED scope. Pushing it down would make it
+    // run for the federation importer and every internal caller too, whose `actorObjectId` is a
+    // SYNTHETIC subject (`FEDERATION_IMPORT_ACTOR_ID`) — which is precisely how an authorization
+    // check quietly becomes a no-op. It stays at the doors, and its own three-site census
+    // (here + `iac/plans-repo.ts`'s create and update branches) is what keeps it honest.
+    validateWrite: async (tx, args) => {
+      await assertPolicyScopeWithinAuthority(tx, args);
+    }
   },
   {
     typeId: "control",

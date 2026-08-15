@@ -1,6 +1,6 @@
 # ADR-0032: Dependency subscriptions — a declared inventory, a three-level enablement chain, and a managed bump actuator
 
-**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13; **the §8 actuator clause is contingent on the charter amendment it requires**, and is DECIDED, NOT YET BUILT.
+**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13; **the §8 actuator clause is contingent on the charter amendment it requires**, and is DECIDED, NOT YET BUILT. **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.**
 **Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (the four-arm ownership test and six-gate boundary test this feature must pass); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (SCP stores no SBOM bytes); [ADR-0016](0016-scoped-scan-requirement-policies.md) (the multi-tier resolution shape reused here); [ADR-0022](0022-outpost-config-authority-split.md) (commander-declared config must be a graph object to reach an outpost); [ADR-0028](0028-stage-scoped-component-coupling.md) (`provides`/`requires` — prior art for the wait predicate); [ADR-0030](0030-dev-branch-pipelines.md) §2 (declared, never inferred); [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local work does not journal)
 
@@ -63,6 +63,43 @@ DESIGN §5's closure-table escape hatch.
 boundary is what makes the table representation sufficient; without it the graph would be necessary
 again, and Context 3's measurement would apply.
 
+### 3a. The subscription is a POLICY EFFECT, not a new object type (2026-08-13, M21.3)
+
+Amending §3's "a graph object" to name the mechanism precisely, because the obvious reading — a new
+built-in `dependency-subscription` object type — walks straight into Context 4 and would have made
+proposal §10 Q6 a hard prerequisite.
+
+A **dependency subscription is a `dependencySubscription` effect on an ordinary `policy` object**,
+attached by the existing `governed_by` edge and resolved by the existing `matchPoliciesForTargets` /
+`resolvePolicies` / `containmentChain` machinery. This mirrors `scanThreshold` (ADR-0016) exactly —
+the shipped precedent for governed, federating, multi-tier configuration, built this way for these
+reasons.
+
+Four consequences, all improvements:
+
+1. **No new built-in object or relationship type ships at all.** Context 4's federation hazard is not
+   merely mitigated but **absent**, and **proposal §10 Q6 is moot for M21 as built** — it stays open
+   as a general hardening question about the importer, not a prerequisite for this feature.
+   *(Measured while settling this: the failure mode Q6 describes is a Postgres **foreign-key
+   violation, 23503**, not the 404 originally reported — `objects.type_id` references
+   `object_types.id` and `objects-repo.ts` has no type-existence check. So the fix, if ever made,
+   cannot be a copy of `relationship_upsert`'s skip-on-400: that catch would not fire.)*
+2. **It federates already.** `policy` is a built-in type on every instance and the importer's
+   `policy_upsert` shares the `object_upsert` case — no new journal entry kind, no new registration,
+   nothing for an outpost to be missing.
+3. **Charter principle 2 is satisfied in its own words** — "new concepts arrive as
+   relationship/**policy**/registry data" — rather than bent a second time.
+4. **The merge stays ours.** Like `scanThreshold`, `dependencySubscription` is deliberately **NOT**
+   added to `policy-model.ts`'s `PolicyEffect` union: that union drives the gate's require/approve
+   enforcement, and an enablement bit is not an "unsatisfied effect". `mergeContributorEffects`
+   already ignores unrecognised effect shapes, so existing enforcement is provably untouched, and
+   §6's monotone AND is computed by this feature's own resolver over the matched contributions —
+   exactly as `scan-requirements.ts` computes its own per-severity MIN rather than using the union.
+
+The **instance-level unlock** is not a policy: it is instance-scoped rather than org-scoped, so it
+follows the singleton-table precedent (migrations 0029 / 0035 / 0036) with operator-token-gated
+writes — the same split ADR-0016 uses for its above-org tiers.
+
 ### 4. Direct declared dependencies only
 
 The inventory is what a component's own manifests **declare**. The transitive closure is not stored:
@@ -93,6 +130,79 @@ an opted-out dependency is never polled.
 
 An instance-level unlock that silently activated authoring on any component would violate ADR-0006's
 "managed execution is never a default"; the AND makes that structurally impossible.
+
+### 6a. A GROUP-SCOPED OPT-OUT IS REFUSED AT AUTHORING TIME (2026-08-13, M21.3)
+
+`matchPoliciesForTargets` returns a `scope.group` policy **only when the acting subject is a
+transitive `member_of` that group** (`governance/policy-resolve.ts:186-193`). That is right for "this
+rule governs work done BY this group" and wrong for a constraint, because a constraint that fails to
+match is a constraint that does not apply.
+
+The two directions of this feature's effect are **not symmetric**, and that asymmetry is the whole
+argument:
+
+- a group-scoped **enable** that fails to match yields NOT-enabled — the safe direction, and already
+  what §6's "absent never means enabled" guarantees. Nothing is lost, so it stays permitted.
+- a group-scoped **opt-out** that fails to match yields STILL-ENABLED. SCP then authors a bump for a
+  dependency a team explicitly opted out of — which is precisely the case the opt-out exists to serve
+  (proposal §1: "one or more dependencies are causing issues when upgraded and so they want to handle
+  that manually"). It fails silently in both halves: fewer rows from the matcher, fewer contributions
+  in the merge, and `enabled: true` is an ordinary-looking answer. An operator would learn about it
+  from a pull request they explicitly asked never to receive.
+
+**Decision: authoring a `dependencySubscription` opt-out at `group` scope is refused with a 400** that
+names `objectRef`/`selector` as the remedy. A silent fail-open at evaluation time becomes a loud
+refusal at authoring time — the same move `0061`'s declared-producer CHECK makes: render the unusable
+state unrepresentable rather than merely guarded.
+
+**Why not fix the matcher instead.** The identical exposure exists for `scanThreshold` (ADR-0016,
+shipped): a group-scoped scan **ceiling** silently does not contribute for a non-member, leaving the
+effective threshold LOOSER than the operator authored. Changing `matchPoliciesForTargets` here would
+alter that shipped gate's behaviour as a side effect of a dependency feature — which is how a
+governance change gets made without anyone deciding to make one. This clause guards **this feature's
+use** of the matcher; the matcher itself is tracked separately, for both consumers at once.
+
+**Cost, accepted:** a team wanting a group-wide opt-out must express it as an `objectRef`/`selector`
+scope rather than a group. That is a real ergonomic loss and it is the correct trade, because the
+alternative is an opt-out that appears to work.
+
+#### 6a-i. Amended during the M21.3 review round — WHERE the refusal lives, and HOW WIDE it is
+
+Two corrections, both found by building the clause rather than by reading it.
+
+**(a) It is enforced at the write choke point, not at the typed route.** The first cut installed the
+refusal in exactly one place: the composed `validateWrite` of the typed `/policies` routes. Its
+sibling in that same composition, `assertPolicyScopeWithinAuthority`, was already installed in
+**three** — that config plus `iac/plans-repo.ts`'s create and update branches — which is the tell
+that the route was never the boundary. Three doors reached `createObject` with a free-form `typeId`
+and free-form `properties` and planted the exact document the typed route answers 400 to, each
+reproduced end to end: **IaC** (`POST /plans` + `/plans/{id}/apply` — which made `routes/plans.ts`'s
+"the exact same governance gates the typed /policies routes enforce" false), **hand-fill**
+(`POST /api/v1/federation/hand-fill`), and **overlay** (`POST /api/v1/federation/overlays`, plain
+`object:write`). The refusal now lives in `graph/objects-repo.ts`'s `createObject`/`updateObject` —
+the one choke point every local write door funnels through — following the M16.2 clause-(4)
+precedent already there. Adding three more call sites was rejected explicitly: that is the shape
+that produced the bug, and the next door added would repeat it.
+
+**The exemption is exactly one path wide.** A row arriving by genuine federation import is NOT
+refused, because `import-repo.ts`'s `object_upsert` branch has no try/catch and a throw there aborts
+the whole signed bundle and wedges the channel (proposal §10 Q6) — and because an authoring-time
+refusal belongs at the authoring instance, not at a receiver refereeing a document another domain
+owns. But `federationImport` is set by **two** modules, not one (`import-repo.ts` and
+`federation/handfill-repo.ts`; census re-run filterlessly, there is no third), and hand-fill is a
+**local operator action** with a free-form `typeId`, no chain to wedge, and an operator standing
+there to read the 400. So hand-fill calls the guard for itself, exactly as it already does for the
+M16.2 peer-binding clause and for the same reason.
+
+**(b) It refuses only when `group` is the ONLY scope present.** `matchPoliciesForTargets` evaluates
+the three scope kinds **independently**, not as alternatives: the `objectRef` and `selector` branches
+each record a match before the actor-dependent `group` branch is reached. A policy carrying `group`
+**and** `objectRef` therefore contributes for every caller through the `objectRef` route, member or
+not — the hazard is absent, and the first cut's 400 told the author to do what they had already
+done. Residual, stated rather than papered over: this is a structural test, so a **dangling**
+`objectRef` (or a selector nothing matches yet) leaves the group branch as the only live route. That
+is not fixable at authoring time for the general case, because a selector is designed to match
+objects that do not exist yet.
 
 ### 7. Detection has two ingresses and an air-gap shape
 
