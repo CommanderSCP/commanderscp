@@ -15,6 +15,8 @@ import type {
 } from "@scp/plugin-api";
 import {
   assertNoRedirect,
+  assertSafeRef,
+  assertSafeRepo,
   assertSafeRepoPath,
   createExecutorPluginFromAdapter,
   decodeBoundedBase64,
@@ -373,7 +375,7 @@ async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<Execu
     ctx,
     config,
     "GET",
-    `/projects/${projectId(config)}/pipelines/${pipelineId}`
+    `/projects/${projectId(config)}/pipelines/${encodeURIComponent(pipelineId)}`
   );
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`gitlab status: server returned HTTP ${httpStatus}`);
@@ -399,7 +401,7 @@ async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortR
     ctx,
     config,
     "POST",
-    `/projects/${projectId(config)}/pipelines/${pipelineId}/cancel`
+    `/projects/${projectId(config)}/pipelines/${encodeURIComponent(pipelineId)}/cancel`
   );
   return status >= 200 && status < 300
     ? { aborted: true }
@@ -561,8 +563,15 @@ async function readFileAtRef(
   const config = asConfig(ctx.config);
   const maxBytes = resolveMaxBytes(request.maxBytes);
   assertSafeRepoPath("gitlab", request.path);
+  // `ref` is asserted here for the same reason the other two adapters assert it, even though this
+  // adapter's whole-string `encodeURIComponent` already makes a `..` inert as a query VALUE: the
+  // refusal is the control, the encoding is the belt. Refusing identically across the three keeps
+  // one rule instead of three (`assertSafeRef`, `@scp/git-provider-core`).
+  assertSafeRef("gitlab", request.ref);
   // An explicit `request.repo` is a full project path (`group/subgroup/repo`) and is encoded to the
-  // REST `:id` exactly as `projectId()` does for the binding's own project.
+  // REST `:id` exactly as `projectId()` does for the binding's own project. No `exactSegments`:
+  // a GitLab project path legitimately nests, unlike github's/gitea's fixed `owner/repo`.
+  if (request.repo !== undefined) assertSafeRepo("gitlab", request.repo);
   const pid = request.repo ? encodeURIComponent(request.repo) : projectId(config);
 
   // See difference (2) above: WHOLE-string encoding, slashes included. Not `encodePathSegments`.

@@ -47,6 +47,26 @@ describe("parseComparableVersion", () => {
     }
   });
 
+  it("PARSES a digit-leading git sha — and the doc comment must not claim otherwise", () => {
+    // The comment on VERSION_RE used to say a bare git sha "has no numeric core and is refused".
+    // False, and misleadingly so: roughly six shas in ten start with a digit, and `1a2b3c4d` is
+    // major 1, precision 1, suffix `a2b3c4d`. Callers must not read "it parsed" as "it is a version"
+    // — see the two mechanisms below, which are what actually keep it harmless.
+    expect(parseComparableVersion("1a2b3c4d")).toMatchObject({
+      major: 1,
+      precision: 1,
+      suffix: "a2b3c4d"
+    });
+    // Mechanism 1: it can never be ordered against a real release — the suffixes differ.
+    const sha = parseComparableVersion("1a2b3c4d");
+    const release = parseComparableVersion("1.2.3");
+    expect(sha && release && compareVersions(sha, release)).toBeUndefined();
+    // Mechanism 2: the registry-side door refuses precision 1 by default.
+    expect(parseImageTagVersion("1a2b3c4d")).toBeUndefined();
+    // A LETTER-leading sha genuinely is refused here, which is the half of the old claim that held.
+    expect(parseComparableVersion("a1b2c3d4")).toBeUndefined();
+  });
+
   it("refuses shapes it does not model rather than truncating them to a wrong number", () => {
     // PEP 440 epochs and space-separated junk would both truncate to `1` under a lenient parser.
     expect(parseComparableVersion("1!2.0")).toBeUndefined();

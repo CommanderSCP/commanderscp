@@ -242,6 +242,13 @@ export interface GitProviderAdapter {
    * refused redirect, an egress-guard denial — THROW, already classified by `read-file.ts`'s
    * `wrapProviderRequestError`/`assertNoRedirect`.
    *
+   * An adversarial `repo`/`path`/`ref` also THROWS, before any HTTP happens: every implementer MUST
+   * call `assertSafeRepo`/`assertSafeRepoPath`/`assertSafeRef` first. That is a hard requirement,
+   * not a suggestion — all three are spliced into a REST route, and percent-encoding does not close
+   * a `..` segment (`encodeURIComponent("..") === ".."`), so without the asserts a caller re-targets
+   * the request at a different endpoint using the binding's own credentials (M21.2 review). A THROW
+   * rather than a `refused` result is deliberate: that is a caller bug, not a fact about the repo.
+   *
    * REQUIRED, not optional, on purpose: every implementer lives in this monorepo (github, gitea,
    * gitlab, plus the core's own test fake), so a required hook makes a fourth provider's omission a
    * compile error instead of a silently empty dependency inventory for that provider's components.

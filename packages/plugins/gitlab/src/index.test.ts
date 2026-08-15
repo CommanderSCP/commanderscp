@@ -363,6 +363,29 @@ describe("status() — single GitLab pipeline status enum", () => {
       .reply(500, { message: "boom" });
     await expect(plugin.status(ctx, { externalId: "pipeline::500" })).rejects.toThrow(/HTTP 500/);
   });
+
+  it("ENCODES the pipelineId sliced out of externalId into the route", async () => {
+    // Same census class as readFileAtRef's `repo`/`ref` (M21.2 review BLOCKERS 1-2) and github's
+    // `postCommitStatus` sha: a non-literal string spliced into a REST route. `externalId` is
+    // stored correlation state and numeric in practice, so this encoding is an IDENTITY today and
+    // its removal would change no observed behaviour — which is exactly why it is pinned. An
+    // unpinned member of a censused class is indistinguishable from an untouched one on the next
+    // refactor (CLAUDE.md, "census by property, not by symptom"). Unencoded, `../../../user`
+    // re-targets this GET at `<base>/user` because `new URL()` collapses literal `..` segments;
+    // encoded it is `..%2F..%2F..%2Fuser`, ONE segment a URL does not normalize away. The
+    // interceptor matches only the encoded form, and `disableNetConnect()` plus the file-wide
+    // pending-mocks check make the unencoded form fail loudly rather than pass quietly.
+    const { ctx, token, base, pid } = setup();
+    const pipelineId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/pipelines/${encodeURIComponent(pipelineId)}`)
+      .reply(200, { id: 1, status: "success", sha: "8".repeat(40) });
+
+    const s = await plugin.status(ctx, { externalId: `pipeline::${pipelineId}` });
+    expect(s.phase).toBe("succeeded");
+    scope.done();
+  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -396,6 +419,23 @@ describe("abort()", () => {
       aborted: false,
       detail: "gitlab: no correlated pipeline to cancel"
     });
+  });
+
+  it("ENCODES the pipelineId sliced out of externalId into the cancel route", async () => {
+    // The second of this adapter's two `externalId`-derived route splices — see the identical pin
+    // in `status()` above for why an identity-today encoding is still pinned. Unencoded this POST
+    // would land on `<base>/user/cancel` rather than on the pipeline.
+    const { ctx, token, base, pid } = setup();
+    const pipelineId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("private-token", token)
+      .post(`/projects/${pid}/pipelines/${encodeURIComponent(pipelineId)}/cancel`)
+      .reply(200, { id: 1, status: "canceled" });
+
+    expect(await plugin.abort(ctx, { externalId: `pipeline::${pipelineId}` })).toEqual({
+      aborted: true
+    });
+    scope.done();
   });
 });
 
@@ -692,6 +732,34 @@ describe("readFileAtRef()", () => {
     scope.done();
   });
 
+  it("ESCAPES a '#' in the REF query value — unencoded it starts a URL fragment and TRUNCATES the request", async () => {
+    // The `repo` and `path` interpolations are already pinned by the two tests above (a `%2F` in
+    // either changes the route). `ref` is the third, and it needed a character where the encoding
+    // is load-bearing rather than identity: `git check-ref-format` permits `#` in a ref name, so
+    // `assertSafeRef` does not refuse it, but unencoded it ends the URL — `?ref=release/#42` would
+    // reach GitLab as `ref=release/` and resolve a DIFFERENT commit (a wrong answer, not an error).
+    const { ctx, token, base, pid } = setup();
+    const ref = "release/#42";
+    const scope = nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/go.mod`)
+      // nock decodes before matching, so this asserts the DECODED value round-trips; the unencoded
+      // form never arrives at all, its `#` having been dropped as a fragment.
+      .query({ ref })
+      .reply(200, {
+        file_path: "go.mod",
+        size: 3,
+        encoding: "base64",
+        content: Buffer.from("ok\n", "utf8").toString("base64"),
+        blob_id: "blobhash",
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, { path: "go.mod", ref });
+    expect(result).toMatchObject({ outcome: "found", content: "ok\n" });
+    scope.done();
+  });
+
   it("round-trips MULTI-BYTE UTF-8 content (sizeBytes counts bytes, not UTF-16 units)", async () => {
     const { ctx, token, base, pid } = setup();
     const text = 'FROM alpine:1.0\nLABEL authors="Ada — 日本語 🎉"\n';
@@ -910,5 +978,78 @@ describe("readFileAtRef()", () => {
       ref: "main"
     });
     expect(result).toMatchObject({ outcome: "found", content: "FROM alpine:1.0\n" });
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // ADVERSARIAL `ref` and `repo` (M21.2 review, BLOCKERS 1 and 2). This adapter is the one that
+  // already ENCODED both — into a single whole-encoded route parameter and a query value — so
+  // neither was exploitable here, which is precisely why it needs the tests: the refusal is now a
+  // shared rule across all three providers, and "gitlab happened to encode" is an implementation
+  // detail a later refactor (e.g. adopting the two-call resolve shape) would silently take away.
+  // These pin the RULE, not the encoding.
+  // -----------------------------------------------------------------------------------------
+
+  it("refuses a REF traversal and the other git-forbidden ref shapes BEFORE any HTTP", async () => {
+    const { ctx } = setup();
+    await expect(
+      gitlabAdapter.readFileAtRef(ctx, { path: "package.json", ref: "../../../../user" })
+    ).rejects.toThrow(/^gitlab readFileAtRef: ref '.*' contains '\.\.'/);
+    for (const ref of ["main ", "ma?in", "main~1", "HEAD@{1}", "main.", "/main"]) {
+      await expect(
+        gitlabAdapter.readFileAtRef(ctx, { path: "package.json", ref }),
+        ref
+      ).rejects.toThrow(/^gitlab readFileAtRef: ref /);
+    }
+  });
+
+  it("refuses an adversarial REPO before any HTTP, while still allowing a NESTED project path", async () => {
+    const { ctx } = setup();
+    await expect(
+      gitlabAdapter.readFileAtRef(ctx, {
+        repo: "acme/widgets/../../..",
+        path: "package.json",
+        ref: "main"
+      })
+    ).rejects.toThrow(/^gitlab readFileAtRef: repo .* contains a '\.'\/'\.\.' segment/);
+    await expect(
+      gitlabAdapter.readFileAtRef(ctx, {
+        repo: "acme/widgets?x=",
+        path: "package.json",
+        ref: "main"
+      })
+    ).rejects.toThrow(/has a segment 'widgets\?x=' outside/);
+    // NEGATIVE CONTROL for the segment-COUNT rule: github/gitea assert exactly 2, gitlab must NOT
+    // — a nested group path is a legitimate GitLab project id. A 3-segment repo is passed here
+    // with a bad REF, so the only thing that may be refused is the ref.
+    await expect(
+      gitlabAdapter.readFileAtRef(ctx, {
+        repo: "acme/platform/base-images",
+        path: "package.json",
+        ref: "../.."
+      })
+    ).rejects.toThrow(/^gitlab readFileAtRef: ref /);
+  });
+
+  it("NEVER fabricates `blobSha` — a repository-file response without `blob_id` comes back without one", async () => {
+    // `ReadFileAtRefFound.blobSha` promises it is never fabricated; the equivalent
+    // `file.blob_id ?? "unknown"` mutation survived this suite before this test existed.
+    const { ctx, token, base, pid } = setup();
+    const manifest = "module example.com/x\n";
+    nock(base)
+      .matchHeader("private-token", token)
+      .get(`/projects/${pid}/repository/files/go.mod`)
+      .query({ ref: "main" })
+      .reply(200, {
+        file_path: "go.mod",
+        size: Buffer.byteLength(manifest, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(manifest, "utf8").toString("base64"),
+        // no `blob_id` at all
+        commit_id: COMMIT_ID
+      });
+
+    const result = await gitlabAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" });
+    expect(result).toMatchObject({ outcome: "found", content: manifest });
+    expect((result as { blobSha?: string }).blobSha).toBeUndefined();
   });
 });

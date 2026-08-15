@@ -105,13 +105,19 @@ export const DependencyLineSchema = z.object({
    * where it had been wrong since before the level that exposed it (charter principle 6). Discovery
    * may PROPOSE the link; an operator accepts it.
    *
-   * The database pairs this with `producedByDeclaredAt` under a CHECK constraint, so a producer link
-   * with no declaration behind it cannot be persisted at all.
+   * What keeps inference out is that `UpsertDependencyLineInputSchema` HAS NO PRODUCER FIELD — the
+   * capability is absent from the ingestion verb rather than guarded on it. The database's
+   * `dependency_lines_internal_is_declared` CHECK is the weaker complement: it ties this column,
+   * `producedByDeclaredAt` and `producedByDeclaredByObjectId` together so none of the three can be
+   * written without the other two, which refuses a raw-SQL half-write. It does NOT make the declarer
+   * a human — that is `DeclareLineProducerInput`'s call sites and the route's authz (0060 header).
    */
   producedByObjectId: z.string().uuid().nullable(),
   producedByDeclaredAt: z.string().nullable(),
   /** Which principal declared the producer link — principle 6: "who asserted this line is internal?"
-   *  must be answerable. `null` when no producer is declared. */
+   *  must be answerable. `null` when no producer is declared, and NEVER null beside a non-null
+   *  `producedByObjectId`: the CHECK above binds all three, and the column carries a foreign key, so
+   *  the answer can be neither absent nor a uuid that names nothing. */
   producedByDeclaredByObjectId: z.string().uuid().nullable(),
   /**
    * The head of the line as last OBSERVED (written by M21.4 detection, never by manifest ingestion —

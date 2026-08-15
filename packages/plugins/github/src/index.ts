@@ -15,6 +15,8 @@ import type {
 } from "@scp/plugin-api";
 import {
   assertNoRedirect,
+  assertSafeRef,
+  assertSafeRepo,
   assertSafeRepoPath,
   createExecutorPluginFromAdapter,
   decodeBoundedBase64,
@@ -597,7 +599,7 @@ async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<Execu
     ctx,
     config,
     "GET",
-    `/repos/${config.owner}/${config.repo}/actions/runs/${runId}`
+    `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}`
   );
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`github status: server returned HTTP ${httpStatus}`);
@@ -623,7 +625,7 @@ async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortR
     ctx,
     config,
     "POST",
-    `/repos/${config.owner}/${config.repo}/actions/runs/${runId}/cancel`
+    `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}/cancel`
   );
   return httpStatus >= 200 && httpStatus < 300
     ? { aborted: true }
@@ -704,7 +706,25 @@ async function readFileAtRef(
   const config = asConfig(ctx.config);
   const repo = request.repo ?? `${config.owner}/${config.repo}`;
   const maxBytes = resolveMaxBytes(request.maxBytes);
+  // All THREE caller-supplied strings that reach a route are asserted before any HTTP happens.
+  // `repo` and `ref` are not decoration: `encodeURIComponent("..")` is `".."`, so encoding alone
+  // let a ref of `../../../../user` reach `GET https://api.github.com/user` with this binding's
+  // installation token, and a raw `repo` of `acme/widgets?x=` terminated the route at the query
+  // string. See `assertSafeRef`/`assertSafeRepo` in `@scp/git-provider-core` for the full case.
+  assertSafeRepo("github", repo, 2);
   assertSafeRepoPath("github", request.path);
+  assertSafeRef("github", request.ref);
+  // `repo` reaches the routes below UNENCODED, deliberately. It used to be wrapped in
+  // `encodePathSegments`, which `assertSafeRepo`'s charset makes a provable IDENTITY
+  // (`REPO_SEGMENT` is `[A-Za-z0-9._-]`, every character URL-unreserved) — a call that READ as the
+  // control while the assert above was the entire control, and that no test could tell apart from
+  // its own deletion. The coupling it claimed to defend (a later relaxation of `REPO_SEGMENT`
+  // letting an un-encoded repo reach a URL) is now pinned where that charset actually lives:
+  // git-provider-core's read-file.test.ts "every character assertSafeRepo accepts is URL-identity"
+  // test FAILS the moment the charset admits anything needing an escape. `path` and `ref` below
+  // still encode for real — their charsets legitimately contain characters that must be escaped
+  // (a space in a path, for instance).
+  const repoPath = repo;
 
   // STEP 1 — resolve the ref to a commit sha, and STEP 2 reads at that SHA rather than at the ref.
   // The two-call shape is forced (GitHub's contents response carries a blob sha, never a commit
@@ -714,7 +734,7 @@ async function readFileAtRef(
   const resolved = await readGet(
     ctx,
     config,
-    `/repos/${repo}/commits/${encodePathSegments(request.ref)}`
+    `/repos/${repoPath}/commits/${encodePathSegments(request.ref)}`
   );
   if (resolved.status === 404) {
     // GitHub 404s an unknown ref AND an inaccessible repo identically (it hides private repos
@@ -742,7 +762,7 @@ async function readFileAtRef(
   const contents = await readGet(
     ctx,
     config,
-    `/repos/${repo}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
+    `/repos/${repoPath}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
   );
   if (contents.status === 404) {
     return {
@@ -855,7 +875,11 @@ export async function postCommitStatus(
     ctx,
     config,
     "POST",
-    `/repos/${config.owner}/${config.repo}/statuses/${input.sha}`,
+    // `input.sha` is CALLER-supplied and spliced into a route, so it is encoded for the same reason
+    // `readFileAtRef`'s `repo`/`ref` are (M21.2 review, BLOCKERS 1-2). Encoding is sufficient HERE
+    // and a validator is not, because this is a single segment with no literal `/` left after
+    // encoding: `encodeURIComponent("../..")` is `..%2F..`, which a URL does not normalize away.
+    `/repos/${config.owner}/${config.repo}/statuses/${encodeURIComponent(input.sha)}`,
     {
       state: input.state,
       context: input.context ?? "commanderscp/coordination",

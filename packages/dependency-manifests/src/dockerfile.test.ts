@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ManifestParseError } from "./types.js";
 import { parseDockerfile } from "./dockerfile.js";
 
 /**
@@ -199,5 +200,74 @@ describe("parseDockerfile — the awkward reference forms", () => {
   it("joins continued lines so a FROM split across lines is still one instruction", () => {
     const deps = parseDockerfile("FROM \\\n  alpine:3.19 \\\n  AS base\nFROM base\n");
     expect(deps.map((d) => d.coordinate)).toEqual(["alpine"]);
+  });
+
+  it("drops a comment INSIDE a continuation rather than splicing it into the instruction", () => {
+    // The load-bearing case the comment-skip describes, and the one neither fixture contained: both
+    // had comments only BETWEEN instructions, where stripping them changes nothing. Docker's own
+    // parser drops a comment line mid-continuation.
+    //
+    // With the skip disabled the instruction breaks in two — `FROM alpine:3.19 # …` and a stray
+    // `AS base` — so the stage `base` is never declared and the later `FROM base` is minted as a
+    // phantom dependency on an image no registry has.
+    const deps = parseDockerfile(
+      "FROM alpine:3.19 \\\n# why this base and not the slim one\n  AS base\nFROM base\nRUN true\n"
+    );
+    expect(deps.map((d) => d.coordinate)).toEqual(["alpine"]);
+    expect(deps[0]?.declared).toBe("3.19");
+  });
+
+  it("keeps a stage named after its own base image as a real dependency", () => {
+    // `FROM alpine AS alpine` is ordinary style. Recording the stage name BEFORE testing this
+    // instruction's own operand against the stage set made the FROM shadow itself and deleted a
+    // genuine bumpable dependency. A stage cannot reference itself, so the test must run first.
+    expect(parseDockerfile("FROM alpine AS alpine\nRUN true\n").map((d) => d.coordinate)) //
+      .toEqual(["alpine"]);
+    expect(parseDockerfile("FROM node:22 AS node\nRUN true\n").map((d) => d.coordinate)) //
+      .toEqual(["node"]);
+    // NEGATIVE CONTROL: a LATER FROM naming that stage is still correctly excluded — the stage does
+    // shadow the image from the next instruction onward, which is Docker's own rule.
+    expect(
+      parseDockerfile("FROM alpine AS alpine\nFROM alpine\nRUN true\n").map((d) => d.coordinate)
+    ).toEqual(["alpine"]);
+  });
+
+  it("refuses a malformed reference instead of minting a garbage row", () => {
+    // An empty coordinate is an identity every malformed manifest in the org collides on, and an
+    // empty digest recorded as `pinned` is a pin to nothing.
+    expect(parseDockerfile("FROM :1.0\nRUN true\n")).toEqual([]);
+    expect(parseDockerfile("FROM alpine@\nRUN true\n")).toEqual([]);
+    expect(parseDockerfile("FROM alpine:\nRUN true\n")).toEqual([]);
+    // NEGATIVE CONTROL: the well-formed spellings of each still parse.
+    expect(parseDockerfile("FROM alpine:1.0\n")[0]?.coordinate).toBe("alpine");
+    expect(parseDockerfile("FROM alpine@sha256:abc\n")[0]?.digest).toBe("sha256:abc");
+  });
+
+  it("does not tell an operator that a sha-pinned base image floats", () => {
+    // `1a2b3c4d` is a git sha that happens to start with a digit — roughly six in ten do — and it
+    // parses to precision 1. Labelling it "a moving tag: it names a line, not a point" is a note
+    // named after WHICH BRANCH matched, and it is false: a sha names exactly one point. The same
+    // branch also covered date stamps like `20240115`, where it is equally false.
+    const sha = parseDockerfile("FROM alpine:1a2b3c4d\n")[0];
+    expect(sha?.note).not.toContain("moving tag");
+    expect(sha?.note).toContain("commit sha");
+    const stamp = parseDockerfile("FROM alpine:20240115\n")[0];
+    expect(stamp?.note).not.toContain("moving tag");
+    expect(stamp?.note).toContain("date stamp");
+    // NEGATIVE CONTROL: a tag that genuinely spells a partial version line still says so, and a
+    // fully-specified one still carries no note at all.
+    expect(parseDockerfile("FROM alpine:3.19\n")[0]?.note).toContain("moving tag");
+    expect(parseDockerfile("FROM alpine:3.19.1\n")[0]?.note).toBeUndefined();
+  });
+
+  it("refuses input that is not a Dockerfile, rather than reporting no base image", () => {
+    // `FROM` is the only required Dockerfile instruction, so its absence means a bad fetch — a 404
+    // body, an HTML error page, an unexpanded LFS pointer. Returning [] is indistinguishable from
+    // "declares no base image" and silently deletes the component's image inventory next pass.
+    expect(() => parseDockerfile("<html>404 Not Found</html>")).toThrow(ManifestParseError);
+    expect(() => parseDockerfile("")).toThrow(ManifestParseError);
+    expect(() => parseDockerfile("# just a comment\nRUN true\n")).toThrow(ManifestParseError);
+    // NEGATIVE CONTROL: a Dockerfile whose only FROM yields no dependency is NOT an error.
+    expect(parseDockerfile("FROM scratch\nCOPY app /app\n")).toEqual([]);
   });
 });

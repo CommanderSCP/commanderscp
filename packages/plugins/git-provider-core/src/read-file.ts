@@ -17,7 +17,8 @@ import type { PluginContext } from "@scp/plugin-api";
  * than extend it. This hook only READS; nothing here can write a branch, a commit or a PR.
  *
  * WHAT LIVES HERE vs IN AN ADAPTER: this file owns the request/result vocabulary, the decode bound,
- * the base64→UTF-8 decode with its refusals, path/ref URL-safety, and the two failure classifiers
+ * the base64→UTF-8 decode with its refusals, the `repo`/`path`/`ref` URL-safety asserts, and the
+ * two failure classifiers
  * (redirect, transport/egress). Each adapter owns only its own wire calls — which endpoint, which
  * field carries the commit sha, how a directory comes back — because those genuinely differ:
  * Gitea's contents API is GitHub-compatible, **GitLab's is not** (different endpoint, different
@@ -36,12 +37,17 @@ export interface ReadFileAtRefRequest {
    * because ADR-0032's ingestion work-list is per COMPONENT and one binding legitimately covers
    * several components in one org (the monorepo case discovery already proposes), so pinning the
    * hook to exactly one repo per binding would force a binding per component.
+   *
+   * Validated by {@link assertSafeRepo} before it reaches a URL — it is caller-supplied and every
+   * adapter splices it into a REST route.
    */
   repo?: string;
-  /** Repo-relative path to a single file, e.g. `services/api/package.json`. No leading `/`, no `..`. */
+  /** Repo-relative path to a single file, e.g. `services/api/package.json`. No leading `/`, no `..`
+   *  — enforced by {@link assertSafeRepoPath}, which REFUSES rather than normalizes. */
   path: string;
   /** Branch, tag, or commit sha. A fully-qualified `refs/heads/x` form works wherever the provider
-   *  accepts it; adapters encode it per path segment so a `feature/x` branch survives. */
+   *  accepts it; adapters encode it per path segment so a `feature/x` branch survives. Validated by
+   *  {@link assertSafeRef} — percent-encoding alone does NOT make it URL-safe. */
   ref: string;
   /** Upper bound on bytes this call will DECODE. Defaults to {@link DEFAULT_MAX_FILE_BYTES} and is
    *  clamped to {@link HARD_MAX_FILE_BYTES} — see `resolveMaxBytes`. */
@@ -214,11 +220,33 @@ export interface DecodeBoundedBase64Input {
  * `Buffer.from(…, "base64")` can produce (it ignores characters it cannot decode), so gate 3 already
  * bounds the allocation.
  *
- * HONEST LIMIT: this bounds what SCP DECODES, not what the transport already buffered. The plugin
- * host's `ScopedHttpClient` does `await res.text()` over the whole response
- * (`apps/server/src/plugin-host/subprocess-entry.ts:297`) before a plugin sees a single byte, so the
- * response body is in memory regardless. Bounding the decode is the part this layer can enforce;
- * bounding the transport would be a change to the host's HTTP client, not to an adapter.
+ * HONEST LIMIT — READ THIS AS A LIVE GAP, NOT AS A HANDLED ONE. These four gates bound what SCP
+ * DECODES. **Nothing here bounds what the transport BUFFERS**, and the two are not the same number:
+ * the plugin host's `ScopedHttpClient` does `await res.text()` over the whole response
+ * (`apps/server/src/plugin-host/subprocess-entry.ts:297`) with no cap, no content-length pre-check
+ * and no `Range` header, and no adapter sends a bound to the wire. So the body is fully in the
+ * plugin subprocess's memory — roughly 1.37x the file's size, base64 — *before* gate 1 runs.
+ *
+ * Per provider, measured against what each API actually serves:
+ *
+ *  - **GitHub is incidentally bounded**, by the provider and not by us: its contents API stops
+ *    returning inline content above 1 MB and answers with `encoding: "none"` instead (gate 1's
+ *    `too_large` case), so a GitHub blob response cannot exceed ~1.4 MB whatever the file's size.
+ *  - **Gitea and GitLab are NOT bounded.** Both serve arbitrarily large blobs inline as base64, so
+ *    any file a binding can reach buffers in full. This is a real exposure, not a theoretical one.
+ *
+ * It is NOT fixed per-adapter here, and the reason is that neither available mitigation actually
+ * closes it: GitLab's metadata-only view of a blob is `HEAD .../repository/files/:path`
+ * (`X-Gitlab-Size`), and `ScopedHttpRequest.method` (`packages/plugin-api/src/index.ts:34`) is
+ * `GET|POST|PUT|PATCH|DELETE` — a plugin cannot issue a HEAD at all; Gitea's is the parent
+ * DIRECTORY listing, a second round trip per read whose own response grows with the sibling count,
+ * which reduces the exposure rather than removing it and leaves GitLab untouched. Fixing one of
+ * three providers with a half-measure is the shape of fix this repo's census discipline exists to
+ * prevent (CLAUDE.md).
+ *
+ * The fix that closes the CLASS is host-side and covers every plugin, not just these three: cap
+ * `res.text()` in `subprocess-entry.ts` (and/or add `HEAD` to `ScopedHttpRequest.method` so an
+ * adapter can pre-check a size). Tracked as M21.2 review MAJOR 5.
  */
 export function decodeBoundedBase64(input: DecodeBoundedBase64Input): ReadFileAtRefResult {
   const { path, requestedRef, maxBytes } = input;
@@ -352,6 +380,114 @@ export function assertSafeRepoPath(provider: string, path: string): void {
   }
   if (segments.some((s) => s.length === 0)) {
     throw new Error(`${provider} readFileAtRef: path '${path}' contains an empty segment`);
+  }
+}
+
+/**
+ * Characters a git ref may never contain, as `git check-ref-format` defines them: ASCII control
+ * characters and DEL, space, and the seven metacharacters git reserves for its own revision syntax
+ * (`~ ^ : ? * [` and `\`). Three of those are also the ones that would change a REST request rather
+ * than name a ref — `?` starts a query string, `[`/`\` are provider-storage hazards — so the git
+ * rule and the URL rule want the same refusal here and there is no need for two lists.
+ */
+// `no-control-regex` exists to catch a control character that got into a pattern by ACCIDENT. Here
+// the control range IS the rule being expressed, so the rule is disabled for this one line rather
+// than the range being split into a separate charCode loop — which would leave git's single list
+// expressed in two places.
+// eslint-disable-next-line no-control-regex
+const REF_FORBIDDEN_CHARACTERS = /[\u0000-\u001f\u007f ~^:?*[\\]/;
+
+/**
+ * Rejects a `ref` that must never reach a URL, and REFUSES rather than sanitises.
+ *
+ * Why per-segment encoding is not enough — measured, not assumed: `encodeURIComponent("..")` is
+ * `".."`, so {@link encodePathSegments} passes a `..` segment through untouched. A ref of
+ * `../../../../user` therefore turned `GET /repos/{o}/{r}/commits/../../../../user` into
+ * `GET https://api.github.com/user` — a DIFFERENT endpoint, reached with the binding's installation
+ * credentials. Encoding protects the *contents* of a segment; only a validator can refuse a segment
+ * that is structural.
+ *
+ * Refused rather than rewritten, for the same reason {@link assertSafeRepoPath} refuses: silently
+ * turning the caller's `../../user` into something else makes the request differ from what the
+ * caller asked for and can see, which is its own hazard.
+ *
+ * The rule set is git's own (`git check-ref-format`), not an invented allowlist, so everything a
+ * provider can legitimately be asked for still works: a 40-hex commit sha, `main`, a `feature/x`
+ * branch, a `v1.2.3` tag, and a fully-qualified `refs/heads/x`.
+ */
+export function assertSafeRef(provider: string, ref: string): void {
+  const refuse = (why: string): never => {
+    throw new Error(`${provider} readFileAtRef: ref '${ref}' ${why}`);
+  };
+  if (ref.length === 0) refuse("is empty");
+  if (ref.includes("..")) {
+    refuse("contains '..' — refused (it would re-target the REST route, not just the ref)");
+  }
+  if (REF_FORBIDDEN_CHARACTERS.test(ref)) {
+    refuse("contains a character git forbids in a ref name (control/space or one of ~^:?*[\\)");
+  }
+  if (ref.startsWith("/") || ref.endsWith("/")) refuse("begins or ends with '/'");
+  if (ref.includes("@{")) refuse("contains '@{' — git's reflog syntax, not a ref name");
+  if (ref === "@") refuse("is the single character '@', which git reserves");
+  if (ref.endsWith(".")) refuse("ends with '.'");
+  for (const segment of ref.split("/")) {
+    if (segment.length === 0) refuse("contains an empty segment");
+    if (segment.startsWith(".")) refuse(`has a segment beginning with '.' ('${segment}')`);
+    if (segment.endsWith(".lock")) refuse(`has a segment ending with '.lock' ('${segment}')`);
+  }
+}
+
+/**
+ * The characters a repo/owner/group/project segment may contain across all three providers. GitHub
+ * owner and repo names, Gitea's, and GitLab group/project paths are each drawn from exactly
+ * `[A-Za-z0-9._-]`, so this is the providers' own rule rather than a guess — and it is what makes
+ * the subsequent {@link encodePathSegments} call provably an identity function (every character
+ * here is URL-unreserved), which is why encoding alone was never going to be the control.
+ */
+const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+/**
+ * Rejects a caller-supplied `repo` that must never reach a URL. Third of the three asserts, and the
+ * one that was missing longest: `request.repo` is spliced into the route by every adapter, and two
+ * of the three spliced it **raw** — neither validated nor encoded. Both halves of that were
+ * exploitable, and each needs its own refusal:
+ *
+ *  - a `..` segment re-targets the route exactly as it does for `path`/`ref` — `acme/widgets/../../..`
+ *    turned `GET /repos/{repo}/commits/main` into `GET https://api.github.com/commits/main`, and the
+ *    gitea adapter into `.../repos/acme/widgets/../../../commits?sha=main`;
+ *  - a `?` TERMINATES the route early — `acme/widgets?x=` made
+ *    `/repos/acme/widgets?x=/commits/main` a request for the repo itself with the rest of the
+ *    intended route folded into a query parameter.
+ *
+ * The gitlab adapter was the one that already encoded (its `:id` is a single whole-encoded route
+ * parameter, so `%2F`/`%3F` made it inert) — that is why this is a shared assert rather than a
+ * per-adapter patch: the class was understood for one provider and missed for two, which is the
+ * signature of a fix applied to an instance instead of to the property (CLAUDE.md, census).
+ *
+ * `exactSegments` is the provider's own shape, not a style preference: GitHub and Gitea address a
+ * repo as exactly `owner/repo`, while a GitLab project path legitimately nests
+ * (`group/subgroup/repo`), so only the first two can assert a count.
+ */
+export function assertSafeRepo(provider: string, repo: string, exactSegments?: number): void {
+  const refuse = (why: string): never => {
+    throw new Error(`${provider} readFileAtRef: repo '${repo}' ${why}`);
+  };
+  if (repo.length === 0) refuse("is empty");
+  if (repo.startsWith("/") || repo.endsWith("/")) refuse("begins or ends with '/'");
+  const segments = repo.split("/");
+  // Per-segment checks run BEFORE the count check on purpose: `acme/widgets/../../..` fails both,
+  // and "contains a '..' segment" is the message an operator can act on — "wrong segment count"
+  // would describe the symptom and hide the reason.
+  for (const segment of segments) {
+    if (segment === "." || segment === "..") {
+      refuse("contains a '.'/'..' segment — refused (it would re-target the REST route)");
+    }
+    if (!REPO_SEGMENT.test(segment)) {
+      refuse(`has a segment '${segment}' outside [A-Za-z0-9._-]`);
+    }
+  }
+  if (exactSegments !== undefined && segments.length !== exactSegments) {
+    refuse(`must have exactly ${exactSegments} '/'-separated segments for ${provider}`);
   }
 }
 

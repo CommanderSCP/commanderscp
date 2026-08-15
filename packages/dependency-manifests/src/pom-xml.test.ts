@@ -208,6 +208,42 @@ describe("parsePomXml", () => {
     expect(parsePomXml("<project><modelVersion>4.0.0</modelVersion></project>")).toEqual([]);
   });
 
+  it("refuses a MISMATCHED or unbalanced closing tag, not only a truncated document", () => {
+    // The walker's own comment claimed it "throws on a malformed document instead of returning a
+    // partial one", and the end-of-document stack check was the only thing behind that claim — so a
+    // document with equal numbers of wrong opens and closes ended with an empty stack and was
+    // accepted. `<version>1.0</version></wrong>` parsed as well-formed.
+    expect(() =>
+      parsePomXml(
+        "<project><dependencies><dependency><groupId>a</groupId><artifactId>b</artifactId>" +
+          "<version>1.0</version></wrong></dependency></dependencies></project>"
+      )
+    ).toThrow(ManifestParseError);
+    // Stack underflow: a close with nothing open. Also previously accepted, silently.
+    expect(() => parsePomXml("<project></project></wrong>")).toThrow(ManifestParseError);
+    // NEGATIVE CONTROL: the correctly-nested version of the first document still parses.
+    expect(
+      parsePomXml(
+        "<project><dependencies><dependency><groupId>a</groupId><artifactId>b</artifactId>" +
+          "<version>1.0</version></dependency></dependencies></project>"
+      ).map((d) => d.coordinate)
+    ).toEqual(["a:b"]);
+  });
+
+  it("decodes XML entities in the fields it reads, in the right order", () => {
+    // `decodeEntities` survived being made a no-op: no fixture carried an entity in a field the
+    // walker actually reads. Maven coordinates do not normally contain one, but every child value
+    // the walker collects goes through this function, so a silent no-op would corrupt any that did.
+    //
+    // The ORDER is the substantive property: `&amp;` must be replaced LAST, or `&amp;lt;` decodes
+    // all the way to `<` — a double-decode that turns escaped text into markup.
+    const pom =
+      "<project><dependencies><dependency>" +
+      "<groupId>a&amp;b</groupId><artifactId>c&amp;lt;d</artifactId><version>1.0</version>" +
+      "</dependency></dependencies></project>";
+    expect(parsePomXml(pom)[0]?.coordinate).toBe("a&b:c&lt;d");
+  });
+
   it("ignores XML comments, CDATA and namespace prefixes", () => {
     const pom = `<m:project xmlns:m="http://maven.apache.org/POM/4.0.0">
       <m:dependencies>

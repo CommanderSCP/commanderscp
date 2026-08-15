@@ -81,6 +81,25 @@ describe("parsePackageJson", () => {
     expect(zod?.version).toBeUndefined();
   });
 
+  it("does not produce an UPPER BOUND as if it were the declared version", () => {
+    // Same rule as the compound-range case above, applied to a single-clause upper bound — which is
+    // where it was NOT applied: stripping `^[\^~=><\s]+` turned `<2.0.0` into 2.0.0 and `<=1.9.9`
+    // into 1.9.9, versions the component is pinned BELOW. A detection tick reading either reports
+    // no upgrade for a component that is nowhere near that version.
+    const bounded = parsePackageJson(
+      '{"dependencies":{"below":"<2.0.0","at-or-below":"<=1.9.9","above":">1.4.0","at-or-above":">=1.4.0"}}'
+    );
+    const byName = new Map(bounded.map((d) => [d.coordinate, d]));
+    expect(byName.get("below")?.version).toBeUndefined();
+    expect(byName.get("at-or-below")?.version).toBeUndefined();
+    // The rows still exist and keep their text — only the version is withheld.
+    expect(byName.get("below")).toMatchObject({ constraint: "range", declared: "<2.0.0" });
+    // NEGATIVE CONTROL: `>`/`>=` DO name where the line starts, and still yield it. Without this,
+    // the two assertions above would pass if the parser had stopped producing versions entirely.
+    expect(byName.get("above")?.version).toMatchObject({ major: 1, minor: 4, patch: 0 });
+    expect(byName.get("at-or-above")?.version).toMatchObject({ major: 1, minor: 4, patch: 0 });
+  });
+
   it("marks non-registry specifiers unresolved rather than parsing a version out of a URL", () => {
     expect(byName.get("@scp/schemas")).toMatchObject({
       constraint: "unresolved",

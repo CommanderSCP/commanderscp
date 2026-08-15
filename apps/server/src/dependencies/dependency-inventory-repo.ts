@@ -99,6 +99,12 @@ function tagPatternFor(
  * `declareDependencyLineProducer` — nor the `latest_*` observation columns, which belong to M21.4
  * detection. Two different ingresses writing one row must not be able to clobber each other's
  * fields.
+ *
+ * NOTHING BUT THE LITERAL SET LIST BELOW ENFORCES THAT — no constraint, no trigger, no column-level
+ * grant. Widening the set by one key is a one-line change that type-checks and that every
+ * round-trip test still passes, so the property is pinned behaviourally instead: see "manifest
+ * re-ingestion cannot clobber a declared producer or an observed head" in
+ * `dependency-inventory.integration.test.ts`. That test is the guard; this paragraph is not.
  */
 export async function upsertDependencyLine(
   tx: TenantTx,
@@ -177,11 +183,18 @@ export async function getDependencyLineById(
  * alongside a coordinate it just observed, "declared, never inferred" would survive only as long as
  * every ingestion call site remembered to leave the field unset — and this repo has already shipped
  * a provenance label that went false the moment its matcher covered a second case (charter principle
- * 6). Splitting the verb removes the capability rather than guarding it.
+ * 6). Splitting the verb removes the capability FROM INGESTION rather than guarding it there.
  *
  * `declaredAt`/`declaredByObjectId` move with the link and are cleared together with it, which the
- * `dependency_lines_internal_is_declared` CHECK constraint also enforces at the database level: a
- * producer with no declaration behind it cannot be stored at all.
+ * `dependency_lines_internal_is_declared` CHECK also enforces at the database level: all three
+ * columns are NULL or all three are set, so a producer with no declaration and no principal behind
+ * it cannot be stored at all.
+ *
+ * What that CHECK does NOT do — because the split above is the strong half and this is the weak one
+ * — is make the declaration HUMAN. This function stamps all three columns unconditionally, so the
+ * CHECK never fires on this path; it fires on a raw-SQL half-write or on a future verb that forgets
+ * a column. "A human asserted this" is a property of this function's call sites and of the authz an
+ * M21.3 route puts in front of it (0060's "INTERNAL vs THIRD-PARTY" header states the same split).
  */
 export async function declareDependencyLineProducer(
   tx: TenantTx,
@@ -222,6 +235,11 @@ export async function recordDependencyLineHead(
   // actually means. An OMITTED `latestDigest` leaves the stored one alone (the key is absent from
   // the SET list, not set to undefined, which drizzle would render as a literal NULL); an EXPLICIT
   // `null` clears it, which is what a language ecosystem supplies.
+  //
+  // Both branches are pinned by "an omitted digest leaves the stored one alone, an explicit null
+  // clears it" in `dependency-inventory.integration.test.ts`. The inverted form
+  // (`{ latestDigest: input.latestDigest ?? null }`) type-checks identically, and under it a
+  // language-ecosystem poll that omits the field would silently erase an image line's digest.
   const digestPatch = input.latestDigest === undefined ? {} : { latestDigest: input.latestDigest };
   const [row] = await tx
     .update(dependencyLines)
@@ -246,8 +264,10 @@ export async function recordDependencyLineHead(
  * silently delete the other's declaration.
  *
  * `createdAt` is NOT in the update set: it records when this declaration was first seen, and
- * re-observing an unchanged manifest must not reset it. `observedAt` is, because that is the "we
- * looked" timestamp.
+ * re-observing an unchanged manifest must not reset it. `observedAt` IS, because that is the "we
+ * looked" timestamp. Both halves are pinned by "re-observing preserves createdAt and advances
+ * observedAt" in `dependency-inventory.integration.test.ts` — as with the line upsert above, the
+ * absence of a key from a SET list is enforced by nothing except the literal.
  */
 export async function upsertComponentDependency(
   tx: TenantTx,

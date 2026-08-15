@@ -38,7 +38,7 @@
  *   backtick) is NOT honoured; it is vanishingly rare outside Windows containers, and a Dockerfile
  *   using it will simply yield fewer/no FROMs rather than wrong ones.
  */
-import type { DeclaredDependency } from "./types.js";
+import { ManifestParseError, type DeclaredDependency } from "./types.js";
 import { parseComparableVersion } from "./version.js";
 
 /** One logical (continuation-joined) instruction plus the line its first physical line sat on. */
@@ -148,9 +148,17 @@ function splitImageRef(ref: string): { name: string; tag?: string; digest?: stri
  * @param content the file's bytes decoded as UTF-8.
  * @returns one entry per `FROM` that names a real, non-`scratch` image; stage references yield
  *          nothing. Order follows the file.
+ * @throws {ManifestParseError} when the content carries no `FROM` instruction at all. Every
+ *   Dockerfile has one — it is the only required instruction — so its absence means we were handed
+ *   something that is not a Dockerfile: a 404 body, an HTML error page, an unexpanded LFS pointer.
+ *   Returning `[]` for that is indistinguishable from "this component's Dockerfile declares no base
+ *   image", and the next ingestion pass would silently DELETE the component's image inventory. See
+ *   {@link ManifestParseError} — unreadable and empty must never collapse.
  */
 export function parseDockerfile(content: string): DeclaredDependency[] {
   const out: DeclaredDependency[] = [];
+  /** Whether any instruction was a `FROM`. See the @throws above. */
+  let sawFrom = false;
   /**
    * Stage names declared by `AS <name>` so far, lower-cased. Docker matches stage names
    * case-insensitively, and a stage shadows any image of the same name, so membership here is
@@ -162,6 +170,7 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
     const tokens = text.split(/\s+/).filter((t) => t !== "");
     const keyword = tokens[0];
     if (keyword === undefined || keyword.toUpperCase() !== "FROM") continue;
+    sawFrom = true;
 
     // Skip instruction flags (`--platform=linux/amd64`, and any future one) without interpreting
     // them: `--platform` selects an architecture of the SAME dependency, so it changes nothing here.
@@ -172,22 +181,37 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
     if (ref === undefined) continue; // malformed `FROM` with no operand
     idx++;
 
-    // `AS <name>` — record the stage BEFORE deciding about this FROM, so a later FROM can see it.
+    // (1) A reference to an EARLIER stage is not a dependency. This is the case a naive parser gets
+    // wrong, and it is negative-controlled in the tests: the same file with a genuine second image
+    // must still yield two.
+    //
+    // The membership test is taken against the stages declared by earlier instructions and BEFORE
+    // this instruction's own `AS` name is added. A stage cannot reference itself, so recording first
+    // makes `FROM alpine AS alpine` — a stage named after its own base image, which is ordinary
+    // style — delete a genuine bumpable dependency. Order is the whole fix.
+    const isStageRef = stages.has(ref.toLowerCase());
+
+    // `AS <name>` — recorded on EVERY FROM, including the ones that yield nothing below, because
+    // `FROM scratch AS base` and `FROM builder AS test` both declare a stage a later FROM can name.
     const asKeyword = tokens[idx];
     const stageName = tokens[idx + 1];
     if (asKeyword !== undefined && asKeyword.toUpperCase() === "AS" && stageName !== undefined) {
       stages.add(stageName.toLowerCase());
     }
 
-    // (1) A reference to an earlier stage is not a dependency. This is the case a naive parser gets
-    // wrong, and it is negative-controlled in the tests: the same file with a genuine second image
-    // must still yield two.
-    if (stages.has(ref.toLowerCase())) continue;
+    if (isStageRef) continue;
 
     // `scratch` is the reserved empty base — no registry, no versions, nothing to bump.
     if (ref.toLowerCase() === "scratch") continue;
 
     const { name, tag, digest } = splitImageRef(ref);
+
+    // A malformed reference is refused outright rather than minted as a row. `FROM :1.0` has an
+    // EMPTY name, and an empty-string coordinate is an identity every malformed manifest in the org
+    // would collide on; `FROM alpine@` has an empty digest, which would be recorded as `pinned` —
+    // a pin to nothing. Both are the "a dependency with a wrong version is worse than a dependency
+    // that is missing" rule this package applies in `go-mod.ts:parseRequireLine`.
+    if (name === "" || digest === "" || tag === "") continue;
 
     // (3) Interpolation in the NAME makes the whole coordinate unknowable — we cannot even say
     // which image this is, so the raw reference is kept verbatim as the coordinate and flagged.
@@ -264,16 +288,32 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
       ...(digest !== undefined ? { digest } : {}),
       declaredIn: "FROM",
       line,
+      // The note names WHAT WAS READ, not which branch matched. "Moving tag" is only true of a tag
+      // that actually spells a partial version line (`3.19`, `3.19-alpine`). A precision-1 tag is
+      // NOT reliably one: `1a2b3c4d` (a git sha whose first character happens to be a digit) and
+      // `20240115` (a date stamp) both parse to precision 1, and telling an operator that a
+      // sha-pinned base image "names a line, not a point" is a provenance label named after the
+      // branch that matched — false the moment the branch covers a second kind of input. Precision 1
+      // gets its own note, mirroring `parseImageTagVersion`'s default `minPrecision: 2` refusal on
+      // the candidate side, and for the same reason.
       ...(version === undefined
         ? {
             note: `tag "${tag}" carries no parseable version core; it must be skipped, never string-ordered`
           }
-        : version.precision < 3
+        : version.precision === 1
           ? {
-              note: `tag "${tag}" is a moving tag: it names a line, not a point, and today resolves to the newest release on it`
+              note: `tag "${tag}" carries a single numeric component, which a registry cannot tell apart from a date stamp or a commit sha; it must not be ordered against another tag`
             }
-          : {})
+          : version.precision === 2
+            ? {
+                note: `tag "${tag}" is a moving tag: it names a line, not a point, and today resolves to the newest release on it`
+              }
+            : {})
     });
+  }
+
+  if (!sawFrom) {
+    throw new ManifestParseError("Dockerfile contains no FROM instruction");
   }
 
   return out;

@@ -34,7 +34,18 @@ import type { ComparableVersion } from "./types.js";
  * the five ecosystems; a string with one is a range or an expression, and ranges are not versions.
  *
  * Anything that does not match this whole shape yields `undefined`. In particular `latest`,
- * `stable`, `edge`, `alpine`, `main` and a bare git sha have no numeric core and are refused.
+ * `stable`, `edge`, `alpine` and `main` have no numeric core and are refused.
+ *
+ * A bare git sha is NOT refused here, and saying it was is the mistake this comment used to make.
+ * Roughly six shas in ten begin with a digit, and `1a2b3c4d` matches the shape above exactly:
+ * major 1, precision 1, suffix `a2b3c4d`. Two other mechanisms — not this one — are what keep it
+ * harmless, and a caller must not assume a parse means "this is a version":
+ * - {@link compareVersions} refuses any pair whose suffixes differ, so `1a2b3c4d` can never be
+ *   ordered against a real tagged release; and
+ * - {@link parseImageTagVersion} refuses precision-1 tags by default, so it never enters a
+ *   registry-side ranking.
+ * Refusing it HERE is not available: the same shape is a legitimate PEP 440 version (`2rc1`) and a
+ * legitimate image tag, and this function is the single door all five ecosystems use.
  */
 const VERSION_RE = /^[vV]?(\d+)(?:\.(\d+))?(?:\.(\d+))?((?:[-+_.]|[A-Za-z])\S*)?$/;
 

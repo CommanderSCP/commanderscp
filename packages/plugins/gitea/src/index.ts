@@ -15,6 +15,8 @@ import type {
 } from "@scp/plugin-api";
 import {
   assertNoRedirect,
+  assertSafeRef,
+  assertSafeRepo,
   assertSafeRepoPath,
   createExecutorPluginFromAdapter,
   decodeBoundedBase64,
@@ -499,7 +501,7 @@ async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<Execu
     ctx,
     config,
     "GET",
-    `/repos/${config.owner}/${config.repo}/actions/runs/${runId}`
+    `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}`
   );
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`gitea status: server returned HTTP ${httpStatus}`);
@@ -525,7 +527,7 @@ async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortR
     ctx,
     config,
     "POST",
-    `/repos/${config.owner}/${config.repo}/actions/runs/${runId}/cancel`
+    `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}/cancel`
   );
   return status >= 200 && status < 300
     ? { aborted: true }
@@ -604,7 +606,22 @@ async function readFileAtRef(
   const config = asConfig(ctx.config);
   const repo = request.repo ?? `${config.owner}/${config.repo}`;
   const maxBytes = resolveMaxBytes(request.maxBytes);
+  // All THREE caller-supplied strings that reach a route are asserted before any HTTP happens —
+  // the same three asserts the github adapter runs, for the same reason: a raw `repo` of
+  // `acme/widgets/../../..` built `.../repos/acme/widgets/../../../commits?sha=main`, and
+  // `encodeURIComponent("..")` is `".."` so encoding a ref never closed the traversal either.
+  assertSafeRepo("gitea", repo, 2);
   assertSafeRepoPath("gitea", request.path);
+  assertSafeRef("gitea", request.ref);
+  // `repo` reaches the routes below UNENCODED, deliberately — same call as the github adapter
+  // makes, for the same reason. `encodePathSegments(repo)` was a provable IDENTITY given
+  // `assertSafeRepo`'s `[A-Za-z0-9._-]` charset (all URL-unreserved): a call that READ as the
+  // control while the assert above was the entire control, and that no test could tell apart from
+  // its own deletion. The coupling it claimed to defend (a later relaxation of `REPO_SEGMENT`
+  // letting an un-encoded repo reach a URL) is pinned where that charset lives — git-provider-core
+  // read-file.test.ts's "every character assertSafeRepo accepts is URL-identity" test. `path` and
+  // `ref` below still encode for real; their charsets do contain characters needing an escape.
+  const repoPath = repo;
 
   // STEP 1 — resolve the ref to a commit sha. Reading the blob at that SHA (step 2) rather than at
   // the ref closes the window where a branch moves between the two calls: an inventory row that
@@ -612,7 +629,7 @@ async function readFileAtRef(
   const resolved = await readGet(
     ctx,
     config,
-    `/repos/${repo}/commits?sha=${encodeURIComponent(request.ref)}&limit=1`
+    `/repos/${repoPath}/commits?sha=${encodeURIComponent(request.ref)}&limit=1`
   );
   if (resolved.status === 404) {
     return {
@@ -647,7 +664,7 @@ async function readFileAtRef(
   const contents = await readGet(
     ctx,
     config,
-    `/repos/${repo}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
+    `/repos/${repoPath}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
   );
   if (contents.status === 404) {
     return {

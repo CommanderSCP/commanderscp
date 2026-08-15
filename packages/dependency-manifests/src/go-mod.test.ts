@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ManifestParseError } from "./types.js";
 import { parseGoMod } from "./go-mod.js";
 
 /**
@@ -124,5 +125,63 @@ describe("parseGoMod", () => {
     const [dep] = parseGoMod("require github.com/x/y v1.0.0 // indirectlyRelated helper\n");
     // `indirect` is matched on a word boundary; `indirectlyRelated` is not the marker.
     expect(dep?.coordinate).toBe("github.com/x/y");
+  });
+});
+
+/**
+ * The fixture above has replace/exclude/retract blocks, but EVERY line in them is independently
+ * rejected by `parseRequireLine`'s two-token rule — so the block-directive tracking and the token
+ * rule were each other's alibi and neither was pinned. Replacing `block === "require"` with
+ * `block !== undefined`, or deleting the `tokens.length > 2` check, left the whole suite green.
+ *
+ * These fixtures separate them: two-token lines inside non-`require` blocks (which the token rule
+ * cannot catch) and an over-long line inside a `require` block (which the block tracking cannot).
+ */
+describe("parseGoMod — the two safety nets, pinned independently", () => {
+  it("does not mint a requirement from a TWO-TOKEN line inside an exclude block", () => {
+    // `go mod edit -exclude github.com/broken/thing@v1.2.3` writes exactly this. Two tokens — the
+    // token rule passes it — so only the block directive keeps it out. Reading it would mint a
+    // phantom DIRECT requirement on a module the component deliberately EXCLUDES.
+    expect(parseGoMod("module m\n\nexclude (\n\tgithub.com/broken/thing v1.2.3\n)\n")).toEqual([]);
+  });
+
+  it("does not mint a requirement from a TWO-TOKEN line inside a retract block", () => {
+    // A retract RANGE `[v1.1.0, v1.2.0]` splits into exactly two tokens as well.
+    expect(parseGoMod("module m\n\nretract (\n\t[v1.1.0, v1.2.0]\n)\n")).toEqual([]);
+  });
+
+  it("does not mint a requirement from a TWO-TOKEN line inside a replace block", () => {
+    // `go mod edit -dropreplace` leaves wildcard replaces of this shape behind in real files.
+    expect(parseGoMod("module m\n\nreplace (\n\tgithub.com/a/b v1.0.0\n)\n")).toEqual([]);
+  });
+
+  it("NEGATIVE CONTROL: the identical two-token line inside a require block IS a requirement", () => {
+    // Without this, the three assertions above would pass if the parser had stopped reading blocks
+    // altogether — the vacuous-absence failure.
+    expect(
+      parseGoMod("module m\n\nrequire (\n\tgithub.com/broken/thing v1.2.3\n)\n").map(
+        (d) => d.coordinate
+      )
+    ).toEqual(["github.com/broken/thing"]);
+  });
+
+  it("refuses a require line with MORE than two tokens", () => {
+    // The other arm of the same check, and the one the fixture never reached. A `replace`-shaped
+    // line is what arrives here if the block tracking above ever regresses.
+    expect(parseGoMod("require github.com/a/b => github.com/c/d v1.0.1\n")).toEqual([]);
+    expect(parseGoMod("module m\n\nrequire (\n\tgithub.com/x/y v1.0.0 v2.0.0\n)\n")).toEqual([]);
+  });
+
+  it("refuses input that is not a go.mod, rather than reporting an empty module", () => {
+    // A 404 body or an unexpanded LFS pointer fetched upstream. Returning [] here is
+    // indistinguishable from a module with no requirements, and Go is sequenced FIRST
+    // (ADR-0032 §10), so the next pass would silently DELETE the component's Go inventory.
+    expect(() => parseGoMod("<html>404 Not Found</html>")).toThrow(ManifestParseError);
+    expect(() =>
+      parseGoMod("version https://git-lfs.github.com/spec/v1\noid sha256:abc\n")
+    ).toThrow(ManifestParseError);
+    expect(() => parseGoMod("")).toThrow(ManifestParseError);
+    // NEGATIVE CONTROL: a real go.mod that genuinely requires nothing is NOT an error.
+    expect(parseGoMod("module github.com/x/y\n\ngo 1.22.5\n")).toEqual([]);
   });
 });

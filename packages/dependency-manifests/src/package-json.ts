@@ -65,6 +65,30 @@ const EXACT_RE = /^=?[vV]?\d+\.\d+\.\d+([-+].*)?$/;
 /** `*`, `x`, `X`, `latest`, `""` — "any version", i.e. no constraint expressed. */
 const UNPINNED_RE = /^(\*|[xX]|latest|)$/;
 
+/** The leading comparator of an npm range, longest-first so `<=` is never read as `<`. */
+const NPM_OPERATOR_RE = /^(<=|>=|<|>|\^|~|=)?\s*/;
+
+/**
+ * The version a specifier states the component is AT OR ABOVE, or `undefined` when it states none.
+ *
+ * Blindly stripping `^[\^~=><\s]+` makes an upper bound look like a declared version: `<2.0.0`
+ * records 2.0.0 and `<=1.9.9` records 1.9.9 — versions the component is pinned BELOW, not at. That
+ * is the same dishonesty `package-json.test.ts` already rules out for the compound range
+ * `">=3.23.8 <4"` ("producing 3.23.8 for it would assert a floor as if it were the declared
+ * version"); the rule simply was not applied to a single-clause upper bound. `>` is kept: it
+ * excludes its endpoint but still says where the line starts, which `<`/`<=` do not.
+ *
+ * The compound-range case stays undefined for its own separate reason — after the comparator is
+ * stripped, `3.23.8 <4` still carries whitespace, and `parseComparableVersion` refuses a version
+ * token with a space in it (see the no-whitespace note in `version.ts`).
+ */
+function floorOf(spec: string): ReturnType<typeof parseComparableVersion> {
+  const m = NPM_OPERATOR_RE.exec(spec);
+  const op = m?.[1] ?? "";
+  if (op === "<" || op === "<=") return undefined;
+  return parseComparableVersion(spec.slice(m?.[0]?.length ?? 0));
+}
+
 function classify(spec: string): {
   constraint: DeclaredDependency["constraint"];
   note?: string;
@@ -123,11 +147,10 @@ export function parsePackageJson(content: string): DeclaredDependency[] {
       const { constraint, note } = classify(spec);
 
       // Only a version-shaped specifier gets a comparable core, and it comes from the one shared
-      // helper. `^1.2.3` yields 1.2.3 — the range's floor, which is what the manifest states today.
+      // helper. `^1.2.3` yields 1.2.3 — the range's floor. An upper-bound-only range has no floor
+      // and yields undefined; see {@link floorOf}.
       const version =
-        constraint === "unresolved" || constraint === "unpinned"
-          ? undefined
-          : parseComparableVersion(spec.replace(/^[\^~=><\s]+/, ""));
+        constraint === "unresolved" || constraint === "unpinned" ? undefined : floorOf(spec);
 
       out.push({
         ecosystem: "npm",

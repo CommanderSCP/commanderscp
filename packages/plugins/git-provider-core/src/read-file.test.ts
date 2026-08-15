@@ -13,6 +13,8 @@ import {
   DEFAULT_MAX_FILE_BYTES,
   HARD_MAX_FILE_BYTES,
   assertNoRedirect,
+  assertSafeRef,
+  assertSafeRepo,
   assertSafeRepoPath,
   base64DecodedByteLength,
   decodeBoundedBase64,
@@ -228,6 +230,149 @@ describe("assertSafeRepoPath", () => {
 
   it("names the provider in the message, so an operator knows which binding refused", () => {
     expect(() => assertSafeRepoPath("gitea", "../x")).toThrow(/^gitea readFileAtRef:/);
+  });
+});
+
+// `ref` is the one that percent-encoding LOOKS like it already covered and does not: the proof
+// asserted here is that `encodeURIComponent("..") === ".."`, so `encodePathSegments` leaves a
+// traversal ref byte-identical and only a refusal closes it.
+describe("assertSafeRef", () => {
+  it("accepts every ref shape a provider is legitimately asked for", () => {
+    for (const ref of [
+      "main",
+      "feature/x",
+      "release/1.x",
+      "refs/heads/main",
+      "refs/tags/v1.2.3",
+      "v1.2.3",
+      "9f".repeat(20), // a 40-hex commit sha
+      "user@example.com-branch"
+    ]) {
+      expect(() => assertSafeRef("p", ref), ref).not.toThrow();
+    }
+  });
+
+  it("refuses a '..' traversal — the ONE case percent-encoding silently passes through", () => {
+    // The premise, asserted rather than assumed: encoding is not the control here.
+    expect(encodePathSegments("../../../../user")).toBe("../../../../user");
+    expect(() => assertSafeRef("p", "../../../../user")).toThrow(/contains '\.\.'/);
+    expect(() => assertSafeRef("p", "main/../../../user")).toThrow(/contains '\.\.'/);
+  });
+
+  it("refuses each character git forbids in a ref name", () => {
+    for (const ref of ["a b", "a~b", "a^b", "a:b", "a?b", "a*b", "a[b", "a\\b"]) {
+      expect(() => assertSafeRef("p", ref), ref).toThrow(/git forbids in a ref name/);
+    }
+    expect(() => assertSafeRef("p", `a${String.fromCharCode(0)}b`)).toThrow(
+      /git forbids in a ref name/
+    );
+    expect(() => assertSafeRef("p", `a${String.fromCharCode(127)}b`)).toThrow(
+      /git forbids in a ref name/
+    );
+  });
+
+  it("refuses the remaining check-ref-format shapes: empty, leading/trailing '/', '//', '@{', bare '@', trailing '.', a '.'-leading or '.lock' segment", () => {
+    expect(() => assertSafeRef("p", "")).toThrow(/is empty/);
+    expect(() => assertSafeRef("p", "/main")).toThrow(/begins or ends with '\/'/);
+    expect(() => assertSafeRef("p", "main/")).toThrow(/begins or ends with '\/'/);
+    expect(() => assertSafeRef("p", "a//b")).toThrow(/empty segment/);
+    expect(() => assertSafeRef("p", "main@{1}")).toThrow(/'@\{'/);
+    expect(() => assertSafeRef("p", "@")).toThrow(/single character '@'/);
+    expect(() => assertSafeRef("p", "main.")).toThrow(/ends with '\.'/);
+    expect(() => assertSafeRef("p", "refs/heads/.hidden")).toThrow(/beginning with '\.'/);
+    expect(() => assertSafeRef("p", "refs/heads/main.lock")).toThrow(/'\.lock'/);
+  });
+
+  it("names the provider and quotes the ref, so an operator sees which binding refused what", () => {
+    expect(() => assertSafeRef("github", "../../user")).toThrow(
+      /^github readFileAtRef: ref '\.\.\/\.\.\/user'/
+    );
+  });
+});
+
+describe("assertSafeRepo", () => {
+  it("accepts the shapes each provider actually addresses", () => {
+    expect(() => assertSafeRepo("github", "acme/widgets", 2)).not.toThrow();
+    expect(() => assertSafeRepo("gitea", "acme-org/my_repo.git-ish", 2)).not.toThrow();
+    // GitLab nests, so it asserts no count.
+    expect(() => assertSafeRepo("gitlab", "group/subgroup/repo")).not.toThrow();
+  });
+
+  it("refuses a '..' segment — the route re-targeting proven against all three adapters", () => {
+    expect(() => assertSafeRepo("github", "acme/widgets/../../..", 2)).toThrow();
+    expect(() => assertSafeRepo("gitlab", "acme/widgets/../..")).toThrow(/'\.'\/'\.\.' segment/);
+    expect(() => assertSafeRepo("gitlab", "acme/./widgets")).toThrow(/'\.'\/'\.\.' segment/);
+  });
+
+  it("refuses a '?' — it TERMINATES the route, folding the rest of it into a query string", () => {
+    expect(() => assertSafeRepo("gitlab", "acme/widgets?x=")).toThrow(/outside \[A-Za-z0-9\._-\]/);
+  });
+
+  it("refuses everything else outside the providers' own [A-Za-z0-9._-] segment charset", () => {
+    for (const repo of ["acme/wid gets", "acme/wid#gets", "acme/wid%2Fgets", "acme/wid\\gets"]) {
+      expect(() => assertSafeRepo("p", repo), repo).toThrow(/outside \[A-Za-z0-9\._-\]/);
+    }
+    expect(() => assertSafeRepo("p", "")).toThrow(/is empty/);
+    expect(() => assertSafeRepo("p", "/acme/widgets")).toThrow(/begins or ends with '\/'/);
+    expect(() => assertSafeRepo("p", "acme/widgets/")).toThrow(/begins or ends with '\/'/);
+  });
+
+  it("enforces the segment COUNT only where the provider has a fixed one", () => {
+    expect(() => assertSafeRepo("github", "acme/group/widgets", 2)).toThrow(
+      /exactly 2 '\/'-separated segments/
+    );
+    expect(() => assertSafeRepo("github", "widgets", 2)).toThrow(
+      /exactly 2 '\/'-separated segments/
+    );
+    // Same string, no count asserted — this is the gitlab call and it must NOT throw.
+    expect(() => assertSafeRepo("gitlab", "acme/group/widgets")).not.toThrow();
+  });
+
+  it("every character it ACCEPTS is URL-identity — the property the adapters splice `repo` raw on", () => {
+    // This is the load-bearing half of the M21.2 repo fix, and it lives here rather than in the
+    // adapters because it is a property of THIS charset. github's and gitea's `readFileAtRef` put
+    // the validated `repo` into their routes unencoded (see the comment at each `const repoPath =
+    // repo`), which is only safe while `REPO_SEGMENT` admits nothing that a URL would treat
+    // structurally or that would need an escape. They previously wrapped it in
+    // `encodePathSegments`, but that call was a provable identity under this same charset — a
+    // no-op indistinguishable from its own deletion, so no test could hold it (CLAUDE.md: a
+    // well-written comment naming a hazard is a signal to sweep, not evidence it was handled).
+    // Relaxing the charset — a space, `~`, `%`, `/`, or "any non-slash character" — fails HERE
+    // instead of silently re-opening the injection two packages away.
+    //
+    // The sweep is over every ASCII code point plus a sample of non-ASCII (an exhaustive Unicode
+    // sweep is not runnable; these catch the realistic relaxation, e.g. to a negated class).
+    const candidates = [
+      ...Array.from({ length: 128 }, (_, i) => String.fromCharCode(i)),
+      "é",
+      "空",
+      " ",
+      "∕"
+    ];
+    const accepted: string[] = [];
+    for (const character of candidates) {
+      // Probed inside a real second segment: a bare character would also trip the empty/leading-
+      // slash arms and hide which rule did the refusing.
+      try {
+        assertSafeRepo("p", `acme/wid${character}gets`, 2);
+        accepted.push(character);
+      } catch {
+        /* refused — not this test's business which rule refused it */
+      }
+    }
+    const acceptedNonIdentity = accepted.filter((c) => encodeURIComponent(c) !== c);
+    expect(
+      acceptedNonIdentity.map((c) => JSON.stringify(c)),
+      "assertSafeRepo accepts characters that are NOT URL-identity — github/gitea splice the validated repo into their REST routes UNENCODED, so relaxing REPO_SEGMENT means re-introducing encoding at those call sites"
+    ).toEqual([]);
+    // The sweep must also be shown to have ACCEPTED something: an assert that refused every
+    // candidate would satisfy the check above vacuously (this repo's second recurring bug class —
+    // green for the wrong reason). Pinning the exact accepted set rather than a count also makes
+    // the charset itself readable here, and makes any change to it — tightening included — arrive
+    // as a deliberate edit to this line.
+    expect(accepted.join("")).toBe(
+      "-.0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz"
+    );
   });
 });
 

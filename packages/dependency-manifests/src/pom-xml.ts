@@ -71,7 +71,17 @@ interface RawDependency {
  * A hand-written walker rather than an XML library for the same reason as `toml-lite.ts`: charter
  * principle 5 (offline, vendored, no runtime network) and a deliberately dependency-free package.
  * It handles comments, CDATA, processing instructions, self-closing elements and namespace
- * prefixes, and it throws on a malformed document instead of returning a partial one.
+ * prefixes.
+ *
+ * WHAT IT REFUSES, precisely — the claim is narrowed to what is actually checked, because the
+ * broader "throws on a malformed document" it used to make was false: it never compared a closing
+ * tag to the stack top, so `<version>1.0</version></wrong>` was accepted as well-formed:
+ * - an unterminated comment, CDATA section, declaration or tag;
+ * - a closing tag that does not match the innermost open element;
+ * - a closing tag with nothing open (stack underflow);
+ * - a document that ends with elements still open.
+ * It is NOT a validating parser: attributes, entity declarations, duplicate roots, encoding and
+ * schema conformance are all unchecked, and a POM that passes here is not thereby valid XML.
  */
 function walk(
   content: string,
@@ -135,6 +145,17 @@ function walk(
     if (inner.startsWith("/")) {
       // Closing tag. The text accumulated since the matching open tag is this element's value.
       const name = localName(inner.slice(1).trim());
+      // Balance is checked HERE, not only by the end-of-document stack check below: a document with
+      // equal numbers of wrong opens and closes ends with an empty stack and would otherwise be
+      // read as well-formed, with each dependency's children attributed to whatever element the
+      // mis-nesting left at the tracked depth.
+      const open = stack[stack.length - 1];
+      if (open === undefined) {
+        throw new ManifestParseError(`pom.xml closes </${name}> with no element open`);
+      }
+      if (open !== name) {
+        throw new ManifestParseError(`pom.xml closes </${name}> while <${open}> is open`);
+      }
       const closedDepth = stack.length - 1;
       stack.pop();
 

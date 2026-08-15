@@ -112,10 +112,25 @@
 -- covers a second case. There is no material to infer it from anyway — SCP has no artifact name at
 -- all (`ArtifactRef` is `{type, digest}`, and no `purl` exists in the tree).
 --
--- `dependency_lines_internal_is_declared` is what makes that structural rather than conventional:
--- a producer link cannot exist without the declaration timestamp that says a human asserted it. An
--- ingestion path that "worked out" a producer therefore cannot write the row at all — the capability
--- is missing rather than guarded, the same shape 0059 used for `objects.domain_local`.
+-- TWO DIFFERENT MECHANISMS carry that rule and they are NOT equally strong. Naming which is which
+-- is the point of this paragraph: an earlier draft called the CHECK "the capability is missing
+-- rather than guarded", which is the comment-that-overstates class CLAUDE.md warns about — a
+-- comment naming a hazard is a signal to sweep, not evidence the hazard was handled.
+--
+--   MISSING, not guarded (the strong half, and it is not this constraint): the INGESTION verb has
+--   no producer field to set. `UpsertDependencyLineInputSchema` does not carry one, and
+--   `upsertDependencyLine`'s ON CONFLICT set cannot reach `produced_by_*` at all
+--   (`src/dependencies/dependency-inventory-repo.ts`). A manifest-parsing path that "worked out" a
+--   producer has nowhere to put it without deliberately calling a different verb. This is the shape
+--   0059 used for `objects.domain_local`.
+--
+--   GUARDED, not missing (this CHECK): it refuses a HALF-WRITTEN row — a producer link with no
+--   declaration timestamp, or none of the declaring principal — from raw SQL, a psql session, or a
+--   future verb that forgets one of the three columns. It does NOT stop
+--   `declareDependencyLineProducer` from being called by machinery rather than a human: that verb
+--   unconditionally stamps all three columns, so the CHECK never fires on it. "A HUMAN asserted
+--   this" is a property of that verb's CALL SITES and of whatever authz an M21.3 route puts in
+--   front of it — never of this constraint.
 --
 -- ===========================================================================================
 -- RLS AND GRANTS — mirrored from 0007_change_coordination.sql §7/§8, EXACTLY
@@ -125,14 +140,29 @@
 -- inventory is a map of an org's entire software estate; getting this wrong leaks one org's estate
 -- to another, so it is copied verbatim rather than re-derived.
 --
--- Two structural barriers keep a cross-org reference impossible rather than merely unlikely:
---   1. RLS WITH CHECK pins a row's OWN `org_id` to the session GUC.
+-- Two structural barriers apply, and they cover DIFFERENT references — the scope is the load-bearing
+-- part, so it is stated rather than summarised:
+--   1. RLS WITH CHECK pins a row's OWN `org_id` to the session GUC, on both tables.
 --   2. `component_dependencies_line_fk` is a COMPOSITE `(org_id, line_id)` foreign key into
---      `dependency_lines (org_id, id)` — so a row cannot point at another org's line even though
---      the session passes barrier 1 for its own org. (`component_object_id` uses the plain
---      `REFERENCES objects(id)` form `changes.object_id` already uses; `objects` carries no
---      `(org_id, id)` unique constraint to hang a composite key on, and this migration changes no
---      existing table.)
+--      `dependency_lines (org_id, id)` — so a row cannot point at another org's LINE even though
+--      the session passes barrier 1 for its own org.
+--
+-- BARRIER 2 COVERS `line_id` AND NOTHING ELSE. The three `objects(id)` references here —
+-- `component_dependencies.component_object_id`, `dependency_lines.produced_by_object_id` and
+-- `dependency_lines.produced_by_declared_by_object_id` — are plain, ORG-UNBOUND
+-- `REFERENCES objects(id)`, the form `changes.object_id` already uses, because `objects` carries no
+-- `(org_id, id)` unique constraint to hang a composite key on and this migration changes no existing
+-- table. Two consequences follow, and both are recorded by a test rather than left to be discovered
+-- ("cross-org OBJECT references are not structurally prevented" in
+-- `src/dependencies/dependency-inventory.integration.test.ts`):
+--   - a session in org B CAN write a row stamped `org_id = B` whose `component_object_id` is one of
+--     org A's objects. RI triggers are not subject to RLS, so the foreign-key check sees org A's row
+--     and passes; RLS never looks at the referenced table.
+--   - which makes FK-violation-vs-success an EXISTENCE ORACLE for another tenant's object ids, to
+--     anything that already holds a raw `scp_app` connection and can set the GUC.
+-- Neither is reachable through the public API today — M21.2 is substrate and there is no route yet.
+-- The mitigation an M21.3 route OWES is to resolve every caller-supplied object id under the
+-- CALLER'S OWN org before it reaches this table. Do not read barriers 1+2 as having done that.
 --
 -- DELETE is granted on `component_dependencies` and NOT on `dependency_lines`, deliberately:
 -- a manifest that drops a dependency must be able to prune its projection row (the precedent is
@@ -159,7 +189,12 @@ CREATE TABLE IF NOT EXISTS "dependency_lines" (
   -- DECLARED internal-producer link. NULL = third-party. See "INTERNAL vs THIRD-PARTY" above.
   "produced_by_object_id" uuid REFERENCES objects(id),
   "produced_by_declared_at" timestamp with time zone,
-  "produced_by_declared_by_object_id" uuid,
+  -- WHO asserted it (principle 6). Carries `REFERENCES objects(id)` and is part of the CHECK below,
+  -- because the COMMENT on this column promises "which human asserted this line is internal?" is
+  -- answerable: without both, a producer link could persist beside a NULL principal or a fabricated
+  -- uuid and every constraint would still pass, leaving the promise false. Org-unbound, like the two
+  -- other `objects(id)` references here — see barrier 2's scope note in the header.
+  "produced_by_declared_by_object_id" uuid REFERENCES objects(id),
   -- The head of the line as last OBSERVED. Written by M21.4 detection, never by ingestion of a
   -- component's manifest — a component declaring `1.2.0` says nothing about what the line's head is.
   -- NULL means "not yet observed", which is NOT "no newer version exists": absent never means zero,
@@ -175,10 +210,17 @@ CREATE TABLE IF NOT EXISTS "dependency_lines" (
   -- with the primary key for uniqueness purposes; it exists so a `(org_id, id)` foreign key has
   -- something to reference.
   CONSTRAINT "dependency_lines_org_id_key" UNIQUE ("org_id", "id"),
-  -- A producer link cannot exist without its declaration timestamp, and vice versa. This is the
-  -- "declared, never inferred" rule made structural rather than conventional.
+  -- The producer link, its declaration timestamp and its declaring principal exist TOGETHER or not
+  -- at all: all three NULL (third-party) or all three set (declared internal). The third conjunct is
+  -- not decoration — without it a link could be stored with a NULL principal, which is precisely the
+  -- state that makes `produced_by_declared_by_object_id`'s COMMENT untrue. See the header for what
+  -- this constraint does and does not buy (it refuses a half-write; it does not make the writer a
+  -- human).
   CONSTRAINT "dependency_lines_internal_is_declared"
-    CHECK (("produced_by_object_id" IS NULL) = ("produced_by_declared_at" IS NULL))
+    CHECK (
+      ("produced_by_object_id" IS NULL) = ("produced_by_declared_at" IS NULL)
+      AND ("produced_by_object_id" IS NULL) = ("produced_by_declared_by_object_id" IS NULL)
+    )
 );
 --> statement-breakpoint
 
@@ -287,7 +329,10 @@ COMMENT ON TABLE dependency_lines IS
   'ADR-0032 §3: the identity of ONE MAJOR LINE of one dependency. A projection table, not a graph object — package coordinates are not representable as URNs (graph/urn.ts collapses @acme/lib and acme-lib to one slug). Identity is (org_id, ecosystem, coordinate, major); the coordinate is stored ecosystem-native and verbatim. Does NOT federate; each domain derives its own.';
 --> statement-breakpoint
 COMMENT ON COLUMN dependency_lines.produced_by_object_id IS
-  'ADR-0032 §7: the component/service this org DECLARES produces this line. NULL = third-party. Operator-declared, NEVER inferred from a coordinate, repo name or registry host (ADR-0030 §2). Paired with produced_by_declared_at by a CHECK so an inferred link cannot be written at all.';
+  'ADR-0032 §7: the component/service this org DECLARES produces this line. NULL = third-party. Operator-declared, NEVER inferred from a coordinate, repo name or registry host (ADR-0030 §2). What keeps inference out is that the INGESTION verb has no producer field (UpsertDependencyLineInputSchema; upsertDependencyLine cannot reach these columns) — not the CHECK, which only refuses a half-written row.';
+--> statement-breakpoint
+COMMENT ON COLUMN dependency_lines.produced_by_declared_by_object_id IS
+  'Principle 6: the principal (graph user object) that asserted this line is internal. REFERENCES objects(id) and bound to produced_by_object_id by dependency_lines_internal_is_declared, so "which principal asserted this?" cannot be answered with NULL or with a fabricated uuid. It does NOT prove the principal was a human — that is the calling route''s authz, not this column''s.';
 --> statement-breakpoint
 COMMENT ON TABLE component_dependencies IS
   'ADR-0032 §4: which component DECLARES which dependency line, at which version, from which dependency manifest. DIRECT declared dependencies ONLY — never the transitive closure, which is an SBOM by another name (ADR-0013). Mints NO depends_on edge (ADR-0032 §5): that type is the wave toposort input and package graphs contain cycles. Both hot queries are single-hop index lookups; exposing a transitive traversal here would invalidate the reason this is a table at all.';

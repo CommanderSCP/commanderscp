@@ -43,6 +43,15 @@ import { parseComparableVersion } from "./version.js";
 /**
  * PEP 508: `name [extras] specifier ; marker` or `name @ url ; marker`.
  *
+ * **The leading `[A-Za-z0-9]` anchor is load-bearing, not cosmetic.** It is the sole mechanism that
+ * keeps a `requirements.txt` OPTION line out of the inventory: `--only-binary numpy`,
+ * `-r base.txt`, `--index-url …` all begin with `-`, so they cannot match here and
+ * {@link parseRequirementsTxt} needs no separate leading-`-` test (there used to be one; it was
+ * provably unreachable, and dead code that reads as the enforcement is its own hazard — a later
+ * editor loosening this charset would have believed the other line was still holding the door).
+ * Anything that widens this character class — PEP 625 name normalisation, say — must re-check
+ * `--only-binary numpy`, whose argument is the one option argument that reads as a requirement.
+ *
  * The name charset is PEP 508's own (`[A-Za-z0-9]` with `.`, `-`, `_` internally). Extras are
  * captured separately: `celery[redis]` and `celery` are the SAME distribution with different
  * optional features, so the coordinate is `celery` and the extras go in the note. Keeping the
@@ -53,6 +62,44 @@ const PEP508_RE = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[([^\]]*)\])?\s*(.*)$/;
 
 /** `==1.2.3` / `===1.2.3` naming exactly one version. `==1.2.*` is a range and is excluded here. */
 const PY_EXACT_RE = /^={2,3}\s*[^\s,*]+$/;
+
+/**
+ * A `requirements.txt` line whose leading token is a URL SCHEME rather than a distribution name.
+ *
+ * The rule is "the leading token is immediately followed by `+` or `:`" — decidable without knowing
+ * any scheme at all, and correct in all three directions this guard has been wrong in:
+ *
+ * - **It is a delimiter test, not a prefix test.** A prefix test (`/^(https?|git\+|file:)/i`)
+ *   discards every distribution whose NAME merely begins with a scheme word — httpx, httpcore,
+ *   httptools, httplib2, httpie, filelock and gitpython are all real PyPI packages, and they
+ *   vanished with no row, no note and no error. Silent deletion of a real dependency is the outcome
+ *   {@link ManifestParseError} exists to prevent; producing it from a guard is that same failure
+ *   inside one parser.
+ * - **It covers the whole class, not the one scheme somebody remembered.** pip documents FOUR VCS
+ *   schemes: `git+`, `hg+`, `svn+`, `bzr+` (pip docs, "VCS Support"). A version of this guard that
+ *   enumerated only `git+` let `hg+https://example/x` fall through to {@link PEP508_RE}, which read
+ *   it as a distribution named `hg` — with `svn` and `bzr` behind it. Phantom package names that no
+ *   index resolves, attached to a real component.
+ * - **A MALFORMED scheme is refused too, deliberately.** `http:example` (no `//`) and
+ *   `git+https//broken` (no scheme colon) are neither URLs nor valid PEP 508: the name charset is
+ *   `[A-Za-z0-9._-]` and no specifier operator begins with `+` or `:`, so nothing valid can look
+ *   like this. Demanding a WELL-FORMED URL here would send exactly those two on to
+ *   {@link PEP508_RE} and mint the coordinates `http` and `git` — a distribution named after the
+ *   scheme of the URL somebody meant to type. Refusing matches `dockerfile.ts:209-214`, which skips
+ *   `FROM :1.0` rather than minting an empty-name coordinate: a dependency carrying a WRONG identity
+ *   is worse than one that is missing, because the missing one is visibly missing.
+ *
+ * Enumerating schemes on top of this would buy nothing and cost something. The verdict for a
+ * well-formed and for a malformed VCS URL is identical — no row — so a scheme-listing regex ahead of
+ * this one could never change an outcome, i.e. it would be the dead-guard-that-reads-as-the-
+ * enforcement hazard described on {@link PEP508_RE}. The scheme list belongs in this comment and in
+ * the tests, where it is a statement about the world, not a branch that can quietly stop mattering.
+ *
+ * Refusal is per-LINE, never a {@link ManifestParseError}: one mistyped URL does not mean the file
+ * is not a requirements.txt, and throwing would delete the inventory of every correctly-spelled line
+ * beside it.
+ */
+const SCHEME_LINE_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*[+:]/;
 
 interface ParsedRequirement {
   readonly coordinate: string;
@@ -115,13 +162,51 @@ export function parsePep508(requirement: string): ParsedRequirement | undefined 
   };
 }
 
-/** Strip comparison operators so the shared version helper sees only the numeric text. */
+/**
+ * One clause of a comma-separated specifier: an optional operator, then the version text.
+ *
+ * Longest-first alternation so `>=` is never read as `>` and `~=` never as `~`. Poetry's own `^`/`~`
+ * are in the same set because {@link comparableFrom} is shared by both the PEP 508 path and the
+ * Poetry path below — Poetry writes `^2.32.3` where PEP 508 writes `>=2.32.3,<3`.
+ */
+const PY_CLAUSE_RE = /^(===|==|~=|!=|>=|<=|\^|~|>|<)?\s*(.*)$/;
+
+/**
+ * Operators whose clause names the FLOOR of the declared line — the version the component is at or
+ * above today. Everything absent from this set (`!=`, `<`, `<=`) names something the component is
+ * explicitly NOT at, and recording it as {@link DeclaredDependency.version} inverts the field's
+ * meaning: `sqlalchemy!=1.4.0,>=1.3` would record 1.4.0, the one version the manifest FORBIDS, and
+ * `urllib3<3,>=1.21.1` would record 3.0.0, a ceiling the component may never install. A detection
+ * tick reading either sees a component "already at" a version it is nowhere near and reports no
+ * upgrade.
+ *
+ * This is not an exotic spelling. `packaging.SpecifierSet.__str__` sorts its clauses, and both `!`
+ * (0x21) and `<` (0x3C) sort before `>` (0x3E), so exclusion-first and ceiling-first is exactly what
+ * a pip-compile or PKG-INFO round-trip emits — the first clause is routinely NOT the floor.
+ *
+ * `>` is included: `>2.0` excludes the endpoint but still names where the line starts, whereas `!=`
+ * punches a hole in an otherwise unbounded range and `<`/`<=` say nothing about the floor at all.
+ * The empty operator is included for Poetry's bare `2.0.32`, which names exactly one version.
+ *
+ * Where NO clause denotes a floor, the answer is `undefined` — ADR-0032 §7's "skipped rather than
+ * guessed" applied to specifiers, and {@link DeclaredDependency.version}'s documented first-class
+ * outcome. A missed bump costs a tick; a guessed one costs a wrong commit in someone's repo.
+ */
+const PY_FLOOR_OPS: ReadonlySet<string> = new Set(["", "===", "==", "~=", ">=", ">", "^", "~"]);
+
+/** The floor clause of a specifier, or `undefined` when no clause states one. */
 function comparableFrom(spec: string | undefined): ReturnType<typeof parseComparableVersion> {
   if (spec === undefined) return undefined;
-  // Take the FIRST clause of a comma-separated set — `>=2.0,<3` states a floor of 2.0, which is what
-  // the manifest asserts today. Nothing here tries to compute the range's true resolution.
-  const first = (spec.split(",")[0] ?? "").trim();
-  return parseComparableVersion(first.replace(/^[=<>!~^\s]+/, ""));
+  for (const raw of spec.split(",")) {
+    const clause = raw.trim();
+    if (clause === "") continue;
+    const m = PY_CLAUSE_RE.exec(clause);
+    if (!m) continue;
+    if (!PY_FLOOR_OPS.has(m[1] ?? "")) continue;
+    const parsed = parseComparableVersion((m[2] ?? "").trim());
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
 }
 
 function toDeclared(
@@ -151,10 +236,14 @@ function toDeclared(
 /**
  * Parse a `requirements.txt`.
  *
- * Option lines are skipped rather than parsed: `-r base.txt` and `-c constraints.txt` point at
- * ANOTHER FILE, and following them would be this package doing I/O, which it never does — the
- * caller that fetched this file is the only thing that can fetch a second one. `-e .` is an
- * editable install of the component itself, which is not a dependency of it.
+ * Option lines are skipped rather than parsed (by {@link PEP508_RE}'s anchor — see there): `-r
+ * base.txt` and `-c constraints.txt` point at ANOTHER FILE, and following them would be this package
+ * doing I/O, which it never does — the caller that fetched this file is the only thing that can
+ * fetch a second one. `-e .` is an editable install of the component itself, not a dependency of it.
+ *
+ * Never throws. Unlike the other four parsers (see the entry point's contract note), a
+ * `requirements.txt` has no required construct whose absence proves the file is not one, so there is
+ * nothing to distinguish "empty" from "unreadable" on.
  *
  * `--hash=sha256:…` fragments appended to a requirement are stripped: they pin bytes for an already
  * pinned version and add nothing to the coordinate.
@@ -171,10 +260,17 @@ export function parseRequirementsTxt(content: string): DeclaredDependency[] {
     buffer = "";
     if (text === "") return;
 
-    // Options and their arguments: `-r`, `-e`, `--index-url`, `--extra-index-url`, `--find-links`…
-    if (text.startsWith("-")) return;
-    // A bare URL/path requirement names no distribution we can key on.
-    if (/^(https?|git\+|file:)/i.test(text) || text.startsWith(".") || text.startsWith("/")) return;
+    // Option lines (`-r base.txt`, `-e .`, `--index-url …`, `--only-binary numpy`) are NOT filtered
+    // here. PEP508_RE's leading `[A-Za-z0-9]` anchor already excludes every line beginning with `-`,
+    // so the guard that used to sit on this line could not fire for any input — and a redundant
+    // guard that reads as the enforcement is worse than none, because the next person to widen the
+    // name charset checks the guard, sees it, and never looks at the anchor. The invariant now lives
+    // on PEP508_RE itself, where it is actually enforced. `parseRequirementsTxt` option-line
+    // behaviour stays pinned by its own tests below.
+
+    // A URL, VCS or path requirement names no distribution we can key on — whether it is spelled
+    // correctly or not. One guard covers both, for the reasons on SCHEME_LINE_RE.
+    if (SCHEME_LINE_RE.test(text) || text.startsWith(".") || text.startsWith("/")) return;
 
     const withoutHashes = text.replace(/\s--hash=\S+/g, "").trim();
     const parsed = parsePep508(withoutHashes);

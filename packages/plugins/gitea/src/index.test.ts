@@ -410,6 +410,29 @@ describe("status() — single Gitea status enum", () => {
       .reply(500, { message: "boom" });
     await expect(plugin.status(ctx, { externalId: "action_run::500" })).rejects.toThrow(/HTTP 500/);
   });
+
+  it("ENCODES the runId sliced out of externalId into the route", async () => {
+    // Same census class as readFileAtRef's `repo`/`ref` (M21.2 review BLOCKERS 1-2) and github's
+    // `postCommitStatus` sha: a non-literal string spliced into a REST route. `externalId` is
+    // stored correlation state and numeric in practice, so this encoding is an IDENTITY today and
+    // its removal would change no observed behaviour — which is exactly why it is pinned. An
+    // unpinned member of a censused class is indistinguishable from an untouched one on the next
+    // refactor (CLAUDE.md, "census by property, not by symptom"). Unencoded, `../../../user`
+    // re-targets this GET at `<base>/user` because `new URL()` collapses literal `..` segments;
+    // encoded it is `..%2F..%2F..%2Fuser`, ONE segment a URL does not normalize away. The
+    // interceptor matches only the encoded form, and `disableNetConnect()` plus the file-wide
+    // pending-mocks check make the unencoded form fail loudly rather than pass quietly.
+    const { config, ctx, authHeader, base } = setup();
+    const runId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}`)
+      .reply(200, { id: 1, status: "success", head_sha: "8".repeat(40) });
+
+    const s = await plugin.status(ctx, { externalId: `action_run::${runId}` });
+    expect(s.phase).toBe("succeeded");
+    scope.done();
+  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -444,6 +467,25 @@ describe("abort()", () => {
       aborted: false,
       detail: "gitea: no correlated run to cancel"
     });
+  });
+
+  it("ENCODES the runId sliced out of externalId into the cancel route", async () => {
+    // The second of this adapter's two `externalId`-derived route splices — see the identical pin
+    // in `status()` above for why an identity-today encoding is still pinned. Unencoded this POST
+    // would land on `<base>/user/cancel` rather than on the run.
+    const { config, ctx, authHeader, base } = setup();
+    const runId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .post(
+        `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}/cancel`
+      )
+      .reply(200);
+
+    expect(await plugin.abort(ctx, { externalId: `action_run::${runId}` })).toEqual({
+      aborted: true
+    });
+    scope.done();
   });
 });
 
@@ -799,6 +841,42 @@ describe("readFileAtRef()", () => {
     contentsScope.done();
   });
 
+  it("ESCAPES a '#' in both the ref and the path — unencoded it starts a URL fragment and TRUNCATES the request", async () => {
+    // `#` is where these two encodings are load-bearing rather than decorative: `git
+    // check-ref-format` permits it in a ref and it is legal in a filename, so neither
+    // `assertSafeRef` nor `assertSafeRepoPath` refuses it — but unencoded it ends the URL, so step
+    // 1's `?sha=release/#42` would query `sha=release/` (resolving the WRONG commit) and step 2
+    // would request the `docs/` directory listing. Both are wrong answers, not errors, which is
+    // why they are pinned rather than left to the not-found paths.
+    const { config, ctx, authHeader, base } = setup();
+    const ref = "release/#42";
+    const path = "docs/notes#1.md";
+    const refScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      // nock decodes before matching, so this asserts the DECODED value round-trips — the
+      // unencoded form never gets here at all, its `#` having been dropped as a fragment.
+      .query({ sha: ref, limit: "1" })
+      .reply(200, [{ sha: REF_COMMIT_SHA }]);
+    const contentsScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/docs/notes%231.md`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path,
+        sha: "blobhash",
+        type: "file",
+        size: 3,
+        encoding: "base64",
+        content: Buffer.from("ok\n", "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path, ref });
+    expect(result).toMatchObject({ outcome: "found", content: "ok\n" });
+    refScope.done();
+    contentsScope.done();
+  });
+
   it("round-trips MULTI-BYTE UTF-8 content (sizeBytes counts bytes, not UTF-16 units)", async () => {
     const { config, ctx, authHeader, base } = setup();
     const text = 'FROM alpine:1.0\nLABEL org.opencontainers.image.authors="Ada — 日本語 🎉"\n';
@@ -907,6 +985,13 @@ describe("readFileAtRef()", () => {
 
     const dir = await giteaAdapter.readFileAtRef(ctx, { path: "services", ref: "main" });
     expect(dir).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+    // `reason` alone does NOT pin the ARRAY branch: with `Array.isArray` deleted this same input
+    // still yields not_a_file through the type gate, because `[].type` is undefined. The detail —
+    // and the entry count, which only the array branch can produce — is what separates the two
+    // gates. Censused here rather than fixed only where the reviewer found it (github).
+    expect((dir as { detail: string }).detail).toContain(
+      "is a directory (contents returned a listing of 1 entries)"
+    );
 
     nockResolveRef(base, authHeader, config);
     nock(base)
@@ -922,6 +1007,7 @@ describe("readFileAtRef()", () => {
 
     const sub = await giteaAdapter.readFileAtRef(ctx, { path: "vendor/lib", ref: "main" });
     expect(sub).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+    expect((sub as { detail: string }).detail).toContain("content type 'submodule'");
   });
 
   it("refuses a BINARY file rather than returning replacement-character mojibake", async () => {
@@ -1002,5 +1088,72 @@ describe("readFileAtRef()", () => {
     await expect(
       giteaAdapter.readFileAtRef(ctx, { path: "a/../../etc/passwd", ref: "main" })
     ).rejects.toThrow(/^gitea readFileAtRef: path .* contains a '\.'\/'\.\.' segment/);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // ADVERSARIAL `ref` and `repo` (M21.2 review, BLOCKERS 1 and 2). `repo` was spliced into this
+  // adapter's routes RAW — proven to build `.../repos/acme/widgets/../../../commits?sha=main` —
+  // and `ref` was only `encodeURIComponent`d, which leaves `..` intact. Each test registers NO
+  // interceptor, so with the assert removed the call escapes as a nock no-match; asserting the
+  // MESSAGE (not merely that it threw) is what keeps these from passing for the wrong reason.
+  // -----------------------------------------------------------------------------------------
+
+  it("refuses a REPO traversal BEFORE any HTTP — the route, not just the repo, was being re-targeted", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, {
+        repo: "acme/widgets/../../..",
+        path: "go.mod",
+        ref: "main"
+      })
+    ).rejects.toThrow(
+      /^gitea readFileAtRef: repo 'acme\/widgets\/\.\.\/\.\.\/\.\.' contains a '\.'\/'\.\.' segment/
+    );
+  });
+
+  it("refuses a REPO outside `owner/repo` or outside the provider's own segment charset", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { repo: "acme/widgets?x=", path: "go.mod", ref: "main" })
+    ).rejects.toThrow(/has a segment 'widgets\?x=' outside/);
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { repo: "acme/group/widgets", path: "go.mod", ref: "main" })
+    ).rejects.toThrow(/exactly 2 '\/'-separated segments/);
+  });
+
+  it("refuses a REF traversal and the other git-forbidden ref shapes BEFORE any HTTP", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "../../../../user" })
+    ).rejects.toThrow(/^gitea readFileAtRef: ref '.*' contains '\.\.'/);
+    for (const ref of ["main ", "ma?in", "main~1", "HEAD@{1}", "main."]) {
+      await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref }), ref).rejects.toThrow(
+        /^gitea readFileAtRef: ref /
+      );
+    }
+  });
+
+  it("NEVER fabricates `blobSha` — a contents response without `sha` comes back without one", async () => {
+    // `ReadFileAtRefFound.blobSha` promises it is "never fabricated when it did not" carry one;
+    // an `entry.sha ?? "unknown"` mutation survived this suite before this test existed.
+    const { config, ctx, authHeader, base } = setup();
+    const manifest = "module example.com/x\n";
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "go.mod",
+        // no `sha` at all
+        type: "file",
+        size: Buffer.byteLength(manifest, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(manifest, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" });
+    expect(result).toMatchObject({ outcome: "found", content: manifest });
+    expect((result as { blobSha?: string }).blobSha).toBeUndefined();
   });
 });

@@ -1772,16 +1772,23 @@ export const dependencyLines = pgTable(
      * (charter principle 6). There is no material to infer it from anyway: SCP has no artifact name
      * at all (`ArtifactRef` is `{type, digest}`; no `purl` exists in the tree).
      *
-     * The `dependency_lines_internal_is_declared` CHECK makes that structural: a producer link
-     * cannot be written without the declaration timestamp beside it, so an ingestion path that
-     * "worked out" a producer cannot persist the row at all — the capability is missing rather than
-     * guarded, the shape 0059 used for `objects.domainLocal`.
+     * What removes the capability rather than guarding it is the INGESTION VERB, not the CHECK:
+     * `UpsertDependencyLineInputSchema` has no producer field and `upsertDependencyLine`'s ON
+     * CONFLICT set cannot reach these columns, so a manifest-parsing path has nowhere to put a
+     * producer it "worked out". That is the shape 0059 used for `objects.domainLocal`. The
+     * `dependency_lines_internal_is_declared` CHECK is the weaker, complementary half: it refuses a
+     * HALF-WRITTEN row from raw SQL or a future verb that forgets a column. It does not make the
+     * writer a human — see 0060's "INTERNAL vs THIRD-PARTY" header.
      */
     producedByObjectId: uuid("produced_by_object_id").references(() => objects.id),
     producedByDeclaredAt: timestamp("produced_by_declared_at", { withTimezone: true }),
     /** The principal (graph `user` object) that declared the producer link — principle 6: "which
-     *  human asserted this line is internal?" must be answerable. */
-    producedByDeclaredByObjectId: uuid("produced_by_declared_by_object_id"),
+     *  principal asserted this line is internal?" must be answerable. `references(objects.id)` and
+     *  part of the CHECK below so the answer can be neither NULL nor a fabricated uuid; org-unbound,
+     *  like the other two `objects(id)` references here (0060 header, barrier 2's scope note). */
+    producedByDeclaredByObjectId: uuid("produced_by_declared_by_object_id").references(
+      () => objects.id
+    ),
     /** The head of the line as last OBSERVED. Written by M21.4 detection, never by manifest
      *  ingestion — a component declaring `1.2.0` says nothing about what the line's head is. NULL is
      *  "not yet observed", which is NOT "no newer version exists": absent never means zero, the same
@@ -1813,9 +1820,13 @@ export const dependencyLines = pgTable(
     index("dependency_lines_org_producer")
       .on(table.orgId, table.producedByObjectId)
       .where(sql`${table.producedByObjectId} IS NOT NULL`),
+    // Link, timestamp and declaring principal exist together or not at all. The second conjunct is
+    // load-bearing: without it a producer link could carry a NULL principal, which is exactly the
+    // state that makes `producedByDeclaredByObjectId`'s "must be answerable" comment false.
     check(
       "dependency_lines_internal_is_declared",
-      sql`(${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredAt} IS NULL)`
+      sql`(${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredAt} IS NULL)
+          AND (${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredByObjectId} IS NULL)`
     )
   ]
 );
