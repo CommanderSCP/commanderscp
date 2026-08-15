@@ -76,6 +76,7 @@ export type GetCurrentUserResponses = {
         orgName: string;
         username: string;
         subjectObjectId: string;
+        instanceRole: 'commander' | 'outpost' | 'retrans';
     };
 };
 
@@ -6444,6 +6445,13 @@ export type GetComponentPipelineResponses = {
             id: string;
             urn: string;
             name: string;
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
+            domainLocal: boolean;
         };
         pipeline: {
             topologyObjectId: string;

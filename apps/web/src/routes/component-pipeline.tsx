@@ -19,6 +19,7 @@ import {
   X,
   type LucideIcon
 } from "lucide-react";
+import { CommanderStar, OutpostFort } from "../components/icons/federation-roles";
 import type {
   ComponentPipelineResponse,
   ComponentPipelineStage,
@@ -1417,14 +1418,25 @@ function SourceNode({
   label,
   sources,
   componentId,
-  pipelineKey
+  pipelineKey,
+  upstream,
+  domainLocal
 }: {
   label: string;
   sources: ComponentPipelineResponse["sources"];
   componentId: string;
   pipelineKey: unknown[];
+  /** Who maintains this component (outpost-ui.md §9.3a) — read from the response, never inferred. */
+  upstream: ComponentPipelineResponse["component"]["maintainedBy"];
+  domainLocal: boolean;
 }): React.JSX.Element {
   const [adding, setAdding] = useState(false);
+  // §9.3a — the two source shapes. Another domain maintains this component (on an outpost, that
+  // is the commander): it is UPSTREAM of this domain's repos, shown first. Domain-local, or
+  // self-maintained: the repo IS the source, nothing ahead of it. A domain-local component cannot
+  // have an upstream by construction (it never journaled), so the data and the rule agree — the
+  // UI states the shape rather than deciding it.
+  const hasUpstream = !upstream.isSelf && upstream.domainId !== null && !domainLocal;
   return (
     <NodeShell
       kind={label === "Config" ? "config" : "source"}
@@ -1437,6 +1449,33 @@ function SourceNode({
       testid="pipeline-node-source"
       muted={sources.length === 0}
     >
+      {hasUpstream && (
+        // Commander-sourced work: the maintaining domain sits ahead of this domain's repos. Named
+        // from the response's maintainedBy (name null = origin matches no known peer; say the id
+        // rather than guess).
+        <div
+          className="mb-1.5 flex items-center gap-1.5 text-slate-700"
+          data-testid="pipeline-source-upstream"
+          title={`This component is maintained by ${upstream.name ?? upstream.domainId} — its source of truth is there; the repos below are this domain's local hop.`}
+        >
+          {upstream.role === "commander" ? (
+            <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+          ) : (
+            <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+          )}
+          <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
+          <span className="text-slate-400">upstream</span>
+          <ArrowRight className="size-3.5 shrink-0 text-slate-400" strokeWidth={2} aria-hidden="true" />
+          <span className="text-slate-500">repos in this domain</span>
+        </div>
+      )}
+      {domainLocal && (
+        // Domain-specific IaC/CaC: no upstream. Stated, so an operator comparing two pipelines
+        // sees WHY one has a commander ahead of its repos and the other does not.
+        <p className="mb-1.5 text-xs text-slate-500" data-testid="pipeline-source-no-upstream">
+          Domain-local — this repo is the source of truth; nothing upstream of it.
+        </p>
+      )}
       {sources.length === 0 ? (
         // The source-side twin of an unplaced stage: no push to any repo can start this pipeline,
         // so it only ever runs if someone raises a change by hand.
@@ -1931,6 +1970,8 @@ export function ComponentPipelinePage({
                         sources={node.sources}
                         componentId={data.component.id}
                         pipelineKey={pipelineKey}
+                        upstream={data.component.maintainedBy}
+                        domainLocal={data.component.domainLocal}
                       />
                     )}
                     {node.kind === "build" && <BuildNode bindings={node.bindings} />}

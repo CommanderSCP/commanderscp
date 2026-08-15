@@ -80,7 +80,11 @@ export function registerAuthRoutes(app: FastifyInstance, deps: AppDeps): void {
         orgId: auth.orgId,
         orgName: auth.orgName,
         username: auth.username,
-        subjectObjectId: auth.subjectObjectId
+        subjectObjectId: auth.subjectObjectId,
+        // outpost-ui.md §9.2 — the serving instance's install-time role, so the web shell can
+        // mount the commander site or the smaller outpost site. Read from config, never from
+        // federation_self: one deterministic answer per instance.
+        instanceRole: deps.config.federationRole
       });
     }
   });

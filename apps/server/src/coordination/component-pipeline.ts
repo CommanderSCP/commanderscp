@@ -419,7 +419,13 @@ async function gateForStage(
 export async function getComponentPipeline(
   tx: TenantTx,
   orgId: string,
-  component: { id: string; urn: string; name: string },
+  component: {
+    id: string;
+    urn: string;
+    name: string;
+    originDomainId: string;
+    domainLocal: boolean;
+  },
   actorObjectId: string
 ): Promise<ComponentPipelineResponse> {
   // The component's placements, read from `properties` — the source of truth for the pair
@@ -735,7 +741,18 @@ export async function getComponentPipeline(
   }
 
   return {
-    component: { id: component.id, urn: component.urn, name: component.name },
+    component: {
+      id: component.id,
+      urn: component.urn,
+      name: component.name,
+      // outpost-ui.md §9.3a — the two facts the source lane READS to know its shape: a component
+      // maintained by another domain (typically the commander) has that domain UPSTREAM of this
+      // domain's repos; a domain-local one has no upstream at all — its repo IS the source. Stated
+      // by the server from `originDomainId`/`domainLocal` + federation self, never inferred by
+      // the client from labels or names.
+      maintainedBy: maintainerOf(component.originDomainId),
+      domainLocal: component.domainLocal
+    },
     pipeline,
     stageSource,
     sources,

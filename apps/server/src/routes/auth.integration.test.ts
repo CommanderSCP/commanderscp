@@ -11,6 +11,7 @@ interface CurrentUserBody {
   orgName: string;
   username: string;
   subjectObjectId: string;
+  instanceRole: string;
 }
 
 /**
@@ -44,6 +45,11 @@ describe("Web UI session discovery (/auth/me, /auth/logout, /auth/config)", () =
     expect(body.orgName).toBe(org.orgName);
     expect(body.userId).toBeTruthy();
     expect(body.subjectObjectId).toBeTruthy();
+    // outpost-ui.md §9.2 — the serving instance's INSTALL-TIME role, from config, so the web shell
+    // can pick the commander site or the small outpost site. The harness boots with the default
+    // (`SCP_FEDERATION_ROLE` unset → commander); this pins that the field is present and mirrors
+    // config rather than the per-org advisory federation_self.role (which is "unset" here).
+    expect(body.instanceRole).toBe("commander");
 
     const anon = await server.app.inject({ method: "GET", url: "/api/v1/auth/me" });
     expect(anon.statusCode).toBe(401);

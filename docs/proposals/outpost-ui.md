@@ -1,6 +1,8 @@
 # Proposal: the Outpost UI — a domain workbench and a setup lane, differentiated by data, never by role
 
-**Status:** v0.2 — **owner decisions recorded 2026-08-13** (§8): setup surface = both (in-place affordances + setup landing); subdomains = **nested containment domains now** (overriding this proposal's §5 deferral recommendation — the owner chose (b)); sequencing = both lanes in one round, A3 accepted. Implementation proceeding on the ui-review branch.
+**Status:** v0.3 — **owner correction 2026-08-14 (§9)** after reviewing the v0.2 build on a live two-instance pair: the outpost site is **too complex** — it must NOT carry most of the commander's features. The outpost shows the targets it controls and, as the biggest difference from the commander, the **domain-specific IaC/CaC** the commander does not control. §9 supersedes §2's "never by role" for SITE SHAPE (nav + page set), which is now decided by the **install-time role**; §2 stands unchanged for domain-local RENDERING. v0.2 owner decisions (§8) remain: subdomains nest; setup landing + in-place affordances; A3 accepted.
+
+v0.2 status, for the record: owner decisions recorded 2026-08-13 (§8): setup surface = both (in-place affordances + setup landing); subdomains = **nested containment domains now** (overriding this proposal's §5 deferral recommendation — the owner chose (b)); sequencing = both lanes in one round, A3 accepted. Implemented on the ui-review branch and demonstrated on a live commander (:8080) + outpost (:8082) pair.
 **Role:** Answer the owner's ask (2026-08-13): an Outpost UI for (a) domain-specific tasks the commander doesn't need to know about — the headline case being domain-specific configuration changes for services — and (b) domain-specific outpost setup — importing and deploying to targets. "Stood up by the Outpost itself, not the Commander (except for the case where Commander and Outpost are one and the same, though still different subdomains)."
 **Relates to:** [ADR-0022](../adr/0022-outpost-config-authority-split.md) (the config-authority split this completes the outpost side of), [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) + §6a/M20.5 (domain-local objects and subtree locality — the mechanism the workbench operates), [ADR-0030](../adr/0030-dev-branch-pipelines.md) (`ref_pattern`/`classification` on source mappings), [ADR-0011](../adr/0011-universal-outpost-validation.md), [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (M15 outpost-local Gitea/Harbor), M16.3 (outpost-local UI + write-control census), Mode A P1–P5 (`/connect/argocd`), [GLOSSARY](../GLOSSARY.md) (the six senses of "domain"), charter principles 2, 3, 6, 7.
 
@@ -99,6 +101,62 @@ One adjacent open ruling to import from the M20 author (flagged by them 2026-08-
 4. **B1** — generalize the connect wizard; **B3/B4** ride its review.
 5. **A4** — freeze card.
 6. Doc correction batch: `discovery-worker-dispatch.md` status flip; `domain-local.tsx` comment honesty fix (§2).
+
+## 9. v0.3 — the outpost is a SMALL site (owner correction, 2026-08-14)
+
+### 9.1 What the owner saw, and what it means
+
+The v0.2 build served the entire commander SPA on the outpost, differentiated only by data (§2). Reviewed on a real second website (a paired outpost on its own port and database), the owner's verdict: **"way too complex — it doesn't need most of the features of commander."** An outpost operator's job is narrow: the targets this outpost controls, what runs on them, and — the biggest change from the commander — the **domain-specific IaC and CaC** (`infrastructure` and `configuration` Type pipelines whose objects are domain-local) that the commander neither sees nor controls, as opposed to the org's global IaC/CaC.
+
+This is a correction of *altitude*, not of principle. §2's three precedents forbade role-gated **views** because a role check inside a shared page becomes a lie when the data doesn't match (M16.3's census) or a false guarantee (ADR-0031's "absence is the guarantee"). None of them says two *sites* must have the same page set. A commander and an outpost are different websites, on different hosts, often unable to communicate; the shape of the site each serves is a deployment fact, and the deployment already declares it.
+
+### 9.2 The mode signal — install-time role, on the wire (owner decision)
+
+`SCP_FEDERATION_ROLE` (`config.ts`, the deployment-wide axis; already the sole gate for the retrans SPA-withholding, `app.ts:271`) decides the site shape. It is:
+
+- **Install-time**, set by whoever stands the outpost up — cannot drift with data;
+- **Deterministic and process-wide** — one answer per site, unlike `federation_self.role`, which is per-org, advisory, and which M16.3 P3 explicitly refused as an authorization input.
+
+It reaches the SPA as **one additive field on `GET /auth/me`**: `instanceRole: "commander" | "outpost" | "retrans"` (retrans never serves the SPA, so it never appears in practice — but the enum mirrors the config, not the UI). Additive on a response, so it passes the oasdiff gate. The SPA reads it once via the existing auth context; nothing else about auth changes. **This decides only which nav and route table the shell mounts. It authorizes nothing** — every write the outpost site offers still goes to the API and renders the server's refusal (M16.3's rule, unchanged).
+
+### 9.3 The outpost site (owner decisions)
+
+| Area | Outpost site | Rationale |
+|---|---|---|
+| **Home = a new, smaller Dashboard** | Yes — **outpost-scoped**: the targets this outpost controls, what is placed on each, last deploy state, and the domain-specific IaC/CaC pipelines with their status. Component-level, not org-level. | "Retain Dashboard, but Outposts only track things at the component level." |
+| Campaigns, Graph | **Removed** | Org-wide coordination — the commander's job. |
+| Federation management (Outposts page, Federation status page) | **Removed** | Managing *other* outposts is commander-only. |
+| Outpost's own sync status | **Kept, moved under Admin** | The outpost needs to know whether it is current with its commander — an admin fact, not a nav destination. |
+| Catalog (Services / Assemblies / Components) | **Kept** | Domain-local objects live here; the register/create/publish surfaces (M20) are needed at the outpost more than anywhere. |
+| Setup (`/setup`) | **Kept** | Built for the outpost operator in the first place. |
+| Admin (Identity, Plugins, Access Tokens) + Sync status | **Kept** | The outpost drives its own targets, needs its own tokens and executor plugins. |
+
+**"Targets this outpost controls"** already has a precise server meaning — `originDomainId === federation_self.domainId` (the `maintainedBy.isSelf` logic in `coordination/component-pipeline.ts`). The dashboard reads that fact; it does not infer ownership from labels or peer names.
+
+**"Domain-specific IaC/CaC"** = pipelines whose executor binding is Type `infrastructure` or `configuration` (ADR-0007's facet) on a **domain-local** component or one placed on a target this outpost controls. Global IaC/CaC (bindings on shared, commander-origin objects) is the commander's and shows on the outpost only as read-only replica context, exactly as ADR-0022 already renders commander-declared config.
+
+### 9.3a The outpost pipeline's SOURCE rendering (owner, 2026-08-14)
+
+On the outpost site a component's pipeline shows **where its inputs come from**, and there are exactly two shapes:
+
+- **Commander-sourced work** — the component (or its shared IaC/CaC) is commander-origin: the pipeline's source lane shows **the commander first, then the relevant repos in this domain**. The commander is the upstream; the domain's repos are the local hop.
+- **Domain-specific CaC and IaC** — the source lane shows **the domain repo directly. The commander does not appear ahead of it.** There is no upstream: this code was authored, reviewed and released in this domain, and never crossed a boundary (ADR-0031's content class).
+
+This is READ from facts the API already states, never inferred: whether the component is domain-local (`domainLocal`, ADR-0031), whether it is a commander-origin replica (`originDomainId` ≠ self — the `maintainedBy.isSelf` logic), and the source mapping's `sourceKind`/repo. A domain-local component **cannot** have a commander source by construction (it never journaled), so the rule and the data agree structurally; the UI states the shape rather than deciding it.
+
+### 9.4 What does NOT change
+
+- One bundle. Both sites are the same `apps/web/dist`; the shell picks a nav + route table by `instanceRole` at mount. No second build, no per-role deploy artifact (charter 5, M16.3 P1's one-bundle property).
+- No role gating *inside* pages. Domain-local rendering keys on the object's bit; write controls stay offered and render server refusals.
+- The commander site is untouched.
+
+### 9.5 Build increments
+
+1. `instanceRole` on `/auth/me` (server + schema, additive; `pnpm gen`).
+2. Shell: `OUTPOST_NAV`/`COMMANDER_NAV` + a role-selected route table; `app-shell-nav.test.tsx` pins BOTH navs.
+3. The outpost Dashboard: targets-I-control cards → placed components → domain-specific IaC/CaC pipeline status; honest empties ("no targets are maintained by this outpost yet — import one").
+4. Sync status card under Admin (the outpost's own peer row: last pulled/applied sequence, transport, tier).
+5. Verify on the live :8082 outpost.
 
 ## 8. Open questions for the owner
 

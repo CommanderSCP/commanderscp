@@ -60,6 +60,131 @@ const CATALOG_REGISTRIES = CATALOG_BASE_PATHS.map((basePath) => {
   return registry;
 });
 
+/**
+ * TWO SITES, ONE BUNDLE (outpost-ui.md §9, owner correction 2026-08-14).
+ *
+ * The nav is DATA selected by the serving instance's install-time role (`/auth/me`'s
+ * `instanceRole`, from `SCP_FEDERATION_ROLE`) — the commander site and the smaller outpost site
+ * are two tables rendered by one component, so `app-shell-nav.test.tsx` can pin BOTH shapes and a
+ * change to either is a visible diff to a table, not a conditional buried in JSX.
+ *
+ * What the outpost site does NOT carry, and why (owner decisions):
+ *  - Campaigns, Graph — org-wide coordination is the commander's job.
+ *  - Outposts, Federation status — managing OTHER outposts is commander-only; the outpost's own
+ *    sync status lives under Admin instead.
+ * What it keeps: a smaller Dashboard as home (the targets this outpost controls, at the component
+ * level), the Catalog (domain-local objects live there), Setup, and Admin.
+ *
+ * This decides nav + route table ONLY. It authorizes nothing and gates no rendering inside a
+ * page — M16.3's offer-the-write rule and ADR-0031's data-keyed domain-local rendering are
+ * unchanged. Two sites having different page sets is a deployment fact; a role check inside a
+ * shared page would still be the lie those precedents forbid.
+ */
+export type NavEntry = { to: string; label: string; icon: LucideIcon; exact?: boolean };
+export type NavSection = { label: string | null; entries: NavEntry[] };
+
+const CATALOG_SECTION: NavSection = {
+  label: "Catalog",
+  entries: CATALOG_REGISTRIES.map((r) => ({
+    to: `/${r.basePath}`,
+    label: r.label,
+    icon: r.icon
+  }))
+};
+
+export const COMMANDER_NAV: NavSection[] = [
+  {
+    label: null,
+    entries: [
+      { to: "/", label: "Dashboard", icon: LayoutDashboard, exact: true },
+      { to: "/campaigns", label: "Campaigns", icon: Flag },
+      { to: "/graph", label: "Graph", icon: Waypoints }
+    ]
+  },
+  CATALOG_SECTION,
+  {
+    // M16.2 phase B (B4) required that "Outposts" be REACHABLE and that the pre-existing
+    // `/federation` destination SURVIVE — both still hold, pinned by app-shell-nav.test.tsx.
+    // "Federation status" is exact, or it lights up alongside Outposts (prefix match; owner bug
+    // report 2026-08-11).
+    label: "Federation",
+    entries: [
+      { to: "/federation/outposts", label: "Outposts", icon: OutpostFort },
+      { to: "/federation", label: "Federation status", icon: Globe, exact: true },
+      { to: "/setup", label: "Setup", icon: ListChecks }
+    ]
+  },
+  {
+    label: "Admin",
+    entries: [
+      { to: "/identity", label: "Identity", icon: Users },
+      { to: "/plugins", label: "Plugins", icon: Puzzle },
+      { to: "/pats", label: "Access Tokens", icon: KeyRound }
+    ]
+  }
+];
+
+export const OUTPOST_NAV: NavSection[] = [
+  {
+    label: null,
+    entries: [{ to: "/", label: "Dashboard", icon: LayoutDashboard, exact: true }]
+  },
+  CATALOG_SECTION,
+  {
+    label: "Domain",
+    entries: [{ to: "/setup", label: "Setup", icon: ListChecks }]
+  },
+  {
+    label: "Admin",
+    entries: [
+      // The outpost's OWN sync status — an admin fact (am I current with my commander?), not a
+      // federation-management destination. Same route the commander calls "Federation status";
+      // the outpost names it for what it is here.
+      { to: "/federation", label: "Sync status", icon: Globe, exact: true },
+      { to: "/identity", label: "Identity", icon: Users },
+      { to: "/plugins", label: "Plugins", icon: Puzzle },
+      { to: "/pats", label: "Access Tokens", icon: KeyRound }
+    ]
+  }
+];
+
+export function navForRole(role: "commander" | "outpost" | "retrans" | undefined): NavSection[] {
+  // retrans never serves the SPA (app.ts withholds it), so it can't reach here; if it ever did,
+  // the outpost shape is the safer default — nothing org-wide.
+  return role === "outpost" || role === "retrans" ? OUTPOST_NAV : COMMANDER_NAV;
+}
+
+/** The sidebar nav rendered from a role's table — one renderer, two shapes. */
+export function SiteNav({
+  role
+}: {
+  role: "commander" | "outpost" | "retrans" | undefined;
+}): React.JSX.Element {
+  return (
+    <nav className="flex flex-col gap-1" data-testid="site-nav" data-site={role ?? "commander"}>
+      {navForRole(role).map((section, i) => (
+        <div key={section.label ?? `top-${i}`} className="flex flex-col gap-1">
+          {section.label && (
+            <SectionLabel className="mb-1 mt-5 px-2 text-army-300">{section.label}</SectionLabel>
+          )}
+          {section.entries.map((entry) => (
+            <Link
+              key={entry.to}
+              to={entry.to}
+              className={navLinkClass}
+              activeProps={{ className: navLinkActiveClass }}
+              {...(entry.exact ? { activeOptions: { exact: true } } : {})}
+            >
+              <NavIcon icon={entry.icon} />
+              {entry.label}
+            </Link>
+          ))}
+        </div>
+      ))}
+    </nav>
+  );
+}
+
 /** Left-nav app chrome wrapping every authenticated page (DESIGN.md §14). */
 export function AppShell({ children }: { children: ReactNode }): React.JSX.Element {
   const { user, refresh } = useAuth();
@@ -92,103 +217,7 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
           CommanderSCP
         </Link>
         <InstanceRoleChip />
-        <nav className="flex flex-col gap-1">
-          <Link to="/" className={navLinkClass} activeProps={{ className: navLinkActiveClass }}>
-            <NavIcon icon={LayoutDashboard} />
-            Dashboard
-          </Link>
-          <Link
-            to="/campaigns"
-            className={navLinkClass}
-            activeProps={{ className: navLinkActiveClass }}
-          >
-            <NavIcon icon={Flag} />
-            Campaigns
-          </Link>
-          <Link
-            to="/graph"
-            className={navLinkClass}
-            activeProps={{ className: navLinkActiveClass }}
-          >
-            <NavIcon icon={Waypoints} />
-            Graph
-          </Link>
-
-          <SectionLabel className="mb-1 mt-5 px-2 text-army-300">Catalog</SectionLabel>
-          {CATALOG_REGISTRIES.map((registry) => (
-            <Link
-              key={registry.basePath}
-              to="/$basePath"
-              params={{ basePath: registry.basePath }}
-              className={navLinkClass}
-              activeProps={{ className: navLinkActiveClass }}
-            >
-              <NavIcon icon={registry.icon} />
-              {registry.label}
-            </Link>
-          ))}
-
-          {/* M16.2 phase B (B4) required that "Outposts" be REACHABLE and that the pre-existing
-              `/federation` destination SURVIVE — both still hold, and both are still pinned by
-              `app-shell-nav.test.tsx`. What changed (2026-08-10) is only the shape: Outposts used
-              to be indented UNDER a "Federation" link that was simultaneously a page and a parent,
-              which read as though Outposts were part of the status page. They are now two peers
-              under a heading, so neither is nested inside the other. No destination was renamed. */}
-          <SectionLabel className="mb-1 mt-5 px-2 text-army-300">Federation</SectionLabel>
-          <Link
-            to="/federation/outposts"
-            className={navLinkClass}
-            activeProps={{ className: navLinkActiveClass }}
-          >
-            <NavIcon icon={OutpostFort} />
-            Outposts
-          </Link>
-          <Link
-            to="/federation"
-            // exact, or this lights up alongside Outposts: TanStack's default active match is
-            // prefix-based and /federation/outposts starts with /federation (owner bug report,
-            // 2026-08-11).
-            activeOptions={{ exact: true }}
-            className={navLinkClass}
-            activeProps={{ className: navLinkActiveClass }}
-          >
-            <NavIcon icon={Globe} />
-            Federation status
-          </Link>
-          {/* G5 (outpost-ui.md §4 close) — the setup landing, kept under FEDERATION rather than a
-              new section: it is domain-scoped setup work (connect/place/map/freeze), the same
-              rung Outposts and Federation status already occupy, not a Catalog or Admin concern. */}
-          <Link
-            to="/setup"
-            className={navLinkClass}
-            activeProps={{ className: navLinkActiveClass }}
-          >
-            <NavIcon icon={ListChecks} />
-            Setup
-          </Link>
-
-          <SectionLabel className="mb-1 mt-5 px-2 text-army-300">Admin</SectionLabel>
-          <Link
-            to="/identity"
-            className={navLinkClass}
-            activeProps={{ className: navLinkActiveClass }}
-          >
-            <NavIcon icon={Users} />
-            Identity
-          </Link>
-          <Link
-            to="/plugins"
-            className={navLinkClass}
-            activeProps={{ className: navLinkActiveClass }}
-          >
-            <NavIcon icon={Puzzle} />
-            Plugins
-          </Link>
-          <Link to="/pats" className={navLinkClass} activeProps={{ className: navLinkActiveClass }}>
-            <NavIcon icon={KeyRound} />
-            Access Tokens
-          </Link>
-        </nav>
+        <SiteNav role={user?.instanceRole ?? "commander"} />
       </aside>
       {/* min-w-0: a row-axis flex item's default min-width is its content's min-content width
           (flexbox automatic minimum size), so without this a wide table's intrinsic width tunnels

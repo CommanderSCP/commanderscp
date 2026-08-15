@@ -389,7 +389,19 @@ export type ComponentPipelineSource = z.infer<typeof ComponentPipelineSourceSche
  * that has never released, which the change-anchored surface it replaces could not represent at all.
  */
 export const ComponentPipelineResponseSchema = z.object({
-  component: z.object({ id: z.string().uuid(), urn: z.string(), name: z.string() }),
+  component: z.object({
+    id: z.string().uuid(),
+    urn: z.string(),
+    name: z.string(),
+    /** WHO MAINTAINS THIS COMPONENT (outpost-ui.md §9.3a) — same shape as a stage's `maintainedBy`.
+     *  `isSelf: false` on an outpost means the commander (or another peer) is UPSTREAM of this
+     *  domain's repos in the source lane; `isSelf: true` means this domain authored it. */
+    maintainedBy: ComponentPipelineDomainSchema,
+    /** ADR-0031 — a domain-local component has NO upstream: its repo is the source, and no
+     *  commander appears ahead of it. Structurally consistent with `maintainedBy.isSelf` (a
+     *  domain-local object never journaled, so it is always self-maintained). */
+    domainLocal: z.boolean()
+  }),
   /** Null when no rung supplies one — the component releases as a single anonymous wave. */
   pipeline: ComponentPipelineSourceSchema.nullable(),
   /** WHERE THE JOURNEY CAME FROM, which is what decides how to read an EMPTY `unplacedStages`.

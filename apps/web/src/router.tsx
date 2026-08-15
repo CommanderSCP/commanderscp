@@ -3,6 +3,8 @@ import { RootLayout } from "./components/layout/RootLayout";
 import { AuthenticatedLayout } from "./components/layout/AuthenticatedLayout";
 import { LoginPage } from "./routes/login";
 import { DashboardPage } from "./routes/dashboard";
+import { OutpostDashboardPage } from "./routes/outpost-dashboard";
+import { useAuth } from "./lib/auth-context";
 import { DevicePage } from "./routes/device";
 import { PatsPage } from "./routes/pats";
 import { RegistryListPage } from "./routes/registry-list";
@@ -54,10 +56,20 @@ const authenticatedLayoutRoute = createRoute({
   component: AuthenticatedLayout
 });
 
+/**
+ * HOME is site-shaped (outpost-ui.md §9.3): the commander gets the org-wide dashboard, the outpost
+ * a small component-level one. Selected by `/auth/me`'s install-time `instanceRole` — the ONE
+ * place role picks a page — and only here: inside either page every row keys on data.
+ */
+function HomePage(): React.JSX.Element {
+  const { user } = useAuth();
+  return user?.instanceRole === "outpost" ? <OutpostDashboardPage /> : <DashboardPage />;
+}
+
 const dashboardRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/",
-  component: DashboardPage
+  component: HomePage
 });
 
 const deviceRoute = createRoute({

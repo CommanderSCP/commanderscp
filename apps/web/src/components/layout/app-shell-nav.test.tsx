@@ -52,7 +52,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
   useQuery: () => ({ data: undefined, isLoading: true, isError: false })
 }));
 
-const { AppShell } = await import("./AppShell");
+const { AppShell, SiteNav, OUTPOST_NAV, COMMANDER_NAV, navForRole } = await import("./AppShell");
 const { router } = await import("../../router");
 
 /** Every path the code-based route tree can serve. The router's ids carry the PATHLESS layout
@@ -112,16 +112,17 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     expect(navHrefs(html)).toContain("/federation");
   });
 
-  /** The registry links go through `Link params={{basePath}}`, and the router mock at the top of
-   *  this file renders `to` verbatim — so every one of them serializes to `href="/$basePath"` and
-   *  the href tells us NOTHING about which registries are in the nav. Asserting hrefs here would
-   *  pass with Teams and Components still in the sidebar. The rendered LABEL is the honest signal,
-   *  so the catalog set is pinned by label and by count. */
+  /** The catalog entries are now data (`COMMANDER_NAV`, outpost-ui.md §9) with concrete `to`
+   *  paths, so BOTH the label and the href are honest signals — pinned by both, and by count. */
   it("shows exactly the three catalog registries", () => {
     for (const label of ["Services", "Assemblies", "Components"]) {
       expect(html).toContain(`>${label}</a>`);
     }
-    expect(navHrefs(html).filter((h) => h === "/$basePath")).toHaveLength(3);
+    const hrefs = navHrefs(html);
+    for (const path of ["/services", "/assemblies", "/components"]) {
+      expect(hrefs).toContain(path);
+    }
+    expect(hrefs.filter((h) => ["/services", "/assemblies", "/components"].includes(h))).toHaveLength(3);
   });
 
   /** Removed from the nav on purpose. `/changes` no longer has a LIST route at all, so a link to it
@@ -142,6 +143,62 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     ]) {
       expect(html).not.toContain(`>${label}</a>`);
     }
+  });
+});
+
+/**
+ * THE OUTPOST SITE (outpost-ui.md §9, owner correction 2026-08-14): the same bundle serves a
+ * SMALLER site when the instance's install-time role is `outpost`. Pinned as a table diff against
+ * the commander site above — the whole point of making the nav data was that this test could say,
+ * per entry, which site carries it and which does not.
+ */
+describe("app nav: the OUTPOST site is the small one (outpost-ui.md §9)", () => {
+  const html = renderToStaticMarkup(<SiteNav role="outpost" />);
+  const hrefs = navHrefs(html);
+
+  it("keeps home, the catalog, setup, and admin", () => {
+    for (const path of ["/", "/services", "/assemblies", "/components", "/setup", "/identity", "/plugins", "/pats"]) {
+      expect(hrefs).toContain(path);
+    }
+  });
+
+  it("does NOT carry the commander's org-wide areas — Campaigns, Graph, Outposts", () => {
+    expect(hrefs).not.toContain("/campaigns");
+    expect(hrefs).not.toContain("/graph");
+    expect(hrefs).not.toContain("/federation/outposts");
+    for (const label of ["Campaigns", "Graph", "Outposts", "Federation status"]) {
+      expect(html).not.toContain(`>${label}</a>`);
+    }
+  });
+
+  it("keeps the outpost's OWN sync status, relabelled and moved under Admin", () => {
+    // Same destination the commander calls "Federation status" — a bookmark survives — but on the
+    // outpost it is an admin fact about THIS instance, not a federation-management page.
+    expect(hrefs).toContain("/federation");
+    expect(html).toContain(">Sync status</a>");
+    const adminSection = OUTPOST_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/federation");
+  });
+
+  it("is a strict SUBSET of the commander site's destinations (plus nothing new)", () => {
+    // Every outpost destination exists on the commander site too — the outpost REMOVES, it does
+    // not invent. If this fails, someone added an outpost-only route; that needs a decision, not
+    // a drive-by.
+    const commanderTo = new Set(COMMANDER_NAV.flatMap((s) => s.entries.map((e) => e.to)));
+    for (const to of OUTPOST_NAV.flatMap((s) => s.entries.map((e) => e.to))) {
+      expect(commanderTo.has(to), `outpost-only destination: ${to}`).toBe(true);
+    }
+    expect(OUTPOST_NAV.flatMap((s) => s.entries).length).toBeLessThan(
+      COMMANDER_NAV.flatMap((s) => s.entries).length
+    );
+  });
+
+  it("selects by install-time role, and retrans (never served) falls to the small shape", () => {
+    expect(navForRole("commander")).toBe(COMMANDER_NAV);
+    expect(navForRole(undefined)).toBe(COMMANDER_NAV);
+    expect(navForRole("outpost")).toBe(OUTPOST_NAV);
+    expect(navForRole("retrans")).toBe(OUTPOST_NAV);
+    expect(html).toContain('data-site="outpost"');
   });
 });
 
