@@ -121,7 +121,9 @@ export function RegistryDetailPage(): React.JSX.Element {
           foreign || object.domainLocal === true ? (
             <span className="flex flex-wrap items-center gap-2">
               {foreign && <ForeignOriginNotice originDomainId={object.originDomainId} />}
-              {object.domainLocal === true && <DomainLocalBadge />}
+              {object.domainLocal === true && (
+                <DomainLocalBadge inheritedFrom={object.domainLocalInheritedFrom} />
+              )}
             </span>
           ) : undefined
         }
@@ -438,7 +440,15 @@ function ComponentServiceCard({
         </div>
         <div className="flex items-end gap-2">
           <div className="flex flex-1 flex-col gap-1.5">
-            <label htmlFor="assign-service" className="text-xs font-medium text-slate-600">
+            {/* M20.5/§6a honesty (the M20 author's flagged edge, 2026-08-13): re-parenting is
+                where an operator EXPECTS locality to follow, and it never does — locality is set
+                at create only. Stated on the move control itself, as a tooltip: always true, so
+                it must not shout, but the one place someone reaches for it is here. */}
+            <label
+              htmlFor="assign-service"
+              className="text-xs font-medium text-slate-600"
+              title="Moving never changes locality (ADR-0031 §6a): a shared component moved into a domain-local subtree stays shared, and a domain-local one stays local. Locality is set at create; the only exit is the one-way publish."
+            >
               {currentServiceId ? "Move to service" : "Assign to service"}
             </label>
             <Select value={selected} onValueChange={setSelected} disabled={moveBlocked}>

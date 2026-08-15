@@ -250,11 +250,12 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     const domains: { id: string }[] = [];
     let refusal: unknown = null;
     for (let i = 0; i < 14; i++) {
+      const parent = domains[domains.length - 1];
       try {
         domains.push(
           await admin
             .object("domain")
-            .create({ name: uniq(`deep-d${i}`), ...(i === 0 ? {} : { domainId: domains[i - 1].id }) })
+            .create({ name: uniq(`deep-d${i}`), ...(parent ? { domainId: parent.id } : {}) })
         );
       } catch (e) {
         refusal = e;
@@ -290,13 +291,15 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     let deepComponent: { id: string } | null = null;
     let componentDomain: { id: string } | null = null;
     for (let i = domains.length - 1; i >= 0 && !deepComponent; i--) {
+      const candidate = domains[i];
+      if (!candidate) continue;
       try {
         deepComponent = await admin.components.create({
           name: uniq(`component-deep-${i}`),
           service: deepSvc.id,
-          domainId: domains[i].id
+          domainId: candidate.id
         });
-        componentDomain = domains[i];
+        componentDomain = candidate;
       } catch {
         // 403 at this depth too — step up one domain and retry; the claim is about the deepest
         // shape the API actually hands out.

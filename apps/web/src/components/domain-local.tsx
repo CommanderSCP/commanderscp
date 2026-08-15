@@ -32,14 +32,28 @@ import {
 /**
  * Worn wherever the object's name is (list row, detail header). `domainLocal` is a declared fact,
  * not an unknown — so this is a neutral pill (spec §1.5), not the amber-dashed honesty badge.
+ *
+ * M20.7 (ADR-0031 §6c): `inheritedFrom` is the server-stamped provenance — `null` means declared
+ * directly, present means inherited at create from that container. It is READ, never derived
+ * (the whole point of asking the server for it), and it is HISTORY: where the bit came from, not
+ * whether that container still withholds publication. Never use it to predict a §6b refusal.
  */
-export function DomainLocalBadge(): React.JSX.Element {
+export function DomainLocalBadge({
+  inheritedFrom
+}: {
+  inheritedFrom?: { id: string; urn: string } | null;
+}): React.JSX.Element {
+  const base =
+    "Domain-local (ADR-0031): its existence never leaves this security domain — nothing about it is ever journaled to federation peers. Immutable once set; the only exit is the one-way Publish action on its detail page.";
+  const provenance = inheritedFrom
+    ? ` Inherited at create from ${inheritedFrom.urn} (M20.5 container declaration — historical provenance, stamped at create).`
+    : " Declared directly at create.";
   return (
     <Badge
       variant="neutral"
       icon={EyeOff}
       data-testid="domain-local-badge"
-      title="Domain-local (ADR-0031), declared at create — directly, or inherited from a domain-local container (M20.5): its existence never leaves this security domain — nothing about it is ever journaled to federation peers. Immutable once set; the only exit is the one-way Publish action on its detail page."
+      title={base + provenance}
     >
       domain-local
     </Badge>
@@ -132,7 +146,12 @@ export function DomainLocalPublishCard({
   typeId,
   invalidateKeys
 }: {
-  object: { id: string; name: string; domainLocal?: boolean };
+  object: {
+    id: string;
+    name: string;
+    domainLocal?: boolean;
+    domainLocalInheritedFrom?: { id: string; urn: string } | null;
+  };
   typeId: string;
   /** Query keys to invalidate after a successful publish (detail + list). */
   invalidateKeys: QueryKey[];
@@ -187,6 +206,20 @@ export function DomainLocalPublishCard({
               This object is domain-local: nothing about it — its existence included — is journaled
               to federation peers. Publishing is the one-way exit.
             </p>
+            {/* M20.7 provenance — HISTORICAL, read from the server's create-time stamp. It says
+                where the bit came from; it deliberately does NOT claim that container still
+                withholds publication (the container may have published since — the server's §6b
+                check at publish time is the only authority on ordering). */}
+            {object.domainLocalInheritedFrom && (
+              <p
+                className="text-xs text-slate-500"
+                data-testid="publish-provenance"
+                title="Stamped at create (ADR-0031 §6c). Historical provenance only — whether that container still blocks publication is decided by the server when you publish, not by this label."
+              >
+                Locality inherited at create from{" "}
+                <ProvenanceLink source={object.domainLocalInheritedFrom} />.
+              </p>
+            )}
             <div>
               <Button
                 variant="outline"
@@ -287,6 +320,37 @@ function EdgeBucket({
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * The provenance stamp's container (M20.7), linked into its registry page when its urn names a
+ * routed type — same urn-derived link decision as EndpointName below, same degradation to plain
+ * text when the type segment resolves to no registry.
+ */
+export function ProvenanceLink({
+  source
+}: {
+  source: { id: string; urn: string };
+}): React.JSX.Element {
+  const registry = findRegistryByTypeId(source.urn.split(":")[3]);
+  const label = source.urn.split(":").pop() ?? source.urn;
+  if (!registry) {
+    return (
+      <span className="font-medium text-slate-700" title={source.urn}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <Link
+      to="/$basePath/$idOrUrn"
+      params={{ basePath: registry.basePath, idOrUrn: source.id }}
+      className="font-medium text-slate-900 hover:underline"
+      title={source.urn}
+    >
+      {label}
+    </Link>
   );
 }
 

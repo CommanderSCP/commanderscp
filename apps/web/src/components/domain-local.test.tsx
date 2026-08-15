@@ -36,6 +36,7 @@ import {
   DomainLocalCreateField,
   DomainLocalPublishCard,
   EndpointName,
+  ProvenanceLink,
   PublishConfirmBody
 } from "./domain-local";
 
@@ -81,6 +82,46 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
     expect(html).toContain("one-way Publish");
   });
 
+  // M20.7 (§6c): provenance is READ from the server's create-time stamp, never derived. The two
+  // states must render distinguishably, and the inherited tooltip must carry the container's urn
+  // — that's the entire point of having asked the server for the field.
+  it("badge tooltip distinguishes declared (null stamp) from inherited (stamped), by urn", () => {
+    const declared = renderToStaticMarkup(<DomainLocalBadge inheritedFrom={null} />);
+    expect(declared).toContain("Declared directly at create");
+    expect(declared).not.toContain("Inherited at create from");
+
+    const inherited = renderToStaticMarkup(
+      <DomainLocalBadge
+        inheritedFrom={{
+          id: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5",
+          urn: "urn:scp:default:service:secure-partition"
+        }}
+      />
+    );
+    expect(inherited).toContain("Inherited at create from urn:scp:default:service:secure-partition");
+    expect(inherited).toContain("historical provenance");
+    expect(inherited).not.toContain("Declared directly");
+  });
+
+  it("provenance link routes a routable container urn and degrades to plain text otherwise", () => {
+    const linked = renderToStaticMarkup(
+      <ProvenanceLink
+        source={{
+          id: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5",
+          urn: "urn:scp:default:service:secure-partition"
+        }}
+      />
+    );
+    expect(linked).toContain('href="/services/0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5"');
+    expect(linked).toContain("secure-partition");
+
+    const unrouted = renderToStaticMarkup(
+      <ProvenanceLink source={{ id: "x", urn: "urn:scp:default:not-a-registry:thing" }} />
+    );
+    expect(unrouted).not.toContain("<a ");
+    expect(unrouted).toContain("thing");
+  });
+
   it("create field names the permission and the immutability before the operator commits", () => {
     const html = renderToStaticMarkup(
       <DomainLocalCreateField checked={false} onChange={() => {}} />
@@ -111,6 +152,31 @@ describe("domain-local UI (M20 / ADR-0031)", () => {
     // "There is no un-publish" appears only in the confirm copy (asserted below), never as a
     // control: the card's own markup must not contain an un-publish affordance.
     expect(html.toLowerCase()).not.toMatch(/un-?publish/);
+    // No provenance stamp → no provenance line (an absent fact renders as absence, not filler).
+    expect(html).not.toContain('data-testid="publish-provenance"');
+  });
+
+  it("publish card's provenance line is stamped-fact-only, and disclaims live ordering", () => {
+    const html = renderWithQueryClient(
+      <DomainLocalPublishCard
+        object={{
+          ...LOCAL,
+          domainLocalInheritedFrom: {
+            id: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5",
+            urn: "urn:scp:default:service:secure-partition"
+          }
+        }}
+        typeId="component"
+        invalidateKeys={[]}
+      />
+    );
+    expect(html).toContain('data-testid="publish-provenance"');
+    expect(html).toContain("Locality inherited at create from");
+    expect(html).toContain("secure-partition");
+    // §6c's normative caveat, pinned: the stamp is history, never a §6b publish-order predictor —
+    // the server decides ordering at publish time.
+    expect(html).toContain("the server");
+    expect(html).toContain("publish");
   });
 
   // The sweep report's link decision is derived ENTIRELY from `otherEndpointUrn`'s type segment,

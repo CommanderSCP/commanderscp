@@ -299,7 +299,9 @@ export function RegistryListPage(): React.JSX.Element {
                     >
                       {item.name}
                     </Link>
-                    {item.domainLocal === true && <DomainLocalBadge />}
+                    {item.domainLocal === true && (
+                      <DomainLocalBadge inheritedFrom={item.domainLocalInheritedFrom} />
+                    )}
                   </span>
                 </TableCell>
                 <TableCell className="font-mono text-xs text-slate-500">{item.urn}</TableCell>
