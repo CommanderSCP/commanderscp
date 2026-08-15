@@ -1,5 +1,6 @@
 import { sql, type SQL } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
+import { conflict } from "../errors.js";
 
 /**
  * THE containment walk — "what contains this object?" — in ONE place.
@@ -235,6 +236,38 @@ export interface ChainEntry {
  */
 export const CONTAINER_TYPES = ["service", "assembly"] as const;
 
+/**
+ * THE ONE DEPTH BOUND every recursive graph walk shares (ADR-0033) — and the reason it is loud.
+ *
+ * Six sites recurse with this bound (filterless census, 2026-08-13): this file's
+ * `containmentChain`, `named-queries.ts`'s `groupByDomain`, `policy-resolve.ts`'s `isMemberOf`,
+ * and `authz/resolve.ts`'s three walks (two `member_of` expansions + `scopeExpandCte`, the
+ * hand-synced copy this file's header warns about). Before ADR-0033 each carried a literal `10`
+ * and STOPPED EXPANDING silently at it — and `containmentChain`'s depth inversion then presented
+ * the outermost SURVIVOR as the org root, so an over-deep chain didn't look broken, it looked
+ * like a shallower org whose root was a mid-level domain. Org-scoped required policies silently
+ * stopped matching: the ADR-0026 failure shape, measured as reachable through the public API
+ * once nested domains landed (~10 domain levels + one component).
+ *
+ * The fix is not a bigger number — it is that hitting the bound is now an ERROR, detected by
+ * walking ONE level past it (`WALK_TRUNCATION_PROBE_DEPTH`) and refusing if anything is found
+ * there. Raising capacity later is a one-line change HERE, and only here; a raise that edits any
+ * single call site instead is the six-copies bug this constant exists to end.
+ */
+export const CONTAINMENT_WALK_MAX_DEPTH = 10;
+/** One past the bound: a row AT this depth proves the walk was cut, not complete. */
+export const WALK_TRUNCATION_PROBE_DEPTH = CONTAINMENT_WALK_MAX_DEPTH + 1;
+
+/** The uniform refusal for a walk that hit the bound — one message shape for all six sites, so
+ *  operators meet one explanation, not six dialects. */
+export function walkDepthExceeded(what: string, remedy: string): Error {
+  return conflict(
+    `${what} exceeds the supported containment depth (${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0033). ` +
+      `Rather than answer from a silently truncated walk — which is how org-scoped policies stop ` +
+      `matching with no error — this operation refuses. ${remedy}`
+  );
+}
+
 export function isContainerType(typeId: string): boolean {
   return (CONTAINER_TYPES as readonly string[]).includes(typeId);
 }
@@ -291,11 +324,22 @@ export async function containmentChain(
         JOIN objects parent_o ON parent_o.id = pp.parent_id AND parent_o.org_id = ${orgId}
           AND parent_o.deleted_at IS NULL
       ) parent
-      WHERE c.depth < 10
+      -- ADR-0033: expand ONE level past the shared bound. A row landing at the probe depth is the
+      -- truncation detector — it can only exist if a row at the bound still had a live parent,
+      -- i.e. the chain was about to be cut rather than complete. The throw below is what keeps
+      -- the "index 0 = org root" inversion honest: a truncated chain would otherwise present a
+      -- mid-level ancestor at the root position with no error anywhere.
+      WHERE c.depth < ${WALK_TRUNCATION_PROBE_DEPTH}
     )
     -- Max walk depth per id (see the doc comment): preserves service-beats-domain precedence.
     SELECT DISTINCT ON (id) id, type_id, depth, labels FROM chain ORDER BY id, depth DESC
   `);
+  if (result.rows.some((r) => r.depth >= WALK_TRUNCATION_PROBE_DEPTH)) {
+    throw walkDepthExceeded(
+      `the containment chain of object '${objectId}'`,
+      `Flatten the nesting above it (typically stacked subdomains) before governance can scope it.`
+    );
+  }
   // Reverse so index 0 = org root (max depth in the recursive walk) — matches policy-model.ts's
   // "0 = org root, increasing toward the target" depth convention.
   const rows = result.rows;

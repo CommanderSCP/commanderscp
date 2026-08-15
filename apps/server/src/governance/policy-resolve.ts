@@ -2,7 +2,12 @@ import { sql } from "drizzle-orm";
 import { and, eq, isNull } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
-import { containmentChain, type ChainEntry } from "../graph/containment.js";
+import {
+  WALK_TRUNCATION_PROBE_DEPTH,
+  containmentChain,
+  walkDepthExceeded,
+  type ChainEntry
+} from "../graph/containment.js";
 import { isUuid } from "../graph/objects-repo.js";
 import type { MatchedPolicy, PolicyEffect, PolicyEnforcement } from "./policy-model.js";
 
@@ -77,18 +82,35 @@ async function isMemberOf(
   subjectObjectId: string,
   groupObjectId: string
 ): Promise<boolean> {
-  const result = await tx.execute<{ id: string }>(sql`
+  const result = await tx.execute<{ id: string; depth: number }>(sql`
     WITH RECURSIVE subject_expand AS (
       SELECT ${subjectObjectId}::uuid AS subject_id, 0 AS depth
       UNION
       SELECT r.to_id, se.depth + 1
       FROM relationships r
       JOIN subject_expand se ON r.from_id = se.subject_id
-      WHERE r.org_id = ${orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL AND se.depth < 10
+      WHERE r.org_id = ${orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
+        AND se.depth < ${WALK_TRUNCATION_PROBE_DEPTH}
     )
-    SELECT subject_id AS id FROM subject_expand WHERE subject_id = ${groupObjectId}::uuid
+    SELECT subject_id AS id, depth FROM subject_expand
+    WHERE subject_id = ${groupObjectId}::uuid OR depth >= ${WALK_TRUNCATION_PROBE_DEPTH}
   `);
-  return result.rows.length > 0;
+  // ADR-0033 asymmetry: a match found within the bound is valid regardless of what else the
+  // frontier was doing — membership is a reachability fact. Only NON-membership can be fabricated
+  // by a cut walk, and a fabricated "not a member" here makes a group-scoped REQUIRED policy
+  // silently not apply: fail-open, the worst direction this repo knows (ADR-0026). So: match wins;
+  // no-match with a still-expanding frontier refuses; clean no-match stays false.
+  if (result.rows.some((r) => r.id === groupObjectId && r.depth < WALK_TRUNCATION_PROBE_DEPTH)) {
+    return true;
+  }
+  if (result.rows.some((r) => r.depth >= WALK_TRUNCATION_PROBE_DEPTH)) {
+    throw walkDepthExceeded(
+      `the member_of chain above subject '${subjectObjectId}'`,
+      `Group-scope policy matching cannot assert non-membership past the bound; flatten the ` +
+        `group nesting.`
+    );
+  }
+  return false;
 }
 
 export interface MatchPoliciesInput {

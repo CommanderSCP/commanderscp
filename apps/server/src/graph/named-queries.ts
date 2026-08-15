@@ -6,6 +6,7 @@ import type {
   NamedGraphQuery
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
+import { WALK_TRUNCATION_PROBE_DEPTH, walkDepthExceeded } from "./containment.js";
 import { mapRawObjectRow, type RawObjectRow } from "./raw-row-mappers.js";
 import { sqlIn, sqlInOrAlways } from "./sql-helpers.js";
 
@@ -183,7 +184,7 @@ async function groupByDomain(
   objectIds: string[]
 ): Promise<Record<string, number>> {
   if (objectIds.length === 0) return {};
-  const result = await tx.execute<{ domain_urn: string; count: number }>(sql`
+  const result = await tx.execute<{ domain_urn: string; count: number; truncated: boolean }>(sql`
     WITH RECURSIVE ancestry AS (
       SELECT id AS start_id, id, domain_id, type_id, 0 AS depth FROM objects
       WHERE org_id = ${orgId}::uuid AND ${sqlIn("id", objectIds)}
@@ -191,7 +192,13 @@ async function groupByDomain(
       SELECT a.start_id, o.id, o.domain_id, o.type_id, a.depth + 1
       FROM objects o
       JOIN ancestry a ON o.id = a.domain_id
-      WHERE o.org_id = ${orgId}::uuid AND a.depth < 10 AND a.type_id NOT IN ('domain', 'organization')
+      -- ADR-0033 probe: one past the shared bound. This walk has NO branching (domain_id is a
+      -- single column), and expansion stops AT the first domain/organization row — so a row
+      -- landing at the probe depth proves that start object found no domain within the bound,
+      -- not that some second path kept going. Before this, such an object silently VANISHED from
+      -- the grouping (absent from 'nearest' = absent from the counts).
+      WHERE o.org_id = ${orgId}::uuid AND a.depth < ${WALK_TRUNCATION_PROBE_DEPTH}
+        AND a.type_id NOT IN ('domain', 'organization')
     ),
     nearest AS (
       SELECT DISTINCT ON (a.start_id) a.start_id, a.id, o.urn
@@ -200,8 +207,19 @@ async function groupByDomain(
       WHERE a.type_id IN ('domain', 'organization')
       ORDER BY a.start_id, a.depth ASC
     )
-    SELECT urn AS domain_urn, count(*)::int AS count FROM nearest GROUP BY urn
+    SELECT urn AS domain_urn, count(*)::int AS count, false AS truncated FROM nearest GROUP BY urn
+    UNION ALL
+    SELECT o.urn AS domain_urn, 0 AS count, true AS truncated
+    FROM ancestry a JOIN objects o ON o.id = a.start_id
+    WHERE a.depth >= ${WALK_TRUNCATION_PROBE_DEPTH}
   `);
+  const cut = result.rows.filter((r) => r.truncated).map((r) => r.domain_urn);
+  if (cut.length > 0) {
+    throw walkDepthExceeded(
+      `the domain ancestry of ${cut.slice(0, 3).join(", ")}${cut.length > 3 ? ", …" : ""}`,
+      `Grouping by domain would silently drop such objects from the counts.`
+    );
+  }
   return Object.fromEntries(result.rows.map((r) => [r.domain_urn, r.count]));
 }
 

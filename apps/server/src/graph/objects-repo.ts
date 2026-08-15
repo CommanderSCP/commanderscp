@@ -1035,6 +1035,54 @@ export async function deleteObject(
     }
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // ROUTE-1 ORPHAN GUARD: a tombstoned domain parent makes its `domain_id` children permanently
+  // unadministrable, so a delete that would do that is refused — not cascaded, not tolerated.
+  //
+  // Measured 2026-08-13 (two API calls, depth 1): delete a domain whose live children name it via
+  // `objects.domain_id` → 200; every such child then 403s on UPDATE and DELETE forever, for the
+  // org-root admin included, because the authz scope expansion joins parents on
+  // `deleted_at IS NULL` and the child's one upward chain dead-ends at the tombstone.
+  //
+  // Why refusal, and only for THIS route: containment has two routes, and their delete semantics
+  // are deliberately different. Route 2 (`contains` edges) is CASCADED below — an edge can be
+  // tombstoned alongside its object, and the reader-side filter backstops what the cascade can't
+  // reach. Route 1 is a COLUMN: it cannot be tombstoned per-child without rewriting the children
+  // (a silent re-parent nobody asked for), and leaving it dangling is the measured orphaning. The
+  // only honest option left is the same one `deleteObject` already uses for a merge loser: refuse
+  // with the blockers named, and let the operator move or delete the children first.
+  //
+  // NOT applied on the federation-import path: the authoritative domain already deleted this
+  // object, and refusing the import would silently diverge this replica from its authority — a
+  // worse failure than the orphaning, which the reader-side deleted-ancestor filter at least
+  // bounds. A local child naming a foreign domain replica as its parent therefore CAN still be
+  // orphaned by that authority's delete; recorded as a cost, same class as the replica edges the
+  // cascade below cannot reach.
+  if (!input.federationImport) {
+    const domainChildren = await tx
+      .select({ id: objects.id, urn: objects.urn })
+      .from(objects)
+      .where(
+        and(
+          eq(objects.orgId, input.orgId),
+          // asContainmentDomainId: the column is branded; "is anyone's containment parent this
+          // row?" is precisely the containment-domain sense of the id (GLOSSARY, branded types).
+          eq(objects.domainId, asContainmentDomainId(existing.id)),
+          isNull(objects.deletedAt)
+        )
+      )
+      .limit(6);
+    if (domainChildren.length > 0) {
+      const shown = domainChildren.slice(0, 5).map((c) => c.urn);
+      const suffix = domainChildren.length > 5 ? ", …" : "";
+      throw conflict(
+        `cannot delete '${existing.urn}': ${domainChildren.length > 5 ? "at least 5" : String(domainChildren.length)} live object(s) still name it as their domain (objects.domain_id) — ` +
+          `deleting it would orphan them permanently, because permission resolution stops at deleted parents and no admin could ever update or delete them again. ` +
+          `Move them to another domain or delete them first: ${shown.join(", ")}${suffix}`
+      );
+    }
+  }
+
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
     .update(objects)

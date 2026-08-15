@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ScpClient } from "@scp/sdk";
+import { ScpApiError, ScpClient } from "@scp/sdk";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { containmentChain } from "./containment.js";
 import { matchPoliciesForTargets } from "../governance/policy-resolve.js";
@@ -192,27 +192,18 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
   });
 
   // -----------------------------------------------------------------------------------------
-  // AT THE BOUND — what nesting actually buys before the walk's ceiling (M21 crossover,
-  // 2026-08-13). Every containment/scope recursion in this repo carries a hardcoded
-  // `depth < 10` that STOPS EXPANDING rather than erroring (six sites, filterless census:
-  // containment.ts:294, named-queries.ts:194, policy-resolve.ts:87, authz/resolve.ts:123/:137/
-  // :194 — the last three being the hand-synced `scopeExpandCte` copy containment.ts:14-18
-  // warns about). `containmentChain` then inverts depths (`maxDepth - depth`), so past the bound
-  // it doesn't look broken — the outermost SURVIVING ancestor is presented at depth 0, the
-  // position the convention comment labels "org root". An over-deep chain therefore masquerades
-  // as a shallower org whose root is a mid-level domain, and org-scoped policies silently stop
-  // matching: the exact failure shape this codebase has paid for twice (fail-open service
-  // freeze; 11 dormant required prod gates). The budget is SHARED across kinds — the deepest
-  // pre-nesting shape (placement→component→assembly→service→domain→org) already spends 5 of 10,
-  // so subdomain nesting has roughly five levels of headroom. M21's enablement resolution
-  // (governance/scan-requirements.ts) walks this same chain and inherits the same ceiling.
-  //
-  // This test RECORDS the truncate-and-relabel behaviour so it is discovered here and not in an
-  // estate. It is a pin, not an endorsement: if the bound is ever raised or made loud, all six
-  // sites move together, and this test's expectations flip deliberately.
+  // AT THE BOUND — the ADR-0033 loudness contract, flipped DELIBERATELY from this test's first
+  // life as a hazard pin (M21 crossover, 2026-08-13). Every recursive walk shares one bound
+  // (CONTAINMENT_WALK_MAX_DEPTH, six census sites), and before ADR-0033 each STOPPED EXPANDING
+  // silently: authz refused deep domain creates with a permission-shaped 403 naming neither
+  // depth nor bound, while a component created under the deepest allowed domain got a chain
+  // whose depth inversion presented a mid-level domain at "org root" — org-scoped required
+  // policies silently stopped matching (the ADR-0026 failure shape), reachable through the
+  // public API. Both halves are now LOUD: the walks probe one level past the bound and refuse
+  // with the depth named. This test pins that contract from the operator's side.
   // -----------------------------------------------------------------------------------------
 
-  it("AT THE BOUND: authz refuses deep DOMAIN creates (fail-closed, permission-shaped error) — but does NOT protect component creates, so the chain relabel IS reachable via the public API", async () => {
+  it("AT THE BOUND (ADR-0033): deep creates refuse with the DEPTH named, and a chain that would truncate refuses instead of relabeling", async () => {
     // CONTROL first — a shallow nesting, well under the bound: the convention holds and the org
     // root genuinely sits at index 0. Without this, the deep case could "pass" against a harness
     // where the convention never held at all (vacuous-test discipline).
@@ -236,17 +227,10 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     ).toBe("organization");
     expect(control.some((r) => r.id === shallowTop.id)).toBe(true);
 
-    // Nest domains until the API refuses — MEASURING the ceiling instead of assuming it. What was
-    // expected here was containmentChain's silent truncate-and-relabel; what the first run found
-    // is that a DIFFERENT copy of the same `depth < 10` bound gets there first: the authz scope
-    // expansion (authz/resolve.ts:123/:137/:194, the hand-synced scopeExpandCte). The org-root
-    // admin's own role binding stops resolving once the walk from the new object's scope can no
-    // longer reach the org root within 10 hops, so the CREATE is refused 403 — fail-CLOSED, the
-    // safe direction, but with a PERMISSION-shaped detail ("subject … lacks 'object:write' at
-    // scope …") that names neither depth nor the bound. An operator meeting it will debug RBAC,
-    // not nesting. (Measured 2026-08-13 on a live instance too: 11 domains create fine, the 12th
-    // 403s; the harness org refuses one level earlier — the exact ceiling depends on where the
-    // walk seeds, which is itself evidence that nothing about it is announced.)
+    // Nest domains until the API refuses. Pre-ADR-0033 this refusal was a permission-shaped 403
+    // ("subject … lacks 'object:write' at scope …") naming neither depth nor bound — an operator
+    // met it and debugged RBAC. Now the deny-path probe (authz/resolve.ts
+    // assertDenyNotTruncated) converts a refusal it cannot vouch for into the loud depth error.
     const domains: { id: string }[] = [];
     let refusal: unknown = null;
     for (let i = 0; i < 14; i++) {
@@ -264,79 +248,67 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     }
     expect(
       refusal,
-      "nesting past the shared depth-10 bound must be REFUSED by authz scope expansion — if this " +
-        "is now null, the bound moved or went loud: update the six-site census " +
-        "(containment.ts:294, named-queries.ts:194, policy-resolve.ts:87, authz/resolve.ts:123/" +
-        ":137/:194) and re-measure, don't just bump the loop"
+      "nesting past the shared bound must still be refused — if this is null the bound was " +
+        "raised without updating this test; move all six census sites together"
     ).not.toBeNull();
-    expect(String(refusal)).toContain("Forbidden");
+    const refusalDetail =
+      refusal instanceof ScpApiError
+        ? JSON.stringify(refusal.problem ?? refusal.message)
+        : String(refusal);
+    expect(
+      refusalDetail,
+      "ADR-0033: the refusal must NAME the depth bound, not masquerade as a missing role"
+    ).toContain("supported containment depth");
+    expect(refusalDetail).toContain("ADR-0033");
     expect(domains.length).toBeGreaterThanOrEqual(8);
 
-    // THE TWO BOUNDS DIVERGE — measured, and this is the live half of the finding. The authz
-    // ceiling above refuses deep DOMAIN creates, but a COMPONENT create under the deepest
-    // ALLOWED domain still passes authz (its write-permission walk evidently seeds/joins
-    // differently than the new-domain case) — and that component's containment chain already
-    // exceeds containmentChain's own `depth < 10`. So the truncate-and-relabel behaviour is
-    // REACHABLE THROUGH THE PUBLIC API: no direct DB writes, no exotic path — ~10 nested domains
-    // (allowed), one component at the bottom (allowed), and the chain silently drops the
-    // outermost ancestors and presents a MID-LEVEL DOMAIN at index 0, the position the inversion
-    // comment labels "org root". Everything that reads this chain — policy scope matching, freeze
-    // scoping, M21's enablement resolution — sees a shallower org whose root is wrong, with no
-    // error anywhere. Org-scoped `required` policies silently stop matching for exactly the
-    // components most deeply nested: the ADR-0026 failure shape, reachable by construction.
-    //
-    // This pin is a RECORD of that hazard, not an endorsement. When the bound is made loud or
-    // raised (all six census sites together), the expectations below flip deliberately.
+    // The other half of the old hazard: a component created under the deepest allowed domain used
+    // to get a silently truncated chain whose inversion presented a mid-level domain as the org
+    // root. Now the chain read REFUSES instead of relabeling — walk back from the deepest domain:
+    // every component whose chain would exceed the bound must throw the depth error, and the
+    // deepest one whose chain FITS must still produce the honest shape (organization at index 0).
     const deepSvc = await admin.services.create({ name: uniq("svc-deep") });
-    let deepComponent: { id: string } | null = null;
-    let componentDomain: { id: string } | null = null;
-    for (let i = domains.length - 1; i >= 0 && !deepComponent; i--) {
+    let sawDepthRefusal = false;
+    let honestChain: Awaited<ReturnType<typeof containmentChain>> | null = null;
+    let honestDomain: { id: string } | null = null;
+    for (let i = domains.length - 1; i >= 0 && !honestChain; i--) {
       const candidate = domains[i];
       if (!candidate) continue;
+      let component: { id: string };
       try {
-        deepComponent = await admin.components.create({
+        component = await admin.components.create({
           name: uniq(`component-deep-${i}`),
           service: deepSvc.id,
           domainId: candidate.id
         });
-        componentDomain = candidate;
       } catch {
-        // 403 at this depth too — step up one domain and retry; the claim is about the deepest
-        // shape the API actually hands out.
+        continue; // create itself refused at this depth — step up.
+      }
+      try {
+        honestChain = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+          containmentChain(tx, org.orgId, component.id)
+        );
+        honestDomain = candidate;
+      } catch (e) {
+        // The loud refusal, where the silent relabel used to be. In-process ProblemError keeps
+        // the text in `detail` (message carries only the RFC title, "Conflict").
+        const text = String((e as { detail?: string; message: string }).detail ?? (e as Error).message);
+        expect(text).toContain("supported containment depth");
+        sawDepthRefusal = true;
       }
     }
-    expect(deepComponent, "no component creatable under ANY probe domain — harness broke").not.toBeNull();
-    const deepest = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      containmentChain(tx, org.orgId, deepComponent!.id)
-    );
     expect(
-      deepest[0]?.typeId,
-      "MEASURED 2026-08-13: the deepest API-creatable component's chain presents a mid-level " +
-        "domain at index 0 (the relabel). If this now reads 'organization', the bound was fixed " +
-        "or raised — update the six-site census and the escalation note in outpost-ui.md §5, and " +
-        "flip this pin to assert the honest chain"
-    ).toBe("domain");
-    // MEASURED SHAPE — quieter than a plain drop. The deep route-1 walk (component → d[i] → … →
-    // d0 → org) truncates before reaching the org, so maxDepth belongs to a DOMAIN — but the org
-    // still arrives via the component's SHORT route (service `contains` hop, then the service's
-    // own domain_id), at a small raw depth. After the `maxDepth - depth` inversion, the org is
-    // therefore PRESENT but DISPLACED to a nonzero position while a top-level domain occupies
-    // index 0. Nothing is missing; the ORDER is wrong — every row accounted for, and every caller
-    // reading "index 0 = org root" scopes against the wrong object. That is the quietest possible
-    // failure shape: no gap to notice, no error to catch, just a chain whose root labels lie.
-    const orgRow = deepest.find((r) => r.typeId === "organization");
+      sawDepthRefusal,
+      "at least one deep component's chain must REFUSE — if none did, either the bound rose " +
+        "(update the six sites together) or components stopped being creatable at depth, which " +
+        "changes what this test protects"
+    ).toBe(true);
+    expect(honestChain, "some shallower component must still resolve a complete chain").not.toBeNull();
     expect(
-      orgRow,
-      "the org still arrives via the component's short service route — if it is now absent " +
-        "entirely, the truncation got louder, which changes the escalation, not the hazard"
-    ).toBeDefined();
-    expect(
-      orgRow!.depth,
-      "the org must sit at a NONZERO depth — displaced from the root position the convention " +
-        "assigns it"
-    ).toBeGreaterThan(0);
-    // The component's own domain IS present (near end of the walk) — the chain looks healthy
-    // from below, which is what makes the masquerade quiet.
-    expect(deepest.find((r) => r.id === componentDomain!.id)).toBeDefined();
+      honestChain![0]?.typeId,
+      "a chain that FITS the bound presents the organization at index 0 — the convention the " +
+        "loudness exists to keep honest"
+    ).toBe("organization");
+    expect(honestChain!.find((r) => r.id === honestDomain!.id)).toBeDefined();
   });
 });

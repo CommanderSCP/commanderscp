@@ -1,7 +1,12 @@
 import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
-import { placementParentsSql } from "../graph/containment.js";
+import {
+  CONTAINMENT_WALK_MAX_DEPTH,
+  WALK_TRUNCATION_PROBE_DEPTH,
+  placementParentsSql,
+  walkDepthExceeded
+} from "../graph/containment.js";
 
 /**
  * RBAC permission resolution (DESIGN.md §7). One recursive CTE does both expansions the design
@@ -91,7 +96,13 @@ export interface PermissionCheck {
  * component's domain is reachable directly AND via its service), and dedupe keeps that from
  * re-walking.
  */
-function scopeExpandCte(orgId: string, scopeObjectId: string) {
+function scopeExpandCte(
+  orgId: string,
+  scopeObjectId: string,
+  // ADR-0033: the shared bound by default; the truncation PROBE passes one-past-the-bound so a
+  // deny can be told apart from a walk that was cut. Callers other than the probe never override.
+  maxDepth: number = CONTAINMENT_WALK_MAX_DEPTH
+) {
   return sql`
     scope_expand AS (
       SELECT ${scopeObjectId}::uuid AS scope_id, 0 AS depth
@@ -120,9 +131,55 @@ function scopeExpandCte(orgId: string, scopeObjectId: string) {
         ON parent_o.id = p.parent_id
        AND parent_o.org_id = ${orgId}
        AND parent_o.deleted_at IS NULL
-      WHERE p.parent_id IS NOT NULL AND se.depth < 10
+      WHERE p.parent_id IS NOT NULL AND se.depth < ${maxDepth}
     )
   `;
+}
+
+/**
+ * ADR-0033 — the deny-path truncation probe, and why it runs only on deny.
+ *
+ * An ALLOW found within the bound is always valid: the binding was reached, the grant is real.
+ * A DENY is the direction that can lie — "no binding reached" is indistinguishable from "the
+ * binding exists at an ancestor the walk never got to" (measured 2026-08-13: an org-root admin
+ * 403'd inside a deep domain chain with a detail naming neither depth nor bound, and the operator
+ * debugging that message debugs RBAC, not nesting). So `hasPermission`/`hasRoleAtScope` call this
+ * only after computing a refusal: both walks are re-run ONE level past the bound, and if either
+ * frontier is still expanding the refusal is converted into a loud depth error instead of a
+ * silent false. The hot allow-path pays nothing.
+ */
+async function assertDenyNotTruncated(
+  tx: TenantTx,
+  orgId: string,
+  subjectObjectId: string,
+  scopeObjectId: string,
+  denialOf: string
+): Promise<void> {
+  const result = await tx.execute<{ kind: string }>(sql`
+    WITH RECURSIVE subject_expand AS (
+      SELECT ${subjectObjectId}::uuid AS subject_id, 0 AS depth
+      UNION
+      SELECT r.to_id, se.depth + 1
+      FROM relationships r
+      JOIN subject_expand se ON r.from_id = se.subject_id
+      WHERE r.org_id = ${orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
+        AND se.depth < ${WALK_TRUNCATION_PROBE_DEPTH}
+    ),
+    ${scopeExpandCte(orgId, scopeObjectId, WALK_TRUNCATION_PROBE_DEPTH)}
+    (SELECT 'subject' AS kind FROM subject_expand WHERE depth >= ${WALK_TRUNCATION_PROBE_DEPTH} LIMIT 1)
+    UNION ALL
+    (SELECT 'scope' AS kind FROM scope_expand WHERE depth >= ${WALK_TRUNCATION_PROBE_DEPTH} LIMIT 1)
+  `);
+  const truncated = result.rows.map((r) => r.kind);
+  if (truncated.length > 0) {
+    throw walkDepthExceeded(
+      truncated.includes("scope")
+        ? `the containment chain above scope '${scopeObjectId}'`
+        : `the member_of chain above subject '${subjectObjectId}'`,
+      `${denialOf} was refused, but the refusal cannot be trusted: a grant may exist beyond the ` +
+        `bound. Flatten the nesting, or bind the role nearer the scope.`
+    );
+  }
 }
 
 export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promise<boolean> {
@@ -134,7 +191,7 @@ export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promi
       FROM relationships r
       JOIN subject_expand se ON r.from_id = se.subject_id
       WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < 10
+        AND se.depth < ${CONTAINMENT_WALK_MAX_DEPTH}
     ),
     ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
@@ -148,7 +205,18 @@ export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promi
 
   const effects = result.rows.map((r) => r.effect);
   if (effects.includes("deny")) return false;
-  return effects.includes("allow");
+  if (effects.includes("allow")) return true;
+  // ADR-0033: no binding reached at all — the one outcome a truncated walk can fabricate.
+  // (An explicit deny above is a REAL binding that was reached; only the nothing-found case is
+  // converted. Every caller inherits this, which is the point: false-by-depth must not exist.)
+  await assertDenyNotTruncated(
+    tx,
+    check.orgId,
+    check.subjectObjectId,
+    check.scopeObjectId,
+    `'${check.permission}'`
+  );
+  return false;
 }
 
 /** Throws 403 Forbidden (RFC 9457) when `hasPermission` would return false. */
@@ -191,7 +259,7 @@ export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<bo
       FROM relationships r
       JOIN subject_expand se ON r.from_id = se.subject_id
       WHERE r.org_id = ${check.orgId} AND r.type_id = 'member_of' AND r.deleted_at IS NULL
-        AND se.depth < 10
+        AND se.depth < ${CONTAINMENT_WALK_MAX_DEPTH}
     ),
     ${scopeExpandCte(check.orgId, check.scopeObjectId)}
     SELECT DISTINCT rb.effect
@@ -205,5 +273,16 @@ export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<bo
 
   const effects = result.rows.map((r) => r.effect);
   if (effects.includes("deny")) return false;
-  return effects.includes("allow");
+  if (effects.includes("allow")) return true;
+  // ADR-0033, same conversion as hasPermission: a quorum member silently vanishing because the
+  // walk was cut is a quorum that fails mysteriously; erroring here fails the gate closed AND
+  // says why.
+  await assertDenyNotTruncated(
+    tx,
+    check.orgId,
+    check.subjectObjectId,
+    check.scopeObjectId,
+    `role '${check.roleName}' at scope`
+  );
+  return false;
 }
