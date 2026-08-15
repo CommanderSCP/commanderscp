@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { CircleUser, Flag, Globe, KeyRound, LayoutDashboard, ListChecks, Puzzle, Users, Waypoints, type LucideIcon } from "lucide-react";
@@ -8,7 +8,7 @@ import { cn, focusRing } from "../../lib/utils";
 import { REGISTRIES } from "../../lib/registries";
 import { Button } from "../ui/button";
 import { SectionLabel } from "../ui/section-label";
-import { BrandMark } from "./BrandMark";
+import { BrandMark, applySiteFavicon } from "./BrandMark";
 import { CommanderStar, OutpostFort, RetransMast } from "../icons/federation-roles";
 import { useQuery } from "@tanstack/react-query";
 import { federationSelfKey } from "../../lib/query-client";
@@ -190,6 +190,12 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
   const { user, refresh } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  // Site-shaped browser-tab icon (outpost-ui.md §9): once the install-time role is known — i.e.
+  // post-auth, inside the shell — the tab wears the outpost fort on an outpost. Never before auth
+  // (the login page keeps the static commander default), never from federation_self.role.
+  useEffect(() => {
+    applySiteFavicon(user?.instanceRole);
+  }, [user?.instanceRole]);
 
   async function handleLogout(): Promise<void> {
     try {
@@ -213,7 +219,7 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
             focusRing
           )}
         >
-          <BrandMark />
+          <BrandMark role={user?.instanceRole} />
           CommanderSCP
         </Link>
         <InstanceRoleChip />

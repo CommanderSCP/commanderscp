@@ -53,6 +53,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 }));
 
 const { AppShell, SiteNav, OUTPOST_NAV, COMMANDER_NAV, navForRole } = await import("./AppShell");
+const { BrandMark } = await import("./BrandMark");
 const { router } = await import("../../router");
 
 /** Every path the code-based route tree can serve. The router's ids carry the PATHLESS layout
@@ -232,5 +233,25 @@ describe("app router: every nav destination this milestone adds actually resolve
 
   it("PREMISE: the flattening really reads the tree (a made-up path is absent)", () => {
     expect(routePaths()).not.toContain("/federation/outposts/does-not-exist");
+  });
+});
+
+/**
+ * SITE-SHAPED INSIGNIA (outpost-ui.md §9, owner 2026-08-14): the outpost site wears the fort, the
+ * commander the star — and the login page ALWAYS wears the star, because the role is post-auth
+ * only (topology disclosure). Pinned by the `data-insignia` attribute rather than SVG path text,
+ * so a redraw of either icon does not break the test while a swapped role does.
+ */
+describe("brand mark: one insignia per site, star before auth", () => {
+  it("wears the fort on the outpost site and the star on the commander site", () => {
+    expect(renderToStaticMarkup(<BrandMark role="outpost" />)).toContain('data-insignia="outpost"');
+    expect(renderToStaticMarkup(<BrandMark role="commander" />)).toContain('data-insignia="commander"');
+  });
+
+  it("wears the STAR when no role is known — the login page's case — never leaking the role pre-auth", () => {
+    // Login renders <BrandMark size="lg" /> with no role: an unauthenticated visitor must not learn
+    // this instance is an outpost from its logo. Same rule the role chip has always followed.
+    expect(renderToStaticMarkup(<BrandMark size="lg" />)).toContain('data-insignia="commander"');
+    expect(renderToStaticMarkup(<BrandMark size="lg" />)).not.toContain('data-insignia="outpost"');
   });
 });
