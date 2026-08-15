@@ -2579,7 +2579,14 @@ export const zGetServiceBoardResponse = z.object({
     service: z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         urn: z.string(),
-        name: z.string()
+        name: z.string(),
+        maintainedBy: z.object({
+            domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+            name: z.string().nullable(),
+            isSelf: z.boolean(),
+            role: z.string().nullable()
+        }),
+        domainLocal: z.boolean()
     }),
     rows: z.array(z.object({
         component: z.object({

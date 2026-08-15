@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildCreatePayload, ParentDomainField } from "./registry-list";
+import { buildCreatePayload, orderDomainOwnedFirst, ParentDomainField } from "./registry-list";
 
 /**
  * G2 (outpost-ui.md §5(b), owner decision 2026-08-13): the domains registry's create form gains an
@@ -102,5 +102,43 @@ describe("registry-list.tsx: nested-domains parent picker (G2)", () => {
     });
     expect(undeclared).not.toHaveProperty("domainLocal");
     expect(undeclared).not.toHaveProperty("domainId");
+  });
+});
+
+/**
+ * OWNERSHIP-SHAPED ORDERING (outpost-ui.md §9, owner 2026-08-14) — the outpost's catalog lists put
+ * the containers THIS domain owns first, so an operator finds where to hang shared domain IaC/CaC
+ * without scanning past commander replicas. Pinned as a pure function: the rule keys ONLY on
+ * `originDomainId` vs the instance's own domain — never on labels or names.
+ */
+describe("registry-list.tsx: domain-owned rows first (outpost catalog)", () => {
+  const SELF = "11111111-1111-4111-8111-111111111111";
+  const OTHER = "22222222-2222-4222-8222-222222222222";
+  const items = [
+    { id: "a", originDomainId: OTHER, name: "cmdr-a" },
+    { id: "b", originDomainId: SELF, name: "mine-b" },
+    { id: "c", originDomainId: OTHER, name: "cmdr-c" },
+    { id: "d", originDomainId: SELF, name: "mine-d" }
+  ];
+
+  it("puts self-owned rows first, preserving each half's original order", () => {
+    expect(orderDomainOwnedFirst(items, SELF).map((i) => i.id)).toEqual(["b", "d", "a", "c"]);
+  });
+
+  it("is the identity when the instance's own domain is unknown — never guesses ownership", () => {
+    // Federation not initialised → nothing can be attributed; the API's order stands untouched
+    // rather than some row being promoted on a hunch.
+    expect(orderDomainOwnedFirst(items, undefined).map((i) => i.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("is a no-op when everything is self-owned (the commander's usual case)", () => {
+    const allMine = items.map((i) => ({ ...i, originDomainId: SELF }));
+    expect(orderDomainOwnedFirst(allMine, SELF)).toEqual(allMine);
+  });
+
+  it("does not drop or duplicate rows", () => {
+    const out = orderDomainOwnedFirst(items, SELF);
+    expect(out).toHaveLength(items.length);
+    expect(new Set(out.map((i) => i.id)).size).toBe(items.length);
   });
 });

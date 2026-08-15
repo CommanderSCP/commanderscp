@@ -53,7 +53,14 @@ function boardPayload(
   replica: StubComponent
 ): ServiceBoardResponse {
   return {
-    service,
+    // outpost-ui.md §9.3a — the board's `service` block carries its own provenance now. This stub
+    // is a SELF-maintained, shared service (the ordinary commander case); the outpost's
+    // "commander upstream" shape is exercised by the pipeline-view tests, not this spec.
+    service: {
+      ...service,
+      maintainedBy: { domainId: null, name: null, isSelf: true, role: null },
+      domainLocal: false
+    },
     rows: [
       {
         component: driven,

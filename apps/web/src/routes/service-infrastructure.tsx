@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { ExternalLink, Info } from "lucide-react";
+import { ArrowRight, ExternalLink, Info } from "lucide-react";
+import { CommanderStar, OutpostFort } from "../components/icons/federation-roles";
 import { client } from "../lib/client";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
@@ -53,12 +54,43 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
   if (!board) return <p className="text-sm text-slate-500">No service.</p>;
 
   const bound = board.servicePipelines.filter((p) => p.bound);
+  // outpost-ui.md §9.3a — the SAME two source shapes the component pipeline renders, one rung up.
+  // A service maintained by another domain (on an outpost: the commander) has that domain
+  // UPSTREAM of whatever shared IaC/CaC this domain binds under it; a self-maintained or
+  // domain-local service is this domain's own — nothing ahead of it. Read from the board's
+  // `service.maintainedBy`/`domainLocal`, never inferred.
+  const upstream = board.service.maintainedBy;
+  const hasUpstream = !upstream.isSelf && upstream.domainId !== null && !board.service.domainLocal;
 
   return (
     <div className="space-y-4" data-testid="service-infrastructure">
       <PageHeader
         title={board.service.name}
         description={<span className="font-mono text-xs break-all">{board.service.urn}</span>}
+        meta={
+          hasUpstream ? (
+            <span
+              className="flex items-center gap-1.5 text-xs text-slate-700"
+              data-testid="service-infra-upstream"
+              title={`This service is maintained by ${upstream.name ?? upstream.domainId} — its shared infrastructure and configuration are authored there; anything bound here is this domain's local hop.`}
+            >
+              {upstream.role === "commander" ? (
+                <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              ) : (
+                <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              )}
+              <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
+              <span className="text-slate-400">upstream</span>
+              <ArrowRight className="size-3.5 shrink-0 text-slate-400" strokeWidth={2} aria-hidden="true" />
+              <span className="text-slate-500">shared IaC / CaC bound in this domain</span>
+            </span>
+          ) : board.service.domainLocal ? (
+            <span className="text-xs text-slate-500" data-testid="service-infra-no-upstream">
+              Domain-local — shared infrastructure and configuration bound here are this
+              domain&apos;s own; nothing upstream of them.
+            </span>
+          ) : undefined
+        }
       />
 
       {bound.length === 0 ? (

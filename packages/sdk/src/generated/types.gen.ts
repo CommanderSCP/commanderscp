@@ -7814,6 +7814,13 @@ export type GetServiceBoardResponses = {
             id: string;
             urn: string;
             name: string;
+            maintainedBy: {
+                domainId: string | null;
+                name: string | null;
+                isSelf: boolean;
+                role: string | null;
+            };
+            domainLocal: boolean;
         };
         rows: Array<{
             component: {

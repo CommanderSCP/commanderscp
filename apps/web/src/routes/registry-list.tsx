@@ -6,6 +6,7 @@ import { client } from "../lib/client";
 import { findRegistry, getRegistryClient } from "../lib/registries";
 import { registryListKey } from "../lib/query-client";
 import { useBasePathParam } from "../lib/use-route-params";
+import { useOwnDomainId } from "../lib/replica-origin";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -54,6 +55,26 @@ export function buildCreatePayload(input: {
     // when the operator actually picked a domain, and only on the domains registry.
     ...(input.isDomainsRegistry && input.parentDomainId ? { domainId: input.parentDomainId } : {})
   };
+}
+
+/**
+ * OWNERSHIP-SHAPED ORDERING (outpost-ui.md §9, owner 2026-08-14). On an outpost the catalog lists
+ * are dominated by commander replicas (measured: 8 of 9 services on the live outpost were
+ * replicas), and the one fact an outpost operator needs — "which containers are MINE, so I can
+ * hang shared domain IaC/CaC on them?" — was invisible on the list rows. This sorts DOMAIN-OWNED
+ * rows first (origin === self), then everything else, each half keeping the API's order; and it
+ * is a pure function so the rule is pinned without a router. It runs on BOTH sites — on the
+ * commander almost everything is self-owned, so it is a no-op there in practice; the point is
+ * that neither site infers ownership from labels or names, only from `originDomainId`.
+ */
+export function orderDomainOwnedFirst<T extends { originDomainId: string }>(
+  items: T[],
+  ownDomainId: string | undefined
+): T[] {
+  if (!ownDomainId) return items;
+  const own = items.filter((i) => i.originDomainId === ownDomainId);
+  const other = items.filter((i) => i.originDomainId !== ownDomainId);
+  return [...own, ...other];
 }
 
 /**
@@ -111,6 +132,7 @@ export function RegistryListPage(): React.JSX.Element {
   // `domain` as its container from this form (a service/component's `domainId` is still inherited via
   // M20.5, never chosen here).
   const isDomainsRegistry = registry?.basePath === "domains";
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const listQuery = useQuery({
     queryKey: registryListKey(basePath ?? ""),
@@ -283,13 +305,20 @@ export function RegistryListPage(): React.JSX.Element {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Maintained by</TableHead>
               <TableHead>URN</TableHead>
               <TableHead>Updated</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {listQuery.data.items.map((item) => (
-              <TableRow key={item.id} data-testid="registry-row">
+            {orderDomainOwnedFirst(listQuery.data.items, ownDomainId).map((item) => (
+              <TableRow
+                key={item.id}
+                data-testid="registry-row"
+                data-maintained-by={
+                  ownDomainId ? (item.originDomainId === ownDomainId ? "self" : "other") : "unknown"
+                }
+              >
                 <TableCell>
                   <span className="flex items-center gap-2">
                     <Link
@@ -303,6 +332,30 @@ export function RegistryListPage(): React.JSX.Element {
                       <DomainLocalBadge inheritedFrom={item.domainLocalInheritedFrom} />
                     )}
                   </span>
+                </TableCell>
+                {/* READ from originDomainId vs this instance's own domain — the same fact the
+                    detail page's read-only-replica notice and the pipeline's maintainedBy use.
+                    Own domain: em-dash (structurally expected, spec §1.5). Other: the neutral
+                    "replica" pill — a fact, not an alarm. Unknown self (federation not
+                    initialised): em-dash with the reason. */}
+                <TableCell className="text-xs">
+                  {!ownDomainId ? (
+                    <span className="text-slate-400" title="Federation isn't initialised, so ownership can't be attributed yet.">
+                      —
+                    </span>
+                  ) : item.originDomainId === ownDomainId ? (
+                    <span className="text-slate-400" title="Maintained by this domain.">
+                      —
+                    </span>
+                  ) : (
+                    <span
+                      className="inline-flex items-center rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+                      title={`Authoritatively owned by another domain (${item.originDomainId}) — a read-only replica here. Shared IaC/CaC for it belongs to that domain, not this one.`}
+                      data-testid="registry-row-replica"
+                    >
+                      replica
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="font-mono text-xs text-slate-500">{item.urn}</TableCell>
                 {/* A date is not a status (spec §4E) — plain caption text, not a Badge. */}
