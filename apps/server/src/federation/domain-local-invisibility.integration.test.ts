@@ -588,6 +588,251 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
     expect(reverse!.detail).toMatch(/different urn/i);
   });
 
+  it("PUBLISH (M20.6): refused while a `contains` container is still domain-local, and NOTHING is written", async () => {
+    // ADR-0031 §6b. Publishing a child out of a still-local container would land it at the commander
+    // with no containment edge — the shape ADR-0026 measured silently stopping 11 `required` policies
+    // and failing service-scoped freezes open.
+    const container = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "service",
+        actorObjectId: outpost.orgId,
+        requestId: "m206-container",
+        name: "secure-networking",
+        domainLocal: true
+      })
+    );
+    // The state M20.5's inheritance produces, constructed directly: `createComponentInService`
+    // authorizes `relationship:write`, and this file's isolated-domain harness has no RBAC subject —
+    // which is why every other test here builds the object and its edge through the repos. The
+    // inheritance that would normally produce this state is covered by
+    // `domain-local-inheritance.integration.test.ts`; the subject HERE is the publish refusal.
+    const child = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "m206-child",
+        name: "vpc-peering",
+        domainLocal: true
+      })
+    );
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "m206-child-edge",
+        typeId: "contains",
+        fromId: container.id,
+        toId: child.id
+      })
+    );
+    expect(child.domainLocal).toBe(true);
+
+    const refusal = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "component",
+        idOrUrn: child.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m206-publish-child"
+      })
+    ).then(
+      () => null,
+      (err: unknown) => err as ProblemError
+    );
+    expect(refusal).toBeInstanceOf(ProblemError);
+    expect(refusal!.status).toBe(409);
+    // The refusal NAMES the offending container — the operator's next action is to publish it, and a
+    // message that only says "some container" makes them go looking.
+    expect(refusal!.detail).toContain("secure-networking");
+    expect(refusal!.detail).toContain(container.urn);
+
+    // And the refusal is REAL: the child is untouched, still domain-local.
+    const after = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx.select().from(objects).where(eq(objects.id, child.id))
+    );
+    expect(after[0]!.domainLocal).toBe(true);
+  });
+
+  it("PUBLISH (M20.6): the container-then-child ORDER works, and publishing a container does NOT publish its children", async () => {
+    const container = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "service",
+        actorObjectId: outpost.orgId,
+        requestId: "m206-order-container",
+        name: "orderable-networking",
+        domainLocal: true
+      })
+    );
+    const child = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: outpost.orgId,
+        requestId: "m206-order-child",
+        name: "vpc-endpoints-ordered",
+        domainLocal: true
+      })
+    );
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createRelationship(tx, {
+        orgId: outpost.orgId,
+        actorObjectId: outpost.orgId,
+        requestId: "m206-order-edge",
+        typeId: "contains",
+        fromId: container.id,
+        toId: child.id
+      })
+    );
+
+    // Publish the CONTAINER first.
+    const containerResult = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "service",
+        idOrUrn: container.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m206-publish-container"
+      })
+    );
+    expect(containerResult.object.domainLocal).toBe(false);
+
+    // THE CONTROL THAT MAKES THE ORDER WORKABLE RATHER THAN COERCIVE: the child is NOT dragged along.
+    // Publishing a container is one decision; publishing each child is another. The edge to the child
+    // is withheld for exactly that reason — its other endpoint is still domain-local.
+    const childAfterContainer = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx.select().from(objects).where(eq(objects.id, child.id))
+    );
+    expect(childAfterContainer[0]!.domainLocal).toBe(true);
+    expect(containerResult.withheldRelationships.map((r) => r.otherEndpointId)).toContain(child.id);
+
+    // NOW the child publishes cleanly — the previously-blocking container federates.
+    const childResult = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "component",
+        idOrUrn: child.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m206-publish-child-2"
+      })
+    );
+    expect(childResult.object.domainLocal).toBe(false);
+    // ...and its edge to the now-shared container travels with it.
+    expect(childResult.publishedRelationships.map((r) => r.otherEndpointId)).toContain(
+      container.id
+    );
+  });
+
+  it("PUBLISH (M20.7): publishing CLEARS the inheritance provenance — on an object that genuinely had one", async () => {
+    // The child must have INHERITED provenance for this to mean anything. Bolting the assertion onto
+    // the ordering test above would have been VACUOUS: that child is created with `domainLocal: true`
+    // explicitly, so its provenance is null from the start and "cleared" would pass trivially.
+    const container = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "domain",
+        actorObjectId: outpost.orgId,
+        requestId: "m207-container",
+        name: "prov-clearing-partition",
+        domainLocal: true
+      })
+    );
+    const child = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: container.id as never,
+        typeId: "service",
+        actorObjectId: outpost.orgId,
+        requestId: "m207-child",
+        name: "prov-clearing-child"
+      })
+    );
+    // Precondition, asserted rather than assumed: it really did inherit.
+    expect(child.domainLocal).toBe(true);
+    expect(child.domainLocalInheritedFrom?.id).toBe(container.id);
+
+    // §6b requires the container first.
+    await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "domain",
+        idOrUrn: container.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m207-publish-container"
+      })
+    );
+    const published = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "service",
+        idOrUrn: child.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m207-publish-child"
+      })
+    );
+
+    // The field answers "why is this domain-local"; on an object that no longer is, a surviving
+    // value would assert a reason for a state that has ended.
+    expect(published.object.domainLocal).toBe(false);
+    expect(published.object.domainLocalInheritedFrom).toBeNull();
+    // BOTH columns, not just the wire view — they are written together and must clear together.
+    const rowAfter = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      tx.select().from(objects).where(eq(objects.id, child.id))
+    );
+    expect(rowAfter[0]!.domainLocalInheritedFrom).toBeNull();
+    expect(rowAfter[0]!.domainLocalInheritedFromUrn).toBeNull();
+  });
+
+  it("PUBLISH (M20.6): the `domain_id` route blocks too — both containment routes, not just `contains`", async () => {
+    // §6b mirrors §6a/§4's either-route rule. Testing only the `contains` route would leave an object
+    // grouped under a domain-local containment DOMAIN publishable straight out of it.
+    const containingDomain = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: null,
+        typeId: "domain",
+        actorObjectId: outpost.orgId,
+        requestId: "m206-domain",
+        name: "secure-partition-m206",
+        domainLocal: true
+      })
+    );
+    const child = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      createObject(tx, {
+        orgId: outpost.orgId,
+        domainId: containingDomain.id as never,
+        typeId: "service",
+        actorObjectId: outpost.orgId,
+        requestId: "m206-domain-child",
+        name: "service-in-secure-partition"
+      })
+    );
+    expect(child.domainLocal).toBe(true); // M20.5 inheritance via domain_id
+
+    const refusal = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      publishDomainLocalObject(tx, {
+        orgId: outpost.orgId,
+        typeId: "service",
+        idOrUrn: child.id,
+        actorObjectId: outpost.orgId,
+        requestId: "m206-publish-domain-child"
+      })
+    ).then(
+      () => null,
+      (err: unknown) => err as ProblemError
+    );
+    expect(refusal).toBeInstanceOf(ProblemError);
+    expect(refusal!.status).toBe(409);
+    expect(refusal!.detail).toContain("secure-partition-m206");
+  });
+
   it("the commander's database holds NO row anywhere naming the domain-local object, across the whole run", async () => {
     // The accumulated census: after create + update + delete have all been exported and imported,
     // the commander has never held it, under any urn, at any point. Asserted over the table rather

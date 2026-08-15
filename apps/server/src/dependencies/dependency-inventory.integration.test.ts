@@ -544,7 +544,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // the SUSPECT verb after the field it must not touch.
     //
     // What the widened SET list would cost: an operator marking a line internal wipes M21.4's
-    // observed head, and the line then reads NULL — which 0060:200-201 defines as "NOT YET
+    // observed head, and the line then reads NULL — which 0061:215-217 defines as "NOT YET
     // OBSERVED", not "no newer version exists" (absent never means zero). A dependency subscription
     // resolving against that line is silently starved of exactly the bump it exists to fire, with
     // nothing erroring and nothing to distinguish it from a line the poll has not reached yet.
@@ -581,7 +581,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(declared.producedByObjectId).toBe(producer);
     expect(declared.producedByDeclaredAt).not.toBeNull();
 
-    // All THREE observation columns survive — the trio moves together (0060:198-206), so pinning
+    // All THREE observation columns survive — the trio moves together (0061:215-221), so pinning
     // only `latest_version` would leave a SET list that nulls the digest and the timestamp green.
     expect(declared.latestVersion).toBe("22.7.0");
     expect(declared.latestDigest).toBe(digest);

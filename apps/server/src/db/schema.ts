@@ -205,6 +205,25 @@ export const objects = pgTable(
     // comes from the PATH (no peer => `exportPromotionBundle` unreachable => E6 never applies), and
     // an inertness test pins that this bit and that gate stay unaware of each other.
     domainLocal: boolean("domain_local").notNull().default(false),
+    // M20.7 (ADR-0031 §6c) — WHY this object is domain-local. The container it INHERITED locality
+    // from at create (M20.5/§6a), or NULL when an operator DECLARED it, or when it is not
+    // domain-local at all. Those three states are exhaustive and need no discriminator column.
+    //
+    // HISTORICAL, deliberately: it records the container as it was at create and is never updated to
+    // follow it, so after §6b's publish-container-then-child flow a still-local child legitimately
+    // points at a container that has since become shared. That is the true answer to "how did this
+    // become domain-local", not staleness. Re-deriving it live would need the containment walk §6a
+    // exists to avoid.
+    //
+    // No FK: losing the provenance because its source was tombstoned would be worse than a dangling
+    // id, which readers render as "inherited, source no longer present".
+    // The URN is denormalized alongside the id because `objects.urn` is IMMUTABLE (`updateObject`
+    // writes `urn: existing.urn`), so it cannot drift — and it is accepted anywhere an id is, which
+    // means a badge can render "inherited from secure-partition" and link to it with NO lookup.
+    // `name` is deliberately absent: it IS mutable, and the urn's last segment is the name as at
+    // create, which for historical provenance is the more honest label.
+    domainLocalInheritedFrom: uuid("domain_local_inherited_from"),
+    domainLocalInheritedFromUrn: text("domain_local_inherited_from_urn"),
     // lifecycle
     version: bigint("version", { mode: "number" }).notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1710,7 +1729,7 @@ export const scanRequirementFloors = pgTable(
 
 // -------------------------------------------------------------------------------------------
 // M21.2 — the DEPENDENCY INVENTORY substrate (ADR-0032 §3/§4/§5/§7). Hand-authored table/RLS/grants
-// in drizzle/0060_dependency_inventory.sql; read that file's header for the full rationale — the
+// in drizzle/0061_dependency_inventory.sql; read that file's header for the full rationale — the
 // four measurements behind the principle-2 bend, the URN-collision argument, and the RLS mirroring.
 //
 // Two things about these tables are invariants rather than current shape:

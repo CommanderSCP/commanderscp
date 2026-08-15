@@ -7,7 +7,7 @@ import { z } from "zod";
  * identity of one MAJOR LINE of one dependency) and `component_dependencies` (which component
  * declares which line, at which version, from which manifest). Storage rationale — the four
  * measurements behind the scoped bend of charter principle 2 — lives in
- * `apps/server/drizzle/0060_dependency_inventory.sql`'s header; this file is the typed contract.
+ * `apps/server/drizzle/0061_dependency_inventory.sql`'s header; this file is the typed contract.
  *
  * Three invariants ride on these shapes and are stated here because a later reader of the types
  * alone would not see them:

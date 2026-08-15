@@ -515,7 +515,7 @@ scoped to what is actually subscribed.
 
 - **M21.1 — Vocabulary + governing docs.** GLOSSARY entries settling `subscription` against
   `notification_bindings`; ADR-0032; the charter amendment for the new managed class; this proposal.
-- **M21.2 — Inventory substrate.** Migration 0060: `dependency_lines` + `component_dependencies`
+- **M21.2 — Inventory substrate.** Migration 0061: `dependency_lines` + `component_dependencies`
   projection tables. The `readFileAtRef` `GitProviderAdapter` hook + three adapter implementations.
   Manifest parsers for all five ecosystems, in the §10 Q3 order (Go → images → npm → Python → Maven).
   Propose→accept wiring.

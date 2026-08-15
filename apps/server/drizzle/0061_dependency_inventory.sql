@@ -6,25 +6,40 @@
 -- is a graph object, nothing here is a relationship, and nothing here federates.
 --
 -- ===========================================================================================
--- THE NUMBER 0060 IS CONTESTED — RENUMBER BEFORE MERGING, AND BUMP `when` WHEN YOU DO
+-- WHY THIS IS 0061 AND NOT 0060 — a three-way collision, and what it teaches about `when`
 --
--- Three branches each took 0060 off a `main` whose highest was 0059, so each checked correctly and
--- still collided: this one, `0060_remove_initiative` (UI branch) and `0060_domain_local_inherited_from`
--- (M20.7, PR #235). Git will NOT flag this at merge — the filenames differ, so both files simply
--- arrive and `meta/_journal.json` ends up with two entries at `idx: 60`. The conflict is silent by
--- construction; only a human checking the number will catch it.
+-- THREE branches each took 0060 off a `main` whose highest was 0059 — this one,
+-- `0060_remove_initiative` (UI branch) and `0060_domain_local_inherited_from` (M20.7). Each checked
+-- the highest number correctly and each still collided, because the number was free when they looked
+-- and taken by the time they merged. Git does NOT flag it: the filenames differ, so both files simply
+-- arrive and `meta/_journal.json` ends up with two entries at one `idx`. Only `db/journal-ordering.test.ts`
+-- catches it, and only after the merge produces the broken file.
 --
--- Renumbering is NOT just a filename + `idx` change. `meta/_journal.json` carries a hand-set `when`
--- epoch-ms, and drizzle SILENTLY SKIPS an entry whose `when` is not strictly greater than what a
--- database has already applied — no error, no warning, and the failure surfaces much later as a
--- missing table. This is not hypothetical here: this entry's original `when` (1788036400000) was
--- BYTE-IDENTICAL to `0060_remove_initiative`'s, because both were derived by adding the customary
--- +10,000,000 ms to 0059. It has been moved to 1788059137000, chosen to sit strictly above all three
--- known claimants (M20.7 deliberately took 1788039137000 to dodge the same arithmetic; the UI branch
--- plans 1788049137000 for its renumbered 0061).
+-- M20.7 merged first and kept 0060, so this became 0061 at that merge — NOT at branch time. The
+-- number is contested until the merge lands, which is precisely why it is resolved here rather than
+-- reserved earlier.
 --
--- So: when you renumber this file, bump `idx` AND `when` together, and verify `when` is strictly
--- greater than every entry that now precedes it — not merely different from them.
+-- THE `when` IS THE HALF THAT BITES, AND IT CANNOT BE CHOSEN AT BRANCH TIME. drizzle gates on `when`
+-- alone (`idx` orders the array; it decides nothing — see journal-ordering.test.ts's header), and it
+-- SILENTLY SKIPS an entry whose `when` does not exceed what a database has already applied. No error,
+-- no warning; the failure surfaces later as a missing table.
+--
+-- This entry's original `when` was 1788036400000 — BYTE-IDENTICAL to the UI branch's, because both
+-- derived it by adding the customary +10,000,000 ms to 0059. Two branches doing correct arithmetic
+-- from the same parent produce the same answer. M20.7 dodged that by picking a deliberately odd
+-- offset (1788039137000), which protected it only in the direction where it merged SECOND; once it
+-- merged FIRST, every database applied it, and any lower `when` behind it became unapplyable.
+--
+-- The rule that survives all three cases: **a `when` is only correct relative to what a database has
+-- actually applied, so it can only be finalised at MERGE time.** Renumbering is therefore always a
+-- two-field edit — bump `idx` AND `when` — and the check is "strictly greater than every entry now
+-- ahead of it", never "different from them". This file's 1788059137000 was set against main's actual
+-- max at merge (1788039137000), read from `origin/main`, not inferred.
+--
+-- Note what the test does NOT cover: it guards the FILE, so fresh databases and main-line CI are
+-- safe. A long-lived dev instance that applied a BRANCH migration before the merge order settled is
+-- outside it — for those, read `drizzle.__drizzle_migrations` directly and compare its max
+-- `created_at` against this entry's `when`.
 --
 -- ===========================================================================================
 -- WHY TABLES AND NOT THE GRAPH — a scoped, deliberate bend of charter principle 2
