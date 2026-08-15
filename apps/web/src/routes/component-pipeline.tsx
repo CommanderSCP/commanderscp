@@ -1431,12 +1431,15 @@ function SourceNode({
   domainLocal: boolean;
 }): React.JSX.Element {
   const [adding, setAdding] = useState(false);
-  // §9.3a — the two source shapes. Another domain maintains this component (on an outpost, that
-  // is the commander): it is UPSTREAM of this domain's repos, shown first. Domain-local, or
-  // self-maintained: the repo IS the source, nothing ahead of it. A domain-local component cannot
-  // have an upstream by construction (it never journaled), so the data and the rule agree — the
-  // UI states the shape rather than deciding it.
-  const hasUpstream = !upstream.isSelf && upstream.domainId !== null && !domainLocal;
+  // §9.3a (owner, 2026-08-14) — ONE pipeline, mixed-provenance inputs. When another domain
+  // maintains this component (on an outpost: the commander), the commander is an OPAQUE PEER
+  // INPUT to this pipeline: its shared repos (ASGs, instance types, …) are known only there — this
+  // domain never learns them and must not pretend to. Alongside it, this domain's own mappings
+  // are its DOMAIN-SPECIFIC inputs (network config, CIDR bands that stay in-domain), tracked only
+  // here. Domain-local component: no commander input at all — its repos are the whole source. A
+  // domain-local component cannot have a commander input by construction (it never journaled),
+  // so the data and the rule agree; the UI states the shape rather than deciding it.
+  const hasCommanderInput = !upstream.isSelf && upstream.domainId !== null && !domainLocal;
   return (
     <NodeShell
       kind={label === "Config" ? "config" : "source"}
@@ -1449,14 +1452,14 @@ function SourceNode({
       testid="pipeline-node-source"
       muted={sources.length === 0}
     >
-      {hasUpstream && (
-        // Commander-sourced work: the maintaining domain sits ahead of this domain's repos. Named
-        // from the response's maintainedBy (name null = origin matches no known peer; say the id
-        // rather than guess).
+      {hasCommanderInput && (
+        // The commander as an OPAQUE input: named from maintainedBy (name null = origin matches
+        // no known peer; say the id rather than guess). Deliberately NO repo, host, path or ref —
+        // this domain does not know them, and showing anything here would be an invention.
         <div
           className="mb-1.5 flex items-center gap-1.5 text-slate-700"
-          data-testid="pipeline-source-upstream"
-          title={`This component is maintained by ${upstream.name ?? upstream.domainId} — its source of truth is there; the repos below are this domain's local hop.`}
+          data-testid="pipeline-source-commander-input"
+          title={`Shared inputs to this pipeline — the repos that are the same in every domain — are authored and tracked at ${upstream.name ?? upstream.domainId}. This domain does not see them; it only knows their source is the commander. The repos listed below are this domain's own, domain-specific inputs to the same pipeline.`}
         >
           {upstream.role === "commander" ? (
             <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
@@ -1464,14 +1467,18 @@ function SourceNode({
             <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
           )}
           <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
-          <span className="text-slate-400">upstream</span>
-          <ArrowRight className="size-3.5 shrink-0 text-slate-400" strokeWidth={2} aria-hidden="true" />
-          <span className="text-slate-500">repos in this domain</span>
+          <span className="text-slate-500">— shared inputs (source: the commander; repos not visible here)</span>
         </div>
       )}
+      {hasCommanderInput && sources.length > 0 && (
+        <p className="mb-1 text-xs text-slate-500" data-testid="pipeline-source-domain-specific-heading">
+          Domain-specific inputs — tracked only in this domain:
+        </p>
+      )}
       {domainLocal && (
-        // Domain-specific IaC/CaC: no upstream. Stated, so an operator comparing two pipelines
-        // sees WHY one has a commander ahead of its repos and the other does not.
+        // Domain-local component (ADR-0031, valid but rare): no commander input at all — its
+        // repos are the whole source. Stated, so an operator comparing two pipelines sees WHY one
+        // has a commander input and the other does not.
         <p className="mb-1.5 text-xs text-slate-500" data-testid="pipeline-source-no-upstream">
           Domain-local — this repo is the source of truth; nothing upstream of it.
         </p>

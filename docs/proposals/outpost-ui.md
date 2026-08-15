@@ -135,14 +135,37 @@ It reaches the SPA as **one additive field on `GET /auth/me`**: `instanceRole: "
 
 **"Domain-specific IaC/CaC"** = pipelines whose executor binding is Type `infrastructure` or `configuration` (ADR-0007's facet) on a **domain-local** component or one placed on a target this outpost controls. Global IaC/CaC (bindings on shared, commander-origin objects) is the commander's and shows on the outpost only as read-only replica context, exactly as ADR-0022 already renders commander-declared config.
 
-### 9.3a The outpost pipeline's SOURCE rendering (owner, 2026-08-14)
+### 9.3a One pipeline, mixed-provenance inputs — and the outpost never learns the shared repo (owner, 2026-08-14)
 
-On the outpost site a component's pipeline shows **where its inputs come from**, and there are exactly two shapes:
+**The model.** A component spans domains: an instance of it runs in each, and the instances need not communicate. Its pipeline has **one** definition, but its **inputs have two provenances**:
 
-- **Commander-sourced work** — the component (or its shared IaC/CaC) is commander-origin: the pipeline's source lane shows **the commander first, then the relevant repos in this domain**. The commander is the upstream; the domain's repos are the local hop.
-- **Domain-specific CaC and IaC** — the source lane shows **the domain repo directly. The commander does not appear ahead of it.** There is no upstream: this code was authored, reviewed and released in this domain, and never crossed a boundary (ADR-0031's content class).
+- **Globally shared** — the same everywhere (ASGs, instance types, EBS volumes…), authored at the commander.
+- **Domain-specific** — network configuration, CIDR bands, anything that must stay in its domain for classification reasons; tracked **only** by that domain's outpost, feeding that domain's targets.
 
-This is READ from facts the API already states, never inferred: whether the component is domain-local (`domainLocal`, ADR-0031), whether it is a commander-origin replica (`originDomainId` ≠ self — the `maintainedBy.isSelf` logic), and the source mapping's `sourceKind`/repo. A domain-local component **cannot** have a commander source by construction (it never journaled), so the rule and the data agree structurally; the UI states the shape rather than deciding it.
+Domain-local **components** (ADR-0031/M20) remain valid but **rare** — genuinely domain-only software with no upstream original — controlled by the outpost and never seen by the commander. They are not the outpost's everyday case; shared components with domain-specific inputs are.
+
+**The boundary that decides the design.** An outpost outside the commander's domain **does not know the shared repo exists.** From the outpost's side a shared input is *opaque*: its source is "the commander" — no repo name, host, path or ref, and none should be shown. Only the commander knows the true source repo. The one exception is an outpost co-located in the commander's own domain (the colocated case), where the shared repos are its own.
+
+**Why this is already the system, not a build.** `source_mappings` and `executor_bindings` carry no provenance column and never federate (zero journal calls — ADR-0031 §Context measured it). Under the model above that is the **invariant**, not a gap: an outpost's mappings are its domain-specific inputs *by construction*, because those are the only mappings it is allowed to have. What crosses to the outpost is exactly what crosses today — the component (replica), its changes, its artifact digests — never the commander's mappings. **No new journal kind, no provenance column, no replicated mappings.** (An earlier read of this section treated the missing distinction as a gap to close; the owner's clarification dissolves it.)
+
+**Rendering, on the outpost site.** For a shared (commander-origin) component the source lane shows two kinds of input feeding one pipeline:
+
+1. **The commander, as an opaque input** — "★ hq-commander (source: the commander)". Not "upstream of the domain repos": it is a *peer input* whose internals this domain does not see. The tooltip says so plainly: the shared repos behind it are known only at the commander.
+2. **This domain's own repos** — the mappings held here, listed as "domain-specific inputs — tracked only in this domain".
+
+For a domain-local component there is no commander input at all — its repos are the whole source ("nothing upstream"). Both are READ: `component.maintainedBy.isSelf` decides whether the commander input exists; `domainLocal` decides the no-upstream copy; the mappings list is this instance's own rows. On the commander site (and a co-located outpost), `isSelf` holds and the lane simply lists the component's own mappings — the shared repos are visible there because there they are *its* repos.
+
+**The owner's worked examples (2026-08-14), one component, one pipeline:**
+
+```
+IaC shared source        → component (domain A)                       ← the commander's own domain
+IaC shared source        → IaC repo, domain-B COPY → component (domain B)   ← a mirror of shared IaC, held in B
+IaC domain-B specific    → component (domain B)                        ← B-only IaC (network, CIDR)
+```
+
+All three feed the same component; it is one pipeline. Row 2 sharpens "opaque": in domain B the shared IaC is not invisible — a **copy of the repo lives in B** and B's outpost tracks it — but its **provenance is the commander**, and it sits beside row 3, B's own domain-specific IaC. Rows 2 and 3 are therefore both mappings B holds locally, and today the data cannot tell them apart (no provenance on a mapping). That is the one genuinely open question in this section: whether a mapping should be able to declare "this repo is a mirror of a commander-shared source" (a declared provenance, READ — never inferred from the repo host), so B's source lane can label row 2 "shared (mirror of the commander's source)" and row 3 "domain-specific". Until then B's lane honestly lists both as "this domain's inputs" and does not guess. **Owner decision needed:** add a declared mirror-of-shared marker on mappings, or keep the two indistinguishable in B.
+
+**The dashboard's headline follows.** The outpost's everyday work is *shared components on this outpost's targets that carry domain-specific inputs* — that is what the outpost home counts and lists first. Domain-local components move to a secondary section (present, rare, honest).
 
 ### 9.4 What does NOT change
 

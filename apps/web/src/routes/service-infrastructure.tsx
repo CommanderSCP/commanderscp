@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, ExternalLink, Info } from "lucide-react";
+import { ExternalLink, Info } from "lucide-react";
 import { CommanderStar, OutpostFort } from "../components/icons/federation-roles";
 import { client } from "../lib/client";
 import { serviceBoardKey } from "../lib/query-client";
@@ -54,13 +54,15 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
   if (!board) return <p className="text-sm text-slate-500">No service.</p>;
 
   const bound = board.servicePipelines.filter((p) => p.bound);
-  // outpost-ui.md §9.3a — the SAME two source shapes the component pipeline renders, one rung up.
-  // A service maintained by another domain (on an outpost: the commander) has that domain
-  // UPSTREAM of whatever shared IaC/CaC this domain binds under it; a self-maintained or
-  // domain-local service is this domain's own — nothing ahead of it. Read from the board's
-  // `service.maintainedBy`/`domainLocal`, never inferred.
+  // outpost-ui.md §9.3a (owner, 2026-08-14) — the same mixed-provenance model as the component
+  // pipeline, one rung up. A service maintained by another domain (on an outpost: the commander)
+  // has its GLOBALLY SHARED infra/config authored there — opaque to this domain, which only knows
+  // the source is the commander; whatever this domain binds at the service is its DOMAIN-SPECIFIC
+  // shared-infra input (a cluster shared by this service's components in this domain, say). A
+  // self-maintained or domain-local service is this domain's own — nothing ahead of it. Read from
+  // the board's `service.maintainedBy`/`domainLocal`, never inferred.
   const upstream = board.service.maintainedBy;
-  const hasUpstream = !upstream.isSelf && upstream.domainId !== null && !board.service.domainLocal;
+  const hasCommanderInput = !upstream.isSelf && upstream.domainId !== null && !board.service.domainLocal;
 
   return (
     <div className="space-y-4" data-testid="service-infrastructure">
@@ -68,11 +70,11 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
         title={board.service.name}
         description={<span className="font-mono text-xs break-all">{board.service.urn}</span>}
         meta={
-          hasUpstream ? (
+          hasCommanderInput ? (
             <span
               className="flex items-center gap-1.5 text-xs text-slate-700"
-              data-testid="service-infra-upstream"
-              title={`This service is maintained by ${upstream.name ?? upstream.domainId} — its shared infrastructure and configuration are authored there; anything bound here is this domain's local hop.`}
+              data-testid="service-infra-commander-input"
+              title={`This service's globally shared infrastructure and configuration are authored and tracked at ${upstream.name ?? upstream.domainId} — this domain does not see those repos; it only knows their source is the commander. Anything bound at the service here is this domain's own, domain-specific input to the same pipelines.`}
             >
               {upstream.role === "commander" ? (
                 <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
@@ -80,9 +82,7 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
                 <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
               )}
               <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
-              <span className="text-slate-400">upstream</span>
-              <ArrowRight className="size-3.5 shrink-0 text-slate-400" strokeWidth={2} aria-hidden="true" />
-              <span className="text-slate-500">shared IaC / CaC bound in this domain</span>
+              <span className="text-slate-500">— shared inputs (source: the commander); anything bound here is domain-specific</span>
             </span>
           ) : board.service.domainLocal ? (
             <span className="text-xs text-slate-500" data-testid="service-infra-no-upstream">

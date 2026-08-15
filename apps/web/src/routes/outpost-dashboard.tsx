@@ -16,12 +16,19 @@ import { DomainLocalBadge } from "../components/domain-local";
 import { OutpostFort } from "../components/icons/federation-roles";
 
 /**
- * THE OUTPOST SITE'S HOME (outpost-ui.md §9.3, owner decisions 2026-08-14) — a small, component-
- * level dashboard, not the commander's org-wide one:
+ * THE OUTPOST SITE'S HOME (outpost-ui.md §9.3/§9.3a, owner decisions 2026-08-14) — a small,
+ * component-level dashboard, not the commander's org-wide one:
  *
  *   the deployment targets THIS OUTPOST CONTROLS
  *     → the components placed on each
- *       → the DOMAIN-SPECIFIC IaC / CaC pipelines (the biggest thing the commander doesn't own)
+ *       → each component's DOMAIN-SPECIFIC INPUTS to its one pipeline — this domain's own repos
+ *         and infra/config bindings (network config, CIDR bands, the cluster shared by this
+ *         domain's instances) alongside the shared inputs whose source is opaquely "the commander"
+ *
+ * The everyday case is a SHARED component (commander-origin replica) carrying domain-specific
+ * inputs here. Domain-local COMPONENTS (ADR-0031/M20 — genuinely domain-only software) remain
+ * valid but RARE, so they are a secondary section, not the headline. The stat that matters is
+ * "components on this outpost's targets with domain-specific inputs", per COMPONENT.
  *
  * "Controls" is READ, not inferred: a target is this outpost's when its `originDomainId` equals
  * this instance's `federation_self.domainId` — the same fact `coordination/component-pipeline.ts`'s
@@ -41,6 +48,8 @@ import { OutpostFort } from "../components/icons/federation-roles";
  */
 
 const IAC_CAC_TYPES = new Set(["infrastructure", "configuration"]);
+/** Mirrors the pipeline's source-mapping form and /setup — the kinds this instance can route. */
+const SOURCE_KINDS = ["github", "gitea", "gitlab"] as const;
 
 function placementIds(p: GraphObject): { componentId: string | null; targetId: string | null } {
   const props = p.properties as { componentId?: unknown; deploymentTargetId?: unknown };
@@ -67,6 +76,16 @@ export function OutpostDashboardPage(): React.JSX.Element {
   const componentsQuery = useQuery({
     queryKey: registryListKey("components"),
     queryFn: () => client.components.list({ limit: 100 })
+  });
+  // Every source mapping this instance holds is a DOMAIN-SPECIFIC input by construction —
+  // mappings never federate (ADR-0031 §Context; outpost-ui.md §9.3a), so the commander's shared
+  // repos are structurally absent here and nothing needs filtering out. Fanned out per kind the
+  // same way /setup does; the kinds mirror the pipeline's source-mapping form.
+  const mappingQueries = useQueries({
+    queries: SOURCE_KINDS.map((kind) => ({
+      queryKey: ["source-mappings", kind, "outpost-dashboard"],
+      queryFn: () => client.changeSources.listMappings(kind)
+    }))
   });
 
   const selfDomainId = selfQuery.data?.domainId ?? null;
@@ -102,6 +121,19 @@ export function OutpostDashboardPage(): React.JSX.Element {
   const iacCacBindings = bindingQueries
     .flatMap((q) => q.data ?? [])
     .filter((b) => IAC_CAC_TYPES.has(b.type));
+  const mappingsLoaded = mappingQueries.every((q) => !q.isLoading);
+  const allMappings = mappingQueries.flatMap((q) => q.data?.items ?? []);
+  // Component ids placed on THIS outpost's targets.
+  const placedHere = new Set(
+    myTargets.flatMap((t) => (placementsByTarget.get(t.id) ?? []).map((p) => placementIds(p).componentId)).filter(Boolean)
+  );
+  // Domain-specific inputs per component: its mappings held here (any kind, any Type) plus
+  // infra/config bindings on the component itself. Bindings on the TARGET are the target's, and
+  // already counted in the target card. Counted per COMPONENT (the owner's unit), not per row.
+  const componentsWithDomainInputs = new Set<string>();
+  for (const m of allMappings) if (placedHere.has(m.componentObjectId)) componentsWithDomainInputs.add(m.componentObjectId);
+  const domainInputsByComponent = new Map<string, number>();
+  for (const m of allMappings) domainInputsByComponent.set(m.componentObjectId, (domainInputsByComponent.get(m.componentObjectId) ?? 0) + 1);
 
   return (
     <div className="flex flex-col gap-6">
@@ -112,7 +144,7 @@ export function OutpostDashboardPage(): React.JSX.Element {
             <span className="flex items-center gap-1.5">
               <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
               {selfQuery.data.name} — the targets this outpost controls, what runs on them, and
-              this domain&apos;s own IaC and CaC.
+              this domain&apos;s own inputs to their pipelines.
             </span>
           ) : undefined
         }
@@ -131,17 +163,17 @@ export function OutpostDashboardPage(): React.JSX.Element {
               data-testid="outpost-stat-targets"
             />
             <StatCard
-              label="Domain-local components"
-              value={domainLocalComponents.length}
+              label="Components with domain-specific inputs"
+              value={mappingsLoaded ? componentsWithDomainInputs.size : undefined}
               hint={
-                componentsQuery.data && componentsQuery.data.items.length >= 100
-                  ? "of the first 100 components fetched"
-                  : undefined
+                mappingsLoaded
+                  ? "placed on this outpost's targets, with repos tracked only in this domain"
+                  : "counting…"
               }
-              data-testid="outpost-stat-domain-local"
+              data-testid="outpost-stat-domain-inputs"
             />
             <StatCard
-              label="Domain IaC / CaC pipelines"
+              label="Domain IaC / CaC bindings"
               value={iacCacBindings.length}
               hint="infrastructure + configuration bindings on this outpost's targets"
               data-testid="outpost-stat-iac-cac"
@@ -179,6 +211,7 @@ export function OutpostDashboardPage(): React.JSX.Element {
                     componentsById={componentsById}
                     bindings={bindingQueries[i]?.data ?? []}
                     bindingsLoading={bindingQueries[i]?.isLoading ?? false}
+                    domainInputsByComponent={domainInputsByComponent}
                   />
                 ))}
               </div>
@@ -225,13 +258,17 @@ function TargetCard({
   placements,
   componentsById,
   bindings,
-  bindingsLoading
+  bindingsLoading,
+  domainInputsByComponent
 }: {
   target: GraphObject;
   placements: GraphObject[];
   componentsById: Map<string, GraphObject>;
   bindings: ExecutorBinding[];
   bindingsLoading: boolean;
+  /** Per component id: how many source mappings this domain holds for it (its domain-specific
+   *  inputs — every mapping here is one, by construction). */
+  domainInputsByComponent: Map<string, number>;
 }): React.JSX.Element {
   const iacCac = bindings.filter((b) => IAC_CAC_TYPES.has(b.type));
   return (
@@ -269,10 +306,23 @@ function TargetCard({
                         >
                           {component.name}
                         </Link>
-                        {component.domainLocal && (
-                          <Badge variant="neutral" icon={EyeOff} title="Domain-local — never leaves this domain (ADR-0031).">
+                        {component.domainLocal ? (
+                          <Badge variant="neutral" icon={EyeOff} title="Domain-local component (ADR-0031) — genuinely domain-only; its repos are the whole source, no commander input.">
                             domain-local
                           </Badge>
+                        ) : (
+                          <span
+                            className="text-xs text-slate-500"
+                            title="A shared component: its globally shared inputs are authored at the commander (opaque here). Listed count = repos this domain tracks for it — its domain-specific inputs to the same pipeline."
+                            data-testid="outpost-component-domain-inputs"
+                          >
+                            {(() => {
+                              const n = domainInputsByComponent.get(component.id) ?? 0;
+                              return n === 0
+                                ? "shared · no domain-specific inputs yet"
+                                : `shared · ${n} domain-specific input${n === 1 ? "" : "s"}`;
+                            })()}
+                          </span>
                         )}
                       </>
                     ) : (
