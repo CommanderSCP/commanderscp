@@ -4636,6 +4636,10 @@ export function buildProgram(): Command {
       "--mirror-of-shared",
       "declare this repo a local MIRROR of a commander-shared source (outpost-ui.md §9.3a) — omit for a domain-specific repo; UI/reporting only, never an enforcement input"
     )
+    .option(
+      "--disabled",
+      "create this mapping already PAUSED (migration 0063) — declared but routes nothing until enabled; default is enabled"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -4649,6 +4653,7 @@ export function buildProgram(): Command {
           type?: ExecutorType;
           classification?: PipelineClassification;
           mirrorOfShared?: boolean;
+          disabled?: boolean;
         }
       ) => {
         const client = await clientFromStoredCredentials(opts);
@@ -4659,7 +4664,8 @@ export function buildProgram(): Command {
           refPattern: opts.ref,
           type: opts.type,
           classification: opts.classification,
-          ...(opts.mirrorOfShared ? { mirrorOfShared: true } : {})
+          ...(opts.mirrorOfShared ? { mirrorOfShared: true } : {}),
+          ...(opts.disabled ? { enabled: false } : {})
         });
         printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
       }

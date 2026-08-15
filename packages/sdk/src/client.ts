@@ -156,6 +156,7 @@ import {
   createSourceMapping as createSourceMappingRequest,
   deleteSourceMapping as deleteSourceMappingRequest,
   listSourceMappings as listSourceMappingsRequest,
+  setSourceMappingEnabled as setSourceMappingEnabledRequest,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, routes/typed-registries.ts +
   // routes/governance.ts): Policy/Control typed-registry resources, control bindings/runs,
   // approvals (N-of-M quorum), freezes, and the `scp policy evaluate` dry-run endpoint.
@@ -1470,6 +1471,20 @@ export class ScpClient {
         client: this.client,
         path: { sourceKind },
         body: req
+      });
+      return unwrap(result);
+    },
+    /** Flips the pause switch on ONE mapping, by id (migration 0063) — a disabled mapping stays
+     *  declared but `matchComponentForSource` skips it, so it routes nothing. */
+    setMappingEnabled: async (
+      sourceKind: string,
+      id: string,
+      enabled: boolean
+    ): Promise<SourceMapping> => {
+      const result = await setSourceMappingEnabledRequest({
+        client: this.client,
+        path: { sourceKind, id },
+        body: { enabled }
       });
       return unwrap(result);
     },

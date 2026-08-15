@@ -643,6 +643,7 @@ describe("iac/plan-diff: source mappings (C1)", () => {
       type: "configuration",
       classification: null,
       mirrorOfShared: false,
+      enabled: true,
       ...over
     };
   }
@@ -672,6 +673,7 @@ describe("iac/plan-diff: source mappings (C1)", () => {
         type: "configuration",
         classification: null,
         mirrorOfShared: false,
+        enabled: true,
         reason: "no existing source mapping with this identity"
       }
     ]);
@@ -857,7 +859,8 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
     refPattern: null,
     type: "configuration",
     classification: null,
-    mirrorOfShared: false
+    mirrorOfShared: false,
+    enabled: true
   });
 
   const bindingOn = (targetUrn: string): ManifestBinding => ({
@@ -961,7 +964,8 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
     refPattern: null,
     type: "configuration",
     classification: null,
-    mirrorOfShared: false
+    mirrorOfShared: false,
+    enabled: true
   };
 
   const bindingOn: ManifestBinding = {

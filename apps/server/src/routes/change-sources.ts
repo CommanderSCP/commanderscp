@@ -11,6 +11,8 @@ import {
   DeleteSourceMappingResponseSchema,
   CreateWebhookSecretRequestSchema,
   ProblemSchema,
+  SetSourceMappingEnabledRequestSchema,
+  SourceMappingIdParamSchema,
   SourceMappingListResponseSchema,
   SourceMappingSchema,
   WebhookIngressResponseSchema,
@@ -27,7 +29,8 @@ import { changeSourceEvents, changeSourceWebhookSecrets } from "../db/schema.js"
 import {
   createSourceMapping,
   deleteSourceMappingsMatching,
-  listSourceMappingsForSource
+  listSourceMappingsForSource,
+  setSourceMappingEnabled
 } from "../coordination/source-mappings-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { resolveWebhookSecret, verifierForSourceKind } from "../coordination/webhook-signature.js";
@@ -410,10 +413,62 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           componentIdOrUrn: request.body.component,
           type: request.body.type,
           classification: request.body.classification,
-          mirrorOfShared: request.body.mirrorOfShared
+          mirrorOfShared: request.body.mirrorOfShared,
+          enabled: request.body.enabled
         });
       });
       reply.status(201).send(mapping);
+    }
+  });
+
+  /**
+   * PATCH a source_mapping's ONE mutable field — the pause switch (migration 0063, owner ask
+   * 2026-08-14: "each [source] should have its own arrow so I can enable and disable each as
+   * needed"). Addressed by id, unlike POST/DELETE above which use the identity tuple: this is a
+   * genuine in-place update of one specific row, so an id is both correct and necessary — the
+   * identity tuple can be shared by several byte-identical rows, and toggling one must never touch
+   * its siblings. Same auth/tenant-tx idiom as the routes above.
+   */
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/change-sources/:sourceKind/mappings/:id",
+    schema: {
+      params: SourceMappingIdParamSchema,
+      body: SetSourceMappingEnabledRequestSchema,
+      response: {
+        200: SourceMappingSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "setSourceMappingEnabled",
+        summary:
+          "Enable or disable a source_mapping (the pause switch) — a disabled mapping stays declared but routes nothing",
+        tags: ["change-sources"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: auth.orgId
+        });
+        return setSourceMappingEnabled(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id,
+          request.body.enabled
+        );
+      });
+      reply.status(200).send(mapping);
     }
   });
 

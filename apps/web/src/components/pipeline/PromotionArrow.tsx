@@ -46,12 +46,20 @@ export function PromotionArrow({
   state,
   label,
   detail,
-  why
+  why,
+  inert
 }: {
   state: PromotionState;
   label?: string;
   detail?: string;
   why?: ReactNode;
+  /** Presentation-only, and never a new `PromotionState` (owner ask 2026-08-14): the fan-in arrow
+   *  drawn beneath a DISABLED source-mapping tile. The mapping is still declared — `state` stays
+   *  whatever the caller passes (normally `"pending"`, since there is no gate verdict here either)
+   *  — `inert` only lightens the fill and swaps the aria-label, so it reads as "this connector
+   *  carries nothing right now" rather than an ordinary not-yet-evaluated wait. Omitted (the
+   *  default), this component is pixel-for-pixel what it always was. */
+  inert?: boolean;
 }): React.JSX.Element {
   const style = STATE_STYLES[state];
   return (
@@ -59,11 +67,16 @@ export function PromotionArrow({
       className="flex flex-col items-center py-1"
       data-testid="promotion-arrow"
       data-state={state}
-      aria-label={`promotion ${state}${label ? `: ${label}` : ""}${detail ? ` — ${detail}` : ""}`}
+      data-inert={inert ? "true" : undefined}
+      aria-label={
+        inert
+          ? "connector inert (source disabled)"
+          : `promotion ${state}${label ? `: ${label}` : ""}${detail ? ` — ${detail}` : ""}`
+      }
     >
-      <div className={`h-7 w-11 rounded-t-sm ${style.bar}`} />
+      <div className={`h-7 w-11 rounded-t-sm ${inert ? "bg-slate-200 opacity-60" : style.bar}`} />
       <div
-        className={`h-0 w-0 border-x-[22px] border-x-transparent border-t-[18px] ${style.triangle}`}
+        className={`h-0 w-0 border-x-[22px] border-x-transparent border-t-[18px] ${inert ? "border-t-slate-200 opacity-60" : style.triangle}`}
         aria-hidden="true"
       />
       {(label || why) && (

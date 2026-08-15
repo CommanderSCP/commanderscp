@@ -11,6 +11,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { objects, sourceMappings } from "../db/schema.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { notFound } from "../errors.js";
 
 function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping {
   const type = (row.type as ExecutorType | null) ?? "configuration";
@@ -26,6 +27,7 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     category: categoryOfType(type),
     classification: parsePipelineClassification(row.classification),
     mirrorOfShared: row.mirrorOfShared,
+    enabled: row.enabled,
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -41,6 +43,8 @@ export interface CreateSourceMappingInput {
   classification?: PipelineClassification;
   /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a); omitted = domain-specific. */
   mirrorOfShared?: boolean;
+  /** The pause switch (migration 0063); omitted = enabled (the pre-0063 behaviour). */
+  enabled?: boolean;
 }
 
 export async function createSourceMapping(
@@ -60,10 +64,38 @@ export async function createSourceMapping(
       componentObjectId: component.id,
       type: input.type ?? "configuration",
       classification: input.classification ?? null,
-      mirrorOfShared: input.mirrorOfShared ?? false
+      mirrorOfShared: input.mirrorOfShared ?? false,
+      enabled: input.enabled ?? true
     })
     .returning();
   if (!row) throw new Error("failed to insert source mapping");
+  return toSourceMapping(row);
+}
+
+/**
+ * Flips the ONE mutable field on this table (migration 0063, PATCH .../mappings/:id) — the
+ * operator's pause switch. Scoped by `(orgId, sourceKind, id)`, matching the route's addressing;
+ * a miss on any of the three throws 404 rather than silently patching nothing.
+ */
+export async function setSourceMappingEnabled(
+  tx: TenantTx,
+  orgId: string,
+  sourceKind: string,
+  id: string,
+  enabled: boolean
+): Promise<SourceMapping> {
+  const [row] = await tx
+    .update(sourceMappings)
+    .set({ enabled })
+    .where(
+      and(
+        eq(sourceMappings.orgId, orgId),
+        eq(sourceMappings.sourceKind, sourceKind),
+        eq(sourceMappings.id, id)
+      )
+    )
+    .returning();
+  if (!row) throw notFound(`no source mapping '${id}' for source kind '${sourceKind}'`);
   return toSourceMapping(row);
 }
 
@@ -90,6 +122,8 @@ export interface BackfillSourceMappingInput {
   classification?: PipelineClassification;
   /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a); omitted = domain-specific. */
   mirrorOfShared?: boolean;
+  /** The pause switch (migration 0063); omitted = enabled. */
+  enabled?: boolean;
 }
 
 export interface BackfillSourceMappingsResult {
@@ -169,7 +203,8 @@ export async function backfillSourceMappings(
       componentIdOrUrn: componentId,
       type: m.type,
       classification: m.classification,
-      mirrorOfShared: m.mirrorOfShared
+      mirrorOfShared: m.mirrorOfShared,
+      enabled: m.enabled
     });
     createdSourceMappingIds.push(created.id);
   }

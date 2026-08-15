@@ -116,6 +116,10 @@ export const ComponentPipelineSourceMappingSchema = z.object({
    *  `false` = domain-specific, tracked only in this domain. The source lane groups by it. Read,
    *  never inferred; never an enforcement input. */
   mirrorOfShared: z.boolean(),
+  /** The operator's pause switch (migration 0063) — `false` means this source tile is declared but
+   *  `matchComponentForSource` skips it, so a push that matches its repo/path/ref routes nowhere.
+   *  This is what lets the UI give each source its own enable/disable, not just its own arrow. */
+  enabled: z.boolean(),
   /** The repo's web page, or null when it cannot be known — a GLOBBED `repoPattern` names a set of
    *  repos rather than a page, and a self-hosted provider's host is not recorded on a mapping. */
   url: z.string().nullable()

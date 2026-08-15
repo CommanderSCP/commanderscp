@@ -631,6 +631,12 @@ export const SourceMappingSchema = z.object({
    *  of shared IaC); `false` = domain-specific, tracked only in this domain. Declared, never
    *  inferred from the repo host; UI/reporting only, never an enforcement input. */
   mirrorOfShared: z.boolean(),
+  /** The operator's PAUSE SWITCH (migration 0063, owner ask 2026-08-14). Unlike `mirrorOfShared`
+   *  above, this IS an enforcement input: `false` means the mapping stays declared but
+   *  `matchComponentForSource` (coordination/correlation.ts) skips it — a push that would
+   *  otherwise match this row routes to nothing. `true` for every pre-0063 row (the default),
+   *  which was already routing. */
+  enabled: z.boolean(),
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -654,7 +660,12 @@ export const CreateSourceMappingRequestSchema = z.object({
   /** Declare this repo a MIRROR of a commander-shared source (outpost-ui.md §9.3a). Omitted means
    *  domain-specific — the pre-0062 meaning of every mapping, so existing callers are unaffected.
    *  `.optional()` not `.default()` for the same request-shape reason as `type` above. */
-  mirrorOfShared: z.boolean().optional()
+  mirrorOfShared: z.boolean().optional(),
+  /** The operator's pause switch (migration 0063). Omitted means enabled — a mapping routes by
+   *  default, the pre-0063 behaviour, so an existing caller is unaffected. Pass `false` to create
+   *  a mapping that is declared but does not yet route. `.optional()` not `.default()` for the
+   *  same request-shape reason as `type`/`mirrorOfShared` above. */
+  enabled: z.boolean().optional()
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 
@@ -701,6 +712,26 @@ export type DeleteSourceMappingResponse = z.infer<typeof DeleteSourceMappingResp
 
 export const SourceMappingListResponseSchema = cursorPageResponseSchema(SourceMappingSchema);
 export type SourceMappingListResponse = z.infer<typeof SourceMappingListResponseSchema>;
+
+/**
+ * `PATCH /change-sources/{sourceKind}/mappings/{id}` params — the one mapping route addressed by
+ * id rather than the identity tuple, because unlike delete/create this is a genuine UPDATE of one
+ * specific row (migration 0063): flipping `enabled` on a mapping must never also flip its
+ * byte-identical sibling.
+ */
+export const SourceMappingIdParamSchema = z.object({
+  sourceKind: z.string().min(1),
+  id: z.string().uuid()
+});
+
+/**
+ * `PATCH /change-sources/{sourceKind}/mappings/{id}` body — the ONE mutable field on this table
+ * (migration 0063's pause switch). Deliberately not a general "patch a mapping" shape: every other
+ * column here is part of the identity tuple (`ManifestSourceMappingSchema`) or, like
+ * `mirrorOfShared`/`classification`, a create-time declaration with no update path.
+ */
+export const SetSourceMappingEnabledRequestSchema = z.object({ enabled: z.boolean() });
+export type SetSourceMappingEnabledRequest = z.infer<typeof SetSourceMappingEnabledRequestSchema>;
 
 /**
  * `POST /change-sources/{sourceKind}/webhook` body — a source-specific payload, kept verbatim

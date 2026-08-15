@@ -6472,6 +6472,7 @@ export type GetComponentPipelineResponses = {
             category: 'build' | 'infrastructure' | 'configuration';
             classification: 'dev' | 'beta' | null;
             mirrorOfShared: boolean;
+            enabled: boolean;
             url: string | null;
         }>;
         stages: Array<{
@@ -10630,6 +10631,7 @@ export type CreatePlanData = {
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
+                enabled?: boolean;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10736,6 +10738,7 @@ export type CreatePlanResponses = {
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
+                enabled?: boolean;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10797,6 +10800,7 @@ export type CreatePlanResponses = {
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification: 'dev' | 'beta' | null;
                 mirrorOfShared: boolean;
+                enabled: boolean;
                 reason: string;
             }>;
             placements?: Array<{
@@ -10929,6 +10933,7 @@ export type GetPlanResponses = {
                 type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
+                enabled?: boolean;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10990,6 +10995,7 @@ export type GetPlanResponses = {
                 type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                 classification: 'dev' | 'beta' | null;
                 mirrorOfShared: boolean;
+                enabled: boolean;
                 reason: string;
             }>;
             placements?: Array<{
@@ -11134,6 +11140,7 @@ export type ApplyPlanResponses = {
                     type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     classification?: 'dev' | 'beta';
                     mirrorOfShared?: boolean;
+                    enabled?: boolean;
                 }>;
                 executorBindings?: Array<{
                     targetUrn: string;
@@ -11195,6 +11202,7 @@ export type ApplyPlanResponses = {
                     type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
                     classification: 'dev' | 'beta' | null;
                     mirrorOfShared: boolean;
+                    enabled: boolean;
                     reason: string;
                 }>;
                 placements?: Array<{
@@ -12481,6 +12489,7 @@ export type ListSourceMappingsResponses = {
             category: 'build' | 'infrastructure' | 'configuration';
             classification: 'dev' | 'beta' | null;
             mirrorOfShared: boolean;
+            enabled: boolean;
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -12499,6 +12508,7 @@ export type CreateSourceMappingData = {
         type?: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
         classification?: 'dev' | 'beta';
         mirrorOfShared?: boolean;
+        enabled?: boolean;
     };
     path: {
         sourceKind: string;
@@ -12572,11 +12582,96 @@ export type CreateSourceMappingResponses = {
         category: 'build' | 'infrastructure' | 'configuration';
         classification: 'dev' | 'beta' | null;
         mirrorOfShared: boolean;
+        enabled: boolean;
         createdAt: string;
     };
 };
 
 export type CreateSourceMappingResponse = CreateSourceMappingResponses[keyof CreateSourceMappingResponses];
+
+export type SetSourceMappingEnabledData = {
+    body: {
+        enabled: boolean;
+    };
+    path: {
+        sourceKind: string;
+        id: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings/{id}';
+};
+
+export type SetSourceMappingEnabledErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetSourceMappingEnabledError = SetSourceMappingEnabledErrors[keyof SetSourceMappingEnabledErrors];
+
+export type SetSourceMappingEnabledResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        sourceKind: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        refPattern: string | null;
+        componentObjectId: string;
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
+        classification: 'dev' | 'beta' | null;
+        mirrorOfShared: boolean;
+        enabled: boolean;
+        createdAt: string;
+    };
+};
+
+export type SetSourceMappingEnabledResponse = SetSourceMappingEnabledResponses[keyof SetSourceMappingEnabledResponses];
 
 export type ListPolicysData = {
     body?: never;

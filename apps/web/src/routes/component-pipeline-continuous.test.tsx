@@ -59,6 +59,7 @@ const {
   arrowInto,
   buildJourney,
   laneNodes,
+  sharedConnectorVisible,
   LANES
 } = await import("./component-pipeline");
 
@@ -389,6 +390,9 @@ function source(over: Partial<ComponentPipelineResponse["sources"][number]> = {}
     category: "configuration" as const,
     classification: null,
     mirrorOfShared: false,
+    // migration 0063: every mapping is enabled by default; tests that care about the disabled
+    // treatment override this explicitly, same as every other field here.
+    enabled: true,
     url: "https://github.com/AgentKitProject/agentkit",
     ...over
   };
@@ -1088,6 +1092,7 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     category: "infrastructure" as const,
     classification: null,
     mirrorOfShared: false,
+    enabled: true,
     url: null,
     ...over
   });
@@ -1138,6 +1143,108 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     );
     expect(tiles(html, "pipeline-source-tile-none")).toBe(1);
     expect(html).toContain("No repo is mapped to this component here");
+  });
+});
+
+/**
+ * EACH SOURCE TILE GETS ITS OWN ARROW (owner, 2026-08-14: "each [source] should have its own arrow
+ * so I can enable and disable each as needed", "they should also appear side by side" — for ALL
+ * pipelines, commander and outpost). The describe above pins ONE-TILE-PER-SOURCE; this pins the two
+ * things layered on top of it: a fan-in arrow PER tile instead of one shared connector for the whole
+ * row, and the durable per-mapping enable/disable the correlation matcher now honours (migration
+ * 0063's `matchComponentForSource`) — a toggle that does not change matching would be theatre.
+ */
+describe("each source tile carries its own fan-in arrow, and its own enable/disable toggle", () => {
+  const SELF = { domainId: "d-self", name: "field-outpost", isSelf: true, role: "outpost" };
+  const COMMANDER = { domainId: "d-cmd", name: "hq-commander", isSelf: false, role: "commander" };
+  const count = (html: string, testid: string) =>
+    (html.match(new RegExp(`data-testid="${testid}"`, "g")) ?? []).length;
+
+  it("N enabled sources render N tiles AND N of their OWN fan-in arrows — never one shared arrow for the row", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          source({ id: "019f0000-0000-7000-8000-00000000f001", repoPattern: "acme/one" }),
+          source({ id: "019f0000-0000-7000-8000-00000000f002", repoPattern: "acme/two" }),
+          source({ id: "019f0000-0000-7000-8000-00000000f003", repoPattern: "acme/three" })
+        ]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    expect(count(html, "pipeline-source-tile")).toBe(3);
+    expect(
+      count(html, "promotion-arrow"),
+      "three tiles, three fan-in arrows — one PER TILE, not one shared arrow for the whole row"
+    ).toBe(3);
+  });
+
+  it("suppresses the SHARED lane connector right after a source node — its tiles already drew the transition", () => {
+    // Renderer-level, not a full page mount: `sharedConnectorVisible` IS the suppression rule the
+    // lane loop applies before each node, so pinning it directly proves the rule without a fetch.
+    const nodes = [{ kind: "source" }, { kind: "build" }, { kind: "registry" }] as const;
+    expect(sharedConnectorVisible(nodes, 0), "no connector before the first node, ever").toBe(false);
+    expect(
+      sharedConnectorVisible(nodes, 1),
+      "build follows a source — its shared connector is skipped; the source's own tiles already drew it"
+    ).toBe(false);
+    expect(
+      sharedConnectorVisible(nodes, 2),
+      "registry follows build, an ordinary pair — untouched"
+    ).toBe(true);
+  });
+
+  it("a DISABLED source renders muted, says it routes nothing, and draws an INERT arrow", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[source({ id: "019f0000-0000-7000-8000-00000000f004", enabled: false })]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    expect(html, "the muted treatment — NodeShell's own dashed/quiet card").toContain("border-dashed");
+    expect(html).toContain("disabled — routes nothing");
+    expect(html, "the arrow beneath it carries the inert style, not an ordinary pending one").toContain(
+      'data-inert="true"'
+    );
+    expect(html).toContain("connector inert (source disabled)");
+  });
+
+  it("the toggle sits on every mapping tile, and NEVER on the commander's opaque input tile", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          source({ id: "019f0000-0000-7000-8000-00000000f005" }),
+          source({ id: "019f0000-0000-7000-8000-00000000f006" })
+        ]}
+        upstream={COMMANDER}
+        domainLocal={false}
+      />
+    );
+    // 1 commander tile + 2 mapping tiles = 3 tiles total; the toggle count staying at 2 (not 3) is
+    // what proves the commander tile — an input this domain does not own — carries none of its own.
+    expect(count(html, "pipeline-source-commander-input")).toBe(1);
+    expect(count(html, "toggle-mapping-enabled-button")).toBe(2);
+  });
+
+  it("tiles sit side by side in ONE flex-wrap row, never stacked", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          source({ id: "019f0000-0000-7000-8000-00000000f007" }),
+          source({ id: "019f0000-0000-7000-8000-00000000f008" })
+        ]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+    const rowTag = html.match(/<div[^>]*data-testid="pipeline-source-row"[^>]*>/)?.[0];
+    expect(rowTag, "the source row's own container element").toBeDefined();
+    expect(rowTag).toContain("flex-wrap");
   });
 });
 

@@ -467,6 +467,7 @@ export async function getComponentPipeline(
       category: categoryOfType(m.type),
       classification: m.classification ?? null,
       mirrorOfShared: m.mirrorOfShared,
+      enabled: m.enabled,
       url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null)
     }))
     .sort(

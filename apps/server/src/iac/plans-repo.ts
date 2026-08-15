@@ -424,7 +424,8 @@ export async function computeDiffForManifest(
       refPattern: row.refPattern,
       type: row.type,
       classification: row.classification,
-      mirrorOfShared: row.mirrorOfShared
+      mirrorOfShared: row.mirrorOfShared,
+      enabled: row.enabled
     });
   }
 
@@ -489,7 +490,11 @@ export async function computeDiffForManifest(
       classification: m.classification ?? null,
       // Descriptive, like classification — NOT part of the identity (iac.ts): a mapping that only
       // changed its declared provenance is the same mapping, not a delete+create.
-      mirrorOfShared: m.mirrorOfShared ?? false
+      mirrorOfShared: m.mirrorOfShared ?? false,
+      // The pause switch (migration 0063) — also descriptive here (see `sourceMappingKey`).
+      // Omitted ⇒ enabled, the pre-0063 behaviour and the safer default for a hand-authored
+      // manifest that has never heard of this field.
+      enabled: m.enabled ?? true
     })),
     placements: (manifest.placements ?? []).map((pl) => ({
       componentUrn: pl.componentUrn,
@@ -1177,7 +1182,10 @@ export async function executePlanDiff(
       componentIdOrUrn: endpointId(entry.componentUrn),
       type: entry.type,
       ...(entry.classification !== null ? { classification: entry.classification } : {}),
-      ...(entry.mirrorOfShared ? { mirrorOfShared: true } : {})
+      ...(entry.mirrorOfShared ? { mirrorOfShared: true } : {}),
+      // `createSourceMapping` defaults `enabled` to `true`, so only pass it through when the plan
+      // says the row should be created already-paused.
+      ...(entry.enabled === false ? { enabled: false } : {})
     });
   }
 

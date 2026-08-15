@@ -11,6 +11,8 @@ import {
   GitBranch,
   Package,
   Plus,
+  Power,
+  PowerOff,
   Server,
   SlidersHorizontal,
   Trash2,
@@ -988,6 +990,18 @@ export function laneNodes(
 }
 
 /**
+ * Whether the lane renderer's SHARED connector before `nodes[i]` should draw. A "source" node now
+ * fans in: each of its tiles carries its own `PromotionArrow` beneath it (owner, 2026-08-14), so the
+ * shared connector immediately after it would be an EXTRA arrow, not the transition's only one —
+ * suppressed here so a source's transition is drawn exactly once, at the tile(s). Every other
+ * adjacent pair is untouched: `i > 0` is still the whole rule. Exported so the suppression itself is
+ * assertable without standing up the fetching page around it.
+ */
+export function sharedConnectorVisible(nodes: readonly Pick<LaneNode, "kind">[], i: number): boolean {
+  return i > 0 && nodes[i - 1]?.kind !== "source";
+}
+
+/**
  * THE HEAD OF A LANE — the repos a push to which releases this component through this pipeline.
  *
  * This is the durable RULE (`source_mappings`), not release history, so it answers "does a change
@@ -1481,6 +1495,15 @@ function DeleteMappingButton({
   );
 }
 
+/** A disabled mapping is a DECLARED rule the correlation matcher skips, not a deleted one (owner,
+ *  2026-08-14: "a toggle is theatre" unless something downstream honours it — migration 0063's
+ *  `matchComponentForSource` is that something). Reads `!== false` rather than a bare `!source.enabled`
+ *  so a value this component genuinely never received (an older cached response, a hand-built test
+ *  fixture) still reads as enabled rather than silently muting every tile on the page. */
+function isMappingEnabled(source: Pick<ComponentPipelineResponse["sources"][number], "enabled">): boolean {
+  return source.enabled !== false;
+}
+
 /** A SOURCE NODE — the repos a push to which starts this pipeline. Durable rules, so it answers
  *  "does a change there affect this?" for a component that has never released. */
 function SourceNode({
@@ -1530,43 +1553,59 @@ function SourceNode({
             : "— a push matching one of these rules starts a release"}
         </span>
       </SectionLabel>
-      {tileCount === 0 && !domainLocal ? (
+      {tileCount === 0 ? (
         // The source-side twin of an unplaced stage: no push to any repo can start this pipeline,
-        // so it only ever runs if someone raises a change by hand.
-        <Card className="w-full border-dashed bg-slate-50/60 shadow-none" data-testid="pipeline-source-tile-none">
-          <CardContent className="py-3 text-xs text-slate-400" data-testid="pipeline-no-sources">
-            No repo is mapped to this component here, so no push can trigger this pipeline.
-          </CardContent>
-        </Card>
+        // so it only ever runs if someone raises a change by hand. Still carries its own downward
+        // arrow (fan-in of one, drawn even when the "one" is empty) so the chain never reads as
+        // having stopped here — a domain-local component with zero mappings (rare, ADR-0031) omits
+        // the card itself but keeps the connector, since it has no "no repo mapped" claim to make.
+        <div className="flex flex-col items-center gap-1">
+          {!domainLocal && (
+            <Card
+              className="w-full border-dashed bg-slate-50/60 shadow-none"
+              data-testid="pipeline-source-tile-none"
+            >
+              <CardContent className="py-3 text-xs text-slate-400" data-testid="pipeline-no-sources">
+                No repo is mapped to this component here, so no push can trigger this pipeline.
+              </CardContent>
+            </Card>
+          )}
+          <PromotionArrow state="pending" />
+        </div>
       ) : (
-        <div className="flex flex-wrap items-stretch justify-center gap-2">
+        <div className="flex flex-wrap items-stretch justify-center gap-2" data-testid="pipeline-source-row">
           {hasCommanderInput && (
             // THE COMMANDER AS AN OPAQUE INPUT — its own tile, named from maintainedBy (name null
             // = origin matches no known peer; say the id rather than guess). Deliberately NO repo,
             // host, path or ref: this domain does not know them, and a tile that showed any would
-            // be an invention.
-            <Card
-              className="min-w-[14rem] flex-1 basis-[14rem]"
-              data-testid="pipeline-source-commander-input"
-              title={`Shared inputs to this pipeline — the repos that are the same in every domain — are authored and tracked at ${upstream.name ?? upstream.domainId}. This domain does not see them; it only knows their source is the commander.`}
-            >
-              <CardHeader className="pb-1">
-                <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
-                  Global — source: the commander
-                </p>
-                <div className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
-                  {upstream.role === "commander" ? (
-                    <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-                  ) : (
-                    <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-                  )}
-                  {upstream.name ?? upstream.domainId}
-                </div>
-              </CardHeader>
-              <CardContent className="pt-0 text-xs text-slate-500">
-                repos not visible in this domain
-              </CardContent>
-            </Card>
+            // be an invention. Its own fan-in arrow too (owner, 2026-08-14: "each source should
+            // have its own arrow") — plain `pending`, since there is no per-mapping enable/disable
+            // concept for an input this domain does not own.
+            <div className="flex min-w-[14rem] flex-1 basis-[14rem] flex-col items-center gap-1">
+              <Card
+                className="w-full"
+                data-testid="pipeline-source-commander-input"
+                title={`Shared inputs to this pipeline — the repos that are the same in every domain — are authored and tracked at ${upstream.name ?? upstream.domainId}. This domain does not see them; it only knows their source is the commander.`}
+              >
+                <CardHeader className="pb-1">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                    Global — source: the commander
+                  </p>
+                  <div className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
+                    {upstream.role === "commander" ? (
+                      <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                    ) : (
+                      <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                    )}
+                    {upstream.name ?? upstream.domainId}
+                  </div>
+                </CardHeader>
+                <CardContent className="pt-0 text-xs text-slate-500">
+                  repos not visible in this domain
+                </CardContent>
+              </Card>
+              <PromotionArrow state="pending" />
+            </div>
           )}
           {[...mirrors, ...domainSpecific].map((source) => (
             <SourceTile
@@ -1614,7 +1653,9 @@ function SourceNode({
 }
 
 /**
- * ONE SOURCE TILE — one repo rule, its own card, sitting beside its siblings in the source row.
+ * ONE SOURCE TILE — one repo rule, its own card, sitting beside its siblings in the source row, and
+ * (owner, 2026-08-14) its own downward arrow beneath it: `tile, then arrow` in one column, so N
+ * tiles read as N converging fan-in lines rather than one shared connector for the whole row.
  * `provenance` is the declared kind (outpost-ui.md §9.3a): "mirror" = a local copy of a commander-
  * shared repo; "domain" = domain-specific, tracked only here; "local" = a repo of a domain-local
  * component (nothing upstream); null = don't label (the commander's own site, where these are
@@ -1632,6 +1673,7 @@ function SourceTile({
   componentId: string;
   pipelineKey: unknown[];
 }): React.JSX.Element {
+  const enabled = isMappingEnabled(source);
   const eyebrow =
     provenance === "mirror"
       ? { text: "Mirror of global — held in this domain", title: "A local COPY of a source the commander owns — declared by the operator at create, never inferred from the repo host. Its source of truth is the commander." }
@@ -1646,79 +1688,150 @@ function SourceTile({
       : provenance === "domain" || provenance === "local"
         ? "pipeline-source-tile-domain-specific"
         : "pipeline-source-tile";
+  const hasHeader = Boolean(eyebrow) || !enabled;
   return (
-    <Card className="min-w-[14rem] flex-1 basis-[14rem]" data-testid={testid}>
-      {eyebrow && (
-        <CardHeader className="pb-1">
-          <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400" title={eyebrow.title}>
-            {eyebrow.text}
-          </p>
-        </CardHeader>
-      )}
-      <CardContent className={`text-xs text-slate-600 ${eyebrow ? "pt-0" : "pt-4"}`}>
-        {(() => {
-          const sources = [source];
-          void sources;
-          const renderRow = (source: ComponentPipelineResponse["sources"][number]) => (
+    <div className="flex min-w-[14rem] flex-1 basis-[14rem] flex-col items-center gap-1">
+      <Card
+        className={cn("w-full", !enabled && "border-dashed bg-slate-50/60 shadow-none")}
+        data-testid={testid}
+      >
+        {hasHeader && (
+          <CardHeader className="pb-1">
+            {eyebrow && (
+              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400" title={eyebrow.title}>
+                {eyebrow.text}
+              </p>
+            )}
+            {!enabled && (
+              // The muted card alone reads as "quiet" — this says WHY: the rule is still declared,
+              // it simply matches nothing right now. Distinct wording from delete on purpose (owner,
+              // 2026-08-14: "routes nothing" is not "gone").
+              <p
+                className="text-[10px] font-medium uppercase tracking-wide text-amber-700"
+                title="Disabled mappings stay declared but route nothing — a push matching this rule starts no release. Distinct from delete."
+                data-testid="pipeline-source-tile-disabled-badge"
+              >
+                disabled — routes nothing
+              </p>
+            )}
+          </CardHeader>
+        )}
+        <CardContent className={`text-xs text-slate-600 ${hasHeader ? "pt-0" : "pt-4"}`}>
+          {(() => {
+            const sources = [source];
+            void sources;
+            const renderRow = (source: ComponentPipelineResponse["sources"][number]) => (
 
-          <div key={source.id} data-testid="pipeline-source-mapping">
-            <span className="text-slate-400">{source.sourceKind}</span>{" "}
-            <ConsoleLink href={source.url} testid="pipeline-source-link">
-              <span className="font-mono">{source.repoPattern ?? "(any repo)"}</span>
-            </ConsoleLink>{" "}
-            {source.pathPattern ? (
-              <span className="font-mono text-slate-500">{source.pathPattern}</span>
-            ) : (
-              // A null path matches EVERY file in the repo — a far broader rule than a blank cell
-              // suggests, and on the live estate a real one worth noticing.
-              <span
-                className="text-amber-700"
-                title="This mapping has no path filter, so any commit anywhere in the repo releases this component."
-                data-testid="pipeline-source-whole-repo"
-              >
-                whole repo
+            <div key={source.id} data-testid="pipeline-source-mapping">
+              <span className="text-slate-400">{source.sourceKind}</span>{" "}
+              <ConsoleLink href={source.url} testid="pipeline-source-link">
+                <span className="font-mono">{source.repoPattern ?? "(any repo)"}</span>
+              </ConsoleLink>{" "}
+              {source.pathPattern ? (
+                <span className="font-mono text-slate-500">{source.pathPattern}</span>
+              ) : (
+                // A null path matches EVERY file in the repo — a far broader rule than a blank cell
+                // suggests, and on the live estate a real one worth noticing.
+                <span
+                  className="text-amber-700"
+                  title="This mapping has no path filter, so any commit anywhere in the repo releases this component."
+                  data-testid="pipeline-source-whole-repo"
+                >
+                  whole repo
+                </span>
+              )}{" "}
+              {source.refPattern ? (
+                <span className="font-mono text-slate-500">{source.refPattern}</span>
+              ) : (
+                // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
+                // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
+                // `main` to different pipelines from looking identical here (ADR-0030 §1 — the
+                // dev-branch-pipelines ADR, not this branch's ADR-0032).
+                <span
+                  className="text-amber-700"
+                  title="This mapping has no ref filter, so a push to any branch releases this component."
+                  data-testid="pipeline-source-any-branch"
+                >
+                  any branch
+                </span>
+              )}{" "}
+              {source.classification && (
+                // Declared by the operator, never inferred from the branch name — and inert for
+                // enforcement (ADR-0030 §3), so this is a label and nothing more.
+                <span
+                  className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
+                  title="Operator-declared pipeline classification. UI/reporting only — it grants no scan exemption."
+                  data-testid="pipeline-source-classification"
+                >
+                  {source.classification}
+                </span>
+              )}{" "}
+              {/* §1.6: the forward glyph is ArrowRight — the rendered `→` literal stays dead. */}
+              <span className="inline-flex items-center gap-1 text-slate-400">
+                <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                {source.type}
               </span>
-            )}{" "}
-            {source.refPattern ? (
-              <span className="font-mono text-slate-500">{source.refPattern}</span>
-            ) : (
-              // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
-              // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
-              // `main` to different pipelines from looking identical here (ADR-0030 §1 — the
-              // dev-branch-pipelines ADR, not this branch's ADR-0032).
-              <span
-                className="text-amber-700"
-                title="This mapping has no ref filter, so a push to any branch releases this component."
-                data-testid="pipeline-source-any-branch"
-              >
-                any branch
-              </span>
-            )}{" "}
-            {source.classification && (
-              // Declared by the operator, never inferred from the branch name — and inert for
-              // enforcement (ADR-0030 §3), so this is a label and nothing more.
-              <span
-                className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
-                title="Operator-declared pipeline classification. UI/reporting only — it grants no scan exemption."
-                data-testid="pipeline-source-classification"
-              >
-                {source.classification}
-              </span>
-            )}{" "}
-            {/* §1.6: the forward glyph is ArrowRight — the rendered `→` literal stays dead. */}
-            <span className="inline-flex items-center gap-1 text-slate-400">
-              <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
-              {source.type}
-            </span>
-            {/* A1: no edit exists on this table, so the row's only write is delete (see the
-                confirm's own copy for why it is never a bare click). */}
-            <DeleteMappingButton source={source} componentId={componentId} pipelineKey={pipelineKey} />
-          </div>
-          );
-          return renderRow(source);
-        })()}
-      </CardContent>
-    </Card>
+              {/* Owner, 2026-08-14: a durable per-mapping on/off the correlation matcher honours —
+                  distinct from `DeleteMappingButton` below, which removes the rule entirely. */}
+              <ToggleMappingEnabledButton source={source} pipelineKey={pipelineKey} />
+              {/* A1: no edit exists on this table, so the row's only write is delete (see the
+                  confirm's own copy for why it is never a bare click). */}
+              <DeleteMappingButton source={source} componentId={componentId} pipelineKey={pipelineKey} />
+            </div>
+            );
+            return renderRow(source);
+          })()}
+        </CardContent>
+      </Card>
+      <PromotionArrow state="pending" inert={!enabled} />
+    </div>
+  );
+}
+
+/**
+ * ENABLE/DISABLE CONTROL — one mapping's own on/off switch (owner, 2026-08-14). No switch primitive
+ * exists yet in `components/ui/`, so this is the small-outline-Button pattern `DeleteMappingButton`
+ * already uses. Never pre-blocks the click: the server is the one authority on whether the flip is
+ * allowed, so a refusal renders as an `Alert` after the fact rather than a disabled control before it.
+ */
+function ToggleMappingEnabledButton({
+  source,
+  pipelineKey
+}: {
+  source: ComponentPipelineResponse["sources"][number];
+  pipelineKey: unknown[];
+}): React.JSX.Element {
+  const queryClient = useQueryClient();
+  const enabled = isMappingEnabled(source);
+  const toggleMutation = useMutation({
+    mutationFn: () => client.changeSources.setMappingEnabled(source.sourceKind, source.id, !enabled),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: pipelineKey });
+    }
+  });
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        icon={enabled ? PowerOff : Power}
+        className="ml-1 h-6 gap-1 px-2 text-[11px]"
+        disabled={toggleMutation.isPending}
+        onClick={() => toggleMutation.mutate()}
+        title="Disabled mappings stay declared but route nothing — a push matching this rule starts no release. Distinct from delete."
+        data-testid="toggle-mapping-enabled-button"
+      >
+        {toggleMutation.isPending ? "…" : enabled ? "Disable" : "Enable"}
+      </Button>
+      {toggleMutation.isError && (
+        <Alert tone="danger" className="mt-1">
+          {toggleMutation.error instanceof Error
+            ? toggleMutation.error.message
+            : "Failed to update the mapping."}
+        </Alert>
+      )}
+    </>
   );
 }
 
@@ -2124,10 +2237,12 @@ export function ComponentPipelinePage({
                 const arrow = node.kind === "wave" ? arrowInto(node.wave, lane) : null;
                 return (
                   <div key={node.key} className="flex w-full flex-col items-center gap-1">
-                    {i > 0 && (
+                    {sharedConnectorVisible(nodes, i) && (
                       // Between two nodes, the connector is only a verdict where the model HAS one: a
                       // promotion into a deploy stage. Everywhere else it is a plain link, because
-                      // colouring build→registry green would invent a gate nobody evaluated.
+                      // colouring build→registry green would invent a gate nobody evaluated. A
+                      // "source" node draws its OWN arrow per tile instead (`sharedConnectorVisible`),
+                      // so this one is skipped right after it rather than adding a duplicate.
                       <PromotionArrow
                         state={arrow?.state ?? "pending"}
                         label={arrow?.label ?? ""}

@@ -55,6 +55,7 @@ const MAPPING: ComponentPipelineResponse["sources"][number] = {
   category: "configuration",
   classification: null,
   mirrorOfShared: false,
+  enabled: true,
   url: "https://github.com/jag8765/agentkit-bootstrap"
 };
 

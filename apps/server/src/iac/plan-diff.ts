@@ -83,6 +83,11 @@ export interface ResolvedManifestSourceMapping {
    *  `classification`, and like it NOT part of `sourceMappingKey`: a mapping whose declared
    *  provenance changed is the same mapping, not a delete + create. */
   mirrorOfShared: boolean;
+  /** The pause switch (migration 0063) — like `classification`/`mirrorOfShared`, NOT part of
+   *  `sourceMappingKey`: disabling a live mapping is an in-place correction, not a delete + create
+   *  of the route. (It IS an enforcement input at the correlation matcher — but that read happens
+   *  off the live table, never off this diff, so it has no bearing on identity here.) */
+  enabled: boolean;
 }
 
 /**
@@ -485,6 +490,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       type: mapping.type,
       classification: mapping.classification,
       mirrorOfShared: mapping.mirrorOfShared,
+      enabled: mapping.enabled,
       reason: exists ? "matches current state" : "no existing source mapping with this identity"
     });
     if (exists) noops++;
@@ -555,6 +561,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       type: managed.type,
       classification: managed.classification,
       mirrorOfShared: managed.mirrorOfShared,
+      enabled: managed.enabled,
       reason:
         "on an object this stack owns, no longer present in the desired manifest's sourceMappings"
     });

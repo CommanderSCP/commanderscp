@@ -651,6 +651,14 @@ export const sourceMappings = pgTable(
     // NEVER an enforcement input: it grants and withholds nothing; the UI groups the source lane
     // by it and reporting may read it, and that is all.
     mirrorOfShared: boolean("mirror_of_shared").notNull().default(false),
+    // The operator's PAUSE SWITCH, migration 0063 (owner ask 2026-08-14, UI source-lane
+    // enable/disable). A mapping stays DECLARED but routes nothing while disabled — distinct from
+    // delete, which forgets the rule entirely. `correlation.ts`'s `matchComponentForSource` skips a
+    // disabled row as its first filter, so this is an ENFORCEMENT input (unlike `classification`
+    // and `mirrorOfShared` above): a caller flipping it changes what a push actually correlates to,
+    // not just how it renders. `NOT NULL DEFAULT true` — every pre-0063 row was already routing, so
+    // the default preserves that behaviour with no backfill.
+    enabled: boolean("enabled").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]

@@ -93,7 +93,11 @@ export const ManifestSourceMappingSchema = z.object({
   classification: PipelineClassificationSchema.optional(),
   /** Declared mirror-of-shared provenance (outpost-ui.md §9.3a). Like `classification`, NOT part
    *  of the mapping's identity — a descriptive label; omitted means domain-specific. */
-  mirrorOfShared: z.boolean().optional()
+  mirrorOfShared: z.boolean().optional(),
+  /** The pause switch (migration 0063). Like `classification`/`mirrorOfShared`, deliberately
+   *  outside the identity tuple — disabling a live mapping is an in-place correction, not a
+   *  delete-and-recreate of the route. Omitted ⇒ enabled, the pre-0063 behaviour. */
+  enabled: z.boolean().optional()
 });
 export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
 
@@ -274,6 +278,10 @@ export const PlanSourceMappingDiffEntrySchema = z.object({
    *  `dev` label is legible, not because it participates in matching. */
   classification: PipelineClassificationSchema.nullable(),
   mirrorOfShared: z.boolean(),
+  /** Descriptive on this entry too, like `mirrorOfShared` above — outside the identity tuple, so
+   *  its presence here is purely so the operator reviewing the plan can see whether the row they
+   *  are creating/pruning is currently paused. */
+  enabled: z.boolean(),
   reason: z.string()
 });
 export type PlanSourceMappingDiffEntry = z.infer<typeof PlanSourceMappingDiffEntrySchema>;

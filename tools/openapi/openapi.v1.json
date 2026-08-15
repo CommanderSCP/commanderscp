@@ -25391,6 +25391,9 @@
                           "mirrorOfShared": {
                             "type": "boolean"
                           },
+                          "enabled": {
+                            "type": "boolean"
+                          },
                           "url": {
                             "anyOf": [
                               {
@@ -25412,6 +25415,7 @@
                           "category",
                           "classification",
                           "mirrorOfShared",
+                          "enabled",
                           "url"
                         ],
                         "additionalProperties": false
@@ -41962,6 +41966,9 @@
                             },
                             "mirrorOfShared": {
                               "type": "boolean"
+                            },
+                            "enabled": {
+                              "type": "boolean"
                             }
                           },
                           "required": [
@@ -42242,6 +42249,9 @@
                                 ]
                               },
                               "mirrorOfShared": {
+                                "type": "boolean"
+                              },
+                              "enabled": {
                                 "type": "boolean"
                               }
                             },
@@ -42567,6 +42577,9 @@
                               "mirrorOfShared": {
                                 "type": "boolean"
                               },
+                              "enabled": {
+                                "type": "boolean"
+                              },
                               "reason": {
                                 "type": "string"
                               }
@@ -42582,6 +42595,7 @@
                               "type",
                               "classification",
                               "mirrorOfShared",
+                              "enabled",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -43155,6 +43169,9 @@
                               },
                               "mirrorOfShared": {
                                 "type": "boolean"
+                              },
+                              "enabled": {
+                                "type": "boolean"
                               }
                             },
                             "required": [
@@ -43479,6 +43496,9 @@
                               "mirrorOfShared": {
                                 "type": "boolean"
                               },
+                              "enabled": {
+                                "type": "boolean"
+                              },
                               "reason": {
                                 "type": "string"
                               }
@@ -43494,6 +43514,7 @@
                               "type",
                               "classification",
                               "mirrorOfShared",
+                              "enabled",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -44070,6 +44091,9 @@
                                   },
                                   "mirrorOfShared": {
                                     "type": "boolean"
+                                  },
+                                  "enabled": {
+                                    "type": "boolean"
                                   }
                                 },
                                 "required": [
@@ -44394,6 +44418,9 @@
                                   "mirrorOfShared": {
                                     "type": "boolean"
                                   },
+                                  "enabled": {
+                                    "type": "boolean"
+                                  },
                                   "reason": {
                                     "type": "string"
                                   }
@@ -44409,6 +44436,7 @@
                                   "type",
                                   "classification",
                                   "mirrorOfShared",
+                                  "enabled",
                                   "reason"
                                 ],
                                 "additionalProperties": false
@@ -49896,6 +49924,9 @@
                   },
                   "mirrorOfShared": {
                     "type": "boolean"
+                  },
+                  "enabled": {
+                    "type": "boolean"
                   }
                 },
                 "required": [
@@ -50000,6 +50031,9 @@
                     "mirrorOfShared": {
                       "type": "boolean"
                     },
+                    "enabled": {
+                      "type": "boolean"
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time",
@@ -50018,6 +50052,7 @@
                     "category",
                     "classification",
                     "mirrorOfShared",
+                    "enabled",
                     "createdAt"
                   ],
                   "additionalProperties": false
@@ -50596,6 +50631,9 @@
                           "mirrorOfShared": {
                             "type": "boolean"
                           },
+                          "enabled": {
+                            "type": "boolean"
+                          },
                           "createdAt": {
                             "type": "string",
                             "format": "date-time",
@@ -50614,6 +50652,7 @@
                           "category",
                           "classification",
                           "mirrorOfShared",
+                          "enabled",
                           "createdAt"
                         ],
                         "additionalProperties": false
@@ -50682,6 +50721,354 @@
             }
           },
           "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/change-sources/{sourceKind}/mappings/{id}": {
+      "patch": {
+        "operationId": "setSourceMappingEnabled",
+        "summary": "Enable or disable a source_mapping (the pause switch) — a disabled mapping stays declared but routes nothing",
+        "tags": [
+          "change-sources"
+        ],
+        "parameters": [
+          {
+            "name": "sourceKind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "orgId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "sourceKind": {
+                      "type": "string"
+                    },
+                    "repoPattern": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pathPattern": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "refPattern": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "componentObjectId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "image",
+                        "rpm",
+                        "deb",
+                        "npm",
+                        "infrastructure",
+                        "configuration"
+                      ]
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "build",
+                        "infrastructure",
+                        "configuration"
+                      ]
+                    },
+                    "classification": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "dev",
+                            "beta"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "mirrorOfShared": {
+                      "type": "boolean"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "orgId",
+                    "sourceKind",
+                    "repoPattern",
+                    "pathPattern",
+                    "refPattern",
+                    "componentObjectId",
+                    "type",
+                    "category",
+                    "classification",
+                    "mirrorOfShared",
+                    "enabled",
+                    "createdAt"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
             "description": "Error",
             "content": {
               "application/problem+json": {

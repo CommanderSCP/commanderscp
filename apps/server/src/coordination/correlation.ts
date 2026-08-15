@@ -224,6 +224,11 @@ export async function matchComponentForSource(
     );
 
   for (const row of rows) {
+    // The operator's PAUSE SWITCH (migration 0063): a disabled mapping stays declared — it still
+    // renders, still counts in precedence bookkeeping above — but must never route a push. Checked
+    // first, before either glob, so a disabled row costs nothing beyond this one branch and can
+    // never win by falling through a pattern check that happens to match.
+    if (!row.enabled) continue;
     if (row.repoPattern && (!hint.repo || !globMatch(row.repoPattern, hint.repo))) continue;
     if (row.pathPattern && !matchesAnyPath(row.pathPattern, hint)) continue;
     // FAIL-CLOSED on an unknown ref, the same rule as `repoPattern` above and `matchesAnyPath`
