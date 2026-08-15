@@ -428,6 +428,20 @@
       "when": 1788039137000,
       "tag": "0060_domain_local_inherited_from",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1788059137000,
+      "tag": "0061_dependency_inventory",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1788069137000,
+      "tag": "0062_dependency_subscription_enablement",
+      "breakpoints": true
     }
   ]
 }

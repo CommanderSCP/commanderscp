@@ -13,6 +13,12 @@ import { startReconcileLoop } from "./coordination/reconcile.js";
 import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
 import { startInboxLoop } from "./federation/inbox-loop.js";
+import { startDependencyVersionPollLoop } from "./dependencies/version-poll.js";
+import {
+  acceptedChangeRouter,
+  internalReleaseDetectionRoleGuard,
+  startInternalReleaseLoop
+} from "./dependencies/internal-release-loop.js";
 import { startAutoRelayLoop } from "./federation/auto-relay.js";
 import { startFederationSyncLoop } from "./federation/federation-sync.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
@@ -150,7 +156,18 @@ async function main(): Promise<void> {
   // schema-scoped `scp_pgboss` login role (M3 tracked security follow-up — pg-boss no longer
   // runs its own schema migrations on the admin/superuser connection).
   if (runsBackgroundWork) {
-    const boss = await startPgBoss(config.pgBossDatabaseUrl);
+    // M21.4 (ADR-0032 §7): the FIRST real consumer of the domain-event stream. `boss.work()` is a
+    // competing consumer, so a feature that reacts to an event registers a ROUTER here rather than a
+    // second worker on `domain-events` — the router makes one cheap decision and enqueues onto this
+    // capability's own queue, which is then worked by `startInternalReleaseLoop` below. Guarded so
+    // an api-only process neither routes nor works (the guard is the job's own property, not a
+    // consequence of sitting inside `runsBackgroundWork`); a refused guard contributes NO router, so
+    // an event is not even enqueued for a queue nothing will drain.
+    const internalReleaseAllowed = internalReleaseDetectionRoleGuard(config).allowed;
+    const boss = await startPgBoss(
+      config.pgBossDatabaseUrl,
+      internalReleaseAllowed ? [acceptedChangeRouter()] : []
+    );
     // M14.2 (ADR-0009): expose the job queue to request handlers (mirrors `deps.pluginHost` below)
     // so the inbound federation poke endpoint can enqueue an immediate federation-sync tick — the
     // contentless wake that pulls NOW instead of at the next interval, without pulling inline.
@@ -214,6 +231,29 @@ async function main(): Promise<void> {
     // it pulls+imports commander config over the fail-closed per-peer mTLS outbound dialer
     // (federation-outbound.ts) and is the sparse-safety-net + pull-on-startup reliability floor.
     const federationSyncLoop = await startFederationSyncLoop(boss, db);
+    // M21.4 third-party dependency version poll (ADR-0032 §7): same queue-per-capability pattern,
+    // but with a SECOND, explicit guard on top of `runsBackgroundWork` — `config.federationRole`
+    // must be `commander`. An unguarded background job that dials package registries on a timer
+    // would run on AIR-GAPPED OUTPOSTS too, and neither the process-role split nor any runtime
+    // predicate would stop it (`self_domain.role` is per-org, lazy and advisory). The guard lives
+    // in `dependencyVersionPollRoleGuard`, which returns an inert handle and never creates the
+    // queue when it refuses.
+    const dependencyVersionPollLoop = await startDependencyVersionPollLoop(
+      boss,
+      db,
+      pluginHost,
+      config
+    );
+    // M21.4 internal release detection (ADR-0032 §7) — the other half of the router registered with
+    // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event; it runs
+    // on EVERY federation role, deliberately, since each domain derives its own inventory and the
+    // wave-target evidence exists only where the change executed (the loop's module doc has the
+    // reasoning in full).
+    const internalReleaseLoop = await startInternalReleaseLoop(boss, {
+      db,
+      host: pluginHost,
+      config
+    });
 
     app.addHook("onClose", async () => {
       await reconcileLoop.stop();
@@ -222,6 +262,8 @@ async function main(): Promise<void> {
       await inboxLoop.stop();
       await autoRelayLoop.stop();
       await federationSyncLoop.stop();
+      await dependencyVersionPollLoop.stop();
+      await internalReleaseLoop.stop();
       await pluginHost.stop();
       await relay.stop();
       // Stop the poke sender AFTER the relay so no new post-commit hook fires into it; then drain any

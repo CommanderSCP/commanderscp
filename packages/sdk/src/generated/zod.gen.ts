@@ -5171,6 +5171,87 @@ export const zLoadScanDbResponse = z.object({
 /**
  * Success
  */
+export const zGetDependencySubscriptionUnlockResponse = z.object({
+    unlocked: z.boolean(),
+    note: z.string().nullable(),
+    updatedAt: z.string().nullable(),
+    source: z.string()
+});
+
+/**
+ * Success
+ */
+export const zPutDependencySubscriptionUnlockResponse = z.object({
+    unlocked: z.boolean(),
+    note: z.string().nullable(),
+    updatedAt: z.string().nullable(),
+    source: z.string()
+});
+
+/**
+ * Success
+ */
+export const zGetComponentDependencySubscriptionResponse = z.object({
+    componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    line: z.object({
+        ecosystem: z.enum([
+            'npm',
+            'go',
+            'maven',
+            'python',
+            'oci'
+        ]),
+        coordinate: z.string().min(1).max(512),
+        major: z.string().min(1).max(64)
+    }),
+    resolution: z.object({
+        enabled: z.boolean(),
+        reason: z.enum([
+            'enabled',
+            'instance_locked',
+            'disabled',
+            'not_enabled'
+        ]),
+        granularity: z.enum(['patch', 'minor_and_patch']),
+        delivery: z.enum(['pull_request', 'auto_merge']),
+        contributions: z.array(z.object({
+            tier: z.enum([
+                'instance',
+                'org',
+                'containment_domain',
+                'service',
+                'component'
+            ]),
+            source: z.string(),
+            objectTypeId: z.string().optional(),
+            contributed: z.enum([
+                'unlock',
+                'lock',
+                'enable',
+                'disable',
+                'ignored'
+            ]),
+            ignoredReason: z.enum(['malformed', 'condition_unevaluable']).optional(),
+            selector: z.object({
+                ecosystem: z.enum([
+                    'npm',
+                    'go',
+                    'maven',
+                    'python',
+                    'oci'
+                ]).optional(),
+                coordinate: z.string().min(1).max(512).optional(),
+                major: z.string().min(1).max(64).optional()
+            }).optional(),
+            granularity: z.enum(['patch', 'minor_and_patch']).optional(),
+            delivery: z.enum(['pull_request', 'auto_merge']).optional()
+        }))
+    })
+});
+
+/**
+ * Success
+ */
 export const zListCampaignsResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

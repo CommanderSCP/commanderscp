@@ -22,3 +22,4 @@ export * from "./executors.js";
 export * from "./health.js";
 export * from "./events.js";
 export * from "./doctor.js";
+export * from "./dependencies.js";

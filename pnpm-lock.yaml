@@ -74,6 +74,9 @@ importers:
       '@scp/cosign':
         specifier: workspace:*
         version: link:../../packages/cosign
+      '@scp/dependency-manifests':
+        specifier: workspace:*
+        version: link:../../packages/dependency-manifests
       '@scp/git-provider-core':
         specifier: workspace:*
         version: link:../../packages/plugins/git-provider-core
@@ -83,6 +86,12 @@ importers:
       '@scp/plugin-argocd':
         specifier: workspace:*
         version: link:../../packages/plugins/argocd
+      '@scp/plugin-dependency-index-oci':
+        specifier: workspace:*
+        version: link:../../packages/plugins/dependency-index-oci
+      '@scp/plugin-dependency-index-registries':
+        specifier: workspace:*
+        version: link:../../packages/plugins/dependency-index-registries
       '@scp/plugin-fake-executor':
         specifier: workspace:*
         version: link:../../packages/plugins/fake-executor
@@ -343,6 +352,21 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
+  packages/dependency-manifests:
+    devDependencies:
+      '@scp/schemas':
+        specifier: workspace:*
+        version: link:../schemas
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
   packages/iac:
     dependencies:
       '@scp/schemas':
@@ -390,6 +414,38 @@ importers:
       '@scp/plugin-testkit':
         specifier: workspace:*
         version: link:../../plugin-testkit
+      nock:
+        specifier: ^13.5.0
+        version: 13.5.6
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  packages/plugins/dependency-index-oci:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  packages/plugins/dependency-index-registries:
+    dependencies:
+      '@scp/plugin-api':
+        specifier: workspace:*
+        version: link:../../plugin-api
+    devDependencies:
       nock:
         specifier: ^13.5.0
         version: 13.5.6

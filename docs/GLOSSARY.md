@@ -710,7 +710,7 @@ Pass-criteria are **scoped, most-restrictive-wins** over six tiers — platform 
 
 The commander cosign-signs **only** this manifest. The executor cosign-signs the artifacts and the SBOM, at build ([ADR-0015](adr/0015-cosign-cross-boundary-signing.md) §5).
 
-**Not to be confused with:** an **OCI image manifest** (the registry's own descriptor document — a real collision, since SCP handles both), a Kubernetes manifest (a YAML resource file), or an **SBOM** (a component inventory, not an authorization).
+**Not to be confused with:** an **OCI image manifest** (the registry's own descriptor document — a real collision, since SCP handles both), a Kubernetes manifest (a YAML resource file), an **SBOM** (a component inventory, not an authorization), or a **dependency manifest** (`package.json`, `go.mod`, a `FROM` line — a declaration of what a component depends on, which authorizes nothing; see that entry).
 
 **In the code.** `PromotionManifestSchema` in `packages/schemas/src/federation.ts`.
 
@@ -762,6 +762,32 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 ---
 
+### dependency subscription — always qualify
+
+**Definition.** A component team's standing declaration that it follows a **major line** of one dependency, and accepts each new release on that line as an automatic code change. Carries a **granularity** (minor-and-patch, or patch-only) and a delivery mode (pull request, or auto-merge behind a governed control).
+
+**Always spelled in full.** Bare **"subscription"** belongs to `notification_bindings` — who gets told when something happens. A dependency subscription is not a notification; it is a standing authorization to change code ([ADR-0032](adr/0032-dependency-subscriptions.md) §2).
+
+**The enablement chain is three levels and monotone**: the instance level **unlocks and never activates**, the component team flips its own switch, and an individual dependency may be **opted out** — so the deepest level can only ever subtract. Absent never means enabled.
+
+**Not to be confused with:** a **dependency** itself (the thing depended on), the **dependency inventory** (what a component declares, derived per-domain into a projection table), or `depends_on` (a **component-topology** edge feeding the wave toposort — package dependencies deliberately mint none).
+
+**In the code.** *(M21, not yet built)* — `dependency_lines` + `component_dependencies` projection tables; the subscription itself is a graph object so it federates ([ADR-0022](adr/0022-outpost-config-authority-split.md) clause 2).
+
+---
+
+### dependency manifest — always qualify
+
+**Definition.** The file in a component's **own source** that declares what it depends on: `package.json`, `go.mod`, `pom.xml`, `requirements.txt`/`pyproject.toml`, or a container build file's `FROM` line.
+
+**Always qualify.** Bare **"manifest"** in this codebase means the **promotion manifest** — a commander-signed authorization enumerating exactly which artifacts may cross a boundary. The two have nothing to do with each other, and a dependency manifest authorizes nothing.
+
+**Not to be confused with:** the **promotion manifest** (see `manifest`), an **OCI image manifest**, a **Kubernetes manifest**, or an **SBOM** (a full component inventory including the transitive closure — a dependency manifest declares only **direct** dependencies, which is precisely why SCP can store one and deliberately does not store the other, [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md)).
+
+**In the code.** *(M21, not yet built)* — read through the `readFileAtRef` `GitProviderAdapter` hook.
+
+---
+
 ## Deprecated / avoid
 
 | Don't say | Say instead | Why |
@@ -773,6 +799,8 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 | **"stage"** meaning a pipeline **phase** | **"phase"** or **"step"** | "Stage" is reserved for a named deployment place spelled `<domain>[-<location>]-<env>` (D6). Code comments currently misuse it, including the `M<n> stage N` milestone-substep comments and their prefix-less variants; the full roster and the cleanup are tracked in [ADR-0021](adr/0021-terminology.md) Consequences iii-a. |
 | **"stage"** meaning a **wave** | **"wave"** | Same reservation — and a wave *contains* stages, so the two are not interchangeable in either direction. The misuse formerly reached the shipped `/v1` contract; **both halves have now landed** — the cheap UI/comment half (iii-a) and the breaking, oasdiff-gated `/v1` half (iii-b), which renamed `ServiceBoardStageSchema`/`currentStage`/`stages[]` to their wave-named forms. Done. |
 | **"bundle"** unqualified | **"promotion bundle"** / **"air-gap federation bundle"** / **"relay tarball"** | Three different things, only one of which carries artifact bytes. |
+| bare **"subscription"** for the dependency sense | **"dependency subscription"** | Bare *subscription* is already `notification_bindings` — who gets told when something happens. A dependency subscription is a standing authorization to **change code**; conflating an alert with a write is the kind of collision that reads as harmless until someone grants the wrong one ([ADR-0032](adr/0032-dependency-subscriptions.md) §2). |
+| bare **"manifest"** for `package.json` / `go.mod` / a `FROM` line | **"dependency manifest"** | Bare *manifest* is the **promotion manifest**, a commander-signed authorization for a boundary crossing. A dependency manifest authorizes nothing. Two of the four other live senses (OCI image manifest, Kubernetes manifest) already share the word, so this one must be qualified on sight. |
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
 **Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry describes each sense, and [ADR-0021](adr/0021-terminology.md) Consequences (iii) carries the complete site roster. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.

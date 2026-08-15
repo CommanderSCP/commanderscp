@@ -207,6 +207,10 @@ import {
   putScanDbStalenessPolicy as putScanDbStalenessPolicyRequest,
   refreshScanDb as refreshScanDbRequest,
   loadScanDb as loadScanDbRequest,
+  // M21.3 (ADR-0032 §3a/§6) — the dependency-subscription enablement chain.
+  getDependencySubscriptionUnlock as getDependencySubscriptionUnlockRequest,
+  putDependencySubscriptionUnlock as putDependencySubscriptionUnlockRequest,
+  getComponentDependencySubscription as getComponentDependencySubscriptionRequest,
   pairPeer as pairPeerRequest,
   // M16.2 phase A — E4's narrow peer read/PATCH and E1's `outpost` config object.
   getFederationPeer as getFederationPeerRequest,
@@ -350,6 +354,11 @@ import type {
   RefreshScanDbResponse,
   LoadScanDbRequest,
   LoadScanDbResponse,
+  // M21.3 (ADR-0032 §3a/§6) — the dependency-subscription enablement chain.
+  DependencyLineKey,
+  DependencySubscriptionUnlock,
+  DependencySubscriptionResolutionResponse,
+  PutDependencySubscriptionUnlockRequest,
   PairPeerRequest,
   // M16.2 phase A — the narrow peer PATCH (E4) + the `outpost` config object (E1).
   UpdateFederationPeerRequest,
@@ -1777,6 +1786,58 @@ export class ScpClient {
         client: this.client,
         body: req,
         headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M21.3: the DEPENDENCY-SUBSCRIPTION ENABLEMENT CHAIN (ADR-0032 §3a, §6).
+  //
+  //     effective_enabled(component, line) =
+  //         instance_unlocked  AND  component_enabled  AND  NOT line_opted_out
+  //
+  // `unlock` is an ordinary authenticated read (a team whose subscription is inert because the
+  // DEPLOYMENT never opened the feature must be able to see that); `setUnlock` binds every org on
+  // the deployment, so it is an OPERATOR action carrying `x-scp-operator-token`. The twin of
+  // `instanceScanFloors`/`scanDb`, on purpose.
+  //
+  // THERE IS NO `subscribe()` HERE, AND THERE MUST NOT BE. A dependency subscription IS a
+  // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a) — author it with
+  // `client.policies.create(...)`, carrying `effects: [{ dependencySubscription: { enabled: true } }]`
+  // at the scope you want it, and opt one line back out with `{ coordinate: "…", enabled: false }`.
+  // A convenience wrapper here would be a second authoring path for one concept.
+  // -----------------------------------------------------------------------------------------
+  readonly dependencySubscriptions = {
+    /** The instance unlock — the FIRST conjunct. `unlocked: true` PERMITS; it activates nothing. */
+    unlock: async (): Promise<DependencySubscriptionUnlock> => {
+      const result = await getDependencySubscriptionUnlockRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /** Set the unlock. `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN` — no tenant role
+     *  can grant this, because the row binds every org on the deployment. */
+    setUnlock: async (
+      req: PutDependencySubscriptionUnlockRequest,
+      operatorToken: string
+    ): Promise<DependencySubscriptionUnlock> => {
+      const result = await putDependencySubscriptionUnlockRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    },
+    /** Resolve ONE (component, line) pair, with the per-tier `contributions` that decided it — the
+     *  explainability surface (charter principle 6: WHICH level turned this off?). The line key
+     *  travels VERBATIM; the coordinate is never slugified on either side. */
+    resolve: async (
+      componentIdOrUrn: string,
+      line: DependencyLineKey
+    ): Promise<DependencySubscriptionResolutionResponse> => {
+      const result = await getComponentDependencySubscriptionRequest({
+        client: this.client,
+        path: { idOrUrn: componentIdOrUrn },
+        query: line
       });
       return unwrap(result);
     }

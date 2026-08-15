@@ -101,7 +101,18 @@ function buildFakeAdapter(opts: { statePath?: string } = {}): {
     }),
     verifyWebhook: (_rawBody, header) => header === "valid",
     mapEvent: (name) => (name === "push" ? { repo: "acme/widgets", commitSha: "abc" } : null),
-    mapStatusToPhase: (status) => (status === "completed" ? "succeeded" : "running")
+    mapStatusToPhase: (status) => (status === "completed" ? "succeeded" : "running"),
+    // Required by the interface since M21.2. The fake's implementation is deliberately trivial —
+    // the real decode/refusal behavior is covered in `read-file.test.ts` and each provider's own
+    // nock suite; what this call site proves is only that the hook is part of the contract.
+    readFileAtRef: async (_ctx, request) => ({
+      outcome: "found",
+      path: request.path,
+      requestedRef: request.ref,
+      commitSha: "fake-commit-sha",
+      content: "{}",
+      sizeBytes: 2
+    })
   };
   return { adapter, calls };
 }
@@ -299,5 +310,30 @@ describe("verb delegation to the adapter", () => {
       supportsAbort: false,
       triggerKinds: ["workflow_dispatch"]
     });
+  });
+
+  /**
+   * NEGATIVE CONTROL, and the point of the whole assertion: `readFileAtRef` must NOT appear on the
+   * assembled `ExecutorPlugin`. ADR-0032 §9 and charter principle 1 hold that the four verbs ARE the
+   * structural enforcement of "coordination, not execution"; a fifth key here becomes a fifth verb
+   * in every consumer of an `ExecutorPlugin`. The positive half (the hook exists and is reachable on
+   * the ADAPTER) is asserted alongside so this cannot pass by the hook simply not existing.
+   */
+  it("does NOT surface readFileAtRef as an ExecutorPlugin verb — the four-verb set is unchanged (ADR-0032 §9)", async () => {
+    const { adapter } = buildFakeAdapter();
+    const plugin = createExecutorPluginFromAdapter(adapter);
+
+    expect(Object.keys(plugin).sort()).toEqual([
+      "abort",
+      "describeCapabilities",
+      "observe",
+      "status",
+      "trigger"
+    ]);
+    expect("readFileAtRef" in plugin).toBe(false);
+
+    // ...and it IS reachable on the adapter, so the absence above is a boundary, not a gap.
+    const result = await adapter.readFileAtRef(fakeCtx(), { path: "go.mod", ref: "main" });
+    expect(result.outcome).toBe("found");
   });
 });

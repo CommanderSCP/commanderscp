@@ -1,6 +1,8 @@
 import {
   bigint,
   boolean,
+  check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -1723,4 +1725,188 @@ export const scanRequirementFloors = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [primaryKey({ columns: [table.tier, table.origin] })]
+);
+
+// -------------------------------------------------------------------------------------------
+// M21.2 — the DEPENDENCY INVENTORY substrate (ADR-0032 §3/§4/§5/§7). Hand-authored table/RLS/grants
+// in drizzle/0061_dependency_inventory.sql; read that file's header for the full rationale — the
+// four measurements behind the principle-2 bend, the URN-collision argument, and the RLS mirroring.
+//
+// Two things about these tables are invariants rather than current shape:
+//
+//  1. NO `depends_on` EDGE IS EVER MINTED for a package dependency (ADR-0032 §5). That relationship
+//     type is the wave-plan toposort input, the `impact-of`/`blast-radius` default relType, and the
+//     `stageDependencies` materialisation target; a cycle among co-placed targets is a hard
+//     plan-compile error and package graphs routinely contain cycles. Package dependencies live in
+//     these two tables and nowhere else.
+//  2. NOTHING HERE MAY EXPOSE A TRANSITIVE TRAVERSAL (ADR-0032 §3). Direct declared dependencies
+//     only — the transitive closure is an SBOM by another name (ADR-0013) and SCP stores no SBOM
+//     bytes. Both hot queries are single-hop index lookups served by the two indexes below; the
+//     moment a recursive walk appears here the graph representation becomes necessary again and the
+//     measured `impact-of` CTE hazard (7+ min, then disk exhaustion, against a 5s statement_timeout)
+//     applies.
+// -------------------------------------------------------------------------------------------
+
+/**
+ * The identity of ONE MAJOR LINE of one dependency, in one org. Derived, per-domain, high-churn
+ * observation data — the category `changeSourceEvents` and `objectHealth` already occupy — so it is
+ * a projection table and it does NOT federate; each domain derives its own (ADR-0032 §3).
+ *
+ * THE COORDINATE IS NOT A URN, and that is why this is a table. `graph/urn.ts`'s `slugify`
+ * lowercases and hyphenate-collapses every non-alphanumeric run, so `@acme/lib`, `acme/lib` and
+ * `acme-lib` all become `acme-lib` — one URN, a 409 collision, no auto-suffix and no
+ * upsert-by-coordinate. `coordinate` is therefore the ecosystem-native string stored VERBATIM, and
+ * `(orgId, ecosystem, coordinate, major)` is the identity.
+ */
+export const dependencyLines = pgTable(
+  "dependency_lines",
+  {
+    id: uuid("id").primaryKey(),
+    orgId: uuid("org_id").notNull(),
+    /** `npm` | `go` | `maven` | `python` | `oci`. Plain text with no pg enum and no CHECK, exactly
+     *  like `sourceMappings.type`: the closed set is enforced in packages/schemas
+     *  (`DependencyEcosystemSchema`), so a sixth ecosystem is a schema edit, not a migration. */
+    ecosystem: text("ecosystem").notNull(),
+    /** The ecosystem-native coordinate, verbatim and case-preserved: `@acme/lib`,
+     *  `github.com/acme/lib`, `com.acme:lib`, `acme-lib`, `docker.io/library/alpine`. Never
+     *  slugified — see the class comment. */
+    coordinate: text("coordinate").notNull(),
+    /** The major line, as the ecosystem spells it (`1`, `v2`, `3.18`). `text`, not an integer, for
+     *  the same reason the coordinate is verbatim: Go writes `v2`, image lines are frequently
+     *  two-segment, and parsing it to a number here would be the same lossy normalisation the URN
+     *  scheme performs. */
+    major: text("major").notNull(),
+    /** `oci` only — the tag shape whose parsed version this line follows. Image tags are not semver
+     *  (`1.2.3`, `1.2.3-alpine`, `1.2`, `latest` and date stamps coexist) and a registry has no
+     *  notion of a major line, so an image line needs a pattern plus an extractor; tags the
+     *  extractor cannot parse are SKIPPED, never guessed (ADR-0032 §7). NULL for the four language
+     *  ecosystems. */
+    tagPattern: text("tag_pattern"),
+    /**
+     * The component/service this org DECLARES produces this line. NULL = third-party.
+     *
+     * DECLARED, NEVER INFERRED (ADR-0032 §7, ADR-0030 §2). Nothing reads a coordinate, repo name or
+     * registry host and concludes "this one is ours" — a label named after WHAT MATCHED goes false
+     * the moment the matcher covers a second case, which this repo has already shipped once
+     * (charter principle 6). There is no material to infer it from anyway: SCP has no artifact name
+     * at all (`ArtifactRef` is `{type, digest}`; no `purl` exists in the tree).
+     *
+     * What removes the capability rather than guarding it is the INGESTION VERB, not the CHECK:
+     * `UpsertDependencyLineInputSchema` has no producer field and `upsertDependencyLine`'s ON
+     * CONFLICT set cannot reach these columns, so a manifest-parsing path has nowhere to put a
+     * producer it "worked out". That is the shape 0059 used for `objects.domainLocal`. The
+     * `dependency_lines_internal_is_declared` CHECK is the weaker, complementary half: it refuses a
+     * HALF-WRITTEN row from raw SQL or a future verb that forgets a column. It does not make the
+     * writer a human — see 0060's "INTERNAL vs THIRD-PARTY" header.
+     */
+    producedByObjectId: uuid("produced_by_object_id").references(() => objects.id),
+    producedByDeclaredAt: timestamp("produced_by_declared_at", { withTimezone: true }),
+    /** The principal (graph `user` object) that declared the producer link — principle 6: "which
+     *  principal asserted this line is internal?" must be answerable. `references(objects.id)` and
+     *  part of the CHECK below so the answer can be neither NULL nor a fabricated uuid; org-unbound,
+     *  like the other two `objects(id)` references here (0060 header, barrier 2's scope note). */
+    producedByDeclaredByObjectId: uuid("produced_by_declared_by_object_id").references(
+      () => objects.id
+    ),
+    /** The head of the line as last OBSERVED. Written by M21.4 detection, never by manifest
+     *  ingestion — a component declaring `1.2.0` says nothing about what the line's head is. NULL is
+     *  "not yet observed", which is NOT "no newer version exists": absent never means zero, the same
+     *  reading `scanRequirementFloors` established for its nullable ceilings. */
+    latestVersion: text("latest_version"),
+    /** `oci` — the digest `latestVersion`'s tag resolved to when observed. A mutable tag is not an
+     *  identity (ADR-0032 §7), so the bytes are recorded alongside the label. */
+    latestDigest: text("latest_digest"),
+    latestObservedAt: timestamp("latest_observed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    // THE identity. `@acme/lib` and `acme-lib` are two rows here and one URN under `deriveUrn`;
+    // that difference is the whole reason the inventory is tabular (ADR-0032 §3).
+    uniqueIndex("dependency_lines_identity").on(
+      table.orgId,
+      table.ecosystem,
+      table.coordinate,
+      table.major
+    ),
+    // The composite-FK target for `componentDependencies` — see that table's `line_id` note.
+    // Redundant with the primary key for uniqueness; it exists so a `(org_id, id)` foreign key has
+    // something to reference.
+    unique("dependency_lines_org_id_key").on(table.orgId, table.id),
+    // "Which lines does component X publish?" — the M21.4 internal-release derivation. PARTIAL over
+    // the declared minority (internal lines are the exception, third-party the rule), so it stays
+    // proportional to that minority instead of to the table — 0059's partial index, same reasoning.
+    index("dependency_lines_org_producer")
+      .on(table.orgId, table.producedByObjectId)
+      .where(sql`${table.producedByObjectId} IS NOT NULL`),
+    // Link, timestamp and declaring principal exist together or not at all. The second conjunct is
+    // load-bearing: without it a producer link could carry a NULL principal, which is exactly the
+    // state that makes `producedByDeclaredByObjectId`'s "must be answerable" comment false.
+    check(
+      "dependency_lines_internal_is_declared",
+      sql`(${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredAt} IS NULL)
+          AND (${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredByObjectId} IS NULL)`
+    )
+  ]
+);
+
+/**
+ * The projection: which component DECLARES which dependency line, at which version, out of which
+ * dependency manifest (ADR-0032 §4). Keyed by the component's GRAPH OBJECT ID — the same "thin
+ * projection table that references its graph object" pattern `changes.objectId`, `objectHealth` and
+ * `freezes.scopeObjectId` use (DESIGN §4.1). The component stays a first-class graph object; only
+ * this projection of it is tabular.
+ *
+ * DIRECT DECLARED DEPENDENCIES ONLY. No column here can hold a transitive closure, deliberately.
+ */
+export const componentDependencies = pgTable(
+  "component_dependencies",
+  {
+    orgId: uuid("org_id").notNull(),
+    componentObjectId: uuid("component_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** The line this declaration is against. Bound to the org by a COMPOSITE foreign key (see the
+     *  `foreignKey` below) rather than a plain `references()`: RLS's WITH CHECK pins this row's own
+     *  `org_id` to the session, and the composite key then makes pointing at ANOTHER org's line
+     *  structurally impossible rather than merely filtered on read. */
+    lineId: uuid("line_id").notNull(),
+    /** Repo-relative path of the dependency manifest this was read out of (`package.json`,
+     *  `go.mod`, `services/api/Dockerfile`). Part of the key: one component can legitimately declare
+     *  the same line from two manifests (two Dockerfiles; a root and a workspace `package.json`),
+     *  and collapsing them would make a prune of one silently delete the other's declaration. */
+    manifestPath: text("manifest_path").notNull(),
+    /** What the manifest LITERALLY says — `^1.2.3`, `~=1.4`, `v1.2.3`, `3.18-alpine`. Verbatim,
+     *  because it is the exact string the M21.5 actuator has to edit; a normalised copy would be an
+     *  edit target that does not appear in the file. */
+    declaredVersion: text("declared_version").notNull(),
+    /** The concrete version parsed OUT of `declaredVersion`, or NULL when the declaration pins none
+     *  (an open range). Derived from the MANIFEST ALONE — no lockfile is read and no package manager
+     *  is run, which is ADR-0032 §8's manifest-only scope boundary. NULL therefore means "the
+     *  manifest does not pin one", never "we did not look". */
+    resolvedVersion: text("resolved_version"),
+    /** `oci` — the digest this component's `FROM` currently resolves to (ADR-0032 §7). */
+    resolvedDigest: text("resolved_digest"),
+    /** The git ref the manifest was read at (`refs/heads/main`), so a declaration is attributable to
+     *  a point in the repo rather than to "whenever we last looked". */
+    observedRef: text("observed_ref"),
+    observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    // `orgId` LEADS the key so the primary-key index IS the forward lookup ("what does component C
+    // declare?", which is always org-scoped) and no second index is needed to serve it.
+    primaryKey({
+      name: "component_dependencies_pk",
+      columns: [table.orgId, table.componentObjectId, table.lineId, table.manifestPath]
+    }),
+    foreignKey({
+      name: "component_dependencies_line_fk",
+      columns: [table.orgId, table.lineId],
+      foreignColumns: [dependencyLines.orgId, dependencyLines.id]
+    }),
+    // The REVERSE lookup — "which components declare line L?" — the fan-out list a dependency
+    // subscription resolves against. One index descent; deliberately not a traversal.
+    index("component_dependencies_org_line").on(table.orgId, table.lineId)
+  ]
 );

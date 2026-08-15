@@ -19,6 +19,7 @@ import nock from "nock";
 import {
   createGiteaDiscoveryPlugin,
   createGiteaExecutorPlugin,
+  giteaAdapter,
   mapGiteaWebhookEventToHint,
   verifyGiteaWebhookSignature,
   type GiteaConfig
@@ -409,6 +410,29 @@ describe("status() — single Gitea status enum", () => {
       .reply(500, { message: "boom" });
     await expect(plugin.status(ctx, { externalId: "action_run::500" })).rejects.toThrow(/HTTP 500/);
   });
+
+  it("ENCODES the runId sliced out of externalId into the route", async () => {
+    // Same census class as readFileAtRef's `repo`/`ref` (M21.2 review BLOCKERS 1-2) and github's
+    // `postCommitStatus` sha: a non-literal string spliced into a REST route. `externalId` is
+    // stored correlation state and numeric in practice, so this encoding is an IDENTITY today and
+    // its removal would change no observed behaviour — which is exactly why it is pinned. An
+    // unpinned member of a censused class is indistinguishable from an untouched one on the next
+    // refactor (CLAUDE.md, "census by property, not by symptom"). Unencoded, `../../../user`
+    // re-targets this GET at `<base>/user` because `new URL()` collapses literal `..` segments;
+    // encoded it is `..%2F..%2F..%2Fuser`, ONE segment a URL does not normalize away. The
+    // interceptor matches only the encoded form, and `disableNetConnect()` plus the file-wide
+    // pending-mocks check make the unencoded form fail loudly rather than pass quietly.
+    const { config, ctx, authHeader, base } = setup();
+    const runId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}`)
+      .reply(200, { id: 1, status: "success", head_sha: "8".repeat(40) });
+
+    const s = await plugin.status(ctx, { externalId: `action_run::${runId}` });
+    expect(s.phase).toBe("succeeded");
+    scope.done();
+  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -443,6 +467,25 @@ describe("abort()", () => {
       aborted: false,
       detail: "gitea: no correlated run to cancel"
     });
+  });
+
+  it("ENCODES the runId sliced out of externalId into the cancel route", async () => {
+    // The second of this adapter's two `externalId`-derived route splices — see the identical pin
+    // in `status()` above for why an identity-today encoding is still pinned. Unencoded this POST
+    // would land on `<base>/user/cancel` rather than on the run.
+    const { config, ctx, authHeader, base } = setup();
+    const runId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .post(
+        `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}/cancel`
+      )
+      .reply(200);
+
+    expect(await plugin.abort(ctx, { externalId: `action_run::${runId}` })).toEqual({
+      aborted: true
+    });
+    scope.done();
   });
 });
 
@@ -732,3 +775,385 @@ describe("discover() (DiscoveryPlugin)", () => {
 function randomKey(): string {
   return Math.random().toString(36).slice(2);
 }
+
+// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4) — the first file-body read in this package. Gitea's contents
+// API is deliberately GITHUB-COMPATIBLE, so the fixtures below carry Gitea's documented
+// `ContentsResponse` fields (`type`/`encoding`/`size`/`content`/`sha`, with `sha` being the BLOB
+// sha) and a directory comes back from the same route as an array — the same shapes github's suite
+// asserts. What is NOT github-shaped, and is asserted here, is the ref resolution: Gitea's contents
+// response has no commit sha, so the commit comes from `GET /repos/{o}/{r}/commits?sha=<ref>&limit=1`
+// (the same documented list-commits endpoint `pollCommits` already uses).
+// -------------------------------------------------------------------------------------------
+
+describe("readFileAtRef()", () => {
+  const REF_COMMIT_SHA = "7c".repeat(20);
+
+  function nockResolveRef(
+    base: string,
+    authHeader: string,
+    config: GiteaConfig,
+    ref = "main",
+    sha: string | null = REF_COMMIT_SHA
+  ) {
+    return nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: ref, limit: "1" })
+      .reply(200, sha === null ? [] : [{ sha, commit: { message: "chore: bump" } }]);
+  }
+
+  it("reads a manifest and reports the commit the ref resolved to (from the commits list, NOT the blob sha)", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const manifest = "module example.com/widgets\n\ngo 1.22\n";
+    const refScope = nockResolveRef(base, authHeader, config);
+    const contentsScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        name: "go.mod",
+        path: "go.mod",
+        sha: "blobgomod",
+        // Present in Gitea's response and deliberately NOT used as `commitSha` — it means "last
+        // commit that touched this file", a different fact from "what the ref resolved to".
+        last_commit_sha: "ff".repeat(20),
+        type: "file",
+        size: Buffer.byteLength(manifest, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(manifest, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" });
+
+    expect(result).toEqual({
+      outcome: "found",
+      path: "go.mod",
+      requestedRef: "main",
+      commitSha: REF_COMMIT_SHA,
+      content: manifest,
+      sizeBytes: Buffer.byteLength(manifest, "utf8"),
+      blobSha: "blobgomod"
+    });
+    // NEGATIVE CONTROL: `last_commit_sha` is present in the fixture and must NOT be what was picked.
+    expect((result as { commitSha: string }).commitSha).not.toBe("ff".repeat(20));
+    refScope.done();
+    contentsScope.done();
+  });
+
+  it("ESCAPES a '#' in both the ref and the path — unencoded it starts a URL fragment and TRUNCATES the request", async () => {
+    // `#` is where these two encodings are load-bearing rather than decorative: `git
+    // check-ref-format` permits it in a ref and it is legal in a filename, so neither
+    // `assertSafeRef` nor `assertSafeRepoPath` refuses it — but unencoded it ends the URL, so step
+    // 1's `?sha=release/#42` would query `sha=release/` (resolving the WRONG commit) and step 2
+    // would request the `docs/` directory listing. Both are wrong answers, not errors, which is
+    // why they are pinned rather than left to the not-found paths.
+    const { config, ctx, authHeader, base } = setup();
+    const ref = "release/#42";
+    const path = "docs/notes#1.md";
+    const refScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      // nock decodes before matching, so this asserts the DECODED value round-trips — the
+      // unencoded form never gets here at all, its `#` having been dropped as a fragment.
+      .query({ sha: ref, limit: "1" })
+      .reply(200, [{ sha: REF_COMMIT_SHA }]);
+    const contentsScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/docs/notes%231.md`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path,
+        sha: "blobhash",
+        type: "file",
+        size: 3,
+        encoding: "base64",
+        content: Buffer.from("ok\n", "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path, ref });
+    expect(result).toMatchObject({ outcome: "found", content: "ok\n" });
+    refScope.done();
+    contentsScope.done();
+  });
+
+  it("round-trips MULTI-BYTE UTF-8 content (sizeBytes counts bytes, not UTF-16 units)", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const text = 'FROM alpine:1.0\nLABEL org.opencontainers.image.authors="Ada — 日本語 🎉"\n';
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/Dockerfile`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "Dockerfile",
+        sha: "blobdock",
+        type: "file",
+        size: Buffer.byteLength(text, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(text, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "Dockerfile", ref: "main" });
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.content).toBe(text);
+    expect(result.sizeBytes).toBe(Buffer.byteLength(text, "utf8"));
+    expect(result.sizeBytes).not.toBe(result.content.length);
+  });
+
+  it("a 404 on the FILE is a routine not_found (missing: 'path'), not a throw", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/pom.xml`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(404, { message: "object does not exist [id: , rel_path: pom.xml]" });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "pom.xml", ref: "main" });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "path" });
+  });
+
+  it("an EMPTY commits list for an unknown ref is not_found (missing: 'ref') — Gitea 200s that case", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config, "no-such-branch", null);
+    // NEGATIVE CONTROL: no contents interceptor is registered. Falling through to the contents call
+    // would hit `nock.disableNetConnect()` and reject, failing this test rather than passing quietly.
+
+    const result = await giteaAdapter.readFileAtRef(ctx, {
+      path: "go.mod",
+      ref: "no-such-branch"
+    });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "ref" });
+  });
+
+  it("refuses an OVERSIZE file on Gitea's declared `size`, without decoding it", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/package.json`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "package.json",
+        sha: "blobbig",
+        type: "file",
+        size: 9_000_000,
+        encoding: "base64",
+        content: Buffer.from("{}", "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "package.json", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 9_000_000 });
+    expect(result.outcome).not.toBe("found");
+  });
+
+  it("refuses on the COMPUTED payload size when the declared size understates it", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const big = "x".repeat(4096);
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/requirements.txt`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "requirements.txt",
+        sha: "blobreq",
+        type: "file",
+        size: 12,
+        encoding: "base64",
+        content: Buffer.from(big, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, {
+      path: "requirements.txt",
+      ref: "main",
+      maxBytes: 1024
+    });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
+  });
+
+  it("refuses a DIRECTORY (array response) and a SUBMODULE (type != 'file')", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/services`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, [{ name: "api", path: "services/api", type: "dir" }]);
+
+    const dir = await giteaAdapter.readFileAtRef(ctx, { path: "services", ref: "main" });
+    expect(dir).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+    // `reason` alone does NOT pin the ARRAY branch: with `Array.isArray` deleted this same input
+    // still yields not_a_file through the type gate, because `[].type` is undefined. The detail —
+    // and the entry count, which only the array branch can produce — is what separates the two
+    // gates. Censused here rather than fixed only where the reviewer found it (github).
+    expect((dir as { detail: string }).detail).toContain(
+      "is a directory (contents returned a listing of 1 entries)"
+    );
+
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/vendor/lib`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "vendor/lib",
+        sha: "submod",
+        type: "submodule",
+        submodule_git_url: "https://gitea.example.com/acme/lib.git"
+      });
+
+    const sub = await giteaAdapter.readFileAtRef(ctx, { path: "vendor/lib", ref: "main" });
+    expect(sub).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+    expect((sub as { detail: string }).detail).toContain("content type 'submodule'");
+  });
+
+  it("refuses a BINARY file rather than returning replacement-character mojibake", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/logo.png`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "logo.png",
+        sha: "blobpng",
+        type: "file",
+        size: png.byteLength,
+        encoding: "base64",
+        content: png.toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "logo.png", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "not_text" });
+  });
+
+  it("makes a REDIRECT legible — the failure a self-hosted Gitea behind a proxy actually produces", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: "main", limit: "1" })
+      .reply(302, "", { location: "https://gitea.example.com/api/v1/" });
+
+    await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 302.*redirects are refused/s
+    );
+  });
+
+  it("throws a status-bearing error for a non-2xx that is neither 404 nor a redirect", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits`)
+      .query({ sha: "main", limit: "1" })
+      .reply(500, { message: "internal server error" });
+
+    await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 500/
+    );
+  });
+
+  it("surfaces an egress-guard denial as an actionable error naming the self-hosted case (the guard is NOT relaxed)", async () => {
+    // This is the failure an in-cluster Gitea on a private address produces: the guard blocks
+    // loopback/private egress for every tenant-configurable plugin (subprocess-entry.ts:210-215,
+    // egress-guard.ts:83) and `gitea` is deliberately not an operator-plane module. The adapter's
+    // job is to make that legible, never to bypass it — so this test injects a ctx whose http client
+    // throws exactly what the guard throws, and asserts only on the message.
+    const config = buildGiteaConfig();
+    const ctx = {
+      ...buildTestCtx(config),
+      http: {
+        request: async () => {
+          throw Object.assign(
+            new Error(
+              "egress guard: host 'gitea.internal' resolves to private 10.42.0.7 — internal egress blocked for this plugin (SSRF)"
+            ),
+            { egressBlocked: true as const }
+          );
+        }
+      }
+    };
+
+    await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /refused by the plugin egress guard.*10\.42\.0\.7.*self-hosted gitea/s
+    );
+  });
+
+  it("refuses a path-traversal BEFORE any HTTP happens", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { path: "a/../../etc/passwd", ref: "main" })
+    ).rejects.toThrow(/^gitea readFileAtRef: path .* contains a '\.'\/'\.\.' segment/);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // ADVERSARIAL `ref` and `repo` (M21.2 review, BLOCKERS 1 and 2). `repo` was spliced into this
+  // adapter's routes RAW — proven to build `.../repos/acme/widgets/../../../commits?sha=main` —
+  // and `ref` was only `encodeURIComponent`d, which leaves `..` intact. Each test registers NO
+  // interceptor, so with the assert removed the call escapes as a nock no-match; asserting the
+  // MESSAGE (not merely that it threw) is what keeps these from passing for the wrong reason.
+  // -----------------------------------------------------------------------------------------
+
+  it("refuses a REPO traversal BEFORE any HTTP — the route, not just the repo, was being re-targeted", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, {
+        repo: "acme/widgets/../../..",
+        path: "go.mod",
+        ref: "main"
+      })
+    ).rejects.toThrow(
+      /^gitea readFileAtRef: repo 'acme\/widgets\/\.\.\/\.\.\/\.\.' contains a '\.'\/'\.\.' segment/
+    );
+  });
+
+  it("refuses a REPO outside `owner/repo` or outside the provider's own segment charset", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { repo: "acme/widgets?x=", path: "go.mod", ref: "main" })
+    ).rejects.toThrow(/has a segment 'widgets\?x=' outside/);
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { repo: "acme/group/widgets", path: "go.mod", ref: "main" })
+    ).rejects.toThrow(/exactly 2 '\/'-separated segments/);
+  });
+
+  it("refuses a REF traversal and the other git-forbidden ref shapes BEFORE any HTTP", async () => {
+    const { ctx } = setup();
+    await expect(
+      giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "../../../../user" })
+    ).rejects.toThrow(/^gitea readFileAtRef: ref '.*' contains '\.\.'/);
+    for (const ref of ["main ", "ma?in", "main~1", "HEAD@{1}", "main."]) {
+      await expect(giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref }), ref).rejects.toThrow(
+        /^gitea readFileAtRef: ref /
+      );
+    }
+  });
+
+  it("NEVER fabricates `blobSha` — a contents response without `sha` comes back without one", async () => {
+    // `ReadFileAtRefFound.blobSha` promises it is "never fabricated when it did not" carry one;
+    // an `entry.sha ?? "unknown"` mutation survived this suite before this test existed.
+    const { config, ctx, authHeader, base } = setup();
+    const manifest = "module example.com/x\n";
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "go.mod",
+        // no `sha` at all
+        type: "file",
+        size: Buffer.byteLength(manifest, "utf8"),
+        encoding: "base64",
+        content: Buffer.from(manifest, "utf8").toString("base64")
+      });
+
+    const result = await giteaAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" });
+    expect(result).toMatchObject({ outcome: "found", content: manifest });
+    expect((result as { blobSha?: string }).blobSha).toBeUndefined();
+  });
+});

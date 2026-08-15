@@ -23,6 +23,7 @@ import nock from "nock";
 import {
   createGithubDiscoveryPlugin,
   createGithubExecutorPlugin,
+  githubAdapter,
   mapGithubWebhookEventToHint,
   postCommitStatus,
   verifyGithubWebhookSignature,
@@ -677,6 +678,30 @@ describe("status()", () => {
     const status = await plugin.status(ctx, { externalId: "repository_dispatch::some-key" });
     expect(status.phase).toBe("pending");
   });
+
+  it("ENCODES the runId sliced out of externalId into the route", async () => {
+    // Same census class as `postCommitStatus`'s sha (see that test) and readFileAtRef's
+    // `repo`/`ref` (M21.2 review BLOCKERS 1-2): a non-literal string spliced into a REST route.
+    // `externalId` is stored correlation state and numeric in practice, so this encoding is an
+    // IDENTITY today and its removal would change no observed behaviour — which is exactly why it
+    // is pinned. An unpinned member of a censused class is indistinguishable from an untouched one
+    // on the next refactor (CLAUDE.md, "census by property, not by symptom"). Unencoded,
+    // `../../../user` re-targets this GET at `https://api.github.com/user` with the binding's
+    // installation token, because `new URL()` collapses literal `..` segments; encoded it is
+    // `..%2F..%2F..%2Fuser`, ONE segment a URL does not normalize away. The interceptor matches
+    // only the encoded form, and `disableNetConnect()` plus the file-wide pending-mocks check make
+    // the unencoded form fail loudly rather than pass quietly.
+    const { config, ctx, authHeader, base } = setup();
+    const runId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}`)
+      .reply(200, { id: 1, status: "completed", conclusion: "success", head_sha: "8".repeat(40) });
+
+    const status = await plugin.status(ctx, { externalId: `workflow_run::${runId}` });
+    expect(status.phase).toBe("succeeded");
+    scope.done();
+  });
 });
 
 // -------------------------------------------------------------------------------------------
@@ -714,6 +739,25 @@ describe("abort()", () => {
     const ctx = buildTestCtx(config);
     const result = await plugin.abort(ctx, { externalId: "repository_dispatch::some-key" });
     expect(result).toEqual({ aborted: false, detail: "github: no correlated run to cancel" });
+  });
+
+  it("ENCODES the runId sliced out of externalId into the cancel route", async () => {
+    // The second of this adapter's two `externalId`-derived route splices — see the identical pin
+    // in `status()` above for why an identity-today encoding is still pinned. Unencoded this POST
+    // would land on `https://api.github.com/user/cancel` rather than on the run.
+    const { config, ctx, authHeader, base } = setup();
+    const runId = "../../../user";
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .post(
+        `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}/cancel`
+      )
+      .reply(202);
+
+    expect(await plugin.abort(ctx, { externalId: `workflow_run::${runId}` })).toEqual({
+      aborted: true
+    });
+    scope.done();
   });
 });
 
@@ -1019,6 +1063,22 @@ describe("postCommitStatus()", () => {
 
     await expect(postCommitStatus(ctx, { sha, state: "failure" })).rejects.toThrow(/HTTP 422/);
   });
+
+  it("ENCODES the caller-supplied sha into the route — it is the same class as readFileAtRef's `repo`/`ref`", async () => {
+    // Censused out of the M21.2 review BLOCKERS 1-2 (a caller-supplied string spliced raw into a
+    // REST route), not reported against this function: `postCommitStatus` is the only other place
+    // in this package that did it. Unencoded, `../../..` here would have re-targeted the POST; the
+    // interceptor below only matches the ENCODED single segment, and `nock.disableNetConnect()`
+    // plus the file-wide pending-mocks check make the unencoded form fail rather than pass quietly.
+    const { config, ctx, authHeader, base } = setup();
+    const sha = "../../../user";
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .post(`/repos/${config.owner}/${config.repo}/statuses/${encodeURIComponent(sha)}`)
+      .reply(201, {});
+    await postCommitStatus(ctx, { sha, state: "pending" });
+    scope.done();
+  });
 });
 
 /**
@@ -1114,5 +1174,560 @@ describe("correlation.paths: the changed-file set", () => {
     expect(pushEvent).toBeDefined();
     expect(pushEvent?.correlation.commitSha).toBe(commitSha);
     expect(pushEvent?.correlation.paths).toBeUndefined();
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4) — the FIRST file-body read in this package. Every fixture
+// below is GitHub's real documented contents/commits response shape: the contents response for a
+// blob carries `type: "file"`, `encoding: "base64"`, `size`, `content` (base64 WRAPPED AT 60 CHARS
+// WITH NEWLINES — the fixtures wrap it, because that is what GitHub actually sends and an
+// implementation that measured the unstripped string would mis-size every real payload) and `sha`
+// (the BLOB sha); a directory comes back from the SAME route as a JSON array.
+//
+// Note the two-call shape being asserted: resolve `ref` -> commit sha, then read the blob AT THAT
+// SHA. The second interceptor matching on `?ref=<the sha from the first response>` is what proves
+// the pin actually happens — if the adapter read at the branch name instead, that interceptor never
+// matches and the file-wide `afterEach` fails on the unconsumed mock.
+// -------------------------------------------------------------------------------------------
+
+describe("readFileAtRef()", () => {
+  const REF_COMMIT_SHA = "9f".repeat(20);
+
+  /** GitHub wraps contents base64 at 60 chars with `\n`. Fixtures do the same. */
+  function githubBase64(text: string): string {
+    const flat = Buffer.from(text, "utf8").toString("base64");
+    return (flat.match(/.{1,60}/g) ?? []).join("\n");
+  }
+
+  function nockResolveRef(
+    base: string,
+    authHeader: string,
+    config: GithubConfig,
+    ref = "main",
+    sha = REF_COMMIT_SHA
+  ) {
+    return nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/${ref}`)
+      .reply(200, { sha, commit: { message: "chore: bump" } });
+  }
+
+  it("reads a manifest: returns the decoded text, the byte length, the blob sha, and the commit the ref RESOLVED to", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const manifest = '{\n  "name": "widgets",\n  "dependencies": { "left-pad": "^1.3.0" }\n}\n';
+    const refScope = nockResolveRef(base, authHeader, config);
+    const contentsScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/package.json`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        name: "package.json",
+        path: "package.json",
+        sha: "blob0011",
+        size: Buffer.byteLength(manifest, "utf8"),
+        type: "file",
+        encoding: "base64",
+        content: githubBase64(manifest)
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "package.json", ref: "main" });
+
+    expect(result).toEqual({
+      outcome: "found",
+      path: "package.json",
+      requestedRef: "main",
+      commitSha: REF_COMMIT_SHA,
+      content: manifest,
+      sizeBytes: Buffer.byteLength(manifest, "utf8"),
+      blobSha: "blob0011"
+    });
+    refScope.done();
+    contentsScope.done();
+  });
+
+  it("round-trips MULTI-BYTE UTF-8 through GitHub's newline-wrapped base64 (sizeBytes counts bytes, not UTF-16 units)", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    // Long enough that GitHub's 60-char wrapping produces several embedded newlines.
+    const text =
+      `# 日本語 — Dockerfile 🎉\nFROM alpine:1.0\nLABEL maintainer="Ada Lovelace ✨"\n`.repeat(4);
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/Dockerfile`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "Dockerfile",
+        sha: "blobdock",
+        size: Buffer.byteLength(text, "utf8"),
+        type: "file",
+        encoding: "base64",
+        content: githubBase64(text)
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "Dockerfile", ref: "main" });
+
+    expect(result.outcome).toBe("found");
+    if (result.outcome !== "found") throw new Error("unreachable");
+    expect(result.content).toBe(text);
+    expect(result.sizeBytes).toBe(Buffer.byteLength(text, "utf8"));
+    // NEGATIVE CONTROL for the wrapping: a decoder that did not strip the embedded newlines would
+    // produce a different string, and one that used content.length as the size would report this.
+    expect(result.sizeBytes).not.toBe(result.content.length);
+  });
+
+  it("reads a NESTED path with the path encoded PER SEGMENT (slashes stay literal in the route)", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    const scope = nock(base)
+      .matchHeader("authorization", authHeader)
+      // Literal slashes: `encodeURIComponent` over the whole path would send `services%2Fapi%2Fgo.mod`
+      // and this interceptor would never match.
+      .get(`/repos/${config.owner}/${config.repo}/contents/services/api/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "services/api/go.mod",
+        sha: "blobgo",
+        size: 21,
+        type: "file",
+        encoding: "base64",
+        content: githubBase64("module example.com/x\n")
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, {
+      path: "services/api/go.mod",
+      ref: "main"
+    });
+    expect(result).toMatchObject({ outcome: "found", content: "module example.com/x\n" });
+    scope.done();
+  });
+
+  it("ESCAPES a '#' in both the ref and the path — unencoded it starts a URL fragment and TRUNCATES the request", async () => {
+    // The nested-path test above pins per-segment vs whole encoding, but both of its strings are
+    // already URL-identity, so deleting the encoding entirely leaves it green (measured). `#` is
+    // the case where the encoding is load-bearing rather than decorative: `git check-ref-format`
+    // permits it in a ref and it is legal in a filename, so neither `assertSafeRef` nor
+    // `assertSafeRepoPath` refuses it — but unencoded it ends the URL, so step 1 would request
+    // `/commits/release/` and step 2 `/contents/docs/` (each a DIRECTORY listing, i.e. a wrong
+    // answer rather than an error). Both interpolations of this call are therefore pinned here.
+    const { config, ctx, authHeader, base } = setup();
+    const ref = "release/#42";
+    const path = "docs/notes#1.md";
+    const refScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/release/%2342`)
+      .reply(200, { sha: REF_COMMIT_SHA });
+    const contentsScope = nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/docs/notes%231.md`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path,
+        sha: "blobhash",
+        size: 3,
+        type: "file",
+        encoding: "base64",
+        content: githubBase64("ok\n")
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path, ref });
+    expect(result).toMatchObject({ outcome: "found", content: "ok\n" });
+    refScope.done();
+    contentsScope.done();
+  });
+
+  it("a 404 on the FILE is a routine not_found (missing: 'path'), not a throw — most components declare only some manifests", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/pom.xml`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(404, { message: "Not Found" });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "pom.xml", ref: "main" });
+    expect(result).toMatchObject({
+      outcome: "not_found",
+      missing: "path",
+      path: "pom.xml",
+      requestedRef: "main"
+    });
+  });
+
+  it("a 404 on the REF is not_found with missing: 'ref' — and never reaches the contents call at all", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/no-such-branch`)
+      .reply(404, { message: "No commit found for SHA: no-such-branch" });
+    // NEGATIVE CONTROL: NO contents interceptor is registered. If the adapter fell through to the
+    // contents call anyway, `nock.disableNetConnect()` turns it into a rejected promise (a thrown
+    // "no match"), so this test would fail rather than silently pass.
+
+    const result = await githubAdapter.readFileAtRef(ctx, {
+      path: "go.mod",
+      ref: "no-such-branch"
+    });
+    expect(result).toMatchObject({ outcome: "not_found", missing: "ref" });
+  });
+
+  it("refuses an OVERSIZE file on GitHub's declared `size`, without decoding it", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/package.json`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "package.json",
+        sha: "blobbig",
+        size: 5_000_000,
+        type: "file",
+        encoding: "base64",
+        content: githubBase64("{}") // tiny payload: only the DECLARED size can trigger the refusal
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "package.json", ref: "main" });
+    expect(result).toMatchObject({
+      outcome: "refused",
+      reason: "too_large",
+      sizeBytes: 5_000_000
+    });
+    // NEGATIVE CONTROL: it must NOT come back as a successful read of the small payload.
+    expect(result.outcome).not.toBe("found");
+  });
+
+  it("refuses a file over an explicit caller `maxBytes` on the COMPUTED payload size, even when GitHub declares it small", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    const big = "x".repeat(4096);
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/requirements.txt`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "requirements.txt",
+        sha: "blobreq",
+        size: 12, // a size the provider ASSERTS and the payload contradicts
+        type: "file",
+        encoding: "base64",
+        content: githubBase64(big)
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, {
+      path: "requirements.txt",
+      ref: "main",
+      maxBytes: 1024
+    });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large", sizeBytes: 4096 });
+  });
+
+  it('refuses GitHub\'s 1MB–100MB response shape (`content: ""`, `encoding: "none"`) as too_large, NOT as an empty file', async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/pom.xml`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "pom.xml",
+        sha: "blobhuge",
+        size: 8_000_000,
+        type: "file",
+        encoding: "none",
+        content: ""
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "pom.xml", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "too_large" });
+    // The `detail` assertion is what makes this test about the ENCODING and not about the size:
+    // `size: 8_000_000` alone would be refused by the size gate too, so without this the test would
+    // still pass with the `encoding: "none"` handling deleted entirely (verified by mutation).
+    expect((result as { detail: string }).detail).toContain('encoding "none"');
+  });
+
+  it("refuses a DIRECTORY — the same route returns a JSON array, which is the only shape difference", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/services`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, [
+        { name: "api", path: "services/api", type: "dir" },
+        { name: "web", path: "services/web", type: "dir" }
+      ]);
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "services", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+    // The `detail` assertion is what makes this test about the ARRAY branch. `reason` alone does
+    // not: with the `Array.isArray` branch deleted the same input still yields not_a_file via the
+    // type gate, because `[].type` is undefined — so both gates were individually mutation-
+    // survivable and this one test covered neither (verified by mutation, M21.2 review MAJOR 4).
+    // The entry COUNT is asserted for the same reason: it can only come from the array branch.
+    expect((result as { detail: string }).detail).toContain(
+      "is a directory (contents returned a listing of 2 entries)"
+    );
+  });
+
+  it("refuses a BINARY file rather than returning replacement-character mojibake", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    // A real PNG header — NUL bytes and invalid UTF-8, exactly what a mis-pathed read would hit.
+    const png = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d
+    ]);
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/logo.png`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "logo.png",
+        sha: "blobpng",
+        size: png.byteLength,
+        type: "file",
+        encoding: "base64",
+        content: png.toString("base64")
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "logo.png", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "not_text" });
+  });
+
+  it("makes a REDIRECT legible instead of surfacing an anonymous HTTP 3xx", async () => {
+    // Under the production plugin HTTP client a 3xx never arrives as a status (redirect:"error",
+    // subprocess-entry.ts:285,295 — fetch rejects); under this suite's node:http-backed client it
+    // does, since Node's core http neither follows nor errors on redirects. Both shapes must name
+    // the redirect, and this covers the one that is reachable as a status.
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/main`)
+      .reply(301, "", { location: "https://api.github.example/redirected" });
+
+    await expect(githubAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 301.*Location: https:\/\/api\.github\.example\/redirected.*redirects are refused/s
+    );
+  });
+
+  it("throws a status-bearing error for a non-2xx that is neither 404 nor a redirect (e.g. a rate limit)", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/main`)
+      .reply(403, { message: "API rate limit exceeded." });
+
+    await expect(githubAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /HTTP 403/
+    );
+  });
+
+  it("refuses a path-traversal BEFORE any HTTP happens — a '..' segment re-targets the REST route", async () => {
+    const { ctx } = setup();
+    // NEGATIVE CONTROL: not even the installation-token fixture is consumed here, which the
+    // file-wide afterEach checks — proving the refusal is pre-flight, not post-response.
+    await expect(
+      githubAdapter.readFileAtRef(ctx, { path: "../../user", ref: "main" })
+    ).rejects.toThrow(
+      /github readFileAtRef: path '\.\.\/\.\.\/user' contains a '\.'\/'\.\.' segment/
+    );
+    nock.cleanAll();
+  });
+
+  it("honors an explicit `repo` override so one binding can read manifests for sibling components", async () => {
+    const { config, ctx, authHeader, base } = setup({ owner: "acme", repo: "widgets" });
+    expect(`${config.owner}/${config.repo}`).toBe("acme/widgets"); // the binding's own repo
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/acme/other-service/commits/main`)
+      .reply(200, { sha: REF_COMMIT_SHA });
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/acme/other-service/contents/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "go.mod",
+        sha: "blobother",
+        size: 21,
+        type: "file",
+        encoding: "base64",
+        content: githubBase64("module example.com/y\n")
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, {
+      repo: "acme/other-service",
+      path: "go.mod",
+      ref: "main"
+    });
+    expect(result).toMatchObject({ outcome: "found", content: "module example.com/y\n" });
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // ADVERSARIAL `ref` and `repo` (M21.2 review, BLOCKERS 1 and 2). Both were REACHABLE: `ref` was
+  // only percent-encoded per segment, and `encodeURIComponent("..") === ".."`; `repo` was spliced
+  // in raw — neither validated nor encoded. Each test below is a NEGATIVE CONTROL in the strongest
+  // available sense: `nock.disableNetConnect()` is on for the whole file and NO interceptor is
+  // registered, so if the refusal ever stops happening pre-flight the adapter's request escapes as
+  // a "no match for request" rejection with a URL in it — which is exactly what these assert
+  // against, since the message is asserted, not merely the fact of a throw.
+  // -----------------------------------------------------------------------------------------
+
+  it("refuses a REF traversal BEFORE any HTTP — `encodeURIComponent('..')` is '..', so encoding never closed this", async () => {
+    const { ctx } = setup();
+    // Proven reachable before the fix: this exact call issued
+    // `GET https://api.github.com/user` — a different endpoint, with the installation token.
+    await expect(
+      githubAdapter.readFileAtRef(ctx, { path: "package.json", ref: "../../../../user" })
+    ).rejects.toThrow(/^github readFileAtRef: ref '\.\.\/\.\.\/\.\.\/\.\.\/user' contains '\.\.'/);
+    nock.cleanAll();
+  });
+
+  it("refuses the other git-forbidden REF shapes before any HTTP (space, ~^:?*[\\, '@{', trailing '.')", async () => {
+    const { ctx } = setup();
+    for (const ref of ["main ", "ma?in", "main~1", "HEAD@{1}", "main.", "/main"]) {
+      await expect(
+        githubAdapter.readFileAtRef(ctx, { path: "package.json", ref }),
+        ref
+      ).rejects.toThrow(/^github readFileAtRef: ref /);
+    }
+    nock.cleanAll();
+  });
+
+  it("refuses a REPO traversal BEFORE any HTTP — a raw `repo` re-targeted the route", async () => {
+    const { ctx } = setup();
+    // Proven reachable before the fix: issued `GET https://api.github.com/commits/main`.
+    await expect(
+      githubAdapter.readFileAtRef(ctx, {
+        repo: "acme/widgets/../../..",
+        path: "package.json",
+        ref: "main"
+      })
+    ).rejects.toThrow(
+      /^github readFileAtRef: repo 'acme\/widgets\/\.\.\/\.\.\/\.\.' contains a '\.'\/'\.\.' segment/
+    );
+    nock.cleanAll();
+  });
+
+  it("refuses a REPO containing '?' — it terminated the route and folded the rest into a query string", async () => {
+    const { ctx } = setup();
+    // Proven reachable before the fix: issued
+    // `GET https://api.github.com/repos/acme/widgets?x=/commits/main`.
+    await expect(
+      githubAdapter.readFileAtRef(ctx, {
+        repo: "acme/widgets?x=",
+        path: "package.json",
+        ref: "main"
+      })
+    ).rejects.toThrow(/^github readFileAtRef: repo 'acme\/widgets\?x=' has a segment/);
+    nock.cleanAll();
+  });
+
+  it("refuses a REPO that is not exactly `owner/repo` — github has no other shape", async () => {
+    const { ctx } = setup();
+    for (const repo of ["widgets", "acme/group/widgets"]) {
+      await expect(
+        githubAdapter.readFileAtRef(ctx, { repo, path: "package.json", ref: "main" }),
+        repo
+      ).rejects.toThrow(/exactly 2 '\/'-separated segments/);
+    }
+    nock.cleanAll();
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // The two `not_a_file` gates, pinned INDEPENDENTLY (M21.2 review, MAJORS 3 and 4). They are
+  // separate branches over the same route: a directory arrives as an ARRAY, a symlink/submodule as
+  // an OBJECT with a non-`file` `type`. Asserting only `reason: "not_a_file"` covers neither —
+  // deleting the array branch still yields not_a_file via the type gate (`[].type` is undefined),
+  // and deleting the type gate leaves a symlink decoding to `content: ""`, i.e. a silently EMPTY
+  // manifest that downstream reads as "this component declares no dependencies". The `detail`
+  // string is the only thing that separates them, so both tests assert it — the same technique the
+  // `encoding: "none"` test above already uses.
+  // -----------------------------------------------------------------------------------------
+
+  it("refuses a SYMLINK as not_a_file rather than decoding it to an empty manifest", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      // GitHub's documented symlink shape: no `content`, no `encoding`, `target` instead.
+      .reply(200, {
+        name: "go.mod",
+        path: "go.mod",
+        sha: "blobsym",
+        size: 0,
+        type: "symlink",
+        target: "../shared/go.mod"
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+    // Pins the TYPE gate specifically: without it this decodes `content ?? ""` to a found/empty
+    // file, and with only the array gate left the detail would name a directory instead.
+    expect((result as { detail: string }).detail).toContain("content type 'symlink'");
+  });
+
+  it("refuses a SUBMODULE as not_a_file — the other non-blob `type` github serves from this route", async () => {
+    const { config, ctx, authHeader, base } = setup();
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/vendor/lib`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "vendor/lib",
+        sha: "submod",
+        type: "submodule",
+        submodule_git_url: "https://github.example/acme/lib.git"
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "vendor/lib", ref: "main" });
+    expect(result).toMatchObject({ outcome: "refused", reason: "not_a_file" });
+    expect((result as { detail: string }).detail).toContain("content type 'submodule'");
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // Two documented promises that no test held (M21.2 review, MINOR 6).
+  // -----------------------------------------------------------------------------------------
+
+  it("NEVER fabricates `blobSha` — a response without one comes back without one", async () => {
+    // read-file.ts's `ReadFileAtRefFound.blobSha` says "never fabricated when it did not"; a
+    // `entry.sha ?? "unknown"` mutation survived every other test in this file.
+    const { config, ctx, authHeader, base } = setup();
+    const manifest = "module example.com/x\n";
+    nockResolveRef(base, authHeader, config);
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/contents/go.mod`)
+      .query({ ref: REF_COMMIT_SHA })
+      .reply(200, {
+        path: "go.mod",
+        // no `sha` at all
+        size: Buffer.byteLength(manifest, "utf8"),
+        type: "file",
+        encoding: "base64",
+        content: githubBase64(manifest)
+      });
+
+    const result = await githubAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" });
+    expect(result).toMatchObject({ outcome: "found", content: manifest });
+    expect((result as { blobSha?: string }).blobSha).toBeUndefined();
+  });
+
+  it("REFUSES to report a commit it did not resolve — a commits response with no `sha` throws, it does not read at `undefined`", async () => {
+    // Without the guard the adapter reads `?ref=undefined` and returns `commitSha: undefined`,
+    // which is the one field an inventory row is supposed to be able to trust (ADR-0032 §7: a
+    // branch name is not an identity). No contents interceptor is registered, so the mutated code
+    // fails on a nock no-match with a URL in it — the message assertion is what distinguishes them.
+    const { config, ctx, authHeader, base } = setup();
+    nock(base)
+      .matchHeader("authorization", authHeader)
+      .get(`/repos/${config.owner}/${config.repo}/commits/main`)
+      .reply(200, { commit: { message: "chore: bump" } });
+
+    await expect(githubAdapter.readFileAtRef(ctx, { path: "go.mod", ref: "main" })).rejects.toThrow(
+      /carried no sha — refusing to report a resolved commit this call did not actually resolve/
+    );
   });
 });
