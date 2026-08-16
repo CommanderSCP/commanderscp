@@ -172,6 +172,65 @@ export async function listOutpostConfigs(tx: TenantTx, orgId: string): Promise<O
 }
 
 /**
+ * EVERY LIVE `outpost` object, RESOLVED TO ONE PER PEER — the batched read a lane-level projection
+ * wants (pipeline-substrate-registry-scan.md §10.2: "one query over live `outpost` objects"), keyed
+ * on the object's own `properties.peerDomainId` (string-guarded; an object with no string binding is
+ * skipped — it names no peer, so no target's origin can match it).
+ *
+ * WHEN TWO ROWS CLAIM ONE PEER, this picks by `byAuthority` — the SAME rule `findOutpostConfigByPeer`
+ * applies for `GET/PATCH /v1/federation/outposts/{peer}`. It does NOT state "ambiguous": the binding
+ * is enforced 1:1 on every LOCAL create (`assertOutpostPeerBinding`, clause 4), and the duplicates a
+ * database can still hold (an unverified hand-filled shadow beside the authoritative row; a replica
+ * beside a local row) are exactly what `byAuthority` was written to rank — local origin, then
+ * verified replica, then `provenance:'manual'` shadow. A projection that said "ambiguous" where the
+ * outposts API itself resolves to one row would contradict the page the link on that projection
+ * opens; the recovery for a real duplicate is `reconcileOutpostConfig`, not a fifth state.
+ *
+ * `trustTier` reads through `readTrustTier` — an unrecognised or absent tier is null, never
+ * defaulted (see that function).
+ */
+export async function resolveOutpostObjectsByPeer(
+  tx: TenantTx,
+  orgId: string
+): Promise<Map<string, { id: string; name: string; trustTier: OutpostTrustTier | null }>> {
+  const self = await ensureFederationSelf(tx, orgId);
+  const rows = await tx
+    .select()
+    .from(objects)
+    .where(
+      and(
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, OUTPOST_OBJECT_TYPE_ID),
+        isNull(objects.deletedAt)
+      )
+    )
+    .orderBy(asc(objects.createdAt), asc(objects.id));
+  const byPeer = new Map<string, GraphObject[]>();
+  for (const row of rows) {
+    const object = toGraphObject(row);
+    const peerDomainId = object.properties.peerDomainId;
+    if (typeof peerDomainId !== "string" || peerDomainId.length === 0) continue;
+    const list = byPeer.get(peerDomainId) ?? [];
+    list.push(object);
+    byPeer.set(peerDomainId, list);
+  }
+  const resolved = new Map<
+    string,
+    { id: string; name: string; trustTier: OutpostTrustTier | null }
+  >();
+  for (const [peerDomainId, list] of byPeer) {
+    const winner = byAuthority(list, self.domainId)[0];
+    if (!winner) continue;
+    resolved.set(peerDomainId, {
+      id: winner.id,
+      name: winner.name,
+      trustTier: readTrustTier(winner.properties)
+    });
+  }
+  return resolved;
+}
+
+/**
  * Every LIVE `outpost` object bound to `peerDomainId`, in a TOTALLY DETERMINISTIC order.
  *
  * The binding is meant to be 1:1 and `assertOutpostPeerBinding` keeps it that way going forward, but a

@@ -4,6 +4,7 @@ import type {
   ComponentPipelineHold,
   ComponentPipelineResponse,
   ComponentPipelineStage,
+  ComponentPipelineTargetOutpost,
   ComponentPipelineUnplacedStage
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -27,6 +28,7 @@ import { resolvePipelineForTarget } from "./pipeline-resolution.js";
 import { resolveStageDependencyStatus } from "./stage-dependency-status.js";
 import { parseTopologyWaves } from "./topology-waves.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
+import { resolveOutpostObjectsByPeer } from "../federation/outposts-repo.js";
 import { federationPeers } from "../db/schema.js";
 import { artifactFactsForComponent } from "./artifact-facts.js";
 
@@ -523,6 +525,54 @@ export async function getComponentPipeline(
     // misreading this field exists to prevent.
     return { domainId: originDomainId, name: null, isSelf: false, role: null };
   };
+  // WHICH OUTPOST EACH PLACE IS PART OF (§10.2, the owner's TRUST-DOMAIN RULE): the `outpost` object
+  // whose `properties.peerDomainId` equals the target's OWN `origin_domain_id`. Read, never inferred
+  // — not from the target's name, and not from its containment `domain_id` (GLOSSARY: containment
+  // has nothing to do with deployment topology). ONE batched read of the live outpost objects (the
+  // repo resolves duplicates by the same authority rule the outposts API uses — see
+  // `resolveOutpostObjectsByPeer` for why that is not stated as "ambiguous"), plus the SAME
+  // `federation_self` and `federation_peers` reads `maintainerOf` already made.
+  const outpostByPeer = await resolveOutpostObjectsByPeer(tx, orgId);
+  const outpostOf = (originDomainId: string | null): ComponentPipelineTargetOutpost => {
+    if (originDomainId && originDomainId === self.domainId) {
+      // Authored by THIS instance. On a commander this is every commander-authored target — the
+      // honest consequence of the rule (in the model, an outpost's targets are authored by that
+      // outpost); on an outpost it is its own targets.
+      return { state: "self", id: null, name: self.name, trustTier: null, peerDomainId: null };
+    }
+    const outpost = originDomainId ? outpostByPeer.get(originDomainId) : undefined;
+    if (outpost && originDomainId) {
+      return {
+        state: "outpost",
+        id: outpost.id,
+        name: outpost.name,
+        trustTier: outpost.trustTier,
+        peerDomainId: originDomainId
+      };
+    }
+    const peer = originDomainId ? peerById.get(originDomainId) : undefined;
+    if (peer && originDomainId) {
+      // A paired peer with no `outpost` object registered — say WHO, so the operator knows which
+      // peer an outpost record can be declared for (POST /federation/outposts).
+      return {
+        state: "peer-without-outpost",
+        id: null,
+        name: peer.name,
+        trustTier: null,
+        peerDomainId: originDomainId
+      };
+    }
+    // Neither self nor a known peer (a replica whose peer row has not arrived; a foreign origin never
+    // paired here). The raw origin id rides `peerDomainId` so it is stated, not swallowed — and it
+    // must NOT read as "ours", for the same reason `maintainerOf` refuses to.
+    return {
+      state: "unknown-domain",
+      id: null,
+      name: null,
+      trustTier: null,
+      peerDomainId: originDomainId
+    };
+  };
   const resolved = await resolvePipelineForTarget(tx, orgId, component.id);
 
   // One binding resolution per routing Type, from the COMPONENT — the same starting rung the
@@ -635,6 +685,9 @@ export async function getComponentPipeline(
       account,
       cluster
     };
+    // ONE literal here too (§10.2), for the same reason — built once from the target's own origin,
+    // pushed into whichever array this seed lands in.
+    const outpost = outpostOf(target?.originDomainId ?? null);
 
     // AN UNPLACED STAGE CARRIES NO BINDING, NO `current` AND NO `version` — all three are keyed on a
     // placement that does not exist, and a null `binding` beside a real stage is the ADR-0006 case
@@ -650,6 +703,7 @@ export async function getComponentPipeline(
           wave: seed.wave,
           deploymentTarget,
           maintainedBy: maintainerOf(target?.originDomainId ?? null),
+          outpost,
           stageName
         });
       continue;
@@ -736,6 +790,7 @@ export async function getComponentPipeline(
       wave: seed.wave,
       deploymentTarget,
       maintainedBy: maintainerOf(target?.originDomainId ?? null),
+      outpost,
       stageName,
       binding: bindings[0] ?? null,
       bindings,
