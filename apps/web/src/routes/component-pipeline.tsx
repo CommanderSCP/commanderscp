@@ -2674,6 +2674,31 @@ export function sbomUnparseable(artifact: ComponentPipelineArtifact): boolean {
 export function exportsUnparseable(artifact: ComponentPipelineArtifact): boolean {
   return artifact.unknownFields.includes("promotionExports:unparseable");
 }
+
+/**
+ * §10.4 — the IMPORTED promotion manifest, or null. `signing.importedManifest` is OPTIONAL on the
+ * wire (an older server omits it) — undefined and null both read "none here", so a pre-§10.4 server
+ * states the same absence a post-§10.4 outpost that imported nothing does.
+ */
+export function importedManifestOf(
+  artifact: ArtifactOnWire
+): NonNullable<ComponentPipelineArtifact["signing"]["importedManifest"]> | null {
+  return artifact?.signing.importedManifest ?? null;
+}
+/** The projection's STATED unknowns about the imported manifest (`artifact-facts.ts`
+ *  `importedManifestOf`): `importedManifest:unsigned` — a manifest is stamped but no signature is;
+ *  `importedManifest:unparseable` — the stamped manifest does not parse as a PromotionManifest.
+ *  Either is a recorded PRESENCE the tile must not render as "no imported manifest yet". */
+export function importedManifestNote(artifact: ArtifactOnWire): "unsigned" | "unparseable" | null {
+  if (!artifact) return null;
+  if (artifact.unknownFields.includes("importedManifest:unparseable")) return "unparseable";
+  if (artifact.unknownFields.includes("importedManifest:unsigned")) return "unsigned";
+  return null;
+}
+const IMPORTED_MANIFEST_NOTE_TEXT = {
+  unsigned: "manifest recorded but unsigned — no manifestSignature is stamped beside it",
+  unparseable: "manifest recorded but unreadable — it does not parse as a promotion manifest"
+} as const;
 const SBOM_UNPARSEABLE_TEXT =
   "SBOM reference recorded but unreadable — it does not parse as an SBOM reference";
 const EXPORTS_UNPARSEABLE_TEXT = "some export stamps could not be read";
@@ -2704,6 +2729,12 @@ function ExportsUnparseableNote({
  *  the SBOM ALONE; the promotion manifest is a Scan & sign fact and is reviewed there). */
 export function buildHasReview(artifact: ArtifactOnWire): boolean {
   return Boolean(artifact && artifact.sbom !== null);
+}
+
+/** Whether a Registry tile has anything to REVIEW: an imported promotion manifest (§10.4) — the one
+ *  thing that arrives AT the registry under a signature. Nothing else on the tile opens a review. */
+export function registryHasReview(artifact: ArtifactOnWire): boolean {
+  return importedManifestOf(artifact) !== null;
 }
 
 /** Whether a Scan & sign tile has anything to REVIEW: at least one scan row or one signed export. */
@@ -2983,12 +3014,25 @@ const REGISTRY_UNKNOWN_WHY =
 const REGISTRY_NONE_WHY =
   "No change of this component carries an artifact digest in its sourceRef — the first-party change report is the sole way one arrives.";
 
-/** §10.1 — where the IMPORTED promotion manifest belongs on a non-commander site (the Registry: it is
- *  where the artifact lands there), and what is honestly sayable about it TODAY: the importer stores
- *  `sourceRef.promotionManifest` + `manifestSignature` (§8 "PM"), but the component-pipeline wire
- *  carries no field for them yet — so this is a stated "not projected", never a claim either way. */
-const IMPORTED_MANIFEST_NOT_PROJECTED_TITLE =
-  "This site's imported promotion manifest (sourceRef.promotionManifest) is not projected on the component pipeline yet — the wire has no field for it, so nothing is claimed either way.";
+/**
+ * §10.4 — the IMPORTED promotion manifest lives HERE, on the Registry tile of a non-commander site:
+ * the registry is where the promoted artifact lands, and the manifest is what it arrived under. The
+ * wire carries `artifact.signing.importedManifest` (the importer's stamped `sourceRef.promotionManifest`
+ * + `manifestSignature`, verified AT IMPORT by construction — import refuses an unverified bundle),
+ * so present it is a compact line — `arrived under a manifest signed by <exporterName ?? exporterDomainId>
+ * · N artifacts · verified at import` — and the tile becomes REVIEWABLE (header Review → the manifest
+ * fields verbatim). Absent it is a stated absence under Details, and only off the commander: the
+ * commander imports nothing (its OWN manifest is on Scan & sign), so it says nothing about imported
+ * ones. A STATED unknown on the wire (`importedManifest:unsigned` / `:unparseable`) is neither —
+ * it renders as "manifest recorded but unsigned/unreadable" wherever the wire says it, because an
+ * unreadable presence must never read as an absence.
+ */
+const IMPORTED_MANIFEST_ABSENT_TEXT =
+  "no imported manifest yet — one arrives with a promotion from the commander";
+const IMPORTED_MANIFEST_ABSENT_TITLE =
+  "Nothing of this component's artifact has arrived here under a signed promotion manifest yet (sourceRef.promotionManifest is not stamped on the shown change) — a manifest is stamped at promotion import from the commander.";
+const IMPORTED_MANIFEST_PRESENT_TITLE =
+  "The importer stamped the exporter's promotion manifest and its cosign signature on the imported change; import rejects any bundle whose signature, artifact set or digest tie fails, so a manifest recorded here was verified at import.";
 
 function RegistryNode({
   registry,
@@ -2997,81 +3041,236 @@ function RegistryNode({
 }: {
   registry: ComponentPipelineRegistry | null;
   artifact: ArtifactOnWire;
-  /** §10.1 — on a NON-commander site (outpost, retrans, unknown) the Details carry the imported-
-   *  manifest line; the commander creates manifests (Scan & sign) and imports none. */
+  /** §10.4 — on a NON-commander site (outpost, retrans, unknown) the Details state the absence of
+   *  an imported manifest; the commander creates manifests (Scan & sign) and imports none. */
   instanceRole?: InstanceRole | undefined;
 }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
   const digest = artifact ? latestDigest(artifact) : null;
-  // §10.3 — compact: the digest line alone. Details: WHICH change it came from, or the sentence
-  // explaining the stated absence / unknown (the same words the compact line carries in `title`),
-  // then — off the commander — the imported-manifest line (§10.1).
+  const imported = importedManifestOf(artifact);
+  const note = importedManifestNote(artifact);
+  const reviewable = registryHasReview(artifact);
+  // §10.3 — compact: the digest line, then (§10.4) the imported-manifest line when one arrived.
+  // Details: WHICH change it came from, or the sentence explaining the stated absence / unknown
+  // (the same words the compact line carries in `title`), then — off the commander — the stated
+  // absence of an imported manifest (§10.4), or, on any site, the wire's stated unknown about one.
   return (
-    <NodeShell
-      kind="registry"
-      title="Registry"
-      hint={<RegistryHeadline registry={registry} />}
-      testid="pipeline-node-registry"
-      muted={digest === null}
-      details={
-        <>
-          {digest !== null && artifact ? (
-            <p className="text-slate-500" data-testid="pipeline-registry-provenance">
-              from change{" "}
-              <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
-            </p>
-          ) : (
-            <p className="text-slate-400" data-testid="pipeline-registry-explanation">
-              {artifact === undefined ? REGISTRY_UNKNOWN_WHY : REGISTRY_NONE_WHY}
-            </p>
-          )}
-          {instanceRole !== "commander" ? (
-            <p
-              className="text-slate-400"
-              data-testid="pipeline-registry-imported-manifest"
-              title={IMPORTED_MANIFEST_NOT_PROJECTED_TITLE}
+    <>
+      <NodeShell
+        kind="registry"
+        title="Registry"
+        hint={<RegistryHeadline registry={registry} />}
+        testid="pipeline-node-registry"
+        muted={digest === null}
+        review={
+          reviewable
+            ? { ariaLabel: "Review imported promotion manifest", onOpen: () => setOpen(true) }
+            : undefined
+        }
+        details={
+          <>
+            {digest !== null && artifact ? (
+              <p className="text-slate-500" data-testid="pipeline-registry-provenance">
+                from change{" "}
+                <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
+              </p>
+            ) : (
+              <p className="text-slate-400" data-testid="pipeline-registry-explanation">
+                {artifact === undefined ? REGISTRY_UNKNOWN_WHY : REGISTRY_NONE_WHY}
+              </p>
+            )}
+            {imported === null && note !== null ? (
+              <p
+                className="text-amber-700"
+                data-testid="pipeline-registry-imported-manifest"
+                data-state={note}
+                title="The change's sourceRef carries a promotionManifest the projection could not present as a verified import — stated, neither shown as present nor counted as absent."
+              >
+                {IMPORTED_MANIFEST_NOTE_TEXT[note]}
+              </p>
+            ) : imported === null && instanceRole !== "commander" ? (
+              <p
+                className="text-slate-400"
+                data-testid="pipeline-registry-imported-manifest"
+                data-state="absent"
+                title={IMPORTED_MANIFEST_ABSENT_TITLE}
+              >
+                {IMPORTED_MANIFEST_ABSENT_TEXT}
+              </p>
+            ) : null}
+          </>
+        }
+      >
+        {digest !== null && artifact ? (
+          <p data-testid="pipeline-registry-digest">
+            <span
+              className="font-mono text-slate-800"
+              title={
+                artifact.digests.length > 1
+                  ? `${digest} — the last of ${artifact.digests.length} digests this change lists: ${artifact.digests.join(", ")}`
+                  : digest
+              }
             >
-              imported manifest not projected yet
-            </p>
-          ) : null}
-        </>
-      }
-    >
-      {digest !== null && artifact ? (
-        <p data-testid="pipeline-registry-digest">
-          <span
-            className="font-mono text-slate-800"
-            title={
-              artifact.digests.length > 1
-                ? `${digest} — the last of ${artifact.digests.length} digests this change lists: ${artifact.digests.join(", ")}`
-                : digest
-            }
+              {shortDigest(digest)}
+            </span>
+            {artifact.digests.length > 1 ? (
+              <span className="text-slate-400"> +{artifact.digests.length - 1} more</span>
+            ) : null}
+          </p>
+        ) : artifact === undefined ? (
+          <p
+            className="italic text-slate-400"
+            data-testid="pipeline-registry-digest"
+            data-artifact-state="unknown"
+            title={REGISTRY_UNKNOWN_WHY}
           >
-            {shortDigest(digest)}
-          </span>
-          {artifact.digests.length > 1 ? (
-            <span className="text-slate-400"> +{artifact.digests.length - 1} more</span>
-          ) : null}
-        </p>
-      ) : artifact === undefined ? (
-        <p
-          className="italic text-slate-400"
-          data-testid="pipeline-registry-digest"
-          data-artifact-state="unknown"
-          title={REGISTRY_UNKNOWN_WHY}
-        >
-          not observed yet — no artifact digest or scan verdict is captured
-        </p>
-      ) : (
-        <p
-          className="text-slate-400"
-          data-testid="pipeline-registry-digest"
-          data-artifact-state="none"
-          title={REGISTRY_NONE_WHY}
-        >
-          no artifact digest recorded yet
-        </p>
-      )}
-    </NodeShell>
+            not observed yet — no artifact digest or scan verdict is captured
+          </p>
+        ) : (
+          <p
+            className="text-slate-400"
+            data-testid="pipeline-registry-digest"
+            data-artifact-state="none"
+            title={REGISTRY_NONE_WHY}
+          >
+            no artifact digest recorded yet
+          </p>
+        )}
+        {imported !== null ? (
+          <p
+            data-testid="pipeline-registry-imported-manifest"
+            data-state="present"
+            title={IMPORTED_MANIFEST_PRESENT_TITLE}
+          >
+            arrived under a manifest signed by{" "}
+            <span className={imported.exporterName ? undefined : "font-mono"}>
+              {imported.exporterName ?? imported.exporterDomainId}
+            </span>{" "}
+            · {imported.artifactCount} artifact{imported.artifactCount === 1 ? "" : "s"} · verified
+            at import
+          </p>
+        ) : null}
+      </NodeShell>
+      {artifact && imported !== null ? (
+        <RegistryReviewDialog open={open} onOpenChange={setOpen} artifact={artifact} />
+      ) : null}
+    </>
+  );
+}
+
+/** The Registry tile's review dialog — the Radix shell around `RegistryReviewBody`. */
+function RegistryReviewDialog({
+  open,
+  onOpenChange,
+  artifact
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  artifact: ComponentPipelineArtifact;
+}): React.JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl" data-testid="registry-review-dialog">
+        <DialogHeader>
+          <DialogTitle>Imported promotion manifest</DialogTitle>
+        </DialogHeader>
+        <RegistryReviewBody artifact={artifact} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The Registry review dialog's CONTENT, portal-free — exported for the test (Radix portals nothing
+ * under renderToStaticMarkup). Every field is the stored value VERBATIM: the imported manifest as
+ * the importer stamped it (§10.4 — manifestVersion, createdAt, exporterDomainId + the peer's name,
+ * peerDomainId, changeUrn, importedFromDomain, artifacts[] type/digest/signatureRef), the signature's
+ * presence, and — should the wire state one — the `importedManifest:*` unknown as a note. Nothing
+ * is re-verified here; the "verified at import" claim is the importer's (it refuses otherwise).
+ */
+export function RegistryReviewBody({
+  artifact
+}: {
+  artifact: ComponentPipelineArtifact;
+}): React.JSX.Element {
+  const imported = importedManifestOf(artifact);
+  const note = importedManifestNote(artifact);
+  return (
+    <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-sm text-slate-700">
+      <span className="sr-only">Imported promotion manifest</span>
+      <p className="text-xs text-slate-500">
+        change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
+      </p>
+      <section data-testid="registry-review-manifest">
+        <SectionLabel>Promotion manifest</SectionLabel>
+        {imported ? (
+          <>
+            <ArtifactFieldList
+              rows={[
+                { label: "manifestVersion", value: imported.manifest.manifestVersion, mono: true },
+                { label: "createdAt", value: imported.manifest.createdAt, mono: true },
+                {
+                  label: "exporterDomainId",
+                  value: (
+                    <>
+                      {imported.exporterName ? <>{imported.exporterName} · </> : null}
+                      <span className="font-mono">{imported.manifest.exporterDomainId}</span>
+                    </>
+                  )
+                },
+                { label: "peerDomainId", value: imported.manifest.peerDomainId, mono: true },
+                { label: "changeUrn", value: imported.manifest.changeUrn, mono: true },
+                {
+                  label: "importedFromDomain",
+                  value: imported.importedFromDomain ?? "not recorded",
+                  mono: imported.importedFromDomain !== null
+                },
+                {
+                  label: "signature",
+                  value: (
+                    <span data-testid="registry-review-signature">
+                      {imported.manifestSignature.length > 0 ? "present" : "absent"} · verified at
+                      import
+                    </span>
+                  )
+                }
+              ]}
+            />
+            <Table className="mt-2">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>type</TableHead>
+                  <TableHead>digest</TableHead>
+                  <TableHead>signatureRef</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {imported.manifest.artifacts.map((a) => (
+                  <TableRow key={`${a.type}:${a.digest}`} data-testid="registry-review-artifact">
+                    <TableCell>{a.type}</TableCell>
+                    <TableCell className="break-all font-mono text-xs">{a.digest}</TableCell>
+                    <TableCell className="break-all font-mono text-xs">
+                      {a.signatureRef ?? "—"}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </>
+        ) : note === null ? (
+          <p className="text-xs text-slate-400">{IMPORTED_MANIFEST_ABSENT_TEXT}</p>
+        ) : null}
+        {note !== null ? (
+          <p
+            className="mt-1 text-xs text-amber-700"
+            data-testid="registry-review-imported-manifest-note"
+            data-state={note}
+          >
+            {IMPORTED_MANIFEST_NOTE_TEXT[note]}
+          </p>
+        ) : null}
+      </section>
+    </div>
   );
 }
 
@@ -3087,7 +3286,7 @@ export function RegistryNodeForTest({
   artifact?: ArtifactOnWire;
   /** §10.3 — see `StageCardForTest`. */
   detailsExpanded?: boolean;
-  /** §10.1 — see `RegistryNode`. */
+  /** §10.4 — see `RegistryNode`. */
   instanceRole?: InstanceRole | undefined;
 }): React.JSX.Element {
   return (

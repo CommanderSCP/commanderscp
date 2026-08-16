@@ -59,6 +59,10 @@ import type {
  * | make the Build tile reviewable on an export alone | the "an export alone does NOT make the Build tile clickable" test FAILS |
  * | render the PM line AFTER the sign lines | the scan → E6 → PM → sign order test FAILS |
  * | drop the manifest section from `ScanSignReviewBody` | the PM section test FAILS |
+ * | make the Registry reviewable whenever an artifact exists (ignore `importedManifest`) | the §10.4 "absent → NO Review affordance" test FAILS — a button with nothing to review |
+ * | render the absent-imported-manifest line on the commander too | the §10.4 absent test FAILS on the commander half |
+ * | word the `importedManifest:unsigned` unknown as the absence sentence | the §10.4 stated-unknown test FAILS |
+ * | read `exporterName ?? changeName` on the manifest line | the "nothing reads names" test FAILS |
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -82,6 +86,7 @@ const {
   WaveRowForTest,
   arrowInto,
   RegistryNodeForTest,
+  RegistryReviewBody,
   BuildNodeForTest,
   BuildReviewBody,
   ScanSignNodeForTest,
@@ -1318,7 +1323,9 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     );
     const line = outlineText(outpostLine(html));
     expect(line).toContain("Outpost field-outpost");
-    expect(line, "the word outpost appears once — label, not value").not.toMatch(/outpost\s+outpost/i);
+    expect(line, "the word outpost appears once — label, not value").not.toMatch(
+      /outpost\s+outpost/i
+    );
     expect(line).not.toContain("·");
     expect(line).not.toContain("commercial");
   });
@@ -2298,6 +2305,42 @@ function promotionExport(over: Partial<Export> = {}): Export {
   };
 }
 
+type Imported = NonNullable<Artifact["signing"]["importedManifest"]>;
+const IMPORTED_SIG = "MEQCIGltcG9ydGVk…";
+function importedManifest(over: Partial<Imported> = {}): Imported {
+  return {
+    manifest: {
+      manifestVersion: "scp-promotion-manifest/v1",
+      createdAt: "2026-08-15T11:00:00.000Z",
+      sourceChangeObjectId: "019f0000-0000-7000-8000-00000000c4a5",
+      exporterDomainId: EXPORTER_ID,
+      peerDomainId: PEER_ID,
+      changeUrn: "urn:scp:hq:change:acme/checkout-api@1.4.2",
+      artifacts: [
+        { type: "oci", digest: DIGEST },
+        { type: "blob", digest: DIGEST_2, signatureRef: "sig://sbom" }
+      ]
+    },
+    manifestSignature: IMPORTED_SIG,
+    exporterDomainId: EXPORTER_ID,
+    exporterName: "hq-commander",
+    importedFromDomain: EXPORTER_ID,
+    artifactCount: 2,
+    ...over
+  };
+}
+/** An artifact that ARRIVED under a manifest — `signing.importedManifest` set, nothing else. */
+function importedArtifact(over: Partial<Imported> = {}, art: Partial<Artifact> = {}): Artifact {
+  return artifact({
+    signing: {
+      promotionExports: [],
+      originSignatureRefs: [],
+      importedManifest: importedManifest(over)
+    },
+    ...art
+  });
+}
+
 const BUILD_BINDING = {
   externalRef: "build-app",
   type: "image",
@@ -2468,6 +2511,201 @@ describe("the REGISTRY node body — the latest digest, or the stated absence", 
     expect(html).toContain("not observed yet");
     expect(html).toContain('data-artifact-state="unknown"');
     expect(html).not.toContain("no artifact digest recorded yet");
+  });
+});
+
+describe("the REGISTRY tile carries the IMPORTED promotion manifest (§10.4) — a compact line when one arrived, reviewable then and only then; absent is stated off the commander, silent on it", () => {
+  const MARK = 'data-testid="pipeline-registry-imported-manifest"';
+  const REVIEW = 'aria-label="Review imported promotion manifest"';
+
+  it("present → `arrived under a manifest signed by <exporterName> · N artifacts · verified at import`, and the header grows a Review button", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest
+        registry={registryDeclared()}
+        artifact={importedArtifact()}
+        instanceRole="outpost"
+      />
+    );
+    expect(html).toContain(MARK);
+    expect(html).toContain('data-state="present"');
+    expect(html).toContain("arrived under a manifest signed by");
+    expect(html).toContain("hq-commander");
+    expect(html).toContain("2 artifacts");
+    expect(html).toContain("verified at import");
+    expect(html).toContain(REVIEW);
+    expect(html).toContain('data-reviewable="true"');
+    expect(html).toContain('data-testid="pipeline-node-registry-review"');
+  });
+
+  it("names the exporter by its DOMAIN ID (mono) when the server knew no peer name — never a guessed name; one artifact reads singular", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest
+        registry={registryDeclared()}
+        artifact={importedArtifact({ exporterName: null, artifactCount: 1 })}
+        instanceRole="outpost"
+      />
+    );
+    expect(html).toContain(`signed by <span class="font-mono">${EXPORTER_ID}</span>`);
+    expect(html).not.toContain("hq-commander");
+    expect(html).toContain("1 artifact ·");
+    expect(html).not.toContain("1 artifacts");
+  });
+
+  it("the line and the Review are driven by the WIRE, not the site: a commander with an imported manifest on the wire shows it too", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest
+        registry={registryDeclared()}
+        artifact={importedArtifact()}
+        instanceRole="commander"
+      />
+    );
+    expect(html).toContain('data-state="present"');
+    expect(html).toContain(REVIEW);
+  });
+
+  it("absent → NO Review affordance at all (no button, no data-reviewable), whatever the site; off the commander the Details state the absence, on it nothing", () => {
+    for (const role of ["outpost", "retrans", undefined, "commander"] as const) {
+      const html = renderToStaticMarkup(
+        <RegistryNodeForTest
+          detailsExpanded
+          registry={registryDeclared()}
+          artifact={artifact()}
+          instanceRole={role}
+        />
+      );
+      expect(html, `role=${String(role)}`).not.toContain(REVIEW);
+      expect(html, `role=${String(role)}`).not.toContain("data-reviewable");
+      expect(html, `role=${String(role)}`).not.toContain(
+        'data-testid="pipeline-node-registry-review"'
+      );
+      if (role === "commander") {
+        expect(html).not.toContain(MARK);
+        expect(html).not.toContain("imported manifest");
+      } else {
+        expect(html).toContain(MARK);
+        expect(html).toContain('data-state="absent"');
+        expect(html).toContain(
+          "no imported manifest yet — one arrives with a promotion from the commander"
+        );
+      }
+    }
+    // Older server — `signing.importedManifest` not on the wire at all — reads the same absence.
+    const older = renderToStaticMarkup(
+      <RegistryNodeForTest
+        detailsExpanded
+        registry={registryDeclared()}
+        artifact={artifact()}
+        instanceRole="outpost"
+      />
+    );
+    expect(older).toContain('data-state="absent"');
+    // `artifact: null` — same stated absence, still no button.
+    const none = renderToStaticMarkup(
+      <RegistryNodeForTest
+        detailsExpanded
+        registry={registryDeclared()}
+        artifact={null}
+        instanceRole="outpost"
+      />
+    );
+    expect(none).toContain('data-state="absent"');
+    expect(none).not.toContain(REVIEW);
+  });
+
+  it("a STATED unknown (`importedManifest:unsigned` / `:unparseable`) is 'manifest recorded but unsigned/unreadable' — never the absence sentence, never a Review, on any site", () => {
+    for (const [flag, text] of [
+      ["importedManifest:unsigned", "manifest recorded but unsigned"],
+      ["importedManifest:unparseable", "manifest recorded but unreadable"]
+    ] as const) {
+      for (const role of ["outpost", "commander"] as const) {
+        const html = renderToStaticMarkup(
+          <RegistryNodeForTest
+            detailsExpanded
+            registry={registryDeclared()}
+            artifact={artifact({ unknownFields: [flag] })}
+            instanceRole={role}
+          />
+        );
+        expect(html, `${flag} on ${role}`).toContain(MARK);
+        expect(html, `${flag} on ${role}`).toContain(text);
+        expect(html, `${flag} on ${role}`).toContain(
+          `data-state="${flag.slice("importedManifest:".length)}"`
+        );
+        expect(html, `${flag} on ${role}`).not.toContain("no imported manifest yet");
+        expect(html, `${flag} on ${role}`).not.toContain(REVIEW);
+      }
+    }
+  });
+
+  it("nothing on the tile reads the registry's or the change's NAME into the manifest line", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest
+        registry={registryDeclared({ name: "should-not-be-the-exporter" })}
+        artifact={importedArtifact({ exporterName: null }, { changeName: "not-an-exporter" })}
+        instanceRole="outpost"
+      />
+    );
+    const line = html.slice(html.indexOf(MARK));
+    expect(line.slice(0, line.indexOf("</p>"))).not.toContain("should-not-be-the-exporter");
+    expect(line.slice(0, line.indexOf("</p>"))).not.toContain("not-an-exporter");
+  });
+});
+
+describe("the REGISTRY review dialog body renders the imported manifest VERBATIM (portal-free)", () => {
+  it("every manifest field by its wire name, the exporter's name beside its id, the signature's presence, importedFromDomain, and every artifact row", () => {
+    const html = renderToStaticMarkup(<RegistryReviewBody artifact={importedArtifact()} />);
+    expect(html).toContain("Imported promotion manifest");
+    expect(html).toContain("checkout-api@1.4.2");
+    for (const [label, value] of [
+      ["manifestVersion", "scp-promotion-manifest/v1"],
+      ["createdAt", "2026-08-15T11:00:00.000Z"],
+      ["exporterDomainId", EXPORTER_ID],
+      ["peerDomainId", PEER_ID],
+      ["changeUrn", "urn:scp:hq:change:acme/checkout-api@1.4.2"],
+      ["importedFromDomain", EXPORTER_ID]
+    ] as const) {
+      expect(html, `label ${label}`).toContain(`>${label}</dt>`);
+      expect(html, `value of ${label}`).toContain(value);
+    }
+    expect(html).toContain("hq-commander · ");
+    expect(html).toContain('data-testid="registry-review-signature"');
+    expect(html).toContain("present · verified at import");
+    expect(html, "the signature bytes are not a field to read").not.toContain(IMPORTED_SIG);
+    const rows = html.split('data-testid="registry-review-artifact"').length - 1;
+    expect(rows).toBe(2);
+    expect(html).toContain(">oci</td>");
+    expect(html).toContain(">blob</td>");
+    expect(html).toContain(DIGEST);
+    expect(html).toContain(DIGEST_2);
+    expect(html).toContain("sig://sbom");
+    expect(html, "an OCI entry with no signatureRef reads —").toContain(">—</td>");
+    expect(html).not.toContain("registry-review-imported-manifest-note");
+  });
+
+  it("no exporter name → the id alone; no importedFromDomain → 'not recorded'", () => {
+    const html = renderToStaticMarkup(
+      <RegistryReviewBody
+        artifact={importedArtifact({ exporterName: null, importedFromDomain: null })}
+      />
+    );
+    expect(html).not.toContain("hq-commander");
+    expect(html).toContain(EXPORTER_ID);
+    expect(html).toContain("not recorded");
+  });
+
+  it("the body states an `importedManifest:*` unknown as a note ('manifest recorded but unsigned/unreadable'), never as an absence", () => {
+    for (const [flag, text] of [
+      ["importedManifest:unsigned", "manifest recorded but unsigned"],
+      ["importedManifest:unparseable", "manifest recorded but unreadable"]
+    ] as const) {
+      const html = renderToStaticMarkup(
+        <RegistryReviewBody artifact={artifact({ unknownFields: [flag] })} />
+      );
+      expect(html, flag).toContain('data-testid="registry-review-imported-manifest-note"');
+      expect(html, flag).toContain(text);
+      expect(html, flag).not.toContain("no imported manifest yet");
+      expect(html, flag).not.toContain("scp-promotion-manifest/v1");
+    }
   });
 });
 

@@ -35,7 +35,8 @@ import type {
  * | `scanSummary` folds a `fail` row as `pass` when another row passed | the fail-verdict test FAILS |
  * | put the Registry's "from change" back on the compact digest line | the Registry compact test FAILS on "from change" |
  * | drop `aria-label` from the `TileDetails` button (or pass no `label` from `NodeShell`) | the disclosure-ARIA test and the "every kind of tile names WHOSE details" test FAIL |
- * | render the Registry's imported-manifest line for every role (drop the `!== "commander"` guard) | the §10.1 imported-manifest test FAILS on the commander half |
+ * | render the Registry's absent-imported-manifest line for every role (drop the `!== "commander"` guard) | the §10.4 absent-manifest test FAILS on the commander half |
+ * | put the Registry's PRESENT imported-manifest line under Details (or drop `registryHasReview`) | the §10.4 present-manifest test FAILS (compact lacks the line / no Review button) |
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -237,6 +238,30 @@ function promotionExport(over: Partial<Export> = {}): Export {
     },
     manifestSignature: "MEUCIQD…",
     keyFingerprint: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    ...over
+  };
+}
+
+type Imported = NonNullable<Artifact["signing"]["importedManifest"]>;
+function importedManifest(over: Partial<Imported> = {}): Imported {
+  return {
+    manifest: {
+      manifestVersion: "scp-promotion-manifest/v1",
+      createdAt: "2026-08-15T11:00:00.000Z",
+      sourceChangeObjectId: CHANGE_ID,
+      exporterDomainId: "019f0000-0000-7000-8000-00000000c0de",
+      peerDomainId: PEER_ID,
+      changeUrn: "urn:scp:o:change:acme/checkout-api@1.4.2",
+      artifacts: [
+        { type: "oci", digest: DIGEST },
+        { type: "blob", digest: "sha256:" + "b".repeat(64) }
+      ]
+    },
+    manifestSignature: "MEUCIQD…",
+    exporterDomainId: "019f0000-0000-7000-8000-00000000c0de",
+    exporterName: "hq-commander",
+    importedFromDomain: "019f0000-0000-7000-8000-00000000c0de",
+    artifactCount: 2,
     ...over
   };
 }
@@ -588,7 +613,7 @@ describe("§10.3 — the REGISTRY tile: header + digest compact; provenance / ex
     expect(unknownOpen).toContain("does not project the artifact on the component pipeline");
   });
 
-  it("§10.1 — off the commander, the IMPORTED manifest is a stated unknown under Details (`imported manifest not projected yet`), never a silent absence; the commander imports none and says nothing", () => {
+  it("§10.4 — off the commander, the ABSENT imported manifest is a stated absence under Details (`no imported manifest yet — one arrives with a promotion from the commander`), never a silent absence; the commander imports none and says nothing", () => {
     const MARK = 'data-testid="pipeline-registry-imported-manifest"';
     for (const role of ["outpost", "retrans", undefined] as const) {
       const compact = renderToStaticMarkup(
@@ -608,9 +633,13 @@ describe("§10.3 — the REGISTRY tile: header + digest compact; provenance / ex
         />
       );
       expect(open, `role=${String(role)}`).toContain(MARK);
-      expect(open).toContain("imported manifest not projected yet");
-      expect(open, "the title says WHY: the wire has no field for it").toContain(
-        "sourceRef.promotionManifest) is not projected on the component pipeline yet"
+      expect(open).toContain('data-state="absent"');
+      expect(open).toContain(
+        "no imported manifest yet — one arrives with a promotion from the commander"
+      );
+      expect(open, "the interim §10.1 copy is gone").not.toContain("not projected yet");
+      expect(open, "nothing to review → no Review button").not.toContain(
+        "Review imported promotion manifest"
       );
     }
     // With NO artifact on the wire the line is still there — it is about the manifest, not the digest.
@@ -634,6 +663,42 @@ describe("§10.3 — the REGISTRY tile: header + digest compact; provenance / ex
     );
     expect(commander).not.toContain(MARK);
     expect(commander).not.toContain("imported manifest");
+  });
+
+  it("§10.4 — a PRESENT imported manifest is a COMPACT line (`arrived under a manifest signed by <exporter> · N artifacts · verified at import`) and makes the tile reviewable, on any site; the Details keep the provenance", () => {
+    const imported = importedManifest();
+    const compact = renderToStaticMarkup(
+      <RegistryNodeForTest
+        registry={registryDeclared}
+        artifact={artifact({
+          signing: { promotionExports: [], originSignatureRefs: [], importedManifest: imported }
+        })}
+        instanceRole="outpost"
+      />
+    );
+    expect(compact).toContain('data-testid="pipeline-registry-imported-manifest"');
+    expect(compact).toContain('data-state="present"');
+    expect(compact).toContain("arrived under a manifest signed by");
+    expect(compact).toContain("hq-commander");
+    expect(compact).toContain("2 artifacts");
+    expect(compact).toContain("verified at import");
+    expect(compact, "reviewable now").toContain('data-reviewable="true"');
+    expect(compact).toContain('aria-label="Review imported promotion manifest"');
+    expect(compact, "compact: no provenance row").not.toContain(
+      'data-testid="pipeline-registry-provenance"'
+    );
+    const open = renderToStaticMarkup(
+      <RegistryNodeForTest
+        detailsExpanded
+        registry={registryDeclared}
+        artifact={artifact({
+          signing: { promotionExports: [], originSignatureRefs: [], importedManifest: imported }
+        })}
+        instanceRole="outpost"
+      />
+    );
+    expect(open).toContain('data-testid="pipeline-registry-provenance"');
+    expect(open, "present ⇒ no absence line").not.toContain('data-state="absent"');
   });
 });
 
