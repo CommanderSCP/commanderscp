@@ -38,6 +38,7 @@ import { materializeApprovalRequest, castApprovalVote } from "../governance/appr
 import { insertControlRun } from "../governance/controls-repo.js";
 import { getInstanceCosignPublicKey } from "../governance/cosign-keys.js";
 import { getDecision } from "../coordination/decisions-repo.js";
+import { getComponentPipeline } from "../coordination/component-pipeline.js";
 import { listAuditEvents } from "../audit/audit-repo.js";
 import { verifyBlob } from "@scp/cosign";
 import { createIsolatedDomain, type IsolatedDomain } from "./test-support/isolated-domain.js";
@@ -2103,6 +2104,93 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       );
       await adminPool.end();
     }
+  });
+
+  it("§10.4 ROUND TRIP: a promotion exported A→B lands at B with `artifact.signing.importedManifest` on B's component pipeline — the exporter's manifest + signature verbatim, exporterName = A's peer name at B, artifactCount, importedFromDomain = A; A's own pipeline carries none (it imported nothing)", async () => {
+    const digest = `sha256:${"a4".repeat(32)}`;
+    // A COMPONENT (the pipeline is component-scoped) authored at A, synced to B by the same
+    // object_upsert path every promotion target takes, so `properties.targets` resolves at B.
+    const component = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      createObject(tx, {
+        orgId: domainA.orgId,
+        domainId: null,
+        typeId: "component",
+        actorObjectId: domainA.orgId,
+        requestId: "t-promo-manifest-component",
+        name: `promo-manifest-component-${randomUUID()}`
+      })
+    );
+    const preCursor = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      getCursor(tx, domainB.orgId, selfA.domainId, selfA.domainId)
+    );
+    const syncBundle = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      exportSyncBundle(tx, domainA.orgId, domainB.orgName, preCursor.sequence)
+    );
+    await withTenantTx(domainB.db, domainB.orgId, (tx) =>
+      importSyncBundle(tx, domainB.orgId, syncBundle)
+    );
+
+    const { change } = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      proposeChange(tx, {
+        orgId: domainA.orgId,
+        actorObjectId: domainA.orgId,
+        requestId: "t-promo-manifest-change",
+        name: `promote-manifest-${randomUUID()}`,
+        targets: [component.id],
+        sourceRef: { artifact_digest: digest, repo: "acme/checkout" }
+      })
+    );
+    await seedPassingScan(change.id, digest); // E6 needs the passing, digest-bound row to export
+    const bundle = await exportBundleA(change.id);
+    expect(bundle.promotionManifest, "the exporter signs a manifest").toBeDefined();
+    expect(bundle.manifestSignature).toBeDefined();
+    const imported = await importPromotionBundle(domainB.db, domainB.orgId, bundle);
+
+    const pipelineAt = async (domain: IsolatedDomain) =>
+      withTenantTx(domain.db, domain.orgId, async (tx) => {
+        const c = await getObjectByIdOrUrnAnyType(tx, domain.orgId, component.id);
+        return getComponentPipeline(
+          tx,
+          domain.orgId,
+          {
+            id: c.id,
+            urn: c.urn,
+            name: c.name,
+            originDomainId: c.originDomainId,
+            domainLocal: c.domainLocal
+          },
+          domain.orgId
+        );
+      });
+
+    const atB = await pipelineAt(domainB);
+    expect(atB.artifact, "B picks the imported change — it carries the digest").not.toBeNull();
+    expect(atB.artifact!.changeId).toBe(imported.localChangeObjectId);
+    expect(
+      atB.artifact!.digests,
+      "origin key + importer's artifactDigests[] name ONE digest"
+    ).toEqual([digest]);
+    expect(atB.artifact!.unknownFields).toEqual([]);
+    expect(atB.artifact!.signing.importedManifest).toEqual({
+      manifest: bundle.promotionManifest,
+      manifestSignature: bundle.manifestSignature,
+      exporterDomainId: selfA.domainId,
+      // B's `federation_peers` row for A carries A's org name (see `pair`) — the exporter IS a peer.
+      exporterName: domainA.orgName,
+      importedFromDomain: selfA.domainId,
+      artifactCount: 1
+    });
+    expect(atB.artifact!.signing.importedManifest!.manifest.exporterDomainId).toBe(selfA.domainId);
+    expect(atB.artifact!.signing.importedManifest!.manifest.artifacts).toEqual([
+      { type: "oci", digest }
+    ]);
+    // The exporter's OWN sourceRef never carries `promotionManifest` — its manifest lives in the
+    // §9.4 export stamp, on Scan & sign — so A's Registry has nothing imported to state.
+    const atA = await pipelineAt(domainA);
+    expect(atA.artifact!.changeId).toBe(change.id);
+    expect(atA.artifact!.signing.importedManifest).toBeNull();
+    expect(atA.artifact!.signing.promotionExports).toHaveLength(1);
+    expect(atA.artifact!.unknownFields).toEqual([]);
   });
 });
 

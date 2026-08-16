@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
-import { ScanEvidenceSchema, SbomRefSchema } from "@scp/schemas";
+import { PromotionManifestSchema, ScanEvidenceSchema, SbomRefSchema } from "@scp/schemas";
 import type {
   ArtifactRef,
   ComponentPipelineArtifact,
@@ -25,27 +25,51 @@ import { promotionExportsOf } from "../federation/boundary-bundle-ref.js";
  * `ociDigestsOfSourceRef` / `artifactSetOfSourceRef` are the export projection's OWN reader of the
  * change's tracked artifacts (`promotion-repo.ts` — the E3 typed artifact set the promotion bundle
  * carries and the E6 gate scans), factored here so the projection and the exporter read the SAME
- * digests the SAME way; a third copy would be a third place for the two to disagree. NOTE the
- * exporter's reader is VERBATIM (no `sha256:` normalization — `promotion-scan-step.ts::ociDigestsOf`
- * normalizes because it must build a pull ref; the bundle and the gate carry the digest as tracked).
+ * digests the SAME way; a third copy would be a third place for the two to disagree. The managed
+ * scan step (`promotion-scan-step.ts::ociDigestsOf`, which then normalizes to `sha256:<hex>`
+ * because it must build a pull ref) and the gate orchestrator's control-context digest
+ * (`gate-orchestrator.ts::resolveChangeArtifactDigest`, first digest) delegate here too — ONE
+ * function, every reader (§10.4: the importer's `artifactDigests[]` widened all of them at once).
+ * The exporter's set is VERBATIM (no normalization — the bundle and the gate carry the digest as
+ * tracked).
  *
  * `evaluatePromotionScanGate` is the E6 predicate itself (moved here from `promotion-repo.ts`,
  * unchanged), so `artifact.exportGate` is a READ-ONLY re-run of the exact check the export applies,
  * not a re-implementation that could drift from it.
  */
 
-/** The OCI digests a change tracks: `sourceRef.artifact_digest` (canonical, lifted by
- *  `canonicalizeSourceRef`) or `sourceRef.artifactDigest` (the report's own key), string or string[],
- *  VERBATIM. Malformed ⇒ `[]`. */
+/** The three `sourceRef` keys under which a change tracks its OCI digest(s), in read order. The
+ *  SQL prefilter in `pickArtifactChange` probes exactly this list — keep the two together. */
+export const ARTIFACT_DIGEST_SOURCE_REF_KEYS = [
+  "artifact_digest",
+  "artifactDigest",
+  "artifactDigests"
+] as const;
+
+/** One key's value as a digest list: string ⇒ `[it]`, array ⇒ its string members, else `[]`. */
+function digestListOf(raw: unknown): string[] {
+  return typeof raw === "string"
+    ? [raw]
+    : Array.isArray(raw)
+      ? raw.filter((d): d is string => typeof d === "string")
+      : [];
+}
+
+/** The OCI digests a change tracks, VERBATIM, de-duplicated, in a deterministic order:
+ *  `sourceRef.artifact_digest` (canonical, lifted by `canonicalizeSourceRef`) ELSE
+ *  `sourceRef.artifactDigest` (the report's own key) — the origin's tracked digest(s), string or
+ *  string[] — FOLLOWED BY the importer's `sourceRef.artifactDigests` (string[]; §10.4 — stamped on a
+ *  promoted change at import beside `promotionManifest`, the flat digest list the Ed25519 checksum
+ *  anchors). The two are a UNION, not a preference: an imported change usually carries the origin's
+ *  key too (the exporter's `sourceRef` is spread onto the import), and when both name the same
+ *  digest the union says it once; a change stamped ONLY by the importer is picked by the stamp
+ *  alone. Malformed ⇒ `[]`. */
 export function ociDigestsOfSourceRef(sourceRef: unknown): string[] {
   if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) return [];
   const ref = sourceRef as Record<string, unknown>;
-  const artifactDigest = ref.artifact_digest ?? ref.artifactDigest;
-  return typeof artifactDigest === "string"
-    ? [artifactDigest]
-    : Array.isArray(artifactDigest)
-      ? artifactDigest.filter((d): d is string => typeof d === "string")
-      : [];
+  const origin = digestListOf(ref.artifact_digest ?? ref.artifactDigest);
+  const imported = digestListOf(ref.artifactDigests);
+  return [...new Set([...origin, ...imported])];
 }
 
 /**
@@ -176,7 +200,9 @@ async function pickArtifactChange(
         eq(objects.typeId, "change"),
         isNull(objects.deletedAt),
         sql`${objects.properties} @> ${JSON.stringify({ targets: [componentId] })}::jsonb`,
-        sql`${changes.sourceRef} ?| array['artifact_digest', 'artifactDigest']`
+        sql`${changes.sourceRef} ?| ${sql.raw(
+          `array[${ARTIFACT_DIGEST_SOURCE_REF_KEYS.map((k) => `'${k}'`).join(", ")}]`
+        )}`
       )
     )
     .orderBy(desc(changes.createdAt), desc(changes.objectId))
@@ -310,6 +336,8 @@ export async function artifactFactsForComponent(
     .map((a) => a.signatureRef)
     .filter((s): s is string => typeof s === "string" && s.length > 0);
 
+  const importedManifest = importedManifestOf(ref, unknownFields, peerNameOf);
+
   return {
     changeId: pick.id,
     changeName: pick.name,
@@ -318,7 +346,50 @@ export async function artifactFactsForComponent(
     sbom,
     scans,
     exportGate,
-    signing: { promotionExports, originSignatureRefs },
+    signing: { promotionExports, originSignatureRefs, importedManifest },
     unknownFields
+  };
+}
+
+/**
+ * §10.4 — THE IMPORTED PROMOTION MANIFEST, read off the picked change's `sourceRef` exactly as the
+ * importer stamped it (`promotion-repo.ts` import: `promotionManifest` + `manifestSignature`, beside
+ * `promotedFromDomain` / `artifactDigests[]`). Non-null only when BOTH are present AND the manifest
+ * parses as `PromotionManifestSchema`; a manifest without a signature is STATED
+ * (`importedManifest:unsigned`), a manifest that does not parse is STATED
+ * (`importedManifest:unparseable`); neither key ⇒ null, no note.
+ *
+ * NEVER VERIFIED HERE, deliberately. Import already REJECTED any bundle whose signature, artifact
+ * set-equality or digest tie failed (`verifyPromotionManifest`), so a manifest that reached the row
+ * was verified at import BY CONSTRUCTION — and cosign verification is a subprocess, which has no
+ * business inside the projection's read transaction. `exporterName` is the paired peer named by
+ * `manifest.exporterDomainId` (the exporter IS a peer at the importer), resolved through the SAME
+ * `federation_peers` read the export stamps use — null when no such peer row exists here.
+ */
+function importedManifestOf(
+  ref: Record<string, unknown>,
+  unknownFields: string[],
+  peerNameOf: (peerDomainId: string) => string | null
+): ComponentPipelineArtifact["signing"]["importedManifest"] {
+  const rawManifest = ref.promotionManifest;
+  if (rawManifest === undefined || rawManifest === null) return null;
+  const parsed = PromotionManifestSchema.safeParse(rawManifest);
+  if (!parsed.success) {
+    unknownFields.push("importedManifest:unparseable");
+    return null;
+  }
+  const signature = ref.manifestSignature;
+  if (typeof signature !== "string" || signature.length === 0) {
+    unknownFields.push("importedManifest:unsigned");
+    return null;
+  }
+  const manifest = parsed.data;
+  return {
+    manifest,
+    manifestSignature: signature,
+    exporterDomainId: manifest.exporterDomainId,
+    exporterName: peerNameOf(manifest.exporterDomainId),
+    importedFromDomain: typeof ref.promotedFromDomain === "string" ? ref.promotedFromDomain : null,
+    artifactCount: manifest.artifacts.length
   };
 }

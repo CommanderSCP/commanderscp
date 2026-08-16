@@ -20,6 +20,7 @@ import {
 } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
+import { ociDigestsOfSourceRef } from "../coordination/artifact-facts.js";
 import { resolveEffectiveScanThreshold } from "./scan-requirements.js";
 import type { EffectiveScanThreshold } from "@scp/schemas";
 
@@ -301,14 +302,11 @@ async function resolveChangeArtifactDigest(
   changeObjectId: string
 ): Promise<string | undefined> {
   const row = await getChangeRow(tx, orgId, changeObjectId).catch(() => null);
-  const sourceRef = (row?.sourceRef ?? {}) as Record<string, unknown>;
-  const raw = sourceRef.artifact_digest ?? sourceRef.artifactDigest;
-  if (typeof raw === "string" && raw.length > 0) return raw;
-  if (Array.isArray(raw)) {
-    const first = raw.find((d): d is string => typeof d === "string" && d.length > 0);
-    if (first) return first;
-  }
-  return undefined;
+  // The SHARED reader (`coordination/artifact-facts.ts`) — the same keys, in the same order, the
+  // export projection and the pipeline tile read (`artifact_digest` / `artifactDigest` / the
+  // importer's `artifactDigests[]`); the FIRST non-empty digest is the one a single-digest control
+  // context binds to.
+  return ociDigestsOfSourceRef(row?.sourceRef ?? {}).find((d) => d.length > 0);
 }
 
 /**

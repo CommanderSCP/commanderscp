@@ -490,4 +490,140 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     expect(notAList.signing.promotionExports).toEqual([]);
     expect(notAList.unknownFields).toEqual(["promotionExports:unparseable"]);
   });
+
+  // §10.4 — the IMPORTER's stamps. `promotion-repo.ts`'s import writes, on the imported change's
+  // sourceRef, `promotedFromDomain`, `sourceChangeObjectId`, `artifactDigests[]`, `promotionManifest`,
+  // `manifestSignature` (+ `boundaryBundleChecksums`). These tests write the SAME shape by a bare
+  // UPDATE (the stamps are server-owned; `POST /changes` cannot plant them) and pin what the
+  // projection READS off it. The real A→B round trip lives in `federation.integration.test.ts`
+  // ("§10.4 ROUND TRIP"), where `exporterName` resolves to a real peer row; here there is no peer.
+  const importedStamp = (digest: string, exporterDomainId: string) => ({
+    manifestVersion: "scp-promotion-manifest/v1",
+    createdAt: "2026-08-16T00:00:00.000Z",
+    sourceChangeObjectId: randomUUID(),
+    exporterDomainId,
+    peerDomainId: randomUUID(),
+    changeUrn: "urn:scp:hq:change:promote-me",
+    artifacts: [
+      { type: "oci", digest },
+      { type: "blob", digest: digestOf("b"), signatureRef: "https://ci.acme.invalid/sbom.sig" }
+    ]
+  });
+
+  it("§10.4: a change stamped ONLY the way the importer stamps (`artifactDigests[]`, no `artifact_digest`) is PICKED, and `signing.importedManifest` carries the manifest + signature verbatim, `exporterName: null` when no peer row names the exporter", async () => {
+    const component = await createOrphanComponent(admin, uniq("imported"));
+    const digest = digestOf("8");
+    const exporterDomainId = randomUUID();
+    const promotedFromDomain = randomUUID();
+    const change = await proposeWith(component.id, { repo: "acme/checkout" }); // no digest yet
+    expect(
+      (await pipelineOf(component.id)).artifact,
+      "nothing to pick before the stamp"
+    ).toBeNull();
+    const manifest = importedStamp(digest, exporterDomainId);
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            repo: "acme/checkout",
+            promotedFromDomain,
+            sourceChangeObjectId: manifest.sourceChangeObjectId,
+            artifactDigests: [digest],
+            promotionManifest: manifest,
+            manifestSignature: "MEUCIQDimported==",
+            boundaryBundleChecksums: ["d".repeat(64)]
+          }
+        })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+
+    const { artifact } = await pipelineOf(component.id);
+    expect(artifact, "picked by the importer's `artifactDigests[]` alone").not.toBeNull();
+    expect(artifact!.changeId).toBe(change.id);
+    expect(artifact!.digests).toEqual([digest]);
+    expect(artifact!.signing.importedManifest).toEqual({
+      manifest,
+      manifestSignature: "MEUCIQDimported==",
+      exporterDomainId,
+      exporterName: null,
+      importedFromDomain: promotedFromDomain,
+      artifactCount: 2
+    });
+    expect(artifact!.unknownFields).toEqual([]);
+
+    // The union is DE-DUPLICATED and ORDERED origin-first: an imported change usually carries the
+    // exporter's own key too (the exporter's sourceRef is spread onto the import).
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            artifact_digest: [digestOf("9"), digest],
+            artifactDigests: [digest, digestOf("9")],
+            promotedFromDomain,
+            promotionManifest: manifest,
+            manifestSignature: "MEUCIQDimported=="
+          }
+        })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    const both = (await pipelineOf(component.id)).artifact!;
+    expect(both.digests).toEqual([digestOf("9"), digest]);
+    expect(both.signing.importedManifest!.artifactCount).toBe(2);
+  });
+
+  it("§10.4: a stamped manifest WITHOUT a signature is null + `importedManifest:unsigned`; one that does not parse is null + `importedManifest:unparseable`; a `promotedFromDomain` that is not a string reads null", async () => {
+    const component = await createOrphanComponent(admin, uniq("imported-stated"));
+    const digest = digestOf("5");
+    const change = await proposeWith(component.id, { artifactDigest: digest });
+    const manifest = importedStamp(digest, randomUUID());
+
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            artifactDigest: digest,
+            artifactDigests: [digest],
+            promotedFromDomain: 42,
+            promotionManifest: manifest
+          }
+        })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    const unsigned = (await pipelineOf(component.id)).artifact!;
+    expect(unsigned.digests).toEqual([digest]);
+    expect(unsigned.signing.importedManifest).toBeNull();
+    expect(unsigned.unknownFields).toEqual(["importedManifest:unsigned"]);
+
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            artifactDigest: digest,
+            promotionManifest: { manifestVersion: "scp-promotion-manifest/v1", artifacts: "none" },
+            manifestSignature: "MEUCIQ=="
+          }
+        })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    const unparseable = (await pipelineOf(component.id)).artifact!;
+    expect(unparseable.signing.importedManifest).toBeNull();
+    expect(unparseable.unknownFields).toEqual(["importedManifest:unparseable"]);
+
+    // An EMPTY-string signature is no signature.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: { artifactDigest: digest, promotionManifest: manifest, manifestSignature: "" }
+        })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    const empty = (await pipelineOf(component.id)).artifact!;
+    expect(empty.signing.importedManifest).toBeNull();
+    expect(empty.unknownFields).toEqual(["importedManifest:unsigned"]);
+  });
 });
