@@ -52,7 +52,9 @@ async function api(method, path, body) {
     json = text;
   }
   if (!res.ok) {
-    const err = new Error(`${method} ${path} -> ${res.status}: ${JSON.stringify(json).slice(0, 300)}`);
+    const err = new Error(
+      `${method} ${path} -> ${res.status}: ${JSON.stringify(json).slice(0, 300)}`
+    );
     err.status = res.status;
     throw err;
   }
@@ -132,7 +134,10 @@ async function main() {
   // can answer "AWS or hardware? which account?" from STORED data — never from the name. Four AWS
   // targets in one account and two hardware-ish ones with no account, so both answers are visible.
   // `PUT` REPLACES the properties bag (objects-repo upsert), so every body carries the whole facet —
-  // a `{name}`-only PUT on an existing row would silently reset it to `{}`.
+  // a `{name}`-only PUT on an existing row would silently reset it to `{}`. The existing bag is READ
+  // first and the facet layered on (the same discipline as `seed-outpost-fixture.mjs`), so a
+  // property a reviewer hand-added to a target survives a re-run; the fixture is authoritative for
+  // its own four keys only. A 404 on the read is a fresh target — an empty bag.
   // `environment` is deliberately NOT set: a target with BOTH environment and region non-empty is
   // a "declared region target" and reconcile REFUSES its deploys without a region binding (M15.6
   // regional gate) — the facet must describe the place, not arm a gate the fixture has no binding
@@ -167,7 +172,23 @@ async function main() {
     ["edge-eu", "edge-eu (region)", { substrate: "vm" }],
     ["build-host-01", "build-host-01 (host)", { substrate: "bare-metal" }]
   ]) {
-    const t = await put("deployment-targets", urn("deployment-target", slug), { name, properties });
+    const targetUrn = urn("deployment-target", slug);
+    let existingProperties = {};
+    try {
+      const existing = await api("GET", `/deployment-targets/${encodeURIComponent(targetUrn)}`);
+      if (existing?.properties && typeof existing.properties === "object") {
+        existingProperties = existing.properties;
+      }
+    } catch (e) {
+      if (e.status !== 404) {
+        failed.push(`deployment-targets ${targetUrn} (read before PUT): ${e.message}`);
+        continue;
+      }
+    }
+    const t = await put("deployment-targets", targetUrn, {
+      name,
+      properties: { ...existingProperties, ...properties }
+    });
     if (t) targets[slug] = t.id;
   }
 
@@ -221,7 +242,10 @@ async function main() {
     ["notifications-dispatcher", "notifications"]
   ];
   for (const [slug, svc] of componentSpec) {
-    const c = await put("components", urn("component", slug), { name: slug, service: urn("service", svc) });
+    const c = await put("components", urn("component", slug), {
+      name: slug,
+      service: urn("service", svc)
+    });
     if (c) components[slug] = c.id;
   }
 
@@ -255,7 +279,11 @@ async function main() {
   ];
   for (const [c, t] of placements) {
     if (!components[c] || !targets[t]) continue;
-    await post("/placements", { component: components[c], deploymentTarget: targets[t] }, `${c}@${t}`);
+    await post(
+      "/placements",
+      { component: components[c], deploymentTarget: targets[t] },
+      `${c}@${t}`
+    );
   }
 
   // ------------------------------------------------ release topology (waves, in order)
@@ -280,7 +308,11 @@ async function main() {
             {
               name: "prod",
               mode: "parallel",
-              targets: [targets["prod-cluster"], targets["us-east-1-prod"], targets["us-west-1-prod"]]
+              targets: [
+                targets["prod-cluster"],
+                targets["us-east-1-prod"],
+                targets["us-west-1-prod"]
+              ]
             }
           ]
         }
@@ -462,21 +494,45 @@ async function main() {
     // bucket, terraform'd) while RUNNING on clusters that platform-compute manages — the
     // owner's point (2026-08-12) that the sharing tiers COMPOSE per component: own bucket,
     // shared substrate, same journey.
-    ["checkout-api", "infrastructure", "terraform", "acme/checkout-infra", {
-      triggerUrl: "https://tfc.invalid/api/v2/runs"
-    }],
-    ["checkout-api", "image", "github", "acme/checkout", {
-      appId: "000000",
-      installationId: "000000",
-      owner: "acme",
-      repo: "checkout"
-    }],
-    ["identity-api", "configuration", "argocd", "identity-prod", {
-      serverUrl: "https://argocd.invalid"
-    }],
-    ["ledger-ingest", "infrastructure", "terraform", "acme/ledger-infra", {
-      triggerUrl: "https://tfc.invalid/api/v2/runs"
-    }]
+    [
+      "checkout-api",
+      "infrastructure",
+      "terraform",
+      "acme/checkout-infra",
+      {
+        triggerUrl: "https://tfc.invalid/api/v2/runs"
+      }
+    ],
+    [
+      "checkout-api",
+      "image",
+      "github",
+      "acme/checkout",
+      {
+        appId: "000000",
+        installationId: "000000",
+        owner: "acme",
+        repo: "checkout"
+      }
+    ],
+    [
+      "identity-api",
+      "configuration",
+      "argocd",
+      "identity-prod",
+      {
+        serverUrl: "https://argocd.invalid"
+      }
+    ],
+    [
+      "ledger-ingest",
+      "infrastructure",
+      "terraform",
+      "acme/ledger-infra",
+      {
+        triggerUrl: "https://tfc.invalid/api/v2/runs"
+      }
+    ]
   ];
   for (const [comp, type, pluginModule, externalRef, config] of bindings) {
     if (!components[comp]) continue;
@@ -571,8 +627,7 @@ async function main() {
   // no second change) — so the body below is FIXED, nothing time-dependent in it; (2) belt and
   // braces, skip the POST when a change already carries this digest, so a later edit to the body
   // (or a different serialization) can never mint a second artifact for the same digest.
-  const ARTIFACT_DIGEST =
-    "sha256:9c1f2e6b0a4d5c8e7f3b2a1d0e9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c";
+  const ARTIFACT_DIGEST = "sha256:9c1f2e6b0a4d5c8e7f3b2a1d0e9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c";
   const SBOM_DIGEST = "sha256:4e2a9d7c1b6f0e3a8c5d2b7f9a1e6c3d0b8f5a2e7c4d1b9f6a3e0c7d5b2f8a4e";
   if (components["checkout-api"]) {
     let alreadyReported = false;
@@ -643,11 +698,10 @@ async function main() {
   const platformSvc = await put("services", urn("service", "platform-compute"), {
     name: "platform-compute"
   });
-  const eks = await put(
-    "components",
-    urn("component", "eks-gamma"),
-    { name: "eks-gamma", service: urn("service", "platform-compute") }
-  );
+  const eks = await put("components", urn("component", "eks-gamma"), {
+    name: "eks-gamma",
+    service: urn("service", "platform-compute")
+  });
   if (platformSvc) {
     await post(
       `/services/${platformSvc.id}/owners`,
@@ -737,7 +791,9 @@ async function main() {
     created.push("services: secure-partition (domain-local container)");
   } catch (e) {
     if (e.status === 409)
-      created.push("services: secure-partition (already shared — published during review; left as-is)");
+      created.push(
+        "services: secure-partition (already shared — published during review; left as-is)"
+      );
     else failed.push(`services secure-partition: ${e.message}`);
   }
   await put(
@@ -808,7 +864,11 @@ async function main() {
         .publicKey.export({ type: "spki", format: "pem" })
         .toString()
         .trim();
-      await post("/federation/peers", { domainId, name, role: "outpost", publicKey }, `peer ${name}`);
+      await post(
+        "/federation/peers",
+        { domainId, name, role: "outpost", publicKey },
+        `peer ${name}`
+      );
     }
     await post(
       "/federation/outposts",

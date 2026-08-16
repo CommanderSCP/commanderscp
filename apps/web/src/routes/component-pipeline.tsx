@@ -55,7 +55,13 @@ import { SectionLabel } from "../components/ui/section-label";
 import { Skeleton } from "../components/ui/skeleton";
 import { Alert } from "../components/ui/alert";
 import { Input } from "../components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from "../components/ui/select";
 import {
   Table,
   TableBody,
@@ -572,7 +578,11 @@ function HoldSubnode({
  * execution boundary explicitly (charter principle 1) — removing the placement withdraws SCP's
  * OWN coordination record, it does not touch whatever is already running at the target.
  */
-export function RemovePlacementConfirmBody({ stageName }: { stageName: string }): React.JSX.Element {
+export function RemovePlacementConfirmBody({
+  stageName
+}: {
+  stageName: string;
+}): React.JSX.Element {
   // Plain `<p>`, not Radix's `DialogDescription` (house pattern: `domain-local.tsx`'s
   // `PublishConfirmBody`) — `DialogDescription` reads Radix's Dialog context, which is absent when
   // this renders standalone under `renderToStaticMarkup` for the confirm-copy tests.
@@ -871,7 +881,9 @@ export function PlaceAtTargetPicker({
       <Select value={targetId} onValueChange={setTargetId}>
         <SelectTrigger data-testid="place-at-target-select">
           <SelectValue
-            placeholder={targetsQuery.isLoading ? "Loading targets…" : "Select a deployment target…"}
+            placeholder={
+              targetsQuery.isLoading ? "Loading targets…" : "Select a deployment target…"
+            }
           />
         </SelectTrigger>
         <SelectContent>
@@ -1142,7 +1154,10 @@ export function laneNodes(
  * adjacent pair is untouched: `i > 0` is still the whole rule. Exported so the suppression itself is
  * assertable without standing up the fetching page around it.
  */
-export function sharedConnectorVisible(nodes: readonly Pick<LaneNode, "kind">[], i: number): boolean {
+export function sharedConnectorVisible(
+  nodes: readonly Pick<LaneNode, "kind">[],
+  i: number
+): boolean {
   return i > 0 && nodes[i - 1]?.kind !== "source";
 }
 
@@ -1503,9 +1518,9 @@ export function SourceMappingForm({
           data-testid="mapping-ref-input"
         />
         <p className="text-xs text-slate-500">
-          Empty matches any branch — the amber &ldquo;any branch&rdquo; warning below exists
-          because that is a genuinely broad rule, not a display quirk. There is no edit for a
-          mapping once created: to narrow this later, delete it and add the narrower one.
+          Empty matches any branch — the amber &ldquo;any branch&rdquo; warning below exists because
+          that is a genuinely broad rule, not a display quirk. There is no edit for a mapping once
+          created: to narrow this later, delete it and add the narrower one.
         </p>
       </div>
       <div className="flex flex-col gap-1">
@@ -1616,10 +1631,10 @@ export function DeleteMappingConfirmBody({
   // Plain `<p>`, not Radix's `DialogDescription` — see `RemovePlacementConfirmBody`'s comment.
   return (
     <p className="text-sm text-slate-500" data-testid="delete-mapping-confirm-body">
-      Deletes every {source.sourceKind} mapping with this exact repo, path, ref, and{" "}
-      {source.type} Type — if duplicate rows exist (discovery-accepted mappings can leave them),
-      ALL of them go at once, not just this one. This cannot be undone, and there is no edit: to
-      change a pattern, delete it and add the new one.
+      Deletes every {source.sourceKind} mapping with this exact repo, path, ref, and {source.type}{" "}
+      Type — if duplicate rows exist (discovery-accepted mappings can leave them), ALL of them go at
+      once, not just this one. This cannot be undone, and there is no edit: to change a pattern,
+      delete it and add the new one.
     </p>
   );
 }
@@ -1639,7 +1654,10 @@ function DeleteMappingButton({
   const [open, setOpen] = useState(false);
   const deleteMutation = useMutation({
     mutationFn: () =>
-      client.changeSources.deleteMapping(source.sourceKind, buildDeleteMappingPayload(source, componentId)),
+      client.changeSources.deleteMapping(
+        source.sourceKind,
+        buildDeleteMappingPayload(source, componentId)
+      ),
     onSuccess: async () => {
       setOpen(false);
       await queryClient.invalidateQueries({ queryKey: pipelineKey });
@@ -1768,7 +1786,10 @@ function SourceNode({
               className="w-full border-dashed bg-slate-50/60 shadow-none"
               data-testid="pipeline-source-tile-none"
             >
-              <CardContent className="py-3 text-xs text-slate-400" data-testid="pipeline-no-sources">
+              <CardContent
+                className="py-3 text-xs text-slate-400"
+                data-testid="pipeline-no-sources"
+              >
                 No repo is mapped to this component here, so no push can trigger this pipeline.
               </CardContent>
             </Card>
@@ -1776,7 +1797,10 @@ function SourceNode({
           <PromotionArrow state="pending" />
         </div>
       ) : (
-        <div className="flex flex-wrap items-stretch justify-center gap-2" data-testid="pipeline-source-row">
+        <div
+          className="flex flex-wrap items-stretch justify-center gap-2"
+          data-testid="pipeline-source-row"
+        >
           {hasCommanderInput && (
             // THE COMMANDER AS AN OPAQUE INPUT — its own tile, named from maintainedBy (name null
             // = origin matches no known peer; say the id rather than guess). Deliberately NO repo,
@@ -1796,9 +1820,17 @@ function SourceNode({
                   </p>
                   <div className="flex items-center gap-1.5 text-sm font-medium text-slate-900">
                     {upstream.role === "commander" ? (
-                      <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                      <CommanderStar
+                        className="size-3.5 shrink-0"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
                     ) : (
-                      <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                      <OutpostFort
+                        className="size-3.5 shrink-0"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
                     )}
                     {upstream.name ?? upstream.domainId}
                   </div>
@@ -1815,7 +1847,13 @@ function SourceNode({
               key={source.id}
               source={source}
               provenance={
-                !showProvenance ? null : source.mirrorOfShared ? "mirror" : domainLocal ? "local" : "domain"
+                !showProvenance
+                  ? null
+                  : source.mirrorOfShared
+                    ? "mirror"
+                    : domainLocal
+                      ? "local"
+                      : "domain"
               }
               componentId={componentId}
               pipelineKey={pipelineKey}
@@ -1827,7 +1865,10 @@ function SourceNode({
         // Domain-local component (ADR-0031, valid but rare): no commander input at all — its
         // repos are the whole source. Stated, so an operator comparing two pipelines sees WHY one
         // has a commander tile and the other does not.
-        <p className="mt-1 text-center text-xs text-slate-500" data-testid="pipeline-source-no-upstream">
+        <p
+          className="mt-1 text-center text-xs text-slate-500"
+          data-testid="pipeline-source-no-upstream"
+        >
           Domain-local — this repo is the source of truth; nothing upstream of it.
         </p>
       )}
@@ -1889,7 +1930,12 @@ function SourceTile({
   const [dialogOpen, setDialogOpen] = useState(false);
   const toggleMutation = useMutation({
     mutationFn: (input: { enabled: boolean; disabledUntil: string | null }) =>
-      client.changeSources.setMappingEnabled(source.sourceKind, source.id, input.enabled, input.disabledUntil),
+      client.changeSources.setMappingEnabled(
+        source.sourceKind,
+        source.id,
+        input.enabled,
+        input.disabledUntil
+      ),
     onSuccess: async () => {
       setDialogOpen(false);
       await queryClient.invalidateQueries({ queryKey: pipelineKey });
@@ -1898,11 +1944,23 @@ function SourceTile({
   const enabled = isMappingEnabled(source);
   const eyebrow =
     provenance === "mirror"
-      ? { text: "Mirror of global — held in this domain", title: "A local COPY of a source the commander owns — declared by the operator at create, never inferred from the repo host. Its source of truth is the commander." }
+      ? {
+          text: "Mirror of global — held in this domain",
+          title:
+            "A local COPY of a source the commander owns — declared by the operator at create, never inferred from the repo host. Its source of truth is the commander."
+        }
       : provenance === "domain"
-        ? { text: "Domain-specific — tracked only here", title: "Tracked only by this domain's outpost — network configuration, CIDR bands, anything that stays in-domain for classification. Its source of truth is here." }
+        ? {
+            text: "Domain-specific — tracked only here",
+            title:
+              "Tracked only by this domain's outpost — network configuration, CIDR bands, anything that stays in-domain for classification. Its source of truth is here."
+          }
         : provenance === "local"
-          ? { text: "Domain-local", title: "A domain-local component's repo (ADR-0031): the whole source of truth, nothing upstream." }
+          ? {
+              text: "Domain-local",
+              title:
+                "A domain-local component's repo (ADR-0031): the whole source of truth, nothing upstream."
+            }
           : null;
   const testid =
     provenance === "mirror"
@@ -1920,7 +1978,10 @@ function SourceTile({
         {hasHeader && (
           <CardHeader className="pb-1">
             {eyebrow && (
-              <p className="text-[10px] font-medium uppercase tracking-wide text-slate-400" title={eyebrow.title}>
+              <p
+                className="text-[10px] font-medium uppercase tracking-wide text-slate-400"
+                title={eyebrow.title}
+              >
                 {eyebrow.text}
               </p>
             )}
@@ -1945,60 +2006,63 @@ function SourceTile({
             const sources = [source];
             void sources;
             const renderRow = (source: ComponentPipelineResponse["sources"][number]) => (
-
-            <div key={source.id} data-testid="pipeline-source-mapping">
-              <span className="text-slate-400">{source.sourceKind}</span>{" "}
-              <ConsoleLink href={source.url} testid="pipeline-source-link">
-                <span className="font-mono">{source.repoPattern ?? "(any repo)"}</span>
-              </ConsoleLink>{" "}
-              {source.pathPattern ? (
-                <span className="font-mono text-slate-500">{source.pathPattern}</span>
-              ) : (
-                // A null path matches EVERY file in the repo — a far broader rule than a blank cell
-                // suggests, and on the live estate a real one worth noticing.
-                <span
-                  className="text-amber-700"
-                  title="This mapping has no path filter, so any commit anywhere in the repo releases this component."
-                  data-testid="pipeline-source-whole-repo"
-                >
-                  whole repo
+              <div key={source.id} data-testid="pipeline-source-mapping">
+                <span className="text-slate-400">{source.sourceKind}</span>{" "}
+                <ConsoleLink href={source.url} testid="pipeline-source-link">
+                  <span className="font-mono">{source.repoPattern ?? "(any repo)"}</span>
+                </ConsoleLink>{" "}
+                {source.pathPattern ? (
+                  <span className="font-mono text-slate-500">{source.pathPattern}</span>
+                ) : (
+                  // A null path matches EVERY file in the repo — a far broader rule than a blank cell
+                  // suggests, and on the live estate a real one worth noticing.
+                  <span
+                    className="text-amber-700"
+                    title="This mapping has no path filter, so any commit anywhere in the repo releases this component."
+                    data-testid="pipeline-source-whole-repo"
+                  >
+                    whole repo
+                  </span>
+                )}{" "}
+                {source.refPattern ? (
+                  <span className="font-mono text-slate-500">{source.refPattern}</span>
+                ) : (
+                  // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
+                  // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
+                  // `main` to different pipelines from looking identical here (ADR-0030 §1 — the
+                  // dev-branch-pipelines ADR, not this branch's ADR-0032).
+                  <span
+                    className="text-amber-700"
+                    title="This mapping has no ref filter, so a push to any branch releases this component."
+                    data-testid="pipeline-source-any-branch"
+                  >
+                    any branch
+                  </span>
+                )}{" "}
+                {source.classification && (
+                  // Declared by the operator, never inferred from the branch name — and inert for
+                  // enforcement (ADR-0030 §3), so this is a label and nothing more.
+                  <span
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
+                    title="Operator-declared pipeline classification. UI/reporting only — it grants no scan exemption."
+                    data-testid="pipeline-source-classification"
+                  >
+                    {source.classification}
+                  </span>
+                )}{" "}
+                {/* §1.6: the forward glyph is ArrowRight — the rendered `→` literal stays dead. */}
+                <span className="inline-flex items-center gap-1 text-slate-400">
+                  <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                  {source.type}
                 </span>
-              )}{" "}
-              {source.refPattern ? (
-                <span className="font-mono text-slate-500">{source.refPattern}</span>
-              ) : (
-                // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
-                // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
-                // `main` to different pipelines from looking identical here (ADR-0030 §1 — the
-                // dev-branch-pipelines ADR, not this branch's ADR-0032).
-                <span
-                  className="text-amber-700"
-                  title="This mapping has no ref filter, so a push to any branch releases this component."
-                  data-testid="pipeline-source-any-branch"
-                >
-                  any branch
-                </span>
-              )}{" "}
-              {source.classification && (
-                // Declared by the operator, never inferred from the branch name — and inert for
-                // enforcement (ADR-0030 §3), so this is a label and nothing more.
-                <span
-                  className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
-                  title="Operator-declared pipeline classification. UI/reporting only — it grants no scan exemption."
-                  data-testid="pipeline-source-classification"
-                >
-                  {source.classification}
-                </span>
-              )}{" "}
-              {/* §1.6: the forward glyph is ArrowRight — the rendered `→` literal stays dead. */}
-              <span className="inline-flex items-center gap-1 text-slate-400">
-                <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
-                {source.type}
-              </span>
-              {/* A1: no edit exists on this table, so the row's only write is delete (see the
+                {/* A1: no edit exists on this table, so the row's only write is delete (see the
                   confirm's own copy for why it is never a bare click). */}
-              <DeleteMappingButton source={source} componentId={componentId} pipelineKey={pipelineKey} />
-            </div>
+                <DeleteMappingButton
+                  source={source}
+                  componentId={componentId}
+                  pipelineKey={pipelineKey}
+                />
+              </div>
             );
             return renderRow(source);
           })()}
@@ -2105,7 +2169,8 @@ export function SourceOpenCloseBody({
   onCancel: () => void;
 }): React.JSX.Element {
   const [duration, setDuration] = useState<string>("manual");
-  const chosen = CLOSE_DURATIONS.find((d) => d.key === duration) ?? CLOSE_DURATIONS[CLOSE_DURATIONS.length - 1]!;
+  const chosen =
+    CLOSE_DURATIONS.find((d) => d.key === duration) ?? CLOSE_DURATIONS[CLOSE_DURATIONS.length - 1]!;
   const repo = source.repoPattern ?? "(any repo)";
   return (
     <>
@@ -2115,16 +2180,18 @@ export function SourceOpenCloseBody({
       <div className="flex flex-col gap-3 text-sm text-slate-600">
         <p>
           <span className="font-mono text-slate-900">{repo}</span>
-          {source.pathPattern ? <span className="font-mono text-slate-500"> {source.pathPattern}</span> : null}
+          {source.pathPattern ? (
+            <span className="font-mono text-slate-500"> {source.pathPattern}</span>
+          ) : null}
           {" — "}
           <span className="text-slate-500">{source.type}</span>
         </p>
         {currentlyOpen ? (
           <>
             <p>
-              While closed, <strong>a push matching this rule starts no release</strong>. The mapping
-              stays declared — this is not a delete — and re-opens either automatically when the period
-              ends, or when you open it again here.
+              While closed, <strong>a push matching this rule starts no release</strong>. The
+              mapping stays declared — this is not a delete — and re-opens either automatically when
+              the period ends, or when you open it again here.
             </p>
             <fieldset className="flex flex-col gap-1.5" data-testid="close-duration">
               <legend className="text-xs font-medium text-slate-700">Close for</legend>
@@ -2151,8 +2218,8 @@ export function SourceOpenCloseBody({
           </>
         ) : (
           <p>
-            Opening means <strong>a push matching this rule starts a release again</strong>, from the
-            next matching push onward.
+            Opening means <strong>a push matching this rule starts a release again</strong>, from
+            the next matching push onward.
             {source.disabledUntil
               ? ` It was due to re-open automatically at ${new Date(source.disabledUntil).toLocaleString()}; opening now brings that forward.`
               : ""}
@@ -2176,14 +2243,19 @@ export function SourceOpenCloseBody({
               currentlyOpen
                 ? {
                     enabled: false,
-                    disabledUntil: chosen.ms === null ? null : new Date(Date.now() + chosen.ms).toISOString()
+                    disabledUntil:
+                      chosen.ms === null ? null : new Date(Date.now() + chosen.ms).toISOString()
                   }
                 : { enabled: true, disabledUntil: null }
             )
           }
           data-testid="source-open-close-confirm"
         >
-          {busy ? "…" : currentlyOpen ? `Close ${chosen.ms === null ? "until re-opened" : `for ${chosen.label}`}` : "Open"}
+          {busy
+            ? "…"
+            : currentlyOpen
+              ? `Close ${chosen.ms === null ? "until re-opened" : `for ${chosen.label}`}`
+              : "Open"}
         </Button>
       </DialogFooter>
     </>
@@ -2220,7 +2292,9 @@ function whenLabel(value: string): string {
  *  carried verbatim; `promotionExports` follows the same newest-last convention). Null when the
  *  change lists none — a stated absence the tiles say out loud. */
 export function latestDigest(artifact: ComponentPipelineArtifact): string | null {
-  return artifact.digests.length > 0 ? (artifact.digests[artifact.digests.length - 1] ?? null) : null;
+  return artifact.digests.length > 0
+    ? (artifact.digests[artifact.digests.length - 1] ?? null)
+    : null;
 }
 
 /** The newest export stamp — newest LAST (`signing.promotionExports` is append order, §9.4). */
@@ -2281,7 +2355,11 @@ const EXPORTS_UNPARSEABLE_TITLE =
 
 /** The "(some export stamps could not be read)" suffix, or nothing — appended to every PM/sign line
  *  so an unreadable stamp is never silently dropped from a rendered list. */
-function ExportsUnparseableNote({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element | null {
+function ExportsUnparseableNote({
+  artifact
+}: {
+  artifact: ComponentPipelineArtifact;
+}): React.JSX.Element | null {
   if (!exportsUnparseable(artifact)) return null;
   return (
     <span
@@ -2297,12 +2375,16 @@ function ExportsUnparseableNote({ artifact }: { artifact: ComponentPipelineArtif
 
 /** Whether a Build tile has anything to REVIEW: an SBOM reference or at least one signed export. */
 export function buildHasReview(artifact: ArtifactOnWire): boolean {
-  return Boolean(artifact && (artifact.sbom !== null || artifact.signing.promotionExports.length > 0));
+  return Boolean(
+    artifact && (artifact.sbom !== null || artifact.signing.promotionExports.length > 0)
+  );
 }
 
 /** Whether a Scan & sign tile has anything to REVIEW: at least one scan row or one signed export. */
 export function scanSignHasReview(artifact: ArtifactOnWire): boolean {
-  return Boolean(artifact && (artifact.scans.length > 0 || artifact.signing.promotionExports.length > 0));
+  return Boolean(
+    artifact && (artifact.scans.length > 0 || artifact.signing.promotionExports.length > 0)
+  );
 }
 
 /** One line per rule; the field labels are the wire's own names. */
@@ -2380,7 +2462,10 @@ function BuildNode({
           </p>
         ) : (
           bindings.map((binding) => (
-            <div key={`${binding.type}:${binding.externalRef}`} data-testid="pipeline-build-executor">
+            <div
+              key={`${binding.type}:${binding.externalRef}`}
+              data-testid="pipeline-build-executor"
+            >
               <span className="text-slate-400">{binding.type}</span>{" "}
               <ConsoleLink href={binding.url} testid="pipeline-build-link">
                 <span className="font-mono">{binding.externalRef || "—"}</span>
@@ -2412,13 +2497,21 @@ function BuildArtifactLines({
   }
   if (artifact === null) {
     return (
-      <p className="text-slate-400" data-testid="pipeline-build-artifact" data-artifact-state="none">
+      <p
+        className="text-slate-400"
+        data-testid="pipeline-build-artifact"
+        data-artifact-state="none"
+      >
         no artifact yet — no change of this component reports an artifact digest
       </p>
     );
   }
   const newest = latestExport(artifact);
-  const sbomState = artifact.sbom ? "present" : sbomUnparseable(artifact) ? "unparseable" : "absent";
+  const sbomState = artifact.sbom
+    ? "present"
+    : sbomUnparseable(artifact)
+      ? "unparseable"
+      : "absent";
   const pmState = newest ? "signed" : exportsUnparseable(artifact) ? "unparseable" : "absent";
   return (
     <>
@@ -2451,9 +2544,12 @@ function BuildArtifactLines({
         <span className="text-slate-400">PM</span>{" "}
         {newest ? (
           <>
-            <span title={`Promotion manifest signed at export ${newest.exportedAt} for peer ${newest.peerDomainId}.`}>
-              signed for <span className="font-mono">{peerLabel(newest)}</span> · {whenLabel(newest.exportedAt)} ·{" "}
-              {newest.manifest.artifacts.length} artifact{newest.manifest.artifacts.length === 1 ? "" : "s"}
+            <span
+              title={`Promotion manifest signed at export ${newest.exportedAt} for peer ${newest.peerDomainId}.`}
+            >
+              signed for <span className="font-mono">{peerLabel(newest)}</span> ·{" "}
+              {whenLabel(newest.exportedAt)} · {newest.manifest.artifacts.length} artifact
+              {newest.manifest.artifacts.length === 1 ? "" : "s"}
             </span>
             <ExportsUnparseableNote artifact={artifact} />
           </>
@@ -2509,7 +2605,11 @@ function BuildReviewDialog({
  * stored value VERBATIM: the SBOM reference as reported, and each signed export's manifest as the
  * commander stamped it — the manifest, whether a signature is present, and the key fingerprint.
  */
-export function BuildReviewBody({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element {
+export function BuildReviewBody({
+  artifact
+}: {
+  artifact: ComponentPipelineArtifact;
+}): React.JSX.Element {
   const exports = artifact.signing.promotionExports;
   return (
     <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-sm text-slate-700">
@@ -2574,7 +2674,11 @@ export function BuildReviewBody({ artifact }: { artifact: ComponentPipelineArtif
                   rows={[
                     { label: "manifestVersion", value: entry.manifest.manifestVersion, mono: true },
                     { label: "createdAt", value: entry.manifest.createdAt, mono: true },
-                    { label: "exporterDomainId", value: entry.manifest.exporterDomainId, mono: true },
+                    {
+                      label: "exporterDomainId",
+                      value: entry.manifest.exporterDomainId,
+                      mono: true
+                    },
                     {
                       label: "peer",
                       value: (
@@ -2637,7 +2741,13 @@ export function BuildNodeForTest(props: {
   artifact: ArtifactOnWire;
   instanceRole?: InstanceRole;
 }): React.JSX.Element {
-  return <BuildNode bindings={props.bindings} artifact={props.artifact} instanceRole={props.instanceRole} />;
+  return (
+    <BuildNode
+      bindings={props.bindings}
+      artifact={props.artifact}
+      instanceRole={props.instanceRole}
+    />
+  );
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -2700,7 +2810,8 @@ function RegistryNode({
             <span className="text-slate-400"> +{artifact.digests.length - 1} more</span>
           ) : null}{" "}
           <span className="text-slate-500">
-            from change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
+            from change{" "}
+            <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
           </span>
         </p>
       ) : artifact === undefined ? (
@@ -2839,13 +2950,22 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
                 {shortDigest(scan.digest)}
               </span>
               {" · "}
-              <span className={scan.status === "pass" ? "text-emerald-700" : scan.status === "fail" ? "text-red-700" : "text-amber-700"}>
+              <span
+                className={
+                  scan.status === "pass"
+                    ? "text-emerald-700"
+                    : scan.status === "fail"
+                      ? "text-red-700"
+                      : "text-amber-700"
+                }
+              >
                 {scan.status}
               </span>
               {" · "}
               {scan.counts ? (
                 <span title="critical / high / medium / low counts, as the scanner reported them">
-                  C{scan.counts.critical} H{scan.counts.high} M{scan.counts.medium} L{scan.counts.low}
+                  C{scan.counts.critical} H{scan.counts.high} M{scan.counts.medium} L
+                  {scan.counts.low}
                 </span>
               ) : (
                 <span className="text-slate-400">counts not recorded</span>
@@ -2892,7 +3012,11 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
           signing recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
         </p>
       ) : exports.length === 0 ? (
-        <p className="text-slate-400" data-testid="pipeline-sign-state" data-sign-state="not-signed">
+        <p
+          className="text-slate-400"
+          data-testid="pipeline-sign-state"
+          data-sign-state="not-signed"
+        >
           not signed yet — the promotion manifest is signed at export to a peer
         </p>
       ) : (
@@ -2908,7 +3032,8 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
                 <>
                   {" "}
                   <span className="text-slate-500" title={entry.keyFingerprint}>
-                    (key <span className="font-mono">{shortFingerprint(entry.keyFingerprint)}</span>)
+                    (key <span className="font-mono">{shortFingerprint(entry.keyFingerprint)}</span>
+                    )
                   </span>
                 </>
               ) : (
@@ -2928,7 +3053,9 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
         {artifact.signing.originSignatureRefs.length === 0 ? (
           <span className="text-slate-400">not recorded</span>
         ) : (
-          <span className="break-all font-mono">{artifact.signing.originSignatureRefs.join(", ")}</span>
+          <span className="break-all font-mono">
+            {artifact.signing.originSignatureRefs.join(", ")}
+          </span>
         )}
       </p>
     </>
@@ -2963,14 +3090,19 @@ function ScanSignReviewDialog({
  * exports table, and a link to the change's detail page, which renders every control run's raw
  * evidence JSON (`change-detail.tsx`) — the one place the underlying rows live.
  */
-export function ScanSignReviewBody({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element {
+export function ScanSignReviewBody({
+  artifact
+}: {
+  artifact: ComponentPipelineArtifact;
+}): React.JSX.Element {
   const exports = artifact.signing.promotionExports;
   return (
     <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-sm text-slate-700">
       <span className="sr-only">Scan and signing results</span>
       <p className="text-xs text-slate-500">
-        change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span> · export
-        gate (E6): <span data-testid="scan-review-export-gate">{exportGateLabel(artifact.exportGate)}</span>
+        change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span> ·
+        export gate (E6):{" "}
+        <span data-testid="scan-review-export-gate">{exportGateLabel(artifact.exportGate)}</span>
       </p>
       <section data-testid="scan-review-scans">
         <SectionLabel>Scan results</SectionLabel>
@@ -3001,7 +3133,11 @@ export function ScanSignReviewBody({ artifact }: { artifact: ComponentPipelineAr
                   </TableCell>
                   <TableCell className="break-all font-mono text-xs">{scan.digest}</TableCell>
                   <TableCell>
-                    {scan.digestMatch === null ? "not recorded" : scan.digestMatch ? "true" : "false"}
+                    {scan.digestMatch === null
+                      ? "not recorded"
+                      : scan.digestMatch
+                        ? "true"
+                        : "false"}
                   </TableCell>
                   <TableCell>{scan.status}</TableCell>
                   <TableCell>
@@ -3076,14 +3212,19 @@ export function ScanSignReviewBody({ artifact }: { artifact: ComponentPipelineAr
         {artifact.signing.originSignatureRefs.length === 0 ? (
           <span className="text-slate-400">not recorded</span>
         ) : (
-          <span className="break-all font-mono">{artifact.signing.originSignatureRefs.join(", ")}</span>
+          <span className="break-all font-mono">
+            {artifact.signing.originSignatureRefs.join(", ")}
+          </span>
         )}
       </p>
       <p className="text-xs">
         <Link
           to="/changes/$id"
           params={{ id: artifact.changeId }}
-          className={cn("underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900", focusRing)}
+          className={cn(
+            "underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900",
+            focusRing
+          )}
           data-testid="scan-review-change-link"
         >
           raw evidence on the change
@@ -3391,9 +3532,7 @@ export function ComponentPipelinePage({
     <div className="flex flex-col gap-4">
       <PageHeader
         title={<span data-testid="component-name">{data.component.name}</span>}
-        description={
-          <span className="font-mono text-xs text-slate-500">{data.component.urn}</span>
-        }
+        description={<span className="font-mono text-xs text-slate-500">{data.component.urn}</span>}
         actions={
           <Link to="/graph/$idOrUrn" params={{ idOrUrn: data.component.id }}>
             <Button variant="outline" size="sm">
@@ -3456,8 +3595,8 @@ export function ComponentPipelinePage({
         <Card data-testid="pipeline-empty">
           <CardContent className="flex flex-col items-start gap-3 py-6 text-sm text-slate-600">
             <p>
-              This component has no placements and no release topology declaring any stages, so
-              it runs nowhere and nothing can deploy it.
+              This component has no placements and no release topology declaring any stages, so it
+              runs nowhere and nothing can deploy it.
             </p>
             <PlaceAtTargetPicker componentId={data.component.id} pipelineKey={pipelineKey} />
           </CardContent>

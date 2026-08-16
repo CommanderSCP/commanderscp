@@ -192,7 +192,9 @@ export const SERVER_OWNED_SOURCE_REF_KEYS: readonly string[] = [
 /** The server-owned keys PRESENT on a caller-supplied `sourceRef` (`[]` for a non-object). */
 export function serverOwnedSourceRefKeysIn(sourceRef: unknown): string[] {
   if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) return [];
-  return SERVER_OWNED_SOURCE_REF_KEYS.filter((key) => key in (sourceRef as Record<string, unknown>));
+  return SERVER_OWNED_SOURCE_REF_KEYS.filter(
+    (key) => key in (sourceRef as Record<string, unknown>)
+  );
 }
 
 /** `sourceRef` with every server-owned key REMOVED (a new object; the input is not mutated). */

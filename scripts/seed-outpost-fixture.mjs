@@ -56,7 +56,9 @@ async function api(method, path, body) {
     json = text;
   }
   if (!res.ok) {
-    const err = new Error(`${method} ${path} -> ${res.status}: ${JSON.stringify(json).slice(0, 300)}`);
+    const err = new Error(
+      `${method} ${path} -> ${res.status}: ${JSON.stringify(json).slice(0, 300)}`
+    );
     err.status = res.status;
     throw err;
   }

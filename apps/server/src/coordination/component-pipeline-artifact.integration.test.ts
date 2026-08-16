@@ -311,13 +311,14 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
 
     const { artifact } = await pipelineOf(component.id);
     expect(artifact!.scans, "one key ⇒ one row").toHaveLength(1);
-    expect(artifact!.scans[0], "the surviving row is the NEWER one, and it is the fail").toMatchObject(
-      {
-        controlRunId: newerFail.id,
-        status: "fail",
-        counts: { critical: 2, high: 0, medium: 0, low: 0 }
-      }
-    );
+    expect(
+      artifact!.scans[0],
+      "the surviving row is the NEWER one, and it is the fail"
+    ).toMatchObject({
+      controlRunId: newerFail.id,
+      status: "fail",
+      counts: { critical: 2, high: 0, medium: 0, low: 0 }
+    });
     expect(artifact!.scans.map((s) => s.controlRunId)).not.toContain(olderPass.id);
     // E6's own predicate is applied over ALL outcomes, not the reduced rows: the older passing
     // digest-bound row satisfies it. The projection reports E6 as it really decides — a tile that
@@ -397,7 +398,10 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
 
     await seedScan(change.id, d2, { status: "pass" });
     const covered = await pipelineOf(component.id);
-    expect(covered.artifact!.scans, "one row per (scanner, digest) — two digests, two rows").toHaveLength(2);
+    expect(
+      covered.artifact!.scans,
+      "one row per (scanner, digest) — two digests, two rows"
+    ).toHaveLength(2);
     expect(covered.artifact!.exportGate).toBe("pass");
   });
 

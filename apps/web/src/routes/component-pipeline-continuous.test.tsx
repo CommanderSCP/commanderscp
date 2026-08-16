@@ -65,7 +65,9 @@ vi.mock("@tanstack/react-router", async (importOriginal) => ({
  *  static render — same helper the writes test uses. */
 function renderWithQueryClient(node: React.JSX.Element): string {
   const queryClient = new QueryClient();
-  return renderToStaticMarkup(<QueryClientProvider client={queryClient}>{node}</QueryClientProvider>);
+  return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
+  );
 }
 
 const {
@@ -409,7 +411,9 @@ describe("the target's SUBSTRATE FACET — read from the target's declared prope
         })}
       />
     );
-    expect(html, "no values → no element, not an empty span").not.toContain("pipeline-target-facet");
+    expect(html, "no values → no element, not an empty span").not.toContain(
+      "pipeline-target-facet"
+    );
     // The name legitimately appears in the title and the hint; what must NOT happen is a facet
     // element carrying any of it. Assert on the helper directly for the same target.
     expect(
@@ -788,7 +792,9 @@ describe("the REGISTRY node names the registry this component publishes to, at t
     expect(html).toContain('data-testid="pipeline-node-registry"');
     expect(html).toContain('data-registry-state="declared"');
     const name = html.match(/data-testid="pipeline-registry-name"[^>]*>(.*?)<\/span>/)?.[1] ?? "";
-    expect(name, "the name and kind are read off the execution-system").toContain("hq-registry (gitea)");
+    expect(name, "the name and kind are read off the execution-system").toContain(
+      "hq-registry (gitea)"
+    );
     expect(html, "the repository is the edge's own property, after a separator").toMatch(
       /hq-registry \(gitea\).*·.*acme\/checkout-api/
     );
@@ -806,7 +812,9 @@ describe("the REGISTRY node names the registry this component publishes to, at t
     );
     expect(html).toContain("hq-registry (gitea)");
     expect(html).not.toContain("<a ");
-    expect(html, "no repository → no dangling separator").not.toMatch(/\(gitea\)<\/span><\/span> ·/);
+    expect(html, "no repository → no dangling separator").not.toMatch(
+      /\(gitea\)<\/span><\/span> ·/
+    );
   });
 
   it("ambiguous → says HOW MANY, in the amber attention tone, and does not name either", () => {
@@ -1443,7 +1451,8 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     url: null,
     ...over
   });
-  const tiles = (html: string, testid: string) => (html.match(new RegExp(`data-testid="${testid}"`, "g")) ?? []).length;
+  const tiles = (html: string, testid: string) =>
+    (html.match(new RegExp(`data-testid="${testid}"`, "g")) ?? []).length;
 
   it("three inputs (commander + mirror + domain-specific) render as THREE tiles, each its own card", () => {
     const html = renderWithQueryClient(
@@ -1472,7 +1481,11 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     const html = renderWithQueryClient(
       <SourceNodeForTest
         label="Source code"
-        sources={[src({ repoPattern: "acme/asg" }), src({ repoPattern: "acme/network" }), src({ repoPattern: "acme/ebs" })]}
+        sources={[
+          src({ repoPattern: "acme/asg" }),
+          src({ repoPattern: "acme/network" }),
+          src({ repoPattern: "acme/ebs" })
+        ]}
         upstream={SELF}
         domainLocal={false}
       />
@@ -1537,7 +1550,9 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
       { kind: "scan-sign" },
       { kind: "source" }
     ] as const;
-    expect(sharedConnectorVisible(nodes, 0), "no connector before the first node, ever").toBe(false);
+    expect(sharedConnectorVisible(nodes, 0), "no connector before the first node, ever").toBe(
+      false
+    );
     expect(
       sharedConnectorVisible(nodes, 1),
       "build follows a source — its shared connector is skipped; the source's own tiles already drew it"
@@ -1560,16 +1575,25 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
     const html = renderWithQueryClient(
       <SourceNodeForTest
         label="Source code"
-        sources={[source({ id: "019f0000-0000-7000-8000-00000000f004", enabled: false, effectivelyEnabled: false })]}
+        sources={[
+          source({
+            id: "019f0000-0000-7000-8000-00000000f004",
+            enabled: false,
+            effectivelyEnabled: false
+          })
+        ]}
         upstream={SELF}
         domainLocal={false}
       />
     );
-    expect(html, "the muted treatment — NodeShell's own dashed/quiet card").toContain("border-dashed");
-    expect(html).toContain("closed until re-opened — routes nothing");
-    expect(html, "the arrow beneath it carries the inert style, not an ordinary pending one").toContain(
-      'data-inert="true"'
+    expect(html, "the muted treatment — NodeShell's own dashed/quiet card").toContain(
+      "border-dashed"
     );
+    expect(html).toContain("closed until re-opened — routes nothing");
+    expect(
+      html,
+      "the arrow beneath it carries the inert style, not an ordinary pending one"
+    ).toContain('data-inert="true"');
     // THE ARROW IS THE SWITCH (owner, 2026-08-14): a closed source's arrow is a BUTTON that says
     // "closed", offers "click to open", and is RED (owner: "red should signify closed") — a
     // clickable switch, visibly distinct from the GREY of arrows that are not switches at all.
@@ -1646,14 +1670,24 @@ describe("a wave label carries the ORDER claim, not just membership", () => {
         account: null,
         cluster: null
       },
-      placement: { id: `019f0000-0000-7000-8000-${id.slice(-12).padStart(12, "0")}`, urn: `urn:scp:o:placement:${name}` }
+      placement: {
+        id: `019f0000-0000-7000-8000-${id.slice(-12).padStart(12, "0")}`,
+        urn: `urn:scp:o:placement:${name}`
+      }
     })
   });
 
   it("a declared wave says 'Wave N · name' — one wave, fanning out to its targets", () => {
     const html = renderWithQueryClient(
       <WaveRowForTest
-        wave={{ waveIndex: 1, name: "prod", entries: [entry("us-east-1-prod", "0000000000e1", 1), entry("us-west-1-prod", "0000000000e2", 1)] }}
+        wave={{
+          waveIndex: 1,
+          name: "prod",
+          entries: [
+            entry("us-east-1-prod", "0000000000e1", 1),
+            entry("us-west-1-prod", "0000000000e2", 1)
+          ]
+        }}
       />
     );
     expect(html).toContain("Wave 2");
@@ -1666,7 +1700,11 @@ describe("a wave label carries the ORDER claim, not just membership", () => {
   it("the off-topology row says the placements are UNORDERED — never 'Wave', never 'parallel'", () => {
     const html = renderWithQueryClient(
       <WaveRowForTest
-        wave={{ waveIndex: null, name: null, entries: [entry("gamma-cluster", "0000000000a1"), entry("prod-cluster", "0000000000a2")] }}
+        wave={{
+          waveIndex: null,
+          name: null,
+          entries: [entry("gamma-cluster", "0000000000a1"), entry("prod-cluster", "0000000000a2")]
+        }}
       />
     );
     expect(html).toContain('data-testid="pipeline-wave-unordered"');
@@ -1708,7 +1746,12 @@ describe("the arrow opens a dialog — closing offers a period or until-re-opene
     // the dialog rather than flipping state, and the dialog exists in the tree only when open —
     // asserted here by its absence in a static render (Radix portals nothing while closed).
     const html = renderWithQueryClient(
-      <SourceNodeForTest label="Source code" sources={[src({})]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+      <SourceNodeForTest
+        label="Source code"
+        sources={[src({})]}
+        upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }}
+        domainLocal={false}
+      />
     );
     expect(html).toContain('data-switch="open"');
     // (apostrophe HTML-escapes under static render — match the stable tail of the phrase)
@@ -1735,7 +1778,11 @@ describe("the arrow opens a dialog — closing offers a period or until-re-opene
   it("the OPEN dialog confirms too, and says what re-opens — including bringing a timed re-open forward", () => {
     const html = renderWithQueryClient(
       <SourceOpenCloseDialogForTest
-        source={src({ enabled: false, effectivelyEnabled: false, disabledUntil: "2026-08-20T12:00:00.000Z" })}
+        source={src({
+          enabled: false,
+          effectivelyEnabled: false,
+          disabledUntil: "2026-08-20T12:00:00.000Z"
+        })}
         currentlyOpen={false}
       />
     );
@@ -1748,12 +1795,28 @@ describe("the arrow opens a dialog — closing offers a period or until-re-opene
 
   it("a CLOSED tile's badge says until WHEN — a timed close and a manual close read differently", () => {
     const timed = renderWithQueryClient(
-      <SourceNodeForTest label="Source code" sources={[src({ enabled: false, effectivelyEnabled: false, disabledUntil: "2026-08-20T12:00:00.000Z" })]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          src({
+            enabled: false,
+            effectivelyEnabled: false,
+            disabledUntil: "2026-08-20T12:00:00.000Z"
+          })
+        ]}
+        upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }}
+        domainLocal={false}
+      />
     );
     expect(timed).toContain("closed until ");
     expect(timed).not.toContain("closed until re-opened");
     const manual = renderWithQueryClient(
-      <SourceNodeForTest label="Source code" sources={[src({ enabled: false, effectivelyEnabled: false })]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+      <SourceNodeForTest
+        label="Source code"
+        sources={[src({ enabled: false, effectivelyEnabled: false })]}
+        upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }}
+        domainLocal={false}
+      />
     );
     expect(manual).toContain("closed until re-opened");
   });
@@ -1762,7 +1825,18 @@ describe("the arrow opens a dialog — closing offers a period or until-re-opene
     // enabled still false on the row (the operator never re-opened), but the bound is in the past
     // so the matcher routes it — the arrow must be green, not shut, or the UI lies about a live rule.
     const html = renderWithQueryClient(
-      <SourceNodeForTest label="Source code" sources={[src({ enabled: false, effectivelyEnabled: true, disabledUntil: "2020-01-01T00:00:00.000Z" })]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          src({
+            enabled: false,
+            effectivelyEnabled: true,
+            disabledUntil: "2020-01-01T00:00:00.000Z"
+          })
+        ]}
+        upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }}
+        domainLocal={false}
+      />
     );
     expect(html).toContain('data-switch="open"');
     expect(html).not.toContain("routes nothing");
@@ -1783,9 +1857,19 @@ describe("grey is reserved for arrows that are not switches", () => {
         label="Source code"
         sources={[
           {
-            id: "019f0000-0000-7000-8000-00000000c001", sourceKind: "gitea", repoPattern: "field/x", pathPattern: null,
-            refPattern: null, type: "infrastructure", category: "infrastructure" as const, classification: null,
-            mirrorOfShared: false, enabled: false, disabledUntil: null, effectivelyEnabled: false, url: null
+            id: "019f0000-0000-7000-8000-00000000c001",
+            sourceKind: "gitea",
+            repoPattern: "field/x",
+            pathPattern: null,
+            refPattern: null,
+            type: "infrastructure",
+            category: "infrastructure" as const,
+            classification: null,
+            mirrorOfShared: false,
+            enabled: false,
+            disabledUntil: null,
+            effectivelyEnabled: false,
+            url: null
           }
         ]}
         upstream={{ domainId: "d-cmd", name: "hq-commander", isSelf: false, role: "commander" }}
@@ -1793,7 +1877,10 @@ describe("grey is reserved for arrows that are not switches", () => {
       />
     );
     // Split at the mapping tile: everything before it is the commander tile + its arrow.
-    const cmdPart = html.slice(0, html.indexOf('data-testid="pipeline-source-tile-domain-specific"'));
+    const cmdPart = html.slice(
+      0,
+      html.indexOf('data-testid="pipeline-source-tile-domain-specific"')
+    );
     const mapPart = html.slice(html.indexOf('data-testid="pipeline-source-tile-domain-specific"'));
     // Commander arrow: a plain div, grey (pending slate), no data-switch, not red.
     expect(cmdPart).toContain('data-testid="promotion-arrow"');
@@ -1888,7 +1975,11 @@ function promotionExport(over: Partial<Export> = {}): Export {
       changeUrn: "urn:scp:o:change:acme/checkout-api@1.4.2",
       artifacts: [
         { type: "oci", digest: DIGEST },
-        { type: "blob", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", signatureRef: "sig://sbom" }
+        {
+          type: "blob",
+          digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          signatureRef: "sig://sbom"
+        }
       ]
     },
     manifestSignature: "MEUCIQD…",
@@ -1940,19 +2031,18 @@ describe("the Scan & sign node — commander only, after Registry, before Config
       "wave"
     ]);
     const node = nodes[3] as { artifact: Artifact | null | undefined };
-    expect(node.artifact?.changeId, "the node CARRIES the artifact the tile renders from").toBe(CHANGE_ID);
+    expect(node.artifact?.changeId, "the node CARRIES the artifact the tile renders from").toBe(
+      CHANGE_ID
+    );
   });
 
   it("outpost: the SAME data draws the pre-§9.3 chain — no Scan & sign node", () => {
     for (const role of ["outpost", "retrans", undefined] as const) {
       const nodes = laneNodes(commanderLaneData(), ONE_WAVE, SOFTWARE_LANE, role);
-      expect(nodes.map((n) => n.kind), `role=${String(role)}`).toEqual([
-        "source",
-        "build",
-        "registry",
-        "source",
-        "wave"
-      ]);
+      expect(
+        nodes.map((n) => n.kind),
+        `role=${String(role)}`
+      ).toEqual(["source", "build", "registry", "source", "wave"]);
     }
   });
 
@@ -2030,12 +2120,17 @@ describe("the REGISTRY node body — the latest digest, or the stated absence", 
     expect(html, "the full digest is never lost, only folded").toContain(`title="${DIGEST}"`);
     expect(html).toContain("from change");
     expect(html).toContain("checkout-api@1.4.2");
-    expect(html, "a tile with a digest is no longer the muted dashed box").not.toContain("border-dashed");
+    expect(html, "a tile with a digest is no longer the muted dashed box").not.toContain(
+      "border-dashed"
+    );
   });
 
   it("with several digests, shows the LAST one and says how many more", () => {
     const html = renderToStaticMarkup(
-      <RegistryNodeForTest registry={registryDeclared()} artifact={artifact({ digests: [DIGEST_2, DIGEST] })} />
+      <RegistryNodeForTest
+        registry={registryDeclared()}
+        artifact={artifact({ digests: [DIGEST_2, DIGEST] })}
+      />
     );
     expect(html).toContain(shortDigest(DIGEST));
     expect(html).not.toContain(shortDigest(DIGEST_2));
@@ -2043,7 +2138,9 @@ describe("the REGISTRY node body — the latest digest, or the stated absence", 
   });
 
   it("artifact null → 'no artifact digest recorded yet' — an ABSENCE, not an unknown", () => {
-    const html = renderToStaticMarkup(<RegistryNodeForTest registry={registryDeclared()} artifact={null} />);
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest registry={registryDeclared()} artifact={null} />
+    );
     expect(html).toContain("no artifact digest recorded yet");
     expect(html).toContain('data-artifact-state="none"');
     expect(html).not.toContain("not observed yet");
@@ -2066,7 +2163,9 @@ describe("the REGISTRY node body — the latest digest, or the stated absence", 
 
 describe("the BUILD tile — SBOM and promotion manifest, present or stated absent", () => {
   it("older server: no SBOM/PM lines and no review affordance", () => {
-    const html = renderToStaticMarkup(<BuildNodeForTest bindings={[BUILD_BINDING]} artifact={undefined} />);
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={undefined} />
+    );
     expect(html).not.toContain("pipeline-build-sbom");
     expect(html).not.toContain("pipeline-build-pm");
     expect(html).not.toContain(REVIEW_BUILD);
@@ -2074,8 +2173,12 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
   });
 
   it("artifact null: says 'no artifact yet' — and is NOT clickable", () => {
-    const html = renderToStaticMarkup(<BuildNodeForTest bindings={[BUILD_BINDING]} artifact={null} />);
-    expect(html).toContain("no artifact yet — no change of this component reports an artifact digest");
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={null} />
+    );
+    expect(html).toContain(
+      "no artifact yet — no change of this component reports an artifact digest"
+    );
     expect(html).not.toContain(REVIEW_BUILD);
     expect(html).not.toContain("data-reviewable");
   });
@@ -2104,7 +2207,11 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
 
   it("SBOM present: `format specVersion · scanner scannerVersion · generatedAt`, linked to an http(s) location — and the tile IS clickable", () => {
     const html = renderToStaticMarkup(
-      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={artifact({ sbom: sbom() })} instanceRole="commander" />
+      <BuildNodeForTest
+        bindings={[BUILD_BINDING]}
+        artifact={artifact({ sbom: sbom() })}
+        instanceRole="commander"
+      />
     );
     expect(html).toContain("cyclonedx 1.5 · syft 1.0.0 · 2026-08-15T08:59:00Z");
     expect(html).toContain('href="https://ci.acme.invalid/sbom/checkout-api.cdx.json"');
@@ -2120,20 +2227,35 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     const html = renderToStaticMarkup(
       <BuildNodeForTest
         bindings={[]}
-        artifact={artifact({ sbom: sbom({ location: "registry.hq.invalid/acme/checkout-api@sha256:abcd", scanner: undefined, scannerVersion: undefined, generatedAt: undefined }) })}
+        artifact={artifact({
+          sbom: sbom({
+            location: "registry.hq.invalid/acme/checkout-api@sha256:abcd",
+            scanner: undefined,
+            scannerVersion: undefined,
+            generatedAt: undefined
+          })
+        })}
       />
     );
     expect(html).not.toContain("pipeline-build-sbom-link");
     expect(html).toContain('title="registry.hq.invalid/acme/checkout-api@sha256:abcd"');
-    expect(html, "only the present parts join — no dangling separator").toContain(">cyclonedx 1.5</span>");
+    expect(html, "only the present parts join — no dangling separator").toContain(
+      ">cyclonedx 1.5</span>"
+    );
   });
 
   it("PM present: `signed for <peer> · <when> · N artifacts` from the NEWEST export, and the tile IS clickable", () => {
-    const older = promotionExport({ exportedAt: "2026-08-14T11:00:00.000Z", peerName: "old-peer", peerDomainId: "019f0000-0000-7000-8000-00000000fee0" });
+    const older = promotionExport({
+      exportedAt: "2026-08-14T11:00:00.000Z",
+      peerName: "old-peer",
+      peerDomainId: "019f0000-0000-7000-8000-00000000fee0"
+    });
     const html = renderToStaticMarkup(
       <BuildNodeForTest
         bindings={[BUILD_BINDING]}
-        artifact={artifact({ signing: { promotionExports: [older, promotionExport()], originSignatureRefs: [] } })}
+        artifact={artifact({
+          signing: { promotionExports: [older, promotionExport()], originSignatureRefs: [] }
+        })}
         instanceRole="commander"
       />
     );
@@ -2149,7 +2271,12 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     const html = renderToStaticMarkup(
       <BuildNodeForTest
         bindings={[]}
-        artifact={artifact({ signing: { promotionExports: [promotionExport({ peerName: null })], originSignatureRefs: [] } })}
+        artifact={artifact({
+          signing: {
+            promotionExports: [promotionExport({ peerName: null })],
+            originSignatureRefs: []
+          }
+        })}
         instanceRole="commander"
       />
     );
@@ -2160,7 +2287,9 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     const html = renderToStaticMarkup(
       <BuildNodeForTest
         bindings={[]}
-        artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })}
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+        })}
         instanceRole="outpost"
       />
     );
@@ -2177,7 +2306,9 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
       />
     );
     expect(html).toContain('data-sbom-state="unparseable"');
-    expect(html).toContain("SBOM reference recorded but unreadable — it does not parse as an SBOM reference");
+    expect(html).toContain(
+      "SBOM reference recorded but unreadable — it does not parse as an SBOM reference"
+    );
     expect(html).not.toContain("no SBOM reported for this artifact");
     expect(html).not.toContain('data-sbom-state="absent"');
     expect(html, "the PM half is untouched by the SBOM flag").toContain('data-pm-state="absent"');
@@ -2194,8 +2325,12 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
         />
       );
       expect(html, role).toContain('data-pm-state="unparseable"');
-      expect(html, role).toContain("export stamp recorded but unreadable — some export stamps could not be read");
-      expect(html, role).not.toContain("not created — a promotion manifest is created at export to a peer");
+      expect(html, role).toContain(
+        "export stamp recorded but unreadable — some export stamps could not be read"
+      );
+      expect(html, role).not.toContain(
+        "not created — a promotion manifest is created at export to a peer"
+      );
       expect(html, role).not.toContain("imported manifest not projected yet");
       expect(html, `${role}: the SBOM half is untouched by the exports flag`).toContain(
         'data-sbom-state="absent"'
@@ -2222,7 +2357,13 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
 
   it("an empty unknownFields renders NO unparseable wording anywhere (the flag is read, not assumed)", () => {
     const html = renderToStaticMarkup(
-      <BuildNodeForTest bindings={[]} artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })} instanceRole="commander" />
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+        })}
+        instanceRole="commander"
+      />
     );
     expect(html).not.toContain("unreadable");
     expect(html).not.toContain("could not be read");
@@ -2233,13 +2374,22 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     expect(sbomLine(sbom({ specVersion: undefined, scannerVersion: undefined }))).toBe(
       "cyclonedx · syft · 2026-08-15T08:59:00Z"
     );
-    expect(sbomLine(sbom({ specVersion: undefined, scanner: undefined, scannerVersion: undefined, generatedAt: undefined }))).toBe(
-      "cyclonedx"
-    );
+    expect(
+      sbomLine(
+        sbom({
+          specVersion: undefined,
+          scanner: undefined,
+          scannerVersion: undefined,
+          generatedAt: undefined
+        })
+      )
+    ).toBe("cyclonedx");
   });
 
   it("sbomLocationHref links ONLY an http(s) URL", () => {
-    expect(sbomLocationHref("https://ci.acme.invalid/x.json")).toBe("https://ci.acme.invalid/x.json");
+    expect(sbomLocationHref("https://ci.acme.invalid/x.json")).toBe(
+      "https://ci.acme.invalid/x.json"
+    );
     expect(sbomLocationHref("http://ci.acme.invalid/x.json")).toBe("http://ci.acme.invalid/x.json");
     expect(sbomLocationHref("oci://registry.hq.invalid/acme/checkout-api@sha256:abcd")).toBeNull();
     expect(sbomLocationHref("registry.hq.invalid/acme/checkout-api@sha256:abcd")).toBeNull();
@@ -2272,7 +2422,11 @@ describe("the BUILD review dialog body renders the SBOM and the manifest VERBATI
 
   it("every promotion-manifest field, the artifacts table, signature presence and the key fingerprint", () => {
     const html = renderToStaticMarkup(
-      <BuildReviewBody artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })} />
+      <BuildReviewBody
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+        })}
+      />
     );
     expect(html).toContain("scp-promotion-manifest/v1");
     expect(html).toContain(">createdAt</dt>");
@@ -2307,14 +2461,18 @@ describe("the BUILD review dialog body renders the SBOM and the manifest VERBATI
 
   it("the review body states the projection's unknowns too: an unparseable SBOM, and unreadable stamps with or without a readable one beside them", () => {
     const bothUnreadable = renderToStaticMarkup(
-      <BuildReviewBody artifact={artifact({ unknownFields: ["sbom:unparseable", "promotionExports:unparseable"] })} />
+      <BuildReviewBody
+        artifact={artifact({ unknownFields: ["sbom:unparseable", "promotionExports:unparseable"] })}
+      />
     );
     expect(bothUnreadable).toContain('data-testid="build-review-sbom-unparseable"');
     expect(bothUnreadable).toContain("SBOM reference recorded but unreadable");
     expect(bothUnreadable).not.toContain("no SBOM reported for this artifact");
     expect(bothUnreadable).toContain('data-testid="build-review-exports-unparseable"');
     expect(bothUnreadable).toContain("export stamp recorded but unreadable");
-    expect(bothUnreadable).not.toContain("not created — a promotion manifest is created at export to a peer");
+    expect(bothUnreadable).not.toContain(
+      "not created — a promotion manifest is created at export to a peer"
+    );
 
     const besideReadable = renderToStaticMarkup(
       <BuildReviewBody
@@ -2324,7 +2482,9 @@ describe("the BUILD review dialog body renders the SBOM and the manifest VERBATI
         })}
       />
     );
-    expect(besideReadable, "the readable stamp is still rendered in full").toContain("scp-promotion-manifest/v1");
+    expect(besideReadable, "the readable stamp is still rendered in full").toContain(
+      "scp-promotion-manifest/v1"
+    );
     expect(besideReadable).toContain('data-testid="build-review-exports-unparseable"');
     expect(besideReadable).toContain("some export stamps could not be read");
   });
@@ -2413,7 +2573,19 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
 
   it("a `trivy` row with managed=false and an `openscap` row with managed=true — the mark follows the flag, not the name", () => {
     const html = renderToStaticMarkup(
-      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ scanner: "trivy", managed: true }), scan({ scanner: "openscap", method: "openscap", managed: false, controlRunId: "019f0000-0000-7000-8000-00000000ac03" })] })} />
+      <ScanSignNodeForTest
+        artifact={artifact({
+          scans: [
+            scan({ scanner: "trivy", managed: true }),
+            scan({
+              scanner: "openscap",
+              method: "openscap",
+              managed: false,
+              controlRunId: "019f0000-0000-7000-8000-00000000ac03"
+            })
+          ]
+        })}
+      />
     );
     const rows = html.split('data-testid="pipeline-scan-row"').slice(1);
     expect(rows[0]).toContain(">managed<");
@@ -2421,7 +2593,9 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   });
 
   it("counts the evidence omitted → 'counts not recorded', never zeros", () => {
-    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact({ scans: [scan({ counts: null })] })} />);
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ counts: null })] })} />
+    );
     expect(html).toContain("counts not recorded");
     expect(html).not.toContain("C0 H0 M0 L0");
   });
@@ -2431,7 +2605,14 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
       <ScanSignNodeForTest
         artifact={artifact({
           signing: {
-            promotionExports: [promotionExport(), promotionExport({ peerName: null, peerDomainId: "019f0000-0000-7000-8000-00000000fee2", exportedAt: "2026-08-15T12:00:00.000Z" })],
+            promotionExports: [
+              promotionExport(),
+              promotionExport({
+                peerName: null,
+                peerDomainId: "019f0000-0000-7000-8000-00000000fee2",
+                exportedAt: "2026-08-15T12:00:00.000Z"
+              })
+            ],
             originSignatureRefs: []
           }
         })}
@@ -2444,13 +2625,19 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     expect(html).toContain("019f0000-0000-7000-8000-00000000fee2");
     expect(html).toContain(`(key <span class="font-mono">${KEY_FP.slice(0, 16)}…</span>)`);
     expect(html).toContain(`title="${KEY_FP}"`);
-    expect(html, "the scan half is still 'not run'").toContain("not run — no scan result recorded for");
+    expect(html, "the scan half is still 'not run'").toContain(
+      "not run — no scan result recorded for"
+    );
     expect(html).toContain(REVIEW_SCAN);
   });
 
   it("an origin signatureRef, when one exists, is listed instead of 'not recorded'", () => {
     const html = renderToStaticMarkup(
-      <ScanSignNodeForTest artifact={artifact({ signing: { promotionExports: [], originSignatureRefs: ["sig://origin"] } })} />
+      <ScanSignNodeForTest
+        artifact={artifact({
+          signing: { promotionExports: [], originSignatureRefs: ["sig://origin"] }
+        })}
+      />
     );
     const line = html.slice(html.indexOf('data-testid="pipeline-origin-signature"'));
     expect(line).toContain("sig://origin");
@@ -2465,13 +2652,19 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
 
   it("`promotionExports:unparseable` with no readable export → sign-state 'unparseable', never 'not signed yet'", () => {
     const html = renderToStaticMarkup(
-      <ScanSignNodeForTest artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })} />
+      <ScanSignNodeForTest
+        artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })}
+      />
     );
     expect(html).toContain('data-sign-state="unparseable"');
-    expect(html).toContain("signing recorded but unreadable — some export stamps could not be read");
+    expect(html).toContain(
+      "signing recorded but unreadable — some export stamps could not be read"
+    );
     expect(html).not.toContain("not signed yet");
     expect(html).not.toContain('data-sign-state="not-signed"');
-    expect(html, "the scan half is untouched by the exports flag").toContain('data-scan-state="not-run"');
+    expect(html, "the scan half is untouched by the exports flag").toContain(
+      'data-scan-state="not-run"'
+    );
   });
 
   it("`promotionExports:unparseable` beside a readable export → the signed rows stay, plus the note", () => {
@@ -2487,7 +2680,13 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     expect(html).toContain("manifest signed for");
     expect(html).toContain("(some export stamps could not be read)");
     expect(
-      renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })} />),
+      renderToStaticMarkup(
+        <ScanSignNodeForTest
+          artifact={artifact({
+            signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+          })}
+        />
+      ),
       "no flag → no note"
     ).not.toContain("could not be read");
   });
@@ -2498,13 +2697,32 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
     const html = renderToStaticMarkup(
       <ScanSignReviewBody
         artifact={artifact({
-          scans: [scan(), scan({ managed: true, threshold: null, digestMatch: null, controlRunId: "019f0000-0000-7000-8000-00000000ac02" })],
+          scans: [
+            scan(),
+            scan({
+              managed: true,
+              threshold: null,
+              digestMatch: null,
+              controlRunId: "019f0000-0000-7000-8000-00000000ac02"
+            })
+          ],
           exportGate: "pass",
           signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
         })}
       />
     );
-    for (const head of ["method", "scanner", "digest", "digestMatch", "status", "counts", "threshold", "evaluatedAt", "managed", "controlRunId"]) {
+    for (const head of [
+      "method",
+      "scanner",
+      "digest",
+      "digestMatch",
+      "status",
+      "counts",
+      "threshold",
+      "evaluatedAt",
+      "managed",
+      "controlRunId"
+    ]) {
       expect(html, `column ${head}`).toContain(`>${head}</th>`);
     }
     expect(html.split('data-testid="scan-review-row"').length - 1).toBe(2);
@@ -2519,7 +2737,14 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
     expect(html).toContain('data-testid="scan-review-export-gate"');
     expect(html).toContain(">pass</span>");
     // exports table
-    for (const head of ["peer", "exportedAt", "checksum", "keyFingerprint", "signature", "artifacts"]) {
+    for (const head of [
+      "peer",
+      "exportedAt",
+      "checksum",
+      "keyFingerprint",
+      "signature",
+      "artifacts"
+    ]) {
       expect(html, `export column ${head}`).toContain(`>${head}</th>`);
     }
     expect(html).toContain("c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00");
@@ -2539,7 +2764,9 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
 
   it("unreadable export stamps are stated in the dialog — alone, and beside a readable one", () => {
     const alone = renderToStaticMarkup(
-      <ScanSignReviewBody artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })} />
+      <ScanSignReviewBody
+        artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })}
+      />
     );
     expect(alone).toContain('data-testid="scan-review-exports-unparseable"');
     expect(alone).toContain("signing recorded but unreadable");
