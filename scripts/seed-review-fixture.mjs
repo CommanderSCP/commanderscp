@@ -374,6 +374,14 @@ async function main() {
   // the three lanes differ between components rather than all showing the same thing.
   const mappings = [
     ["checkout-api", "github", "acme/checkout", "services/api/**", "image"],
+    // The GLOBALLY SHARED inputs to checkout-api's pipeline (outpost-ui.md §9.3a, owner
+    // 2026-08-14): the commander is the ONE place that knows the true shared repos — every outpost
+    // sees only "source: the commander". The paired outpost fixture mirrors the first as
+    // `field/mirror-of-shared-asg-iac` (mirrorOfShared) and overlays the second with its own
+    // `field/checkout-overlays`; without these two here the commander's Infrastructure lane read
+    // "no repo is mapped", which contradicted the very story the outpost tiles tell.
+    ["checkout-api", "github", "acme/platform-iac", "asg/**", "infrastructure"],
+    ["checkout-api", "github", "acme/checkout-config", "helm/**", "configuration"],
     ["checkout-worker", "github", "acme/checkout", "services/worker/**", "image"],
     ["identity-api", "github", "acme/identity", "**", "configuration"],
     ["ledger-ingest", "gitlab", "acme/ledger-infra", "terraform/**", "infrastructure"]
