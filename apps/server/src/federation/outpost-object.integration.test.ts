@@ -262,7 +262,10 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
     const status = await admin.federation.status();
     expect(status.selfOutpost?.objectId).toBe(config.objectId);
     expect(status.selfOutpost?.trustTier).toBe("commercial");
-    expect(status.peers.some((p) => p.peer.id === self.domainId), "self is not a peer").toBe(false);
+    expect(
+      status.peers.some((p) => p.peer.id === self.domainId),
+      "self is not a peer"
+    ).toBe(false);
   });
 
   it("§10.5: a SECOND self-bound object CONFLICTS (409) — 1:1 per domain holds for self as for a peer", async () => {
@@ -281,7 +284,9 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
     await expectApiError(
       admin.federation.createOutpost({ peerDomainId: randomUUID() }),
       400,
-      new RegExp(`neither a paired federation peer nor this instance's own trust domain \\('${self.domainId}'\\)`)
+      new RegExp(
+        `neither a paired federation peer nor this instance's own trust domain \\('${self.domainId}'\\)`
+      )
     );
   });
 

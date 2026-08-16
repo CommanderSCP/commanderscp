@@ -172,19 +172,19 @@ export async function assertOutpostPeerBinding(
   const peerRows = isSelf
     ? []
     : await tx
-    .select({ id: federationPeers.id, role: federationPeers.role })
-    .from(federationPeers)
-    // BOUNDARY (ADR-0021 D4): `properties.peerDomainId` names a PEER'S FEDERATION IDENTITY — the
-    // TRUST sense — which is exactly what `federation_peers.id` holds. This lookup is where the
-    // operator-supplied string is asserted to be that, and it fails closed one line below if it is
-    // not actually a paired peer.
-    .where(
-      and(
-        eq(federationPeers.orgId, input.orgId),
-        eq(federationPeers.id, asTrustDomainId(peerDomainId))
-      )
-    )
-    .limit(1);
+        .select({ id: federationPeers.id, role: federationPeers.role })
+        .from(federationPeers)
+        // BOUNDARY (ADR-0021 D4): `properties.peerDomainId` names a PEER'S FEDERATION IDENTITY — the
+        // TRUST sense — which is exactly what `federation_peers.id` holds. This lookup is where the
+        // operator-supplied string is asserted to be that, and it fails closed one line below if it is
+        // not actually a paired peer.
+        .where(
+          and(
+            eq(federationPeers.orgId, input.orgId),
+            eq(federationPeers.id, asTrustDomainId(peerDomainId))
+          )
+        )
+        .limit(1);
   const peer = peerRows[0];
   if (!isSelf && !peer) {
     // FAIL-CLOSED on the anchor: config about a peer this instance has never paired with has no
