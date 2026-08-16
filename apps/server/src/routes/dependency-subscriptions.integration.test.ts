@@ -3,6 +3,7 @@ import pg from "pg";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import type { DependencyLineKey, DependencySubscriptionContribution } from "@scp/schemas";
+import type { ReadFileAtRefResult } from "@scp/git-provider-core";
 import {
   createOrphanComponent,
   createTestOrg,
@@ -12,6 +13,10 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { createSourceMapping } from "../coordination/source-mappings-repo.js";
+import { upsertExecutorBinding } from "../coordination/executor-bindings-repo.js";
+import type { GitFileReadPluginClient, PluginHost } from "../plugin-host/contract.js";
 
 /**
  * M21.3 — THE ENABLEMENT CHAIN'S API SURFACE (ADR-0032 §3a/§6, routes/dependency-subscriptions.ts).
@@ -113,7 +118,10 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
   const line: DependencyLineKey = { ecosystem: "npm", coordinate: "@acme/lib", major: "1" };
 
   beforeAll(async () => {
-    server = await listenTestServer({ operatorToken: OPERATOR_TOKEN });
+    // `withPluginHost` because the M21.2 backfill route fail-closes on `deps.pluginHost` — reading a
+    // dependency manifest is a live plugin call, exactly as `POST /discovery/run` is. No
+    // reconcile loop: nothing here needs one, and it would be a live competitor for queued work.
+    server = await listenTestServer({ operatorToken: OPERATOR_TOKEN, withPluginHost: true });
     org = await createTestOrg(server, "dep-sub-api");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     componentId = (await createOrphanComponent(admin, `dep-sub-api-${uuidv7()}`)).id;
@@ -332,6 +340,242 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
         headers: { authorization: `Bearer ${org.adminToken}` }
       });
       expect(response.status).toBe(404);
+    });
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // (5) M21.2 — THE INVENTORY BACKFILL ROUTE (ADR-0032 §4)
+  //
+  // Ingestion is event-driven, so this route is how an EXISTING estate — and any component that has
+  // not released since being enabled — acquires an inventory at all. The behaviour of the ingestion
+  // itself is proven against a recording provider in
+  // `dependencies/inventory-ingestion.integration.test.ts`; what is proven HERE is that the route
+  // reaches it, authorizes it as a write, and does not weaken the enablement gate on the way.
+  // -----------------------------------------------------------------------------------------
+
+  describe("(5) POST /dependencies/inventory/backfill", () => {
+    it("REFUSES a principal with no object:write — negative control: the admin is accepted", async () => {
+      const stranger = await createTestUser(server, org, [{ role: "Viewer", scope: "self" }]);
+      const refused = await fetch(`${server.baseUrl}/dependencies/inventory/backfill`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${stranger.token}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ componentIdsOrUrns: [componentId] })
+      });
+      expect(refused.status).toBe(403);
+
+      const allowed = await fetch(`${server.baseUrl}/dependencies/inventory/backfill`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${org.adminToken}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ componentIdsOrUrns: [componentId] })
+      });
+      expect(allowed.status).toBe(200);
+    });
+
+    it("404s on a component that does not exist rather than reporting `0 ingested`", async () => {
+      // An operator who named a component must not be told nothing happened when the NAME was wrong.
+      const response = await fetch(`${server.baseUrl}/dependencies/inventory/backfill`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${org.adminToken}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({ componentIdsOrUrns: [uuidv7()] })
+      });
+      expect(response.status).toBe(404);
+    });
+
+    it("reports every component INCLUDING the refusals, and fetches nothing for an unenabled one", async () => {
+      await clearUnlock();
+      const response = await admin.dependencySubscriptions.backfillInventory({
+        componentIdsOrUrns: [componentId]
+      });
+      // The deployment is LOCKED, so the chain's first conjunct closes the gate.
+      expect(response.ref).toBe("HEAD");
+      expect(response.components).toHaveLength(1);
+      expect(response.components[0]).toMatchObject({
+        componentObjectId: componentId,
+        verdict: "not_enabled",
+        // THE RECEIPT: zero provider reads. The route cannot pass a flag that skips the gate,
+        // because there is none.
+        reads: 0,
+        manifestsIngested: 0
+      });
+      expect(response.notEnabled).toBe(1);
+      expect(response.ingested).toBe(0);
+    });
+
+    it("echoes the ref it was asked for, so the answer is self-describing", async () => {
+      const response = await admin.dependencySubscriptions.backfillInventory({
+        componentIdsOrUrns: [componentId],
+        ref: "refs/heads/release-1"
+      });
+      expect(response.ref).toBe("refs/heads/release-1");
+    });
+
+    // ---------------------------------------------------------------------------------------
+    // THE SUCCESS PATH — never driven before, so the whole projection below was unexercised
+    // ---------------------------------------------------------------------------------------
+    describe("a run that actually reads manifests", () => {
+      const BACKFILL_REPO = "acme/backfill";
+      /** Swapped onto `deps.pluginHost` for these tests only: the route resolves the host per
+       *  request, so this is the seam that lets a backfill actually read a file. */
+      let bodies: Record<string, string> = {};
+
+      function fakeHost(): PluginHost {
+        const notWired = (): never => {
+          throw new Error("this fixture only wires gitFileRead()");
+        };
+        return {
+          async start() {},
+          async stop() {},
+          async stopInstances() {},
+          executor: notWired,
+          control: notWired,
+          discovery: notWired,
+          notification: notWired,
+          federationTransport: notWired,
+          dependencyIndex: notWired,
+          gitFileRead(): GitFileReadPluginClient {
+            return {
+              readFileAtRef: async (request): Promise<ReadFileAtRefResult> => {
+                const body = bodies[request.path];
+                if (body === undefined) {
+                  return {
+                    outcome: "not_found",
+                    missing: "path",
+                    path: request.path,
+                    requestedRef: request.ref
+                  };
+                }
+                return {
+                  outcome: "found",
+                  path: request.path,
+                  requestedRef: request.ref,
+                  commitSha: "f".repeat(40),
+                  content: body,
+                  sizeBytes: Buffer.byteLength(body, "utf8")
+                };
+              }
+            };
+          }
+        };
+      }
+
+      let realHost: PluginHost | undefined;
+      let backfillComponent = "";
+
+      beforeAll(async () => {
+        realHost = server.deps.pluginHost;
+        server.deps.pluginHost = fakeHost();
+        await putUnlock(
+          org.adminToken,
+          { unlocked: true, note: "M21.2 backfill fixture" },
+          OPERATOR_TOKEN
+        );
+        const component = await createOrphanComponent(admin, `backfill-${uuidv7()}`);
+        backfillComponent = component.id;
+        await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+          await createSourceMapping(tx, {
+            orgId: org.orgId,
+            sourceKind: "github",
+            repoPattern: BACKFILL_REPO,
+            componentIdOrUrn: component.id,
+            type: "configuration"
+          });
+          await upsertExecutorBinding(tx, {
+            orgId: org.orgId,
+            targetObjectId: component.id,
+            pluginModule: "github",
+            pluginInstanceId: `gh-${uuidv7()}`,
+            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" }
+          });
+        });
+        await subscriptionPolicy(`backfill-enable-${uuidv7()}`, component.id, {
+          enabled: true
+        });
+      });
+
+      afterAll(async () => {
+        server.deps.pluginHost = realHost;
+        await clearUnlock().catch(() => undefined);
+      });
+
+      it("REPORTS THE DESTRUCTIVE HALF — a run that deleted an inventory is not identical to a clean one", async () => {
+        // The receipt used to project only what was ADDED, so a run that emptied a component's
+        // whole inventory reported `verdict: "ingested"` and looked exactly like a no-op. An
+        // operator backfilling at the wrong ref had no signal at all.
+        bodies = { "package.json": JSON.stringify({ dependencies: { "@acme/lib": "^1.2.3" } }) };
+        const seeded = await admin.dependencySubscriptions.backfillInventory({
+          componentIdsOrUrns: [backfillComponent]
+        });
+        expect(seeded.components[0]).toMatchObject({
+          verdict: "ingested",
+          manifestsIngested: 1,
+          declarationsRecorded: 1,
+          // A CLEAN run reports zero — which is what makes the non-zero below meaningful.
+          declarationsPruned: 0,
+          manifestsRemoved: 0
+        });
+        expect(seeded.declarationsPruned).toBe(0);
+        expect(seeded.ingested).toBe(1);
+
+        // Now the same backfill at a ref where the manifest is not there at all.
+        bodies = {};
+        const destructive = await admin.dependencySubscriptions.backfillInventory({
+          componentIdsOrUrns: [backfillComponent]
+        });
+        expect(destructive.components[0]).toMatchObject({
+          verdict: "ingested",
+          declarationsPruned: 1,
+          manifestsRemoved: 1
+        });
+        expect(destructive.declarationsPruned).toBe(1);
+      });
+
+      it("BOUNDS the live provider I/O one request performs, and says what it did not reach", async () => {
+        // With no `componentIdsOrUrns` this walks every component in the org inline, at up to 40
+        // live git reads each — one HTTP request holding an unbounded number of round trips against
+        // a user's provider, with a client that timed out long ago.
+        bodies = { "package.json": JSON.stringify({ dependencies: { "@acme/lib": "^1.2.3" } }) };
+        const second = await createOrphanComponent(admin, `backfill-2nd-${uuidv7()}`);
+        await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+          await createSourceMapping(tx, {
+            orgId: org.orgId,
+            sourceKind: "github",
+            repoPattern: BACKFILL_REPO,
+            componentIdOrUrn: second.id,
+            type: "configuration"
+          });
+          await upsertExecutorBinding(tx, {
+            orgId: org.orgId,
+            targetObjectId: second.id,
+            pluginModule: "github",
+            pluginInstanceId: `gh-${uuidv7()}`,
+            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" }
+          });
+        });
+        await subscriptionPolicy(`backfill-enable2-${uuidv7()}`, second.id, {
+          enabled: true
+        });
+
+        const response = await admin.dependencySubscriptions.backfillInventory({
+          componentIdsOrUrns: [backfillComponent, second.id],
+          fetchBudget: 1
+        });
+        expect(response.notAttempted).toBe(1);
+        const unattempted = response.components.find((c) => c.verdict === "not_attempted");
+        expect(unattempted?.reads).toBe(0);
+        // NEGATIVE CONTROL: the budget bounded the run rather than breaking it — the first
+        // component was fully ingested.
+        expect(response.ingested).toBe(1);
+        expect(response.components.find((c) => c.verdict === "ingested")?.reads).toBeGreaterThan(0);
+      });
     });
   });
 });

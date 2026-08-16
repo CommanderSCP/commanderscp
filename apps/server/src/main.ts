@@ -19,6 +19,11 @@ import {
   internalReleaseDetectionRoleGuard,
   startInternalReleaseLoop
 } from "./dependencies/internal-release-loop.js";
+import {
+  inventoryIngestionRoleGuard,
+  inventoryIngestionRouter,
+  startInventoryIngestionLoop
+} from "./dependencies/inventory-ingestion-loop.js";
 import { startAutoRelayLoop } from "./federation/auto-relay.js";
 import { startFederationSyncLoop } from "./federation/federation-sync.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
@@ -163,11 +168,17 @@ async function main(): Promise<void> {
     // an api-only process neither routes nor works (the guard is the job's own property, not a
     // consequence of sitting inside `runsBackgroundWork`); a refused guard contributes NO router, so
     // an event is not even enqueued for a queue nothing will drain.
+    //
+    // M21.2 registers the SECOND router on the same event. Two routers are not two workers: the
+    // domain-events worker calls every router for every event, so they do not compete — which is
+    // exactly why a router exists rather than a `boss.work()` per capability. Each enqueues onto its
+    // OWN queue, so a slow manifest read cannot starve internal detection or vice versa.
     const internalReleaseAllowed = internalReleaseDetectionRoleGuard(config).allowed;
-    const boss = await startPgBoss(
-      config.pgBossDatabaseUrl,
-      internalReleaseAllowed ? [acceptedChangeRouter()] : []
-    );
+    const inventoryIngestionAllowed = inventoryIngestionRoleGuard(config).allowed;
+    const boss = await startPgBoss(config.pgBossDatabaseUrl, [
+      ...(internalReleaseAllowed ? [acceptedChangeRouter()] : []),
+      ...(inventoryIngestionAllowed ? [inventoryIngestionRouter()] : [])
+    ]);
     // M14.2 (ADR-0009): expose the job queue to request handlers (mirrors `deps.pluginHost` below)
     // so the inbound federation poke endpoint can enqueue an immediate federation-sync tick — the
     // contentless wake that pulls NOW instead of at the next interval, without pulling inline.
@@ -254,6 +265,18 @@ async function main(): Promise<void> {
       host: pluginHost,
       config
     });
+    // M21.2 dependency-inventory ingestion (ADR-0032 §4/§6) — the worker half of the second router
+    // registered above. THIS IS WHAT WRITES `component_dependencies`: without it the table is empty
+    // on every deployment and the enablement chain, the version poll and internal detection all
+    // resolve over nothing. Same role reasoning as internal detection, derived from ingestion's own
+    // facts in the loop's module doc (it reads this domain's own change and this domain's own git
+    // binding; it never dials a public index on a timer, which is the poll's whole reason for being
+    // commander-only).
+    const inventoryIngestionLoop = await startInventoryIngestionLoop(boss, {
+      db,
+      host: pluginHost,
+      config
+    });
 
     app.addHook("onClose", async () => {
       await reconcileLoop.stop();
@@ -264,6 +287,7 @@ async function main(): Promise<void> {
       await federationSyncLoop.stop();
       await dependencyVersionPollLoop.stop();
       await internalReleaseLoop.stop();
+      await inventoryIngestionLoop.stop();
       await pluginHost.stop();
       await relay.stop();
       // Stop the poke sender AFTER the relay so no new post-commit hook fires into it; then drain any

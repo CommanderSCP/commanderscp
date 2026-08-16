@@ -109,7 +109,26 @@ export type ReadFileRefusalReason =
   /** Decoded bytes are not text: a NUL byte, or not valid UTF-8. */
   | "not_text"
   /** The provider returned a transfer encoding this decoder does not implement. */
-  | "unsupported_encoding";
+  | "unsupported_encoding"
+  /**
+   * FEWER BYTES ARRIVED THAN THE PROVIDER SAID THE FILE HAS — a cut response, a truncating proxy, a
+   * partially-written payload.
+   *
+   * NO CONSUMER CAN DETECT THIS FROM THE CONTENT, which is why it is refused here rather than left
+   * to them. Every one of ADR-0032's manifest formats is line-oriented or brace-balanced, and the
+   * first N bytes of a `requirements.txt` are still a perfectly valid `requirements.txt` — there is
+   * no construct missing to notice. The declared size and the payload's own length are both in hand
+   * only at this point.
+   *
+   * It is a REFUSAL rather than a `found` carrying short content because of what the one consumer
+   * does with a successful read: the inventory ingestion prunes a manifest's declarations down to
+   * exactly what it just parsed, so a body missing its second half would silently DELETE the
+   * declarations that never arrived. "Unreadable is not empty" is why four of the five manifest
+   * parsers throw on a body that is not their format; this is that same rule for the case none of
+   * them can see, and it covers all six manifests at once rather than the one spelling (a Git-LFS
+   * pointer) that happens to be recognisable from the text.
+   */
+  | "incomplete_body";
 
 export interface ReadFileAtRefRefused {
   outcome: "refused";
@@ -200,7 +219,7 @@ export interface DecodeBoundedBase64Input {
  * one function so all three refuse identically; only the extraction of `base64`/`encoding`/`size`
  * from the provider's own JSON differs.
  *
- * Four gates, in cost order — the cheapest refusal happens first, so an oversize file is refused
+ * Five gates, in cost order — the cheapest refusal happens first, so an oversize file is refused
  * having allocated nothing:
  *
  *  1. **Encoding.** Anything that is not `base64` is refused. GitHub's `"none"` is special-cased to
@@ -211,6 +230,11 @@ export interface DecodeBoundedBase64Input {
  *  3. **Computed size.** Refuse on `base64DecodedByteLength` — deliberately NOT trusting gate 2,
  *     which is a number the provider asserts about a payload it also sends. This gate is the one
  *     that actually holds when the two disagree.
+ *  3b. **Completeness.** Gates 2 and 3 each compare ONE size against the bound; neither compares the
+ *     two with each other. That comparison is the ONLY evidence in the system that a body is
+ *     partial — a truncated line-oriented manifest is still a syntactically valid one — so a payload
+ *     SHORTER than the provider's declared size is refused as `incomplete_body` rather than handed
+ *     on as content. Short only; see the reason's own doc for why over-long is not refused.
  *  4. **Text.** A NUL byte anywhere, or bytes that do not survive a UTF-8 round trip, is refused as
  *     `not_text`. NUL-scanning is git's own binary heuristic; the round trip catches the rest,
  *     because `Buffer.toString("utf8")` NEVER fails — it substitutes U+FFFD — so without it a
@@ -220,7 +244,7 @@ export interface DecodeBoundedBase64Input {
  * `Buffer.from(…, "base64")` can produce (it ignores characters it cannot decode), so gate 3 already
  * bounds the allocation.
  *
- * HONEST LIMIT — READ THIS AS A LIVE GAP, NOT AS A HANDLED ONE. These four gates bound what SCP
+ * HONEST LIMIT — READ THIS AS A LIVE GAP, NOT AS A HANDLED ONE. These gates bound what SCP
  * DECODES. **Nothing here bounds what the transport BUFFERS**, and the two are not the same number:
  * the plugin host's `ScopedHttpClient` does `await res.text()` over the whole response
  * (`apps/server/src/plugin-host/subprocess-entry.ts:297`) with no cap, no content-length pre-check
@@ -297,6 +321,30 @@ export function decodeBoundedBase64(input: DecodeBoundedBase64Input): ReadFileAt
       outcome: "refused",
       reason: "too_large",
       detail: `${input.provider}: '${path}' decodes to ${computedBytes} bytes, over the ${maxBytes}-byte decode bound (computed from the payload)`,
+      path,
+      requestedRef,
+      sizeBytes: computedBytes
+    };
+  }
+
+  // Gate 3b — THE BYTES THAT ARRIVED ARE NOT THE FILE. Gates 2 and 3 each compare ONE size against
+  // the bound; neither compares the two sizes with EACH OTHER, and that comparison is the only
+  // evidence anywhere in the system that a body is partial. See `incomplete_body`.
+  //
+  // SHORT ONLY, deliberately. A payload that decodes to MORE than the provider declared is not the
+  // truncation hazard and is not worth failing a read over: `size` is provider metadata and a
+  // provider that under-reports (a stale index entry, a size computed pre-filter) would otherwise
+  // make every manifest in that repo unreadable. The direction that deletes an inventory is the
+  // short one, and it is the only one refused.
+  if (input.declaredSizeBytes !== undefined && computedBytes < input.declaredSizeBytes) {
+    return {
+      outcome: "refused",
+      reason: "incomplete_body",
+      detail:
+        `${input.provider}: '${path}' arrived as ${computedBytes} bytes but the provider declares ` +
+        `${input.declaredSizeBytes} — the body is partial, so it is not decoded as the file's ` +
+        `content (a truncated manifest parses as FEWER dependencies, which is indistinguishable ` +
+        `from a manifest that dropped them)`,
       path,
       requestedRef,
       sizeBytes: computedBytes

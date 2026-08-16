@@ -175,9 +175,20 @@ export const ComponentDependencySchema = z.object({
   resolvedVersion: z.string().nullable(),
   /** `oci` — the digest this component's `FROM` currently resolves to. */
   resolvedDigest: z.string().nullable(),
+  /**
+   * The REPOSITORY the manifest was read from, as the provider spells it — the half of the address
+   * that `observedRef` alone never carried (a commit sha names no repository).
+   *
+   * It is what makes a prune attributable to the evidence that justifies it: an ingestion pass
+   * reads ONE repo, and "this path is not there" is evidence about THAT repo only. `null` means the
+   * repository was not recorded, and such a row is never pruned (drizzle/0063).
+   */
+  observedRepo: z.string().nullable(),
   /** The git ref the manifest was read at (`refs/heads/main`), so a declaration is attributable to a
    *  point in the repo rather than to "whenever we last looked". */
   observedRef: z.string().nullable(),
+  /** When the manifest was READ, not when the row was written. The two differ whenever two passes
+   *  overlap, and it is the read time that orders their evidence. */
   observedAt: z.string(),
   createdAt: z.string()
 });
@@ -224,7 +235,15 @@ export const UpsertComponentDependencyInputSchema = z.object({
   declaredVersion: z.string().min(1).max(256),
   resolvedVersion: z.string().max(256).nullable().optional(),
   resolvedDigest: z.string().max(256).nullable().optional(),
-  observedRef: z.string().max(512).nullable().optional()
+  /** The repository this declaration was read from. Optional so a test fixture or a future ingress
+   *  that genuinely has no repository can say so, and `null` then means exactly that — but a row
+   *  written without it can never be pruned, because a prune needs evidence from the same
+   *  repository. */
+  observedRepo: z.string().max(512).nullable().optional(),
+  observedRef: z.string().max(512).nullable().optional(),
+  /** When the manifest was READ. Defaults to now; the ingestion passes its phase-2 read time so two
+   *  overlapping passes are ordered by when they looked, not by when they landed. */
+  observedAt: z.date().optional()
 });
 export type UpsertComponentDependencyInput = z.infer<typeof UpsertComponentDependencyInputSchema>;
 
@@ -586,3 +605,105 @@ export const ObserveDependencyLineHeadInputSchema = z.object({
   latestDigest: z.string().max(256).nullable()
 });
 export type ObserveDependencyLineHeadInput = z.infer<typeof ObserveDependencyLineHeadInputSchema>;
+
+// ===========================================================================================
+// M21.2 — THE INVENTORY BACKFILL (ADR-0032 §4).
+//
+// Ingestion is event-driven: a correlated, accepted change re-reads its component's dependency
+// manifests. That covers every component that releases from now on and NO component that does not —
+// so on an existing estate the inventory would stay empty until each team happened to commit, and a
+// component that never pushes again would never acquire one at all.
+//
+// The precedent is `POST /discovery/backfill-source-mappings`, which exists for exactly this class
+// of problem ("create rows onto already-imported components"): operator-triggered, idempotent, and
+// it reports every skip rather than only a count.
+// ===========================================================================================
+
+export const BackfillDependencyInventoryRequestSchema = z.object({
+  /** Narrow the run to specific components (id or URN). OMITTED means every component in the org —
+   *  which is the point of a backfill, and which the ENABLEMENT GATE keeps cheap: a component with
+   *  no enabling subscription is refused before any repo is read. */
+  componentIdsOrUrns: z.array(z.string().min(1)).max(500).optional(),
+  /** The ref to read at. Defaults to `HEAD`, i.e. the repo's own default branch, because a backfill
+   *  has no release to read a commit from — unlike the event-driven path, which reads at the commit
+   *  the accepted change carried. The resolved commit is still what lands on each row. */
+  ref: z.string().min(1).max(512).optional(),
+  /**
+   * How many components this request may actually FETCH for, before it stops and reports the rest
+   * as unattempted. Defaults to {@link DEFAULT_DEPENDENCY_INVENTORY_BACKFILL_FETCH_BUDGET}.
+   *
+   * A BOUND IS REQUIRED, not a nicety. With no `componentIdsOrUrns` the run walks every component
+   * in the org INLINE IN ONE REQUEST, and each enabled one makes up to 40 live git-provider reads.
+   * On a four-hundred-component estate that is a single HTTP request holding tens of thousands of
+   * round trips against a user's provider and its rate limit, with a client that will have timed
+   * out long before. The bound counts only components that were actually fetched for: an
+   * unsubscribed component costs no read (the gate refuses before the repo is touched), so it does
+   * not consume budget and a whole-org run still reports every component's enablement.
+   */
+  fetchBudget: z.number().int().min(1).max(500).optional()
+});
+export type BackfillDependencyInventoryRequest = z.infer<
+  typeof BackfillDependencyInventoryRequestSchema
+>;
+
+/** What happened for ONE component. `not_enabled` is the common, cheap outcome and is REPORTED
+ *  rather than filtered out: "these 400 components were skipped, and why" is the answer an operator
+ *  running a backfill actually needs (the same reason the source-mapping backfill reports skips). */
+export const DependencyInventoryBackfillComponentSchema = z.object({
+  componentObjectId: z.string().uuid(),
+  name: z.string(),
+  /** `not_attempted` is this route's own verdict, not the ingestion's: the fetch budget was spent
+   *  before this component was reached, so nothing was read and nothing was written. */
+  verdict: z.enum(["not_enabled", "not_addressable", "superseded", "ingested", "not_attempted"]),
+  detail: z.string(),
+  /** Dependency manifests read, parsed and written. */
+  manifestsIngested: z.number().int().nonnegative(),
+  /** Declarations recorded across those manifests. */
+  declarationsRecorded: z.number().int().nonnegative(),
+  /**
+   * Declarations DELETED because the manifest no longer declares them.
+   *
+   * REPORTED BECAUSE THE DESTRUCTIVE HALF MUST NOT BE INVISIBLE IN ITS OWN RECEIPT. Without it a
+   * run that emptied a component's entire inventory — every manifest gone from the ref the operator
+   * happened to name — reads exactly like a clean one: `verdict: "ingested"`, and only the counts
+   * of what was ADDED. An operator backfilling at the wrong ref would have no signal at all.
+   */
+  declarationsPruned: z.number().int().nonnegative(),
+  /** Manifests found to be GONE at this ref, whose rows were therefore removed entirely. The
+   *  loudest half of the line above, separated because "the file is not there any more" is a
+   *  different fact from "this file dropped a dependency". */
+  manifestsRemoved: z.number().int().nonnegative(),
+  /** Manifests that could NOT be read or parsed. Their existing rows were left untouched —
+   *  unreadable is never treated as "declares nothing". */
+  manifestsSkipped: z.number().int().nonnegative(),
+  /** Provider reads actually attempted. ZERO for `not_enabled`, by construction. */
+  reads: z.number().int().nonnegative()
+});
+export type DependencyInventoryBackfillComponent = z.infer<
+  typeof DependencyInventoryBackfillComponentSchema
+>;
+
+/** The default of `BackfillDependencyInventoryRequest.fetchBudget` — see that field for why a bound
+ *  exists at all. Sized so a whole-org run stays inside one request's plausible lifetime: 25
+ *  components x up to 40 reads each is the same order as a single discovery run. */
+export const DEFAULT_DEPENDENCY_INVENTORY_BACKFILL_FETCH_BUDGET = 25;
+
+export const BackfillDependencyInventoryResponseSchema = z.object({
+  /** The ref every component was read at, echoed so the answer is self-describing. */
+  ref: z.string(),
+  components: z.array(DependencyInventoryBackfillComponentSchema),
+  ingested: z.number().int().nonnegative(),
+  notEnabled: z.number().int().nonnegative(),
+  notAddressable: z.number().int().nonnegative(),
+  superseded: z.number().int().nonnegative(),
+  /** Components the fetch budget did not reach. NON-ZERO MEANS THE RUN IS INCOMPLETE and should be
+   *  repeated (or narrowed with `componentIdsOrUrns`) — it is a count of work not done, which is
+   *  precisely what a receipt that only counted successes could not say. */
+  notAttempted: z.number().int().nonnegative(),
+  /** Declarations deleted across the whole run. The one number that says a backfill was
+   *  DESTRUCTIVE; a clean re-run reports zero. */
+  declarationsPruned: z.number().int().nonnegative()
+});
+export type BackfillDependencyInventoryResponse = z.infer<
+  typeof BackfillDependencyInventoryResponseSchema
+>;

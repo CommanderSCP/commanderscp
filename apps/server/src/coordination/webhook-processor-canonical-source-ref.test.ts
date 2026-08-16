@@ -119,6 +119,68 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
     expect(sourceRef.repo).toBe("acme/api");
   });
 
+  // -------------------------------------------------------------------------------------------
+  // M21.2 — `repo` and `commit`, the two keys that say WHERE and WHICH POINT.
+  //
+  // Both were dropped at this seam. A GitHub push nests its repo at `repository.full_name` and its
+  // commit at `head_commit.id`, so `source_ref.repo` was absent for every provider webhook and
+  // `source_ref.commit` was absent for EVERY driver in the tree — measured filterlessly, nothing
+  // non-test ever wrote it. The cost was two hard refusals downstream: `manifest-reader.ts` throws
+  // with no repo and `internal-release-version.ts` refuses `no_released_commit` with no commit, so
+  // M21.4's three language ecosystems could not resolve a released version on any real delivery and
+  // M21.2's inventory could not be read at the released point.
+  // -------------------------------------------------------------------------------------------
+  describe("the released POINT and PLACE (M21.2)", () => {
+    /** The shape a real GitHub push webhook arrives in — the fields are NESTED, which is exactly
+     *  why a downstream reader could not simply dig them out itself without becoming a per-provider
+     *  parser in a module that must stay provider-neutral. */
+    const githubPush = {
+      ref: "refs/heads/main",
+      after: "b".repeat(40),
+      repository: { full_name: "acme/widgets" },
+      head_commit: { id: "a".repeat(40) },
+      commits: [{ id: "a".repeat(40), added: ["go.mod"], modified: [], removed: [] }]
+    };
+
+    it("lifts repo, ref and commit out of a GitHub push into flat canonical keys", () => {
+      const hint = extractHint("github", { "x-github-event": "push" }, githubPush);
+      expect(hint.commitSha).toBe("a".repeat(40));
+      const sourceRef = canonicalizeSourceRef(githubPush, hint);
+      expect(sourceRef.repo).toBe("acme/widgets");
+      expect(sourceRef.ref).toBe("refs/heads/main");
+      expect(sourceRef.commit).toBe("a".repeat(40));
+      // The raw payload is still preserved verbatim beside them (DESIGN §8) — additive, never a
+      // replacement, so nothing that read the nested shape regresses.
+      expect(sourceRef.repository).toEqual({ full_name: "acme/widgets" });
+      expect(sourceRef.head_commit).toEqual({ id: "a".repeat(40) });
+    });
+
+    it("reads the flat first-party spellings too — `commitSha` (what observe() writes) and `commit`", () => {
+      // DESIGN §12's poll-vs-push equivalence: `observe()` correlates from a flat payload spelling
+      // it `commitSha`, while a hand-crafted `/webhook` body and the canonical `source_ref` spell it
+      // `commit`. Accepting one and not the other would make that equivalence false for this field.
+      const polled = { repo: "acme/api", commitSha: "c".repeat(40) };
+      expect(canonicalizeSourceRef(polled, extractHint("terraform", {}, polled)).commit).toBe(
+        "c".repeat(40)
+      );
+      const handCrafted = { repo: "acme/api", commit: "d".repeat(40) };
+      expect(
+        canonicalizeSourceRef(handCrafted, extractHint("terraform", {}, handCrafted)).commit
+      ).toBe("d".repeat(40));
+    });
+
+    it("invents nothing when the delivery names no commit", () => {
+      // A registry/package push has no commit at all. `commit` must stay ABSENT rather than become
+      // an empty string, because every reader treats absence as "not known" and a blank as a value.
+      const packagePush = { repo: "acme/api", correlationKey: "release-1" };
+      const sourceRef = canonicalizeSourceRef(
+        packagePush,
+        extractHint("terraform", {}, packagePush)
+      );
+      expect("commit" in sourceRef).toBe(false);
+    });
+  });
+
   it("a harbor PUSH_ARTIFACT (provider adapter path) still canonicalizes its digest and carries no sbom — provider payloads have none", () => {
     const digest = "sha256:" + "cd".repeat(32);
     const payload = {

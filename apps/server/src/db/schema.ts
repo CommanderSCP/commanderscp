@@ -1887,9 +1887,24 @@ export const componentDependencies = pgTable(
     resolvedVersion: text("resolved_version"),
     /** `oci` — the digest this component's `FROM` currently resolves to (ADR-0032 §7). */
     resolvedDigest: text("resolved_digest"),
+    /**
+     * The REPOSITORY the manifest was read from, as the provider spells it — the other half of the
+     * address `observed_ref` only ever gave one half of (a commit sha names no repository).
+     *
+     * It is what makes a prune attributable: an ingestion pass reads ONE repo, and "this path is
+     * not in repo A" is evidence about repo A alone. Without this column a pass over a component
+     * fed by two repositories pruned the OTHER repository's declarations, which silently
+     * unsubscribes the component (drizzle/0063). NULL means "not recorded" and is never pruned.
+     */
+    observedRepo: text("observed_repo"),
     /** The git ref the manifest was read at (`refs/heads/main`), so a declaration is attributable to
      *  a point in the repo rather than to "whenever we last looked". */
     observedRef: text("observed_ref"),
+    /** WHEN THE MANIFEST WAS READ — the phase-2 provider read, not the phase-3 write. That is what
+     *  makes it comparable between two passes that overlap: the ordering guard in
+     *  `inventory-ingestion.ts` refuses to apply a pass whose evidence is older than what the row
+     *  already carries, and a write-time stamp would say the opposite thing (the pass that landed
+     *  last, not the pass that looked last). */
     observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },

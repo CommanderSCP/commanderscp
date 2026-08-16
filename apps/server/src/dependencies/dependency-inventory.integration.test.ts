@@ -91,6 +91,11 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     await server?.close();
   });
 
+  /** The repository these fixtures' declarations were observed in. A prune is scoped to ONE
+   *  repository (drizzle/0063), so a row written without one is unprunable by construction — which
+   *  is the safe direction, and would make every prune assertion below vacuous if it were left off. */
+  const REPO = "acme/widgets";
+
   const componentIn = async (client: ScpClient, name: string): Promise<string> =>
     (await createTestComponent(client, { name: `${name}-${uuidv7()}` })).id;
 
@@ -192,7 +197,8 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         componentObjectId: componentId,
         lineId: go.id,
         manifestPath: "go.mod",
-        declaredVersion: "v1.0.0"
+        declaredVersion: "v1.0.0",
+        observedRepo: REPO
       })
     );
     await inA((tx) =>
@@ -200,7 +206,8 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         componentObjectId: componentId,
         lineId: npmLine.id,
         manifestPath: "package.json",
-        declaredVersion: "^2.0.0"
+        declaredVersion: "^2.0.0",
+        observedRepo: REPO
       })
     );
     // The image case: a `FROM alpine:3.18` in the component's own build input, carrying the DIGEST,
@@ -213,6 +220,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         declaredVersion: "3.18",
         resolvedVersion: "3.18.4",
         resolvedDigest: "sha256:" + "a".repeat(64),
+        observedRepo: REPO,
         observedRef: "refs/heads/main"
       })
     );
@@ -223,7 +231,8 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         componentObjectId: componentId,
         lineId: go.id,
         manifestPath: "go.mod",
-        declaredVersion: "v1.5.0"
+        declaredVersion: "v1.5.0",
+        observedRepo: REPO
       })
     );
     expect(updated.declaredVersion).toBe("v1.5.0");
@@ -235,6 +244,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     const removed = await inA((tx) =>
       pruneComponentDependencies(tx, orgA.orgId, {
         componentObjectId: componentId,
+        observedRepo: REPO,
         manifestPath: "package.json",
         keepLineIds: []
       })
@@ -270,7 +280,8 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         componentObjectId: componentId,
         lineId: image.id,
         manifestPath: "Dockerfile",
-        declaredVersion: "3.19"
+        declaredVersion: "3.19",
+        observedRepo: REPO
       })
     );
     // NEGATIVE CONTROL: the update branch ran, so the three NULLs are a clear and not a no-op.
@@ -318,7 +329,8 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           componentObjectId,
           lineId: dropped.id,
           manifestPath: "package.json",
-          declaredVersion: "^1.0.0"
+          declaredVersion: "^1.0.0",
+          observedRepo: REPO
         })
       );
     }
@@ -327,7 +339,8 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
         componentObjectId: mine,
         lineId: kept.id,
         manifestPath: "package.json",
-        declaredVersion: "^1.2.0"
+        declaredVersion: "^1.2.0",
+        observedRepo: REPO
       })
     );
 
@@ -335,6 +348,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     const removed = await inA((tx) =>
       pruneComponentDependencies(tx, orgA.orgId, {
         componentObjectId: mine,
+        observedRepo: REPO,
         manifestPath: "package.json",
         keepLineIds: [kept.id]
       })

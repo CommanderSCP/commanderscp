@@ -7,6 +7,7 @@ import type {
 } from "@scp/schemas";
 import {
   buildProgram,
+  dependencyInventoryBackfillRow,
   dependencySubscriptionContributionRow,
   dependencySubscriptionResolutionRow,
   dependencySubscriptionUnlockRow
@@ -54,10 +55,14 @@ describe("scp dependency-subscriptions — the CLI surface (ADR-0032 §6)", () =
   const program = buildProgram();
   const root = findCommand(program, ["dependency-subscriptions"]);
 
-  it("exists, with exactly the read/operator-write/resolve trio", () => {
+  it("exists, with exactly the read/operator-write/resolve trio plus M21.2's backfill", () => {
     expect(root).toBeDefined();
     const names = root!.commands.map((c) => c.name()).sort();
-    expect(names).toEqual(["resolve", "set-unlock", "unlock"]);
+    // A CLOSED list on purpose: there is still no `subscribe` verb, and there must not be — a
+    // subscription is a `dependencySubscription` effect on an ordinary policy (ADR-0032 §3a), so a
+    // bespoke one here would be a second authoring surface for one concept. `backfill-inventory` is
+    // not that: it authors nothing, it reads manifests an enabled component already declares.
+    expect(names).toEqual(["backfill-inventory", "resolve", "set-unlock", "unlock"]);
   });
 
   it("has NO subscribe/enable/disable verb — a subscription is a POLICY effect, and the help says so", () => {
@@ -115,6 +120,61 @@ describe("scp dependency-subscriptions — the CLI surface (ADR-0032 §6)", () =
     expect(resolve!.options.find((o) => o.long === "--coordinate")?.description).toMatch(
       /verbatim/i
     );
+  });
+
+  it("`backfill-inventory` exists, requires no flags, and repeats --component", () => {
+    // M21.2 (ADR-0032 §4). Ingestion is event-driven, so an existing estate acquires an inventory
+    // only through this — without a CLI surface the operator's only route would be a raw HTTP call,
+    // which is what API→SDK→CLI parity (principle 3) exists to prevent.
+    const backfill = findCommand(program, ["dependency-subscriptions", "backfill-inventory"]);
+    expect(backfill).toBeDefined();
+    // NOTHING is mandatory: the whole-org run is the default, because the ENABLEMENT GATE is what
+    // keeps it cheap rather than a narrowing flag the operator has to remember to pass.
+    expect(backfill!.options.filter((o) => o.mandatory)).toEqual([]);
+    expect(backfill!.options.find((o) => o.long === "--component")).toBeDefined();
+    expect(backfill!.options.find((o) => o.long === "--ref")).toBeDefined();
+    // The gate is the surprising part — an operator who runs this and sees "0 ingested" needs to
+    // know that is enablement and not a broken command.
+    expect(backfill!.description()).toMatch(/enablement chain/);
+    // The run holds LIVE provider I/O inline, so it is bounded — and the bound must be reachable
+    // from the CLI, or a whole-org backfill on a large estate has no way to make progress in
+    // several passes.
+    expect(backfill!.options.find((o) => o.long === "--fetch-budget")).toBeDefined();
+  });
+
+  it("`backfill-inventory` prints the DESTRUCTIVE half of what it did", () => {
+    // A backfill DELETES declarations a manifest no longer makes. A receipt that counted only what
+    // was added made a run that emptied a component's whole inventory — the wrong `--ref`, a repo
+    // mid-migration — print identically to a clean one. The row is the operator's only view of it.
+    const row = dependencyInventoryBackfillRow({
+      componentObjectId: "00000000-0000-4000-8000-000000000001",
+      name: "api",
+      verdict: "ingested",
+      detail: "1 dependency manifest(s) ingested",
+      manifestsIngested: 1,
+      declarationsRecorded: 0,
+      declarationsPruned: 7,
+      manifestsRemoved: 1,
+      manifestsSkipped: 0,
+      reads: 6
+    });
+    expect(row.pruned).toBe("7");
+    expect(row.removed).toBe("1");
+    // NEGATIVE CONTROL: a clean run is distinguishable, which is the whole point of printing it.
+    const clean = dependencyInventoryBackfillRow({
+      componentObjectId: "00000000-0000-4000-8000-000000000002",
+      name: "web",
+      verdict: "ingested",
+      detail: "1 dependency manifest(s) ingested",
+      manifestsIngested: 1,
+      declarationsRecorded: 3,
+      declarationsPruned: 0,
+      manifestsRemoved: 0,
+      manifestsSkipped: 0,
+      reads: 6
+    });
+    expect(clean.pruned).toBe("0");
+    expect(clean.removed).toBe("0");
   });
 });
 

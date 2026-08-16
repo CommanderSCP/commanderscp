@@ -15059,6 +15059,95 @@ export type GetComponentDependencySubscriptionResponses = {
 
 export type GetComponentDependencySubscriptionResponse = GetComponentDependencySubscriptionResponses[keyof GetComponentDependencySubscriptionResponses];
 
+export type BackfillDependencyInventoryData = {
+    body: {
+        componentIdsOrUrns?: Array<string>;
+        ref?: string;
+        fetchBudget?: number;
+    };
+    path?: never;
+    query?: never;
+    url: '/dependencies/inventory/backfill';
+};
+
+export type BackfillDependencyInventoryErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type BackfillDependencyInventoryError = BackfillDependencyInventoryErrors[keyof BackfillDependencyInventoryErrors];
+
+export type BackfillDependencyInventoryResponses = {
+    /**
+     * Success
+     */
+    200: {
+        ref: string;
+        components: Array<{
+            componentObjectId: string;
+            name: string;
+            verdict: 'not_enabled' | 'not_addressable' | 'superseded' | 'ingested' | 'not_attempted';
+            detail: string;
+            manifestsIngested: number;
+            declarationsRecorded: number;
+            declarationsPruned: number;
+            manifestsRemoved: number;
+            manifestsSkipped: number;
+            reads: number;
+        }>;
+        ingested: number;
+        notEnabled: number;
+        notAddressable: number;
+        superseded: number;
+        notAttempted: number;
+        declarationsPruned: number;
+    };
+};
+
+export type BackfillDependencyInventoryResponse = BackfillDependencyInventoryResponses[keyof BackfillDependencyInventoryResponses];
+
 export type ListCampaignsData = {
     body?: never;
     path?: never;

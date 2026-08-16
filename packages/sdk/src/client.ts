@@ -211,6 +211,8 @@ import {
   getDependencySubscriptionUnlock as getDependencySubscriptionUnlockRequest,
   putDependencySubscriptionUnlock as putDependencySubscriptionUnlockRequest,
   getComponentDependencySubscription as getComponentDependencySubscriptionRequest,
+  // M21.2 (ADR-0032 §4) — the inventory backfill.
+  backfillDependencyInventory as backfillDependencyInventoryRequest,
   pairPeer as pairPeerRequest,
   // M16.2 phase A — E4's narrow peer read/PATCH and E1's `outpost` config object.
   getFederationPeer as getFederationPeerRequest,
@@ -359,6 +361,9 @@ import type {
   DependencySubscriptionUnlock,
   DependencySubscriptionResolutionResponse,
   PutDependencySubscriptionUnlockRequest,
+  // M21.2 (ADR-0032 §4) — the inventory backfill.
+  BackfillDependencyInventoryRequest,
+  BackfillDependencyInventoryResponse,
   PairPeerRequest,
   // M16.2 phase A — the narrow peer PATCH (E4) + the `outpost` config object (E1).
   UpdateFederationPeerRequest,
@@ -1839,6 +1844,23 @@ export class ScpClient {
         path: { idOrUrn: componentIdOrUrn },
         query: line
       });
+      return unwrap(result);
+    },
+    /**
+     * M21.2 (ADR-0032 §4) — read enabled components' dependency manifests and (re)build their
+     * inventory.
+     *
+     * Ingestion is normally event-driven off an accepted change, which covers only components that
+     * RELEASE. This is how an existing estate — and any component that has not pushed since being
+     * enabled — acquires an inventory at all. Idempotent, and it reports every skip.
+     *
+     * It does not weaken the enablement gate: a component with no enabling subscription is refused
+     * before its repo is read, and no argument here can turn that off.
+     */
+    backfillInventory: async (
+      req: BackfillDependencyInventoryRequest = {}
+    ): Promise<BackfillDependencyInventoryResponse> => {
+      const result = await backfillDependencyInventoryRequest({ client: this.client, body: req });
       return unwrap(result);
     }
   };
