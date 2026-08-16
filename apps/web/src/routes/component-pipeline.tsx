@@ -350,6 +350,25 @@ export function WaveRowForTest(props: {
   );
 }
 
+/** Exported for `component-pipeline-continuous.test.tsx` — the open/close dialog's contract (the
+ *  duration choices, the consequence copy, the confirm) is pinned by rendering it OPEN, since
+ *  Radix portals nothing while closed under renderToStaticMarkup. */
+export function SourceOpenCloseDialogForTest(props: {
+  source: ComponentPipelineResponse["sources"][number];
+  currentlyOpen: boolean;
+}): React.JSX.Element {
+  return (
+    <SourceOpenCloseBody
+      source={props.source}
+      currentlyOpen={props.currentlyOpen}
+      busy={false}
+      error={null}
+      onConfirm={() => {}}
+      onCancel={() => {}}
+    />
+  );
+}
+
 /** THE STAGE'S CURRENT STATE AT A GLANCE — the deployment outcome as a pill beside its name.
  *
  *  Deliberately says "never deployed" rather than rendering nothing: an empty header would read as
@@ -1500,8 +1519,13 @@ function DeleteMappingButton({
  *  `matchComponentForSource` is that something). Reads `!== false` rather than a bare `!source.enabled`
  *  so a value this component genuinely never received (an older cached response, a hand-built test
  *  fixture) still reads as enabled rather than silently muting every tile on the page. */
-function isMappingEnabled(source: Pick<ComponentPipelineResponse["sources"][number], "enabled">): boolean {
-  return source.enabled !== false;
+function isMappingEnabled(
+  source: Pick<ComponentPipelineResponse["sources"][number], "enabled" | "effectivelyEnabled">
+): boolean {
+  // The READ-TIME truth, not the declared intent: a timed close whose bound has passed is OPEN
+  // again (the matcher routes it) even though `enabled` still reads false. Painting from `enabled`
+  // alone would show a shut arrow on a rule that is, right now, live.
+  return source.effectivelyEnabled ?? source.enabled !== false;
 }
 
 /** A SOURCE NODE — the repos a push to which starts this pipeline. Durable rules, so it answers
@@ -1678,11 +1702,17 @@ function SourceTile({
   // starts a release), shut slate = closed (declared, routes nothing). The mutation lives here so
   // the arrow stays a dumb renderer; a server refusal renders as an Alert after the click, never
   // as a pre-disabled control (M16.3's rule).
+  // NOT one click (owner, 2026-08-14: "it shouldn't be one-click to enable/disable"). The arrow
+  // OPENS A DIALOG. Closing offers a choice — for a period, or until re-opened by hand — and
+  // confirms; opening confirms too. Enabled is the default; a routing rule is not something to flip
+  // by a mis-click. The dialog owns the mutation; the arrow stays a dumb renderer.
   const queryClient = useQueryClient();
+  const [dialogOpen, setDialogOpen] = useState(false);
   const toggleMutation = useMutation({
-    mutationFn: () =>
-      client.changeSources.setMappingEnabled(source.sourceKind, source.id, !isMappingEnabled(source)),
+    mutationFn: (input: { enabled: boolean; disabledUntil: string | null }) =>
+      client.changeSources.setMappingEnabled(source.sourceKind, source.id, input.enabled, input.disabledUntil),
     onSuccess: async () => {
+      setDialogOpen(false);
       await queryClient.invalidateQueries({ queryKey: pipelineKey });
     }
   });
@@ -1724,7 +1754,9 @@ function SourceTile({
                 title="Disabled mappings stay declared but route nothing — a push matching this rule starts no release. Distinct from delete."
                 data-testid="pipeline-source-tile-disabled-badge"
               >
-                disabled — routes nothing
+                {source.disabledUntil
+                  ? `closed until ${new Date(source.disabledUntil).toLocaleString()} — routes nothing`
+                  : "closed until re-opened — routes nothing"}
               </p>
             )}
           </CardHeader>
@@ -1796,22 +1828,186 @@ function SourceTile({
       <PromotionArrow
         state={enabled ? "open" : "pending"}
         inert={!enabled}
-        onToggle={() => toggleMutation.mutate()}
+        onToggle={() => setDialogOpen(true)}
         busy={toggleMutation.isPending}
         toggleTitle={
           enabled
-            ? "Open — a push matching this rule starts a release. Click to close: the mapping stays declared but routes nothing (distinct from delete)."
-            : "Closed — declared, but a push matching this rule starts nothing. Click to open."
+            ? "Open — a push matching this rule starts a release. Click to close it (you'll choose for how long, and confirm)."
+            : source.disabledUntil
+              ? `Closed until ${new Date(source.disabledUntil).toLocaleString()} — then opens again automatically. Click to open it now (confirm).`
+              : "Closed until re-opened by hand — declared, but a push matching this rule starts nothing. Click to open it (confirm)."
         }
       />
-      {toggleMutation.isError && (
-        <Alert tone="danger" className="mt-1 w-full">
-          {toggleMutation.error instanceof Error
-            ? toggleMutation.error.message
-            : "Failed to update the mapping."}
-        </Alert>
-      )}
+      <SourceOpenCloseDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        source={source}
+        currentlyOpen={enabled}
+        busy={toggleMutation.isPending}
+        error={toggleMutation.isError ? toggleMutation.error : null}
+        onConfirm={(input) => toggleMutation.mutate(input)}
+      />
     </div>
+  );
+}
+
+/** How long a close lasts — the choices offered before confirming. `null` = until re-opened. */
+const CLOSE_DURATIONS: { key: string; label: string; ms: number | null }[] = [
+  { key: "1h", label: "1 hour", ms: 3_600_000 },
+  { key: "4h", label: "4 hours", ms: 4 * 3_600_000 },
+  { key: "24h", label: "24 hours", ms: 24 * 3_600_000 },
+  { key: "7d", label: "7 days", ms: 7 * 24 * 3_600_000 },
+  { key: "manual", label: "Until I re-open it", ms: null }
+];
+
+/**
+ * THE OPEN/CLOSE DIALOG (owner, 2026-08-14) — the confirmation every flip goes through.
+ *
+ * CLOSING asks two things: for how long (a period, after which the rule opens again automatically
+ * — evaluated at read time like a freeze window, no timer job — or until re-opened by hand), and
+ * then a confirm that names the consequence: while closed, a push matching this rule starts no
+ * release. OPENING is one confirm, naming what re-opens. Both are one deliberate click past the
+ * arrow, never zero. Server refusals render inside the dialog, at the point of action.
+ */
+function SourceOpenCloseDialog({
+  open,
+  onOpenChange,
+  source,
+  currentlyOpen,
+  busy,
+  error,
+  onConfirm
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  source: ComponentPipelineResponse["sources"][number];
+  currentlyOpen: boolean;
+  busy: boolean;
+  error: unknown;
+  onConfirm: (input: { enabled: boolean; disabledUntil: string | null }) => void;
+}): React.JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent data-testid="source-open-close-dialog">
+        <DialogHeader>
+          <DialogTitle>{currentlyOpen ? "Close this source?" : "Open this source?"}</DialogTitle>
+        </DialogHeader>
+        <SourceOpenCloseBody
+          source={source}
+          currentlyOpen={currentlyOpen}
+          busy={busy}
+          error={error}
+          onConfirm={onConfirm}
+          onCancel={() => onOpenChange(false)}
+        />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The dialog's CONTENT, portal-free — exported for the test (Radix portals nothing under
+ * renderToStaticMarkup, even when open; same reason domain-local.tsx exports PublishConfirmBody).
+ * Owns the duration choice; the confirm is the ONLY thing that fires the mutation.
+ */
+export function SourceOpenCloseBody({
+  source,
+  currentlyOpen,
+  busy,
+  error,
+  onConfirm,
+  onCancel
+}: {
+  source: ComponentPipelineResponse["sources"][number];
+  currentlyOpen: boolean;
+  busy: boolean;
+  error: unknown;
+  onConfirm: (input: { enabled: boolean; disabledUntil: string | null }) => void;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const [duration, setDuration] = useState<string>("manual");
+  const chosen = CLOSE_DURATIONS.find((d) => d.key === duration) ?? CLOSE_DURATIONS[CLOSE_DURATIONS.length - 1]!;
+  const repo = source.repoPattern ?? "(any repo)";
+  return (
+    <>
+      {/* The visible title lives in the shell's DialogTitle (Radix a11y wiring); this sr-only copy
+          keeps the body self-describing when rendered portal-free. */}
+      <span className="sr-only">{currentlyOpen ? "Close this source?" : "Open this source?"}</span>
+      <div className="flex flex-col gap-3 text-sm text-slate-600">
+        <p>
+          <span className="font-mono text-slate-900">{repo}</span>
+          {source.pathPattern ? <span className="font-mono text-slate-500"> {source.pathPattern}</span> : null}
+          {" — "}
+          <span className="text-slate-500">{source.type}</span>
+        </p>
+        {currentlyOpen ? (
+          <>
+            <p>
+              While closed, <strong>a push matching this rule starts no release</strong>. The mapping
+              stays declared — this is not a delete — and re-opens either automatically when the period
+              ends, or when you open it again here.
+            </p>
+            <fieldset className="flex flex-col gap-1.5" data-testid="close-duration">
+              <legend className="text-xs font-medium text-slate-700">Close for</legend>
+              {CLOSE_DURATIONS.map((d) => (
+                <label key={d.key} className="flex items-center gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="close-duration"
+                    value={d.key}
+                    className="accent-army-600"
+                    checked={duration === d.key}
+                    onChange={() => setDuration(d.key)}
+                    data-testid={`close-duration-${d.key}`}
+                  />
+                  {d.label}
+                </label>
+              ))}
+            </fieldset>
+            <p className="text-xs text-slate-500">
+              {chosen.ms === null
+                ? "It stays closed until someone opens it again — no automatic re-open."
+                : `It re-opens automatically at ${new Date(Date.now() + chosen.ms).toLocaleString()} — no timer to fail: every push checks the clock.`}
+            </p>
+          </>
+        ) : (
+          <p>
+            Opening means <strong>a push matching this rule starts a release again</strong>, from the
+            next matching push onward.
+            {source.disabledUntil
+              ? ` It was due to re-open automatically at ${new Date(source.disabledUntil).toLocaleString()}; opening now brings that forward.`
+              : ""}
+          </p>
+        )}
+        {error !== null && (
+          <Alert tone="danger" data-testid="source-open-close-error">
+            {error instanceof Error ? error.message : "Failed to update the mapping."}
+          </Alert>
+        )}
+      </div>
+      <DialogFooter>
+        <Button variant="outline" onClick={onCancel} disabled={busy}>
+          Cancel
+        </Button>
+        <Button
+          variant={currentlyOpen ? "destructive" : "default"}
+          disabled={busy}
+          onClick={() =>
+            onConfirm(
+              currentlyOpen
+                ? {
+                    enabled: false,
+                    disabledUntil: chosen.ms === null ? null : new Date(Date.now() + chosen.ms).toISOString()
+                  }
+                : { enabled: true, disabledUntil: null }
+            )
+          }
+          data-testid="source-open-close-confirm"
+        >
+          {busy ? "…" : currentlyOpen ? `Close ${chosen.ms === null ? "until re-opened" : `for ${chosen.label}`}` : "Open"}
+        </Button>
+      </DialogFooter>
+    </>
   );
 }
 

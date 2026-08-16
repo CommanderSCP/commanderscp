@@ -637,6 +637,11 @@ export const SourceMappingSchema = z.object({
    *  otherwise match this row routes to nothing. `true` for every pre-0063 row (the default),
    *  which was already routing. */
   enabled: z.boolean(),
+  /** The timed close's bound, or null (see SetSourceMappingEnabledRequest). */
+  disabledUntil: z.string().datetime().nullable(),
+  /** The read-time truth the matcher acts on: `enabled`, OR a timed close whose bound has passed.
+   *  Paint state from THIS. */
+  effectivelyEnabled: z.boolean(),
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -730,7 +735,13 @@ export const SourceMappingIdParamSchema = z.object({
  * column here is part of the identity tuple (`ManifestSourceMappingSchema`) or, like
  * `mirrorOfShared`/`classification`, a create-time declaration with no update path.
  */
-export const SetSourceMappingEnabledRequestSchema = z.object({ enabled: z.boolean() });
+export const SetSourceMappingEnabledRequestSchema = z.object({
+  enabled: z.boolean(),
+  /** With `enabled: false` only: close UNTIL this instant (ISO), then re-open automatically at
+   *  read time — no timer job. Omitted/null = closed until an operator re-opens. Ignored with
+   *  `enabled: true`. */
+  disabledUntil: z.string().datetime().nullable().optional()
+});
 export type SetSourceMappingEnabledRequest = z.infer<typeof SetSourceMappingEnabledRequestSchema>;
 
 /**

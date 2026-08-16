@@ -55,6 +55,7 @@ const {
   StageCardForTest,
   UnplacedStageCardForTest,
   SourceNodeForTest,
+  SourceOpenCloseDialogForTest,
   WaveRowForTest,
   arrowInto,
   buildJourney,
@@ -393,6 +394,8 @@ function source(over: Partial<ComponentPipelineResponse["sources"][number]> = {}
     // migration 0063: every mapping is enabled by default; tests that care about the disabled
     // treatment override this explicitly, same as every other field here.
     enabled: true,
+    disabledUntil: null,
+    effectivelyEnabled: true,
     url: "https://github.com/AgentKitProject/agentkit",
     ...over
   };
@@ -1093,6 +1096,8 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     classification: null,
     mirrorOfShared: false,
     enabled: true,
+    disabledUntil: null,
+    effectivelyEnabled: true,
     url: null,
     ...over
   });
@@ -1199,13 +1204,13 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
     const html = renderWithQueryClient(
       <SourceNodeForTest
         label="Source code"
-        sources={[source({ id: "019f0000-0000-7000-8000-00000000f004", enabled: false })]}
+        sources={[source({ id: "019f0000-0000-7000-8000-00000000f004", enabled: false, effectivelyEnabled: false })]}
         upstream={SELF}
         domainLocal={false}
       />
     );
     expect(html, "the muted treatment — NodeShell's own dashed/quiet card").toContain("border-dashed");
-    expect(html).toContain("disabled — routes nothing");
+    expect(html).toContain("closed until re-opened — routes nothing");
     expect(html, "the arrow beneath it carries the inert style, not an ordinary pending one").toContain(
       'data-inert="true"'
     );
@@ -1303,5 +1308,97 @@ describe("a wave label carries the ORDER claim, not just membership", () => {
     expect(html).not.toMatch(/Wave \d/);
     // The tooltip carries the remedy: attach a topology, gamma in its own wave, then prod fans out.
     expect(html).toContain("gamma in its own wave");
+  });
+});
+
+/**
+ * NOT ONE CLICK (owner, 2026-08-14): "Enabled is default. If clicking on it while enabled, it should
+ * give you the option to disable for x period of time or until manually enabled again. There
+ * should also be a confirmation screen. When disabled, users can enable but it also needs a
+ * confirmation screen." The arrow opens a DIALOG; the dialog holds the choice and the confirm; the
+ * mutation fires only from the confirm. Radix's dialog renders nothing under renderToStaticMarkup,
+ * so the dialog body is pinned by rendering it open via its own component export.
+ */
+describe("the arrow opens a dialog — closing offers a period or until-re-opened, and both directions confirm", () => {
+  const src = (over: Partial<ComponentPipelineResponse["sources"][number]>) => ({
+    id: "019f0000-0000-7000-8000-00000000d001",
+    sourceKind: "gitea",
+    repoPattern: "field/network-cidr",
+    pathPattern: "cidr/**",
+    refPattern: "main",
+    type: "infrastructure",
+    category: "infrastructure" as const,
+    classification: null,
+    mirrorOfShared: false,
+    enabled: true,
+    disabledUntil: null,
+    effectivelyEnabled: true,
+    url: null,
+    ...over
+  });
+
+  it("an OPEN source's arrow is a switch that opens the dialog — it does not carry a one-click mutation", () => {
+    // The arrow is a button (aria-pressed) with the "click to close" affordance; that click opens
+    // the dialog rather than flipping state, and the dialog exists in the tree only when open —
+    // asserted here by its absence in a static render (Radix portals nothing while closed).
+    const html = renderWithQueryClient(
+      <SourceNodeForTest label="Source code" sources={[src({})]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+    );
+    expect(html).toContain('data-switch="open"');
+    // (apostrophe HTML-escapes under static render — match the stable tail of the phrase)
+    expect(html).toContain("choose for how long, and confirm");
+    expect(html).not.toContain('data-testid="source-open-close-dialog"');
+  });
+
+  it("the CLOSE dialog offers periods plus until-re-opened, names the consequence, and confirms with the chosen duration", () => {
+    const html = renderWithQueryClient(
+      <SourceOpenCloseDialogForTest source={src({})} currentlyOpen={true} />
+    );
+    expect(html).toContain("Close this source?");
+    for (const key of ["1h", "4h", "24h", "7d", "manual"]) {
+      expect(html, `duration ${key}`).toContain(`data-testid="close-duration-${key}"`);
+    }
+    expect(html).toContain("a push matching this rule starts no release");
+    expect(html).toContain("this is not a delete");
+    // Default = until re-opened (the conservative default: nothing re-opens by itself unless asked).
+    expect(html).toContain("It stays closed until someone opens it again");
+    expect(html).toContain('data-testid="source-open-close-confirm"');
+    expect(html).toContain("Close until re-opened");
+  });
+
+  it("the OPEN dialog confirms too, and says what re-opens — including bringing a timed re-open forward", () => {
+    const html = renderWithQueryClient(
+      <SourceOpenCloseDialogForTest
+        source={src({ enabled: false, effectivelyEnabled: false, disabledUntil: "2026-08-20T12:00:00.000Z" })}
+        currentlyOpen={false}
+      />
+    );
+    expect(html).toContain("Open this source?");
+    expect(html).toContain("starts a release again");
+    expect(html).toContain("opening now brings that forward");
+    expect(html).toContain('data-testid="source-open-close-confirm"');
+    expect(html).not.toContain('data-testid="close-duration-1h"');
+  });
+
+  it("a CLOSED tile's badge says until WHEN — a timed close and a manual close read differently", () => {
+    const timed = renderWithQueryClient(
+      <SourceNodeForTest label="Source code" sources={[src({ enabled: false, effectivelyEnabled: false, disabledUntil: "2026-08-20T12:00:00.000Z" })]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+    );
+    expect(timed).toContain("closed until ");
+    expect(timed).not.toContain("closed until re-opened");
+    const manual = renderWithQueryClient(
+      <SourceNodeForTest label="Source code" sources={[src({ enabled: false, effectivelyEnabled: false })]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+    );
+    expect(manual).toContain("closed until re-opened");
+  });
+
+  it("paints from the READ-TIME truth: a timed close whose bound has passed renders OPEN", () => {
+    // enabled still false on the row (the operator never re-opened), but the bound is in the past
+    // so the matcher routes it — the arrow must be green, not shut, or the UI lies about a live rule.
+    const html = renderWithQueryClient(
+      <SourceNodeForTest label="Source code" sources={[src({ enabled: false, effectivelyEnabled: true, disabledUntil: "2020-01-01T00:00:00.000Z" })]} upstream={{ domainId: "d", name: "field-outpost", isSelf: true, role: "outpost" }} domainLocal={false} />
+    );
+    expect(html).toContain('data-switch="open"');
+    expect(html).not.toContain("routes nothing");
   });
 });

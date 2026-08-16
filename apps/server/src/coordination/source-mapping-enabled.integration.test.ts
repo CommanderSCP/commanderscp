@@ -124,4 +124,53 @@ describe("source mapping: enabled (the pause switch, migration 0063)", () => {
     const third = await match(sourceKind, repo, ["svc/main.tf"]);
     expect(third?.componentObjectId).toBe(enabledTarget.id);
   });
+
+  // ==========================================================================================
+  // TIMED CLOSE (owner, 2026-08-14: "disable for x period of time or until manually enabled
+  // again"), migration 0064. The re-open is READ-TIME, like a freeze window: no timer job — the
+  // matcher checks the clock at every push. These pin all three states AND the automatic
+  // re-open, using bounds in the past/future rather than sleeping.
+  // ==========================================================================================
+
+  it("TIMED CLOSE: closed while now() < disabledUntil, and OPEN again — automatically, at read time — once the bound has passed", async () => {
+    const sourceKind = `timed-close-${uuidv7()}`;
+    const repo = `acme/timed-${uuidv7()}`;
+    const component = await createTestComponent(admin, { name: `timed-${uuidv7()}` });
+    const m = await admin.changeSources.createMapping(sourceKind, {
+      component: component.id,
+      repoPattern: repo,
+      type: "configuration"
+    });
+    expect(m.effectivelyEnabled).toBe(true);
+
+    // 1) Close for an hour → CLOSED now, wire says so, and the bound is echoed back.
+    const inAnHour = new Date(Date.now() + 3_600_000).toISOString();
+    const closed = await admin.changeSources.setMappingEnabled(sourceKind, m.id, false, inAnHour);
+    expect(closed.enabled).toBe(false);
+    expect(closed.disabledUntil).toBe(inAnHour);
+    expect(closed.effectivelyEnabled).toBe(false);
+    await expect(match(sourceKind, repo)).resolves.toBeNull();
+
+    // 2) THE RE-OPEN, without waiting: set a bound already in the PAST. `enabled` still reads false
+    //    (nobody re-opened by hand) — but the matcher routes it and the wire says effectivelyEnabled.
+    //    This is the whole reason the read-time design is honest: no job to run, no job to fail.
+    const inThePast = new Date(Date.now() - 60_000).toISOString();
+    const lapsed = await admin.changeSources.setMappingEnabled(sourceKind, m.id, false, inThePast);
+    expect(lapsed.enabled, "declared intent is still 'closed'").toBe(false);
+    expect(lapsed.effectivelyEnabled, "…but the bound has passed, so it is OPEN at read time").toBe(true);
+    await expect(match(sourceKind, repo)).resolves.toMatchObject({ componentObjectId: component.id });
+
+    // 3) Manual close (no bound) stays closed regardless of the clock.
+    const manual = await admin.changeSources.setMappingEnabled(sourceKind, m.id, false, null);
+    expect(manual.disabledUntil).toBeNull();
+    expect(manual.effectivelyEnabled).toBe(false);
+    await expect(match(sourceKind, repo)).resolves.toBeNull();
+
+    // 4) Re-open by hand clears the bound entirely — a stale bound must not linger on an open row.
+    const reopened = await admin.changeSources.setMappingEnabled(sourceKind, m.id, true, inAnHour);
+    expect(reopened.enabled).toBe(true);
+    expect(reopened.disabledUntil, "a bound sent with enabled:true is ignored AND cleared").toBeNull();
+    expect(reopened.effectivelyEnabled).toBe(true);
+    await expect(match(sourceKind, repo)).resolves.toMatchObject({ componentObjectId: component.id });
+  });
 });

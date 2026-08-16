@@ -28,6 +28,12 @@ function toSourceMapping(row: typeof sourceMappings.$inferSelect): SourceMapping
     classification: parsePipelineClassification(row.classification),
     mirrorOfShared: row.mirrorOfShared,
     enabled: row.enabled,
+    disabledUntil: row.disabledUntil ? row.disabledUntil.toISOString() : null,
+    // What the matcher will actually DO right now — the read-time truth. Differs from `enabled`
+    // only in the one honest case: a timed close whose bound has passed (enabled=false but the
+    // rule routes again). The UI paints the arrow from THIS, never from `enabled` alone.
+    effectivelyEnabled:
+      row.enabled || (row.disabledUntil !== null && row.disabledUntil.getTime() <= Date.now()),
     createdAt: row.createdAt.toISOString()
   };
 }
@@ -82,11 +88,14 @@ export async function setSourceMappingEnabled(
   orgId: string,
   sourceKind: string,
   id: string,
-  enabled: boolean
+  enabled: boolean,
+  /** A timed close: closed until this instant, then open again automatically (read-time, like a
+   *  freeze). Ignored — and cleared — when `enabled` is true. Null = closed until re-opened by hand. */
+  disabledUntil: Date | null = null
 ): Promise<SourceMapping> {
   const [row] = await tx
     .update(sourceMappings)
-    .set({ enabled })
+    .set({ enabled, disabledUntil: enabled ? null : disabledUntil })
     .where(
       and(
         eq(sourceMappings.orgId, orgId),

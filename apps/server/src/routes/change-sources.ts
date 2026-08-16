@@ -465,7 +465,8 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           auth.orgId,
           request.params.sourceKind,
           request.params.id,
-          request.body.enabled
+          request.body.enabled,
+          request.body.disabledUntil ? new Date(request.body.disabledUntil) : null
         );
       });
       reply.status(200).send(mapping);

@@ -6473,6 +6473,8 @@ export type GetComponentPipelineResponses = {
             classification: 'dev' | 'beta' | null;
             mirrorOfShared: boolean;
             enabled: boolean;
+            disabledUntil: string | null;
+            effectivelyEnabled: boolean;
             url: string | null;
         }>;
         stages: Array<{
@@ -12490,6 +12492,8 @@ export type ListSourceMappingsResponses = {
             classification: 'dev' | 'beta' | null;
             mirrorOfShared: boolean;
             enabled: boolean;
+            disabledUntil: string | null;
+            effectivelyEnabled: boolean;
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -12583,6 +12587,8 @@ export type CreateSourceMappingResponses = {
         classification: 'dev' | 'beta' | null;
         mirrorOfShared: boolean;
         enabled: boolean;
+        disabledUntil: string | null;
+        effectivelyEnabled: boolean;
         createdAt: string;
     };
 };
@@ -12592,6 +12598,7 @@ export type CreateSourceMappingResponse = CreateSourceMappingResponses[keyof Cre
 export type SetSourceMappingEnabledData = {
     body: {
         enabled: boolean;
+        disabledUntil?: string | null;
     };
     path: {
         sourceKind: string;
@@ -12667,6 +12674,8 @@ export type SetSourceMappingEnabledResponses = {
         classification: 'dev' | 'beta' | null;
         mirrorOfShared: boolean;
         enabled: boolean;
+        disabledUntil: string | null;
+        effectivelyEnabled: boolean;
         createdAt: string;
     };
 };

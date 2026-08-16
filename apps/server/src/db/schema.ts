@@ -659,6 +659,14 @@ export const sourceMappings = pgTable(
     // not just how it renders. `NOT NULL DEFAULT true` — every pre-0063 row was already routing, so
     // the default preserves that behaviour with no backfill.
     enabled: boolean("enabled").notNull().default(true),
+    // TIMED CLOSE (owner, 2026-08-14: "disable for x period of time or until manually enabled
+    // again"), migration 0064. Read together with `enabled`, exactly the way a freeze window is
+    // read (governance/freezes-repo.ts): NO timer job re-opens anything — the correlation matcher
+    // evaluates `now()` at every push. Three states: enabled=true → open (this column ignored);
+    // enabled=false, disabled_until NULL → closed until an operator re-opens; enabled=false,
+    // disabled_until = T → closed while now() < T, then OPEN again automatically, on time, with
+    // zero moving parts. `enabled` stays the operator's declared intent; this column bounds it.
+    disabledUntil: timestamp("disabled_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]

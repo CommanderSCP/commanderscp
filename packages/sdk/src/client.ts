@@ -1479,12 +1479,14 @@ export class ScpClient {
     setMappingEnabled: async (
       sourceKind: string,
       id: string,
-      enabled: boolean
+      enabled: boolean,
+      /** Timed close (with enabled:false): closed until this ISO instant, then open again at read time. */
+      disabledUntil?: string | null
     ): Promise<SourceMapping> => {
       const result = await setSourceMappingEnabledRequest({
         client: this.client,
         path: { sourceKind, id },
-        body: { enabled }
+        body: { enabled, ...(disabledUntil !== undefined ? { disabledUntil } : {}) }
       });
       return unwrap(result);
     },
