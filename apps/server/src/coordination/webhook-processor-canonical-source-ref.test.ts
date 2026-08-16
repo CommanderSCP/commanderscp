@@ -100,6 +100,26 @@ describe("canonicalizeSourceRef: the report body's supply-chain fields become ca
     expect(sourceRef).toEqual(push);
   });
 
+  it("the SERVER-OWNED stamps (`boundaryBundleChecksums`, `promotionExports`) are stripped off a delivery — a payload cannot plant 'exported' or 'signed for <peer>' facts; every other key survives verbatim", () => {
+    const planted = {
+      repo: "acme/api",
+      correlationKey: "refs/heads/main",
+      artifactDigest: ARTIFACT_DIGEST,
+      boundaryBundleChecksums: ["c".repeat(64)],
+      promotionExports: [{ peerDomainId: "x", manifestSignature: "MEUCIQ==" }]
+    };
+    const sourceRef = canonicalizeSourceRef(planted, extractHint("terraform", {}, planted));
+    expect(sourceRef).not.toHaveProperty("boundaryBundleChecksums");
+    expect(sourceRef).not.toHaveProperty("promotionExports");
+    expect(sourceRef.repo).toBe("acme/api");
+    expect(sourceRef.artifactDigest, "the raw key beside the stamps is untouched").toBe(
+      ARTIFACT_DIGEST
+    );
+    expect(sourceRef.artifact_digest).toBe(ARTIFACT_DIGEST);
+    // The caller's own object is not mutated — the delivery row keeps its payload byte-for-byte.
+    expect(planted.promotionExports).toHaveLength(1);
+  });
+
   it("a MALFORMED sbom reference is dropped rather than throwing — ingress must not wedge on one bad supply-chain field, and the raw payload is still preserved for forensics", () => {
     // `digest` is a tag, not a sha256 digest -> the reference cannot be bound to anything.
     const bad = {

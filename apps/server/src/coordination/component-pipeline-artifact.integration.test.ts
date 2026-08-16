@@ -3,7 +3,9 @@ import { randomUUID } from "node:crypto";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import type { ComponentPipelineArtifact, GraphObject } from "@scp/schemas";
+import { and, eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { changes } from "../db/schema.js";
 import { insertControlRun } from "../governance/controls-repo.js";
 import { MANAGED_SCAN_CONTROL_OBJECT_ID } from "../federation/promotion-scan-step.js";
 import { PROMOTION_EXPORTS_KEY } from "../federation/boundary-bundle-ref.js";
@@ -38,6 +40,14 @@ import {
  *   - an UNPARSEABLE `sbom` reads null + `unknownFields: ["sbom:unparseable"]`, digests intact.
  *   - a stored `promotionExports[]` entry that does not parse is COUNTED under `unknownFields`,
  *     the parseable one beside it still rendered with `peerName: null` (no peer row here).
+ *   - the reduction keeps the NEWEST row per key even when it is a fail over an older pass (a
+ *     "prefer pass" sort would lie), while E6 — over ALL outcomes — still reads `pass`.
+ *   - `managed` is the synthetic control id ALONE: a gateRef claiming `promotionScanStep` on a
+ *     random control id reads `managed: false`; the managed id with an empty gateRef reads `true`
+ *     with `method` falling back to the scanner.
+ *   - a TWO-digest change: a passing digest-bound row for one digest reads `fail` (E6 needs one per
+ *     substantive artifact); covering the second flips it to `pass`.
+ *   - `POST /changes` 400s a sourceRef planting `promotionExports`/`boundaryBundleChecksums`.
  *
  * MUTATION LOG (each applied ALONE, then reverted)
  * | Mutation | Result |
@@ -47,6 +57,10 @@ import {
  * | `managed: false` always | the reduction test FAILS on the openscap row |
  * | `exportGate` = `outcomes.length > 0 ? "pass" : "not_run"` | the digest-unbound test FAILS (`pass` where `fail`) |
  * | skip the `sbom:unparseable` push | the unparseable-sbom test FAILS |
+ * | sort rows `pass` first before the reduction | the newer-fail test FAILS (older pass survives) |
+ * | `managed: gateRef?.promotionScanStep === true` | the managed-flag test FAILS (impostor reads managed) |
+ * | `exportGate = any pass+digestMatch row ? pass : fail` | the two-digest test FAILS (`pass` where `fail`) |
+ * | drop the reserved-key check in `routes/changes.ts` | the planted-stamp test FAILS (201) |
  */
 describe("component pipeline: the artifact and its change-scoped facts (§9.3)", () => {
   let server: ListeningTestServer;
@@ -284,6 +298,129 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     expect(artifact!.unknownFields).toEqual(["sbom:unparseable"]);
   });
 
+  it("keeps the NEWEST row per (scanner, digest) even when it is a FAIL over an older pass — the reduction is by recency, never 'prefer pass'; E6 still reads `pass` off the older digest-bound row (it accepts ANY passing row)", async () => {
+    const component = await createOrphanComponent(admin, uniq("newer-fail"));
+    const digest = digestOf("8");
+    const change = await proposeWith(component.id, { artifactDigest: digest });
+
+    const olderPass = await seedScan(change.id, digest, { status: "pass" });
+    const newerFail = await seedScan(change.id, digest, {
+      status: "fail",
+      counts: { critical: 2, high: 0, medium: 0, low: 0 }
+    });
+
+    const { artifact } = await pipelineOf(component.id);
+    expect(artifact!.scans, "one key ⇒ one row").toHaveLength(1);
+    expect(artifact!.scans[0], "the surviving row is the NEWER one, and it is the fail").toMatchObject(
+      {
+        controlRunId: newerFail.id,
+        status: "fail",
+        counts: { critical: 2, high: 0, medium: 0, low: 0 }
+      }
+    );
+    expect(artifact!.scans.map((s) => s.controlRunId)).not.toContain(olderPass.id);
+    // E6's own predicate is applied over ALL outcomes, not the reduced rows: the older passing
+    // digest-bound row satisfies it. The projection reports E6 as it really decides — a tile that
+    // shows a red row beside a green gate is telling the truth about two different things.
+    expect(artifact!.exportGate).toBe("pass");
+  });
+
+  it("`managed` is read off the SYNTHETIC CONTROL ID alone — a gateRef claiming `promotionScanStep` on an org control does not make it managed, and a managed row with no gateRef method still is (method falls back to the scanner)", async () => {
+    const component = await createOrphanComponent(admin, uniq("managed-flag"));
+    const digest = digestOf("5");
+    const change = await proposeWith(component.id, { artifactDigest: digest });
+
+    // (a) the managed control id, gateRef carries NO method → managed:true, method = scanner.
+    const managedNoMethod = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      insertControlRun(tx, {
+        orgId: org.orgId,
+        controlObjectId: MANAGED_SCAN_CONTROL_OBJECT_ID,
+        changeObjectId: change.id,
+        gateKind: "lifecycle_edge",
+        gateRef: {},
+        status: "pass",
+        evidence: {
+          scanner: "openscap",
+          scannerVersion: "1.3.10",
+          artifactDigest: digest,
+          expectedDigest: digest,
+          digestMatch: true,
+          severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+          threshold: { maxCritical: 0, maxHigh: 0 }
+        }
+      })
+    );
+    // (b) a RANDOM control id whose gateRef CLAIMS to be the promotion scan step → managed:false;
+    //     the method is still read from gateRef (it is a stored value, not the discriminator).
+    const impostor = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      insertControlRun(tx, {
+        orgId: org.orgId,
+        controlObjectId: randomUUID(),
+        changeObjectId: change.id,
+        gateKind: "lifecycle_edge",
+        gateRef: { promotionScanStep: true, method: "trivy-vm", artifactDigest: digest },
+        status: "pass",
+        evidence: {
+          scanner: "trivy",
+          scannerVersion: "0.55.0",
+          artifactDigest: digest,
+          expectedDigest: digest,
+          digestMatch: true,
+          severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+          threshold: { maxCritical: 0, maxHigh: 0 }
+        }
+      })
+    );
+
+    const { artifact } = await pipelineOf(component.id);
+    expect(artifact!.scans).toHaveLength(2);
+    const oscap = artifact!.scans.find((s) => s.controlRunId === managedNoMethod.id)!;
+    expect(oscap).toMatchObject({ managed: true, method: "openscap", scanner: "openscap" });
+    const trivy = artifact!.scans.find((s) => s.controlRunId === impostor.id)!;
+    expect(trivy).toMatchObject({ managed: false, method: "trivy-vm", scanner: "trivy" });
+  });
+
+  it("E6 over a MULTI-digest change: a passing digest-bound row for ONE of two digests reads `fail`; a row for the other flips it to `pass`", async () => {
+    const component = await createOrphanComponent(admin, uniq("two-digests"));
+    const d1 = digestOf("3");
+    const d2 = digestOf("4");
+    const change = await proposeWith(component.id, { artifact_digest: [d1, d2] });
+
+    await seedScan(change.id, d1, { status: "pass" });
+    const partial = await pipelineOf(component.id);
+    expect(partial.artifact!.digests).toEqual([d1, d2]);
+    expect(partial.artifact!.scans).toHaveLength(1);
+    expect(
+      partial.artifact!.exportGate,
+      "d2 has no passing digest-bound row — E6 needs one per substantive artifact"
+    ).toBe("fail");
+
+    await seedScan(change.id, d2, { status: "pass" });
+    const covered = await pipelineOf(component.id);
+    expect(covered.artifact!.scans, "one row per (scanner, digest) — two digests, two rows").toHaveLength(2);
+    expect(covered.artifact!.exportGate).toBe("pass");
+  });
+
+  it("`POST /changes` REFUSES a sourceRef that plants a server-owned stamp (`promotionExports`, `boundaryBundleChecksums`) — 400, nothing stored", async () => {
+    const component = await createOrphanComponent(admin, uniq("planted"));
+    for (const key of [PROMOTION_EXPORTS_KEY, "boundaryBundleChecksums"]) {
+      const res = await server.app.inject({
+        method: "POST",
+        url: "/api/v1/changes",
+        headers: { authorization: `Bearer ${org.adminToken}` },
+        payload: {
+          name: uniq("chg"),
+          targets: [component.id],
+          type: "image",
+          sourceRef: { artifactDigest: digestOf("6"), [key]: [{ checksum: "planted" }] }
+        }
+      });
+      expect(res.statusCode, key).toBe(400);
+      expect(res.json().detail, key).toContain(`sourceRef.${key}`);
+    }
+    expect((await pipelineOf(component.id)).artifact, "no change was minted").toBeNull();
+  });
+
   it("renders a stored promotionExports[] stamp with `peerName: null` when no peer row exists, and COUNTS an unparseable one", async () => {
     const component = await createOrphanComponent(admin, uniq("stamped"));
     const digest = digestOf("7");
@@ -297,20 +434,31 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
       changeUrn: "urn:scp:x:change:y",
       artifacts: [{ type: "oci", digest }]
     };
-    await proposeWith(component.id, {
-      artifactDigest: digest,
-      [PROMOTION_EXPORTS_KEY]: [
-        {
-          peerDomainId,
-          exportedAt: "2026-08-16T00:00:01.000Z",
-          checksum: "c".repeat(64),
-          manifest,
-          manifestSignature: "MEUCIQ==",
-          keyFingerprint: "ab".repeat(32)
-        },
-        { checksum: "not-a-record" }
-      ]
-    });
+    const change = await proposeWith(component.id, { artifactDigest: digest });
+    // The stamp is SERVER-OWNED (`POST /changes` refuses it — see above), so it is written the way
+    // the exporter's `stampBoundaryBundleChecksum` writes it: a bare UPDATE of the row's sourceRef.
+    // The second entry is deliberately malformed — that is what the unparseable count is for.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            artifactDigest: digest,
+            [PROMOTION_EXPORTS_KEY]: [
+              {
+                peerDomainId,
+                exportedAt: "2026-08-16T00:00:01.000Z",
+                checksum: "c".repeat(64),
+                manifest,
+                manifestSignature: "MEUCIQ==",
+                keyFingerprint: "ab".repeat(32)
+              },
+              { checksum: "not-a-record" }
+            ]
+          }
+        })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
 
     const { artifact } = await pipelineOf(component.id);
     expect(artifact!.signing.promotionExports).toEqual([
@@ -325,5 +473,17 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
       }
     ]);
     expect(artifact!.unknownFields).toEqual(["promotionExports:unparseable"]);
+
+    // A key that is PRESENT but not a list at all is ONE unreadable stored value — stated, exactly
+    // like a malformed `sbom` is, never read as "nothing exported".
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({ sourceRef: { artifactDigest: digest, [PROMOTION_EXPORTS_KEY]: { checksum: "x" } } })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    const notAList = (await pipelineOf(component.id)).artifact!;
+    expect(notAList.signing.promotionExports).toEqual([]);
+    expect(notAList.unknownFields).toEqual(["promotionExports:unparseable"]);
   });
 });

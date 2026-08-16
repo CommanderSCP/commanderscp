@@ -70,12 +70,20 @@ describe("boundary-bundle-ref: promotionExports[] helpers (§9.4)", () => {
     expect((stamped[PROMOTION_EXPORTS_KEY] as unknown[])[2]).toBe("garbage");
   });
 
-  it("reads `[]` / 0 off anything that is not a list", () => {
+  it("reads `[]` / 0 when the key is MISSING — and `[]` / 1 when it is PRESENT but not a list (a stored value that does not read is stated, not claimed absent)", () => {
     expect(promotionExportsOf(undefined)).toEqual({ entries: [], unparseable: 0 });
-    expect(promotionExportsOf({ [PROMOTION_EXPORTS_KEY]: "nope" })).toEqual({
+    expect(promotionExportsOf("junk")).toEqual({ entries: [], unparseable: 0 });
+    expect(promotionExportsOf({ repo: "acme/x" })).toEqual({ entries: [], unparseable: 0 });
+    expect(promotionExportsOf({ [PROMOTION_EXPORTS_KEY]: null })).toEqual({
       entries: [],
       unparseable: 0
     });
+    for (const malformed of ["nope", { checksum: "x" }, 42, true]) {
+      expect(promotionExportsOf({ [PROMOTION_EXPORTS_KEY]: malformed }), String(malformed)).toEqual({
+        entries: [],
+        unparseable: 1
+      });
+    }
   });
 
   it("strips the key from an exported payload and leaves everything else", () => {

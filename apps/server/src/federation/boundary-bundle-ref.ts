@@ -120,7 +120,10 @@ export type PromotionExportStamp = z.infer<typeof PromotionExportStampSchema>;
 
 /** The export records stamped on a change's `sourceRef`, defensively read: entries that do not
  *  parse are COUNTED (`unparseable`) rather than dropped silently or fabricated — the projection
- *  states the count in `unknownFields`. A missing/malformed list is `[]` with `unparseable: 0`. */
+ *  states the count in `unknownFields`. A MISSING key (`undefined`/`null`) is `[]` with
+ *  `unparseable: 0`; a key that is PRESENT but not a list is one unreadable value (`unparseable: 1`)
+ *  — the same honesty rule `artifact-facts.ts` applies to a malformed `sbom`: something is stored
+ *  under the key, so its absence must not be claimed. */
 export function promotionExportsOf(sourceRef: unknown): {
   entries: PromotionExportStamp[];
   unparseable: number;
@@ -129,7 +132,8 @@ export function promotionExportsOf(sourceRef: unknown): {
     return { entries: [], unparseable: 0 };
   }
   const raw = (sourceRef as Record<string, unknown>)[PROMOTION_EXPORTS_KEY];
-  if (!Array.isArray(raw)) return { entries: [], unparseable: 0 };
+  if (raw === undefined || raw === null) return { entries: [], unparseable: 0 };
+  if (!Array.isArray(raw)) return { entries: [], unparseable: 1 };
   const entries: PromotionExportStamp[] = [];
   let unparseable = 0;
   for (const item of raw) {
@@ -163,6 +167,42 @@ export function withPromotionExport(
   );
   base[PROMOTION_EXPORTS_KEY] = alreadyStamped ? existing : [...existing, record];
   return base;
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE SERVER-OWNED `sourceRef` KEYS — what a caller may NOT plant.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Both keys above are written by exactly one server-side writer (`changes-repo.ts::
+ * stampBoundaryBundleChecksum`, and the promotion importer for its own received checksum), and the
+ * component pipeline RENDERS them as facts — "exported (checksum …)", "manifest signed for <peer>
+ * (key <fp>)". `proposeChange` stores a caller's `sourceRef` VERBATIM (DESIGN §8: the delivery
+ * payload is kept as-is), so without this list an org proposer could plant a stamp through
+ * `POST /changes` and the Scan & sign tile would claim a signing that never happened. The two
+ * UNTRUSTED doors refuse/strip these keys; the engine's own callers (federation import — which
+ * legitimately writes the import-side checksum — rollback, campaign fan-out) call `proposeChange`
+ * directly and are not filtered.
+ */
+export const SERVER_OWNED_SOURCE_REF_KEYS: readonly string[] = [
+  BOUNDARY_BUNDLE_CHECKSUMS_KEY,
+  PROMOTION_EXPORTS_KEY
+];
+
+/** The server-owned keys PRESENT on a caller-supplied `sourceRef` (`[]` for a non-object). */
+export function serverOwnedSourceRefKeysIn(sourceRef: unknown): string[] {
+  if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) return [];
+  return SERVER_OWNED_SOURCE_REF_KEYS.filter((key) => key in (sourceRef as Record<string, unknown>));
+}
+
+/** `sourceRef` with every server-owned key REMOVED (a new object; the input is not mutated). */
+export function withoutServerOwnedSourceRefKeys(
+  sourceRef: Record<string, unknown>
+): Record<string, unknown> {
+  if (serverOwnedSourceRefKeysIn(sourceRef).length === 0) return sourceRef;
+  const rest = { ...sourceRef };
+  for (const key of SERVER_OWNED_SOURCE_REF_KEYS) delete rest[key];
+  return rest;
 }
 
 /** `sourceRef` with the key REMOVED — the exported bundle payload only (see the header above). */

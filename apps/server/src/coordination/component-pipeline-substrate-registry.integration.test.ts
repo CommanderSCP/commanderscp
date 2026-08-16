@@ -40,6 +40,7 @@ import {
  * | resolve `state: "declared"` from `rows[0]` when >1 edge | the ambiguous test FAILS (`state`, and `name` non-null) |
  * | skip the `domainLocal`-endpoint journal check in relationships-repo | the never-journals test FAILS — a `relationship_upsert` row names the edge |
  * | read `repository` without the string guard | the non-string test FAILS with `repository: 42` on the wire (zod response validation would also refuse it) |
+ * | drop `isNull(relationships.deletedAt)` from the `publishes_to` where-clause | the deleted-edge test FAILS (`declared`, edgeCount 1 after the delete) |
  */
 describe("component pipeline: the substrate facet (§9.1) and the per-site registry (§9.2)", () => {
   let server: ListeningTestServer;
@@ -257,6 +258,34 @@ describe("component pipeline: the substrate facet (§9.1) and the per-site regis
       url: "https://registry.hq.invalid/ui",
       repository: "acme/checkout-api",
       edgeCount: 1
+    });
+  });
+
+  it("registry: a DELETED `publishes_to` edge no longer counts — `declared` returns to `none` with edgeCount 0 (a tombstone is not a declaration)", async () => {
+    const component = await createOrphanComponent(admin, uniq("deleted-edge"));
+    const hq = await registrySystem(uniq("hq-registry"), { domainLocal: true });
+    const edge = await admin.relationships.create({
+      typeId: "publishes_to",
+      fromId: component.id,
+      toId: hq.id,
+      properties: { repository: "acme/checkout-api" }
+    });
+    expect((await pipelineOf(component.id)).registry).toMatchObject({
+      state: "declared",
+      executionSystemId: hq.id,
+      edgeCount: 1
+    });
+
+    await admin.relationships.delete(edge.id);
+
+    expect((await pipelineOf(component.id)).registry).toEqual({
+      state: "none",
+      executionSystemId: null,
+      name: null,
+      kind: null,
+      url: null,
+      repository: null,
+      edgeCount: 0
     });
   });
 
