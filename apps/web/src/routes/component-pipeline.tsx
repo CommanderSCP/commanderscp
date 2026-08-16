@@ -317,9 +317,11 @@ function TargetOutpostLine({
   const body = (() => {
     switch (outpost.state) {
       case "outpost": {
+        // The line's leading label already says "Outpost", so the value is the NAME (+ tier) —
+        // "Outpost outpost field-outpost" read doubled on the live review (owner, 2026-08-16).
         const label = (
           <>
-            outpost <span className="font-medium text-slate-600">{outpost.name}</span>
+            <span className="font-medium text-slate-600">{outpost.name}</span>
             {outpost.trustTier ? ` · ${outpost.trustTier}` : ""}
           </>
         );

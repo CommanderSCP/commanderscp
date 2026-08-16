@@ -1271,11 +1271,11 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     expect(html).toContain('data-testid="pipeline-target-outpost"');
     expect(html).toContain('data-outpost-state="outpost"');
     const line = outlineText(outpostLine(html));
-    expect(line).toContain("outpost field-outpost · il5");
+    expect(line).toContain("Outpost field-outpost · il5");
     // The router `Link` is mocked to a bare `<a>` at the top of this file (so `data-testid`/`to`
     // do not survive) — the assertion is that the outpost words are INSIDE an anchor.
     expect(outpostLine(html), "linked on the commander site").toMatch(
-      /<a>outpost <span[^>]*>field-outpost/
+      /<a><span[^>]*>field-outpost/
     );
     expect(line, "never the target's name").not.toContain("field-cluster");
   });
@@ -1296,7 +1296,7 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
       const html = renderToStaticMarkup(
         <StageCardForTest instanceRole={role} stage={stageWithOutpost} />
       );
-      expect(outlineText(outpostLine(html))).toContain("outpost field-outpost · il5");
+      expect(outlineText(outpostLine(html))).toContain("Outpost field-outpost · il5");
       expect(outpostLine(html), `role=${String(role)} must not link`).not.toContain("<a");
     }
   });
@@ -1317,7 +1317,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
       />
     );
     const line = outlineText(outpostLine(html));
-    expect(line).toContain("outpost field-outpost");
+    expect(line).toContain("Outpost field-outpost");
+    expect(line, "the word outpost appears once — label, not value").not.toMatch(/outpost\s+outpost/i);
     expect(line).not.toContain("·");
     expect(line).not.toContain("commercial");
   });
@@ -1463,8 +1464,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
       />
     );
     expect(html).toContain('data-outpost-state="outpost"');
-    expect(outlineText(outpostLine(html))).toContain("outpost field-outpost · il5");
-    expect(outpostLine(html)).toMatch(/<a>outpost <span[^>]*>field-outpost/);
+    expect(outlineText(outpostLine(html))).toContain("Outpost field-outpost · il5");
+    expect(outpostLine(html)).toMatch(/<a><span[^>]*>field-outpost/);
   });
 });
 
