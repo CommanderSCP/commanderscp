@@ -175,6 +175,36 @@ describe("A1 — source-mapping authoring", () => {
       mirrorOfShared: true
     });
     expect(declared.mirrorOfShared).toBe(true);
+    // scope (pipeline-substrate-registry-scan.md §10.6): the same omit-when-default rule — "not
+    // declared" (`""`/omitted) sends NO key so the row stores NULL and nothing is inferred; a
+    // chosen value is sent verbatim. Orthogonal to mirrorOfShared: both may be present.
+    expect("scope" in blank).toBe(false);
+    expect("scope" in filled).toBe(false);
+    expect("scope" in declared).toBe(false);
+    const undeclared = buildCreateMappingPayload({
+      repoPattern: "field/network",
+      pathPattern: "",
+      refPattern: "",
+      component: "comp-1",
+      type: "infrastructure",
+      classification: "",
+      scope: ""
+    });
+    expect("scope" in undeclared).toBe(false);
+    for (const scope of ["global", "domain"] as const) {
+      const scoped = buildCreateMappingPayload({
+        repoPattern: "field/network",
+        pathPattern: "",
+        refPattern: "",
+        component: "comp-1",
+        type: "infrastructure",
+        classification: "",
+        mirrorOfShared: scope === "domain",
+        scope
+      });
+      expect(scoped.scope).toBe(scope);
+      expect(scoped.mirrorOfShared).toBe(scope === "domain" ? true : undefined);
+    }
   });
 
   it("SourceMappingForm offers exactly the request schema's operator-facing fields — component is implicit (this page IS the component), nothing else is added or missing", () => {
@@ -189,6 +219,7 @@ describe("A1 — source-mapping authoring", () => {
       "mapping-source-kind-select",
       "mapping-type-select",
       "mapping-classification-select",
+      "mapping-scope-select",
       "mapping-mirror-of-shared",
       "mapping-repo-input",
       "mapping-path-input",
@@ -202,6 +233,11 @@ describe("A1 — source-mapping authoring", () => {
     expect(html).toContain("Path pattern");
     expect(html).toContain("Ref pattern");
     expect(html).toContain("Classification");
+    // §10.6: the scope label is offered here too (API parity with `--scope`); the help copy says
+    // undeclared shows no eyebrow and that correlation never reads it.
+    expect(html).toContain("Scope");
+    expect(html).toContain("no eyebrow is shown");
+    expect(html).toContain("correlation does not read it");
     // §9.3a: the declaration is stated as what it is — a mirror of the commander's source — and
     // the help copy names both the case it is for and its inertness.
     expect(html).toContain("mirror of a commander-shared source");

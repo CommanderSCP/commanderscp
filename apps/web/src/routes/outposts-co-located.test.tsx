@@ -22,8 +22,12 @@ import type { OutpostConfig } from "@scp/schemas";
  *     marker, in `unknownFields` → `· unverified`, else the tier.
  *   * `SelfDomainPanel` still forbids every peer-row column for self.
  *   * `DeclareConfigCard coLocated` renders the declare control with the co-located copy and does
- *     NOT run the peer-role refusal (there is no peer); without `coLocated` a `commander`-role peer
- *     is still refused (the existing case in outpost-configuration.test.tsx).
+ *     NOT run the peer-role refusal (there is no peer) — but ONLY for `selfRole: "commander"`, the
+ *     one role the server's self-shape door accepts (`outpost-binding.ts`; measured in
+ *     `outpost-config-sync.integration.test.ts`): every other role renders the refusal and no
+ *     control. Without `coLocated` a `commander`-role peer is still refused (the existing case in
+ *     outpost-configuration.test.tsx). `SelfOutpostLine`'s `null` arm offers the declare link on
+ *     the same condition and otherwise reads `declared at the commander`.
  *
  * MUTATION LOG (each applied ALONE, then reverted)
  * | Mutation | Result |
@@ -31,6 +35,8 @@ import type { OutpostConfig } from "@scp/schemas";
  * | `SelfOutpostLine`: treat `undefined` like `null` | the "not reported" case FAILS |
  * | `SelfOutpostTier`: ignore `unknownFields` | the unverified case FAILS (`data-tier-provenance="declared"`) |
  * | `DeclareConfigCard`: drop the `!coLocated &&` guard and pass `peer={{role:"commander"}}` | the co-located case FAILS (`config-role-not-outpost`) |
+ * | `DeclareConfigCard`: drop the `selfRole !== "commander"` refusal | the "any OTHER role" case FAILS (`config-declare-save` rendered) |
+ * | `SelfOutpostLine`: offer the declare link on every role | the "NON-commander role" case FAILS (`self-outpost-declare-link` present) |
  * | `SelfDomainPanel`: stop threading `selfOutpost` | the registered case FAILS (`data-self-outpost="unreported"`) |
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -104,6 +110,20 @@ describe("SelfOutpostLine (§10.5): the co-located record, read off selfOutpost,
     expect(visibleText(html)).toContain("no outpost registered");
     expect(html, "the way to declare one is a link").toMatch(/<a>declare one<\/a>/);
     expect(html).not.toMatch(/<a>hq-outpost<\/a>/);
+  });
+
+  it("`null` on a NON-commander role: the absence is stated, but NO declare link — the record is the commander's (the server 400s the self shape from an outpost)", () => {
+    for (const role of ["outpost", "retrans", "unset"] as const) {
+      const html = renderToStaticMarkup(
+        <SelfOutpostLine self={{ ...SELF, role }} selfOutpost={null} />
+      );
+      expect(html, role).toContain('data-self-outpost="none"');
+      expect(html, role).toContain('data-self-outpost-authority="commander"');
+      expect(visibleText(html), role).toContain("no outpost registered");
+      expect(visibleText(html), role).toContain("declared at the commander");
+      expect(html, `${role}: no declare link`).not.toContain("self-outpost-declare-link");
+      expect(html, `${role}: no anchor at all`).not.toMatch(/<a>/);
+    }
   });
 
   it("`undefined` (an older server): `not reported` — NOT read as none", () => {
@@ -208,14 +228,44 @@ describe("SelfOutpostCard (§10.5): the detail page's card for this instance's o
 });
 
 describe("DeclareConfigCard coLocated (§10.5): the declare control for this instance's own domain", () => {
-  it("renders the declare control with the co-located copy and no peer-role refusal", () => {
-    const html = renderToStaticMarkup(<DeclareConfigCard coLocated onCreate={() => {}} />);
+  it("on a COMMANDER-role instance it renders the declare control with the co-located copy and no peer-role refusal", () => {
+    const html = renderToStaticMarkup(
+      <DeclareConfigCard coLocated selfRole="commander" onCreate={() => {}} />
+    );
     expect(html).toContain('data-testid="config-declare-card"');
     expect(html).toContain('data-co-located="true"');
     expect(html).toContain('data-testid="config-declare-co-located"');
     expect(html).toContain('data-testid="config-declare-save"');
     expect(html).not.toContain('data-testid="config-role-not-outpost"');
+    expect(html).not.toContain('data-testid="config-self-role-not-commander"');
     expect(visibleText(html)).toContain("co-located outpost");
+  });
+
+  it("on any OTHER role (outpost / retrans / unset / not given) it renders the refusal the server measures — no declare control", () => {
+    // Mirrors `outpost-binding.ts`: the self shape is a 400 unless `federation_self.role` is
+    // `commander` (an outpost's own record is commander-declared and arrives replicated). Offering
+    // the button here would guide the outpost operator into authoring a local row that outranks
+    // the commander's replica in every read.
+    for (const role of ["outpost", "retrans", "unset", undefined] as const) {
+      const html = renderToStaticMarkup(
+        <DeclareConfigCard
+          coLocated
+          {...(role !== undefined ? { selfRole: role } : {})}
+          onCreate={() => {}}
+        />
+      );
+      expect(html, String(role)).toContain('data-testid="config-self-role-not-commander"');
+      expect(html, String(role)).not.toContain('data-testid="config-declare-save"');
+      expect(html, String(role)).not.toContain('data-testid="config-declare-card"');
+      const text = visibleText(html);
+      expect(text, String(role)).toContain("commander-declared");
+      expect(text, String(role)).toContain("declare it at the commander");
+      if (role === "unset") {
+        expect(text).toContain("scp federation init --role commander");
+      } else {
+        expect(text, String(role)).not.toContain("scp federation init");
+      }
+    }
   });
 
   it("without coLocated, a non-outpost peer is still refused (the door 400s it)", () => {

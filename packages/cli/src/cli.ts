@@ -770,12 +770,17 @@ async function readManifestFile(manifestPath: string): Promise<DesiredStateManif
  * action closure and exported for the reason `federationStatusRow` gives. Column order is the order an
  * operator reads a rule in: what routes where, then the labels on it. `scope` (§10.6, migration 0066)
  * prints BLANK when not declared — the printer's absent-field convention, and the honest one: no
- * label was set, and nothing here guesses one from the site's role. `?` when an OLDER server does not
- * send the field at all (absence is not "undeclared").
+ * label was set, and nothing here guesses one from the site's role. `?` when the key is ABSENT
+ * (absence is not "undeclared") — DEFENSIVE ONLY: `scope` is required-nullable on the wire and the
+ * generated SDK validates every response body (ADR-0023), so a pre-0066 server's body is a contract
+ * error at the SDK boundary and never reaches this printer; what an operator actually sees against
+ * such a server is that error, not `?`. The widening stays so a hand-built row cannot crash the table
+ * (the `outpostConfigRow` lesson above), not because the `?` is reachable through the SDK.
  */
 export function sourceMappingRow(m: SourceMapping): Record<string, string> {
-  // Widened on purpose: the SDK type says `scope` is required, but an older server's response
-  // predates the field — read it as possibly-absent so that case prints `?`, not a crash or a blank.
+  // Widened on purpose (defensive, see above): the SDK type AND its response validator say `scope`
+  // is required, so through the SDK it is never absent — read it as possibly-absent anyway so a row
+  // that arrives without it prints `?`, not a crash or a blank.
   const scope = (m as { scope?: SourceMappingScope | null }).scope;
   return {
     id: m.id,
@@ -3694,7 +3699,7 @@ export function buildProgram(): Command {
   outpostCmd
     .command("declare")
     .description(
-      "Declare the config object for an already-paired outpost peer — or, with --peer set to this instance's own domain id ('scp federation self'), the co-located outpost"
+      "Declare the config object for an already-paired outpost peer — or, with --peer set to this instance's own domain id ('scp federation self'), the co-located outpost (commander-role instances only: an outpost's own record arrives replicated)"
     )
     .requiredOption(
       "--peer <domainId>",

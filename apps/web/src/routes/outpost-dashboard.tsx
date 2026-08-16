@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { ArrowRight, EyeOff, Server } from "lucide-react";
-import type { ExecutorBinding, GraphObject } from "@scp/schemas";
+import type { ExecutorBinding, GraphObject, SourceMapping } from "@scp/schemas";
 import { client } from "../lib/client";
 import { federationSelfKey, registryListKey } from "../lib/query-client";
 import { Badge } from "../components/ui/badge";
@@ -21,14 +21,18 @@ import { OutpostFort } from "../components/icons/federation-roles";
  *
  *   the deployment targets THIS OUTPOST CONTROLS
  *     → the components placed on each
- *       → each component's DOMAIN-SPECIFIC INPUTS to its one pipeline — this domain's own repos
- *         and infra/config bindings (network config, CIDR bands, the cluster shared by this
- *         domain's instances) alongside the shared inputs whose source is opaquely "the commander"
+ *       → each component's INPUTS HELD HERE to its one pipeline — the repos this domain holds for
+ *         it and infra/config bindings (network config, CIDR bands, the cluster shared by this
+ *         domain's instances) alongside the shared inputs whose source is opaquely "the commander".
+ *         Whether a held repo is domain-specific, global or a mirror is READ off the mapping's own
+ *         `scope`/`mirrorOfShared` (pipeline-substrate-registry-scan.md §10.6) — this page used to
+ *         caption every held mapping "domain-specific by construction", which a `scope: global`
+ *         or `mirrorOfShared` row makes false.
  *
- * The everyday case is a SHARED component (commander-origin replica) carrying domain-specific
- * inputs here. Domain-local COMPONENTS (ADR-0031/M20 — genuinely domain-only software) remain
- * valid but RARE, so they are a secondary section, not the headline. The stat that matters is
- * "components on this outpost's targets with domain-specific inputs", per COMPONENT.
+ * The everyday case is a SHARED component (commander-origin replica) carrying inputs held here.
+ * Domain-local COMPONENTS (ADR-0031/M20 — genuinely domain-only software) remain valid but RARE,
+ * so they are a secondary section, not the headline. The stat that matters is "components on this
+ * outpost's targets with inputs held here", per COMPONENT.
  *
  * "Controls" is READ, not inferred: a target is this outpost's when its `originDomainId` equals
  * this instance's `federation_self.domainId` — the same fact `coordination/component-pipeline.ts`'s
@@ -50,6 +54,45 @@ import { OutpostFort } from "../components/icons/federation-roles";
 const IAC_CAC_TYPES = new Set(["infrastructure", "configuration"]);
 /** Mirrors the pipeline's source-mapping form and /setup — the kinds this instance can route. */
 const SOURCE_KINDS = ["github", "gitea", "gitlab"] as const;
+
+/**
+ * What this domain holds for ONE component, READ off each mapping's own labels
+ * (pipeline-substrate-registry-scan.md §10.6: `scope`/`mirrorOfShared` are declared, never inferred
+ * — nothing here infers a scope from the site's role). `held` is the plain fact (mappings this
+ * instance holds for the component); the other three are the DECLARED labels among them, each
+ * counted only when a mapping actually carries it. Before §10.6 this page captioned every held
+ * mapping "domain-specific" by construction; a mapping declared `scope: global` (the API accepts it
+ * on any site) or a `mirrorOfShared` row is not domain-specific, so the caption now says only what
+ * the rows say. Exported for the test file.
+ */
+export function heldInputsSummary(
+  mappings: readonly Pick<SourceMapping, "scope" | "mirrorOfShared">[]
+): { held: number; domain: number; global: number; mirrors: number } {
+  let domain = 0;
+  let global = 0;
+  let mirrors = 0;
+  for (const m of mappings) {
+    if (m.mirrorOfShared) mirrors += 1;
+    if (m.scope === "domain") domain += 1;
+    else if (m.scope === "global") global += 1;
+  }
+  return { held: mappings.length, domain, global, mirrors };
+}
+
+/** The caption beside a shared component on a target card — the held count first (a fact), then
+ *  ONLY the declared labels that occur; a component with no declared labels reads just the count. */
+export function heldInputsCaption(
+  summary: ReturnType<typeof heldInputsSummary>
+): string {
+  if (summary.held === 0) return "shared · no inputs held here yet";
+  const labels: string[] = [];
+  if (summary.domain > 0) labels.push(`${summary.domain} domain-specific`);
+  if (summary.global > 0) labels.push(`${summary.global} global`);
+  if (summary.mirrors > 0)
+    labels.push(`${summary.mirrors} mirror${summary.mirrors === 1 ? "" : "s"} of global`);
+  const head = `shared · ${summary.held} input${summary.held === 1 ? "" : "s"} held here`;
+  return labels.length === 0 ? head : `${head} (${labels.join(", ")})`;
+}
 
 function placementIds(p: GraphObject): { componentId: string | null; targetId: string | null } {
   const props = p.properties as { componentId?: unknown; deploymentTargetId?: unknown };
@@ -77,10 +120,11 @@ export function OutpostDashboardPage(): React.JSX.Element {
     queryKey: registryListKey("components"),
     queryFn: () => client.components.list({ limit: 100 })
   });
-  // Every source mapping this instance holds is a DOMAIN-SPECIFIC input by construction —
-  // mappings never federate (ADR-0031 §Context; outpost-ui.md §9.3a), so the commander's shared
-  // repos are structurally absent here and nothing needs filtering out. Fanned out per kind the
-  // same way /setup does; the kinds mirror the pipeline's source-mapping form.
+  // Every source mapping this instance holds is an input HELD HERE — mappings never federate
+  // (ADR-0031 §Context; outpost-ui.md §9.3a), so the commander's own rows are structurally absent
+  // and nothing needs filtering out. Whether a held mapping is domain-specific, global or a mirror
+  // is READ off its `scope`/`mirrorOfShared` (§10.6), never assumed from being held on this site.
+  // Fanned out per kind the same way /setup does; the kinds mirror the pipeline's source-mapping form.
   const mappingQueries = useQueries({
     queries: SOURCE_KINDS.map((kind) => ({
       queryKey: ["source-mappings", kind, "outpost-dashboard"],
@@ -127,13 +171,17 @@ export function OutpostDashboardPage(): React.JSX.Element {
   const placedHere = new Set(
     myTargets.flatMap((t) => (placementsByTarget.get(t.id) ?? []).map((p) => placementIds(p).componentId)).filter(Boolean)
   );
-  // Domain-specific inputs per component: its mappings held here (any kind, any Type) plus
-  // infra/config bindings on the component itself. Bindings on the TARGET are the target's, and
-  // already counted in the target card. Counted per COMPONENT (the owner's unit), not per row.
-  const componentsWithDomainInputs = new Set<string>();
-  for (const m of allMappings) if (placedHere.has(m.componentObjectId)) componentsWithDomainInputs.add(m.componentObjectId);
-  const domainInputsByComponent = new Map<string, number>();
-  for (const m of allMappings) domainInputsByComponent.set(m.componentObjectId, (domainInputsByComponent.get(m.componentObjectId) ?? 0) + 1);
+  // Inputs held here per component: its mappings held on this instance (any kind, any Type).
+  // Bindings on the TARGET are the target's, and already counted in the target card. Counted per
+  // COMPONENT (the owner's unit), not per row; the declared labels ride along (§10.6).
+  const componentsWithHeldInputs = new Set<string>();
+  for (const m of allMappings) if (placedHere.has(m.componentObjectId)) componentsWithHeldInputs.add(m.componentObjectId);
+  const mappingsByComponent = new Map<string, SourceMapping[]>();
+  for (const m of allMappings) {
+    const list = mappingsByComponent.get(m.componentObjectId) ?? [];
+    list.push(m);
+    mappingsByComponent.set(m.componentObjectId, list);
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -163,11 +211,11 @@ export function OutpostDashboardPage(): React.JSX.Element {
               data-testid="outpost-stat-targets"
             />
             <StatCard
-              label="Components with domain-specific inputs"
-              value={mappingsLoaded ? componentsWithDomainInputs.size : undefined}
+              label="Components with inputs held here"
+              value={mappingsLoaded ? componentsWithHeldInputs.size : undefined}
               hint={
                 mappingsLoaded
-                  ? "placed on this outpost's targets, with repos tracked only in this domain"
+                  ? "placed on this outpost's targets, with repos this domain holds for them"
                   : "counting…"
               }
               data-testid="outpost-stat-domain-inputs"
@@ -211,7 +259,7 @@ export function OutpostDashboardPage(): React.JSX.Element {
                     componentsById={componentsById}
                     bindings={bindingQueries[i]?.data ?? []}
                     bindingsLoading={bindingQueries[i]?.isLoading ?? false}
-                    domainInputsByComponent={domainInputsByComponent}
+                    mappingsByComponent={mappingsByComponent}
                   />
                 ))}
               </div>
@@ -259,16 +307,17 @@ function TargetCard({
   componentsById,
   bindings,
   bindingsLoading,
-  domainInputsByComponent
+  mappingsByComponent
 }: {
   target: GraphObject;
   placements: GraphObject[];
   componentsById: Map<string, GraphObject>;
   bindings: ExecutorBinding[];
   bindingsLoading: boolean;
-  /** Per component id: how many source mappings this domain holds for it (its domain-specific
-   *  inputs — every mapping here is one, by construction). */
-  domainInputsByComponent: Map<string, number>;
+  /** Per component id: the source mappings this domain holds for it. The caption reads their
+   *  declared `scope`/`mirrorOfShared` (`heldInputsSummary`, §10.6) — never "domain-specific by
+   *  construction". */
+  mappingsByComponent: Map<string, SourceMapping[]>;
 }): React.JSX.Element {
   const iacCac = bindings.filter((b) => IAC_CAC_TYPES.has(b.type));
   return (
@@ -313,15 +362,12 @@ function TargetCard({
                         ) : (
                           <span
                             className="text-xs text-slate-500"
-                            title="A shared component: its globally shared inputs are authored at the commander (opaque here). Listed count = repos this domain tracks for it — its domain-specific inputs to the same pipeline."
+                            title="A shared component: its globally shared inputs are authored at the commander (opaque here). Listed count = repos this domain holds for it; the labels in parentheses are each mapping's DECLARED scope / mirror flag (set with --scope or the mirror checkbox), never inferred from being held here."
                             data-testid="outpost-component-domain-inputs"
                           >
-                            {(() => {
-                              const n = domainInputsByComponent.get(component.id) ?? 0;
-                              return n === 0
-                                ? "shared · no domain-specific inputs yet"
-                                : `shared · ${n} domain-specific input${n === 1 ? "" : "s"}`;
-                            })()}
+                            {heldInputsCaption(
+                              heldInputsSummary(mappingsByComponent.get(component.id) ?? [])
+                            )}
                           </span>
                         )}
                       </>

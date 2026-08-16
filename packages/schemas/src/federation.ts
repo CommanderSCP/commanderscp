@@ -308,7 +308,10 @@ export type OutpostTrustTier = z.infer<typeof OutpostTrustTierSchema>;
 export const CreateOutpostConfigRequestSchema = z.strictObject({
   /** The paired peer this config is ABOUT (its trust-domain id = `federation_peers.id`). The peer
    *  row must already exist and hold role `outpost`; an unbound id is refused, and a second config
-   *  object for the same peer conflicts. */
+   *  object for the same peer conflicts. Since pipeline-substrate-registry-scan.md §10.5 the second
+   *  accepted value is THIS instance's own domain id (`GET /federation/self`) — the CO-LOCATED
+   *  outpost — accepted only from a `commander`-role instance (an outpost's own record is
+   *  commander-declared and arrives replicated; any other role is a 400). */
   peerDomainId: z.string().uuid(),
   /** Display name for the config object. Defaults to the peer's own name. The object's URN is
    *  derived from `peerDomainId`, never from this, so renaming can never fork the binding. */

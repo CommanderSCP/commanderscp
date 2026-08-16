@@ -39,12 +39,14 @@ import type {
 import {
   ExecutorTypeSchema,
   PipelineClassificationSchema,
+  SourceMappingScopeSchema,
   type CreatePlacementRequest,
   type DeleteSourceMappingRequest,
   type ExecutorType,
   type GraphObject,
   type InstanceRole,
-  type PipelineClassification
+  type PipelineClassification,
+  type SourceMappingScope
 } from "@scp/schemas";
 import { client } from "../lib/client";
 import { useAuth } from "../lib/auth-context";
@@ -295,8 +297,11 @@ type TargetOutpost = ComponentPipelineStage["outpost"];
  *                               `peerDomainId` is then this instance's own domain, and the link opens
  *                               that record on the Outposts page (it renders the self-bound record).
  *   - `self`                  → `this instance's domain — no outpost registered` — the STATED ABSENCE
- *                               of a co-located outpost (quiet; the title says how to declare one:
- *                               Federation › Outposts, `peerDomainId` = this instance's domain).
+ *                               of a co-located outpost (quiet; on the COMMANDER the title says how
+ *                               to declare one: Federation › Outposts, `peerDomainId` = this
+ *                               instance's domain; on any other `instanceRole` it says the record is
+ *                               commander-declared and arrives replicated — the server 400s the self
+ *                               shape from a non-commander, so no declare hint is offered there).
  *   - `peer-without-outpost`  → `peer <name> — no outpost record`, quiet, with the way to fix it in
  *                               `title` (an outpost object is declared under Federation › Outposts).
  *                               The server states this ONLY for an `outpost`-role peer — the one kind
@@ -350,7 +355,15 @@ function TargetOutpostLine({
             title={
               `This target was authored by this instance's own trust domain` +
               (outpost.name ? ` (${outpost.name})` : "") +
-              `, and no outpost record names that domain. An outpost co-located with this instance can be declared under Federation › Outposts (peerDomainId = this instance's domain).`
+              `, and no outpost record names that domain. ` +
+              // The declare hint is offered ONLY on the commander: the server's self-shape door
+              // takes the write only from a commander-role instance (an outpost's own record is
+              // commander-declared and arrives replicated — `outpost-binding.ts`, measured in
+              // `outpost-config-sync.integration.test.ts`), so pointing an outpost operator at
+              // Federation › Outposts would guide them into a 400.
+              (instanceRole === "commander"
+                ? `An outpost co-located with this instance can be declared under Federation › Outposts (peerDomainId = this instance's domain).`
+                : `This instance's own outpost record is commander-declared and arrives replicated from the commander — declare it there.`)
             }
           >
             this instance&apos;s domain — no outpost registered
@@ -1720,6 +1733,11 @@ export function buildCreateMappingPayload(form: {
    *  true (omitted = domain-specific, the server default), mirroring `classification`'s
    *  omit-when-empty so an unticked box changes nothing on the wire. */
   mirrorOfShared?: boolean;
+  /** pipeline-substrate-registry-scan.md §10.6 — the declared scope label (`global` | `domain`).
+   *  Sent ONLY when chosen; `""`/omitted = not declared, and the wire is left without the key so
+   *  the row stores NULL ("no label, nothing inferred") — the same omit-when-default rule as
+   *  `mirrorOfShared`. Orthogonal to `mirrorOfShared` (a `domain` mapping may mirror a global one). */
+  scope?: SourceMappingScope | "";
 }): Omit<CreateSourceMappingRequest, "sourceKind"> {
   return {
     component: form.component,
@@ -1728,7 +1746,8 @@ export function buildCreateMappingPayload(form: {
     refPattern: form.refPattern.trim() || undefined,
     type: form.type,
     classification: form.classification || undefined,
-    ...(form.mirrorOfShared ? { mirrorOfShared: true } : {})
+    ...(form.mirrorOfShared ? { mirrorOfShared: true } : {}),
+    ...(form.scope ? { scope: form.scope } : {})
   };
 }
 
@@ -1755,6 +1774,7 @@ export function SourceMappingForm({
   const [type, setType] = useState<ExecutorType>("configuration");
   const [classification, setClassification] = useState<PipelineClassification | "">("");
   const [mirrorOfShared, setMirrorOfShared] = useState(false);
+  const [scope, setScope] = useState<SourceMappingScope | "">("");
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -1767,7 +1787,8 @@ export function SourceMappingForm({
           component: componentId,
           type,
           classification,
-          mirrorOfShared
+          mirrorOfShared,
+          scope
         })
       ),
     onSuccess: async () => {
@@ -1884,6 +1905,37 @@ export function SourceMappingForm({
             ))}
           </SelectContent>
         </Select>
+      </div>
+      {/* pipeline-substrate-registry-scan.md §10.6 — the DECLARED scope label. `global` = the
+          cross-domain shared repo authored and tracked at the commander; `domain` = tracked only in
+          this domain. "not declared" sends no key at all (the row stores NULL, the tile shows no
+          eyebrow); it can be set later with `scp change-source set-mapping-scope`. A label only —
+          correlation never reads it. */}
+      <div className="flex flex-col gap-1">
+        <label htmlFor="mapping-scope" className="text-xs font-medium text-slate-600">
+          Scope
+        </label>
+        <Select
+          value={scope || "__undeclared"}
+          onValueChange={(v) => setScope(v === "__undeclared" ? "" : (v as SourceMappingScope))}
+        >
+          <SelectTrigger id="mapping-scope" data-testid="mapping-scope-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__undeclared">not declared</SelectItem>
+            {SourceMappingScopeSchema.options.map((c) => (
+              <SelectItem key={c} value={c}>
+                {c === "global" ? "global — shared across domains" : "domain — tracked only here"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p className="text-xs text-slate-500">
+          A label the source tile&apos;s eyebrow reads (Global / Domain-specific); leave it
+          undeclared and no eyebrow is shown. Declared, never inferred; correlation does not read
+          it.
+        </p>
       </div>
       {/* outpost-ui.md §9.3a — DECLARED provenance. A domain often holds a COPY of a repo whose
           source of truth is the commander (shared ASG/instance-type IaC) right beside repos that
@@ -2238,8 +2290,11 @@ function SourceNode({
  *   "global" — `scope: "global"`: shared across domains, tracked at the commander;
  *   "domain" — `scope: "domain"`: tracked only in this domain;
  *   null     — scope NOT DECLARED and not a mirror: NO eyebrow, nothing inferred (the tile's title
- *              says how to declare it). `scope` is read as possibly-absent so a pre-0066 server's
- *              response degrades to the same "not declared" rendering rather than throwing.
+ *              says how to declare it). `scope` is read as possibly-absent DEFENSIVELY: through the
+ *              SDK it never is (`ComponentPipelineSourceMappingSchema.scope` is required-nullable and
+ *              the generated client validates every response body, ADR-0023 — a pre-0066 server's
+ *              body is a contract error at the boundary, not a tile), so the widening only keeps a
+ *              hand-built source from throwing here.
  * Exported for the test file only.
  */
 export function sourceProvenance(source: {

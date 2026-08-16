@@ -38,7 +38,7 @@ describe("sourceMappingRow: the SCOPE column", () => {
     expect(sourceMappingRow(base).scope).toBe("");
   });
 
-  it("prints `?` when an older server sends no scope key at all", () => {
+  it("prints `?` when the scope key is ABSENT (defensive: unreachable through the SDK, whose response validator requires it — a hand-built row must not crash the table)", () => {
     const legacy = { ...base } as Partial<SourceMapping>;
     delete legacy.scope;
     expect(sourceMappingRow(legacy as SourceMapping).scope).toBe("?");

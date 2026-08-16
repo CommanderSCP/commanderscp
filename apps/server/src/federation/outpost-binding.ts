@@ -74,7 +74,9 @@ import { ensureFederationSelf } from "./self-repo.js";
  *      OR, since pipeline-substrate-registry-scan.md §10.5 (owner, 2026-08-16), THIS INSTANCE'S OWN
  *      TRUST DOMAIN (`federation_self.domainId`): THE CO-LOCATED OUTPOST, the "commander and outpost
  *      are one and the same" case, in which every target this instance authors is within an outpost
- *      too. Those are the ONLY two accepted shapes; anything else stays fail-closed. A second object
+ *      too — accepted ONLY when `federation_self.role` is `commander` (an outpost's own record is
+ *      commander-declared and arrives replicated; a locally authored one would outrank the replica in
+ *      every `byAuthority` read). Those are the ONLY two accepted shapes; anything else stays fail-closed. A second object
  *      for the same domain (peer OR self) is a 409. The object never creates, mutates, or is
  *      required by the peer row — deleting nothing and blocking nothing. Federation works exactly as
  *      before for a peer that has no `outpost` object; the object only adds declared config. The
@@ -133,6 +135,12 @@ export function isPeerBoundObjectType(typeId: string): boolean {
  *  peer no outpost UI will ever render. */
 const REQUIRED_PEER_ROLE = "outpost";
 
+/** The federation role THIS instance must hold (`federation_self.role`) to author the CO-LOCATED
+ *  outpost record (§10.5) — the record about its own trust domain. Only a commander declares outpost
+ *  config (clause (2)); on an outpost that record is the commander's replica, and a local one authored
+ *  ahead of it would outrank the replica in every `byAuthority` read (see the check below). */
+const SELF_BINDING_ROLE = "commander";
+
 /**
  * Clause (4) of the rule above, for one local-origin `outpost` write. Throws `badRequest` when the
  * binding is missing/unbound/wrong-role and `conflict` when another live object already claims the
@@ -162,12 +170,32 @@ export async function assertOutpostPeerBinding(
 
   // §10.5 — THE CO-LOCATED OUTPOST: `peerDomainId` naming THIS instance's own trust domain is the
   // second accepted shape. There is no peer row to check a role against (an instance is not its own
-  // peer — `outpost-binding.ts` module doc, IMPORT PATHS), so it skips straight to the 1:1 scan
+  // peer — `outpost-binding.ts` module doc, IMPORT PATHS), so the role checked is THIS instance's own
+  // (`federation_self.role`), and it must be `commander` — clause (2): an outpost's record is
+  // COMMANDER-DECLARED and arrives at the outpost as a read-only replica. Without this check an
+  // OUTPOST-role instance could author a local-origin `outpost` object for its own domain BEFORE the
+  // commander's record synced down; the replica then lands beside it (imports skip this guard, and
+  // its URN carries the commander's org prefix so nothing clashes), and `byAuthority` (local-origin
+  // first) would make the outpost's own declaration win every read of its own record while the
+  // commander's tier never converged — the inversion of ADR-0022 for exactly the record §10.5 says
+  // "arrives replicated". `outpost-config-sync.integration.test.ts` pins the refusal both before and
+  // after the replica arrives. `unset` (never `scp federation init`) is refused too: fail-closed, and
+  // the copy says which command designates the role. Accepted, it skips straight to the 1:1 scan
   // below, which applies to it exactly as to a peer: a second self-bound object is the same 409.
   // `ensureFederationSelf` is the ONE reader of `federation_self` (self-repo.ts) — lazily minted, so
   // this never fails for want of an identity row.
   const self = await ensureFederationSelf(tx, input.orgId);
   const isSelf = peerDomainId === (self.domainId as string);
+  if (isSelf && self.role !== SELF_BINDING_ROLE) {
+    throw badRequest(
+      `peerDomainId '${peerDomainId}' is this instance's own trust domain, but this instance's ` +
+        `federation role is '${self.role}', not '${SELF_BINDING_ROLE}' — an outpost's own record is ` +
+        `commander-declared and arrives replicated from the commander; declare it there ` +
+        (self.role === "unset"
+          ? `(or designate this instance's role first: 'scp federation init --role commander')`
+          : `('scp federation outpost declare --peer ${peerDomainId}' at the commander)`)
+    );
+  }
 
   const peerRows = isSelf
     ? []

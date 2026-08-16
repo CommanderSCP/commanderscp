@@ -1333,21 +1333,20 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     expect(line).not.toContain("commercial");
   });
 
-  it("`self`: the STATED ABSENCE of a co-located outpost — `this instance's domain — no outpost registered` (§10.5), with the declare hint in the title, never the target's name", () => {
+  it("`self`: the STATED ABSENCE of a co-located outpost — `this instance's domain — no outpost registered` (§10.5), with the declare hint in the title on the COMMANDER, never the target's name", () => {
+    const selfStage = stage({
+      deploymentTarget: OUTPOST_TARGET,
+      outpost: {
+        state: "self",
+        id: null,
+        name: "hq-commander",
+        trustTier: null,
+        peerDomainId: null,
+        peerRole: null
+      }
+    });
     const html = renderToStaticMarkup(
-      <StageCardForTest
-        stage={stage({
-          deploymentTarget: OUTPOST_TARGET,
-          outpost: {
-            state: "self",
-            id: null,
-            name: "hq-commander",
-            trustTier: null,
-            peerDomainId: null,
-            peerRole: null
-          }
-        })}
-      />
+      <StageCardForTest instanceRole="commander" stage={selfStage} />
     );
     expect(html).toContain('data-outpost-state="self"');
     const line = outlineText(outpostLine(html));
@@ -1359,6 +1358,27 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
       "peerDomainId = this instance"
     );
     expect(line).not.toContain("field-cluster");
+
+    // On an OUTPOST site (or an unknown role) the SAME absence is stated, but the title does NOT
+    // point at Federation › Outposts: the server's self-shape door takes the write only from a
+    // commander-role instance (`outpost-binding.ts`, measured in
+    // `outpost-config-sync.integration.test.ts`) — an outpost's own record is commander-declared
+    // and arrives replicated, and a hint to declare it locally would guide the operator into a 400.
+    for (const role of ["outpost", undefined] as const) {
+      const other = renderToStaticMarkup(
+        <StageCardForTest instanceRole={role} stage={selfStage} />
+      );
+      expect(other, String(role)).toContain('data-outpost-state="self"');
+      expect(outlineText(outpostLine(other)), String(role)).toContain(
+        "this instance's domain — no outpost registered"
+      );
+      expect(outpostLine(other), `${String(role)}: no local declare hint`).not.toContain(
+        "peerDomainId = this instance"
+      );
+      expect(outpostLine(other), `${String(role)}: names the authority`).toContain(
+        "commander-declared and arrives replicated"
+      );
+    }
   });
 
   it("`peer-without-outpost`: names the PEER and says there is no outpost record — quiet, with the fix in the title", () => {
@@ -1910,7 +1930,7 @@ describe("§10.6 — the source tile's eyebrow is READ off scope/mirrorOfShared,
     expect(html).toContain("scope not declared — set it with `--scope global|domain`");
   });
 
-  it("a pre-0066 response with NO scope key renders as undeclared — the same absence, never a throw", () => {
+  it("a source with NO scope key renders as undeclared — the same absence, never a throw (defensive: unreachable through the SDK, whose response validator requires the key)", () => {
     const legacy = src({});
     delete (legacy as { scope?: unknown }).scope;
     const html = render(legacy);

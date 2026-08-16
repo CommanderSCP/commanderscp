@@ -4,6 +4,7 @@ import { formatOutpostClaimantToken, OutpostTrustTierSchema } from "@scp/schemas
 import type {
   FederationPeer,
   FederationPeerStatus,
+  FederationRole,
   OutpostConfig,
   OutpostConfigReconcileResult,
   OutpostTrustTier
@@ -390,10 +391,14 @@ export function declaredTierOf(selectValue: string): OutpostTrustTier | undefine
  *  role is `outpost` — a `retrans` peer is a MEASURED 400 (`outpost-object.integration.test.ts`), so
  *  the create control is not offered for one rather than offered and refused — OR (§10.5) to THIS
  *  instance's own trust domain, the CO-LOCATED outpost: `coLocated` renders that case, for which
- *  there is no peer row and no role to check (the door takes it — measured in the same test file). */
+ *  there is no peer row; the role checked is THIS instance's own (`selfRole`, `federation_self.role`),
+ *  which must be `commander` — an outpost's own record is commander-declared and arrives replicated,
+ *  and the server 400s the self shape on any other role (MEASURED —
+ *  `outpost-config-sync.integration.test.ts`, before and after the replica arrives). */
 export function DeclareConfigCard({
   peer,
   coLocated = false,
+  selfRole,
   createError,
   isCreating = false,
   onCreate
@@ -402,6 +407,9 @@ export function DeclareConfigCard({
   peer?: Pick<FederationPeer, "role">;
   /** §10.5 — declaring the record for THIS instance's own domain (`peerDomainId` = self). */
   coLocated?: boolean;
+  /** With `coLocated`: this instance's own federation role (`GET /federation/self`/status `self`).
+   *  Anything but `commander` renders the refusal — the same one the server measures. */
+  selfRole?: FederationRole;
   createError?: unknown;
   isCreating?: boolean;
   onCreate: (tier: OutpostTrustTier | undefined) => void;
@@ -413,6 +421,27 @@ export function DeclareConfigCard({
         Commander-declared configuration binds only to a peer whose federation role is{" "}
         <code>outpost</code>. This peer&apos;s role is <code>{peer.role}</code>, so it has no config
         object and none can be declared for it.
+      </p>
+    );
+  }
+  if (coLocated && selfRole !== "commander") {
+    return (
+      <p className="text-sm text-slate-600" data-testid="config-self-role-not-commander">
+        This instance&apos;s own outpost record is <strong>commander-declared</strong>: it is
+        authored at the commander and arrives here replicated, read-only. This instance&apos;s
+        federation role is <code>{selfRole ?? "unknown"}</code>, not <code>commander</code>, so it
+        cannot declare one for itself — declare it at the commander
+        {selfRole === "unset" ? (
+          <>
+            {" "}
+            (or designate this instance&apos;s role first:{" "}
+            <code className="rounded bg-slate-100 px-1 py-0.5">
+              scp federation init --role commander
+            </code>
+            )
+          </>
+        ) : null}
+        .
       </p>
     );
   }
@@ -428,7 +457,7 @@ export function DeclareConfigCard({
           is part of some outpost — declaring the <strong>co-located outpost</strong> registers this
           instance&apos;s domain as one, so the targets it authors read that outpost on their
           pipeline tiles instead of &ldquo;no outpost registered&rdquo;. It is an ordinary
-          commander-origin graph object; on an outpost site it arrives replicated from the
+          commander-origin graph object; at an outpost the same record arrives replicated from this
           commander.
         </p>
       ) : (
@@ -903,8 +932,10 @@ export function OutpostConfigurationSection({
   selfDomain
 }: {
   status?: FederationPeerStatus;
-  /** §10.5 — this instance's own domain (`GET /federation/self`), for the co-located outpost. */
-  selfDomain?: { domainId: string; name: string };
+  /** §10.5 — this instance's own domain (`GET /federation/self` / status `self`), for the
+   *  co-located outpost. `role` is `federation_self.role`: the declare card offers the write only
+   *  for `commander`, the one role the server's self-shape door accepts. */
+  selfDomain?: { domainId: string; name: string; role: FederationRole };
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const { domainId: ownDomainId } = useOwnDomainId();
@@ -1068,7 +1099,9 @@ export function OutpostConfigurationSection({
 
         {!conflict && !config && configsQuery.isSuccess && (
           <DeclareConfigCard
-            {...(status ? { peer: status.peer } : { coLocated: true })}
+            {...(status
+              ? { peer: status.peer }
+              : { coLocated: true, ...(selfDomain ? { selfRole: selfDomain.role } : {}) })}
             createError={createMutation.error}
             isCreating={createMutation.isPending}
             onCreate={(tier) => createMutation.mutate(tier)}

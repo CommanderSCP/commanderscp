@@ -122,9 +122,11 @@ export interface CreateOutpostConfigInput {
 
 /**
  * Declares the config object for an already-paired outpost peer — or, with `peerDomainId` = this
- * instance's own trust domain, the CO-LOCATED outpost (§10.5). The peer-binding guard
- * (`assertOutpostPeerBinding`, reached through `createObject`) refuses an unbound `peerDomainId`
- * (400), a peer whose role is not `outpost` (400), and a second object for the same domain (409).
+ * instance's own trust domain, the CO-LOCATED outpost (§10.5; accepted only when this instance's
+ * `federation_self.role` is `commander` — on an outpost that record is the commander's replica). The
+ * peer-binding guard (`assertOutpostPeerBinding`, reached through `createObject`) refuses an unbound
+ * `peerDomainId` (400), a peer whose role is not `outpost` (400), the self shape on a non-commander
+ * instance (400), and a second object for the same domain (409).
  *
  * The peer lookup here is NON-throwing (`findPeerByDomainId`) and is used ONLY to default the display
  * name. Validating the binding is the guard's job at the choke point — so an unpaired peer produces

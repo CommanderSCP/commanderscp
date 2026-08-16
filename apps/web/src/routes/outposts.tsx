@@ -662,7 +662,9 @@ export function SelfOutpostTier({ config }: { config: OutpostConfig }): React.JS
  *   * a record  → its name (linked to `/federation/outposts/$peerDomainId` with self's own id — that
  *                 page renders the co-located record), its tier, and the marker
  *                 `co-located · this instance`;
- *   * `null`    → `no outpost registered` — a stated absence, with the way to declare one (quiet);
+ *   * `null`    → `no outpost registered` — a stated absence, with the way to declare one (quiet)
+ *                 ONLY when `self.role` is `commander` (the one role the server's self-shape door
+ *                 accepts); on any other role it reads `declared at the commander` with no link;
  *   * absent    → `not reported` — an older server that does not resolve it; NOT read as "none".
  */
 export function SelfOutpostLine({
@@ -685,7 +687,12 @@ export function SelfOutpostLine({
     );
   }
   if (selfOutpost === null) {
-    return (
+    // The declare offer is made ONLY where the server accepts the write: `outpost-binding.ts` takes
+    // the self shape only when `federation_self.role` is `commander` (MEASURED — `outpost-config-sync
+    // .integration.test.ts`: an outpost-role instance is 400'd both before and after the replica
+    // arrives). On any other role the record is the commander's, and the honest line says so
+    // instead of offering a door the server refuses.
+    return self.role === "commander" ? (
       <span
         data-testid="self-outpost"
         data-self-outpost="none"
@@ -701,6 +708,16 @@ export function SelfOutpostLine({
         >
           declare one
         </Link>
+      </span>
+    ) : (
+      <span
+        data-testid="self-outpost"
+        data-self-outpost="none"
+        data-self-outpost-authority="commander"
+        className="text-xs text-slate-500"
+        title={`No outpost record names this instance's own trust domain. This instance's federation role is '${self.role}': its own record is commander-declared and arrives replicated from the commander — declare it there.`}
+      >
+        no outpost registered — declared at the commander
       </span>
     );
   }
