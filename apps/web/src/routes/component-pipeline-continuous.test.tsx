@@ -2168,6 +2168,66 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     expect(html).not.toContain("imported manifest not projected yet");
   });
 
+  it("`sbom:unparseable` STATED by the projection → 'recorded but unreadable', NEVER 'no SBOM reported' (an unreadable presence is not an absence)", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[BUILD_BINDING]}
+        artifact={artifact({ sbom: null, unknownFields: ["sbom:unparseable"] })}
+        instanceRole="commander"
+      />
+    );
+    expect(html).toContain('data-sbom-state="unparseable"');
+    expect(html).toContain("SBOM reference recorded but unreadable — it does not parse as an SBOM reference");
+    expect(html).not.toContain("no SBOM reported for this artifact");
+    expect(html).not.toContain('data-sbom-state="absent"');
+    expect(html, "the PM half is untouched by the SBOM flag").toContain('data-pm-state="absent"');
+    expect(html, "nothing parseable to review → still no affordance").not.toContain(REVIEW_BUILD);
+  });
+
+  it("`promotionExports:unparseable` with NO readable export → PM 'recorded but unreadable', never 'not created' — on the commander AND the outpost", () => {
+    for (const role of ["commander", "outpost"] as const) {
+      const html = renderToStaticMarkup(
+        <BuildNodeForTest
+          bindings={[]}
+          artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })}
+          instanceRole={role}
+        />
+      );
+      expect(html, role).toContain('data-pm-state="unparseable"');
+      expect(html, role).toContain("export stamp recorded but unreadable — some export stamps could not be read");
+      expect(html, role).not.toContain("not created — a promotion manifest is created at export to a peer");
+      expect(html, role).not.toContain("imported manifest not projected yet");
+      expect(html, `${role}: the SBOM half is untouched by the exports flag`).toContain(
+        'data-sbom-state="absent"'
+      );
+    }
+  });
+
+  it("`promotionExports:unparseable` BESIDE a readable export → the signed line keeps its facts and says some stamps could not be read", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
+          unknownFields: ["promotionExports:unparseable"]
+        })}
+        instanceRole="commander"
+      />
+    );
+    expect(html).toContain('data-pm-state="signed"');
+    expect(html).toContain("signed for");
+    expect(html).toContain("(some export stamps could not be read)");
+    expect(html).toContain('data-testid="pipeline-exports-unparseable"');
+  });
+
+  it("an empty unknownFields renders NO unparseable wording anywhere (the flag is read, not assumed)", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[]} artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })} instanceRole="commander" />
+    );
+    expect(html).not.toContain("unreadable");
+    expect(html).not.toContain("could not be read");
+  });
+
   it("sbomLine joins ONLY the present parts, in order", () => {
     expect(sbomLine(sbom())).toBe("cyclonedx 1.5 · syft 1.0.0 · 2026-08-15T08:59:00Z");
     expect(sbomLine(sbom({ specVersion: undefined, scannerVersion: undefined }))).toBe(
@@ -2244,6 +2304,30 @@ describe("the BUILD review dialog body renders the SBOM and the manifest VERBATI
     expect(html).toContain(">not recorded</dd>");
     expect(html).toContain(">absent</dd>");
   });
+
+  it("the review body states the projection's unknowns too: an unparseable SBOM, and unreadable stamps with or without a readable one beside them", () => {
+    const bothUnreadable = renderToStaticMarkup(
+      <BuildReviewBody artifact={artifact({ unknownFields: ["sbom:unparseable", "promotionExports:unparseable"] })} />
+    );
+    expect(bothUnreadable).toContain('data-testid="build-review-sbom-unparseable"');
+    expect(bothUnreadable).toContain("SBOM reference recorded but unreadable");
+    expect(bothUnreadable).not.toContain("no SBOM reported for this artifact");
+    expect(bothUnreadable).toContain('data-testid="build-review-exports-unparseable"');
+    expect(bothUnreadable).toContain("export stamp recorded but unreadable");
+    expect(bothUnreadable).not.toContain("not created — a promotion manifest is created at export to a peer");
+
+    const besideReadable = renderToStaticMarkup(
+      <BuildReviewBody
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
+          unknownFields: ["promotionExports:unparseable"]
+        })}
+      />
+    );
+    expect(besideReadable, "the readable stamp is still rendered in full").toContain("scp-promotion-manifest/v1");
+    expect(besideReadable).toContain('data-testid="build-review-exports-unparseable"');
+    expect(besideReadable).toContain("some export stamps could not be read");
+  });
 });
 
 describe("the SCAN & SIGN tile — each state stated, clickable only with something to review", () => {
@@ -2303,8 +2387,28 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     expect(rows[0], "org-pipeline trivy row: no managed mark").not.toContain(">managed<");
     expect(rows[1], "the commander's own step: marked managed off the flag").toContain(">managed<");
     expect(html).toContain('data-export-gate="fail"');
+    // The VISIBLE label is READ from `exportGate`, never derived from the rows: a pass row exists
+    // here, yet the wire says `fail` (E6 needs a digest-bound pass for EVERY substantive artifact),
+    // and the text must say `fail`.
+    expect(html).toMatch(/data-export-gate="fail"[\s\S]*?>fail<\/span>/);
     expect(html).toContain(REVIEW_SCAN);
     expect(html).toContain('data-reviewable="true"');
+  });
+
+  it("the export-gate label mirrors the WIRE, not the rows: `pass` over fail-only rows reads pass; the review body too", () => {
+    const failOnly = artifact({ scans: [scan({ status: "fail" })], exportGate: "pass" });
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={failOnly} />);
+    expect(html).toMatch(/data-export-gate="pass"[\s\S]*?>pass<\/span>/);
+    const body = renderToStaticMarkup(<ScanSignReviewBody artifact={failOnly} />);
+    expect(body).toMatch(/data-testid="scan-review-export-gate">pass<\/span>/);
+    // And the third value spelled out — the enum's `not_run` reads "not run" on both surfaces.
+    const notRun = artifact({ scans: [scan()], exportGate: "not_run" });
+    expect(renderToStaticMarkup(<ScanSignNodeForTest artifact={notRun} />)).toMatch(
+      /data-export-gate="not_run"[\s\S]*?>not run<\/span>/
+    );
+    expect(renderToStaticMarkup(<ScanSignReviewBody artifact={notRun} />)).toMatch(
+      /data-testid="scan-review-export-gate">not run<\/span>/
+    );
   });
 
   it("a `trivy` row with managed=false and an `openscap` row with managed=true — the mark follows the flag, not the name", () => {
@@ -2358,6 +2462,35 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     expect(html).toContain('data-scan-state="unknown"');
     expect(html).not.toContain(REVIEW_SCAN);
   });
+
+  it("`promotionExports:unparseable` with no readable export → sign-state 'unparseable', never 'not signed yet'", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })} />
+    );
+    expect(html).toContain('data-sign-state="unparseable"');
+    expect(html).toContain("signing recorded but unreadable — some export stamps could not be read");
+    expect(html).not.toContain("not signed yet");
+    expect(html).not.toContain('data-sign-state="not-signed"');
+    expect(html, "the scan half is untouched by the exports flag").toContain('data-scan-state="not-run"');
+  });
+
+  it("`promotionExports:unparseable` beside a readable export → the signed rows stay, plus the note", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
+          unknownFields: ["promotionExports:unparseable"]
+        })}
+      />
+    );
+    expect(html).toContain('data-sign-state="signed"');
+    expect(html).toContain("manifest signed for");
+    expect(html).toContain("(some export stamps could not be read)");
+    expect(
+      renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })} />),
+      "no flag → no note"
+    ).not.toContain("could not be read");
+  });
 });
 
 describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, and the way to the raw evidence", () => {
@@ -2402,5 +2535,26 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
     const html = renderToStaticMarkup(<ScanSignReviewBody artifact={artifact()} />);
     expect(html).toContain("not run — no scan result recorded");
     expect(html).toContain("not signed yet — the promotion manifest is signed at export to a peer");
+  });
+
+  it("unreadable export stamps are stated in the dialog — alone, and beside a readable one", () => {
+    const alone = renderToStaticMarkup(
+      <ScanSignReviewBody artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })} />
+    );
+    expect(alone).toContain('data-testid="scan-review-exports-unparseable"');
+    expect(alone).toContain("signing recorded but unreadable");
+    expect(alone).not.toContain("not signed yet");
+
+    const beside = renderToStaticMarkup(
+      <ScanSignReviewBody
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
+          unknownFields: ["promotionExports:unparseable"]
+        })}
+      />
+    );
+    expect(beside.split('data-testid="scan-review-export-row"').length - 1).toBe(1);
+    expect(beside).toContain('data-testid="scan-review-exports-unparseable"');
+    expect(beside).toContain("some export stamps could not be read");
   });
 });

@@ -2257,6 +2257,44 @@ function peerLabel(entry: PromotionExport): string {
   return entry.peerName ?? entry.peerDomainId;
 }
 
+/**
+ * The projection's STATED unknowns (§9.6 — `artifact.unknownFields`): a stored value that does NOT
+ * parse is neither a present fact nor a stated absence, and the tiles must never render an absence
+ * ("no SBOM reported", "not signed yet") over an unreadable presence. Two flags exist today
+ * (`artifact-facts.ts`): `sbom:unparseable` — `sourceRef.sbom` is set but is not an `SbomRef`;
+ * `promotionExports:unparseable` — at least one stamped export record does not parse. First-party
+ * ingress cannot write either (a malformed report ref is quarantined), so what reaches here is a
+ * sourceRef written by a different version or imported through federation — exactly what the flag
+ * is on the wire for.
+ */
+export function sbomUnparseable(artifact: ComponentPipelineArtifact): boolean {
+  return artifact.sbom === null && artifact.unknownFields.includes("sbom:unparseable");
+}
+export function exportsUnparseable(artifact: ComponentPipelineArtifact): boolean {
+  return artifact.unknownFields.includes("promotionExports:unparseable");
+}
+const SBOM_UNPARSEABLE_TEXT =
+  "SBOM reference recorded but unreadable — it does not parse as an SBOM reference";
+const EXPORTS_UNPARSEABLE_TEXT = "some export stamps could not be read";
+const EXPORTS_UNPARSEABLE_TITLE =
+  "At least one promotion-export stamp stored on this change does not parse as an export record — it is neither shown nor counted as absent.";
+
+/** The "(some export stamps could not be read)" suffix, or nothing — appended to every PM/sign line
+ *  so an unreadable stamp is never silently dropped from a rendered list. */
+function ExportsUnparseableNote({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element | null {
+  if (!exportsUnparseable(artifact)) return null;
+  return (
+    <span
+      className="text-amber-700"
+      data-testid="pipeline-exports-unparseable"
+      title={EXPORTS_UNPARSEABLE_TITLE}
+    >
+      {" "}
+      ({EXPORTS_UNPARSEABLE_TEXT})
+    </span>
+  );
+}
+
 /** Whether a Build tile has anything to REVIEW: an SBOM reference or at least one signed export. */
 export function buildHasReview(artifact: ArtifactOnWire): boolean {
   return Boolean(artifact && (artifact.sbom !== null || artifact.signing.promotionExports.length > 0));
@@ -2299,11 +2337,14 @@ function ArtifactFieldList({
  *
  * §9.3 (owner §7.2) hangs two ARTIFACT facts under the executor line, each present or stated absent:
  *   - SBOM — the reference the first-party change report carried (`sourceRef.sbom`; SCP never
- *     generates one and stores no bytes), or "no SBOM reported for this artifact";
+ *     generates one and stores no bytes), or "no SBOM reported for this artifact" — or, when the
+ *     projection STATES `sbom:unparseable`, "recorded but unreadable" (never an absence over an
+ *     unreadable presence; `sbomUnparseable`);
  *   - PM   — the promotion manifest the commander signed at the newest export (§9.4), or, on the
  *     commander, "not created — a promotion manifest is created at export to a peer". On an outpost
  *     the imported manifest (`sourceRef.promotionManifest`, written by the importer) is NOT on this
  *     wire — the tile says so ("imported manifest not projected yet") rather than inventing one.
+ *     `promotionExports:unparseable` is stated on the line either way (`exportsUnparseable`).
  * The tile is clickable ONLY when an SBOM or a signed export exists (`buildHasReview`); the review
  * dialog renders both verbatim.
  */
@@ -2377,9 +2418,11 @@ function BuildArtifactLines({
     );
   }
   const newest = latestExport(artifact);
+  const sbomState = artifact.sbom ? "present" : sbomUnparseable(artifact) ? "unparseable" : "absent";
+  const pmState = newest ? "signed" : exportsUnparseable(artifact) ? "unparseable" : "absent";
   return (
     <>
-      <p data-testid="pipeline-build-sbom" data-sbom-state={artifact.sbom ? "present" : "absent"}>
+      <p data-testid="pipeline-build-sbom" data-sbom-state={sbomState}>
         <span className="text-slate-400">SBOM</span>{" "}
         {artifact.sbom ? (
           (() => {
@@ -2393,16 +2436,30 @@ function BuildArtifactLines({
               <span title={artifact.sbom.location}>{line}</span>
             );
           })()
+        ) : sbomState === "unparseable" ? (
+          <span
+            className="text-amber-700"
+            title="The change's sourceRef.sbom is set but does not parse as an SBOM reference (SbomRef) — the projection states it as unreadable, so this is neither a present SBOM nor a stated absence."
+          >
+            {SBOM_UNPARSEABLE_TEXT}
+          </span>
         ) : (
           <span className="text-slate-400">no SBOM reported for this artifact</span>
         )}
       </p>
-      <p data-testid="pipeline-build-pm" data-pm-state={newest ? "signed" : "absent"}>
+      <p data-testid="pipeline-build-pm" data-pm-state={pmState}>
         <span className="text-slate-400">PM</span>{" "}
         {newest ? (
-          <span title={`Promotion manifest signed at export ${newest.exportedAt} for peer ${newest.peerDomainId}.`}>
-            signed for <span className="font-mono">{peerLabel(newest)}</span> · {whenLabel(newest.exportedAt)} ·{" "}
-            {newest.manifest.artifacts.length} artifact{newest.manifest.artifacts.length === 1 ? "" : "s"}
+          <>
+            <span title={`Promotion manifest signed at export ${newest.exportedAt} for peer ${newest.peerDomainId}.`}>
+              signed for <span className="font-mono">{peerLabel(newest)}</span> · {whenLabel(newest.exportedAt)} ·{" "}
+              {newest.manifest.artifacts.length} artifact{newest.manifest.artifacts.length === 1 ? "" : "s"}
+            </span>
+            <ExportsUnparseableNote artifact={artifact} />
+          </>
+        ) : pmState === "unparseable" ? (
+          <span className="text-amber-700" title={EXPORTS_UNPARSEABLE_TITLE}>
+            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
           </span>
         ) : instanceRole === "commander" ? (
           <span className="text-slate-400">
@@ -2487,13 +2544,21 @@ export function BuildReviewBody({ artifact }: { artifact: ComponentPipelineArtif
               { label: "generatedAt", value: artifact.sbom.generatedAt ?? "—", mono: true }
             ]}
           />
+        ) : sbomUnparseable(artifact) ? (
+          <p className="text-xs text-amber-700" data-testid="build-review-sbom-unparseable">
+            {SBOM_UNPARSEABLE_TEXT}
+          </p>
         ) : (
           <p className="text-xs text-slate-400">no SBOM reported for this artifact</p>
         )}
       </section>
       <section data-testid="build-review-pm">
         <SectionLabel>Promotion manifest{exports.length > 1 ? "s" : ""}</SectionLabel>
-        {exports.length === 0 ? (
+        {exports.length === 0 && exportsUnparseable(artifact) ? (
+          <p className="text-xs text-amber-700" data-testid="build-review-exports-unparseable">
+            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
+          </p>
+        ) : exports.length === 0 ? (
           <p className="text-xs text-slate-400">
             not created — a promotion manifest is created at export to a peer
           </p>
@@ -2554,6 +2619,11 @@ export function BuildReviewBody({ artifact }: { artifact: ComponentPipelineArtif
                 </Table>
               </div>
             ))}
+            {exportsUnparseable(artifact) ? (
+              <p className="text-xs text-amber-700" data-testid="build-review-exports-unparseable">
+                {EXPORTS_UNPARSEABLE_TEXT} — they are neither listed above nor counted as absent
+              </p>
+            ) : null}
           </div>
         )}
       </section>
@@ -2812,7 +2882,16 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
           {exportGateLabel(artifact.exportGate)}
         </span>
       </p>
-      {exports.length === 0 ? (
+      {exports.length === 0 && exportsUnparseable(artifact) ? (
+        <p
+          className="text-amber-700"
+          data-testid="pipeline-sign-state"
+          data-sign-state="unparseable"
+          title={EXPORTS_UNPARSEABLE_TITLE}
+        >
+          signing recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
+        </p>
+      ) : exports.length === 0 ? (
         <p className="text-slate-400" data-testid="pipeline-sign-state" data-sign-state="not-signed">
           not signed yet — the promotion manifest is signed at export to a peer
         </p>
@@ -2837,6 +2916,11 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
               )}
             </li>
           ))}
+          {exportsUnparseable(artifact) ? (
+            <li>
+              <ExportsUnparseableNote artifact={artifact} />
+            </li>
+          ) : null}
         </ul>
       )}
       <p data-testid="pipeline-origin-signature">
@@ -2939,7 +3023,11 @@ export function ScanSignReviewBody({ artifact }: { artifact: ComponentPipelineAr
       </section>
       <section data-testid="scan-review-exports">
         <SectionLabel>Signed exports</SectionLabel>
-        {exports.length === 0 ? (
+        {exports.length === 0 && exportsUnparseable(artifact) ? (
+          <p className="text-xs text-amber-700" data-testid="scan-review-exports-unparseable">
+            signing recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
+          </p>
+        ) : exports.length === 0 ? (
           <p className="text-xs text-slate-400">
             not signed yet — the promotion manifest is signed at export to a peer
           </p>
@@ -2977,6 +3065,11 @@ export function ScanSignReviewBody({ artifact }: { artifact: ComponentPipelineAr
             </TableBody>
           </Table>
         )}
+        {exports.length > 0 && exportsUnparseable(artifact) ? (
+          <p className="mt-1 text-xs text-amber-700" data-testid="scan-review-exports-unparseable">
+            {EXPORTS_UNPARSEABLE_TEXT} — they are neither listed above nor counted as absent
+          </p>
+        ) : null}
       </section>
       <p data-testid="scan-review-origin-signature" className="text-xs">
         <span className="text-slate-500">origin artifact signature:</span>{" "}
