@@ -28,7 +28,7 @@
  *    the authority-checked dedicated path: `campaign-repo.ts`'s `proposeCampaign` (campaign ->
  *    change, via the reconciler `campaign-reconcile.ts`), which `authorize()`-checks the acting
  *    actor's authority before creating the edge. (A second writer was removed with the grouping
- *    rung above campaigns — ADR-0032.) Rollback itself no
+ *    rung above campaigns — ADR-0034.) Rollback itself no
  *    longer trusts these raw edges at all — it sources membership from the plan-compiled
  *    `campaign_wave_targets` (`campaign-rollback.ts`) — this block is defense-in-depth on the
  *    creation side, closing the injection VECTOR outright.

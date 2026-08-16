@@ -1,4 +1,6 @@
-# ADR-0032 — Remove the `initiative` object type
+# ADR-0034 — Remove the `initiative` object type
+
+**Numbering note (2026-08-16):** written as ADR-0032 on the `claude/ui-review-worktree-efc42b` branch; main took 0032 for dependency subscriptions (#236, 2026-08-15) before this branch merged, so this ADR is **0034** (0033 is the loud depth bound). Every reference on the branch was updated in the same commit.
 
 **Status:** Accepted (owner instruction, 2026-08-10 — explicit, given after the charter and API-gate consequences below were put in front of them).
 **Supersedes:** the Initiative Model / Initiative Structure sections of PROJECT_CHARTER.md, and DESIGN.md §9.5's initiative half.

@@ -466,7 +466,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 
 ### M5 — Campaigns
 - **Goal:** coordinated multi-change activity over the existing engine — no new machinery.
-- **Contents:** Campaign objects that `coordinate` many Changes with their own plan/waves/gates; campaign-scoped rollback; `scp campaign create/status`; IaC constructs for Campaign/ReleaseTopology; UI campaign board. *(An Initiative rung shipped in M5 and was removed in full on 2026-08-10 — [ADR-0030](adr/0032-remove-initiative.md).)*
+- **Contents:** Campaign objects that `coordinate` many Changes with their own plan/waves/gates; campaign-scoped rollback; `scp campaign create/status`; IaC constructs for Campaign/ReleaseTopology; UI campaign board. *(An Initiative rung shipped in M5 and was removed in full on 2026-08-10 — [ADR-0034](adr/0034-remove-initiative.md).)*
 - **Done / verified by:** E2E: a "patch 3 services" campaign compiles to per-target changes, wave 2 blocked by one target's failing control while wave 1 is accepted; campaign status aggregates correctly; campaign-level rollback reverts accepted targets. All engine invariants from M3/M4 re-verified at campaign scope in integration tests.
 
 ### M6 — Federation Basics

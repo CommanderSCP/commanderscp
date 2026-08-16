@@ -1,5 +1,5 @@
 -- ===========================================================================================
--- Remove the `initiative` concept (ADR-0032; owner instruction 2026-08-10, explicit).
+-- Remove the `initiative` concept (ADR-0034; owner instruction 2026-08-10, explicit).
 --
 -- An initiative was the portfolio rung above campaigns: a strategic objective ("FedRAMP
 -- Certification", "Data Center Exit") grouping campaigns via `coordinates`, with a roll-up status

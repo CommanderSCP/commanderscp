@@ -457,7 +457,7 @@ A DB-persisted explicit state machine is dramatically simpler to operate, ship a
 
 Campaign (Kubernetes upgrade, OS patch cycle) = graph object that `coordinates` many Changes across targets, with its own plan/waves/gates over the same machinery. In MVP scope per the charter; introduces no new engine machinery.
 
-> An **Initiative** rung once sat above this — a strategic objective grouping campaigns, with a roll-up status derived by traversal. Removed in full on 2026-08-10 ([ADR-0030](adr/0032-remove-initiative.md)): it carried no plan, compiled no waves and executed nothing, so it bought a read-only view over campaign state at the price of a first-class object type, four API paths, a named graph query, a CLI noun and an IaC construct.
+> An **Initiative** rung once sat above this — a strategic objective grouping campaigns, with a roll-up status derived by traversal. Removed in full on 2026-08-10 ([ADR-0034](adr/0034-remove-initiative.md)): it carried no plan, compiled no waves and executed nothing, so it bought a read-only view over campaign state at the price of a first-class object type, four API paths, a named graph query, a CLI noun and an IaC construct.
 
 ---
 

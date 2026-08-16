@@ -310,7 +310,7 @@ describe("@scp/iac: campaign/release-topology synth", () => {
     // one would only ever 403 at apply. The campaign -> member-change edges are written by the
     // reconciler's own authority-checked path instead.
     //
-    // This guarantee used to be asserted through the removed grouping construct (ADR-0032). The
+    // This guarantee used to be asserted through the removed grouping construct (ADR-0034). The
     // property is about `coordinates`, not about what sat above a campaign, so it moved here
     // rather than being deleted alongside it.
     expect((campaignA as unknown as { coordinates?: unknown }).coordinates).toBeUndefined();

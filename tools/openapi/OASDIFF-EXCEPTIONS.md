@@ -92,9 +92,9 @@ bypassed, or edited; the label plus this entry are the record of owner approval.
 still be **green** — the regenerated `tools/openapi/openapi.v1.json` and `packages/sdk/src/generated/*`
 are committed in this PR.
 
-### ADR-0032 — remove the `initiative` object type (2026-08-10, on the `claude/ui-review-worktree-efc42b` branch)
+### ADR-0034 — remove the `initiative` object type (2026-08-10, on the `claude/ui-review-worktree-efc42b` branch)
 
-**Spec:** [docs/adr/0032-remove-initiative.md](../../docs/adr/0032-remove-initiative.md). Migration:
+**Spec:** [docs/adr/0034-remove-initiative.md](../../docs/adr/0034-remove-initiative.md). Migration:
 `apps/server/drizzle/0061_remove_initiative.sql` (renumbered from 0056 with a `when` bump when the
 branch merged main).
 
@@ -108,14 +108,14 @@ graph type, API, SDK, CLI, IaC construct, UI. On the wire that is:
 - **Enum narrowed on `/graph/query/{name}`:** the `initiative-rollup` member is removed from the
   `name` path parameter's enum (a **request** position — oasdiff ERR) and from the response's
   echoed `name` enum. The remaining named queries are untouched.
-- The `Initiative` / `InitiativeProps` IaC constructs are removed with no shim (ADR-0032
+- The `Initiative` / `InitiativeProps` IaC constructs are removed with no shim (ADR-0034
   "Consequences").
 
 The `coordinates` relationship type survives, narrowed to `campaign -> change` (migration
 `0061`); nothing about the `/relationships` wire changes.
 
 **Why it is acceptable here:** owner instruction, 2026-08-10, given explicitly AFTER the charter
-and API-gate consequences were put in front of them (ADR-0032 header). The single-instance
+and API-gate consequences were put in front of them (ADR-0034 header). The single-instance
 reasoning ADR-0007 and ADR-0021 relied on still holds: the initiative surface had **no SDK
 consumer outside this monorepo** (CLI, IaC and web ship from the same commit as the server), the
 type never federated anything a peer's journal depends on, and — the removal's own finding — the

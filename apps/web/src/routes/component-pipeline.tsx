@@ -2450,7 +2450,7 @@ function SourceTile({
                   // The ref-side twin of "whole repo" above, and broad for the same reason: a null ref
                   // matches EVERY branch. Rendering it is what keeps two mappings that route `dev` and
                   // `main` to different pipelines from looking identical here (ADR-0030 §1 — the
-                  // dev-branch-pipelines ADR, not this branch's ADR-0032).
+                  // dev-branch-pipelines ADR, not this branch's ADR-0034).
                   <span
                     className="text-amber-700"
                     title="This mapping has no ref filter, so a push to any branch releases this component."
