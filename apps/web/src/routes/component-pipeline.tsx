@@ -1673,6 +1673,19 @@ function SourceTile({
   componentId: string;
   pipelineKey: unknown[];
 }): React.JSX.Element {
+  // THE ARROW IS THE SWITCH (owner, 2026-08-14). The mapping's own fan-in arrow carries its
+  // enable/disable: click flips it, colour states it — green = open (a push matching this rule
+  // starts a release), shut slate = closed (declared, routes nothing). The mutation lives here so
+  // the arrow stays a dumb renderer; a server refusal renders as an Alert after the click, never
+  // as a pre-disabled control (M16.3's rule).
+  const queryClient = useQueryClient();
+  const toggleMutation = useMutation({
+    mutationFn: () =>
+      client.changeSources.setMappingEnabled(source.sourceKind, source.id, !isMappingEnabled(source)),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: pipelineKey });
+    }
+  });
   const enabled = isMappingEnabled(source);
   const eyebrow =
     provenance === "mirror"
@@ -1771,9 +1784,6 @@ function SourceTile({
                 <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
                 {source.type}
               </span>
-              {/* Owner, 2026-08-14: a durable per-mapping on/off the correlation matcher honours —
-                  distinct from `DeleteMappingButton` below, which removes the rule entirely. */}
-              <ToggleMappingEnabledButton source={source} pipelineKey={pipelineKey} />
               {/* A1: no edit exists on this table, so the row's only write is delete (see the
                   confirm's own copy for why it is never a bare click). */}
               <DeleteMappingButton source={source} componentId={componentId} pipelineKey={pipelineKey} />
@@ -1783,55 +1793,25 @@ function SourceTile({
           })()}
         </CardContent>
       </Card>
-      <PromotionArrow state="pending" inert={!enabled} />
-    </div>
-  );
-}
-
-/**
- * ENABLE/DISABLE CONTROL — one mapping's own on/off switch (owner, 2026-08-14). No switch primitive
- * exists yet in `components/ui/`, so this is the small-outline-Button pattern `DeleteMappingButton`
- * already uses. Never pre-blocks the click: the server is the one authority on whether the flip is
- * allowed, so a refusal renders as an `Alert` after the fact rather than a disabled control before it.
- */
-function ToggleMappingEnabledButton({
-  source,
-  pipelineKey
-}: {
-  source: ComponentPipelineResponse["sources"][number];
-  pipelineKey: unknown[];
-}): React.JSX.Element {
-  const queryClient = useQueryClient();
-  const enabled = isMappingEnabled(source);
-  const toggleMutation = useMutation({
-    mutationFn: () => client.changeSources.setMappingEnabled(source.sourceKind, source.id, !enabled),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: pipelineKey });
-    }
-  });
-  return (
-    <>
-      <Button
-        type="button"
-        variant="outline"
-        size="sm"
-        icon={enabled ? PowerOff : Power}
-        className="ml-1 h-6 gap-1 px-2 text-[11px]"
-        disabled={toggleMutation.isPending}
-        onClick={() => toggleMutation.mutate()}
-        title="Disabled mappings stay declared but route nothing — a push matching this rule starts no release. Distinct from delete."
-        data-testid="toggle-mapping-enabled-button"
-      >
-        {toggleMutation.isPending ? "…" : enabled ? "Disable" : "Enable"}
-      </Button>
+      <PromotionArrow
+        state={enabled ? "open" : "pending"}
+        inert={!enabled}
+        onToggle={() => toggleMutation.mutate()}
+        busy={toggleMutation.isPending}
+        toggleTitle={
+          enabled
+            ? "Open — a push matching this rule starts a release. Click to close: the mapping stays declared but routes nothing (distinct from delete)."
+            : "Closed — declared, but a push matching this rule starts nothing. Click to open."
+        }
+      />
       {toggleMutation.isError && (
-        <Alert tone="danger" className="mt-1">
+        <Alert tone="danger" className="mt-1 w-full">
           {toggleMutation.error instanceof Error
             ? toggleMutation.error.message
             : "Failed to update the mapping."}
         </Alert>
       )}
-    </>
+    </div>
   );
 }
 

@@ -1209,7 +1209,11 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
     expect(html, "the arrow beneath it carries the inert style, not an ordinary pending one").toContain(
       'data-inert="true"'
     );
-    expect(html).toContain("connector inert (source disabled)");
+    // THE ARROW IS THE SWITCH (owner, 2026-08-14): a closed source's arrow is a BUTTON that says
+    // "closed", offers "click to open", and is NOT red — red is a gate denial, not a paused rule.
+    expect(html).toContain('data-switch="closed"');
+    expect(html).toContain("source closed — click to open");
+    expect(html).not.toContain("bg-red-500");
   });
 
   it("the toggle sits on every mapping tile, and NEVER on the commander's opaque input tile", () => {
@@ -1224,10 +1228,19 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
         domainLocal={false}
       />
     );
-    // 1 commander tile + 2 mapping tiles = 3 tiles total; the toggle count staying at 2 (not 3) is
-    // what proves the commander tile — an input this domain does not own — carries none of its own.
+    // 1 commander tile + 2 mapping tiles = 3 tiles, 3 fan-in arrows — but only the two MAPPING
+    // arrows are switches. The commander's arrow stays a plain connector: this domain does not own
+    // that input, so it cannot open or close it. `data-switch` marks a clickable arrow; its count
+    // staying at 2 (not 3) is what proves that.
     expect(count(html, "pipeline-source-commander-input")).toBe(1);
-    expect(count(html, "toggle-mapping-enabled-button")).toBe(2);
+    expect(count(html, "promotion-arrow")).toBe(3);
+    expect((html.match(/data-switch="/g) ?? []).length).toBe(2);
+    // Open = green, and the switch says so in words too (colour alone must not carry the state).
+    expect((html.match(/data-switch="open"/g) ?? []).length).toBe(2);
+    expect(html).toContain("source open — click to close");
+    expect(html).toContain("bg-green-500");
+    // The old separate button is GONE — the arrow replaced it, it did not join it.
+    expect(count(html, "toggle-mapping-enabled-button")).toBe(0);
   });
 
   it("tiles sit side by side in ONE flex-wrap row, never stacked", () => {

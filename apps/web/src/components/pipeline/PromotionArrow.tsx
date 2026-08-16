@@ -47,7 +47,10 @@ export function PromotionArrow({
   label,
   detail,
   why,
-  inert
+  inert,
+  onToggle,
+  busy,
+  toggleTitle
 }: {
   state: PromotionState;
   label?: string;
@@ -60,18 +63,48 @@ export function PromotionArrow({
    *  carries nothing right now" rather than an ordinary not-yet-evaluated wait. Omitted (the
    *  default), this component is pixel-for-pixel what it always was. */
   inert?: boolean;
+  /** THE ARROW IS THE SWITCH (owner, 2026-08-14: "enable/disable should be done via clicking on the
+   *  arrow; the colour of the arrow indicates whether it's open or closed"). When supplied, the
+   *  arrow renders as a BUTTON: click flips the source it feeds. Open = the `open` green (the
+   *  connector carries releases); closed = `inert`'s shut slate look, deliberately NOT red —
+   *  red is `blocked`, a gate DENYING a promotion, and a rule the operator paused is not a denial.
+   *  Presentation-only otherwise: the parent owns the mutation and passes `busy` while it runs. */
+  onToggle?: () => void;
+  busy?: boolean;
+  /** Tooltip for the switch — the parent states what a click does and what the colour means. */
+  toggleTitle?: string;
 }): React.JSX.Element {
   const style = STATE_STYLES[state];
+  const isSwitch = typeof onToggle === "function";
+  const Wrapper: "button" | "div" = isSwitch ? "button" : "div";
   return (
-    <div
-      className="flex flex-col items-center py-1"
+    <Wrapper
+      {...(isSwitch
+        ? {
+            type: "button" as const,
+            onClick: onToggle,
+            disabled: busy,
+            title: toggleTitle,
+            "aria-pressed": !inert
+          }
+        : {})}
+      className={`flex flex-col items-center py-1 ${
+        isSwitch
+          ? "cursor-pointer rounded-md px-2 transition-opacity hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-army-600 disabled:cursor-progress"
+          : ""
+      }`}
       data-testid="promotion-arrow"
       data-state={state}
       data-inert={inert ? "true" : undefined}
+      data-switch={isSwitch ? (inert ? "closed" : "open") : undefined}
       aria-label={
         inert
-          ? "connector inert (source disabled)"
-          : `promotion ${state}${label ? `: ${label}` : ""}${detail ? ` — ${detail}` : ""}`
+          ? isSwitch
+            ? "source closed — click to open (enable this mapping)"
+            : "connector inert (source disabled)"
+          : isSwitch
+            ? "source open — click to close (disable this mapping)"
+            : `promotion ${state}${label ? `: ${label}` : ""}${detail ? ` — ${detail}` : ""}`
       }
     >
       <div className={`h-7 w-11 rounded-t-sm ${inert ? "bg-slate-200 opacity-60" : style.bar}`} />
@@ -94,6 +127,13 @@ export function PromotionArrow({
           {detail}
         </p>
       )}
-    </div>
+      {isSwitch && (
+        // The switch says its state in words too — colour alone must not carry it (a11y, and the
+        // "closed" slate is close to `pending`'s slate on a bad monitor).
+        <span className={`mt-0.5 text-[10px] font-medium uppercase tracking-wide ${inert ? "text-slate-400" : "text-green-700"}`}>
+          {busy ? "…" : inert ? "closed" : "open"}
+        </span>
+      )}
+    </Wrapper>
   );
 }
