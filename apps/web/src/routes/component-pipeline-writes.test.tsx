@@ -242,6 +242,7 @@ describe("B2 — placements", () => {
   it("an unplaced stage offers 'Place at target…' exactly where the dead prose used to be, and the dead prose is gone", () => {
     const withAffordance = renderWithQueryClient(
       <UnplacedStageCardForTest
+        detailsExpanded
         stage={unplacedStage()}
         componentId="comp-1"
         pipelineKey={["pipeline", "comp-1"]}
@@ -257,7 +258,9 @@ describe("B2 — placements", () => {
   });
 
   it("without componentId/pipelineKey (the pre-B2 call shape), no affordance renders and the honesty prose is untouched — proves the new props are additive, not a behavior change for old callers", () => {
-    const html = renderToStaticMarkup(<UnplacedStageCardForTest stage={unplacedStage()} />);
+    const html = renderToStaticMarkup(
+      <UnplacedStageCardForTest detailsExpanded stage={unplacedStage()} />
+    );
     expect(html).not.toContain("Place at target");
     expect(html).not.toContain('data-testid="place-at-target-button"');
     expect(html).toContain("never reach this stage");
@@ -274,7 +277,11 @@ describe("B2 — placements", () => {
 
   it("a placed stage offers a quiet remove-placement affordance once the page wires pipelineKey through", () => {
     const withAffordance = renderWithQueryClient(
-      <StageCardForTest stage={placedStage()} pipelineKey={["pipeline", "comp-1"]} />
+      <StageCardForTest
+        detailsExpanded
+        stage={placedStage()}
+        pipelineKey={["pipeline", "comp-1"]}
+      />
     );
     expect(withAffordance).toContain('data-testid="remove-placement-button"');
     expect(withAffordance).toContain("Remove placement");
@@ -283,7 +290,7 @@ describe("B2 — placements", () => {
   it("without pipelineKey (the pre-B2 call shape), the placed-stage card renders with no remove affordance and no query-client dependency", () => {
     // No QueryClientProvider wrapper here at all — this is the exact call
     // `component-pipeline-continuous.test.tsx` makes, and it must still need none.
-    const html = renderToStaticMarkup(<StageCardForTest stage={placedStage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={placedStage()} />);
     expect(html).not.toContain('data-testid="remove-placement-button"');
   });
 

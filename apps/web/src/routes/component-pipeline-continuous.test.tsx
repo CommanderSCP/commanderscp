@@ -169,7 +169,7 @@ function unplaced(
 
 describe("a component pipeline stage renders honestly", () => {
   it("paints a stage that has NEVER released — the whole point", () => {
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={stage()} />);
     expect(html, "the stage must render from the placement alone").toContain(
       "commercial-nyc3-prod"
     );
@@ -179,7 +179,7 @@ describe("a component pipeline stage renders honestly", () => {
   });
 
   it("says the version is NOT OBSERVED rather than leaving it blank", () => {
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={stage()} />);
     expect(
       html,
       "an empty version cell reads as 'nothing is deployed' — a claim nobody has made (Phase 4a is unbuilt)"
@@ -190,7 +190,7 @@ describe("a component pipeline stage renders honestly", () => {
     // Guards the other direction: the unknown treatment must not swallow a genuine value when
     // Phase 4a lands and `unknownFields` no longer lists it.
     const html = renderToStaticMarkup(
-      <StageCardForTest stage={stage({ version: "v1.4.2", unknownFields: [] })} />
+      <StageCardForTest detailsExpanded stage={stage({ version: "v1.4.2", unknownFields: [] })} />
     );
     expect(html).toContain("v1.4.2");
     expect(html).not.toContain("not observed yet");
@@ -243,7 +243,9 @@ describe("a component pipeline stage renders honestly", () => {
       ]
     });
 
-    const software = renderToStaticMarkup(<StageCardForTest stage={threePipelines} />);
+    const software = renderToStaticMarkup(
+      <StageCardForTest detailsExpanded stage={threePipelines} />
+    );
     expect(software, "the config sync is what executes AT a deploy stage").toContain("deploy-app");
     expect(
       software,
@@ -255,7 +257,7 @@ describe("a component pipeline stage renders honestly", () => {
     ).not.toContain("build-app");
 
     const infra = renderToStaticMarkup(
-      <StageCardForTest stage={threePipelines} lane={INFRA_LANE} />
+      <StageCardForTest detailsExpanded stage={threePipelines} lane={INFRA_LANE} />
     );
     expect(infra).toContain("tf-app");
     expect(infra).not.toContain("build-app");
@@ -268,7 +270,9 @@ describe("a component pipeline stage renders honestly", () => {
   it("says a stage is 'not managed by this pipeline' WITHOUT raising the unbound alarm", () => {
     // A component whose substrate someone else manages is ordinary. Painting the ADR-0006 case (a)
     // alarm over it would fire on nearly every component and train the alarm away.
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} lane={INFRA_LANE} />);
+    const html = renderToStaticMarkup(
+      <StageCardForTest detailsExpanded stage={stage()} lane={INFRA_LANE} />
+    );
     expect(html).toContain("not managed by this pipeline here");
     expect(
       html,
@@ -312,10 +316,12 @@ describe("a component pipeline stage renders honestly", () => {
       ]
     });
 
-    expect(renderToStaticMarkup(<StageCardForTest stage={withHistory} />)).toContain(
-      "ship-the-app"
+    expect(
+      renderToStaticMarkup(<StageCardForTest detailsExpanded stage={withHistory} />)
+    ).toContain("ship-the-app");
+    const infra = renderToStaticMarkup(
+      <StageCardForTest detailsExpanded stage={withHistory} lane={INFRA_LANE} />
     );
-    const infra = renderToStaticMarkup(<StageCardForTest stage={withHistory} lane={INFRA_LANE} />);
     expect(
       infra,
       "the infra pipeline has never run here, and must say so rather than borrow the software release"
@@ -326,7 +332,9 @@ describe("a component pipeline stage renders honestly", () => {
 
 describe("a stage the component is NOT placed at", () => {
   it("says 'not placed' in words, and says what that MEANS", () => {
-    const html = renderToStaticMarkup(<UnplacedStageCardForTest stage={unplaced()} />);
+    const html = renderToStaticMarkup(
+      <UnplacedStageCardForTest detailsExpanded stage={unplaced()} />
+    );
     expect(html, "greyed alone is indistinguishable from 'quiet'").toContain("Not placed");
     expect(
       html,
@@ -336,7 +344,9 @@ describe("a stage the component is NOT placed at", () => {
   });
 
   it("shows NO executor row — 'no placement' must never be painted as the unbound ALARM", () => {
-    const html = renderToStaticMarkup(<UnplacedStageCardForTest stage={unplaced()} />);
+    const html = renderToStaticMarkup(
+      <UnplacedStageCardForTest detailsExpanded stage={unplaced()} />
+    );
     expect(
       html,
       "'No executor' means a bound-to-nothing placement that would fake-succeed (ADR-0006 case (a)); an absent placement is not that, and crying wolf on every component that simply does not go to prod would train the alarm away"
@@ -889,6 +899,7 @@ describe("a node is clickable exactly when there is somewhere real to go", () =>
   it("links a stage's executor to its console, and leaves it plain when unknown", () => {
     const linked = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={stage({
           bindings: [
             {
@@ -910,6 +921,7 @@ describe("a node is clickable exactly when there is somewhere real to go", () =>
 
     const plain = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={stage({
           bindings: [
             {
@@ -954,7 +966,9 @@ describe("the entry gate — a SUBNODE of the stage it governs", () => {
     // Measured 2026-08-10: every live policy requires one Owner approval and asks for NO automated
     // check (0 control bindings, 0 control runs estate-wide). A blank would be indistinguishable
     // from a view that cannot see checks; the truth is that none are configured.
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage({ gate: gated() })} />);
+    const html = renderToStaticMarkup(
+      <StageCardForTest detailsExpanded stage={stage({ gate: gated() })} />
+    );
     expect(html).toContain("Owner");
     expect(html, "the policy that imposes it is named — principle 6").toContain("prod-gate");
     expect(html).toContain("no automated check required");
@@ -964,6 +978,7 @@ describe("the entry gate — a SUBNODE of the stage it governs", () => {
     // Owner, 2026-08-04: "not started, in progress, check marks and failed marks for tests".
     const html = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={stage({
           gate: {
             policies: gated({ name: "scan-gate", requireControls: ["c1", "c2", "c3", "c4"] })
@@ -994,6 +1009,7 @@ describe("the entry gate — a SUBNODE of the stage it governs", () => {
     // A policy requiring a control that no longer exists blocks every release through this stage.
     const html = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={stage({
           gate: {
             policies: gated({ requireControls: ["gone"] }).policies,
@@ -1006,7 +1022,7 @@ describe("the entry gate — a SUBNODE of the stage it governs", () => {
   });
 
   it("says plainly when NOTHING gates a stage", () => {
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={stage()} />);
     expect(
       html,
       "an ungated stage is a real state — and different from 'we did not look'"
@@ -1017,8 +1033,10 @@ describe("the entry gate — a SUBNODE of the stage it governs", () => {
   it("belongs to the STAGE, so two placements in one wave keep their own gates", () => {
     // As a wave-level node this had to merge several placements' policies into one; as a subnode
     // each target simply carries its own, which is also what the server resolved.
-    const withGate = renderToStaticMarkup(<StageCardForTest stage={stage({ gate: gated() })} />);
-    const without = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    const withGate = renderToStaticMarkup(
+      <StageCardForTest detailsExpanded stage={stage({ gate: gated() })} />
+    );
+    const without = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={stage()} />);
     expect(withGate).toContain("prod-gate");
     expect(without, "the ungated sibling is not tarred with its neighbour's gate").not.toContain(
       "prod-gate"
@@ -1030,6 +1048,7 @@ describe("the DEPLOYMENT at a stage", () => {
   it("shows the deployment outcome in words, not only as an arrow colour", () => {
     const html = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={stage({
           currents: [
             {
@@ -1050,7 +1069,7 @@ describe("the DEPLOYMENT at a stage", () => {
   });
 
   it("says 'never deployed here' rather than leaving the row blank", () => {
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={stage()} />);
     expect(html).toContain("never deployed here");
   });
 });
@@ -1131,7 +1150,7 @@ describe("who MAINTAINS a place", () => {
   // receiving outpost validate every deploy in its own domain. A stage with no domain on it reads
   // as if the commander deploys it — the one thing charter principle 1 says it does not do.
   it("names the domain on a placed stage", () => {
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={stage()} />);
     expect(html).toContain("Maintained by");
     expect(html).toContain("commercial");
   });
@@ -1139,6 +1158,7 @@ describe("who MAINTAINS a place", () => {
   it("says an OUTPOST runs it, and that this instance only coordinates", () => {
     const html = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={stage({
           maintainedBy: {
             domainId: "019f0000-0000-7000-8000-00000000f001",
@@ -1159,6 +1179,7 @@ describe("who MAINTAINS a place", () => {
     // misreading this field exists to prevent.
     const html = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={stage({
           maintainedBy: {
             domainId: "019f0000-0000-7000-8000-00000000f002",
@@ -1177,7 +1198,9 @@ describe("who MAINTAINS a place", () => {
   });
 
   it("names the domain on an UNPLACED stage too — it is still somebody's to run", () => {
-    const html = renderToStaticMarkup(<UnplacedStageCardForTest stage={unplaced()} />);
+    const html = renderToStaticMarkup(
+      <UnplacedStageCardForTest detailsExpanded stage={unplaced()} />
+    );
     expect(html, "'not placed' must not read as 'nowhere'").toContain("Maintained by");
   });
 });
@@ -1444,7 +1467,7 @@ describe("a HELD stage is not a `pending` one", () => {
   }
 
   it("says HELD where it used to say `pending` — the defect, verbatim", () => {
-    const html = renderToStaticMarkup(<StageCardForTest stage={heldStage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={heldStage()} />);
     const pill = /data-testid="stage-status-pill"[^>]*>(.*?)<\/span>/s.exec(html)?.[1] ?? "";
     expect(pill, "the headline must not be the word that means the opposite here").toContain(
       "held"
@@ -1458,7 +1481,7 @@ describe("a HELD stage is not a `pending` one", () => {
   });
 
   it("NAMES what it is waiting on — the entire point of the increment", () => {
-    const html = renderToStaticMarkup(<StageCardForTest stage={heldStage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={heldStage()} />);
     const hold = /data-testid="stage-hold"[^>]*>(.*?)<\/div><\/div>/s.exec(html)?.[1] ?? "";
     expect(
       hold,
@@ -1476,6 +1499,7 @@ describe("a HELD stage is not a `pending` one", () => {
     const held = heldStage();
     const html = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={{
           ...held,
           hold: {
@@ -1492,6 +1516,7 @@ describe("a HELD stage is not a `pending` one", () => {
     const held = heldStage();
     const html = renderToStaticMarkup(
       <StageCardForTest
+        detailsExpanded
         stage={{
           ...held,
           hold: {
@@ -1534,10 +1559,14 @@ describe("a HELD stage is not a `pending` one", () => {
       ]
     });
 
-    const software = renderToStaticMarkup(<StageCardForTest stage={shared} lane={SOFTWARE_LANE} />);
+    const software = renderToStaticMarkup(
+      <StageCardForTest detailsExpanded stage={shared} lane={SOFTWARE_LANE} />
+    );
     expect(software).toContain("payments-api");
 
-    const infra = renderToStaticMarkup(<StageCardForTest stage={shared} lane={INFRA_LANE} />);
+    const infra = renderToStaticMarkup(
+      <StageCardForTest detailsExpanded stage={shared} lane={INFRA_LANE} />
+    );
     expect(infra, "the infra pipeline released here a month ago and is not waiting").not.toContain(
       "payments-api"
     );
@@ -1621,7 +1650,7 @@ describe("a HELD stage is not a `pending` one", () => {
   it("leaves an ordinary stage untouched — `hold` absent is not an empty claim", () => {
     // The boundary. Every response predating increment 4, and every stage that is simply not held,
     // must render exactly as before.
-    const html = renderToStaticMarkup(<StageCardForTest stage={stage()} />);
+    const html = renderToStaticMarkup(<StageCardForTest detailsExpanded stage={stage()} />);
     expect(html).not.toContain('data-testid="stage-hold"');
     expect(html).toContain("never deployed");
   });
@@ -2315,7 +2344,7 @@ describe("the Scan & sign node — commander only, after Registry, before Config
 describe("the REGISTRY node body — the latest digest, or the stated absence", () => {
   it("shows the newest digest folded (full value in title) and WHICH change it came from", () => {
     const html = renderToStaticMarkup(
-      <RegistryNodeForTest registry={registryDeclared()} artifact={artifact()} />
+      <RegistryNodeForTest detailsExpanded registry={registryDeclared()} artifact={artifact()} />
     );
     expect(html).toContain('data-testid="pipeline-registry-digest"');
     expect(html).toContain(shortDigest(DIGEST));
@@ -2571,7 +2600,9 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   });
 
   it("no scans, no exports → 'not run' for the digest, gate not run, not signed, origin signature not recorded — not clickable", () => {
-    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact()} />);
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest detailsExpanded artifact={artifact()} />
+    );
     expect(html).toContain("not run — no scan result recorded for");
     expect(html).toContain(shortDigest(DIGEST));
     expect(html).toContain(`title="${DIGEST}"`);
@@ -2585,12 +2616,19 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     expect(html).toContain("origin artifact signature:");
     expect(html).toContain(">not recorded</span>");
     expect(html).not.toContain(REVIEW_SCAN);
-    expect(html).not.toContain("<button");
+    // §10.3: the tile now carries its Details toggle (a button) — the ONLY button. The review
+    // affordance is what must be absent, so it is named rather than "any button".
+    expect(html).not.toContain('data-testid="pipeline-node-scan-sign-review"');
+    expect(html.split("<button").length - 1, "one button: the Details toggle, nothing else").toBe(
+      1
+    );
+    expect(html).toContain('data-testid="tile-details-toggle"');
   });
 
-  it("the PM line (§10.1) sits between the E6 line and the sign line — scan → E6 → PM → sign → origin signature", () => {
+  it("the PM line (§10.1) sits between the E6 line and the signed line — scan → E6 → PM → sign, in the compact part AND under Details", () => {
     const html = renderToStaticMarkup(
       <ScanSignNodeForTest
+        detailsExpanded
         artifact={artifact({
           scans: [scan()],
           signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
@@ -2599,17 +2637,26 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     );
     const at = (id: string) => html.indexOf(`data-testid="${id}"`);
     for (const id of [
-      "pipeline-scan-state",
+      "pipeline-scan-summary",
       "pipeline-scan-export-gate",
       "pipeline-scan-pm",
+      "pipeline-sign-summary",
+      "tile-details",
+      "pipeline-scan-state",
       "pipeline-sign-state",
       "pipeline-origin-signature"
     ]) {
       expect(at(id), id).toBeGreaterThan(-1);
     }
-    expect(at("pipeline-scan-state")).toBeLessThan(at("pipeline-scan-export-gate"));
+    // §10.3 — the COMPACT four, in the export order: scan verdict → E6 → PM → signed.
+    expect(at("pipeline-scan-summary")).toBeLessThan(at("pipeline-scan-export-gate"));
     expect(at("pipeline-scan-export-gate")).toBeLessThan(at("pipeline-scan-pm"));
-    expect(at("pipeline-scan-pm")).toBeLessThan(at("pipeline-sign-state"));
+    expect(at("pipeline-scan-pm")).toBeLessThan(at("pipeline-sign-summary"));
+    // … then the Details region, holding the rows in the same scan → sign order, then the origin
+    // signature. Every compact line precedes the region; every detail row sits inside it.
+    expect(at("pipeline-sign-summary")).toBeLessThan(at("tile-details"));
+    expect(at("tile-details")).toBeLessThan(at("pipeline-scan-state"));
+    expect(at("pipeline-scan-state")).toBeLessThan(at("pipeline-sign-state"));
     expect(at("pipeline-sign-state")).toBeLessThan(at("pipeline-origin-signature"));
   });
 
@@ -2683,6 +2730,7 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   it("scan rows: `scanner version · digest · status · C H M L · when`, the managed step marked from the FLAG (never the scanner name) — and clickable", () => {
     const html = renderToStaticMarkup(
       <ScanSignNodeForTest
+        detailsExpanded
         artifact={artifact({
           scans: [
             scan(),
@@ -2739,6 +2787,7 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   it("a `trivy` row with managed=false and an `openscap` row with managed=true — the mark follows the flag, not the name", () => {
     const html = renderToStaticMarkup(
       <ScanSignNodeForTest
+        detailsExpanded
         artifact={artifact({
           scans: [
             scan({ scanner: "trivy", managed: true }),
@@ -2759,7 +2808,10 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
 
   it("counts the evidence omitted → 'counts not recorded', never zeros", () => {
     const html = renderToStaticMarkup(
-      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ counts: null })] })} />
+      <ScanSignNodeForTest
+        detailsExpanded
+        artifact={artifact({ scans: [scan({ counts: null })] })}
+      />
     );
     expect(html).toContain("counts not recorded");
     expect(html).not.toContain("C0 H0 M0 L0");
@@ -2768,6 +2820,7 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   it("exports present, no scans → 'manifest signed for <peer> <when> (key <fp>)' per export — and clickable", () => {
     const html = renderToStaticMarkup(
       <ScanSignNodeForTest
+        detailsExpanded
         artifact={artifact({
           signing: {
             promotionExports: [
@@ -2799,6 +2852,7 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   it("an origin signatureRef, when one exists, is listed instead of 'not recorded'", () => {
     const html = renderToStaticMarkup(
       <ScanSignNodeForTest
+        detailsExpanded
         artifact={artifact({
           signing: { promotionExports: [], originSignatureRefs: ["sig://origin"] }
         })}
@@ -2818,6 +2872,7 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   it("`promotionExports:unparseable` with no readable export → sign-state 'unparseable', never 'not signed yet'", () => {
     const html = renderToStaticMarkup(
       <ScanSignNodeForTest
+        detailsExpanded
         artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })}
       />
     );
@@ -2835,6 +2890,7 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
   it("`promotionExports:unparseable` beside a readable export → the signed rows stay, plus the note", () => {
     const html = renderToStaticMarkup(
       <ScanSignNodeForTest
+        detailsExpanded
         artifact={artifact({
           signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
           unknownFields: ["promotionExports:unparseable"]
@@ -2847,6 +2903,7 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     expect(
       renderToStaticMarkup(
         <ScanSignNodeForTest
+          detailsExpanded
           artifact={artifact({
             signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
           })}

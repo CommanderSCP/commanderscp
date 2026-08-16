@@ -1,9 +1,13 @@
-import { useState } from "react";
+import { createContext, useContext, useId, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
   Circle,
   CircleAlert,
   CircleDashed,
@@ -446,20 +450,26 @@ function currentFor(stage: ComponentPipelineStage, lane: Lane): ComponentPipelin
  *  the whole page would drag in the query client for no added coverage. `pipelineKey` is optional
  *  and defaults to absent, same reason: a caller that never passes it (every pre-B2 test) gets
  *  the exact pre-B2 markup back, with no query client required — the remove-placement affordance
- *  (B2) only mounts, and only then needs `useMutation`'s context, once a caller opts in. */
+ *  (B2) only mounts, and only then needs `useMutation`'s context, once a caller opts in.
+ *  `detailsExpanded` (§10.3) renders the tile with its Details disclosure OPEN (`true`) or shut
+ *  (`false`); omitted, the tile follows the page default (collapsed) exactly as production does. */
 export function StageCardForTest({
   stage,
   lane = LANES[0]!,
   pipelineKey,
-  instanceRole
+  instanceRole,
+  detailsExpanded
 }: {
   stage: ComponentPipelineStage;
   lane?: Lane;
   pipelineKey?: unknown[];
   instanceRole?: InstanceRole;
+  detailsExpanded?: boolean;
 }): React.JSX.Element {
   return (
-    <StageCard stage={stage} lane={lane} pipelineKey={pipelineKey} instanceRole={instanceRole} />
+    <TileDetailsForTest expanded={detailsExpanded}>
+      <StageCard stage={stage} lane={lane} pipelineKey={pipelineKey} instanceRole={instanceRole} />
+    </TileDetailsForTest>
   );
 }
 
@@ -470,20 +480,42 @@ export function UnplacedStageCardForTest({
   stage,
   componentId,
   pipelineKey,
-  instanceRole
+  instanceRole,
+  detailsExpanded
 }: {
   stage: ComponentPipelineUnplacedStage;
   componentId?: string;
   pipelineKey?: unknown[];
   instanceRole?: InstanceRole;
+  detailsExpanded?: boolean;
 }): React.JSX.Element {
   return (
-    <UnplacedStageCard
-      stage={stage}
-      componentId={componentId}
-      pipelineKey={pipelineKey}
-      instanceRole={instanceRole}
-    />
+    <TileDetailsForTest expanded={detailsExpanded}>
+      <UnplacedStageCard
+        stage={stage}
+        componentId={componentId}
+        pipelineKey={pipelineKey}
+        instanceRole={instanceRole}
+      />
+    </TileDetailsForTest>
+  );
+}
+
+/** The static-markup doubles' way of choosing a Details state (§10.3): `expanded` set pins every
+ *  tile under it open or shut through the same context the page's Expand-all control drives;
+ *  omitted, nothing is provided and the tile takes the production default (collapsed). */
+function TileDetailsForTest({
+  expanded,
+  children
+}: {
+  expanded: boolean | undefined;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  if (expanded === undefined) return <>{children}</>;
+  return (
+    <TileDetailsContext.Provider value={{ expandedAll: expanded, version: 0 }}>
+      {children}
+    </TileDetailsContext.Provider>
   );
 }
 
@@ -818,112 +850,116 @@ function StageCard({
         />
       </CardHeader>
       <CardContent className="space-y-2 pl-[3.4rem] text-xs text-slate-600">
-        {/* §10.2 — the compact part: right under the facet in the header, before the maintainer. */}
+        {/* §10.2/§10.3 — the COMPACT part: the outpost line right under the facet in the header,
+            then the entry gate as ONE line. Everything else the tile knows sits under Details. */}
         <TargetOutpostLine outpost={stage.outpost} instanceRole={instanceRole} />
-        <MaintainerLine maintainedBy={stage.maintainedBy} />
-        <GateSubnode gate={stage.gate} />
-        {hold && <HoldSubnode hold={hold} />}
-        {/* ONE ROW PER PIPELINE. A stage runs a build, an infra plan/apply and a config sync as
+        <GateSummary gate={stage.gate} />
+        <TileDetails>
+          <MaintainerLine maintainedBy={stage.maintainedBy} />
+          <GateSubnode gate={stage.gate} />
+          {hold && <HoldSubnode hold={hold} />}
+          {/* ONE ROW PER PIPELINE. A stage runs a build, an infra plan/apply and a config sync as
             separate pipelines (ADR-0007 Type), and rendering only the first hides the others. The
             Type is shown, not implied: "agentkit-bootstrap @ homelab-argo" says nothing about
             whether that is the thing that BUILDS or the thing that DEPLOYS. */}
-        {bindings.map((binding) => (
-          <div key={binding.type} data-testid="stage-executor">
-            <span className="text-slate-400">{binding.type}</span>{" "}
-            <ConsoleLink href={binding.url} testid="stage-executor-link">
-              <span className="font-mono">{binding.externalRef || "—"}</span>
-              {binding.executionSystemName ? ` @ ${binding.executionSystemName}` : ""}
-            </ConsoleLink>
-            {/* The ladder's provenance (ADR-0029), rendered verbatim — "via component" is the
+          {bindings.map((binding) => (
+            <div key={binding.type} data-testid="stage-executor">
+              <span className="text-slate-400">{binding.type}</span>{" "}
+              <ConsoleLink href={binding.url} testid="stage-executor-link">
+                <span className="font-mono">{binding.externalRef || "—"}</span>
+                {binding.executionSystemName ? ` @ ${binding.executionSystemName}` : ""}
+              </ConsoleLink>
+              {/* The ladder's provenance (ADR-0029), rendered verbatim — "via component" is the
                 owner's own-infra case, "via service"/"via assembly" the inherited rungs (shared-
                 infrastructure proposal §5's attribution). Silent when bound on the placement
                 itself: that is the unremarkable direct case. */}
-            {binding.resolvedVia && binding.resolvedVia !== "placement" && (
+              {binding.resolvedVia && binding.resolvedVia !== "placement" && (
+                <span
+                  className="ml-1 text-slate-400"
+                  data-testid="stage-executor-provenance"
+                  title={`This pipeline is not bound on this stage's placement — the resolver found it ${binding.resolvedVia === "organization" ? "at the org rung" : `on the ${binding.resolvedVia}`} (nearest-wins ancestor ladder), and a release here will use it.`}
+                >
+                  via {binding.resolvedVia}
+                </span>
+              )}
+            </div>
+          ))}
+          {stage.bindings.length > 0 && bindings.length === 0 && (
+            // Bound at this place, but not by THIS pipeline. Muted and factual — it is not the
+            // ADR-0006 alarm, and dressing it up as one would cry wolf on every component whose
+            // substrate someone else manages.
+            <div className="text-slate-400" data-testid="stage-lane-unmanaged">
+              not managed by this pipeline here
+            </div>
+          )}
+          <div data-testid="stage-version">
+            <span className="text-slate-400">Version</span>{" "}
+            {versionUnknown ? (
+              // NOT a blank. The server says this is unobserved (Phase 4a is unbuilt), and an empty
+              // cell would read as "no version deployed" — a claim nobody has made.
               <span
-                className="ml-1 text-slate-400"
-                data-testid="stage-executor-provenance"
-                title={`This pipeline is not bound on this stage's placement — the resolver found it ${binding.resolvedVia === "organization" ? "at the org rung" : `on the ${binding.resolvedVia}`} (nearest-wins ancestor ladder), and a release here will use it.`}
+                className="italic text-slate-400"
+                title="No version signal is captured yet — coordination-ui-views.md Phase 4a."
               >
-                via {binding.resolvedVia}
+                not observed yet
               </span>
+            ) : (
+              <span className="font-mono">{stage.version}</span>
             )}
           </div>
-        ))}
-        {stage.bindings.length > 0 && bindings.length === 0 && (
-          // Bound at this place, but not by THIS pipeline. Muted and factual — it is not the
-          // ADR-0006 alarm, and dressing it up as one would cry wolf on every component whose
-          // substrate someone else manages.
-          <div className="text-slate-400" data-testid="stage-lane-unmanaged">
-            not managed by this pipeline here
+          <div data-testid="stage-deployment">
+            <span className="text-slate-400">Deployment</span>{" "}
+            {current ? (
+              // `change_wave_targets.status` IS the deployment outcome at this place. The arrow into
+              // the stage already uses it for colour; showing it in words is what makes "deployed and
+              // succeeded" distinguishable from "deployed and failed" without reading a colour.
+              //
+              // The RAW value is kept even when held — this row is the one place the column is
+              // reported verbatim, and a held target really is `pending` — with the reason appended
+              // rather than substituted, so the two facts stay separable. Reading `pending` here and
+              // nothing else was the whole defect.
+              <span
+                className={
+                  current.targetStatus === "failed" || current.targetStatus === "blocked"
+                    ? "font-medium text-red-700"
+                    : hold
+                      ? "font-medium text-indigo-700"
+                      : current.targetStatus === "succeeded"
+                        ? "font-medium text-green-700"
+                        : "text-slate-500"
+                }
+              >
+                {current.targetStatus ?? "unknown"}
+                {hold ? " — never triggered: a stage dependency is withholding it" : ""}
+                {current.waveName ? ` · wave ${current.waveName}` : ""}
+              </span>
+            ) : (
+              <span className="text-slate-400">never deployed here</span>
+            )}
           </div>
-        )}
-        <div data-testid="stage-version">
-          <span className="text-slate-400">Version</span>{" "}
-          {versionUnknown ? (
-            // NOT a blank. The server says this is unobserved (Phase 4a is unbuilt), and an empty
-            // cell would read as "no version deployed" — a claim nobody has made.
-            <span
-              className="italic text-slate-400"
-              title="No version signal is captured yet — coordination-ui-views.md Phase 4a."
-            >
-              not observed yet
-            </span>
-          ) : (
-            <span className="font-mono">{stage.version}</span>
-          )}
-        </div>
-        <div data-testid="stage-deployment">
-          <span className="text-slate-400">Deployment</span>{" "}
-          {current ? (
-            // `change_wave_targets.status` IS the deployment outcome at this place. The arrow into
-            // the stage already uses it for colour; showing it in words is what makes "deployed and
-            // succeeded" distinguishable from "deployed and failed" without reading a colour.
-            //
-            // The RAW value is kept even when held — this row is the one place the column is
-            // reported verbatim, and a held target really is `pending` — with the reason appended
-            // rather than substituted, so the two facts stay separable. Reading `pending` here and
-            // nothing else was the whole defect.
-            <span
-              className={
-                current.targetStatus === "failed" || current.targetStatus === "blocked"
-                  ? "font-medium text-red-700"
-                  : hold
-                    ? "font-medium text-indigo-700"
-                    : current.targetStatus === "succeeded"
-                      ? "font-medium text-green-700"
-                      : "text-slate-500"
-              }
-            >
-              {current.targetStatus ?? "unknown"}
-              {hold ? " — never triggered: a stage dependency is withholding it" : ""}
-              {current.waveName ? ` · wave ${current.waveName}` : ""}
-            </span>
-          ) : (
-            <span className="text-slate-400">never deployed here</span>
-          )}
-        </div>
-        <div data-testid="stage-current">
-          <span className="text-slate-400">Last release</span>{" "}
-          {current ? (
-            <Link
-              to="/changes/$id/pipeline"
-              params={{ id: current.changeId }}
-              className={cn(
-                "inline-flex items-center gap-1 rounded underline hover:text-slate-900",
-                focusRing
-              )}
-              data-testid="stage-run-link"
-            >
-              {current.changeName ?? current.changeId.slice(0, 8)}
-              <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
-            </Link>
-          ) : (
-            <span className="text-slate-400">nothing has released here</span>
-          )}
-        </div>
-        {/* B2: a quiet, deliberately unobtrusive removal — this is not the primary action on a
+          <div data-testid="stage-current">
+            <span className="text-slate-400">Last release</span>{" "}
+            {current ? (
+              <Link
+                to="/changes/$id/pipeline"
+                params={{ id: current.changeId }}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded underline hover:text-slate-900",
+                  focusRing
+                )}
+                data-testid="stage-run-link"
+              >
+                {current.changeName ?? current.changeId.slice(0, 8)}
+                <ArrowRight className="size-3.5" strokeWidth={2} aria-hidden="true" />
+              </Link>
+            ) : (
+              <span className="text-slate-400">nothing has released here</span>
+            )}
+          </div>
+          {/* B2: a quiet, deliberately unobtrusive removal — this is not the primary action on a
             placed, healthy stage, so it does not compete with the rows above for attention. */}
-        {pipelineKey && <RemovePlacementButton stage={stage} pipelineKey={pipelineKey} />}
+          {pipelineKey && <RemovePlacementButton stage={stage} pipelineKey={pipelineKey} />}
+        </TileDetails>
       </CardContent>
     </Card>
   );
@@ -1077,16 +1113,21 @@ function UnplacedStageCard({
         />
       </CardHeader>
       <CardContent className="space-y-2 pl-[3.4rem] text-xs text-slate-400">
+        {/* §10.3 — compact: the outpost line (the "Not placed" badge is in the header, and an
+            unplaced stage has no gate on the wire). The consequence sentence, the maintainer and
+            the Place-at-target action are the Details. */}
         <TargetOutpostLine outpost={stage.outpost} instanceRole={instanceRole} />
-        <MaintainerLine maintainedBy={stage.maintainedBy} />
-        <p>This component has no placement here, so its releases never reach this stage.</p>
-        {componentId && pipelineKey && (
-          <PlaceAtTargetPicker
-            componentId={componentId}
-            pipelineKey={pipelineKey}
-            defaultTargetId={stage.deploymentTarget.id}
-          />
-        )}
+        <TileDetails>
+          <MaintainerLine maintainedBy={stage.maintainedBy} />
+          <p>This component has no placement here, so its releases never reach this stage.</p>
+          {componentId && pipelineKey && (
+            <PlaceAtTargetPicker
+              componentId={componentId}
+              pipelineKey={pipelineKey}
+              defaultTargetId={stage.deploymentTarget.id}
+            />
+          )}
+        </TileDetails>
       </CardContent>
     </Card>
   );
@@ -1391,6 +1432,128 @@ function NodeHeading({
   );
 }
 
+/* ------------------------------------------------------------------------------------------------
+ * TILE DENSITY (§10.3, owner) — every pipeline tile is a COMPACT part plus a Details disclosure.
+ *
+ * The compact part is identity + state (what the tile IS, and the one-line verdict of where it
+ * stands); everything else the tile knows moves UNDER "Details", collapsed by default. Nothing that
+ * rendered before this became unreachable — it moved. Two controls drive the state:
+ *
+ *   - the page-level Expand all / Collapse all (`TileDetailsScope`, near the lane header): each
+ *     flip publishes `{ expandedAll, version }` through `TileDetailsContext`, and every tile follows;
+ *   - each tile's own chevron (`TileDetails`): a LOCAL override, remembered with the `version` it
+ *     was made under, so it wins until the next page-level flip bumps the version — at which point
+ *     the page-level state wins again. Local to the page: nothing is persisted (no localStorage).
+ *
+ * The disclosure is a native `<button>` (Enter/Space toggle for free) with `aria-expanded` and
+ * `aria-controls` naming the region; the region mounts its children ONLY while open, so a
+ * collapsed tile's markup genuinely holds the compact set and nothing else — the property the
+ * static-markup tests assert. A tile with nothing to put under Details renders NO toggle at all
+ * (`NodeShell` draws it only when `details` is given).
+ * ---------------------------------------------------------------------------------------------- */
+
+interface TileDetailsScopeState {
+  /** The page-level ask: `true` = all open, `false` = all shut, `null` = nothing asked yet
+   *  (tiles take the default, collapsed). */
+  expandedAll: boolean | null;
+  /** Bumped on every page-level flip — a tile's local override is keyed on it and expires when
+   *  it changes. */
+  version: number;
+}
+
+const TileDetailsContext = createContext<TileDetailsScopeState>({ expandedAll: null, version: 0 });
+
+/**
+ * The page-level control plus the context it drives. Exported for the tests, which render tiles
+ * under it and click the control — the same component the page mounts, so what the test flips is
+ * what the operator flips.
+ */
+export function TileDetailsScope({ children }: { children: React.ReactNode }): React.JSX.Element {
+  const [state, setState] = useState<TileDetailsScopeState>({ expandedAll: null, version: 0 });
+  const allOpen = state.expandedAll === true;
+  const Icon = allOpen ? ChevronsDownUp : ChevronsUpDown;
+  return (
+    <TileDetailsContext.Provider value={state}>
+      <div className="flex w-full justify-end">
+        <button
+          type="button"
+          className={cn(
+            "inline-flex items-center gap-1 rounded px-1 text-xs text-slate-500 hover:text-slate-900",
+            focusRing
+          )}
+          onClick={() =>
+            setState((previous) => ({ expandedAll: !allOpen, version: previous.version + 1 }))
+          }
+          data-testid="pipeline-details-toggle-all"
+          data-expanded-all={state.expandedAll === null ? "unset" : String(state.expandedAll)}
+          title={
+            allOpen
+              ? "Collapse the Details of every tile on this page"
+              : "Expand the Details of every tile on this page"
+          }
+        >
+          <Icon className="size-3.5" strokeWidth={2} aria-hidden="true" />
+          {allOpen ? "Collapse all" : "Expand all"}
+        </button>
+      </div>
+      {children}
+    </TileDetailsContext.Provider>
+  );
+}
+
+/** One tile's open/shut state: its own override while that override is current, else the page's. */
+function useTileDetails(): { open: boolean; toggle: () => void } {
+  const scope = useContext(TileDetailsContext);
+  const [local, setLocal] = useState<{ open: boolean; version: number } | null>(null);
+  const open =
+    local !== null && local.version === scope.version ? local.open : (scope.expandedAll ?? false);
+  return { open, toggle: () => setLocal({ open: !open, version: scope.version }) };
+}
+
+/** The disclosure: the chevron button and the region it controls. Render it ONLY with something to
+ *  put inside — a toggle over nothing is a lie about the tile. */
+function TileDetails({
+  children,
+  className = "space-y-2"
+}: {
+  children: React.ReactNode;
+  /** The region's row spacing — matches the compact part's, so open and shut read as one body. */
+  className?: string;
+}): React.JSX.Element {
+  const { open, toggle } = useTileDetails();
+  const regionId = useId();
+  const Chevron = open ? ChevronDown : ChevronRight;
+  const state = open ? "open" : "closed";
+  return (
+    <>
+      <button
+        type="button"
+        className={cn(
+          "inline-flex items-center gap-1 rounded text-[11px] text-slate-400 hover:text-slate-700",
+          focusRing
+        )}
+        aria-expanded={open}
+        aria-controls={regionId}
+        onClick={toggle}
+        data-testid="tile-details-toggle"
+        data-state={state}
+      >
+        <Chevron className="size-3.5" strokeWidth={2} aria-hidden="true" />
+        Details
+      </button>
+      <div
+        id={regionId}
+        className={className}
+        hidden={!open}
+        data-testid="tile-details"
+        data-state={state}
+      >
+        {open ? children : null}
+      </div>
+    </>
+  );
+}
+
 /**
  * A node's REVIEW affordance (§9.3, owner §7.2: "clickable only once the fact exists"). When
  * `review` is given the tile IS a click target — a `Review` button in its header carrying the
@@ -1410,7 +1573,8 @@ function NodeShell({
   testid,
   muted,
   review,
-  children
+  children,
+  details
 }: {
   kind: NodeKind;
   title: string;
@@ -1418,7 +1582,11 @@ function NodeShell({
   testid: string;
   muted?: boolean;
   review?: NodeReview;
+  /** The COMPACT body (§10.3). */
   children: React.ReactNode;
+  /** What goes under the tile's Details disclosure; omitted/null → the tile has none and draws no
+   *  toggle (the Build tile today). */
+  details?: React.ReactNode;
 }): React.JSX.Element {
   return (
     <Card
@@ -1462,7 +1630,12 @@ function NodeShell({
           }
         />
       </CardHeader>
-      <CardContent className="space-y-1 pl-[3.4rem] text-xs text-slate-600">{children}</CardContent>
+      <CardContent className="space-y-1 pl-[3.4rem] text-xs text-slate-600">
+        {children}
+        {details !== undefined && details !== null ? (
+          <TileDetails className="space-y-1">{details}</TileDetails>
+        ) : null}
+      </CardContent>
     </Card>
   );
 }
@@ -2540,7 +2713,7 @@ function ArtifactFieldList({
  * THE PROMOTION MANIFEST IS NOT HERE (§10.1, owner). The code's export order is scan step → E6 gate
  * → build manifest → sign manifest (promotion-repo.ts phases 1.5–3): the PM is created AFTER the
  * scan and BEFORE the signature, so it is a Scan & sign fact and lives on that tile
- * (`ScanSignLines`, between the E6 line and the sign lines). The tile is clickable ONLY when an SBOM
+ * (`ScanSignCompact`, between the E6 line and the signed line). The tile is clickable ONLY when an SBOM
  * exists (`buildHasReview`); the review dialog renders the SBOM alone.
  */
 function BuildNode({
@@ -2727,8 +2900,15 @@ export function BuildReviewBody({
 export function BuildNodeForTest(props: {
   bindings: ComponentPipelineStage["bindings"];
   artifact: ArtifactOnWire;
+  /** §10.3 — see `StageCardForTest`. The Build tile has NO Details today (its compact set is
+   *  everything it knows), so this only pins that no toggle appears whatever is asked. */
+  detailsExpanded?: boolean;
 }): React.JSX.Element {
-  return <BuildNode bindings={props.bindings} artifact={props.artifact} />;
+  return (
+    <TileDetailsForTest expanded={props.detailsExpanded}>
+      <BuildNode bindings={props.bindings} artifact={props.artifact} />
+    </TileDetailsForTest>
+  );
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -2759,6 +2939,11 @@ export function BuildNodeForTest(props: {
  * "no artifact digest recorded yet" when the server projected `artifact` and found none (a stated
  * absence), or the pre-§9.3 "not observed" when the field is not on the wire at all (an unknown).
  */
+const REGISTRY_UNKNOWN_WHY =
+  "This server does not project the artifact on the component pipeline, so nothing is known here either way.";
+const REGISTRY_NONE_WHY =
+  "No change of this component carries an artifact digest in its sourceRef — the first-party change report is the sole way one arrives.";
+
 function RegistryNode({
   registry,
   artifact
@@ -2767,6 +2952,8 @@ function RegistryNode({
   artifact: ArtifactOnWire;
 }): React.JSX.Element {
   const digest = artifact ? latestDigest(artifact) : null;
+  // §10.3 — compact: the digest line alone. Details: WHICH change it came from, or the sentence
+  // explaining the stated absence / unknown (the same words the compact line carries in `title`).
   return (
     <NodeShell
       kind="registry"
@@ -2774,6 +2961,18 @@ function RegistryNode({
       hint={<RegistryHeadline registry={registry} />}
       testid="pipeline-node-registry"
       muted={digest === null}
+      details={
+        digest !== null && artifact ? (
+          <p className="text-slate-500" data-testid="pipeline-registry-provenance">
+            from change{" "}
+            <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
+          </p>
+        ) : (
+          <p className="text-slate-400" data-testid="pipeline-registry-explanation">
+            {artifact === undefined ? REGISTRY_UNKNOWN_WHY : REGISTRY_NONE_WHY}
+          </p>
+        )
+      }
     >
       {digest !== null && artifact ? (
         <p data-testid="pipeline-registry-digest">
@@ -2789,18 +2988,14 @@ function RegistryNode({
           </span>
           {artifact.digests.length > 1 ? (
             <span className="text-slate-400"> +{artifact.digests.length - 1} more</span>
-          ) : null}{" "}
-          <span className="text-slate-500">
-            from change{" "}
-            <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
-          </span>
+          ) : null}
         </p>
       ) : artifact === undefined ? (
         <p
           className="italic text-slate-400"
           data-testid="pipeline-registry-digest"
           data-artifact-state="unknown"
-          title="This server does not project the artifact on the component pipeline, so nothing is known here either way."
+          title={REGISTRY_UNKNOWN_WHY}
         >
           not observed yet — no artifact digest or scan verdict is captured
         </p>
@@ -2809,7 +3004,7 @@ function RegistryNode({
           className="text-slate-400"
           data-testid="pipeline-registry-digest"
           data-artifact-state="none"
-          title="No change of this component carries an artifact digest in its sourceRef — the first-party change report is the sole way one arrives."
+          title={REGISTRY_NONE_WHY}
         >
           no artifact digest recorded yet
         </p>
@@ -2822,12 +3017,19 @@ function RegistryNode({
  *  contract, and rendering the whole page would drag in the query client for no added coverage. */
 export function RegistryNodeForTest({
   registry,
-  artifact
+  artifact,
+  detailsExpanded
 }: {
   registry: ComponentPipelineRegistry | null;
   artifact?: ArtifactOnWire;
+  /** §10.3 — see `StageCardForTest`. */
+  detailsExpanded?: boolean;
 }): React.JSX.Element {
-  return <RegistryNode registry={registry} artifact={artifact} />;
+  return (
+    <TileDetailsForTest expanded={detailsExpanded}>
+      <RegistryNode registry={registry} artifact={artifact} />
+    </TileDetailsForTest>
+  );
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -2861,6 +3063,11 @@ function exportGateLabel(gate: ComponentPipelineArtifact["exportGate"]): string 
  * Clickable ONLY when a scan row or an export exists (`scanSignHasReview`); the review dialog holds
  * the full tables and a link to the change for the raw evidence. No CVE rows anywhere: none are
  * stored (§8 "Scan").
+ *
+ * §10.3 splits the above into the COMPACT part (`ScanSignCompact`: `scan: <verdict>` folding the
+ * rows, the E6 line, the PM line, `signed: …`) and the Details (`ScanSignDetails`: the scan rows or
+ * the not-run line, the per-export sign lines or the stated absence, the origin-signature line).
+ * With no artifact there is one stated line and no Details.
  */
 function ScanSignNode({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
   const [open, setOpen] = useState(false);
@@ -2878,8 +3085,9 @@ function ScanSignNode({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Ele
             ? { ariaLabel: "Review scan and signing results", onOpen: () => setOpen(true) }
             : undefined
         }
+        details={artifact ? <ScanSignDetails artifact={artifact} /> : undefined}
       >
-        <ScanSignLines artifact={artifact} />
+        <ScanSignCompact artifact={artifact} />
       </NodeShell>
       {artifact ? (
         <ScanSignReviewDialog open={open} onOpenChange={setOpen} artifact={artifact} />
@@ -2888,7 +3096,43 @@ function ScanSignNode({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Ele
   );
 }
 
-function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
+/**
+ * The scan rows folded to ONE verdict word for the compact line (§10.3): `not run` with no rows,
+ * `pass (N runs)` when every row passed, `fail (…)` when any row failed or timed out, else the
+ * rows' own statuses counted (`warning (1 with warnings · 1 passed)`). A summary of the ROWS, read
+ * from each row's `status` verbatim — never of E6, whose verdict is the wire's own and has its own
+ * line. Exported so the folding is assertable on its own.
+ */
+export function scanSummary(scans: ComponentPipelineArtifact["scans"]): {
+  verdict: "not-run" | "pass" | "fail" | "warning" | "mixed";
+  text: string;
+} {
+  if (scans.length === 0) return { verdict: "not-run", text: "not run" };
+  const n = scans.length;
+  const runs = `${n} run${n === 1 ? "" : "s"}`;
+  const statuses = scans.map((s) => s.status);
+  if (statuses.every((s) => s === "pass")) return { verdict: "pass", text: `pass (${runs})` };
+  const counts = new Map<string, number>();
+  for (const status of statuses) counts.set(status, (counts.get(status) ?? 0) + 1);
+  const detail = [...counts.entries()]
+    .sort(([a], [b]) => (a === "fail" ? -1 : b === "fail" ? 1 : a.localeCompare(b)))
+    .map(([status, count]) => `${count} ${status}`)
+    .join(" · ");
+  const failed = statuses.filter((s) => s === "fail" || s === "timed_out").length;
+  if (failed > 0)
+    return { verdict: "fail", text: `fail (${failed} of ${runs} failed · ${detail})` };
+  if (statuses.some((s) => s === "warning"))
+    return { verdict: "warning", text: `warning (${detail})` };
+  return { verdict: "mixed", text: `${detail} (${runs})` };
+}
+
+/**
+ * The COMPACT part of the Scan & sign tile (§10.3) — with an artifact, FOUR one-liners in the
+ * export order: `scan: …` (the rows folded, `scanSummary`), `export gate (E6): …` (the wire's
+ * verdict), `PM …` (§10.1, the newest export), `signed: …` (the newest export's signature, or the
+ * stated absence). Without one, the single stated line and nothing else — and no Details.
+ */
+function ScanSignCompact({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
   if (artifact === undefined) {
     return (
       <p
@@ -2908,10 +3152,103 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
       </p>
     );
   }
-  const digest = latestDigest(artifact);
   const exports = artifact.signing.promotionExports;
   const newest = latestExport(artifact);
   const pmState = newest ? "created" : exportsUnparseable(artifact) ? "unparseable" : "absent";
+  const summary = scanSummary(artifact.scans);
+  return (
+    <>
+      <p data-testid="pipeline-scan-summary" data-scan-summary={summary.verdict}>
+        <span className="text-slate-400">scan:</span>{" "}
+        <span
+          className={
+            summary.verdict === "pass"
+              ? "text-emerald-700"
+              : summary.verdict === "fail"
+                ? "text-red-700"
+                : summary.verdict === "warning"
+                  ? "text-amber-700"
+                  : "text-slate-500"
+          }
+          title="The scan rows under Details, folded to one word — read from each row's own status, not from the E6 verdict."
+        >
+          {summary.text}
+        </span>
+      </p>
+      <p data-testid="pipeline-scan-export-gate" data-export-gate={artifact.exportGate}>
+        <span className="text-slate-400">export gate (E6):</span>{" "}
+        <span
+          className={
+            artifact.exportGate === "pass"
+              ? "text-emerald-700"
+              : artifact.exportGate === "fail"
+                ? "text-red-700"
+                : "text-slate-500"
+          }
+          title="E6's own predicate, applied read-only: passes when a digest-bound pass row exists for every non-blob artifact."
+        >
+          {exportGateLabel(artifact.exportGate)}
+        </span>
+      </p>
+      <p data-testid="pipeline-scan-pm" data-pm-state={pmState}>
+        <span className="text-slate-400">PM</span>{" "}
+        {newest ? (
+          <>
+            <span
+              title={`Promotion manifest created at export ${newest.exportedAt} for peer ${newest.peerDomainId} (manifest createdAt ${newest.manifest.createdAt}).`}
+            >
+              created for <span className="font-mono">{peerLabel(newest)}</span> ·{" "}
+              {whenLabel(newest.exportedAt)} · {newest.manifest.artifacts.length} artifact
+              {newest.manifest.artifacts.length === 1 ? "" : "s"}
+            </span>
+            <ExportsUnparseableNote artifact={artifact} />
+          </>
+        ) : pmState === "unparseable" ? (
+          <span className="text-amber-700" title={EXPORTS_UNPARSEABLE_TITLE}>
+            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
+          </span>
+        ) : (
+          <span className="text-slate-400">not created — created at export to a peer</span>
+        )}
+      </p>
+      <p
+        data-testid="pipeline-sign-summary"
+        data-sign-state={
+          newest ? "signed" : exportsUnparseable(artifact) ? "unparseable" : "not-signed"
+        }
+      >
+        <span className="text-slate-400">signed:</span>{" "}
+        {newest ? (
+          <>
+            <span
+              title={`Manifest signed for peer ${newest.peerDomainId} at export ${newest.exportedAt}${newest.keyFingerprint ? ` (key ${newest.keyFingerprint})` : ""}. Every export is listed under Details.`}
+            >
+              for <span className="font-mono">{peerLabel(newest)}</span> ·{" "}
+              {whenLabel(newest.exportedAt)}
+              {exports.length > 1 ? ` · ${exports.length} exports` : ""}
+            </span>
+            <ExportsUnparseableNote artifact={artifact} />
+          </>
+        ) : exportsUnparseable(artifact) ? (
+          <span className="text-amber-700" title={EXPORTS_UNPARSEABLE_TITLE}>
+            recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
+          </span>
+        ) : (
+          <span className="text-slate-400">not yet — signed at export to a peer</span>
+        )}
+      </p>
+    </>
+  );
+}
+
+/**
+ * The DETAILS of the Scan & sign tile (§10.3): the scan rows (or the "not run" line naming the
+ * digest), the per-export sign lines (or the stated absence), and the origin-signature line —
+ * everything the compact lines fold, in the same scan → sign order.
+ */
+function ScanSignDetails({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element {
+  const digest = latestDigest(artifact);
+  const exports = artifact.signing.promotionExports;
   return (
     <>
       {artifact.scans.length === 0 ? (
@@ -2974,42 +3311,6 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
           ))}
         </ul>
       )}
-      <p data-testid="pipeline-scan-export-gate" data-export-gate={artifact.exportGate}>
-        <span className="text-slate-400">export gate (E6):</span>{" "}
-        <span
-          className={
-            artifact.exportGate === "pass"
-              ? "text-emerald-700"
-              : artifact.exportGate === "fail"
-                ? "text-red-700"
-                : "text-slate-500"
-          }
-          title="E6's own predicate, applied read-only: passes when a digest-bound pass row exists for every non-blob artifact."
-        >
-          {exportGateLabel(artifact.exportGate)}
-        </span>
-      </p>
-      <p data-testid="pipeline-scan-pm" data-pm-state={pmState}>
-        <span className="text-slate-400">PM</span>{" "}
-        {newest ? (
-          <>
-            <span
-              title={`Promotion manifest created at export ${newest.exportedAt} for peer ${newest.peerDomainId} (manifest createdAt ${newest.manifest.createdAt}).`}
-            >
-              created for <span className="font-mono">{peerLabel(newest)}</span> ·{" "}
-              {whenLabel(newest.exportedAt)} · {newest.manifest.artifacts.length} artifact
-              {newest.manifest.artifacts.length === 1 ? "" : "s"}
-            </span>
-            <ExportsUnparseableNote artifact={artifact} />
-          </>
-        ) : pmState === "unparseable" ? (
-          <span className="text-amber-700" title={EXPORTS_UNPARSEABLE_TITLE}>
-            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
-          </span>
-        ) : (
-          <span className="text-slate-400">not created — created at export to a peer</span>
-        )}
-      </p>
       {exports.length === 0 && exportsUnparseable(artifact) ? (
         <p
           className="text-amber-700"
@@ -3308,8 +3609,19 @@ export function ScanSignReviewBody({
 }
 
 /** Exported ONLY for `component-pipeline-continuous.test.tsx`. */
-export function ScanSignNodeForTest({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
-  return <ScanSignNode artifact={artifact} />;
+export function ScanSignNodeForTest({
+  artifact,
+  detailsExpanded
+}: {
+  artifact: ArtifactOnWire;
+  /** §10.3 — see `StageCardForTest`. */
+  detailsExpanded?: boolean;
+}): React.JSX.Element {
+  return (
+    <TileDetailsForTest expanded={detailsExpanded}>
+      <ScanSignNode artifact={artifact} />
+    </TileDetailsForTest>
+  );
 }
 
 /** The registry node's one-line header — see `RegistryNode` for the three states. */
@@ -3436,6 +3748,94 @@ function CheckMark({ status }: { status: string }): React.JSX.Element {
     >
       <Icon className="size-3.5" strokeWidth={2} aria-hidden="true" />
     </span>
+  );
+}
+
+/** The one-word form of each check status for the compact gate line — the same states
+ *  `CHECK_LABEL` spells out under Details, folded to a count's noun. */
+const CHECK_SHORT: Record<string, string> = {
+  not_started: "not started",
+  pending: "in progress",
+  pass: "passed",
+  fail: "failed",
+  warning: "with warnings",
+  skipped: "skipped",
+  timed_out: "timed out",
+  expired: "expired"
+};
+
+/** The order the compact line lists check counts in — what needs acting on first. */
+const CHECK_SUMMARY_ORDER = [
+  "fail",
+  "timed_out",
+  "warning",
+  "expired",
+  "pending",
+  "pass",
+  "skipped",
+  "not_started"
+] as const;
+
+/**
+ * THE ENTRY GATE AS ONE LINE (§10.3) — the compact form of `GateSubnode`, which keeps the full
+ * per-check list under Details.
+ *
+ * `entry gate: none — enters as soon as the previous stage succeeds` when no policy gates the
+ * stage; else `entry gate: N checks · <counts by status> [· approval required]`. The current UI has
+ * NO aggregate verdict for a gate (each check carries its own mark), so none is invented here: the
+ * line says how many checks and how many are in each state, coloured by the same precedence the
+ * per-check marks use (a failure red, a warning amber, all passed green, else quiet). "approval
+ * required" is appended whenever a policy asks for one, so an approval-only gate does not read as
+ * `0 checks` and nothing else.
+ */
+export function gateSummaryText(gate: ComponentPipelineStage["gate"]): string {
+  if (gate.policies.length === 0) return "none — enters as soon as the previous stage succeeds";
+  const n = gate.checks.length;
+  const counts = new Map<string, number>();
+  for (const check of gate.checks) counts.set(check.status, (counts.get(check.status) ?? 0) + 1);
+  const parts = [`${n} check${n === 1 ? "" : "s"}`];
+  for (const status of CHECK_SUMMARY_ORDER) {
+    const count = counts.get(status);
+    if (count !== undefined) parts.push(`${count} ${CHECK_SHORT[status] ?? status}`);
+  }
+  // A status outside the known set (an older/newer server) is still counted, verbatim.
+  for (const [status, count] of counts) {
+    if (!(CHECK_SUMMARY_ORDER as readonly string[]).includes(status))
+      parts.push(`${count} ${status}`);
+  }
+  if (gate.policies.some((p) => p.requireApprovals.length > 0)) parts.push("approval required");
+  return parts.join(" · ");
+}
+
+function GateSummary({ gate }: { gate: ComponentPipelineStage["gate"] }): React.JSX.Element {
+  const statuses = gate.checks.map((c) => c.status);
+  const tone =
+    gate.policies.length === 0
+      ? "none"
+      : statuses.some((s) => s === "fail" || s === "timed_out")
+        ? "fail"
+        : statuses.some((s) => s === "warning")
+          ? "warning"
+          : statuses.length > 0 && statuses.every((s) => s === "pass")
+            ? "pass"
+            : "quiet";
+  return (
+    <div className="text-slate-500" data-testid="stage-gate-summary" data-gate-summary={tone}>
+      <span className="text-slate-400">entry gate:</span>{" "}
+      <span
+        className={
+          tone === "fail"
+            ? "text-red-700"
+            : tone === "warning"
+              ? "text-amber-700"
+              : tone === "pass"
+                ? "text-green-700"
+                : undefined
+        }
+      >
+        {gateSummaryText(gate)}
+      </span>
+    </div>
   );
 }
 
@@ -3690,64 +4090,68 @@ export function ComponentPipelinePage({
               className="mx-auto flex max-w-2xl flex-col items-center gap-1"
               data-testid={`pipeline-lane-${lane.key}`}
             >
-              {!laneBound && (
-                // The nodes still render below. Absence of a pipeline is a fact about this
-                // component, not a reason to hide the places it runs — and an empty tab would be
-                // indistinguishable from a view that simply does not show infra.
-                <p
-                  className="w-full py-1 text-xs text-slate-500"
-                  data-testid={`pipeline-lane-absent-${lane.key}`}
-                >
-                  {lane.absent}
-                </p>
-              )}
-              {nodes.map((node, i) => {
-                // Computed ONCE. It was called twice inline for `state` and `label`, and a third
-                // call for `detail` would have made the duplication the shape of the code.
-                const arrow = node.kind === "wave" ? arrowInto(node.wave, lane) : null;
-                return (
-                  <div key={node.key} className="flex w-full flex-col items-center gap-1">
-                    {sharedConnectorVisible(nodes, i) && (
-                      // Between two nodes, the connector is only a verdict where the model HAS one: a
-                      // promotion into a deploy stage. Everywhere else it is a plain link, because
-                      // colouring build→registry green would invent a gate nobody evaluated. A
-                      // "source" node draws its OWN arrow per tile instead (`sharedConnectorVisible`),
-                      // so this one is skipped right after it rather than adding a duplicate.
-                      <PromotionArrow
-                        state={arrow?.state ?? "pending"}
-                        label={arrow?.label ?? ""}
-                        detail={arrow?.detail}
-                      />
-                    )}
-                    {node.kind === "source" && (
-                      <SourceNode
-                        label={node.label}
-                        sources={node.sources}
-                        componentId={data.component.id}
-                        pipelineKey={pipelineKey}
-                        upstream={data.component.maintainedBy}
-                        domainLocal={data.component.domainLocal}
-                      />
-                    )}
-                    {node.kind === "build" && (
-                      <BuildNode bindings={node.bindings} artifact={node.artifact} />
-                    )}
-                    {node.kind === "registry" && (
-                      <RegistryNode registry={node.registry} artifact={node.artifact} />
-                    )}
-                    {node.kind === "scan-sign" && <ScanSignNode artifact={node.artifact} />}
-                    {node.kind === "wave" && (
-                      <WaveRow
-                        wave={node.wave}
-                        lane={lane}
-                        componentId={data.component.id}
-                        pipelineKey={pipelineKey}
-                        instanceRole={instanceRole}
-                      />
-                    )}
-                  </div>
-                );
-              })}
+              {/* §10.3 — the Expand all / Collapse all control heads the lane; every tile below
+                  reads its state, and a tile's own chevron overrides it until the next flip. */}
+              <TileDetailsScope>
+                {!laneBound && (
+                  // The nodes still render below. Absence of a pipeline is a fact about this
+                  // component, not a reason to hide the places it runs — and an empty tab would be
+                  // indistinguishable from a view that simply does not show infra.
+                  <p
+                    className="w-full py-1 text-xs text-slate-500"
+                    data-testid={`pipeline-lane-absent-${lane.key}`}
+                  >
+                    {lane.absent}
+                  </p>
+                )}
+                {nodes.map((node, i) => {
+                  // Computed ONCE. It was called twice inline for `state` and `label`, and a third
+                  // call for `detail` would have made the duplication the shape of the code.
+                  const arrow = node.kind === "wave" ? arrowInto(node.wave, lane) : null;
+                  return (
+                    <div key={node.key} className="flex w-full flex-col items-center gap-1">
+                      {sharedConnectorVisible(nodes, i) && (
+                        // Between two nodes, the connector is only a verdict where the model HAS one: a
+                        // promotion into a deploy stage. Everywhere else it is a plain link, because
+                        // colouring build→registry green would invent a gate nobody evaluated. A
+                        // "source" node draws its OWN arrow per tile instead (`sharedConnectorVisible`),
+                        // so this one is skipped right after it rather than adding a duplicate.
+                        <PromotionArrow
+                          state={arrow?.state ?? "pending"}
+                          label={arrow?.label ?? ""}
+                          detail={arrow?.detail}
+                        />
+                      )}
+                      {node.kind === "source" && (
+                        <SourceNode
+                          label={node.label}
+                          sources={node.sources}
+                          componentId={data.component.id}
+                          pipelineKey={pipelineKey}
+                          upstream={data.component.maintainedBy}
+                          domainLocal={data.component.domainLocal}
+                        />
+                      )}
+                      {node.kind === "build" && (
+                        <BuildNode bindings={node.bindings} artifact={node.artifact} />
+                      )}
+                      {node.kind === "registry" && (
+                        <RegistryNode registry={node.registry} artifact={node.artifact} />
+                      )}
+                      {node.kind === "scan-sign" && <ScanSignNode artifact={node.artifact} />}
+                      {node.kind === "wave" && (
+                        <WaveRow
+                          wave={node.wave}
+                          lane={lane}
+                          componentId={data.component.id}
+                          pipelineKey={pipelineKey}
+                          instanceRole={instanceRole}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </TileDetailsScope>
             </section>
           );
         })()
