@@ -359,10 +359,17 @@ async function topologyWavePlaces(
  * WHAT GATES ENTRY TO ONE STAGE — the same policy resolution the wave-boundary gate runs, so this
  * view cannot disagree with the engine about what is required.
  *
- * `actorObjectId` is the REQUESTING user, because `scope.group` policies match on the acting
- * subject (DESIGN §10.1): the honest reading of this field is therefore "what would gate a release
- * YOU made", not "what gates everyone". Passing a system placeholder instead would silently drop
- * every group-scoped policy and under-report the gate, which is the worse error of the two.
+ * `actorObjectId` is the REQUESTING user, because `scope.group`'s ACTING half still matches on the
+ * acting subject (DESIGN §10.1): the honest reading of this field is therefore "what would gate a
+ * release YOU made", not "what gates everyone". Passing a system placeholder instead would drop
+ * every acting-half match and under-report the gate, which is the worse error of the two.
+ *
+ * NARROWED 2026-08-15 (ADR-0016 §2a). `scope.group`'s OWNING half — the group, or a member of it,
+ * holding an `owns` edge into the target's containment chain — does NOT read this field, so the
+ * viewer-dependence of this view is now confined to the acting half. A group-scoped policy that
+ * reaches this placement through ownership renders identically for every viewer, and identically to
+ * the wave-boundary gate that passes `SYSTEM_ACTOR_ID`. Only a policy whose reach comes PURELY from
+ * the caller's own membership still shows differently to two people on the same page.
  */
 async function gateForStage(
   tx: TenantTx,

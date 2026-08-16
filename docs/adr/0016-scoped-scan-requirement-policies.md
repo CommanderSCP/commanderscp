@@ -1,6 +1,6 @@
 # ADR-0016: Scoped scan-requirement policies (platform / trust domain / org / containment domain / service / component), most-restrictive-wins
 
-**Status:** Accepted (owner-decided 2026-07-19; **tier model corrected by the owner 2026-07-20** — see §1)
+**Status:** Accepted (owner-decided 2026-07-19; **tier model corrected by the owner 2026-07-20** — see §1; **§2a added 2026-08-15 — implemented, pending owner ratification**: `scope.group` now matches on the owning subject as well as the acting one, closing a fail-open in the matcher §2 reuses)
 **Context doc:** [docs/proposals/promotion-and-execution-model.md](../proposals/promotion-and-execution-model.md)
 **Relates to:** [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan as a boundary-authorization gate); [ADR-0015](0015-cosign-cross-boundary-signing.md) (the sibling cosign-verify gate); charter principle 2 (graph-native), principle 4 (PostgreSQL-only), principle 6 (explainability)
 
@@ -49,6 +49,61 @@ platform → trust domain (partition) → org → containment domain → service
 ### 2. Org-and-below tiers reuse existing machinery, unchanged
 
 **org / containment domain / service / component** scan-requirements are ordinary **policy/graph data**, matched and resolved by the **existing** `matchPoliciesForTargets` / `resolvePolicies` + `containmentChain` seam — no new resolution engine, no new table, no RLS change. New pass-criteria arrive as relationship/policy data, exactly as charter principle 2 requires.
+
+### 2a. `scope.group` matches on the **owning** subject as well as the acting one — the reused matcher was fail-open
+
+> **Added 2026-08-15. IMPLEMENTED; the semantics below are PROPOSED and await owner ratification.**
+> §2 above bet this ADR's four org-and-below tiers on reusing `matchPoliciesForTargets` "unchanged
+> … no new matching rules". Reusing it was right. **"Unchanged" was not**: the matcher carried a
+> fail-open that this ADR's own gate is the live exposure for, so M17.5 inherited it. This clause
+> records the rule change and its blast radius where a reader of the shipped gate will meet it.
+
+**What was actually implemented, and what DESIGN said.** [DESIGN §10.1](../DESIGN.md#101-policies) has always specified group scope as: *"a policy may scope to a Group; it applies when the change's **acting or owning subject** is a `member_of` that group."* `policy-resolve.ts` implemented **only the acting half** — `isMemberOf(actorObjectId, group)`. So `scope.group` meant, exactly and only, *"the human whose credential is on the request that triggered this evaluation is transitively in this group."* Nothing about the target, its owner, or the change. Half of an Accepted clause, shipped as if it were all of it.
+
+**Why the missing half is a fail-open and not merely an omission.** A scope narrows *which work a policy governs*. For a policy that **grants** or **routes**, narrowing by the actor is coherent. For a policy that **constrains**, **a constraint that fails to match is a constraint that does not apply** — so actor-narrowing a constraint is an *exemption for everyone else*. Every enforcing consumer of this matcher is a constraint:
+
+| Consumer | Effects it enforces | A miss means |
+|---|---|---|
+| `gate-orchestrator.ts` `evaluateGovernanceGate` | `requireControls`, `requireApprovals` | fewer required controls, fewer approvals — `allow` where the operator authored `block` |
+| the same, `emergencyPolicy` filter | `emergencyPolicy` | **no** emergency policy matched ⇒ the `else` branch sets `effectivePolicies = []` ⇒ the emergency change proceeds **ungated** |
+| `scan-requirements.ts` `resolveEffectiveScanThreshold` | `scanThreshold` (per-severity **MIN**) | **this ADR's gate.** A group-scoped scan **ceiling** silently does not join the MIN, leaving the effective threshold **looser than authored**. No error, no log; the gate simply permits more. |
+
+The operator-visible statement: **a non-member could evade a group's own gate by being the one to push the button.**
+
+**And it was worse than actor-dependent — it was structurally inert on one whole edge.** `SYSTEM_ACTOR_ID` is the nil UUID and is `member_of` nothing, yet it is the actor passed by `coordination/reconcile.ts`'s **wave-boundary** gate, `campaign-reconcile.ts`, `shouldAutoRollback`, and `prewarmGovernanceForChange`. So one group-scoped document governed a change's `validating → accepted` edge and **not** the wave boundaries of that same change.
+
+**Decision: implement DESIGN §10.1's owning half. `scope.group` matches when EITHER holds.**
+
+1. **Acting half — unchanged, byte for byte.** The acting subject is transitively `member_of` the scoped group. Anchors at the org root (depth 0), as before. Reason-tree label stays `via: "group"`.
+2. **Owning half — new.** An **owning subject** of any object on the target's containment chain — the group itself, or anything transitively `member_of` it (a team, a user, a service account) holding an `owns` edge — is in the scoped group. Anchors at the **owned object's real depth**. Reason-tree label `via: "ownerGroup"`.
+
+**Three properties this design is chosen for.**
+
+- **Additive, therefore monotonically tightening.** The owning half only ever *adds* matches. Since every consumer is a constraint or an additive trigger, no gate that fired before can stop firing, and no threshold can loosen. The unsafe direction is structurally unavailable.
+- **Ownership inherits, like every other scope kind.** The match is taken over the whole containment chain, not the target alone. `owns` edges are normally recorded at the **service** (`routes/ownership.ts`); matching only a direct edge on the target would make ownership the one scope kind that does not inherit, and would fail open on essentially every component.
+- **It restores §5's explainability promise.** §5 promises *"a blocked promotion can show which tier set the binding severity floor."* The acting half has no anchor of its own and attaches at the org root, whose `typeId` is `organization`, so `tierForObjectType` labelled every group-scoped ceiling **`org`** — the wrong tier, silently. An ownership match anchors at the owned object, so a service-owned requirement is now reported at the `service` tier. (`owns`'s registered `to_types` exclude `organization`, so an ownership match can never land at the org root.)
+
+**Rejected alternatives.**
+
+- **(i) Make a group-scoped constraint always match (ignore the group).** Rejected: it would silently impose *"interns need 3 approvals"* on the entire org. Tightening, but wildly wrong, and it deletes the expressiveness the field exists for.
+- **(ii) Refuse to author `scope.group` together with a constraint effect.** Rejected: it breaks every existing document, and forbids the thing operators most want to say.
+- **(iii) Move the actor predicate into the CEL `condition` and make `scope.group` target-only.** Genuinely attractive — the CEL context already carries `actor`, and an *unevaluable condition already fails closed* here (`scan-requirements.ts`), whereas an unmatched scope fails open. Rejected **for this change** because it silently changes the meaning of every existing group-scoped document and needs a migration of authored policy text; recorded as the honest long-term shape if the owner ever wants the actor predicate to fail closed too.
+- **(iv) A superseding ADR.** Rejected per house style: this is a completion of DESIGN §10.1 and a qualification of §2, not a reversal of anything ADR-0016 decided.
+
+**Migration — before / after, and what an operator must check.**
+
+| Estate shape | Before 2026-08-15 | After | Direction |
+|---|---|---|---|
+| Group-scoped policy; target chain has **no** `owns` edge from the group or its members | matches iff the actor is a member | **identical** | none |
+| …target's service **is** owned by the group; a **member** acts | matched (acting half) | still matches; now *also* via `ownerGroup`, anchored at the service | none for enforcement; tier label corrects `org` → `service` |
+| …target's service **is** owned by the group; a **non-member** acts | **did not match — the fail-open** | **matches** | **TIGHTENS** |
+| …at a **wave boundary** / prewarm / auto-rollback (`SYSTEM_ACTOR_ID`) | never matched — structurally inert | matches whenever ownership holds | **TIGHTENS** |
+
+Nothing loosens, and no document needs editing. But the third and fourth rows are a **behaviour change to a shipped governance gate**: an operator whose group-scoped policy has been quietly inert can see a change that previously passed start blocking — required controls that were never run, approvals that were never requested, or a scan ceiling that now binds. Before rolling out, list group-scoped policies whose group (or its members) hold `owns` edges; those are exactly the documents whose reach changes. Each row of the table is pinned by a test in `apps/server/src/governance/group-scope-ownership.integration.test.ts` — including the **no-ownership** row, which is the pin that says this change is additive rather than a widening of group scope into "matches everything".
+
+**One consumer changes behaviour without being a gate, and deserves naming separately.** `coordination/reconcile.ts`'s `shouldAutoRollback` resolves policies with `SYSTEM_ACTOR_ID` and returns `effective.some(p => p.autoRollbackOnFailure)`. A group-scoped `autoRollbackOnFailure: true` document could therefore **never** fire — the feature was unreachable through that scope kind. It can now fire whenever ownership matches, so a failed wave under such a policy will **automatically create a rollback change** where it previously parked for a manual `scp change rollback`. That is the operator's declared intent finally taking effect rather than a regression, and it is conservative in the safety sense; it is called out here because "nothing loosens" describes the *gates*, and this one is not a gate.
+
+**Not in scope here.** The `depth < 10` recursion bound in `isMemberOf` (and five sibling sites) truncates silently; that is a different property, separately tracked, and untouched. The new expansion deliberately adds no sixth instance: it is cycle-safe via `UNION` (not `UNION ALL`) over a bare member id, so a `member_of` cycle terminates the recursion instead of spinning, and no arbitrary cap is needed.
 
 ### 3. The two above-org tiers — ONE instance-scoped floor table
 

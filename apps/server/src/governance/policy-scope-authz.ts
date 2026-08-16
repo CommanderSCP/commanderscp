@@ -16,8 +16,13 @@ import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
  *  - `scope.objectRef` (and no selector/group): the policy is bounded to that concrete object, so
  *    the author must hold `policy:write` at-or-above THAT object.
  *  - anything broader — unscoped, a label `selector` (which can match objects org-wide), or a
- *    `group` scope (applies wherever a member acts) — has org-wide blast radius, so it requires
- *    `policy:write` at the ORG ROOT.
+ *    `group` scope — has org-wide blast radius, so it requires `policy:write` at the ORG ROOT.
+ *
+ * The `group` case got BROADER on 2026-08-15 (ADR-0016 §2a) and this rule needed no change, which
+ * is the point of writing it conservatively. It used to reach "wherever a member acts"; it now also
+ * reaches "whatever the group or its members OWN, and everything contained beneath that" — DESIGN
+ * §10.1's owning-subject half, which had never been built. Both readings are org-wide in the worst
+ * case, so org-root authority was already the right bar and remains it.
  *
  * A `selector`-scoped policy could in principle be bounded to the subtree its selector can match;
  * that's a strictly-safe future refinement — requiring org-root authority for any selector is the
