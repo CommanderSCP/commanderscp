@@ -3,7 +3,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Info } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { CommanderStar, OutpostFort, RetransMast } from "../components/icons/federation-roles";
-import type { BundleTransfer, FederationPeerStatus, FederationStatusResponse } from "@scp/schemas";
+import type {
+  BundleTransfer,
+  FederationPeerStatus,
+  FederationStatusResponse,
+  OutpostConfig
+} from "@scp/schemas";
 import { client } from "../lib/client";
 import { isAbsent } from "../lib/absent";
 import { cn } from "../lib/utils";
@@ -610,10 +615,131 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
  * name over a place-role deployment-target, and none of this instance's targets carry the
  * `environment` property that derivation needs — so there is nothing honest to print yet.
  */
+/**
+ * THE CO-LOCATED OUTPOST'S TIER (§10.5) — the same three states `TrustTierCell` renders for a peer
+ * row, read off the OutpostConfig itself (this record has no peer-status row): no tier → the unknown
+ * marker; a tier the server ALSO lists in `unknownFields` (an unverified hand-filled shadow) →
+ * `<tier> · unverified`; else the plain badge. Never blank, never defaulted.
+ */
+export function SelfOutpostTier({ config }: { config: OutpostConfig }): React.JSX.Element {
+  const tier = config.trustTier ?? null;
+  if (tier === null) {
+    return (
+      <span data-testid="self-outpost-tier" data-trust-tier="unknown" data-tier-provenance="none">
+        <UnknownHere
+          label="no tier asserted"
+          title="No trust tier has been asserted for the co-located outpost. The tier is entered by an operator and has no other source — it is not defaulted."
+        />
+      </span>
+    );
+  }
+  const unverified = (config.unknownFields ?? []).includes("trustTier");
+  return (
+    <span
+      data-testid="self-outpost-tier"
+      data-trust-tier={tier}
+      data-tier-provenance={unverified ? "unverified" : "declared"}
+    >
+      <Badge
+        variant={unverified ? "unknown" : "neutral"}
+        title={
+          unverified
+            ? `'${tier}' comes from an UNVERIFIED hand-filled shadow copy, not from this instance's own assertion. Reconcile the record before relying on it.`
+            : undefined
+        }
+      >
+        {unverified ? `${tier} · unverified` : tier}
+      </Badge>
+    </span>
+  );
+}
+
+/**
+ * THE CO-LOCATED OUTPOST LINE inside the self-domain panel (pipeline-substrate-registry-scan.md
+ * §10.5): the `outpost` record whose `peerDomainId` is THIS instance's own domain, read off
+ * `FederationStatusResponse.selfOutpost` — the ONE place a self-bound record can be read, since it
+ * has no peer row and so no `peers[]` entry. Three states, each stated:
+ *   * a record  → its name (linked to `/federation/outposts/$peerDomainId` with self's own id — that
+ *                 page renders the co-located record), its tier, and the marker
+ *                 `co-located · this instance`;
+ *   * `null`    → `no outpost registered` — a stated absence, with the way to declare one (quiet);
+ *   * absent    → `not reported` — an older server that does not resolve it; NOT read as "none".
+ */
+export function SelfOutpostLine({
+  self,
+  selfOutpost
+}: {
+  self: NonNullable<FederationStatusResponse["self"]>;
+  selfOutpost: OutpostConfig | null | undefined;
+}): React.JSX.Element {
+  if (selfOutpost === undefined) {
+    return (
+      <span
+        data-testid="self-outpost"
+        data-self-outpost="unreported"
+        className="text-xs text-slate-500"
+        title="This server did not report whether this domain has a co-located outpost record; it is not a statement that there is none."
+      >
+        not reported
+      </span>
+    );
+  }
+  if (selfOutpost === null) {
+    return (
+      <span
+        data-testid="self-outpost"
+        data-self-outpost="none"
+        className="text-xs text-slate-500"
+        title="No outpost record names this instance's own trust domain. Every deployment target is part of some outpost; declare the co-located one so this domain's own targets read it on their pipeline tiles."
+      >
+        no outpost registered —{" "}
+        <Link
+          to="/federation/outposts/$peerDomainId"
+          params={{ peerDomainId: self.domainId }}
+          className="underline"
+          data-testid="self-outpost-declare-link"
+        >
+          declare one
+        </Link>
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex flex-wrap items-center gap-1.5"
+      data-testid="self-outpost"
+      data-self-outpost="registered"
+      data-object-id={selfOutpost.objectId}
+    >
+      <Link
+        to="/federation/outposts/$peerDomainId"
+        params={{ peerDomainId: self.domainId }}
+        className="font-medium text-slate-900 hover:underline"
+        data-testid="self-outpost-link"
+      >
+        {selfOutpost.name}
+      </Link>
+      <SelfOutpostTier config={selfOutpost} />
+      <Badge
+        variant="info"
+        icon={OutpostFort}
+        title="This record's peerDomainId is this instance's own trust domain — the outpost co-located with this instance. It has no peer row: nothing syncs to or from it."
+        data-testid="self-outpost-marker"
+      >
+        co-located · this instance
+      </Badge>
+    </span>
+  );
+}
+
 export function SelfDomainPanel({
-  self
+  self,
+  selfOutpost
 }: {
   self: FederationStatusResponse["self"];
+  /** §10.5 — `FederationStatusResponse.selfOutpost`; omitted = an older server (rendered as
+   *  "not reported", never as "none"). */
+  selfOutpost?: OutpostConfig | null | undefined;
 }): React.JSX.Element | null {
   if (!self) return null;
   const roleDeclared = self.role !== "unset";
@@ -656,7 +782,11 @@ export function SelfDomainPanel({
                 </span>
               )
             },
-            { label: "Domain id", value: self.domainId, mono: true }
+            { label: "Domain id", value: self.domainId, mono: true },
+            {
+              label: "Co-located outpost",
+              value: <SelfOutpostLine self={self} selfOutpost={selfOutpost} />
+            }
           ]}
         />
       </CardContent>
@@ -682,7 +812,9 @@ export function OutpostsPage(): React.JSX.Element {
         meta={<ObservationScopeNote />}
       />
 
-      {statusQuery.data && <SelfDomainPanel self={statusQuery.data.self} />}
+      {statusQuery.data && (
+        <SelfDomainPanel self={statusQuery.data.self} selfOutpost={statusQuery.data.selfOutpost} />
+      )}
 
       <Card>
         <CardHeader>

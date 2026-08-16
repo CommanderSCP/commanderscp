@@ -279,10 +279,10 @@ function TargetFacet({ target }: { target: DeploymentTargetFacet }): React.JSX.E
 type TargetOutpost = ComponentPipelineStage["outpost"];
 
 /**
- * WHICH OUTPOST THIS PLACE IS PART OF (pipeline-substrate-registry-scan.md §10.2) — one quiet line
- * in the compact part of every target tile, rendered from the server's STATED `outpost.state`, never
- * from the target's name or its containment domain (GLOSSARY: containment has nothing to do with
- * deployment topology). Five states, five sentences:
+ * WHICH OUTPOST THIS PLACE IS PART OF (pipeline-substrate-registry-scan.md §10.2, §10.5) — one quiet
+ * line in the compact part of every target tile, rendered from the server's STATED `outpost.state`,
+ * never from the target's name or its containment domain (GLOSSARY: containment has nothing to do
+ * with deployment topology). Five states, five sentences:
  *
  *   - `outpost`               → `outpost <name> · <trustTier>` — a Link to that outpost's page on the
  *                               COMMANDER site only: the outpost pages are commander-managed — reachable
@@ -290,8 +290,13 @@ type TargetOutpost = ComponentPipelineStage["outpost"];
  *                               entry on `instanceRole`; router.tsx registers the route everywhere) and
  *                               their writes are the commander's; plain text anywhere else. The tier is
  *                               appended only when the server read one (`null` = none declared, not
- *                               "commercial").
- *   - `self`                  → `this instance (<name>)`.
+ *                               "commercial"). Since §10.5 (object-first resolution) this is ALSO what a
+ *                               self-origin target reads once the CO-LOCATED outpost is registered —
+ *                               `peerDomainId` is then this instance's own domain, and the link opens
+ *                               that record on the Outposts page (it renders the self-bound record).
+ *   - `self`                  → `this instance's domain — no outpost registered` — the STATED ABSENCE
+ *                               of a co-located outpost (quiet; the title says how to declare one:
+ *                               Federation › Outposts, `peerDomainId` = this instance's domain).
  *   - `peer-without-outpost`  → `peer <name> — no outpost record`, quiet, with the way to fix it in
  *                               `title` (an outpost object is declared under Federation › Outposts).
  *                               The server states this ONLY for an `outpost`-role peer — the one kind
@@ -340,8 +345,15 @@ function TargetOutpostLine({
       }
       case "self":
         return (
-          <span title="This target was authored by this instance's own trust domain — the trust-domain rule (§10.2) puts it here.">
-            this instance{outpost.name ? ` (${outpost.name})` : ""}
+          <span
+            className="text-slate-400"
+            title={
+              `This target was authored by this instance's own trust domain` +
+              (outpost.name ? ` (${outpost.name})` : "") +
+              `, and no outpost record names that domain. An outpost co-located with this instance can be declared under Federation › Outposts (peerDomainId = this instance's domain).`
+            }
+          >
+            this instance&apos;s domain — no outpost registered
           </span>
         );
       case "peer-without-outpost":

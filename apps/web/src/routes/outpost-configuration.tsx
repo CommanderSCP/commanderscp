@@ -388,20 +388,26 @@ export function declaredTierOf(selectValue: string): OutpostTrustTier | undefine
 
 /** No config object exists for this peer yet. `POST /federation/outposts` binds only to a peer whose
  *  role is `outpost` — a `retrans` peer is a MEASURED 400 (`outpost-object.integration.test.ts`), so
- *  the create control is not offered for one rather than offered and refused. */
+ *  the create control is not offered for one rather than offered and refused — OR (§10.5) to THIS
+ *  instance's own trust domain, the CO-LOCATED outpost: `coLocated` renders that case, for which
+ *  there is no peer row and no role to check (the door takes it — measured in the same test file). */
 export function DeclareConfigCard({
   peer,
+  coLocated = false,
   createError,
   isCreating = false,
   onCreate
 }: {
-  peer: FederationPeer;
+  /** The peer this record would be about — omitted for the co-located outpost, which has none. */
+  peer?: Pick<FederationPeer, "role">;
+  /** §10.5 — declaring the record for THIS instance's own domain (`peerDomainId` = self). */
+  coLocated?: boolean;
   createError?: unknown;
   isCreating?: boolean;
   onCreate: (tier: OutpostTrustTier | undefined) => void;
 }): React.JSX.Element {
   const [tier, setTier] = useState<string>("");
-  if (peer.role !== "outpost") {
+  if (!coLocated && peer && peer.role !== "outpost") {
     return (
       <p className="text-sm text-slate-600" data-testid="config-role-not-outpost">
         Commander-declared configuration binds only to a peer whose federation role is{" "}
@@ -411,11 +417,26 @@ export function DeclareConfigCard({
     );
   }
   return (
-    <div className="flex flex-col gap-3" data-testid="config-declare-card">
-      <p className="text-sm text-slate-600">
-        No commander-declared configuration exists for this outpost yet. Declaring it creates a
-        commander-origin graph object that syncs down as a read-only replica.
-      </p>
+    <div
+      className="flex flex-col gap-3"
+      data-testid="config-declare-card"
+      data-co-located={coLocated ? "true" : undefined}
+    >
+      {coLocated ? (
+        <p className="text-sm text-slate-600" data-testid="config-declare-co-located">
+          This instance&apos;s own trust domain has no outpost record yet. Every deployment target
+          is part of some outpost — declaring the <strong>co-located outpost</strong> registers this
+          instance&apos;s domain as one, so the targets it authors read that outpost on their
+          pipeline tiles instead of &ldquo;no outpost registered&rdquo;. It is an ordinary
+          commander-origin graph object; on an outpost site it arrives replicated from the
+          commander.
+        </p>
+      ) : (
+        <p className="text-sm text-slate-600">
+          No commander-declared configuration exists for this outpost yet. Declaring it creates a
+          commander-origin graph object that syncs down as a read-only replica.
+        </p>
+      )}
       <label className="block">
         <SectionLabel as="span">Trust tier (optional)</SectionLabel>
         <select
@@ -869,15 +890,25 @@ function isNotFound(err: unknown): boolean {
   return err instanceof ScpApiError && err.status === 404;
 }
 
-/** The wired-up Configuration card. */
+/**
+ * The wired-up Configuration card — for a PAIRED PEER (`status`, the peer-status row) or, since
+ * pipeline-substrate-registry-scan.md §10.5, for THIS INSTANCE'S OWN DOMAIN (`selfDomain`): the
+ * CO-LOCATED outpost, whose record binds `peerDomainId` = this instance's domain id and has NO peer
+ * row. Exactly one of the two is given. The config half (declare / tier / reconcile) is identical
+ * for both — it keys on the domain id alone; the poke-mode card is a PEER-ROW flag and is rendered
+ * only for a peer (there is no peer row to flag for self, and an instance never pokes itself).
+ */
 export function OutpostConfigurationSection({
-  status
+  status,
+  selfDomain
 }: {
-  status: FederationPeerStatus;
+  status?: FederationPeerStatus;
+  /** §10.5 — this instance's own domain (`GET /federation/self`), for the co-located outpost. */
+  selfDomain?: { domainId: string; name: string };
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const { domainId: ownDomainId } = useOwnDomainId();
-  const peerDomainId = status.peer.id;
+  const peerDomainId = status?.peer.id ?? selfDomain?.domainId ?? "";
 
   // The LIST, not the single-object GET: a peer with two claimant rows is exactly the conflict the
   // reconcile verb exists for, and the single GET resolves it away before a client can see it.
@@ -985,9 +1016,20 @@ export function OutpostConfigurationSection({
       <CardHeader>
         <CardTitle>Configuration</CardTitle>
         <CardDescription>
-          Commander-declared configuration for this outpost. It is an ordinary graph object, so it
-          rides the sync journal down and lands at the outpost as a read-only replica. Poke-mode
-          below is a peer-row flag and is <strong>this side only</strong>.
+          {status ? (
+            <>
+              Commander-declared configuration for this outpost. It is an ordinary graph object, so
+              it rides the sync journal down and lands at the outpost as a read-only replica.
+              Poke-mode below is a peer-row flag and is <strong>this side only</strong>.
+            </>
+          ) : (
+            <>
+              Commander-declared configuration for the <strong>co-located outpost</strong> — this
+              instance&apos;s own trust domain, registered as an outpost. It is an ordinary graph
+              object; there is no peer row behind it, so there is no transport, sync or poke-mode to
+              configure here.
+            </>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
@@ -1026,7 +1068,7 @@ export function OutpostConfigurationSection({
 
         {!conflict && !config && configsQuery.isSuccess && (
           <DeclareConfigCard
-            peer={status.peer}
+            {...(status ? { peer: status.peer } : { coLocated: true })}
             createError={createMutation.error}
             isCreating={createMutation.isPending}
             onCreate={(tier) => createMutation.mutate(tier)}
@@ -1038,13 +1080,17 @@ export function OutpostConfigurationSection({
           </Alert>
         )}
 
-        <hr className="border-slate-200" />
-        <PokeModeCard
-          status={status}
-          saveError={pokeMutation.error}
-          isSaving={pokeMutation.isPending}
-          onToggle={(next) => pokeMutation.mutate(next)}
-        />
+        {status && (
+          <>
+            <hr className="border-slate-200" />
+            <PokeModeCard
+              status={status}
+              saveError={pokeMutation.error}
+              isSaving={pokeMutation.isPending}
+              onToggle={(next) => pokeMutation.mutate(next)}
+            />
+          </>
+        )}
 
         <hr className="border-slate-200" />
         <ManagedElsewhereNotes />

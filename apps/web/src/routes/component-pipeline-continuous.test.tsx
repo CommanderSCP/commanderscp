@@ -1330,7 +1330,7 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     expect(line).not.toContain("commercial");
   });
 
-  it("`self`: `this instance (<name>)`", () => {
+  it("`self`: the STATED ABSENCE of a co-located outpost — `this instance's domain — no outpost registered` (§10.5), with the declare hint in the title, never the target's name", () => {
     const html = renderToStaticMarkup(
       <StageCardForTest
         stage={stage({
@@ -1348,7 +1348,13 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     );
     expect(html).toContain('data-outpost-state="self"');
     const line = outlineText(outpostLine(html));
-    expect(line).toContain("this instance (hq-commander)");
+    expect(line).toContain("this instance's domain — no outpost registered");
+    // The old copy read `this instance (<name>)` — as if the instance WERE the outpost. §10.5 makes
+    // `self` the absence of one, so the line must not read as an outpost identity.
+    expect(line).not.toContain("this instance (hq-commander)");
+    expect(outpostLine(html), "the fix lives in the title").toContain(
+      "peerDomainId = this instance"
+    );
     expect(line).not.toContain("field-cluster");
   });
 

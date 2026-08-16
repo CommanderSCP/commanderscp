@@ -1,5 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
-import type { FederationPeerStatus } from "@scp/schemas";
+import type { FederationPeerStatus, FederationStatusResponse } from "@scp/schemas";
+import { Badge } from "../components/ui/badge";
+import { OutpostFort } from "../components/icons/federation-roles";
 import { client } from "../lib/client";
 import { federationStatusKey } from "../lib/query-client";
 import { usePeerDomainIdParam } from "../lib/use-route-params";
@@ -19,7 +21,8 @@ import {
   APPLIED_AT_PEER_TITLE,
   HEALTH_ROLLUP_TITLE,
   formatDateTime,
-  roleBadge
+  roleBadge,
+  SelfOutpostLine
 } from "./outposts";
 import { PeerSettingsSection } from "./outpost-settings";
 import { OutpostConfigurationSection } from "./outpost-configuration";
@@ -122,6 +125,52 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
   );
 }
 
+/**
+ * THE CO-LOCATED OUTPOST'S own card (pipeline-substrate-registry-scan.md §10.5) — rendered when the
+ * route's id is THIS instance's own trust domain. There is no peer row behind it, so NONE of the
+ * status cells apply (nothing syncs to or from self, no transport, no poke): the card states what
+ * `federation_self` and `FederationStatusResponse.selfOutpost` actually know and nothing more — the
+ * same discipline as the Outposts page's self-domain panel.
+ */
+export function SelfOutpostCard({
+  self,
+  selfOutpost
+}: {
+  self: NonNullable<FederationStatusResponse["self"]>;
+  selfOutpost: FederationStatusResponse["selfOutpost"];
+}): React.JSX.Element {
+  return (
+    <Card data-testid="self-outpost-card">
+      <CardHeader>
+        <CardTitle>This instance&apos;s own domain</CardTitle>
+        <CardDescription>
+          The outpost <strong>co-located with this instance</strong>: its record binds this
+          instance&apos;s own trust domain, not a paired peer. It never syncs with, exports to, or
+          pokes itself, so there is no status, transport or peer settings to show for it — only its
+          declared configuration below.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <KeyValueList
+          columns={2}
+          className="sm:grid-cols-3"
+          items={[
+            { label: "Domain", value: <span data-testid="self-domain-name">{self.name}</span> },
+            {
+              label: "Declared role",
+              value: <span data-testid="self-domain-role">{roleBadge(self.role)}</span>
+            },
+            {
+              label: "Co-located outpost",
+              value: <SelfOutpostLine self={self} selfOutpost={selfOutpost} />
+            }
+          ]}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
 export function OutpostDetailPage(): React.JSX.Element {
   const peerDomainId = usePeerDomainIdParam();
 
@@ -131,6 +180,10 @@ export function OutpostDetailPage(): React.JSX.Element {
   });
 
   const status = findPeerStatus(statusQuery.data?.peers, peerDomainId);
+  // §10.5 — the id names THIS instance's own domain: the co-located outpost. Decided from the
+  // server's own `self`, never by "no peer matched" (an unpaired foreign id is still "not paired").
+  const self = statusQuery.data?.self ?? null;
+  const isSelf = self !== null && self.domainId === peerDomainId;
 
   return (
     <div className="flex flex-col gap-6">
@@ -138,7 +191,16 @@ export function OutpostDetailPage(): React.JSX.Element {
         backTo="/federation/outposts"
         backLabel="Outposts"
         title={
-          <span data-testid="outpost-detail-name">{status?.peer.name ?? peerDomainId}</span>
+          <span className="inline-flex flex-wrap items-center gap-2">
+            <span data-testid="outpost-detail-name">
+              {isSelf ? (status?.peer.name ?? self.name) : (status?.peer.name ?? peerDomainId)}
+            </span>
+            {isSelf && (
+              <Badge variant="info" icon={OutpostFort} data-testid="outpost-detail-co-located">
+                co-located · this instance
+              </Badge>
+            )}
+          </span>
         }
         description={<span className="font-mono text-xs break-all">{peerDomainId}</span>}
       />
@@ -155,11 +217,13 @@ export function OutpostDetailPage(): React.JSX.Element {
           testId="outpost-detail-error"
         />
       )}
-      {statusQuery.data && !status && (
+      {statusQuery.data && !status && !isSelf && (
         <p className="text-sm text-slate-500" data-testid="outpost-not-paired">
           No peer with this trust-domain id is paired on this instance.
         </p>
       )}
+      {isSelf && <SelfOutpostCard self={self} selfOutpost={statusQuery.data?.selfOutpost} />}
+      {isSelf && <OutpostConfigurationSection selfDomain={self} />}
       {status && <OutpostStatusCard status={status} />}
       {status && <PeerSettingsSection peer={status.peer} />}
       {status && <OutpostConfigurationSection status={status} />}
