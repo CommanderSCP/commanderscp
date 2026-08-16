@@ -877,6 +877,42 @@ async function main() {
     );
   }
 
+  // THE REAL PAIRED OUTPOST (pipeline-substrate-registry-scan.md §10.2). The three fixture outposts
+  // above bind to fixture peers that are never dialled; the review pair's actual outpost (:8082,
+  // paired by hand as `field-outpost`) has a peer row but, until now, NO `outpost` object — so
+  // every target it authored (field-cluster) read "peer field-outpost — no outpost record" on the
+  // pipeline tiles. Register the object against THAT peer's id, read off `GET /federation/peers`
+  // (never minted here — the pairing owns the id), idempotent GET-then-create. If the pair has not
+  // been made on this instance, say so and move on: the fixture must not invent a peer.
+  {
+    const fieldPeer = ((await api("GET", "/federation/peers")) ?? []).find(
+      (p) => p.name === "field-outpost" && p.role === "outpost"
+    );
+    if (!fieldPeer) {
+      console.log(
+        "  - skip: no paired peer named 'field-outpost' with role 'outpost' — the field-cluster " +
+          "tiles will read 'peer … no outpost record' / 'origin domain not known here' until the " +
+          "review pair is paired ('scp federation pair')"
+      );
+    } else {
+      let existing;
+      try {
+        existing = await api("GET", `/federation/outposts/${fieldPeer.id}`);
+      } catch (e) {
+        if (e.status !== 404) failed.push(`outpost field-outpost lookup: ${e.message}`);
+      }
+      if (existing) {
+        created.push(`/federation/outposts: outpost field-outpost (il5) (exists)`);
+      } else {
+        await post(
+          "/federation/outposts",
+          { peerDomainId: fieldPeer.id, name: "field-outpost", trustTier: "il5" },
+          "outpost field-outpost (il5) — the real paired outpost"
+        );
+      }
+    }
+  }
+
   console.log(`\n=== created/upserted (${created.length}) ===`);
   for (const c of created) console.log("  +", c);
   if (failed.length) {
