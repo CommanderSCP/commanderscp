@@ -1,6 +1,6 @@
 # Proposal: what a pipeline tile must know — target substrate, the per-domain image registry, and the scan stage
 
-**Status:** v0.1 Draft — **proposed, pending review.** Nothing built. Written 2026-08-14 from the owner's live review of the `checkout-api` mockup on a paired commander (:8080) + outpost (:8082).
+**Status:** v0.2 — **owner decisions taken 2026-08-16 (§7); building all three.** Written 2026-08-14 from the owner's live review of the `checkout-api` mockup on a paired commander (:8080) + outpost (:8082); §7.1 added 2026-08-16 to reconcile the Scan-node decision with ADR-0013/0016.
 **Role:** Three of the owner's five review points were not fixture omissions but **model gaps** — the pipeline view could not show them because the graph does not hold them. This proposal says what is missing, where each thing already has a design home, and what the smallest honest build is. The other two points (tab highlight, source-row visibility) were view fixes and shipped (`component-detail.tsx`).
 **Relates to:** [ADR-0010](../adr/0010-outpost-local-artifact-infra.md) (a registry is an `execution-system` graph object; import Harbor/Artifactory via discovery), [ADR-0012](../adr/0012-registry-consolidation.md), [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md) (scan-at-source at the commander; trust, don't re-scan, downstream), [ADR-0016](../adr/0016-scoped-scan-requirement-policies.md) (`scan-result-control`, scan-requirement policies), [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (placement = component × target), [outpost-ui.md §9.3a](outpost-ui.md) (mixed-provenance inputs), GLOSSARY *deployment target* / *scan gate*, charter principles 1, 2, 6.
 
@@ -74,8 +74,27 @@ cluster:    string      — cluster name/ARN when substrate is kubernetes-on-clo
 3. **§4(b)** — scan check rendering + "scanned at source" marker + fixture control run. Commander-only by construction.
 4. **§4(a)** — only if the owner rules for a stage node after seeing (b).
 
-## 7. Owner decisions needed
+## 7. Owner decisions (2026-08-16)
 
-1. **§2 shape** — is `substrate / account / region / cluster` the right first facet, or is there a canonical set from the ops side (e.g. an ARN, an environment id)?
-2. **§4** — scan as a **per-crossing check made visible** (recommended, matches ADR-0013/GLOSSARY) or as a **distinct stage node** (cleaner picture, wrong in the mixed-crossing case)?
-3. **Sequencing** — build all three now for the mockup, or §2 + §3 now and hold §4 for the M13 session (scan is M13's territory)?
+| # | Question | Decision | Note |
+|---|---|---|---|
+| 1 | §2 shape | **`substrate / account / region / cluster`** as one declared facet on `deployment-target` (recommended option) | Rejected: provider-native identifier only (no policy could key on account); one object type per substrate (fragments every consumer of `deployment-target`). |
+| 2 | §3 registry | **Resolve from the image executor binding's `executionSystemId`** (recommended option) | Rejected: a separate `publishes_to` relationship (second thing to keep in sync); deferring to M13. |
+| 3 | §4 scan | **A distinct Scan stage node, commander only** — the owner overruled the per-crossing-check recommendation | See §7.1 for how the node stays honest in the mixed-crossing case. |
+| 4 | Sequencing | **All three now**, in this round | §4 lands ahead of the full M13 mechanism; the node renders what the code holds today and says "not run" where it holds nothing. |
+
+### 7.1 How a single Scan node stays honest
+
+The recommendation against a node was that "one scan for a pipeline whose stages cross different boundaries" is a lie in the mixed case. On reflection the objection conflates two things ADR-0013/0016 keep separate, and separating them is what makes the owner's choice honest:
+
+- **The scan** is one event per **artifact** — Trivy + OpenSCAP against a digest, at source (ADR-0013). There is exactly one of it per built artifact, however many boundaries that artifact later crosses. A single node describing *the scan* is therefore truthful: *what was scanned (digest), with what (tools, DB version), when, verdict, finding counts.*
+- **The requirement** — *does this crossing require a passing scan, against which pass criteria* — is per crossing (ADR-0016 scoped policies, GLOSSARY per-crossing). That is a **gate check on each target tile** and stays there. The Scan node never claims a crossing is authorised; the target's entry gate does.
+
+So the node reads **"Scan — at source · authorises cross-boundary transfer"**, and its body is the artifact-level fact set. States, all read from stored data:
+- **no artifact yet** — nothing built/observed, so nothing to scan (the Registry node's "not observed yet" twin);
+- **not run** — an artifact digest exists but no scan result is recorded for it;
+- **pass / fail** with the recorded facts (tool, digest, counts, decision id where one exists).
+
+**Commander only** is a read of the install-time role (`instanceRole` on `/auth/me`, the same read that shapes the site) — the node is not drawn on an outpost site at all. An outpost's Delivery lane keeps the Registry node; whether it also states "verified at source (signed manifest)" is left to §3's outpost rendering and is *not* a scan claim.
+
+**Placement:** after Registry, before Config — the scan is of the artifact that landed in the registry; configuration is a different input class and enters after.
