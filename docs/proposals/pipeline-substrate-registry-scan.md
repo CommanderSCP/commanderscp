@@ -98,3 +98,11 @@ So the node reads **"Scan — at source · authorises cross-boundary transfer"**
 **Commander only** is a read of the install-time role (`instanceRole` on `/auth/me`, the same read that shapes the site) — the node is not drawn on an outpost site at all. An outpost's Delivery lane keeps the Registry node; whether it also states "verified at source (signed manifest)" is left to §3's outpost rendering and is *not* a scan claim.
 
 **Placement:** after Registry, before Config — the scan is of the artifact that landed in the registry; configuration is a different input class and enters after.
+
+### 7.2 Owner refinements (2026-08-16, same session)
+
+1. **It is "Scan & sign", not "Scan".** ADR-0013 and ADR-0015 pair them: the commander scans the artifact *and* signs it (cosign, ADR-0015) so downstream hops can verify without re-scanning. The node is one tile, **Scan & sign**, with two facts — scan verdict and signature — each read from stored data and each independently "not yet" when the code holds nothing (a scanned-but-unsigned artifact must read that way, never as "done").
+2. **The Build tile also carries the SBOM and the Promotion Manifest (PM).** The build produces the artifact; the SBOM describes it; the PM is the signed set of artifacts a promotion carries (ADR-0013 §Decision). Both surface on the Build tile — present / not yet, read from stored data. *Reconciliation to record after grounding:* in the code the PM may be a **promotion-time** object (created at export), not a build-time one; if so the Build tile shows "PM: not yet — created at first cross-boundary promotion" until one exists, rather than pretending a manifest exists at build.
+3. **Both tiles are clickable once complete** and open a review: Scan & sign → findings (tool, DB version, counts by severity, digest) + signature (who signed, key/identity, verified-at); Build → the SBOM and the PM. If an existing page already shows any of these (promotion detail, decision detail), link there; otherwise a focused review view is added. **Not clickable until the fact exists** — a tile with nothing to review has no affordance, so a click never lands on an empty page.
+
+These extend §7 rows 3–4; sequencing stays "all now" and the honesty rule of §5 is unchanged: **every field on these tiles is a stored fact or is stated as absent.**
