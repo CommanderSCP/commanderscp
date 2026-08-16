@@ -525,33 +525,26 @@ export async function getComponentPipeline(
     // misreading this field exists to prevent.
     return { domainId: originDomainId, name: null, isSelf: false, role: null };
   };
-  // WHICH OUTPOST EACH PLACE IS PART OF (§10.2, the owner's TRUST-DOMAIN RULE): the `outpost` object
-  // whose `properties.peerDomainId` equals the target's OWN `origin_domain_id`. Read, never inferred
-  // — not from the target's name, and not from its containment `domain_id` (GLOSSARY: containment
-  // has nothing to do with deployment topology). ONE batched read of the live outpost objects (the
-  // repo resolves duplicates by the same authority rule the outposts API uses — see
-  // `resolveOutpostObjectsByPeer` for why that is not stated as "ambiguous"), plus the SAME
-  // `federation_self` and `federation_peers` reads `maintainerOf` already made.
+  // WHICH OUTPOST EACH PLACE IS PART OF (§10.2, the owner's TRUST-DOMAIN RULE; §10.5, every target is
+  // within an outpost): the `outpost` object whose `properties.peerDomainId` equals the target's OWN
+  // `origin_domain_id`. Read, never inferred — not from the target's name, and not from its
+  // containment `domain_id` (GLOSSARY: containment has nothing to do with deployment topology). ONE
+  // batched read of the live outpost objects (the repo resolves duplicates by the same authority rule
+  // the outposts API uses — see `resolveOutpostObjectsByPeer` for why that is not stated as
+  // "ambiguous"), plus the SAME `federation_self` and `federation_peers` reads `maintainerOf` already
+  // made.
   const outpostByPeer = await resolveOutpostObjectsByPeer(tx, orgId);
   const outpostOf = (originDomainId: string | null): ComponentPipelineTargetOutpost => {
-    // PRECEDENCE — `self` FIRST, before the outpost-object lookup. An outpost site holds a replica of
-    // its own config, i.e. an `outpost` object whose `peerDomainId` names SELF; consulting the objects
-    // first would make that site's own targets read `outpost <its own name>` instead of `self`.
-    if (originDomainId && originDomainId === self.domainId) {
-      // Authored by THIS instance. On a commander this is every commander-authored target — the
-      // honest consequence of the rule (in the model, an outpost's targets are authored by that
-      // outpost); on an outpost it is its own targets.
-      return {
-        state: "self",
-        id: null,
-        name: self.name,
-        trustTier: null,
-        peerDomainId: null,
-        peerRole: null
-      };
-    }
+    const isSelf = originDomainId !== null && originDomainId === self.domainId;
     const peer = originDomainId ? peerById.get(originDomainId) : undefined;
     const outpost = originDomainId ? outpostByPeer.get(originDomainId) : undefined;
+    // PRECEDENCE — OBJECT-FIRST (§10.5; this supersedes §10.2's self-first sentence). An `outpost`
+    // object naming the target's origin domain wins WHETHER OR NOT that domain is self: an outpost
+    // site's replica of its own config is exactly "an `outpost` object whose `peerDomainId` names
+    // self", so that site's own targets read `outpost <its own name> · <tier>`; a commander that has
+    // registered the CO-LOCATED outpost (`peerDomainId` = its own domain — outpost-binding.ts) reads
+    // it for every target it authored. `peerRole` is the peer row's role, or self's own role for the
+    // co-located record (there is no peer row for self).
     if (outpost && originDomainId) {
       return {
         state: "outpost",
@@ -559,7 +552,20 @@ export async function getComponentPipeline(
         name: outpost.name,
         trustTier: outpost.trustTier,
         peerDomainId: originDomainId,
-        peerRole: peer?.role ?? null
+        peerRole: isSelf ? self.role : (peer?.role ?? null)
+      };
+    }
+    if (isSelf) {
+      // Authored by THIS instance and NO outpost object names this instance's domain — a STATED
+      // ABSENCE ("this instance's domain — no outpost registered"), not a sixth state: the fix is
+      // to declare the co-located outpost under Federation › Outposts.
+      return {
+        state: "self",
+        id: null,
+        name: self.name,
+        trustTier: null,
+        peerDomainId: null,
+        peerRole: null
       };
     }
     if (peer && originDomainId) {

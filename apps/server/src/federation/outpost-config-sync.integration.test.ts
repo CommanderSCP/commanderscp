@@ -156,6 +156,17 @@ describe("M16.2 E2: commander-origin outpost config syncs down as a read-only re
     );
     expect(localView?.trustTier).toBe("fedramp-high");
     expect(localView?.originDomainId).toBe(commanderSelf.domainId);
+    // §10.5 — the two self flags are INDEPENDENT, and this replica is the row that proves it: the
+    // commander authored it (`originIsSelf: false` here) and it is ABOUT this outpost's own domain
+    // (`peerIsSelf: true`). Deriving one from the other would fail on exactly this row.
+    expect(localView?.originIsSelf).toBe(false);
+    expect(localView?.peerIsSelf).toBe(true);
+    // …and on the commander the same record is about a PEER: `peerIsSelf: false`.
+    const commanderView = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      findOutpostConfigByPeer(tx, commander.orgId, outpostSelf.domainId)
+    );
+    expect(commanderView?.originIsSelf).toBe(true);
+    expect(commanderView?.peerIsSelf).toBe(false);
   });
 
   it("the OUTPOST's own write to that object is REFUSED by the existing read-only-replica guard", async () => {

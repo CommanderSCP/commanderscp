@@ -3,6 +3,7 @@ import { asTrustDomainId } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { federationPeers, objects } from "../db/schema.js";
 import { badRequest, conflict } from "../errors.js";
+import { ensureFederationSelf } from "./self-repo.js";
 
 /**
  * M16.2 phase A (E1) — THE AUTHORITY-SPLIT RULE, and the one choke point that enforces it.
@@ -69,10 +70,16 @@ import { badRequest, conflict } from "../errors.js";
  *      and appends NO journal entry at all (F1 — peer state cannot ride the journal, by construction).
  *
  *  (4) THE PEER ROW IS THE ANCHOR; THE BINDING IS 1:1 AND OBJECT→PEER ONLY. An `outpost` object must
- *      name an already-paired peer that holds role `outpost` (an unbound `peerDomainId` is a 400); a
- *      second object for the same peer is a 409. The object never creates, mutates, or is required
- *      by the peer row — deleting nothing and blocking nothing. Federation works exactly as before
- *      for a peer that has no `outpost` object; the object only adds declared config.
+ *      name an already-paired peer that holds role `outpost` (an unbound `peerDomainId` is a 400) —
+ *      OR, since pipeline-substrate-registry-scan.md §10.5 (owner, 2026-08-16), THIS INSTANCE'S OWN
+ *      TRUST DOMAIN (`federation_self.domainId`): THE CO-LOCATED OUTPOST, the "commander and outpost
+ *      are one and the same" case, in which every target this instance authors is within an outpost
+ *      too. Those are the ONLY two accepted shapes; anything else stays fail-closed. A second object
+ *      for the same domain (peer OR self) is a 409. The object never creates, mutates, or is
+ *      required by the peer row — deleting nothing and blocking nothing. Federation works exactly as
+ *      before for a peer that has no `outpost` object; the object only adds declared config. The
+ *      self-bound record has NO peer row at all — every reader that joins a record to its peer row
+ *      renders it as "this instance" (name/role from `federation_self`; `OutpostConfig.peerIsSelf`).
  *      ONE ASYMMETRY, and it is the H1 fix: on an UPDATE the 409 fires only for an AUTHORITATIVE
  *      claimant. An unverified `provenance:'manual'` shadow gets no veto over an edit to the row that
  *      actually holds authority — that veto was reachable, permanent, and had no delete door. Duplicates
@@ -148,12 +155,23 @@ export async function assertOutpostPeerBinding(
   const raw = input.properties.peerDomainId;
   if (typeof raw !== "string" || raw.length === 0) {
     throw badRequest(
-      "an 'outpost' object must carry properties.peerDomainId — the trust-domain id of the already-paired peer it describes"
+      "an 'outpost' object must carry properties.peerDomainId — the trust-domain id of the already-paired peer it describes, or this instance's own domain id for the co-located outpost"
     );
   }
   const peerDomainId = raw;
 
-  const peerRows = await tx
+  // §10.5 — THE CO-LOCATED OUTPOST: `peerDomainId` naming THIS instance's own trust domain is the
+  // second accepted shape. There is no peer row to check a role against (an instance is not its own
+  // peer — `outpost-binding.ts` module doc, IMPORT PATHS), so it skips straight to the 1:1 scan
+  // below, which applies to it exactly as to a peer: a second self-bound object is the same 409.
+  // `ensureFederationSelf` is the ONE reader of `federation_self` (self-repo.ts) — lazily minted, so
+  // this never fails for want of an identity row.
+  const self = await ensureFederationSelf(tx, input.orgId);
+  const isSelf = peerDomainId === (self.domainId as string);
+
+  const peerRows = isSelf
+    ? []
+    : await tx
     .select({ id: federationPeers.id, role: federationPeers.role })
     .from(federationPeers)
     // BOUNDARY (ADR-0021 D4): `properties.peerDomainId` names a PEER'S FEDERATION IDENTITY — the
@@ -168,19 +186,22 @@ export async function assertOutpostPeerBinding(
     )
     .limit(1);
   const peer = peerRows[0];
-  if (!peer) {
+  if (!isSelf && !peer) {
     // FAIL-CLOSED on the anchor: config about a peer this instance has never paired with has no
     // transport to ride down and no identity to be verified against. Refuse rather than store a
-    // dangling assertion that would look configured in a UI.
+    // dangling assertion that would look configured in a UI. The copy names BOTH accepted shapes.
     throw badRequest(
-      `peerDomainId '${peerDomainId}' is not a paired federation peer — pair it first ` +
-        `('scp federation pair'), then declare its outpost config`
+      `peerDomainId '${peerDomainId}' is neither a paired federation peer nor this instance's own ` +
+        `trust domain ('${self.domainId}') — an 'outpost' config object may name a paired peer of role ` +
+        `'${REQUIRED_PEER_ROLE}' (pair it first: 'scp federation pair') or this instance's own domain id ` +
+        `(GET /federation/self) for the co-located outpost`
     );
   }
-  if (peer.role !== REQUIRED_PEER_ROLE) {
+  if (peer && peer.role !== REQUIRED_PEER_ROLE) {
     throw badRequest(
       `peer '${peerDomainId}' has federation role '${peer.role}', not '${REQUIRED_PEER_ROLE}' — ` +
-        `an 'outpost' config object may only describe a peer this instance holds as an outpost`
+        `an 'outpost' config object may only describe a peer this instance holds as an outpost, or ` +
+        `this instance's own trust domain ('${self.domainId}') as the co-located outpost`
     );
   }
 

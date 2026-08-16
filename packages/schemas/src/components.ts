@@ -47,31 +47,38 @@ export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSche
 
 /**
  * WHICH OUTPOST A TARGET IS PART OF (pipeline-substrate-registry-scan.md §10.2 — the owner's
- * TRUST-DOMAIN RULE), resolved by the server and READ by the client, never inferred.
+ * TRUST-DOMAIN RULE; §10.5 — every target is within an outpost, the co-located outpost), resolved by
+ * the server and READ by the client, never inferred.
  *
  * The rule: an `outpost` object carries `properties.peerDomainId` — a paired peer's federation
- * identity, i.e. its trust domain (`outpost-binding.ts` refuses anything else); every object
- * carries `originDomainId` — the trust domain that authored it; ADR-0017 §1 puts one outpost
- * deployment per trust domain. So a target's outpost is THE `outpost` OBJECT WHOSE `peerDomainId`
- * EQUALS THE TARGET'S `originDomainId`. No new data. Never derived from the target's name, and
- * never from its containment `domain_id` (GLOSSARY: containment has nothing to do with deployment
- * topology).
+ * identity, i.e. its trust domain, OR (§10.5) this instance's OWN trust domain, the co-located
+ * outpost (`outpost-binding.ts` refuses anything else); every object carries `originDomainId` — the
+ * trust domain that authored it; ADR-0017 §1 puts one outpost deployment per trust domain. So a
+ * target's outpost is THE `outpost` OBJECT WHOSE `peerDomainId` EQUALS THE TARGET'S `originDomainId`.
+ * No new data. Never derived from the target's name, and never from its containment `domain_id`
+ * (GLOSSARY: containment has nothing to do with deployment topology).
  *
  * Five states, each STATED — the identity fields are nullable per state, and a client renders the
- * state it is given rather than guessing from which fields happen to be null. PRECEDENCE: `self` is
- * decided FIRST, before the outpost-object lookup — so on an outpost site, whose replica of its own
- * config is exactly "an `outpost` object whose `peerDomainId` names self", its own targets read
- * `self`, never `outpost <its own name>`; the object lookup and the peer lookup follow in that order.
- *   - `outpost`               — the target's origin is a paired peer that has an `outpost` object.
- *                               `id`/`name` are that object's; `trustTier` its declared tier (null
- *                               when the object declares none, or one this build does not know —
- *                               `outposts-repo.ts`'s `readTrustTier`, never defaulted);
- *                               `peerDomainId` the peer's id (the link target on the commander site,
- *                               `/federation/outposts/$peerDomainId`).
- *   - `self`                  — the target's origin IS this instance (`federation_self`). `name` is
- *                               this instance's federation name; the rest null. On the commander this
- *                               is the honest consequence of the rule for a commander-authored target
- *                               (§10.2: in the model those targets would be authored by their outposts).
+ * state it is given rather than guessing from which fields happen to be null. PRECEDENCE (§10.5,
+ * OBJECT-FIRST — this supersedes §10.2's self-first sentence): an `outpost` object naming the
+ * target's origin domain wins WHETHER OR NOT that domain is self; then `self` (only when NO object
+ * names this instance's domain); then the peer lookup. So on an outpost site its own targets read
+ * `outpost <its own name> · <tier>` off its replica of its own config, and on a commander with a
+ * co-located outpost registered its own targets read that outpost — `self` is the stated absence
+ * of one.
+ *   - `outpost`               — an `outpost` object names the target's origin domain (a paired peer's,
+ *                               or this instance's own — §10.5). `id`/`name` are that object's;
+ *                               `trustTier` its declared tier (null when the object declares none, or
+ *                               one this build does not know — `outposts-repo.ts`'s `readTrustTier`,
+ *                               never defaulted); `peerDomainId` the domain it names (the link target
+ *                               on the commander site, `/federation/outposts/$peerDomainId`, which
+ *                               renders the co-located record too); `peerRole` the peer row's role,
+ *                               or this instance's `federation_self.role` when the domain is self.
+ *   - `self`                  — the target's origin IS this instance (`federation_self`) and NO
+ *                               `outpost` object names this instance's domain. `name` is this
+ *                               instance's federation name; the rest null. A stated absence: "this
+ *                               instance's domain — no outpost registered" (one can be declared under
+ *                               Federation › Outposts with `peerDomainId` = this instance's domain id).
  *   - `peer-without-outpost`  — the origin is a paired peer of role `outpost` with NO `outpost` object
  *                               registered. `name` is the PEER's name and `peerDomainId` its id, so a
  *                               client can say who — and, because the peer's role IS `outpost`, that an
@@ -101,8 +108,9 @@ export const ComponentPipelineTargetOutpostSchema = z.object({
   peerDomainId: z.string().nullable(),
   /** The paired peer's federation ROLE (`commander` / `outpost` / `retrans`), READ off its peer row,
    *  for the three peer states — the word a client uses for `peer-not-outpost` (`commander …` /
-   *  `relay …`). Null for `self` and `unknown-domain`, and for an `outpost` object whose
-   *  `peerDomainId` names no peer row held here. */
+   *  `relay …`). For an `outpost` object naming THIS instance's own domain (§10.5) it is
+   *  `federation_self.role`. Null for `self` and `unknown-domain`, and for an `outpost` object whose
+   *  `peerDomainId` names neither self nor a peer row held here. */
   peerRole: z.string().nullable()
 });
 export type ComponentPipelineTargetOutpost = z.infer<typeof ComponentPipelineTargetOutpostSchema>;

@@ -5823,6 +5823,28 @@ export const zGetFederationStatusResponse = z.object({
         cosignPublicKey: z.string().nullish()
     }).nullable(),
     ownJournalTail: z.int().gte(-9007199254740991).lte(9007199254740991).nullish(),
+    selfOutpost: z.object({
+        objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        urn: z.string(),
+        name: z.string(),
+        peerDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        trustTier: z.enum([
+            'commercial',
+            'govcloud',
+            'fedramp-high',
+            'il5',
+            'airgap'
+        ]).nullable(),
+        originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        originIsSelf: z.boolean().optional(),
+        peerIsSelf: z.boolean().optional(),
+        provenance: z.enum(['manual']).nullish(),
+        revision: z.int().gte(-9007199254740991).lte(9007199254740991),
+        version: z.int().gte(-9007199254740991).lte(9007199254740991),
+        unknownFields: z.array(z.string()),
+        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+        updatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+    }).nullish(),
     peers: z.array(z.object({
         peer: z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -6188,6 +6210,7 @@ export const zListOutpostConfigsResponse = z.array(z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6213,6 +6236,7 @@ export const zCreateOutpostConfigResponse = z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6238,6 +6262,7 @@ export const zGetOutpostConfigResponse = z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6263,6 +6288,7 @@ export const zUpdateOutpostConfigResponse = z.object({
     ]).nullable(),
     originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
     originIsSelf: z.boolean().optional(),
+    peerIsSelf: z.boolean().optional(),
     provenance: z.enum(['manual']).nullish(),
     revision: z.int().gte(-9007199254740991).lte(9007199254740991),
     version: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -6289,6 +6315,7 @@ export const zReconcileOutpostConfigResponse = z.object({
         ]).nullable(),
         originDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         originIsSelf: z.boolean().optional(),
+        peerIsSelf: z.boolean().optional(),
         provenance: z.enum(['manual']).nullish(),
         revision: z.int().gte(-9007199254740991).lte(9007199254740991),
         version: z.int().gte(-9007199254740991).lte(9007199254740991),

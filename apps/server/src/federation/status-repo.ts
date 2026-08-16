@@ -10,7 +10,7 @@ import {
   listRecentTransfers
 } from "./bundle-transfers-repo.js";
 import { ownJournalTail } from "./journal-repo.js";
-import { listOutpostConfigs } from "./outposts-repo.js";
+import { findOutpostConfigByPeer, listOutpostConfigs } from "./outposts-repo.js";
 import { federationPeerRequiresMtls } from "./federation-outbound.js";
 import { federationClientCertsUsable, peerSyncCadence } from "./federation-sync.js";
 
@@ -213,6 +213,12 @@ export async function getFederationStatus(
     })
   );
 
+  // §10.5 — THE CO-LOCATED OUTPOST RECORD. Bound to self's own domain, so it has no peer row and
+  // can never be a `peers[]` entry; resolved here by the SAME authority rule the outposts API's
+  // single GET applies (`findOutpostConfigByPeer`), so this and `GET /federation/outposts/{self}`
+  // agree by construction. `null` is a stated absence — no record registered.
+  const selfOutpost = await findOutpostConfigByPeer(tx, orgId, selfRow.domainId as string);
+
   return {
     self: {
       domainId: selfRow.domainId,
@@ -226,6 +232,7 @@ export async function getFederationStatus(
       cosignPublicKey
     },
     ownJournalTail: tail.sequence,
+    selfOutpost,
     peers: peerStatuses
   };
 }

@@ -17,11 +17,15 @@ import {
 /**
  * pipeline-substrate-registry-scan.md §10.2 — WHICH OUTPOST EACH TARGET IS PART OF, by the owner's
  * TRUST-DOMAIN RULE: the `outpost` object whose `properties.peerDomainId` equals the target's own
- * `origin_domain_id`. Through the real HTTP route against real Postgres.
+ * `origin_domain_id` — and §10.5, EVERY TARGET IS WITHIN AN OUTPOST: resolution is OBJECT-FIRST, so
+ * an object naming self (the co-located outpost, or an outpost site's replica of its own config)
+ * wins over `self`, which is now the stated ABSENCE of one. Through the real HTTP route against
+ * real Postgres.
  *
  * WHAT EACH TEST PINS, AND WHY IT IS NOT VACUOUS
  *   - `self`: a locally-authored target reads this instance's federation NAME (initialised here to a
- *     value that is neither the org id nor any peer's name — so "always self" or "peer name" fail).
+ *     value that is neither the org id nor any peer's name — so "always self" or "peer name" fail)
+ *     — WHILE no outpost object names self (this test runs before any is planted or declared).
  *   - `outpost`: a target hand-filled under a paired outpost peer that HAS an `outpost` object reads
  *     that object's id/name/trustTier — on a PLACED stage AND on an UNPLACED stage (one literal feeds
  *     both arrays; a fix applied to one array fails the other).
@@ -39,9 +43,13 @@ import {
  *     `resolveOutpostObjectsByPeer`) — the target falls back to `peer-without-outpost`.
  *   - two live rows on one peer resolve by `byAuthority` — a verified replica outranks an OLDER
  *     `provenance:'manual'` shadow — and `GET /federation/outposts/{peer}` picks the same row.
- *   - precedence: `self` is decided BEFORE the outpost-object lookup, so an outpost object whose
- *     `peerDomainId` is self (an outpost site's replica of its own config) leaves a locally-authored
- *     target at `self`.
+ *   - precedence (§10.5, OBJECT-FIRST): an outpost object whose `peerDomainId` is self (an outpost
+ *     site's replica of its own config) turns a locally-authored target into `outpost <its name>`
+ *     — the inverse of the §10.2 self-first expectation this test used to pin; the replica is
+ *     soft-deleted at the end so the next case starts from "no self object".
+ *   - the CO-LOCATED outpost (§10.5): `createOutpost({peerDomainId: self})` through the API is
+ *     201, and every self-origin target — placed AND unplaced — reads `outpost <its name> · <tier>`
+ *     with `peerRole` = self's own role and `peerDomainId` = self; a second is 409.
  *
  * MUTATION LOG (each applied ALONE, then reverted)
  * | Mutation | Result |
@@ -54,7 +62,8 @@ import {
  * | state every paired peer without an object as `peer-without-outpost` (drop the role split) | both `peer-not-outpost` tests FAIL (`state`) |
  * | remove `isNull(objects.deletedAt)` from `resolveOutpostObjectsByPeer` | the soft-deleted test FAILS (`expected { state: 'outpost', … }`) |
  * | `const winner = list[0]` instead of `byAuthority(list, self.domainId)[0]` | the two-rows test FAILS — the shadow wins |
- * | consult `outpostByPeer` BEFORE the self check | the precedence test FAILS (`state: 'outpost'`) |
+ * | check `isSelf` BEFORE `outpostByPeer` (the §10.2 order) | the precedence test AND the co-located test FAIL (`state: 'self'`) |
+ * | `peerRole: peer?.role ?? null` for the self-bound object | the co-located test FAILS (`peerRole: null`, expected `commander`) |
  * | `peerRole: null` on every state | outpost / peer-without-outpost / peer-not-outpost tests FAIL |
  */
 describe("component pipeline: which outpost each target is part of (§10.2 trust-domain rule)", () => {
@@ -219,7 +228,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     await server?.close();
   });
 
-  it("`self` — a locally-authored target names THIS instance, id/tier/peer null", async () => {
+  it("`self` — with NO outpost object naming this instance's domain, a locally-authored target names THIS instance, id/tier/peer null (the stated absence, §10.5)", async () => {
     const target = await admin.deploymentTargets.create({
       name: uniq("hq-target"),
       properties: { environment: "prod" }
@@ -462,9 +471,10 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     expect(viaApi.objectId).toBe(verified.id);
   });
 
-  it("PRECEDENCE — an outpost object naming SELF's domain (the replica shape every OUTPOST SITE holds of its own config) does not turn a locally-authored target into `outpost`: `self` is decided first", async () => {
-    await plantOutpostObject({
-      originDomainId: randomUUID(),
+  it("PRECEDENCE (§10.5, OBJECT-FIRST) — an outpost object naming SELF's domain (the replica shape every OUTPOST SITE holds of its own config) DOES turn a locally-authored target into `outpost <its name>`: the object is decided first, `self` only when none names it", async () => {
+    const replicaOrigin = randomUUID();
+    const replica = await plantOutpostObject({
+      originDomainId: replicaOrigin,
       peerDomainId: selfDomainId,
       name: "replica-of-me",
       provenance: null,
@@ -477,12 +487,75 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     const component = await placedComponentOn(target.id, "mine-component");
 
     expect((await pipelineOf(component.id)).stages[0]!.outpost).toEqual({
-      state: "self",
-      id: null,
-      name: SELF_NAME,
-      trustTier: null,
-      peerDomainId: null,
-      peerRole: null
+      state: "outpost",
+      id: replica.id,
+      name: "replica-of-me",
+      trustTier: "airgap",
+      peerDomainId: selfDomainId,
+      // No peer row for self — the role is this instance's OWN (`federation_self.role`).
+      peerRole: "commander"
     });
+
+    // Back to "no self object", so the co-located case below starts from the create door's clean
+    // state (a live replica would be a claimant and 409 it). A verified replica is deletable only
+    // as its authority would delete it — through the import channel, at a later revision.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      deleteObject(tx, {
+        orgId: org.orgId,
+        typeId: "outpost",
+        actorObjectId: org.orgId,
+        requestId: `test-del-${replica.id}`,
+        idOrUrn: replica.id,
+        federationImport: {
+          originDomainId: asTrustDomainId(replicaOrigin),
+          revision: 2,
+          provenance: null
+        }
+      })
+    );
+    expect((await pipelineOf(component.id)).stages[0]!.outpost.state).toBe("self");
+  });
+
+  it("THE CO-LOCATED OUTPOST (§10.5) — `createOutpost({peerDomainId: self})` is accepted, and every self-origin target reads `outpost <its name> · <tier>` on the placed AND the unplaced stage; a second is 409", async () => {
+    const config = await admin.federation.createOutpost({
+      peerDomainId: selfDomainId,
+      name: "hq-outpost",
+      trustTier: "commercial"
+    });
+    expect(config.peerIsSelf).toBe(true);
+    const placedTarget = await admin.deploymentTargets.create({
+      name: uniq("hq-gamma"),
+      properties: { environment: "gamma" }
+    });
+    const unplacedTarget = await admin.deploymentTargets.create({
+      name: uniq("hq-prod"),
+      properties: { environment: "prod" }
+    });
+    const component = await createOrphanComponent(admin, uniq("hq-component"));
+    await admin.placements.create({ component: component.id, deploymentTarget: placedTarget.id });
+    await attachTopology(component.id, [
+      { name: "gamma", target: placedTarget.id },
+      { name: "prod", target: unplacedTarget.id }
+    ]);
+
+    const p = await pipelineOf(component.id);
+
+    const expected: Outpost = {
+      state: "outpost",
+      id: config.objectId,
+      name: "hq-outpost",
+      trustTier: "commercial",
+      peerDomainId: selfDomainId,
+      peerRole: "commander"
+    };
+    const placed = p.stages.find((s) => s.deploymentTarget.id === placedTarget.id);
+    expect(placed, "the placed stage is on the wire").toBeDefined();
+    expect(placed!.outpost).toEqual(expected);
+    const unplaced = p.unplacedStages.find((s) => s.deploymentTarget.id === unplacedTarget.id);
+    expect(unplaced, "the unplaced stage is on the wire").toBeDefined();
+    expect(unplaced!.outpost, "the SAME literal feeds `unplacedStages`").toEqual(expected);
+
+    // Still 1:1 per domain — self included.
+    expect(await createOutpostStatus(selfDomainId), "a second self-bound object").toBe(409);
   });
 });

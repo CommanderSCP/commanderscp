@@ -83,6 +83,9 @@ export function toOutpostConfig(object: GraphObject, selfDomainId: string): Outp
   const trustTier = readTrustTier(properties);
   const peerDomainId = typeof properties.peerDomainId === "string" ? properties.peerDomainId : "";
   const originIsSelf = object.originDomainId === selfDomainId;
+  // §10.5 — the co-located outpost: this record is ABOUT this instance's own domain. Independent of
+  // `originIsSelf` (on an outpost site its own replica is commander-authored AND about self).
+  const peerIsSelf = peerDomainId === selfDomainId;
   const unknownFields: string[] = [];
   if (trustTier === null) unknownFields.push("trustTier");
   // An UNVERIFIED shadow's tier is not an assertion this instance can stand behind: it was typed in by
@@ -98,6 +101,7 @@ export function toOutpostConfig(object: GraphObject, selfDomainId: string): Outp
     trustTier,
     originDomainId: object.originDomainId,
     originIsSelf,
+    peerIsSelf,
     provenance: object.provenance ?? null,
     revision: object.revision,
     version: object.version,
@@ -117,13 +121,14 @@ export interface CreateOutpostConfigInput {
 }
 
 /**
- * Declares the config object for an already-paired outpost peer. The peer-binding guard
+ * Declares the config object for an already-paired outpost peer — or, with `peerDomainId` = this
+ * instance's own trust domain, the CO-LOCATED outpost (§10.5). The peer-binding guard
  * (`assertOutpostPeerBinding`, reached through `createObject`) refuses an unbound `peerDomainId`
- * (400), a peer whose role is not `outpost` (400), and a second object for the same peer (409).
+ * (400), a peer whose role is not `outpost` (400), and a second object for the same domain (409).
  *
  * The peer lookup here is NON-throwing (`findPeerByDomainId`) and is used ONLY to default the display
  * name. Validating the binding is the guard's job at the choke point — so an unpaired peer produces
- * the guard's own precise 400 ("not a paired federation peer") rather than a 404 from a name lookup,
+ * the guard's own precise 400 ("neither a paired federation peer nor…") rather than a 404 from a name lookup,
  * and a caller that bypasses this module gets the identical refusal.
  */
 export async function createOutpostConfig(
@@ -138,10 +143,14 @@ export async function createOutpostConfig(
     actorObjectId: input.actorObjectId,
     requestId: input.requestId,
     urn: outpostConfigUrn(input.orgId, input.peerDomainId),
-    // Falls back to the raw id when the peer does not exist — a name the guard is about to make
-    // irrelevant by refusing the write. `createObject` requires a name, so this keeps the ORDER of
-    // refusals in the guard's hands instead of the name default's.
-    name: input.name ?? peer?.name ?? input.peerDomainId,
+    // Falls back to this instance's own federation name for the co-located outpost (§10.5 — there
+    // is no peer row to take one from), and to the raw id when the peer does not exist — a name the
+    // guard is about to make irrelevant by refusing the write. `createObject` requires a name, so
+    // this keeps the ORDER of refusals in the guard's hands instead of the name default's.
+    name:
+      input.name ??
+      peer?.name ??
+      (input.peerDomainId === (self.domainId as string) ? self.name : input.peerDomainId),
     properties: {
       peerDomainId: input.peerDomainId,
       // Written ONLY when the operator supplied one — an omitted tier leaves the key absent, which

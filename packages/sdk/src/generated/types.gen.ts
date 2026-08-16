@@ -16091,6 +16091,22 @@ export type GetFederationStatusResponses = {
             cosignPublicKey?: string | null;
         } | null;
         ownJournalTail?: number | null;
+        selfOutpost?: {
+            objectId: string;
+            urn: string;
+            name: string;
+            peerDomainId: string;
+            trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
+            originDomainId: string;
+            originIsSelf?: boolean;
+            peerIsSelf?: boolean;
+            provenance?: 'manual' | null;
+            revision: number;
+            version: number;
+            unknownFields: Array<string>;
+            createdAt: string;
+            updatedAt: string;
+        } | null;
         peers: Array<{
             peer: {
                 id: string;
@@ -17176,6 +17192,7 @@ export type ListOutpostConfigsResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -17270,6 +17287,7 @@ export type CreateOutpostConfigResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -17340,6 +17358,7 @@ export type GetOutpostConfigResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -17447,6 +17466,7 @@ export type UpdateOutpostConfigResponses = {
         trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
         originDomainId: string;
         originIsSelf?: boolean;
+        peerIsSelf?: boolean;
         provenance?: 'manual' | null;
         revision: number;
         version: number;
@@ -17544,6 +17564,7 @@ export type ReconcileOutpostConfigErrors = {
             trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
             originDomainId: string;
             originIsSelf?: boolean;
+            peerIsSelf?: boolean;
             provenance?: 'manual' | null;
             revision: number;
             version: number;
@@ -17569,6 +17590,7 @@ export type ReconcileOutpostConfigResponses = {
             trustTier: 'commercial' | 'govcloud' | 'fedramp-high' | 'il5' | 'airgap' | null;
             originDomainId: string;
             originIsSelf?: boolean;
+            peerIsSelf?: boolean;
             provenance?: 'manual' | null;
             revision: number;
             version: number;
