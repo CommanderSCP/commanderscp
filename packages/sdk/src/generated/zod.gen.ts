@@ -2250,6 +2250,87 @@ export const zGetComponentPipelineResponse = z.object({
         repository: z.string().nullable(),
         edgeCount: z.int().gte(-9007199254740991).lte(9007199254740991)
     }).nullish(),
+    artifact: z.object({
+        changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        changeName: z.string().nullable(),
+        changeCreatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+        digests: z.array(z.string()),
+        sbom: z.object({
+            format: z.enum(['cyclonedx', 'spdx']),
+            specVersion: z.string().optional(),
+            digest: z.string(),
+            location: z.string().min(1),
+            mediaType: z.string().optional(),
+            signatureRef: z.string().optional(),
+            scanner: z.string().optional(),
+            scannerVersion: z.string().optional(),
+            generatedAt: z.string().optional()
+        }).nullable(),
+        scans: z.array(z.object({
+            method: z.string(),
+            scanner: z.enum([
+                'trivy',
+                'openscap',
+                'trivy-vm'
+            ]),
+            scannerVersion: z.string(),
+            digest: z.string(),
+            digestMatch: z.boolean().nullable(),
+            status: z.enum([
+                'pass',
+                'fail',
+                'warning',
+                'skipped',
+                'timed_out',
+                'expired'
+            ]),
+            counts: z.object({
+                critical: z.int().gte(0).lte(9007199254740991),
+                high: z.int().gte(0).lte(9007199254740991),
+                medium: z.int().gte(0).lte(9007199254740991),
+                low: z.int().gte(0).lte(9007199254740991)
+            }).nullable(),
+            threshold: z.object({
+                maxCritical: z.int().gte(0).lte(9007199254740991),
+                maxHigh: z.int().gte(0).lte(9007199254740991),
+                maxMedium: z.int().gte(0).lte(9007199254740991).optional(),
+                maxLow: z.int().gte(0).lte(9007199254740991).optional()
+            }).nullable(),
+            evaluatedAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+            controlRunId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            managed: z.boolean()
+        })),
+        exportGate: z.enum([
+            'pass',
+            'fail',
+            'not_run'
+        ]),
+        signing: z.object({
+            promotionExports: z.array(z.object({
+                peerDomainId: z.string(),
+                peerName: z.string().nullable(),
+                exportedAt: z.string(),
+                checksum: z.string(),
+                manifest: z.object({
+                    manifestVersion: z.literal('scp-promotion-manifest/v1'),
+                    createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+                    sourceChangeObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    exporterDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    peerDomainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+                    changeUrn: z.string(),
+                    artifacts: z.array(z.object({
+                        type: z.enum(['oci', 'blob']),
+                        digest: z.string(),
+                        signatureRef: z.string().optional()
+                    }))
+                }),
+                manifestSignature: z.string(),
+                keyFingerprint: z.string().nullable()
+            })),
+            originSignatureRefs: z.array(z.string())
+        }),
+        unknownFields: z.array(z.string())
+    }).nullish(),
     unknownFields: z.array(z.string())
 });
 

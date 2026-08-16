@@ -6609,6 +6609,72 @@ export type GetComponentPipelineResponses = {
             repository: string | null;
             edgeCount: number;
         } | null;
+        artifact?: {
+            changeId: string;
+            changeName: string | null;
+            changeCreatedAt: string;
+            digests: Array<string>;
+            sbom: {
+                format: 'cyclonedx' | 'spdx';
+                specVersion?: string;
+                digest: string;
+                location: string;
+                mediaType?: string;
+                signatureRef?: string;
+                scanner?: string;
+                scannerVersion?: string;
+                generatedAt?: string;
+            } | null;
+            scans: Array<{
+                method: string;
+                scanner: 'trivy' | 'openscap' | 'trivy-vm';
+                scannerVersion: string;
+                digest: string;
+                digestMatch: boolean | null;
+                status: 'pass' | 'fail' | 'warning' | 'skipped' | 'timed_out' | 'expired';
+                counts: {
+                    critical: number;
+                    high: number;
+                    medium: number;
+                    low: number;
+                } | null;
+                threshold: {
+                    maxCritical: number;
+                    maxHigh: number;
+                    maxMedium?: number;
+                    maxLow?: number;
+                } | null;
+                evaluatedAt: string;
+                controlRunId: string;
+                managed: boolean;
+            }>;
+            exportGate: 'pass' | 'fail' | 'not_run';
+            signing: {
+                promotionExports: Array<{
+                    peerDomainId: string;
+                    peerName: string | null;
+                    exportedAt: string;
+                    checksum: string;
+                    manifest: {
+                        manifestVersion: 'scp-promotion-manifest/v1';
+                        createdAt: string;
+                        sourceChangeObjectId: string;
+                        exporterDomainId: string;
+                        peerDomainId: string;
+                        changeUrn: string;
+                        artifacts: Array<{
+                            type: 'oci' | 'blob';
+                            digest: string;
+                            signatureRef?: string;
+                        }>;
+                    };
+                    manifestSignature: string;
+                    keyFingerprint: string | null;
+                }>;
+                originSignatureRefs: Array<string>;
+            };
+            unknownFields: Array<string>;
+        } | null;
         unknownFields: Array<string>;
     };
 };

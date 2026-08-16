@@ -1,6 +1,14 @@
 import { z } from "zod";
 import { ChangeStageDependencyVerdictSchema } from "./changes.js";
 import { ExecutorCategorySchema, PipelineClassificationSchema } from "./executors.js";
+import { ControlOutcomeStatusSchema } from "./governance.js";
+import {
+  SbomRefSchema,
+  ScanMethodSchema,
+  ScanSeverityCountsSchema,
+  ScanThresholdSchema
+} from "./supply-chain.js";
+import { PromotionManifestSchema } from "./federation.js";
 
 // ---------------------------------------------------------------------------------------------
 // COMPONENT PIPELINE (coordination-ui-views.md §2, as corrected 2026-08-03)
@@ -437,6 +445,105 @@ export const ComponentPipelineRegistrySchema = z.object({
 });
 export type ComponentPipelineRegistry = z.infer<typeof ComponentPipelineRegistrySchema>;
 
+/**
+ * ONE SCAN VERDICT over ONE artifact digest (pipeline-substrate-registry-scan.md §9.3) — a
+ * `control_runs` row of the artifact's change whose `evidence` parses as `ScanEvidenceSchema`,
+ * reduced to the NEWEST per (`scanner`, `digest`). Only what the evidence holds is here: severity
+ * COUNTS, never a CVE list (none is stored — §8 "Scan").
+ *
+ * `managed` is THE ONE server-side discriminator between the commander's own promotion scan step
+ * (promotion-scan-step.ts, the synthetic control id) and an org-pipeline `scan-result-control`
+ * run — the wire `ControlRun` carries no gateKind/gateRef, so without this flag the two are
+ * indistinguishable to a client. Read from `controlObjectId`, not inferred from the scanner.
+ */
+export const ComponentPipelineScanRunSummarySchema = z.object({
+  /** The scan METHOD (`trivy` / `trivy-vm` / `openscap`) — the managed step's `gateRef.method`
+   *  when the run carries one, else the evidence's own `scanner`. */
+  method: z.string(),
+  /** WHICH scanner produced the verdict, off the evidence. */
+  scanner: ScanMethodSchema,
+  scannerVersion: z.string(),
+  /** The digest the scanner ACTUALLY scanned (`evidence.artifactDigest`). */
+  digest: z.string(),
+  /** `evidence.digestMatch` — true iff the scanned digest equals the promoted one. Null only if
+   *  the evidence omitted it (the schema requires it, so today never — kept nullable for an older
+   *  evidence document). */
+  digestMatch: z.boolean().nullable(),
+  status: ControlOutcomeStatusSchema,
+  counts: ScanSeverityCountsSchema.nullable(),
+  /** The threshold the verdict was evaluated against, verbatim; null when the evidence omitted it. */
+  threshold: ScanThresholdSchema.nullable(),
+  /** The control run's `created_at` — when the verdict was recorded here. */
+  evaluatedAt: z.string().datetime(),
+  controlRunId: z.string().uuid(),
+  managed: z.boolean()
+});
+export type ComponentPipelineScanRunSummary = z.infer<typeof ComponentPipelineScanRunSummarySchema>;
+
+/**
+ * ONE EXPORT OF THIS CHANGE TO ONE PEER, as the commander stamped it at export time (§9.4 —
+ * `sourceRef.promotionExports[]`, written under the same row lock as `boundaryBundleChecksums`).
+ * This is WHAT THE COMMANDER SIGNED: its own promotion manifest (ADR-0015 §5 — SCP never signs an
+ * origin artifact), the detached cosign signature over `canonicalStringify(manifest)`, and the
+ * fingerprint of the instance key that signed it. A record here says "signed and exported"; it
+ * says nothing about arrival or verification at the peer (`boundary-segment.ts` R1).
+ */
+export const ComponentPipelinePromotionExportSchema = z.object({
+  peerDomainId: z.string(),
+  /** The peer's `name` when a `federation_peers` row still exists for it here; null otherwise. */
+  peerName: z.string().nullable(),
+  exportedAt: z.string(),
+  /** The Ed25519 bundle checksum — the same value `boundaryBundleChecksums[]` carries. */
+  checksum: z.string(),
+  manifest: PromotionManifestSchema,
+  manifestSignature: z.string(),
+  /** SHA-256 hex of the signing instance's cosign public-key PEM; null on a stamp written before
+   *  the fingerprint was recorded. */
+  keyFingerprint: z.string().nullable()
+});
+export type ComponentPipelinePromotionExport = z.infer<
+  typeof ComponentPipelinePromotionExportSchema
+>;
+
+/**
+ * THE ARTIFACT this pipeline is about, and every CHANGE-SCOPED fact the projection holds about it
+ * (§9.3). The pipeline is component-scoped; a digest, an SBOM reference, a scan verdict and a
+ * signed manifest are all facts about ONE CHANGE — so the projection PICKS a change and STATES the
+ * pick (`changeId`, `changeName`, `changeCreatedAt`): the newest change of the component whose
+ * `sourceRef` carries an artifact digest, preferring the changes at the stages' currents/holds,
+ * else the component's newest such change at all. No such change ⇒ the response carries
+ * `artifact: null` — "no artifact yet", not an empty artifact.
+ *
+ * Every field is READ from stored data or stated absent:
+ *   - `digests`     — `sourceRef.artifact_digest` / `artifactDigest` (string or string[]), verbatim.
+ *   - `sbom`        — `sourceRef.sbom` when it parses as `SbomRefSchema`; else null and
+ *                     `unknownFields` carries `sbom:unparseable` (a malformed reference is stated,
+ *                     not silently dropped).
+ *   - `scans`       — see `ComponentPipelineScanRunSummarySchema`.
+ *   - `exportGate`  — the E6 export gate's OWN predicate applied read-only over the same runs:
+ *                     `not_run` when no scan evidence exists at all; else `pass`/`fail`. It is a
+ *                     re-evaluation, never a remembered verdict (E6 writes no Decision on pass).
+ *   - `signing.promotionExports`   — the §9.4 stamps, newest last (append order).
+ *   - `signing.originSignatureRefs` — every ORIGIN `signatureRef` the sourceRef holds (today only
+ *                     the SBOM blob's; there is no artifact-level one — an empty array is the honest
+ *                     answer, never a fabricated ref).
+ */
+export const ComponentPipelineArtifactSchema = z.object({
+  changeId: z.string().uuid(),
+  changeName: z.string().nullable(),
+  changeCreatedAt: z.string().datetime(),
+  digests: z.array(z.string()),
+  sbom: SbomRefSchema.nullable(),
+  scans: z.array(ComponentPipelineScanRunSummarySchema),
+  exportGate: z.enum(["pass", "fail", "not_run"]),
+  signing: z.object({
+    promotionExports: z.array(ComponentPipelinePromotionExportSchema),
+    originSignatureRefs: z.array(z.string())
+  }),
+  unknownFields: z.array(z.string())
+});
+export type ComponentPipelineArtifact = z.infer<typeof ComponentPipelineArtifactSchema>;
+
 /** Which rung supplied the pipeline — the answer to "why does this component release this way?"
  *  (charter principle 6). `pipeline-resolution.ts` computes it; surfacing it here is what stops an
  *  inheritance surprise (someone attaches a topology to a SERVICE and every component changes). */
@@ -508,6 +615,11 @@ export const ComponentPipelineResponseSchema = z.object({
    *  `/v1` is additive-only and this shipped after the response did; a server that emits it always
    *  emits an object (`state: "none"` is a value, not an omission). Null/absent = an older server. */
   registry: ComponentPipelineRegistrySchema.nullable().optional(),
+  /** THE ARTIFACT and its change-scoped facts — see `ComponentPipelineArtifactSchema`. Optional on
+   *  the wire (additive-only `/v1`); a server that emits it sends an object or `null` (null = no
+   *  change of this component carries an artifact digest — "no artifact yet"). Absent = an older
+   *  server. */
+  artifact: ComponentPipelineArtifactSchema.nullable().optional(),
   unknownFields: z.array(z.string())
 });
 export type ComponentPipelineResponse = z.infer<typeof ComponentPipelineResponseSchema>;

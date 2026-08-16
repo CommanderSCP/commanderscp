@@ -26467,6 +26467,403 @@
                         }
                       ]
                     },
+                    "artifact": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "changeId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "changeName": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "changeCreatedAt": {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                            },
+                            "digests": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "sbom": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "format": {
+                                      "type": "string",
+                                      "enum": [
+                                        "cyclonedx",
+                                        "spdx"
+                                      ]
+                                    },
+                                    "specVersion": {
+                                      "type": "string"
+                                    },
+                                    "digest": {
+                                      "type": "string"
+                                    },
+                                    "location": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "mediaType": {
+                                      "type": "string"
+                                    },
+                                    "signatureRef": {
+                                      "type": "string"
+                                    },
+                                    "scanner": {
+                                      "type": "string"
+                                    },
+                                    "scannerVersion": {
+                                      "type": "string"
+                                    },
+                                    "generatedAt": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "format",
+                                    "digest",
+                                    "location"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "scans": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "method": {
+                                    "type": "string"
+                                  },
+                                  "scanner": {
+                                    "type": "string",
+                                    "enum": [
+                                      "trivy",
+                                      "openscap",
+                                      "trivy-vm"
+                                    ]
+                                  },
+                                  "scannerVersion": {
+                                    "type": "string"
+                                  },
+                                  "digest": {
+                                    "type": "string"
+                                  },
+                                  "digestMatch": {
+                                    "anyOf": [
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "status": {
+                                    "type": "string",
+                                    "enum": [
+                                      "pass",
+                                      "fail",
+                                      "warning",
+                                      "skipped",
+                                      "timed_out",
+                                      "expired"
+                                    ]
+                                  },
+                                  "counts": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "critical": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "high": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "medium": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "low": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "critical",
+                                          "high",
+                                          "medium",
+                                          "low"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "threshold": {
+                                    "anyOf": [
+                                      {
+                                        "type": "object",
+                                        "properties": {
+                                          "maxCritical": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "maxHigh": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "maxMedium": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          },
+                                          "maxLow": {
+                                            "type": "integer",
+                                            "minimum": 0,
+                                            "maximum": 9007199254740991
+                                          }
+                                        },
+                                        "required": [
+                                          "maxCritical",
+                                          "maxHigh"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "evaluatedAt": {
+                                    "type": "string",
+                                    "format": "date-time",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                  },
+                                  "controlRunId": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  "managed": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "method",
+                                  "scanner",
+                                  "scannerVersion",
+                                  "digest",
+                                  "digestMatch",
+                                  "status",
+                                  "counts",
+                                  "threshold",
+                                  "evaluatedAt",
+                                  "controlRunId",
+                                  "managed"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "exportGate": {
+                              "type": "string",
+                              "enum": [
+                                "pass",
+                                "fail",
+                                "not_run"
+                              ]
+                            },
+                            "signing": {
+                              "type": "object",
+                              "properties": {
+                                "promotionExports": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "peerDomainId": {
+                                        "type": "string"
+                                      },
+                                      "peerName": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      },
+                                      "exportedAt": {
+                                        "type": "string"
+                                      },
+                                      "checksum": {
+                                        "type": "string"
+                                      },
+                                      "manifest": {
+                                        "type": "object",
+                                        "properties": {
+                                          "manifestVersion": {
+                                            "type": "string",
+                                            "const": "scp-promotion-manifest/v1"
+                                          },
+                                          "createdAt": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+                                          },
+                                          "sourceChangeObjectId": {
+                                            "type": "string",
+                                            "format": "uuid",
+                                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                          },
+                                          "exporterDomainId": {
+                                            "type": "string",
+                                            "format": "uuid",
+                                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                          },
+                                          "peerDomainId": {
+                                            "type": "string",
+                                            "format": "uuid",
+                                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                          },
+                                          "changeUrn": {
+                                            "type": "string"
+                                          },
+                                          "artifacts": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "type": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "oci",
+                                                    "blob"
+                                                  ]
+                                                },
+                                                "digest": {
+                                                  "type": "string"
+                                                },
+                                                "signatureRef": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "type",
+                                                "digest"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          }
+                                        },
+                                        "required": [
+                                          "manifestVersion",
+                                          "createdAt",
+                                          "sourceChangeObjectId",
+                                          "exporterDomainId",
+                                          "peerDomainId",
+                                          "changeUrn",
+                                          "artifacts"
+                                        ],
+                                        "additionalProperties": false
+                                      },
+                                      "manifestSignature": {
+                                        "type": "string"
+                                      },
+                                      "keyFingerprint": {
+                                        "anyOf": [
+                                          {
+                                            "type": "string"
+                                          },
+                                          {
+                                            "type": "null"
+                                          }
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "peerDomainId",
+                                      "peerName",
+                                      "exportedAt",
+                                      "checksum",
+                                      "manifest",
+                                      "manifestSignature",
+                                      "keyFingerprint"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "originSignatureRefs": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              },
+                              "required": [
+                                "promotionExports",
+                                "originSignatureRefs"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "unknownFields": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "required": [
+                            "changeId",
+                            "changeName",
+                            "changeCreatedAt",
+                            "digests",
+                            "sbom",
+                            "scans",
+                            "exportGate",
+                            "signing",
+                            "unknownFields"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "unknownFields": {
                       "type": "array",
                       "items": {
