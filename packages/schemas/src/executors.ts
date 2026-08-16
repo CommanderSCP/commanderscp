@@ -74,6 +74,26 @@ export function parsePipelineClassification(value: string | null): PipelineClass
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * The DECLARED reach of a source mapping's repo (pipeline-substrate-registry-scan.md §10.6, owner
+ * 2026-08-16; migration 0066): `global` = a cross-domain shared repo authored and tracked at the
+ * commander (outposts see it only as "source: the commander"); `domain` = tracked only in one
+ * domain. Stored NULL = NOT DECLARED → no label rendered, NOTHING inferred (not from the site's
+ * federation role, not from the repo host). Orthogonal to `mirrorOfShared` — a `domain`-scope mapping
+ * may mirror a global one. Same class of label as `PipelineClassificationSchema` above: UI/reporting/
+ * IaC vocabulary, never a routing or enforcement input — the correlation matcher does not read it.
+ */
+export const SourceMappingScopeSchema = z.enum(["global", "domain"]);
+export type SourceMappingScope = z.infer<typeof SourceMappingScopeSchema>;
+
+/** Parse a stored `scope` value, total over anything the column can hold — same shape and reason
+ *  as `parsePipelineClassification`: an unrecognised value reads back as `null` (undeclared), never
+ *  crashes a list path and is never mistaken for a recognised scope. */
+export function parseSourceMappingScope(value: string | null): SourceMappingScope | null {
+  const parsed = SourceMappingScopeSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 /** Static Type → Category map (ADR-0007). Every Type belongs to exactly one Category, so Category
  *  needs no column — it is a projection of Type. The single source of truth for the derivation. */
 export const CATEGORY_OF_TYPE: Record<ExecutorType, ExecutorCategory> = {

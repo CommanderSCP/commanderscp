@@ -157,6 +157,7 @@ import {
   deleteSourceMapping as deleteSourceMappingRequest,
   listSourceMappings as listSourceMappingsRequest,
   setSourceMappingEnabled as setSourceMappingEnabledRequest,
+  setSourceMappingScope as setSourceMappingScopeRequest,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, routes/typed-registries.ts +
   // routes/governance.ts): Policy/Control typed-registry resources, control bindings/runs,
   // approvals (N-of-M quorum), freezes, and the `scp policy evaluate` dry-run endpoint.
@@ -305,6 +306,7 @@ import type {
   ChangeReportRequest,
   SourceMapping,
   SourceMappingListResponse,
+  SourceMappingScope,
   WebhookIngressResponse,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4).
   ControlBinding,
@@ -1490,6 +1492,22 @@ export class ScpClient {
       });
       return unwrap(result);
     },
+    /** Sets or clears ONE mapping's declared scope, by id (migration 0066, §10.6): `global` = a
+     *  cross-domain shared repo tracked at the commander, `domain` = tracked only in this domain,
+     *  `null` = clear (back to "not declared" — no label). A label read by pipelines, IaC and the
+     *  CLI; never a routing input. */
+    setMappingScope: async (
+      sourceKind: string,
+      id: string,
+      scope: SourceMappingScope | null
+    ): Promise<SourceMapping> => {
+      const result = await setSourceMappingScopeRequest({
+        client: this.client,
+        path: { sourceKind, id },
+        body: { scope }
+      });
+      return unwrap(result);
+    },
     /** M7: configures (or rotates) this org+sourceKind's webhook HMAC signing secret — once set,
      *  `webhook()` deliveries for this sourceKind MUST carry a valid signature or are rejected
      *  (coordination/webhook-signature.ts). */
@@ -1661,7 +1679,6 @@ export class ScpClient {
       return unwrap(result);
     }
   };
-
 
   // -----------------------------------------------------------------------------------------
   // M17.5: instance-scoped scan-requirement floors (ADR-0016 §3) — the two ABOVE-org tiers of the

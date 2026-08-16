@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { JsonRecordSchema, UrnSchema } from "./graph.js";
-import { ExecutorTypeSchema, PipelineClassificationSchema } from "./executors.js";
+import {
+  ExecutorTypeSchema,
+  PipelineClassificationSchema,
+  SourceMappingScopeSchema
+} from "./executors.js";
 
 /**
  * `@scp/iac` desired-state manifest contract (DESIGN.md §15, BUILD_AND_TEST.md §8 M2 item 4).
@@ -97,7 +101,14 @@ export const ManifestSourceMappingSchema = z.object({
   /** The pause switch (migration 0063). Like `classification`/`mirrorOfShared`, deliberately
    *  outside the identity tuple — disabling a live mapping is an in-place correction, not a
    *  delete-and-recreate of the route. Omitted ⇒ enabled, the pre-0063 behaviour. */
-  enabled: z.boolean().optional()
+  enabled: z.boolean().optional(),
+  /** DECLARED reach (§10.6, migration 0066): `global` | `domain`. Outside the identity tuple, like
+   *  the three above — but unlike them it IS converged on an existing row: a declared scope that
+   *  differs from the live row's diffs as an `update` (`PlanSourceMappingDiffEntrySchema.action`),
+   *  and apply writes it in place. Three states, deliberately: OMITTED ⇒ this manifest does not
+   *  manage the scope (a manifest that has never heard of the field never clears a scope an operator
+   *  set by hand); explicit `null` ⇒ declare it undeclared (clear a stale label); a value ⇒ that. */
+  scope: SourceMappingScopeSchema.nullable().optional()
 });
 export type ManifestSourceMapping = z.infer<typeof ManifestSourceMappingSchema>;
 
@@ -245,13 +256,6 @@ export const PlanRelationshipDiffEntrySchema = z.object({
 });
 export type PlanRelationshipDiffEntry = z.infer<typeof PlanRelationshipDiffEntrySchema>;
 
-/**
- * One `source_mappings` row's verdict. No `update`: identity is the whole tuple (see
- * `ManifestSourceMappingSchema`), so a changed mapping surfaces as a delete plus a create — the
- * same identity-only treatment `PlanRelationshipDiffEntrySchema` gets, for the same reason.
- * `repoPattern`/`pathPattern`/`type` are normalized here (null / the `configuration` default) so the
- * entry the operator reviews shows exactly the row that will be written, not the author's shorthand.
- */
 /** A placement diff entry. No `update`: the pair IS the identity, so a changed pair is a different
  *  placement — a delete plus a create, never an in-place edit. */
 export const PlanPlacementDiffEntrySchema = z.object({
@@ -263,9 +267,23 @@ export const PlanPlacementDiffEntrySchema = z.object({
 });
 export type PlanPlacementDiffEntry = z.infer<typeof PlanPlacementDiffEntrySchema>;
 
+/**
+ * One `source_mappings` row's verdict. Identity is the whole tuple (see `ManifestSourceMappingSchema`),
+ * so a changed TUPLE surfaces as a delete plus a create — the same identity-only treatment
+ * `PlanRelationshipDiffEntrySchema` gets, for the same reason. `update` (§10.6, additive — a response
+ * enum gaining a member) is the verdict for an existing tuple whose declared `scope` differs from
+ * the manifest's: scope is an attribute of the row, not part of its identity, so it converges IN
+ * PLACE (apply sets it on every row matching the tuple) rather than by re-creating a live route.
+ * `classification`/`mirrorOfShared`/`enabled` are NOT converged this way today (a differing value
+ * still reads `noop`) — pre-existing, and left as is here on purpose: `enabled` is an enforcement
+ * input a hand-set pause must survive an apply of a manifest that omits it, and the other two have no
+ * "omitted ⇒ unmanaged" reading yet. `repoPattern`/`pathPattern`/`type` are normalized here (null /
+ * the `configuration` default) so the entry the operator reviews shows exactly the row that will be
+ * written, not the author's shorthand.
+ */
 export const PlanSourceMappingDiffEntrySchema = z.object({
   kind: z.literal("source-mapping"),
-  action: z.enum(["create", "delete", "noop"]),
+  action: z.enum(["create", "update", "delete", "noop"]),
   componentUrn: UrnSchema,
   sourceKind: z.string(),
   repoPattern: z.string().nullable(),
@@ -282,6 +300,11 @@ export const PlanSourceMappingDiffEntrySchema = z.object({
    *  its presence here is purely so the operator reviewing the plan can see whether the row they
    *  are creating/pruning is currently paused. */
   enabled: z.boolean(),
+  /** The scope the row WILL HAVE after apply (§10.6): the manifest's declaration for `create`/
+   *  `update`; the live row's value for `noop`/`delete` and for a manifest that omits it (unmanaged).
+   *  `null` = not declared. Optional on the wire — a plan stored before 0066 has no key — read it as
+   *  "unknown", never as "undeclared". */
+  scope: SourceMappingScopeSchema.nullable().optional(),
   reason: z.string()
 });
 export type PlanSourceMappingDiffEntry = z.infer<typeof PlanSourceMappingDiffEntrySchema>;

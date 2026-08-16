@@ -2069,7 +2069,8 @@ export const zGetComponentPipelineResponse = z.object({
         enabled: z.boolean(),
         disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
         effectivelyEnabled: z.boolean(),
-        url: z.string().nullable()
+        url: z.string().nullable(),
+        scope: z.enum(['global', 'domain']).nullable()
     })),
     stages: z.array(z.object({
         placement: z.object({
@@ -3539,7 +3540,8 @@ export const zCreatePlanResponse = z.object({
             ]).optional(),
             classification: z.enum(['dev', 'beta']).optional(),
             mirrorOfShared: z.boolean().optional(),
-            enabled: z.boolean().optional()
+            enabled: z.boolean().optional(),
+            scope: z.enum(['global', 'domain']).nullish()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3602,6 +3604,7 @@ export const zCreatePlanResponse = z.object({
             kind: z.literal('source-mapping'),
             action: z.enum([
                 'create',
+                'update',
                 'delete',
                 'noop'
             ]),
@@ -3621,6 +3624,7 @@ export const zCreatePlanResponse = z.object({
             classification: z.enum(['dev', 'beta']).nullable(),
             mirrorOfShared: z.boolean(),
             enabled: z.boolean(),
+            scope: z.enum(['global', 'domain']).nullish(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3719,7 +3723,8 @@ export const zGetPlanResponse = z.object({
             ]).optional(),
             classification: z.enum(['dev', 'beta']).optional(),
             mirrorOfShared: z.boolean().optional(),
-            enabled: z.boolean().optional()
+            enabled: z.boolean().optional(),
+            scope: z.enum(['global', 'domain']).nullish()
         })).optional(),
         executorBindings: z.array(z.object({
             targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3782,6 +3787,7 @@ export const zGetPlanResponse = z.object({
             kind: z.literal('source-mapping'),
             action: z.enum([
                 'create',
+                'update',
                 'delete',
                 'noop'
             ]),
@@ -3801,6 +3807,7 @@ export const zGetPlanResponse = z.object({
             classification: z.enum(['dev', 'beta']).nullable(),
             mirrorOfShared: z.boolean(),
             enabled: z.boolean(),
+            scope: z.enum(['global', 'domain']).nullish(),
             reason: z.string()
         })).optional(),
         placements: z.array(z.object({
@@ -3900,7 +3907,8 @@ export const zApplyPlanResponse = z.object({
                 ]).optional(),
                 classification: z.enum(['dev', 'beta']).optional(),
                 mirrorOfShared: z.boolean().optional(),
-                enabled: z.boolean().optional()
+                enabled: z.boolean().optional(),
+                scope: z.enum(['global', 'domain']).nullish()
             })).optional(),
             executorBindings: z.array(z.object({
                 targetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
@@ -3963,6 +3971,7 @@ export const zApplyPlanResponse = z.object({
                 kind: z.literal('source-mapping'),
                 action: z.enum([
                     'create',
+                    'update',
                     'delete',
                     'noop'
                 ]),
@@ -3982,6 +3991,7 @@ export const zApplyPlanResponse = z.object({
                 classification: z.enum(['dev', 'beta']).nullable(),
                 mirrorOfShared: z.boolean(),
                 enabled: z.boolean(),
+                scope: z.enum(['global', 'domain']).nullish(),
                 reason: z.string()
             })).optional(),
             placements: z.array(z.object({
@@ -4585,6 +4595,7 @@ export const zListSourceMappingsResponse = z.object({
         enabled: z.boolean(),
         disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
         effectivelyEnabled: z.boolean(),
+        scope: z.enum(['global', 'domain']).nullable(),
         createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
     })),
     nextCursor: z.string().nullable()
@@ -4619,6 +4630,7 @@ export const zCreateSourceMappingResponse = z.object({
     enabled: z.boolean(),
     disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
     effectivelyEnabled: z.boolean(),
+    scope: z.enum(['global', 'domain']).nullable(),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
 });
 
@@ -4651,6 +4663,40 @@ export const zSetSourceMappingEnabledResponse = z.object({
     enabled: z.boolean(),
     disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
     effectivelyEnabled: z.boolean(),
+    scope: z.enum(['global', 'domain']).nullable(),
+    createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+});
+
+/**
+ * Success
+ */
+export const zSetSourceMappingScopeResponse = z.object({
+    id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    sourceKind: z.string(),
+    repoPattern: z.string().nullable(),
+    pathPattern: z.string().nullable(),
+    refPattern: z.string().nullable(),
+    componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    type: z.enum([
+        'image',
+        'rpm',
+        'deb',
+        'npm',
+        'infrastructure',
+        'configuration'
+    ]),
+    category: z.enum([
+        'build',
+        'infrastructure',
+        'configuration'
+    ]),
+    classification: z.enum(['dev', 'beta']).nullable(),
+    mirrorOfShared: z.boolean(),
+    enabled: z.boolean(),
+    disabledUntil: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/).nullable(),
+    effectivelyEnabled: z.boolean(),
+    scope: z.enum(['global', 'domain']).nullable(),
     createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
 });
 

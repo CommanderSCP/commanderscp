@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { ChangeStageDependencyVerdictSchema } from "./changes.js";
-import { ExecutorCategorySchema, PipelineClassificationSchema } from "./executors.js";
+import {
+  ExecutorCategorySchema,
+  PipelineClassificationSchema,
+  SourceMappingScopeSchema
+} from "./executors.js";
 import { ControlOutcomeStatusSchema } from "./governance.js";
 import {
   SbomRefSchema,
@@ -204,7 +208,13 @@ export const ComponentPipelineSourceMappingSchema = z.object({
   effectivelyEnabled: z.boolean(),
   /** The repo's web page, or null when it cannot be known — a GLOBBED `repoPattern` names a set of
    *  repos rather than a page, and a self-hosted provider's host is not recorded on a mapping. */
-  url: z.string().nullable()
+  url: z.string().nullable(),
+  /** DECLARED reach (§10.6, migration 0066): `global` → the tile's eyebrow reads "GLOBAL — shared
+   *  across domains"; `domain` → "DOMAIN-SPECIFIC — tracked only here"; `null` (not declared) → NO
+   *  eyebrow, nothing inferred. `mirrorOfShared` wins the eyebrow when both are set. Read, never
+   *  inferred; never an enforcement input. Required-nullable like `mirrorOfShared`/`disabledUntil`
+   *  (a new REQUIRED response property is additive within /v1). */
+  scope: SourceMappingScopeSchema.nullable()
 });
 export type ComponentPipelineSourceMapping = z.infer<typeof ComponentPipelineSourceMappingSchema>;
 

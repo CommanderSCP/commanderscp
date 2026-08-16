@@ -6476,6 +6476,7 @@ export type GetComponentPipelineResponses = {
             disabledUntil: string | null;
             effectivelyEnabled: boolean;
             url: string | null;
+            scope: 'global' | 'domain' | null;
         }>;
         stages: Array<{
             placement: {
@@ -10751,6 +10752,7 @@ export type CreatePlanData = {
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
+                scope?: 'global' | 'domain' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10858,6 +10860,7 @@ export type CreatePlanResponses = {
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
+                scope?: 'global' | 'domain' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -10910,7 +10913,7 @@ export type CreatePlanResponses = {
             }>;
             sourceMappings?: Array<{
                 kind: 'source-mapping';
-                action: 'create' | 'delete' | 'noop';
+                action: 'create' | 'update' | 'delete' | 'noop';
                 componentUrn: string;
                 sourceKind: string;
                 repoPattern: string | null;
@@ -10920,6 +10923,7 @@ export type CreatePlanResponses = {
                 classification: 'dev' | 'beta' | null;
                 mirrorOfShared: boolean;
                 enabled: boolean;
+                scope?: 'global' | 'domain' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -11053,6 +11057,7 @@ export type GetPlanResponses = {
                 classification?: 'dev' | 'beta';
                 mirrorOfShared?: boolean;
                 enabled?: boolean;
+                scope?: 'global' | 'domain' | null;
             }>;
             executorBindings?: Array<{
                 targetUrn: string;
@@ -11105,7 +11110,7 @@ export type GetPlanResponses = {
             }>;
             sourceMappings?: Array<{
                 kind: 'source-mapping';
-                action: 'create' | 'delete' | 'noop';
+                action: 'create' | 'update' | 'delete' | 'noop';
                 componentUrn: string;
                 sourceKind: string;
                 repoPattern: string | null;
@@ -11115,6 +11120,7 @@ export type GetPlanResponses = {
                 classification: 'dev' | 'beta' | null;
                 mirrorOfShared: boolean;
                 enabled: boolean;
+                scope?: 'global' | 'domain' | null;
                 reason: string;
             }>;
             placements?: Array<{
@@ -11260,6 +11266,7 @@ export type ApplyPlanResponses = {
                     classification?: 'dev' | 'beta';
                     mirrorOfShared?: boolean;
                     enabled?: boolean;
+                    scope?: 'global' | 'domain' | null;
                 }>;
                 executorBindings?: Array<{
                     targetUrn: string;
@@ -11312,7 +11319,7 @@ export type ApplyPlanResponses = {
                 }>;
                 sourceMappings?: Array<{
                     kind: 'source-mapping';
-                    action: 'create' | 'delete' | 'noop';
+                    action: 'create' | 'update' | 'delete' | 'noop';
                     componentUrn: string;
                     sourceKind: string;
                     repoPattern: string | null;
@@ -11322,6 +11329,7 @@ export type ApplyPlanResponses = {
                     classification: 'dev' | 'beta' | null;
                     mirrorOfShared: boolean;
                     enabled: boolean;
+                    scope?: 'global' | 'domain' | null;
                     reason: string;
                 }>;
                 placements?: Array<{
@@ -12611,6 +12619,7 @@ export type ListSourceMappingsResponses = {
             enabled: boolean;
             disabledUntil: string | null;
             effectivelyEnabled: boolean;
+            scope: 'global' | 'domain' | null;
             createdAt: string;
         }>;
         nextCursor: string | null;
@@ -12630,6 +12639,7 @@ export type CreateSourceMappingData = {
         classification?: 'dev' | 'beta';
         mirrorOfShared?: boolean;
         enabled?: boolean;
+        scope?: 'global' | 'domain';
     };
     path: {
         sourceKind: string;
@@ -12706,6 +12716,7 @@ export type CreateSourceMappingResponses = {
         enabled: boolean;
         disabledUntil: string | null;
         effectivelyEnabled: boolean;
+        scope: 'global' | 'domain' | null;
         createdAt: string;
     };
 };
@@ -12793,11 +12804,99 @@ export type SetSourceMappingEnabledResponses = {
         enabled: boolean;
         disabledUntil: string | null;
         effectivelyEnabled: boolean;
+        scope: 'global' | 'domain' | null;
         createdAt: string;
     };
 };
 
 export type SetSourceMappingEnabledResponse = SetSourceMappingEnabledResponses[keyof SetSourceMappingEnabledResponses];
+
+export type SetSourceMappingScopeData = {
+    body: {
+        scope: 'global' | 'domain' | null;
+    };
+    path: {
+        sourceKind: string;
+        id: string;
+    };
+    query?: never;
+    url: '/change-sources/{sourceKind}/mappings/{id}/scope';
+};
+
+export type SetSourceMappingScopeErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type SetSourceMappingScopeError = SetSourceMappingScopeErrors[keyof SetSourceMappingScopeErrors];
+
+export type SetSourceMappingScopeResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        orgId: string;
+        sourceKind: string;
+        repoPattern: string | null;
+        pathPattern: string | null;
+        refPattern: string | null;
+        componentObjectId: string;
+        type: 'image' | 'rpm' | 'deb' | 'npm' | 'infrastructure' | 'configuration';
+        category: 'build' | 'infrastructure' | 'configuration';
+        classification: 'dev' | 'beta' | null;
+        mirrorOfShared: boolean;
+        enabled: boolean;
+        disabledUntil: string | null;
+        effectivelyEnabled: boolean;
+        scope: 'global' | 'domain' | null;
+        createdAt: string;
+    };
+};
+
+export type SetSourceMappingScopeResponse = SetSourceMappingScopeResponses[keyof SetSourceMappingScopeResponses];
 
 export type ListPolicysData = {
     body?: never;
