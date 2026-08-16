@@ -459,24 +459,46 @@ async function main() {
   // `POST .../mappings` has no upsert and does not 409 on an identical tuple, so a re-run silently
   // duplicates every rule — and the component journey renders each one, so the duplication is
   // visible. Read the existing set first and skip exact matches.
-  const seenMappings = new Set();
+  //
+  // §10.6 (owner, 2026-08-16): every mapping the COMMANDER fixture declares is `scope: "global"` —
+  // these are the cross-domain shared repos, and the commander is the one place that knows them.
+  // Declared, never inferred: the server never labels a row from the site's role, so a fixture row
+  // that pre-dates 0066 (`(exists)` below) sits at scope NULL and would render with NO eyebrow.
+  // Converge those with the by-id PATCH `.../mappings/{id}/scope` — a label-only write, so a re-run
+  // is idempotent (skipped when the row already reads `global`).
+  const seenMappings = new Map();
   for (const sourceKind of new Set(mappings.map((m) => m[1]))) {
     const existing = (await api("GET", `/change-sources/${sourceKind}/mappings`)) ?? [];
     for (const m of Array.isArray(existing) ? existing : (existing.items ?? [])) {
-      seenMappings.add([sourceKind, m.componentObjectId, m.repoPattern, m.pathPattern].join("|"));
+      seenMappings.set(
+        [sourceKind, m.componentObjectId, m.repoPattern, m.pathPattern].join("|"),
+        m
+      );
     }
   }
   for (const [comp, sourceKind, repoPattern, pathPattern, type] of mappings) {
     if (!components[comp]) continue;
     const key = [sourceKind, components[comp], repoPattern, pathPattern].join("|");
-    if (seenMappings.has(key)) {
-      created.push(`mapping ${comp} <- ${repoPattern} (exists)`);
+    const existing = seenMappings.get(key);
+    if (existing) {
+      if (existing.scope === "global") {
+        created.push(`mapping ${comp} <- ${repoPattern} (exists, scope global)`);
+        continue;
+      }
+      try {
+        await api("PATCH", `/change-sources/${sourceKind}/mappings/${existing.id}/scope`, {
+          scope: "global"
+        });
+        created.push(`mapping ${comp} <- ${repoPattern} (exists; scope -> global)`);
+      } catch (e) {
+        failed.push(`set scope on mapping ${comp} <- ${repoPattern}: ${e.message}`);
+      }
       continue;
     }
     await post(
       `/change-sources/${sourceKind}/mappings`,
-      { sourceKind, component: components[comp], repoPattern, pathPattern, type },
-      `mapping ${comp} <- ${repoPattern}`
+      { sourceKind, component: components[comp], repoPattern, pathPattern, type, scope: "global" },
+      `mapping ${comp} <- ${repoPattern} (scope global)`
     );
   }
 

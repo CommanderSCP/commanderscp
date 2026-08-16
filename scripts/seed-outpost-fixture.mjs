@@ -180,25 +180,42 @@ async function main() {
   // CIDR IaC, and its own config overlays. `POST .../mappings` has no upsert and does not 409 on an
   // identical tuple, so read the existing set first and skip exact matches — the same discipline as
   // the commander fixture, and for the same reason (the journey renders every rule).
+  //
+  // §10.6: every `field/*` mapping is `scope: "domain"` — tracked only in this domain. The mirror
+  // KEEPS `mirrorOfShared` and is ALSO `domain` scope (the two are orthogonal: a domain-scope row
+  // that mirrors a global one; the tile's eyebrow lets the mirror win). Existing rows that pre-date
+  // 0066 sit at scope NULL — converged with the by-id scope PATCH so a re-run is idempotent.
   if (checkoutApi) {
     const mappings = [
       ["gitea", "field/mirror-of-shared-asg-iac", "asg/**", "infrastructure", true],
       ["gitea", "field/checkout-network-cidr", "cidr/**", "infrastructure", false],
       ["gitea", "field/checkout-overlays", "prod/**", "configuration", false]
     ];
-    const seen = new Set();
+    const seen = new Map();
     try {
       const existing = (await api("GET", "/change-sources/gitea/mappings")) ?? [];
       for (const m of Array.isArray(existing) ? existing : (existing.items ?? [])) {
-        seen.add([m.componentObjectId, m.repoPattern, m.pathPattern].join("|"));
+        seen.set([m.componentObjectId, m.repoPattern, m.pathPattern].join("|"), m);
       }
     } catch (e) {
       failed.push(`list gitea mappings: ${e.message}`);
     }
     for (const [sourceKind, repoPattern, pathPattern, type, mirrorOfShared] of mappings) {
       const key = [checkoutApi.id, repoPattern, pathPattern].join("|");
-      if (seen.has(key)) {
-        created.push(`mapping checkout-api <- ${repoPattern} (exists)`);
+      const existing = seen.get(key);
+      if (existing) {
+        if (existing.scope === "domain") {
+          created.push(`mapping checkout-api <- ${repoPattern} (exists, scope domain)`);
+          continue;
+        }
+        try {
+          await api("PATCH", `/change-sources/${sourceKind}/mappings/${existing.id}/scope`, {
+            scope: "domain"
+          });
+          created.push(`mapping checkout-api <- ${repoPattern} (exists; scope -> domain)`);
+        } catch (e) {
+          failed.push(`set scope on mapping checkout-api <- ${repoPattern}: ${e.message}`);
+        }
         continue;
       }
       await post(
@@ -209,9 +226,10 @@ async function main() {
           repoPattern,
           pathPattern,
           type,
+          scope: "domain",
           ...(mirrorOfShared ? { mirrorOfShared: true } : {})
         },
-        `mapping checkout-api <- ${repoPattern}${mirrorOfShared ? " (mirror of shared)" : ""}`
+        `mapping checkout-api <- ${repoPattern} (scope domain${mirrorOfShared ? ", mirror of shared" : ""})`
       );
     }
   }
