@@ -45,6 +45,16 @@ import type {
  * | draw the registry node in the INFRA lane when a registry is declared | the infra-lane test FAILS |
  * | render `ambiguous` through the `declared` branch | the ambiguous header test FAILS — no count, no amber |
  * | link the registry name to `url + "/" + repository` (a guessed deep path) | the declared header test FAILS on the base-only href |
+ * | drop the `instanceRole === "commander"` gate on the Scan & sign node | SIX tests FAIL — the outpost/undefined-role orders and every pre-§9.3 pinned chain grow a node this site never performs |
+ * | draw the Scan & sign node in the infra lane too | the infra-lane test FAILS |
+ * | mark a scan row `managed` from `scanner === "openscap"` instead of the wire's `managed` flag | the flag-not-name test FAILS — a trivy managed row loses its mark, an org openscap row gains one |
+ * | make the Build tile reviewable whenever an artifact exists (ignore SBOM/PM) | the two "no click affordance" tests FAIL — a button appears with nothing to review |
+ * | make the Scan & sign tile reviewable on scans only (ignore exports) | the exports-only test FAILS — a signed manifest is reviewable too |
+ * | take the FIRST export as "newest" | the PM-line test FAILS — the older peer is named |
+ * | take the FIRST digest as "latest" | the several-digests test FAILS |
+ * | link an SBOM location whatever its scheme | the OCI-ref test FAILS — a non-URL is drawn as somewhere to go |
+ * | render `artifact: null` through the "not observed" (unknown) branch of the Registry body | the absence-vs-unknown test FAILS |
+ * | word the outpost's absent PM the way the commander's is | the outpost test FAILS — the tile would claim "not created" about a manifest another site may well have imported |
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -66,10 +76,17 @@ const {
   WaveRowForTest,
   arrowInto,
   RegistryNodeForTest,
+  BuildNodeForTest,
+  BuildReviewBody,
+  ScanSignNodeForTest,
+  ScanSignReviewBody,
   buildJourney,
   laneNodes,
   sharedConnectorVisible,
   targetFacetValues,
+  sbomLine,
+  sbomLocationHref,
+  shortDigest,
   LANES
 } = await import("./component-pipeline");
 
@@ -1513,7 +1530,13 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
   it("suppresses the SHARED lane connector right after a source node — its tiles already drew the transition", () => {
     // Renderer-level, not a full page mount: `sharedConnectorVisible` IS the suppression rule the
     // lane loop applies before each node, so pinning it directly proves the rule without a fetch.
-    const nodes = [{ kind: "source" }, { kind: "build" }, { kind: "registry" }] as const;
+    const nodes = [
+      { kind: "source" },
+      { kind: "build" },
+      { kind: "registry" },
+      { kind: "scan-sign" },
+      { kind: "source" }
+    ] as const;
     expect(sharedConnectorVisible(nodes, 0), "no connector before the first node, ever").toBe(false);
     expect(
       sharedConnectorVisible(nodes, 1),
@@ -1522,6 +1545,14 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
     expect(
       sharedConnectorVisible(nodes, 2),
       "registry follows build, an ordinary pair — untouched"
+    ).toBe(true);
+    expect(
+      sharedConnectorVisible(nodes, 3),
+      "scan-sign follows registry — it joins the chain exactly as registry does (§9.3)"
+    ).toBe(true);
+    expect(
+      sharedConnectorVisible(nodes, 4),
+      "the config source after scan-sign gets its connector too — scan-sign is not a source"
     ).toBe(true);
   });
 
@@ -1774,5 +1805,602 @@ describe("grey is reserved for arrows that are not switches", () => {
     expect(mapPart).toContain("<button");
     expect(mapPart).toContain("bg-red-500");
     expect(mapPart).not.toContain("bg-slate-200 opacity-60");
+  });
+});
+
+/* ================================================================================================
+ * §9.3 — the ARTIFACT on the tiles: Registry body (latest digest), Build (SBOM + PM), Scan & sign
+ * (commander only). pipeline-substrate-registry-scan.md §9.3/§9.6. Every rendered value is READ
+ * from `artifact` or stated absent; a tile is clickable exactly when it has something to review.
+ * ============================================================================================== */
+
+type Artifact = NonNullable<ComponentPipelineResponse["artifact"]>;
+type Sbom = NonNullable<Artifact["sbom"]>;
+type Scan = Artifact["scans"][number];
+type Export = Artifact["signing"]["promotionExports"][number];
+
+const DIGEST = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const DIGEST_2 = "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+const CHANGE_ID = "019f0000-0000-7000-8000-00000000c4a6";
+const PEER_ID = "019f0000-0000-7000-8000-00000000fee1";
+const EXPORTER_ID = "019f0000-0000-7000-8000-00000000c0de";
+const KEY_FP = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+function artifact(over: Partial<Artifact> = {}): Artifact {
+  return {
+    changeId: CHANGE_ID,
+    changeName: "checkout-api@1.4.2",
+    changeCreatedAt: "2026-08-15T09:00:00.000Z",
+    digests: [DIGEST],
+    sbom: null,
+    scans: [],
+    exportGate: "not_run",
+    signing: { promotionExports: [], originSignatureRefs: [] },
+    unknownFields: [],
+    ...over
+  };
+}
+
+function sbom(over: Partial<Sbom> = {}): Sbom {
+  return {
+    format: "cyclonedx",
+    specVersion: "1.5",
+    digest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    location: "https://ci.acme.invalid/sbom/checkout-api.cdx.json",
+    mediaType: "application/vnd.cyclonedx+json",
+    signatureRef: "https://ci.acme.invalid/sbom/checkout-api.cdx.json.sig",
+    scanner: "syft",
+    scannerVersion: "1.0.0",
+    generatedAt: "2026-08-15T08:59:00Z",
+    ...over
+  };
+}
+
+function scan(over: Partial<Scan> = {}): Scan {
+  return {
+    method: "trivy",
+    scanner: "trivy",
+    scannerVersion: "0.55.0",
+    digest: DIGEST,
+    digestMatch: true,
+    status: "pass",
+    counts: { critical: 0, high: 2, medium: 5, low: 9 },
+    threshold: { maxCritical: 0, maxHigh: 2 },
+    evaluatedAt: "2026-08-15T10:00:00.000Z",
+    controlRunId: "019f0000-0000-7000-8000-00000000ac01",
+    managed: false,
+    ...over
+  };
+}
+
+function promotionExport(over: Partial<Export> = {}): Export {
+  return {
+    peerDomainId: PEER_ID,
+    peerName: "field-outpost",
+    exportedAt: "2026-08-15T11:00:00.000Z",
+    checksum: "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00",
+    manifest: {
+      manifestVersion: "scp-promotion-manifest/v1",
+      createdAt: "2026-08-15T11:00:00.000Z",
+      sourceChangeObjectId: CHANGE_ID,
+      exporterDomainId: EXPORTER_ID,
+      peerDomainId: PEER_ID,
+      changeUrn: "urn:scp:o:change:acme/checkout-api@1.4.2",
+      artifacts: [
+        { type: "oci", digest: DIGEST },
+        { type: "blob", digest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", signatureRef: "sig://sbom" }
+      ]
+    },
+    manifestSignature: "MEUCIQD…",
+    keyFingerprint: KEY_FP,
+    ...over
+  };
+}
+
+const BUILD_BINDING = {
+  externalRef: "build-app",
+  type: "image",
+  category: "build" as const,
+  url: null,
+  executionSystemId: null,
+  executionSystemName: "github"
+};
+
+/** A commander-shaped software lane: a build source + binding, a config source, one wave. */
+function commanderLaneData(over: Partial<Parameters<typeof laneNodes>[0]> = {}) {
+  return {
+    sources: [
+      source({ id: "s1", type: "image", category: "build" }),
+      source({ id: "s2", type: "configuration", category: "configuration" })
+    ],
+    stages: [stage({ bindings: [BUILD_BINDING] })],
+    registry: registryDeclared(),
+    artifact: artifact(),
+    ...over
+  };
+}
+
+const ONE_WAVE = buildJourney({
+  stages: [stage({ order: 0, wave: { index: 0, name: "gamma" } })],
+  unplacedStages: []
+});
+
+const REVIEW_BUILD = 'aria-label="Review SBOM and promotion manifest"';
+const REVIEW_SCAN = 'aria-label="Review scan and signing results"';
+
+describe("the Scan & sign node — commander only, after Registry, before Config", () => {
+  it("commander software lane: source, build, registry, SCAN-SIGN, config, wave", () => {
+    const nodes = laneNodes(commanderLaneData(), ONE_WAVE, SOFTWARE_LANE, "commander");
+    expect(nodes.map((n) => n.kind)).toEqual([
+      "source",
+      "build",
+      "registry",
+      "scan-sign",
+      "source",
+      "wave"
+    ]);
+    const node = nodes[3] as { artifact: Artifact | null | undefined };
+    expect(node.artifact?.changeId, "the node CARRIES the artifact the tile renders from").toBe(CHANGE_ID);
+  });
+
+  it("outpost: the SAME data draws the pre-§9.3 chain — no Scan & sign node", () => {
+    for (const role of ["outpost", "retrans", undefined] as const) {
+      const nodes = laneNodes(commanderLaneData(), ONE_WAVE, SOFTWARE_LANE, role);
+      expect(nodes.map((n) => n.kind), `role=${String(role)}`).toEqual([
+        "source",
+        "build",
+        "registry",
+        "source",
+        "wave"
+      ]);
+    }
+  });
+
+  it("commander with a DECLARED registry and no build (outpost-shaped data) still gets it, after the registry", () => {
+    const nodes = laneNodes(
+      commanderLaneData({ sources: [source()], stages: [stage()] }),
+      ONE_WAVE,
+      SOFTWARE_LANE,
+      "commander"
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["registry", "scan-sign", "source", "wave"]);
+  });
+
+  it("commander with NO build, NO registry and NO artifact draws no Scan & sign box — a permanently 'no artifact yet' tile is decoration", () => {
+    const nodes = laneNodes(
+      { sources: [source()], stages: [stage()], registry: undefined, artifact: null },
+      ONE_WAVE,
+      SOFTWARE_LANE,
+      "commander"
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["source", "wave"]);
+  });
+
+  it("… but an artifact ALONE earns it (there is something to scan even with no registry declared)", () => {
+    const nodes = laneNodes(
+      { sources: [source()], stages: [stage()], registry: undefined, artifact: artifact() },
+      ONE_WAVE,
+      SOFTWARE_LANE,
+      "commander"
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["scan-sign", "source", "wave"]);
+  });
+
+  it("the INFRASTRUCTURE lane never has it, commander or not", () => {
+    const nodes = laneNodes(
+      commanderLaneData({
+        sources: [source({ id: "s3", type: "infrastructure", category: "infrastructure" })],
+        stages: [
+          stage({
+            bindings: [
+              {
+                externalRef: "tf-app",
+                type: "infrastructure",
+                category: "infrastructure",
+                url: null,
+                executionSystemId: null,
+                executionSystemName: "argo-workflows"
+              }
+            ]
+          })
+        ]
+      }),
+      ONE_WAVE,
+      INFRA_LANE,
+      "commander"
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["source", "wave"]);
+  });
+
+  it("carries its OWN glyph — distinct from the registry's", () => {
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={null} />);
+    expect(html).toContain('data-node-icon="scan-sign"');
+    expect(html).toContain("Scan &amp; sign");
+    expect(html).toContain("at source — authorises cross-boundary transfer");
+  });
+});
+
+describe("the REGISTRY node body — the latest digest, or the stated absence", () => {
+  it("shows the newest digest folded (full value in title) and WHICH change it came from", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest registry={registryDeclared()} artifact={artifact()} />
+    );
+    expect(html).toContain('data-testid="pipeline-registry-digest"');
+    expect(html).toContain(shortDigest(DIGEST));
+    expect(html, "the full digest is never lost, only folded").toContain(`title="${DIGEST}"`);
+    expect(html).toContain("from change");
+    expect(html).toContain("checkout-api@1.4.2");
+    expect(html, "a tile with a digest is no longer the muted dashed box").not.toContain("border-dashed");
+  });
+
+  it("with several digests, shows the LAST one and says how many more", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest registry={registryDeclared()} artifact={artifact({ digests: [DIGEST_2, DIGEST] })} />
+    );
+    expect(html).toContain(shortDigest(DIGEST));
+    expect(html).not.toContain(shortDigest(DIGEST_2));
+    expect(html).toContain("+1 more");
+  });
+
+  it("artifact null → 'no artifact digest recorded yet' — an ABSENCE, not an unknown", () => {
+    const html = renderToStaticMarkup(<RegistryNodeForTest registry={registryDeclared()} artifact={null} />);
+    expect(html).toContain("no artifact digest recorded yet");
+    expect(html).toContain('data-artifact-state="none"');
+    expect(html).not.toContain("not observed yet");
+  });
+
+  it("artifact present but no digest listed → the same stated absence", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest registry={registryDeclared()} artifact={artifact({ digests: [] })} />
+    );
+    expect(html).toContain("no artifact digest recorded yet");
+  });
+
+  it("older server (no `artifact` on the wire) → the pre-§9.3 'not observed' sentence, an UNKNOWN", () => {
+    const html = renderToStaticMarkup(<RegistryNodeForTest registry={registryDeclared()} />);
+    expect(html).toContain("not observed yet");
+    expect(html).toContain('data-artifact-state="unknown"');
+    expect(html).not.toContain("no artifact digest recorded yet");
+  });
+});
+
+describe("the BUILD tile — SBOM and promotion manifest, present or stated absent", () => {
+  it("older server: no SBOM/PM lines and no review affordance", () => {
+    const html = renderToStaticMarkup(<BuildNodeForTest bindings={[BUILD_BINDING]} artifact={undefined} />);
+    expect(html).not.toContain("pipeline-build-sbom");
+    expect(html).not.toContain("pipeline-build-pm");
+    expect(html).not.toContain(REVIEW_BUILD);
+    expect(html, "the executor line is kept").toContain("pipeline-build-executor");
+  });
+
+  it("artifact null: says 'no artifact yet' — and is NOT clickable", () => {
+    const html = renderToStaticMarkup(<BuildNodeForTest bindings={[BUILD_BINDING]} artifact={null} />);
+    expect(html).toContain("no artifact yet — no change of this component reports an artifact digest");
+    expect(html).not.toContain(REVIEW_BUILD);
+    expect(html).not.toContain("data-reviewable");
+  });
+
+  it("commander, artifact with neither SBOM nor export: both absences stated, no click affordance", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={artifact()} instanceRole="commander" />
+    );
+    expect(html).toContain("no SBOM reported for this artifact");
+    expect(html).toContain("not created — a promotion manifest is created at export to a peer");
+    expect(html).toContain('data-sbom-state="absent"');
+    expect(html).toContain('data-pm-state="absent"');
+    expect(html, "nothing to review → no button").not.toContain(REVIEW_BUILD);
+    expect(html).not.toContain("data-reviewable");
+    expect(html).not.toContain("<button");
+  });
+
+  it("outpost, no export: the imported manifest is NOT on this wire, and the tile says so rather than inventing one", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[]} artifact={artifact()} instanceRole="outpost" />
+    );
+    expect(html).toContain("imported manifest not projected yet");
+    expect(html).not.toContain("not created — a promotion manifest is created at export to a peer");
+    expect(html).not.toContain(REVIEW_BUILD);
+  });
+
+  it("SBOM present: `format specVersion · scanner scannerVersion · generatedAt`, linked to an http(s) location — and the tile IS clickable", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={artifact({ sbom: sbom() })} instanceRole="commander" />
+    );
+    expect(html).toContain("cyclonedx 1.5 · syft 1.0.0 · 2026-08-15T08:59:00Z");
+    expect(html).toContain('href="https://ci.acme.invalid/sbom/checkout-api.cdx.json"');
+    expect(html).toContain('data-sbom-state="present"');
+    expect(html).toContain(REVIEW_BUILD);
+    expect(html).toContain('data-reviewable="true"');
+    expect(html, "the PM half is still absent, and still says so").toContain(
+      "not created — a promotion manifest is created at export to a peer"
+    );
+  });
+
+  it("SBOM whose location is an OCI ref (not http): text with the ref in title, NO link", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={artifact({ sbom: sbom({ location: "registry.hq.invalid/acme/checkout-api@sha256:abcd", scanner: undefined, scannerVersion: undefined, generatedAt: undefined }) })}
+      />
+    );
+    expect(html).not.toContain("pipeline-build-sbom-link");
+    expect(html).toContain('title="registry.hq.invalid/acme/checkout-api@sha256:abcd"');
+    expect(html, "only the present parts join — no dangling separator").toContain(">cyclonedx 1.5</span>");
+  });
+
+  it("PM present: `signed for <peer> · <when> · N artifacts` from the NEWEST export, and the tile IS clickable", () => {
+    const older = promotionExport({ exportedAt: "2026-08-14T11:00:00.000Z", peerName: "old-peer", peerDomainId: "019f0000-0000-7000-8000-00000000fee0" });
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[BUILD_BINDING]}
+        artifact={artifact({ signing: { promotionExports: [older, promotionExport()], originSignatureRefs: [] } })}
+        instanceRole="commander"
+      />
+    );
+    expect(html).toContain("signed for");
+    expect(html).toContain("field-outpost");
+    expect(html, "the NEWEST (last) export, not the first").not.toContain("old-peer");
+    expect(html).toContain("2 artifacts");
+    expect(html).toContain('data-pm-state="signed"');
+    expect(html).toContain(REVIEW_BUILD);
+  });
+
+  it("PM peer with no name left here → the peer DOMAIN ID verbatim, never a guess", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={artifact({ signing: { promotionExports: [promotionExport({ peerName: null })], originSignatureRefs: [] } })}
+        instanceRole="commander"
+      />
+    );
+    expect(html).toContain(`signed for <span class="font-mono">${PEER_ID}</span>`);
+  });
+
+  it("an export ALSO makes an outpost's tile clickable (a downstream re-export is a signed manifest too)", () => {
+    const html = renderToStaticMarkup(
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })}
+        instanceRole="outpost"
+      />
+    );
+    expect(html).toContain(REVIEW_BUILD);
+    expect(html).not.toContain("imported manifest not projected yet");
+  });
+
+  it("sbomLine joins ONLY the present parts, in order", () => {
+    expect(sbomLine(sbom())).toBe("cyclonedx 1.5 · syft 1.0.0 · 2026-08-15T08:59:00Z");
+    expect(sbomLine(sbom({ specVersion: undefined, scannerVersion: undefined }))).toBe(
+      "cyclonedx · syft · 2026-08-15T08:59:00Z"
+    );
+    expect(sbomLine(sbom({ specVersion: undefined, scanner: undefined, scannerVersion: undefined, generatedAt: undefined }))).toBe(
+      "cyclonedx"
+    );
+  });
+
+  it("sbomLocationHref links ONLY an http(s) URL", () => {
+    expect(sbomLocationHref("https://ci.acme.invalid/x.json")).toBe("https://ci.acme.invalid/x.json");
+    expect(sbomLocationHref("http://ci.acme.invalid/x.json")).toBe("http://ci.acme.invalid/x.json");
+    expect(sbomLocationHref("oci://registry.hq.invalid/acme/checkout-api@sha256:abcd")).toBeNull();
+    expect(sbomLocationHref("registry.hq.invalid/acme/checkout-api@sha256:abcd")).toBeNull();
+    expect(sbomLocationHref("s3://bucket/sbom.json")).toBeNull();
+    expect(sbomLocationHref("javascript:alert(1)")).toBeNull();
+  });
+});
+
+describe("the BUILD review dialog body renders the SBOM and the manifest VERBATIM (portal-free)", () => {
+  it("every SBOM reference field, by its wire name", () => {
+    const html = renderToStaticMarkup(<BuildReviewBody artifact={artifact({ sbom: sbom() })} />);
+    for (const [label, value] of [
+      ["format", "cyclonedx"],
+      ["specVersion", "1.5"],
+      ["digest", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+      ["location", "https://ci.acme.invalid/sbom/checkout-api.cdx.json"],
+      ["mediaType", "application/vnd.cyclonedx+json"],
+      ["signatureRef", "https://ci.acme.invalid/sbom/checkout-api.cdx.json.sig"],
+      ["scanner", "syft"],
+      ["scannerVersion", "1.0.0"],
+      ["generatedAt", "2026-08-15T08:59:00Z"]
+    ]) {
+      expect(html, `label ${label}`).toContain(`>${label}</dt>`);
+      expect(html, `value of ${label}`).toContain(value!);
+    }
+    expect(html, "no export → the PM absence, stated").toContain(
+      "not created — a promotion manifest is created at export to a peer"
+    );
+  });
+
+  it("every promotion-manifest field, the artifacts table, signature presence and the key fingerprint", () => {
+    const html = renderToStaticMarkup(
+      <BuildReviewBody artifact={artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } })} />
+    );
+    expect(html).toContain("scp-promotion-manifest/v1");
+    expect(html).toContain(">createdAt</dt>");
+    expect(html).toContain("2026-08-15T11:00:00.000Z");
+    expect(html).toContain(EXPORTER_ID);
+    expect(html).toContain("field-outpost");
+    expect(html).toContain(PEER_ID);
+    expect(html).toContain("urn:scp:o:change:acme/checkout-api@1.4.2");
+    expect(html).toContain(">oci</td>");
+    expect(html).toContain(">blob</td>");
+    expect(html).toContain(DIGEST);
+    expect(html).toContain("sig://sbom");
+    expect(html).toContain(">present</dd>");
+    expect(html).toContain(KEY_FP);
+    expect(html, "no SBOM → its absence, stated").toContain("no SBOM reported for this artifact");
+  });
+
+  it("a stamp with no fingerprint says 'not recorded'; an empty signature says 'absent'", () => {
+    const html = renderToStaticMarkup(
+      <BuildReviewBody
+        artifact={artifact({
+          signing: {
+            promotionExports: [promotionExport({ keyFingerprint: null, manifestSignature: "" })],
+            originSignatureRefs: []
+          }
+        })}
+      />
+    );
+    expect(html).toContain(">not recorded</dd>");
+    expect(html).toContain(">absent</dd>");
+  });
+});
+
+describe("the SCAN & SIGN tile — each state stated, clickable only with something to review", () => {
+  it("artifact null → 'no artifact yet — nothing to scan', not clickable", () => {
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={null} />);
+    expect(html).toContain("no artifact yet — nothing to scan");
+    expect(html).toContain('data-scan-state="no-artifact"');
+    expect(html).not.toContain(REVIEW_SCAN);
+    expect(html).not.toContain("<button");
+  });
+
+  it("no scans, no exports → 'not run' for the digest, gate not run, not signed, origin signature not recorded — not clickable", () => {
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact()} />);
+    expect(html).toContain("not run — no scan result recorded for");
+    expect(html).toContain(shortDigest(DIGEST));
+    expect(html).toContain(`title="${DIGEST}"`);
+    expect(html).toContain('data-scan-state="not-run"');
+    expect(html).toContain("export gate (E6):");
+    expect(html).toContain('data-export-gate="not_run"');
+    expect(html).toContain(">not run</span>");
+    expect(html).toContain("not signed yet — the promotion manifest is signed at export to a peer");
+    expect(html).toContain("origin artifact signature:");
+    expect(html).toContain(">not recorded</span>");
+    expect(html).not.toContain(REVIEW_SCAN);
+    expect(html).not.toContain("<button");
+  });
+
+  it("scan rows: `scanner version · digest · status · C H M L · when`, the managed step marked from the FLAG (never the scanner name) — and clickable", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({
+          scans: [
+            scan(),
+            scan({
+              method: "openscap",
+              scanner: "openscap",
+              scannerVersion: "1.3.10",
+              status: "fail",
+              counts: { critical: 1, high: 0, medium: 0, low: 3 },
+              controlRunId: "019f0000-0000-7000-8000-00000000ac02",
+              managed: true
+            })
+          ],
+          exportGate: "fail"
+        })}
+      />
+    );
+    expect(html).toContain('data-scan-state="rows"');
+    expect(html).toContain("trivy 0.55.0");
+    expect(html).toContain("C0 H2 M5 L9");
+    expect(html).toContain("openscap 1.3.10");
+    expect(html).toContain("C1 H0 M0 L3");
+    expect(html).toContain(`title="${DIGEST}"`);
+    expect(html).toContain('title="2026-08-15T10:00:00.000Z"');
+    const rows = html.split('data-testid="pipeline-scan-row"').slice(1);
+    expect(rows).toHaveLength(2);
+    expect(rows[0], "org-pipeline trivy row: no managed mark").not.toContain(">managed<");
+    expect(rows[1], "the commander's own step: marked managed off the flag").toContain(">managed<");
+    expect(html).toContain('data-export-gate="fail"');
+    expect(html).toContain(REVIEW_SCAN);
+    expect(html).toContain('data-reviewable="true"');
+  });
+
+  it("a `trivy` row with managed=false and an `openscap` row with managed=true — the mark follows the flag, not the name", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ scans: [scan({ scanner: "trivy", managed: true }), scan({ scanner: "openscap", method: "openscap", managed: false, controlRunId: "019f0000-0000-7000-8000-00000000ac03" })] })} />
+    );
+    const rows = html.split('data-testid="pipeline-scan-row"').slice(1);
+    expect(rows[0]).toContain(">managed<");
+    expect(rows[1]).not.toContain(">managed<");
+  });
+
+  it("counts the evidence omitted → 'counts not recorded', never zeros", () => {
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact({ scans: [scan({ counts: null })] })} />);
+    expect(html).toContain("counts not recorded");
+    expect(html).not.toContain("C0 H0 M0 L0");
+  });
+
+  it("exports present, no scans → 'manifest signed for <peer> <when> (key <fp>)' per export — and clickable", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({
+          signing: {
+            promotionExports: [promotionExport(), promotionExport({ peerName: null, peerDomainId: "019f0000-0000-7000-8000-00000000fee2", exportedAt: "2026-08-15T12:00:00.000Z" })],
+            originSignatureRefs: []
+          }
+        })}
+      />
+    );
+    expect(html).toContain('data-sign-state="signed"');
+    expect(html.split('data-testid="pipeline-sign-row"').length - 1).toBe(2);
+    expect(html).toContain("manifest signed for");
+    expect(html).toContain("field-outpost");
+    expect(html).toContain("019f0000-0000-7000-8000-00000000fee2");
+    expect(html).toContain(`(key <span class="font-mono">${KEY_FP.slice(0, 16)}…</span>)`);
+    expect(html).toContain(`title="${KEY_FP}"`);
+    expect(html, "the scan half is still 'not run'").toContain("not run — no scan result recorded for");
+    expect(html).toContain(REVIEW_SCAN);
+  });
+
+  it("an origin signatureRef, when one exists, is listed instead of 'not recorded'", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest artifact={artifact({ signing: { promotionExports: [], originSignatureRefs: ["sig://origin"] } })} />
+    );
+    const line = html.slice(html.indexOf('data-testid="pipeline-origin-signature"'));
+    expect(line).toContain("sig://origin");
+    expect(line.slice(0, 400)).not.toContain(">not recorded<");
+  });
+
+  it("older server (no `artifact` on the wire) → 'not observed', an unknown, not clickable", () => {
+    const html = renderToStaticMarkup(<ScanSignNodeForTest artifact={undefined} />);
+    expect(html).toContain('data-scan-state="unknown"');
+    expect(html).not.toContain(REVIEW_SCAN);
+  });
+});
+
+describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, and the way to the raw evidence", () => {
+  it("scan table: every ScanRunSummary field incl. threshold JSON, digestMatch and managed; exports table; change link; NO CVE rows", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignReviewBody
+        artifact={artifact({
+          scans: [scan(), scan({ managed: true, threshold: null, digestMatch: null, controlRunId: "019f0000-0000-7000-8000-00000000ac02" })],
+          exportGate: "pass",
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+        })}
+      />
+    );
+    for (const head of ["method", "scanner", "digest", "digestMatch", "status", "counts", "threshold", "evaluatedAt", "managed", "controlRunId"]) {
+      expect(html, `column ${head}`).toContain(`>${head}</th>`);
+    }
+    expect(html.split('data-testid="scan-review-row"').length - 1).toBe(2);
+    // renderToStaticMarkup escapes the quotes; the JSON is verbatim underneath.
+    expect(html).toContain("{&quot;maxCritical&quot;:0,&quot;maxHigh&quot;:2}");
+    expect(html).toContain(">true</td>");
+    expect(html).toContain(">not recorded</td>");
+    expect(html).toContain(">managed</td>");
+    expect(html).toContain(">org pipeline</td>");
+    expect(html).toContain("019f0000-0000-7000-8000-00000000ac01");
+    expect(html).toContain("2026-08-15T10:00:00.000Z");
+    expect(html).toContain('data-testid="scan-review-export-gate"');
+    expect(html).toContain(">pass</span>");
+    // exports table
+    for (const head of ["peer", "exportedAt", "checksum", "keyFingerprint", "signature", "artifacts"]) {
+      expect(html, `export column ${head}`).toContain(`>${head}</th>`);
+    }
+    expect(html).toContain("c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00");
+    expect(html).toContain(KEY_FP);
+    expect(html).toContain(">present</td>");
+    // The router `Link` is mocked to a bare `<a>` at the top of this file, so the props (`to`,
+    // testid) are not in the markup — the link's presence and its text are.
+    expect(html).toContain("<a>raw evidence on the change</a>");
+    expect(html.toLowerCase(), "no CVE list is stored, so none is drawn").not.toContain("cve");
+  });
+
+  it("with no scans and no exports, both absences are stated in the dialog too", () => {
+    const html = renderToStaticMarkup(<ScanSignReviewBody artifact={artifact()} />);
+    expect(html).toContain("not run — no scan result recorded");
+    expect(html).toContain("not signed yet — the promotion manifest is signed at export to a peer");
   });
 });

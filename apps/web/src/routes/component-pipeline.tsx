@@ -11,9 +11,8 @@ import {
   GitBranch,
   Package,
   Plus,
-  Power,
-  PowerOff,
   Server,
+  ShieldCheck,
   SlidersHorizontal,
   Trash2,
   Unlink,
@@ -40,9 +39,11 @@ import {
   type DeleteSourceMappingRequest,
   type ExecutorType,
   type GraphObject,
+  type InstanceRole,
   type PipelineClassification
 } from "@scp/schemas";
 import { client } from "../lib/client";
+import { useAuth } from "../lib/auth-context";
 import { componentPipelineKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
 import { cn, focusRing } from "../lib/utils";
@@ -55,6 +56,14 @@ import { Skeleton } from "../components/ui/skeleton";
 import { Alert } from "../components/ui/alert";
 import { Input } from "../components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow
+} from "../components/ui/table";
 import {
   Dialog,
   DialogContent,
@@ -203,6 +212,19 @@ export const LANES: readonly Lane[] = [
  *  it shipped after `/v1` did; absent/null means an OLDER SERVER, not "none" (`state: "none"` is
  *  itself a value the server always emits once it knows the field). */
 type ComponentPipelineRegistry = NonNullable<ComponentPipelineResponse["registry"]>;
+
+/**
+ * THE ARTIFACT and its change-scoped facts (§9.3) — optional on the wire for the same reason as
+ * `registry`. Three readings, and this file keeps them apart everywhere it renders one:
+ *   `undefined` — an OLDER SERVER; nothing is known either way (the pre-§9.3 "not observed" copy);
+ *   `null`      — the server SAYS no change of this component carries an artifact digest ("no
+ *                 artifact yet" — a stated absence);
+ *   an object   — the pick, stated (`changeId`/`changeName`), and every fact read from it.
+ */
+type ComponentPipelineArtifact = NonNullable<ComponentPipelineResponse["artifact"]>;
+type ArtifactOnWire = ComponentPipelineArtifact | null | undefined;
+type PromotionExport = ComponentPipelineArtifact["signing"]["promotionExports"][number];
+type SbomRef = NonNullable<ComponentPipelineArtifact["sbom"]>;
 
 /** The target's substrate facet as the wire carries it on both stage shapes (§9.1). */
 type DeploymentTargetFacet = Pick<
@@ -1011,24 +1033,48 @@ export function arrowInto(
  *     (`data.registry.state !== "none"` — pipeline-substrate-registry-scan.md §9.2): an outpost
  *     builds nothing, but its registry still receives the promoted image, and leaving the node out
  *     there would say the image lands nowhere. The node carries the per-site `registry` fact so
- *     `RegistryNode` can NAME it; its body is still the explicit "not observed yet" (§9.3 is what
- *     gives it a digest), which is the same unknown-not-blank rule the version cell follows.
+ *     `RegistryNode` can NAME it; its body is the latest artifact digest when §9.3 projected one,
+ *     else the explicit "no artifact digest recorded yet" — the same unknown/absence-not-blank rule
+ *     the version cell follows.
+ *   - **scan-sign** (§9.3, owner §7.2) appears ONLY on the COMMANDER — the scan at source is what
+ *     authorises a cross-boundary transfer (ADR-0013), and the commander alone signs a promotion
+ *     manifest; an outpost neither scans at source nor signs, so drawing the node there would claim
+ *     a step this site never performs. It sits after Registry and before Config, and is drawn where
+ *     a registry node is (something produces or receives an artifact here) or where an artifact is
+ *     already projected — a software lane that starts at a config change and holds no artifact
+ *     would otherwise carry a permanently-"no artifact yet" box, the same decoration argument that
+ *     keeps Build conditional. `instanceRole` is a PARAMETER (read by the page off `useAuth()`, the
+ *     way `router.tsx`/`AppShell.tsx` do) so this stays a pure function the tests can drive.
  */
 type LaneNode =
   | { kind: "source"; key: string; label: string; sources: ComponentPipelineResponse["sources"] }
-  | { kind: "build"; key: string; bindings: ComponentPipelineStage["bindings"] }
-  | { kind: "registry"; key: string; registry: ComponentPipelineRegistry | null }
+  | {
+      kind: "build";
+      key: string;
+      bindings: ComponentPipelineStage["bindings"];
+      artifact: ArtifactOnWire;
+    }
+  | {
+      kind: "registry";
+      key: string;
+      registry: ComponentPipelineRegistry | null;
+      artifact: ArtifactOnWire;
+    }
+  | { kind: "scan-sign"; key: string; artifact: ArtifactOnWire }
   | { kind: "wave"; key: string; wave: JourneyWave };
 
 /**
  * Builds one lane's node chain. Exported for `component-pipeline-continuous.test.tsx` — which nodes
- * appear, and in what order, is the contract this view now IS. `registry` is optional on the wire
- * (older servers), so a caller may omit it: the pre-§9.2 chain then comes back unchanged.
+ * appear, and in what order, is the contract this view now IS. `registry` and `artifact` are
+ * optional on the wire (older servers), so a caller may omit them: the pre-§9.2 chain then comes
+ * back unchanged. `instanceRole` omitted/undefined reads as "not known to be the commander" — the
+ * Scan & sign node is never drawn on a guess.
  */
 export function laneNodes(
-  data: Pick<ComponentPipelineResponse, "sources" | "stages" | "registry">,
+  data: Pick<ComponentPipelineResponse, "sources" | "stages" | "registry" | "artifact">,
   waves: JourneyWave[],
-  lane: Lane
+  lane: Lane,
+  instanceRole?: InstanceRole | undefined
 ): LaneNode[] {
   const sourcesIn = (categories: readonly string[]) =>
     data.sources.filter((s) => categories.includes(s.category));
@@ -1048,15 +1094,29 @@ export function laneNodes(
   // stated absence, which does not draw a node on its own; a null/absent field is an older server,
   // which likewise draws nothing beyond what `buildsHere` earns.
   const registryDeclaredHere = registry !== null && registry.state !== "none";
+  // `undefined` (older server) is carried through as-is: each node states "not known" for it,
+  // which is a different sentence from `null`'s "no artifact yet".
+  const artifact: ArtifactOnWire = data.artifact;
 
   if (buildsHere) {
     nodes.push({ kind: "source", key: "src-build", label: "Source code", sources: buildSources });
-    nodes.push({ kind: "build", key: "build", bindings: uniqueBuilds });
+    nodes.push({ kind: "build", key: "build", bindings: uniqueBuilds, artifact });
   }
   // Between build and config, where the GLOSSARY puts it — and only in a lane that has one at all
   // (infra produces no registry artifact to advance by digest).
-  if (lane.hasRegistry && (buildsHere || registryDeclaredHere)) {
-    nodes.push({ kind: "registry", key: "registry", registry });
+  const drawsRegistry = lane.hasRegistry && (buildsHere || registryDeclaredHere);
+  if (drawsRegistry) {
+    nodes.push({ kind: "registry", key: "registry", registry, artifact });
+  }
+  // Scan & sign — commander only, and only where an artifact exists or can (see the doc above).
+  // `lane.hasRegistry` keeps it out of the infra lane on its own: nothing there is scanned at
+  // source or signed into a promotion manifest as an OCI/blob artifact.
+  if (
+    lane.hasRegistry &&
+    instanceRole === "commander" &&
+    (drawsRegistry || (artifact !== null && artifact !== undefined))
+  ) {
+    nodes.push({ kind: "scan-sign", key: "scan-sign", artifact });
   }
 
   const stageSources = sourcesIn(lane.stageCategories);
@@ -1140,13 +1200,16 @@ function ConsoleLink({
  * "repo, build, registry, deploy" legible at a glance (owner, 2026-08-10). The `data-node-icon`
  * attribute is the distinctness contract `component-pipeline-continuous.test.tsx` pins.
  */
-type NodeKind = "source" | "config" | "build" | "registry" | "stage" | "unplaced";
+type NodeKind = "source" | "config" | "build" | "registry" | "scan-sign" | "stage" | "unplaced";
 
 const NODE_ICON: Record<NodeKind, { icon: LucideIcon; tint: string }> = {
   source: { icon: GitBranch, tint: "bg-sky-50 text-sky-700" },
   config: { icon: SlidersHorizontal, tint: "bg-teal-50 text-teal-700" },
   build: { icon: Wrench, tint: "bg-amber-50 text-amber-700" },
   registry: { icon: Package, tint: "bg-violet-50 text-violet-700" },
+  // shield-check — the scan at source that AUTHORISES a crossing, and the manifest the commander
+  // signs to attest it (§9.3). Emerald, so it does not borrow the registry's violet or a stage's slate.
+  "scan-sign": { icon: ShieldCheck, tint: "bg-emerald-50 text-emerald-700" },
   stage: { icon: Server, tint: "bg-slate-100 text-slate-600" },
   // dashed circle — declared, never reached (§1.6's "structurally not-yet" family)
   unplaced: { icon: CircleDashed, tint: "bg-slate-50 text-slate-400" }
@@ -1198,12 +1261,25 @@ function NodeHeading({
   );
 }
 
+/**
+ * A node's REVIEW affordance (§9.3, owner §7.2: "clickable only once the fact exists"). When
+ * `review` is given the tile IS a click target — a `Review` button in its header carrying the
+ * `aria-label` the tests pin, and the card body opens the same dialog on click (links and other
+ * buttons inside keep their own behaviour). When it is omitted there is NO affordance at all: no
+ * button, no pointer, no hover — a tile with nothing to review must not look like one that has.
+ */
+interface NodeReview {
+  ariaLabel: string;
+  onOpen: () => void;
+}
+
 function NodeShell({
   kind,
   title,
   hint,
   testid,
   muted,
+  review,
   children
 }: {
   kind: NodeKind;
@@ -1211,15 +1287,50 @@ function NodeShell({
   hint: React.ReactNode;
   testid: string;
   muted?: boolean;
+  review?: NodeReview;
   children: React.ReactNode;
 }): React.JSX.Element {
   return (
     <Card
-      className={`w-full ${muted ? "border-dashed bg-slate-50/60 shadow-none" : ""}`}
+      className={cn(
+        "w-full",
+        muted && "border-dashed bg-slate-50/60 shadow-none",
+        review && "cursor-pointer transition-colors hover:border-slate-400"
+      )}
       data-testid={testid}
+      data-reviewable={review ? "true" : undefined}
+      onClick={
+        review
+          ? (event) => {
+              // A click on a link or a button inside the tile is THAT control's click, not the
+              // tile's — the review button below is the accessible control for the same action.
+              if ((event.target as HTMLElement).closest("a,button")) return;
+              review.onOpen();
+            }
+          : undefined
+      }
     >
       <CardHeader className="pb-2">
-        <NodeHeading kind={kind} title={title} hint={hint} muted={muted} />
+        <NodeHeading
+          kind={kind}
+          title={title}
+          hint={hint}
+          muted={muted}
+          right={
+            review ? (
+              <Button
+                variant="outline"
+                size="sm"
+                aria-label={review.ariaLabel}
+                title={review.ariaLabel}
+                onClick={review.onOpen}
+                data-testid={`${testid}-review`}
+              >
+                Review
+              </Button>
+            ) : undefined
+          }
+        />
       </CardHeader>
       <CardContent className="space-y-1 pl-[3.4rem] text-xs text-slate-600">{children}</CardContent>
     </Card>
@@ -2079,40 +2190,389 @@ export function SourceOpenCloseBody({
   );
 }
 
-/** A BUILD NODE — what turns the source into an artifact. Hoisted out of the deploy stages: a build
- *  happens once per release, not once per place, whatever scope its binding happens to hang off. */
-function BuildNode({
-  bindings
+/* ------------------------------------------------------------------------------------------------
+ * ARTIFACT FACTS — small readers shared by the Build, Registry and Scan & sign tiles (§9.3).
+ * Every helper READS a stored value or states its absence; none derives a value from a name.
+ * ---------------------------------------------------------------------------------------------- */
+
+/** A digest short enough for a tile row — `sha256:0123456789ab…`. The FULL value always travels in
+ *  the element's `title`, so nothing is lost, only folded. */
+export function shortDigest(digest: string): string {
+  const [algo, hex] = digest.includes(":") ? digest.split(/:(.+)/, 2) : [null, digest];
+  const head = (hex ?? "").slice(0, 12);
+  const folded = (hex ?? "").length > 12 ? `${head}…` : (hex ?? "");
+  return algo ? `${algo}:${folded}` : folded;
+}
+
+/** A short key fingerprint — the first 16 hex characters, folded. */
+function shortFingerprint(fingerprint: string): string {
+  return fingerprint.length > 16 ? `${fingerprint.slice(0, 16)}…` : fingerprint;
+}
+
+/** A timestamp for a tile ROW: the browser's locale form when the value parses as a date, else the
+ *  stored string verbatim. Callers put the raw value in `title` — the dialogs render it verbatim. */
+function whenLabel(value: string): string {
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? value : new Date(ms).toLocaleString();
+}
+
+/** The digest a tile calls "the latest" — the LAST one the change's `sourceRef` lists (the array is
+ *  carried verbatim; `promotionExports` follows the same newest-last convention). Null when the
+ *  change lists none — a stated absence the tiles say out loud. */
+export function latestDigest(artifact: ComponentPipelineArtifact): string | null {
+  return artifact.digests.length > 0 ? (artifact.digests[artifact.digests.length - 1] ?? null) : null;
+}
+
+/** The newest export stamp — newest LAST (`signing.promotionExports` is append order, §9.4). */
+export function latestExport(artifact: ComponentPipelineArtifact): PromotionExport | null {
+  const exports = artifact.signing.promotionExports;
+  return exports.length > 0 ? (exports[exports.length - 1] ?? null) : null;
+}
+
+/** `location` as an `href` ONLY when it parses as an http(s) URL — an OCI referrer ref or an
+ *  artifact-store URI is stored verbatim and rendered as text, never guessed into a link. */
+export function sbomLocationHref(location: string): string | null {
+  try {
+    const url = new URL(location);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The SBOM tile line — `format specVersion · scanner scannerVersion · generatedAt`, joining ONLY
+ *  the parts the reference carries (every field but `format` is optional on `SbomRefSchema`). */
+export function sbomLine(sbom: SbomRef): string {
+  const parts = [
+    [sbom.format, sbom.specVersion].filter(Boolean).join(" "),
+    [sbom.scanner, sbom.scannerVersion].filter(Boolean).join(" "),
+    sbom.generatedAt ?? ""
+  ].filter((part) => part.length > 0);
+  return parts.join(" · ");
+}
+
+/** The peer an export was signed FOR — its `name` when the server still knew one, else its domain
+ *  id verbatim (a stored identifier, not a guess). */
+function peerLabel(entry: PromotionExport): string {
+  return entry.peerName ?? entry.peerDomainId;
+}
+
+/** Whether a Build tile has anything to REVIEW: an SBOM reference or at least one signed export. */
+export function buildHasReview(artifact: ArtifactOnWire): boolean {
+  return Boolean(artifact && (artifact.sbom !== null || artifact.signing.promotionExports.length > 0));
+}
+
+/** Whether a Scan & sign tile has anything to REVIEW: at least one scan row or one signed export. */
+export function scanSignHasReview(artifact: ArtifactOnWire): boolean {
+  return Boolean(artifact && (artifact.scans.length > 0 || artifact.signing.promotionExports.length > 0));
+}
+
+/** One line per rule; the field labels are the wire's own names. */
+function ArtifactFieldList({
+  rows,
+  testid
 }: {
-  bindings: ComponentPipelineStage["bindings"];
+  rows: readonly { label: string; value: React.ReactNode; mono?: boolean }[];
+  testid?: string;
 }): React.JSX.Element {
   return (
-    <NodeShell
-      kind="build"
-      title="Build"
-      hint="turns the source into an artifact — runs once per release, not once per place"
-      testid="pipeline-node-build"
-      muted={bindings.length === 0}
-    >
-      {bindings.length === 0 ? (
-        <p className="text-slate-400">
-          No build executor is bound — this component&rsquo;s artifact is built upstream of
-          CommanderSCP.
-        </p>
-      ) : (
-        bindings.map((binding) => (
-          <div key={`${binding.type}:${binding.externalRef}`} data-testid="pipeline-build-executor">
-            <span className="text-slate-400">{binding.type}</span>{" "}
-            <ConsoleLink href={binding.url} testid="pipeline-build-link">
-              <span className="font-mono">{binding.externalRef || "—"}</span>
-              {binding.executionSystemName ? ` @ ${binding.executionSystemName}` : ""}
-            </ConsoleLink>
-          </div>
-        ))
-      )}
-    </NodeShell>
+    <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-xs" data-testid={testid}>
+      {rows.map((row) => (
+        <div key={row.label} className="contents">
+          <dt className="text-slate-500">{row.label}</dt>
+          <dd className={cn("min-w-0 text-slate-800", row.mono && "break-all font-mono")}>
+            {row.value}
+          </dd>
+        </div>
+      ))}
+    </dl>
   );
 }
+
+/* ------------------------------------------------------------------------------------------------
+ * BUILD
+ * ---------------------------------------------------------------------------------------------- */
+
+/**
+ * A BUILD NODE — what turns the source into an artifact. Hoisted out of the deploy stages: a build
+ * happens once per release, not once per place, whatever scope its binding happens to hang off.
+ *
+ * §9.3 (owner §7.2) hangs two ARTIFACT facts under the executor line, each present or stated absent:
+ *   - SBOM — the reference the first-party change report carried (`sourceRef.sbom`; SCP never
+ *     generates one and stores no bytes), or "no SBOM reported for this artifact";
+ *   - PM   — the promotion manifest the commander signed at the newest export (§9.4), or, on the
+ *     commander, "not created — a promotion manifest is created at export to a peer". On an outpost
+ *     the imported manifest (`sourceRef.promotionManifest`, written by the importer) is NOT on this
+ *     wire — the tile says so ("imported manifest not projected yet") rather than inventing one.
+ * The tile is clickable ONLY when an SBOM or a signed export exists (`buildHasReview`); the review
+ * dialog renders both verbatim.
+ */
+function BuildNode({
+  bindings,
+  artifact,
+  instanceRole
+}: {
+  bindings: ComponentPipelineStage["bindings"];
+  artifact: ArtifactOnWire;
+  instanceRole: InstanceRole | undefined;
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const reviewable = buildHasReview(artifact);
+  return (
+    <>
+      <NodeShell
+        kind="build"
+        title="Build"
+        hint="turns the source into an artifact — runs once per release, not once per place"
+        testid="pipeline-node-build"
+        muted={bindings.length === 0 && !reviewable}
+        review={
+          reviewable
+            ? { ariaLabel: "Review SBOM and promotion manifest", onOpen: () => setOpen(true) }
+            : undefined
+        }
+      >
+        {bindings.length === 0 ? (
+          <p className="text-slate-400">
+            No build executor is bound — this component&rsquo;s artifact is built upstream of
+            CommanderSCP.
+          </p>
+        ) : (
+          bindings.map((binding) => (
+            <div key={`${binding.type}:${binding.externalRef}`} data-testid="pipeline-build-executor">
+              <span className="text-slate-400">{binding.type}</span>{" "}
+              <ConsoleLink href={binding.url} testid="pipeline-build-link">
+                <span className="font-mono">{binding.externalRef || "—"}</span>
+                {binding.executionSystemName ? ` @ ${binding.executionSystemName}` : ""}
+              </ConsoleLink>
+            </div>
+          ))
+        )}
+        <BuildArtifactLines artifact={artifact} instanceRole={instanceRole} />
+      </NodeShell>
+      {artifact ? (
+        <BuildReviewDialog open={open} onOpenChange={setOpen} artifact={artifact} />
+      ) : null}
+    </>
+  );
+}
+
+/** The SBOM and PM lines of the Build tile — see `BuildNode`. */
+function BuildArtifactLines({
+  artifact,
+  instanceRole
+}: {
+  artifact: ArtifactOnWire;
+  instanceRole: InstanceRole | undefined;
+}): React.JSX.Element | null {
+  if (artifact === undefined) {
+    // Older server: the `artifact` field is not on the wire, so neither fact is known either way.
+    return null;
+  }
+  if (artifact === null) {
+    return (
+      <p className="text-slate-400" data-testid="pipeline-build-artifact" data-artifact-state="none">
+        no artifact yet — no change of this component reports an artifact digest
+      </p>
+    );
+  }
+  const newest = latestExport(artifact);
+  return (
+    <>
+      <p data-testid="pipeline-build-sbom" data-sbom-state={artifact.sbom ? "present" : "absent"}>
+        <span className="text-slate-400">SBOM</span>{" "}
+        {artifact.sbom ? (
+          (() => {
+            const href = sbomLocationHref(artifact.sbom.location);
+            const line = sbomLine(artifact.sbom);
+            return href ? (
+              <ConsoleLink href={href} testid="pipeline-build-sbom-link">
+                {line}
+              </ConsoleLink>
+            ) : (
+              <span title={artifact.sbom.location}>{line}</span>
+            );
+          })()
+        ) : (
+          <span className="text-slate-400">no SBOM reported for this artifact</span>
+        )}
+      </p>
+      <p data-testid="pipeline-build-pm" data-pm-state={newest ? "signed" : "absent"}>
+        <span className="text-slate-400">PM</span>{" "}
+        {newest ? (
+          <span title={`Promotion manifest signed at export ${newest.exportedAt} for peer ${newest.peerDomainId}.`}>
+            signed for <span className="font-mono">{peerLabel(newest)}</span> · {whenLabel(newest.exportedAt)} ·{" "}
+            {newest.manifest.artifacts.length} artifact{newest.manifest.artifacts.length === 1 ? "" : "s"}
+          </span>
+        ) : instanceRole === "commander" ? (
+          <span className="text-slate-400">
+            not created — a promotion manifest is created at export to a peer
+          </span>
+        ) : (
+          // The importer stores `sourceRef.promotionManifest` + `manifestSignature` (§8 "PM"), but
+          // the component-pipeline wire carries no field for them yet — so this is an honest
+          // "not projected", never a claim about whether one was imported.
+          <span
+            className="text-slate-400"
+            title="This site's imported promotion manifest (sourceRef.promotionManifest) is not projected on the component pipeline yet — the wire has no field for it, so nothing is claimed either way."
+          >
+            imported manifest not projected yet
+          </span>
+        )}
+      </p>
+    </>
+  );
+}
+
+/** The Build tile's review dialog — the Radix shell around `BuildReviewBody`. */
+function BuildReviewDialog({
+  open,
+  onOpenChange,
+  artifact
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  artifact: ComponentPipelineArtifact;
+}): React.JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl" data-testid="build-review-dialog">
+        <DialogHeader>
+          <DialogTitle>SBOM and promotion manifest</DialogTitle>
+        </DialogHeader>
+        <BuildReviewBody artifact={artifact} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The Build review dialog's CONTENT, portal-free — exported for the test (Radix portals nothing
+ * under renderToStaticMarkup; same reason `SourceOpenCloseBody` is exported). Every field is the
+ * stored value VERBATIM: the SBOM reference as reported, and each signed export's manifest as the
+ * commander stamped it — the manifest, whether a signature is present, and the key fingerprint.
+ */
+export function BuildReviewBody({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element {
+  const exports = artifact.signing.promotionExports;
+  return (
+    <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-sm text-slate-700">
+      <span className="sr-only">SBOM and promotion manifest</span>
+      <p className="text-xs text-slate-500">
+        change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
+      </p>
+      <section data-testid="build-review-sbom">
+        <SectionLabel>SBOM reference</SectionLabel>
+        {artifact.sbom ? (
+          <ArtifactFieldList
+            rows={[
+              { label: "format", value: artifact.sbom.format },
+              { label: "specVersion", value: artifact.sbom.specVersion ?? "—" },
+              { label: "digest", value: artifact.sbom.digest, mono: true },
+              {
+                label: "location",
+                value: (() => {
+                  const href = sbomLocationHref(artifact.sbom.location);
+                  return href ? (
+                    <ConsoleLink href={href}>{artifact.sbom.location}</ConsoleLink>
+                  ) : (
+                    artifact.sbom.location
+                  );
+                })(),
+                mono: true
+              },
+              { label: "mediaType", value: artifact.sbom.mediaType ?? "—" },
+              { label: "signatureRef", value: artifact.sbom.signatureRef ?? "—", mono: true },
+              { label: "scanner", value: artifact.sbom.scanner ?? "—" },
+              { label: "scannerVersion", value: artifact.sbom.scannerVersion ?? "—" },
+              { label: "generatedAt", value: artifact.sbom.generatedAt ?? "—", mono: true }
+            ]}
+          />
+        ) : (
+          <p className="text-xs text-slate-400">no SBOM reported for this artifact</p>
+        )}
+      </section>
+      <section data-testid="build-review-pm">
+        <SectionLabel>Promotion manifest{exports.length > 1 ? "s" : ""}</SectionLabel>
+        {exports.length === 0 ? (
+          <p className="text-xs text-slate-400">
+            not created — a promotion manifest is created at export to a peer
+          </p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {exports.map((entry) => (
+              <div
+                key={`${entry.peerDomainId}:${entry.exportedAt}:${entry.checksum}`}
+                className="rounded-md border border-slate-200 p-3"
+                data-testid="build-review-export"
+              >
+                <ArtifactFieldList
+                  rows={[
+                    { label: "manifestVersion", value: entry.manifest.manifestVersion, mono: true },
+                    { label: "createdAt", value: entry.manifest.createdAt, mono: true },
+                    { label: "exporterDomainId", value: entry.manifest.exporterDomainId, mono: true },
+                    {
+                      label: "peer",
+                      value: (
+                        <>
+                          {entry.peerName ? <>{entry.peerName} · </> : null}
+                          <span className="font-mono">{entry.manifest.peerDomainId}</span>
+                        </>
+                      )
+                    },
+                    { label: "changeUrn", value: entry.manifest.changeUrn, mono: true },
+                    { label: "exportedAt", value: entry.exportedAt, mono: true },
+                    {
+                      label: "signature",
+                      value: entry.manifestSignature.length > 0 ? "present" : "absent"
+                    },
+                    {
+                      label: "keyFingerprint",
+                      value: entry.keyFingerprint ?? "not recorded",
+                      mono: true
+                    }
+                  ]}
+                />
+                <Table className="mt-2">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>type</TableHead>
+                      <TableHead>digest</TableHead>
+                      <TableHead>signatureRef</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {entry.manifest.artifacts.map((a) => (
+                      <TableRow key={`${a.type}:${a.digest}`} data-testid="build-review-artifact">
+                        <TableCell>{a.type}</TableCell>
+                        <TableCell className="break-all font-mono text-xs">{a.digest}</TableCell>
+                        <TableCell className="break-all font-mono text-xs">
+                          {a.signatureRef ?? "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/** Exported ONLY for `component-pipeline-continuous.test.tsx`. */
+export function BuildNodeForTest(props: {
+  bindings: ComponentPipelineStage["bindings"];
+  artifact: ArtifactOnWire;
+  instanceRole?: InstanceRole;
+}): React.JSX.Element {
+  return <BuildNode bindings={props.bindings} artifact={props.artifact} instanceRole={props.instanceRole} />;
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * REGISTRY
+ * ---------------------------------------------------------------------------------------------- */
 
 /**
  * A REGISTRY NODE — where the built artifact lands, and what promotion advances by digest.
@@ -2133,29 +2593,65 @@ function BuildNode({
  *
  * A null/absent `registry` is an older server; the header then falls back to the pre-§9.2 sentence.
  *
- * The BODY is still an explicit unknown: the digest and the scan verdict that give the node its
- * value are §9.3, and there is no `artifact` object type to read from yet. Saying "not observed" is
- * the same rule the version cell follows: an explicit unknown, never a confident blank.
+ * The BODY is the latest artifact digest (§9.3): the last digest the picked change's `sourceRef`
+ * lists, folded with the full value in `title`, and WHICH change it came from. Absent, it says so —
+ * "no artifact digest recorded yet" when the server projected `artifact` and found none (a stated
+ * absence), or the pre-§9.3 "not observed" when the field is not on the wire at all (an unknown).
  */
 function RegistryNode({
-  registry
+  registry,
+  artifact
 }: {
   registry: ComponentPipelineRegistry | null;
+  artifact: ArtifactOnWire;
 }): React.JSX.Element {
+  const digest = artifact ? latestDigest(artifact) : null;
   return (
     <NodeShell
       kind="registry"
       title="Registry"
       hint={<RegistryHeadline registry={registry} />}
       testid="pipeline-node-registry"
-      muted
+      muted={digest === null}
     >
-      <p
-        className="italic text-slate-400"
-        title="The artifact digest and its scan verdict are observe-enrichment signals SCP does not capture yet — coordination-ui-views.md Layer B."
-      >
-        not observed yet — no artifact digest or scan verdict is captured
-      </p>
+      {digest !== null && artifact ? (
+        <p data-testid="pipeline-registry-digest">
+          <span
+            className="font-mono text-slate-800"
+            title={
+              artifact.digests.length > 1
+                ? `${digest} — the last of ${artifact.digests.length} digests this change lists: ${artifact.digests.join(", ")}`
+                : digest
+            }
+          >
+            {shortDigest(digest)}
+          </span>
+          {artifact.digests.length > 1 ? (
+            <span className="text-slate-400"> +{artifact.digests.length - 1} more</span>
+          ) : null}{" "}
+          <span className="text-slate-500">
+            from change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
+          </span>
+        </p>
+      ) : artifact === undefined ? (
+        <p
+          className="italic text-slate-400"
+          data-testid="pipeline-registry-digest"
+          data-artifact-state="unknown"
+          title="This server does not project the artifact on the component pipeline, so nothing is known here either way."
+        >
+          not observed yet — no artifact digest or scan verdict is captured
+        </p>
+      ) : (
+        <p
+          className="text-slate-400"
+          data-testid="pipeline-registry-digest"
+          data-artifact-state="none"
+          title="No change of this component carries an artifact digest in its sourceRef — the first-party change report is the sole way one arrives."
+        >
+          no artifact digest recorded yet
+        </p>
+      )}
     </NodeShell>
   );
 }
@@ -2163,11 +2659,350 @@ function RegistryNode({
 /** Exported ONLY for `component-pipeline-continuous.test.tsx` — the three-state header is a
  *  contract, and rendering the whole page would drag in the query client for no added coverage. */
 export function RegistryNodeForTest({
-  registry
+  registry,
+  artifact
 }: {
   registry: ComponentPipelineRegistry | null;
+  artifact?: ArtifactOnWire;
 }): React.JSX.Element {
-  return <RegistryNode registry={registry} />;
+  return <RegistryNode registry={registry} artifact={artifact} />;
+}
+
+/* ------------------------------------------------------------------------------------------------
+ * SCAN & SIGN — commander only
+ * ---------------------------------------------------------------------------------------------- */
+
+/** The E6 verdict as the tile words it — `not_run` reads as "not run", the others verbatim. */
+function exportGateLabel(gate: ComponentPipelineArtifact["exportGate"]): string {
+  return gate === "not_run" ? "not run" : gate;
+}
+
+/**
+ * THE SCAN & SIGN NODE (§9.3, owner §7.2) — the commander's scan AT SOURCE, which is what authorises
+ * a cross-boundary transfer (ADR-0013), and the promotion manifest it SIGNS at export (§9.4). Two
+ * independent "not yet" facts, each stated on its own line, never merged into one status.
+ *
+ * States, top to bottom:
+ *   - artifact `null`  → "no artifact yet — nothing to scan";
+ *   - no scan rows     → "not run — no scan result recorded for <digest>";
+ *   - rows             → one per (scanner, digest): `scanner version · digest · status · C H M L ·
+ *                        when`, the commander's own managed step marked "managed" (the wire's ONE
+ *                        discriminator; never inferred from the scanner);
+ *   then "export gate (E6): pass|fail|not run" (E6's own predicate, applied read-only), then the
+ *   sign lines — one per export "manifest signed for <peer> <when> (key <fp>)", or "not signed
+ *   yet — the promotion manifest is signed at export to a peer" — and the origin-signature line,
+ *   "not recorded" unless a `signatureRef` exists (SCP never signs an origin artifact, ADR-0015).
+ * Clickable ONLY when a scan row or an export exists (`scanSignHasReview`); the review dialog holds
+ * the full tables and a link to the change for the raw evidence. No CVE rows anywhere: none are
+ * stored (§8 "Scan").
+ */
+function ScanSignNode({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
+  const [open, setOpen] = useState(false);
+  const reviewable = scanSignHasReview(artifact);
+  return (
+    <>
+      <NodeShell
+        kind="scan-sign"
+        title="Scan & sign"
+        hint="at source — authorises cross-boundary transfer"
+        testid="pipeline-node-scan-sign"
+        muted={!reviewable}
+        review={
+          reviewable
+            ? { ariaLabel: "Review scan and signing results", onOpen: () => setOpen(true) }
+            : undefined
+        }
+      >
+        <ScanSignLines artifact={artifact} />
+      </NodeShell>
+      {artifact ? (
+        <ScanSignReviewDialog open={open} onOpenChange={setOpen} artifact={artifact} />
+      ) : null}
+    </>
+  );
+}
+
+function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
+  if (artifact === undefined) {
+    return (
+      <p
+        className="italic text-slate-400"
+        data-testid="pipeline-scan-state"
+        data-scan-state="unknown"
+        title="This server does not project the artifact on the component pipeline, so nothing is known here either way."
+      >
+        not observed — this server does not project scan or signing results
+      </p>
+    );
+  }
+  if (artifact === null) {
+    return (
+      <p className="text-slate-400" data-testid="pipeline-scan-state" data-scan-state="no-artifact">
+        no artifact yet — nothing to scan
+      </p>
+    );
+  }
+  const digest = latestDigest(artifact);
+  const exports = artifact.signing.promotionExports;
+  return (
+    <>
+      {artifact.scans.length === 0 ? (
+        <p className="text-slate-400" data-testid="pipeline-scan-state" data-scan-state="not-run">
+          not run — no scan result recorded for{" "}
+          {digest ? (
+            <span className="font-mono" title={digest}>
+              {shortDigest(digest)}
+            </span>
+          ) : (
+            "this artifact"
+          )}
+        </p>
+      ) : (
+        <ul className="space-y-0.5" data-testid="pipeline-scan-state" data-scan-state="rows">
+          {artifact.scans.map((scan) => (
+            <li key={scan.controlRunId} data-testid="pipeline-scan-row" data-managed={scan.managed}>
+              <span className="text-slate-800">
+                {scan.scanner ?? scan.method} {scan.scannerVersion}
+              </span>
+              {" · "}
+              <span className="font-mono" title={scan.digest}>
+                {shortDigest(scan.digest)}
+              </span>
+              {" · "}
+              <span className={scan.status === "pass" ? "text-emerald-700" : scan.status === "fail" ? "text-red-700" : "text-amber-700"}>
+                {scan.status}
+              </span>
+              {" · "}
+              {scan.counts ? (
+                <span title="critical / high / medium / low counts, as the scanner reported them">
+                  C{scan.counts.critical} H{scan.counts.high} M{scan.counts.medium} L{scan.counts.low}
+                </span>
+              ) : (
+                <span className="text-slate-400">counts not recorded</span>
+              )}
+              {" · "}
+              <span title={scan.evaluatedAt}>{whenLabel(scan.evaluatedAt)}</span>
+              {scan.managed ? (
+                <>
+                  {" "}
+                  <span
+                    className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600"
+                    title="Run by the commander's own promotion scan step at export — not an org-pipeline control."
+                  >
+                    managed
+                  </span>
+                </>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p data-testid="pipeline-scan-export-gate" data-export-gate={artifact.exportGate}>
+        <span className="text-slate-400">export gate (E6):</span>{" "}
+        <span
+          className={
+            artifact.exportGate === "pass"
+              ? "text-emerald-700"
+              : artifact.exportGate === "fail"
+                ? "text-red-700"
+                : "text-slate-500"
+          }
+          title="E6's own predicate, applied read-only: passes when a digest-bound pass row exists for every non-blob artifact."
+        >
+          {exportGateLabel(artifact.exportGate)}
+        </span>
+      </p>
+      {exports.length === 0 ? (
+        <p className="text-slate-400" data-testid="pipeline-sign-state" data-sign-state="not-signed">
+          not signed yet — the promotion manifest is signed at export to a peer
+        </p>
+      ) : (
+        <ul className="space-y-0.5" data-testid="pipeline-sign-state" data-sign-state="signed">
+          {exports.map((entry) => (
+            <li
+              key={`${entry.peerDomainId}:${entry.exportedAt}:${entry.checksum}`}
+              data-testid="pipeline-sign-row"
+            >
+              manifest signed for <span className="font-mono">{peerLabel(entry)}</span>{" "}
+              <span title={entry.exportedAt}>{whenLabel(entry.exportedAt)}</span>
+              {entry.keyFingerprint ? (
+                <>
+                  {" "}
+                  <span className="text-slate-500" title={entry.keyFingerprint}>
+                    (key <span className="font-mono">{shortFingerprint(entry.keyFingerprint)}</span>)
+                  </span>
+                </>
+              ) : (
+                <span className="text-slate-400"> (key fingerprint not recorded)</span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <p data-testid="pipeline-origin-signature">
+        <span className="text-slate-400">origin artifact signature:</span>{" "}
+        {artifact.signing.originSignatureRefs.length === 0 ? (
+          <span className="text-slate-400">not recorded</span>
+        ) : (
+          <span className="break-all font-mono">{artifact.signing.originSignatureRefs.join(", ")}</span>
+        )}
+      </p>
+    </>
+  );
+}
+
+/** The Scan & sign review dialog — the Radix shell around `ScanSignReviewBody`. */
+function ScanSignReviewDialog({
+  open,
+  onOpenChange,
+  artifact
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  artifact: ComponentPipelineArtifact;
+}): React.JSX.Element {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-3xl" data-testid="scan-sign-review-dialog">
+        <DialogHeader>
+          <DialogTitle>Scan and signing results</DialogTitle>
+        </DialogHeader>
+        <ScanSignReviewBody artifact={artifact} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * The Scan & sign review dialog's CONTENT, portal-free — exported for the test. A scan table with
+ * every `ScanRunSummary` field (threshold as its JSON when present, digest match, managed), an
+ * exports table, and a link to the change's detail page, which renders every control run's raw
+ * evidence JSON (`change-detail.tsx`) — the one place the underlying rows live.
+ */
+export function ScanSignReviewBody({ artifact }: { artifact: ComponentPipelineArtifact }): React.JSX.Element {
+  const exports = artifact.signing.promotionExports;
+  return (
+    <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-sm text-slate-700">
+      <span className="sr-only">Scan and signing results</span>
+      <p className="text-xs text-slate-500">
+        change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span> · export
+        gate (E6): <span data-testid="scan-review-export-gate">{exportGateLabel(artifact.exportGate)}</span>
+      </p>
+      <section data-testid="scan-review-scans">
+        <SectionLabel>Scan results</SectionLabel>
+        {artifact.scans.length === 0 ? (
+          <p className="text-xs text-slate-400">not run — no scan result recorded</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>method</TableHead>
+                <TableHead>scanner</TableHead>
+                <TableHead>digest</TableHead>
+                <TableHead>digestMatch</TableHead>
+                <TableHead>status</TableHead>
+                <TableHead>counts</TableHead>
+                <TableHead>threshold</TableHead>
+                <TableHead>evaluatedAt</TableHead>
+                <TableHead>managed</TableHead>
+                <TableHead>controlRunId</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {artifact.scans.map((scan) => (
+                <TableRow key={scan.controlRunId} data-testid="scan-review-row">
+                  <TableCell>{scan.method}</TableCell>
+                  <TableCell>
+                    {scan.scanner} {scan.scannerVersion}
+                  </TableCell>
+                  <TableCell className="break-all font-mono text-xs">{scan.digest}</TableCell>
+                  <TableCell>
+                    {scan.digestMatch === null ? "not recorded" : scan.digestMatch ? "true" : "false"}
+                  </TableCell>
+                  <TableCell>{scan.status}</TableCell>
+                  <TableCell>
+                    {scan.counts
+                      ? `C${scan.counts.critical} H${scan.counts.high} M${scan.counts.medium} L${scan.counts.low}`
+                      : "not recorded"}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {scan.threshold ? JSON.stringify(scan.threshold) : "—"}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{scan.evaluatedAt}</TableCell>
+                  <TableCell>{scan.managed ? "managed" : "org pipeline"}</TableCell>
+                  <TableCell className="font-mono text-xs">{scan.controlRunId}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </section>
+      <section data-testid="scan-review-exports">
+        <SectionLabel>Signed exports</SectionLabel>
+        {exports.length === 0 ? (
+          <p className="text-xs text-slate-400">
+            not signed yet — the promotion manifest is signed at export to a peer
+          </p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>peer</TableHead>
+                <TableHead>exportedAt</TableHead>
+                <TableHead>checksum</TableHead>
+                <TableHead>keyFingerprint</TableHead>
+                <TableHead>signature</TableHead>
+                <TableHead>artifacts</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {exports.map((entry) => (
+                <TableRow
+                  key={`${entry.peerDomainId}:${entry.exportedAt}:${entry.checksum}`}
+                  data-testid="scan-review-export-row"
+                >
+                  <TableCell>
+                    {entry.peerName ? <>{entry.peerName} · </> : null}
+                    <span className="font-mono text-xs">{entry.peerDomainId}</span>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">{entry.exportedAt}</TableCell>
+                  <TableCell className="break-all font-mono text-xs">{entry.checksum}</TableCell>
+                  <TableCell className="break-all font-mono text-xs">
+                    {entry.keyFingerprint ?? "not recorded"}
+                  </TableCell>
+                  <TableCell>{entry.manifestSignature.length > 0 ? "present" : "absent"}</TableCell>
+                  <TableCell>{entry.manifest.artifacts.length}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </section>
+      <p data-testid="scan-review-origin-signature" className="text-xs">
+        <span className="text-slate-500">origin artifact signature:</span>{" "}
+        {artifact.signing.originSignatureRefs.length === 0 ? (
+          <span className="text-slate-400">not recorded</span>
+        ) : (
+          <span className="break-all font-mono">{artifact.signing.originSignatureRefs.join(", ")}</span>
+        )}
+      </p>
+      <p className="text-xs">
+        <Link
+          to="/changes/$id"
+          params={{ id: artifact.changeId }}
+          className={cn("underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900", focusRing)}
+          data-testid="scan-review-change-link"
+        >
+          raw evidence on the change
+        </Link>
+      </p>
+    </div>
+  );
+}
+
+/** Exported ONLY for `component-pipeline-continuous.test.tsx`. */
+export function ScanSignNodeForTest({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element {
+  return <ScanSignNode artifact={artifact} />;
 }
 
 /** The registry node's one-line header — see `RegistryNode` for the three states. */
@@ -2429,6 +3264,12 @@ export function ComponentPipelinePage({
   lane = LANES[0]!
 }: { lane?: Lane } = {}): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
+  // WHICH SITE THIS IS — the install-time `instanceRole` off `/auth/me`, read the way `router.tsx`
+  // and `AppShell.tsx` read it (§8 "Commander-only signal"). It decides whether the Scan & sign
+  // node is drawn at all and how the Build tile words an absent promotion manifest. Deliberately
+  // NOT `component.maintainedBy.role`, which is the object's origin, not this instance's role.
+  const { user } = useAuth();
+  const instanceRole = user?.instanceRole;
   const pipelineKey = componentPipelineKey(idOrUrn ?? "");
   const query = useQuery({
     queryKey: pipelineKey,
@@ -2533,7 +3374,7 @@ export function ComponentPipelinePage({
           const laneBound = data.stages.some((st) =>
             st.bindings.some((b) => lane.categories.includes(b.category))
           );
-          const nodes = laneNodes(data, waves, lane);
+          const nodes = laneNodes(data, waves, lane, instanceRole);
           return (
             <section
               className="mx-auto flex max-w-2xl flex-col items-center gap-1"
@@ -2578,8 +3419,17 @@ export function ComponentPipelinePage({
                         domainLocal={data.component.domainLocal}
                       />
                     )}
-                    {node.kind === "build" && <BuildNode bindings={node.bindings} />}
-                    {node.kind === "registry" && <RegistryNode registry={node.registry} />}
+                    {node.kind === "build" && (
+                      <BuildNode
+                        bindings={node.bindings}
+                        artifact={node.artifact}
+                        instanceRole={instanceRole}
+                      />
+                    )}
+                    {node.kind === "registry" && (
+                      <RegistryNode registry={node.registry} artifact={node.artifact} />
+                    )}
+                    {node.kind === "scan-sign" && <ScanSignNode artifact={node.artifact} />}
                     {node.kind === "wave" && (
                       <WaveRow
                         wave={node.wave}
