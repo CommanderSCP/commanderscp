@@ -325,7 +325,8 @@ describe("components: driving-case merge (M12 P5d)", () => {
     admin.executors.putBinding(targetId, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${rand()}`,
-      config: { statePath: "/tmp/x" },
+      // Not `statePath`: that key is server-injected, so fake-executor's schema refuses it.
+      config: { autoSucceedAfterMs: 200 },
       allowedHosts: [],
       type
     });

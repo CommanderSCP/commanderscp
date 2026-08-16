@@ -117,7 +117,8 @@ describe("M16.3 P2 remeasured: which writes the server refuses on a FOREIGN-ORIG
     admin.executors.putBinding(targetId, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
-      config: { statePath: "/tmp/x" },
+      // Not `statePath`: that key is server-injected, so fake-executor's schema refuses it.
+      config: { autoSucceedAfterMs: 200 },
       allowedHosts: [],
       type
     });

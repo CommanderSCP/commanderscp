@@ -237,9 +237,24 @@ export function createPipelineGenericExecutorPlugin(): ExecutorPlugin {
   return pipelineGenericExecutorPlugin;
 }
 
+/**
+ * The tenant-facing config surface for this plugin AND for every preset built on it
+ * (`@scp/plugin-terraform` today). `additionalProperties: false` is load-bearing rather than
+ * tidiness, and it is what a permissive schema had been costing:
+ *
+ *  - `statePath` is SERVER-GOVERNED — `resolveExecutorPluginInstance` injects it for every executor
+ *    instance and spreads it LAST — so it is deliberately absent here, the same shape by which
+ *    `managed-iac`'s schema refuses `runnerImage`/`networkMode`/`workspaceRoot`. Without
+ *    `additionalProperties: false` the absence achieved nothing: an unlisted key was simply stored.
+ *  - the general property: a config key no schema names is a key no reviewer has ever had to
+ *    reason about. `PipelineGenericConfig` is the whole contract this plugin reads; anything else in
+ *    a binding is either a typo (silently inert — the `runIdField` typo that makes every run report
+ *    the wrong external id) or an attempt at a field the plugin does not offer.
+ */
 export const pipelineGenericConfigSchema: Record<string, unknown> = {
   type: "object",
   required: ["triggerUrl"],
+  additionalProperties: false,
   properties: {
     triggerUrl: { type: "string", format: "uri" },
     tokenSecretKey: { type: "string" },

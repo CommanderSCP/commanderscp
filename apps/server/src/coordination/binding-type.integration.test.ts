@@ -39,8 +39,9 @@ describe("executor bindings: 1:N per target, keyed by Type", () => {
     await server?.close();
   });
 
-  // `fake-executor` deliberately: it is in KNOWN_EXECUTOR_MODULES but has no manifest, so
-  // validatePluginConfig skips it — this file is about the routing Type, not each plugin's config shape.
+  // `fake-executor` deliberately: an empty config satisfies its manifest schema, so nothing here
+  // depends on a plugin's config shape — this file is about the routing Type. (It USED to have no
+  // manifest at all, which is the fail-open this comment once described as if it were a feature.)
   const bind = (targetId: string, type: ExecutorType | undefined, instance: string) =>
     admin.executors.putBinding(targetId, {
       pluginModule: "fake-executor",

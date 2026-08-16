@@ -15,7 +15,10 @@ import {
   discoveryManifest as argocdDiscoveryManifest
 } from "@scp/plugin-argocd";
 import { manifest as terraformManifest } from "@scp/plugin-terraform";
+import { manifest as pipelineGenericManifest } from "@scp/plugin-pipeline-generic";
 import { manifest as managedIacManifest } from "@scp/plugin-managed-iac";
+import { manifest as managedScanManifest } from "@scp/plugin-managed-scan";
+import { manifest as fakeExecutorManifest } from "@scp/plugin-fake-executor";
 import { manifest as webhookNotifyManifest } from "@scp/plugin-webhook-notify";
 import { manifest as smtpNotifyManifest } from "@scp/plugin-smtp-notify";
 import {
@@ -27,6 +30,7 @@ import {
 import { ociIndexManifest } from "@scp/plugin-dependency-index-oci";
 import { PluginManifestSchema, type PluginManifest as ApiPluginManifest } from "@scp/schemas";
 import { validateProperties } from "../graph/property-validation.js";
+import { badRequest } from "../errors.js";
 
 /**
  * The bundled plugin manifest catalog (static — no runtime hot-loading, DESIGN §11) and the
@@ -103,8 +107,29 @@ export const BUNDLED_PLUGIN_MANIFESTS: ApiPluginManifest[] = [
  * are refused. Pinned by `plugin-manifests-dependency-index.test.ts` so neither half is "tidied".
  */
 
+/**
+ * `fake-executor`, `pipeline-generic` and `managed-scan` are here and NOT in the published list
+ * above, for the same reason the dependency indexes are: the list above is the CONFIG-FORM CATALOG
+ * (`GET /api/v1/plugins/manifests`), and none of these three is a plugin an operator picks from a
+ * form — `fake-executor` is the in-repo test executor, `pipeline-generic` is already published under
+ * its `terraform` preset id (byte-identical schema), and `managed-scan` is driven by the commander's
+ * promotion scan step rather than bound by hand. Widening the PUBLIC v1 response body is a separate,
+ * deliberate change; closing the gate is not.
+ *
+ * This map, by contrast, is the GATE — the one `validatePluginConfig` reads — and all three were
+ * missing from it while sitting on `KNOWN_EXECUTOR_MODULES`. Because `validatePluginConfig` used to
+ * return early when it found no manifest, every executor-binding write door
+ * (`PUT /executors/{id}/binding`, IaC apply) stored their configs with NO schema validation at all.
+ * For `managed-scan` that was arbitrary code execution on the SCP host: the plugin does
+ * `execFile(config.dockerBinary ?? "docker", …)`, and `dockerBinary` is not among the keys
+ * `resolveExecutorPluginInstance` injects, so nothing else stood in the way. `managed-iac` was safe
+ * from the identical config shape ONLY because it was in this map and its schema is
+ * `additionalProperties: false` — i.e. by exactly the check that no-oped for its sibling.
+ */
+
 /** Every bundled plugin's manifest, keyed by the module name a binding references. */
 export const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
+  "fake-executor": fakeExecutorManifest,
   github: githubExecutorManifest,
   "github-discovery": githubDiscoveryManifest,
   gitea: giteaManifest,
@@ -114,7 +139,9 @@ export const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   argocd: argocdManifest,
   "argocd-discovery": argocdDiscoveryManifest,
   terraform: terraformManifest,
+  "pipeline-generic": pipelineGenericManifest,
   "managed-iac": managedIacManifest,
+  "managed-scan": managedScanManifest,
   "webhook-notify": webhookNotifyManifest,
   "smtp-notify": smtpNotifyManifest,
   "dependency-index-go": goIndexManifest,
@@ -124,11 +151,67 @@ export const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   "dependency-index-oci": ociIndexManifest
 };
 
-/** Throws `badRequest` if `config` doesn't satisfy `module`'s declared `configSchema`. An unknown
- *  module has no schema to validate against — that's caught separately (the module allowlist in
- *  `executor-bindings-repo.ts`/`notification-bindings-repo.ts`), so here we simply skip. */
+/** Whether `module` has a bundled manifest, i.e. whether `validatePluginConfig` has anything to
+ *  gate on. Exported so an allowlist can assert its own completeness — see
+ *  `assertEveryModuleHasManifest`. */
+export function hasPluginManifest(module: string): boolean {
+  return MANIFEST_BY_MODULE[module] !== undefined;
+}
+
+/**
+ * Throws `badRequest` if `config` doesn't satisfy `module`'s declared `configSchema`, and ALSO if
+ * `module` has no manifest at all.
+ *
+ * FAILS CLOSED, and the previous early `return` is the reason this comment is long. It read:
+ * "an unknown module has no schema to validate against — that's caught separately (the module
+ * allowlist)". That sentence is true of an UNKNOWN module and says nothing whatever about the case
+ * that actually existed: a module that PASSES the allowlist and has no manifest. `fake-executor`,
+ * `pipeline-generic` and `managed-scan` were all in that state on shipped main, so their bindings'
+ * configs were stored unread — and `managed-scan`'s config selects the binary it `execFile`s.
+ *
+ * The allowlists really do run first at every one of this function's four call sites
+ * (`routes/executors.ts` binding-create + notification-upsert + discovery-run, and
+ * `iac/plans-repo.ts`'s `assertInlineBindingsValid`), so in practice this branch is reached only by
+ * a NEW allowlisted module whose author forgot the manifest — which is precisely the mistake being
+ * closed, and it must be refused rather than waved through. A never-reached refusal is the correct
+ * cost of a gate that cannot be forgotten.
+ */
 export function validatePluginConfig(module: string, config: unknown): void {
   const manifest = MANIFEST_BY_MODULE[module];
-  if (!manifest) return;
+  if (!manifest) {
+    throw badRequest(
+      `plugin module '${module}' declares no config schema, so its config cannot be validated — ` +
+        `refusing to store it. Add the module's manifest to MANIFEST_BY_MODULE ` +
+        `(apps/server/src/plugin-host/plugin-manifests.ts).`
+    );
+  }
   validateProperties(manifest.configSchema, config ?? {}, `plugin-config:${module}`);
+}
+
+/**
+ * Fails LOUD at module load if any module on a binding allowlist has no manifest.
+ *
+ * `validatePluginConfig`'s refusal above is the runtime net; this is the one that means a mistake
+ * can never SHIP. The distinction matters because the runtime net only bites on a write door someone
+ * exercises, whereas an allowlist entry with no manifest is a defect the moment it is committed —
+ * `managed-scan` sat in exactly that state through several milestones with a doc comment in its own
+ * package asserting that the gate protected it.
+ *
+ * A comment is not the guard: the comment above `MANIFEST_BY_MODULE` already reasoned about this
+ * exact property for the dependency-index plugins, and `managed-scan` slipped past it anyway.
+ * Called at module load by `coordination/executor-bindings-repo.ts` and
+ * `notify/notification-bindings-repo.ts`, next to the allowlists themselves, so the two can never
+ * drift apart unobserved — a boot that would accept an unvalidated config does not boot.
+ */
+export function assertEveryModuleHasManifest(modules: readonly string[], label: string): void {
+  const missing = modules.filter((module) => !hasPluginManifest(module));
+  if (missing.length > 0) {
+    throw new Error(
+      `${label} allowlists plugin module(s) with no bundled manifest: ${missing.join(", ")}. ` +
+        `A binding may name them, and 'validatePluginConfig' would then have no schema to gate ` +
+        `their tenant-supplied config on. Export a manifest from the plugin package (with ` +
+        `'additionalProperties: false', omitting every server-injected key) and register it in ` +
+        `MANIFEST_BY_MODULE.`
+    );
+  }
 }

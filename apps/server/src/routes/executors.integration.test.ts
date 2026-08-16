@@ -57,7 +57,9 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const binding = await admin.executors.putBinding(component.id, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
-      config: { statePath: "/tmp/whatever" },
+      // A real tenant-facing fake-executor key. It used to be `statePath`, which is SERVER-injected
+      // for every executor instance and is therefore refused by the plugin's manifest schema now.
+      config: { autoSucceedAfterMs: 200 },
       allowedHosts: ["example.test"],
       // M12 P1: the executor-specific target id (e.g. an Argo CD Application name) this object maps
       // to. reconcile passes it as trigger().targetRef (falling back to the object id when unset).
@@ -614,10 +616,91 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       expect(cfg.networkMode).toBe("none"); // NOT host
       expect(cfg.workspaceRoot).toBe("/srv/scp/managed-iac"); // NOT /
       expect(typeof cfg.statePath).toBe("string"); // durable dedup path always injected (MAJOR #4)
+      // Defence in depth for the key that is now refused AND injected: `dockerBinary` selects the
+      // executable this plugin `execFile`s, so the write-door schema is no longer its only guard.
+      expect(cfg.dockerBinary).toBe("docker");
     } finally {
       process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = savedEnv.image;
       process.env.SCP_MANAGED_IAC_NETWORK_MODE = savedEnv.net;
       process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT = savedEnv.root;
+    }
+  });
+
+  /**
+   * THE SAME REFUSAL, FOR THE MODULES THAT NEVER HAD IT. The managed-iac tests above passed while
+   * three sibling modules on the very same `KNOWN_EXECUTOR_MODULES` allowlist — `managed-scan`,
+   * `pipeline-generic`, `fake-executor` — had no manifest at all, so `validatePluginConfig` found no
+   * schema and returned early. Every key of their binding configs was stored unread.
+   *
+   * `managed-scan` is the one with teeth: `@scp/plugin-managed-scan` runs
+   * `execFile(config.dockerBinary ?? "docker", …)`, and `dockerBinary` was NOT among the keys
+   * `resolveExecutorPluginInstance` injects — so a tenant `PUT /executors/{id}/binding` naming any
+   * host path reached arbitrary code execution on the SCP host, across the exact boundary the plugin
+   * sandbox exists to hold. Proven HERE, at the HTTP write door, not only against
+   * `validatePluginConfig`: a unit test cannot show that the door still calls it.
+   *
+   * MUTATION-PROVEN: restoring shipped main for one module — drop `"managed-scan"` from
+   * `MANIFEST_BY_MODULE`, restore `validatePluginConfig`'s `if (!manifest) return;`, and disable the
+   * `assertEveryModuleHasManifest` boot check — makes this test fail with "promise resolved
+   * { …(11) } instead of rejecting": the binding carrying `dockerBinary: "/tmp/pwn.sh"` is STORED.
+   */
+  it("REJECTS server-governed config on the modules that previously had NO manifest at all", async () => {
+    const org = await createTestOrg(server, "manifestless-modules-reject");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const component = await createTestComponent(admin, {
+      name: `comp-${randomUUID().slice(0, 8)}`
+    });
+
+    const governed = [
+      { dockerBinary: "/tmp/pwn.sh" }, // THE escalation: the binary the plugin execFile's
+      { runnerImage: "attacker/evil:latest" },
+      { networkMode: "host" },
+      { workspaceRoot: "/" },
+      { statePath: "/etc/scp/anything" }
+    ];
+    type Module = "managed-scan" | "pipeline-generic" | "fake-executor";
+    const cases: { module: Module; base: Record<string, unknown> }[] = [
+      { module: "managed-scan", base: {} },
+      { module: "pipeline-generic", base: { triggerUrl: "https://ci.example.test/hooks/x" } },
+      { module: "fake-executor", base: {} }
+    ];
+
+    for (const { module, base } of cases) {
+      for (const evil of governed) {
+        await expect(
+          admin.executors.putBinding(component.id, {
+            pluginModule: module,
+            pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+            config: { ...base, ...evil }
+          }),
+          `expected ${module} config ${JSON.stringify(evil)} to be rejected`
+        ).rejects.toBeInstanceOf(ScpApiError);
+      }
+    }
+
+    // NEGATIVE CONTROLS — a legitimate config for each is still ACCEPTED. Without these, a schema
+    // that refused EVERYTHING (and broke all three executors) would be indistinguishable from a
+    // working fix, judging by the refusals alone.
+    const legitimate: { module: Module; config: Record<string, unknown> }[] = [
+      { module: "managed-scan", config: { timeoutMs: 60_000 } },
+      {
+        module: "pipeline-generic",
+        config: {
+          triggerUrl: "https://ci.example.test/hooks/deploy",
+          statusUrl: "https://ci.example.test/runs/{externalId}",
+          tokenSecretKey: "ci-token",
+          runIdField: "id"
+        }
+      },
+      { module: "fake-executor", config: { autoSucceedAfterMs: 50, forcePhase: { t: "failed" } } }
+    ];
+    for (const { module, config } of legitimate) {
+      const ok = await admin.executors.putBinding(component.id, {
+        pluginModule: module,
+        pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+        config
+      });
+      expect(ok.pluginModule, module).toBe(module);
     }
   });
 });
