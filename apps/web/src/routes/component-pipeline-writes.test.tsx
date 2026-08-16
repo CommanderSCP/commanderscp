@@ -70,7 +70,10 @@ function placedStage(over: Partial<ComponentPipelineStage> = {}): ComponentPipel
       id: "019f0000-0000-7000-8000-00000000bbbb",
       name: "prod",
       environment: "prod",
-      region: "nyc3"
+      region: "nyc3",
+      substrate: null,
+      account: null,
+      cluster: null
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
@@ -95,7 +98,10 @@ function unplacedStage(
       id: "019f0000-0000-7000-8000-00000000dddd",
       name: "prod (DOKS hosted)",
       environment: "prod",
-      region: "nyc3"
+      region: "nyc3",
+      substrate: null,
+      account: null,
+      cluster: null
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },

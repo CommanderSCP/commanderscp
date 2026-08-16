@@ -78,7 +78,10 @@ function stage(over: Partial<ComponentPipelineStage> = {}): ComponentPipelineSta
       id: "019f0000-0000-7000-8000-00000000bbbb",
       name: "prod",
       environment: "prod",
-      region: "nyc3"
+      region: "nyc3",
+      substrate: null,
+      account: null,
+      cluster: null
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
@@ -119,7 +122,10 @@ function unplaced(
       id: "019f0000-0000-7000-8000-00000000dddd",
       name: "prod (DOKS hosted)",
       environment: "prod",
-      region: "nyc3"
+      region: "nyc3",
+      substrate: null,
+      account: null,
+      cluster: null
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
@@ -1019,7 +1025,10 @@ describe("a HELD stage is not a `pending` one", () => {
         id: "019f0000-0000-7000-8000-00000000e0f2",
         name: "gamma-b",
         environment: "gamma",
-        region: null
+        region: null,
+        substrate: null,
+        account: null,
+        cluster: null
       },
       currents: [
         {
@@ -1042,7 +1051,10 @@ describe("a HELD stage is not a `pending` one", () => {
         id: "019f0000-0000-7000-8000-00000000e0a2",
         name: "gamma-c",
         environment: "gamma",
-        region: null
+        region: null,
+        substrate: null,
+        account: null,
+        cluster: null
       },
       currents: [
         {
@@ -1281,7 +1293,15 @@ describe("a wave label carries the ORDER claim, not just membership", () => {
     order: 0,
     waveIndex,
     stage: stage({
-      deploymentTarget: { id, name, environment: null, region: null },
+      deploymentTarget: {
+        id,
+        name,
+        environment: null,
+        region: null,
+        substrate: null,
+        account: null,
+        cluster: null
+      },
       placement: { id: `019f0000-0000-7000-8000-${id.slice(-12).padStart(12, "0")}`, urn: `urn:scp:o:placement:${name}` }
     })
   });

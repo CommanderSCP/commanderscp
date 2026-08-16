@@ -2085,7 +2085,10 @@ export const zGetComponentPipelineResponse = z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
             name: z.string(),
             environment: z.string().nullable(),
-            region: z.string().nullable()
+            region: z.string().nullable(),
+            substrate: z.string().nullable(),
+            account: z.string().nullable(),
+            cluster: z.string().nullable()
         }),
         maintainedBy: z.object({
             domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
@@ -2221,7 +2224,10 @@ export const zGetComponentPipelineResponse = z.object({
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
             name: z.string(),
             environment: z.string().nullable(),
-            region: z.string().nullable()
+            region: z.string().nullable(),
+            substrate: z.string().nullable(),
+            account: z.string().nullable(),
+            cluster: z.string().nullable()
         }),
         maintainedBy: z.object({
             domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
@@ -2231,6 +2237,19 @@ export const zGetComponentPipelineResponse = z.object({
         }),
         stageName: z.string().nullable()
     })),
+    registry: z.object({
+        state: z.enum([
+            'declared',
+            'ambiguous',
+            'none'
+        ]),
+        executionSystemId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+        name: z.string().nullable(),
+        kind: z.string().nullable(),
+        url: z.string().nullable(),
+        repository: z.string().nullable(),
+        edgeCount: z.int().gte(-9007199254740991).lte(9007199254740991)
+    }).nullish(),
     unknownFields: z.array(z.string())
 });
 

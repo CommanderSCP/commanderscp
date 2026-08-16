@@ -6492,6 +6492,9 @@ export type GetComponentPipelineResponses = {
                 name: string;
                 environment: string | null;
                 region: string | null;
+                substrate: string | null;
+                account: string | null;
+                cluster: string | null;
             };
             maintainedBy: {
                 domainId: string | null;
@@ -6585,6 +6588,9 @@ export type GetComponentPipelineResponses = {
                 name: string;
                 environment: string | null;
                 region: string | null;
+                substrate: string | null;
+                account: string | null;
+                cluster: string | null;
             };
             maintainedBy: {
                 domainId: string | null;
@@ -6594,6 +6600,15 @@ export type GetComponentPipelineResponses = {
             };
             stageName: string | null;
         }>;
+        registry?: {
+            state: 'declared' | 'ambiguous' | 'none';
+            executionSystemId: string | null;
+            name: string | null;
+            kind: string | null;
+            url: string | null;
+            repository: string | null;
+            edgeCount: number;
+        } | null;
         unknownFields: Array<string>;
     };
 };

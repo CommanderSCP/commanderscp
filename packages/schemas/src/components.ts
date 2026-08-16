@@ -277,7 +277,21 @@ export const ComponentPipelineStageSchema = z.object({
     name: z.string(),
     /** ADR-0026 D1 — present only on a place-role target; without it no stage name derives. */
     environment: z.string().nullable(),
-    region: z.string().nullable()
+    region: z.string().nullable(),
+    /**
+     * THE SUBSTRATE FACET (pipeline-substrate-registry-scan.md §9.1) — what the target physically
+     * IS, read verbatim from the target's own `properties` (migration 0065 types them as optional
+     * strings; a non-string is read as absent). Well-known `substrate` values are GLOSSARY
+     * vocabulary (`aws|gcp|azure|kubernetes|vm|bare-metal|other`), rendered as-is, never enforced
+     * on the wire. Null = NOT DECLARED — an absence of a declaration, not an unknown observation,
+     * so a client renders nothing (no `—`, no badge). A client MUST NOT derive any of these from
+     * `name`: fixture names like `us-east-1-prod (k8s)` look parseable and are exactly the trap.
+     */
+    substrate: z.string().nullable(),
+    /** Provider account / project / subscription id. Same reading rules as `substrate`. */
+    account: z.string().nullable(),
+    /** Cluster name inside that account/region. Same reading rules as `substrate`. */
+    cluster: z.string().nullable()
   }),
   /** WHOSE DOMAIN maintains this place — see `ComponentPipelineDomainSchema`. */
   maintainedBy: ComponentPipelineDomainSchema,
@@ -369,7 +383,13 @@ export const ComponentPipelineUnplacedStageSchema = z.object({
     id: z.string().uuid(),
     name: z.string(),
     environment: z.string().nullable(),
-    region: z.string().nullable()
+    region: z.string().nullable(),
+    /** The substrate facet — same fields, same reading rules as `ComponentPipelineStageSchema
+     *  .deploymentTarget`: the server builds ONE literal and pushes it into both arrays, so the two
+     *  shapes must not drift. */
+    substrate: z.string().nullable(),
+    account: z.string().nullable(),
+    cluster: z.string().nullable()
   }),
   /** WHOSE DOMAIN maintains this place. A stage this component never reaches is still somebody's to
    *  run, and saying so is what stops "not placed" reading as "nowhere". */
@@ -379,6 +399,43 @@ export const ComponentPipelineUnplacedStageSchema = z.object({
   stageName: z.string().nullable()
 });
 export type ComponentPipelineUnplacedStage = z.infer<typeof ComponentPipelineUnplacedStageSchema>;
+
+/**
+ * THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE (pipeline-substrate-registry-scan.md §9.2).
+ *
+ * Resolved from the component's outgoing `publishes_to` edges (component → execution-system,
+ * migration 0065) — a GRAPH FACT, deliberately not the `image` executor binding: a binding's Type is
+ * WHICH PIPELINE it drives (ADR-0007), so the image binding names what BUILDS the artifact, never
+ * where it lands. A registry is created `domainLocal:true` at each site and an edge with a
+ * domain-local endpoint never journals (M20.3), which is what makes this per-site by construction:
+ * the commander's Delivery lane shows the commander's registry, an outpost's shows its own.
+ *
+ * `state` is STATED, never chosen:
+ *   `none`      — no `publishes_to` edge here; every identity field null, `edgeCount` 0. A client
+ *                 says "no registry declared for this component here" — an absence, not an unknown.
+ *   `declared`  — exactly one edge; the identity fields describe it.
+ *   `ambiguous` — MORE than one edge. The identity fields are null and `edgeCount` says how many;
+ *                 the projection does NOT pick one (there is no rule that would make the pick
+ *                 honest, and "one per site" is a projection statement, not a DB constraint).
+ */
+export const ComponentPipelineRegistrySchema = z.object({
+  state: z.enum(["declared", "ambiguous", "none"]),
+  /** The execution-system object's id (`declared` only). */
+  executionSystemId: z.string().uuid().nullable(),
+  /** Its `name` — READ from the object, never from the component. */
+  name: z.string().nullable(),
+  /** Its `properties.kind` (`gitea`, `harbor`, `ecr`, …) when it is a string; null otherwise. */
+  kind: z.string().nullable(),
+  /** Console base — `webUrl`, else `serverUrl`, trailing slash trimmed (`executionSystemConsoleBase`).
+   *  Base only: no registry has a known deep-link shape here, and a guessed path is a lie. */
+  url: z.string().nullable(),
+  /** The edge's own `properties.repository` (the repository/path inside the registry, e.g.
+   *  `acme/checkout-api`) when it is a string; null otherwise. */
+  repository: z.string().nullable(),
+  /** How many `publishes_to` edges the component has here — 0, 1, or the count behind `ambiguous`. */
+  edgeCount: z.number().int()
+});
+export type ComponentPipelineRegistry = z.infer<typeof ComponentPipelineRegistrySchema>;
 
 /** Which rung supplied the pipeline — the answer to "why does this component release this way?"
  *  (charter principle 6). `pipeline-resolution.ts` computes it; surfacing it here is what stops an
@@ -447,6 +504,10 @@ export const ComponentPipelineResponseSchema = z.object({
    *  repeats anything in the other. `order` makes their union a single ordered pipeline. Do NOT
    *  "simplify" this into one array without an `api-v2-exception` (tools/openapi/OASDIFF-EXCEPTIONS.md). */
   unplacedStages: z.array(ComponentPipelineUnplacedStageSchema),
+  /** THE REGISTRY at this site — see `ComponentPipelineRegistrySchema`. Optional on the wire because
+   *  `/v1` is additive-only and this shipped after the response did; a server that emits it always
+   *  emits an object (`state: "none"` is a value, not an omission). Null/absent = an older server. */
+  registry: ComponentPipelineRegistrySchema.nullable().optional(),
   unknownFields: z.array(z.string())
 });
 export type ComponentPipelineResponse = z.infer<typeof ComponentPipelineResponseSchema>;

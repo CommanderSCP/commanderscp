@@ -7,7 +7,14 @@ import type {
   ComponentPipelineUnplacedStage
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { changes, changeWaveTargets, changeWaves, changePlans, objects } from "../db/schema.js";
+import {
+  changes,
+  changeWaveTargets,
+  changeWaves,
+  changePlans,
+  objects,
+  relationships
+} from "../db/schema.js";
 import type { ExecutorBindingRow } from "./executor-bindings-repo.js";
 import { resolveBindingForTarget } from "./binding-resolution.js";
 import { ExecutorTypeSchema } from "@scp/schemas";
@@ -589,9 +596,22 @@ export async function getComponentPipeline(
   const unplacedStages: ComponentPipelineUnplacedStage[] = [];
   for (const [order, seed] of seeds.entries()) {
     const target = targetById.get(seed.deploymentTargetId);
-    const tProps = (target?.properties ?? {}) as { environment?: unknown; region?: unknown };
+    const tProps = (target?.properties ?? {}) as {
+      environment?: unknown;
+      region?: unknown;
+      substrate?: unknown;
+      account?: unknown;
+      cluster?: unknown;
+    };
     const environment = typeof tProps.environment === "string" ? tProps.environment : null;
     const region = typeof tProps.region === "string" ? tProps.region : null;
+    // THE SUBSTRATE FACET (§9.1) — read verbatim off the target's own bag with the same string
+    // guard as `region`. Migration 0065 types these as optional strings, but Ajv runs on WRITE only
+    // and a replicated row from an older peer was never checked here, so the guard is not
+    // decorative. Null = not declared. NEVER derived from `name`.
+    const substrate = typeof tProps.substrate === "string" ? tProps.substrate : null;
+    const account = typeof tProps.account === "string" ? tProps.account : null;
+    const cluster = typeof tProps.cluster === "string" ? tProps.cluster : null;
 
     // ADR-0026 D1: `<origin domain>-[<region>-]<environment>`, and ONLY for a target carrying an
     // `environment`. The domain segment comes from the target's OWN `origin_domain_id`, never from
@@ -603,11 +623,16 @@ export async function getComponentPipeline(
         ? [domainLabel, region, environment].filter(Boolean).join("-")
         : null;
 
+    // ONE literal, pushed unchanged into BOTH `stages` and `unplacedStages` — the two wire shapes
+    // must not drift, and this is the only place either is built.
     const deploymentTarget = {
       id: target?.id ?? seed.deploymentTargetId,
       name: target?.name ?? "(unresolved)",
       environment,
-      region
+      region,
+      substrate,
+      account,
+      cluster
     };
 
     // AN UNPLACED STAGE CARRIES NO BINDING, NO `current` AND NO `version` — all three are keyed on a
@@ -744,6 +769,8 @@ export async function getComponentPipeline(
     };
   }
 
+  const registry = await registryForComponent(tx, orgId, component.id);
+
   return {
     component: {
       id: component.id,
@@ -762,6 +789,84 @@ export async function getComponentPipeline(
     sources,
     stages,
     unplacedStages,
+    registry,
     unknownFields: []
+  };
+}
+
+/**
+ * THE REGISTRY THIS COMPONENT PUBLISHES TO, AT THIS SITE (§9.2) — resolved from its outgoing
+ * `publishes_to` edges (component → execution-system, migration 0065), never from the `image`
+ * executor binding (a binding's Type is WHICH PIPELINE it drives, ADR-0007 — the image binding
+ * names what BUILDS the artifact, not where it lands).
+ *
+ * ONE query for the edges (joined to the live execution-system row) — lane-level, not per stage.
+ * Per-site by construction: a registry is created `domainLocal:true` at each site, and an edge with
+ * a domain-local endpoint never journals (relationships-repo.ts, M20.3), so this instance's
+ * `relationships` table holds only the edges declared HERE.
+ *
+ * `state` is STATED, not chosen. >1 edge is `ambiguous` with the count and NULL identity fields —
+ * there is no rule that would make picking one honest, and rendering the first would look exactly
+ * like `declared`.
+ */
+async function registryForComponent(
+  tx: TenantTx,
+  orgId: string,
+  componentId: string
+): Promise<NonNullable<ComponentPipelineResponse["registry"]>> {
+  const rows = await tx
+    .select({
+      edgeProperties: relationships.properties,
+      systemId: objects.id,
+      systemName: objects.name,
+      systemProperties: objects.properties
+    })
+    .from(relationships)
+    .innerJoin(
+      objects,
+      and(
+        eq(objects.id, relationships.toId),
+        eq(objects.orgId, orgId),
+        eq(objects.typeId, "execution-system"),
+        isNull(objects.deletedAt)
+      )
+    )
+    .where(
+      and(
+        eq(relationships.orgId, orgId),
+        eq(relationships.typeId, "publishes_to"),
+        eq(relationships.fromId, componentId),
+        isNull(relationships.deletedAt)
+      )
+    );
+
+  const none = {
+    executionSystemId: null,
+    name: null,
+    kind: null,
+    url: null,
+    repository: null
+  };
+  if (rows.length === 0) return { state: "none", ...none, edgeCount: 0 };
+  if (rows.length > 1) return { state: "ambiguous", ...none, edgeCount: rows.length };
+
+  const row = rows[0]!;
+  const sysProps = (row.systemProperties ?? null) as Record<string, unknown> | null;
+  const edgeProps = (row.edgeProperties ?? null) as Record<string, unknown> | null;
+  // Every identity field READ, never inferred: name off the object, kind off `properties.kind`
+  // (string guard — the registered schema for execution-system is open), url = console base only
+  // (`webUrl` → `serverUrl`; no registry deep-link shape is known, so none is guessed), repository
+  // off the EDGE's own property (0065's open schema types it as a string, but a row written before
+  // that or replicated from elsewhere was never checked, hence the guard — a non-string is null,
+  // not a crash).
+  return {
+    state: "declared",
+    executionSystemId: row.systemId,
+    name: row.systemName,
+    kind: typeof sysProps?.["kind"] === "string" ? (sysProps["kind"] as string) : null,
+    url: executionSystemConsoleBase(sysProps),
+    repository:
+      typeof edgeProps?.["repository"] === "string" ? (edgeProps["repository"] as string) : null,
+    edgeCount: 1
   };
 }
