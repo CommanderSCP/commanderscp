@@ -102,8 +102,8 @@ branch merged main).
 graph type, API, SDK, CLI, IaC construct, UI. On the wire that is:
 
 - **Four operations removed:** `GET /initiatives`, `POST /initiatives`, `GET /initiatives/{id}`,
-  `POST /initiatives/{id}/campaigns` (`operationId`s `listInitiatives`, `createInitiative`,
-  `getInitiative`, `addCampaignToInitiative` — and with them the generated `client.initiatives.*`
+  `POST /initiatives/{id}/campaigns` (`operationId`s `listInitiatives`, `proposeInitiative`,
+  `getInitiative`, `addInitiativeCampaign` — and with them the generated `client.initiatives.*`
   SDK surface and the `scp initiative …` CLI verbs).
 - **Enum narrowed on `/graph/query/{name}`:** the `initiative-rollup` member is removed from the
   `name` path parameter's enum (a **request** position — oasdiff ERR) and from the response's
