@@ -45,6 +45,52 @@ export const ComponentPipelineDomainSchema = z.object({
 });
 export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSchema>;
 
+/**
+ * WHICH OUTPOST A TARGET IS PART OF (pipeline-substrate-registry-scan.md §10.2 — the owner's
+ * TRUST-DOMAIN RULE), resolved by the server and READ by the client, never inferred.
+ *
+ * The rule: an `outpost` object carries `properties.peerDomainId` — a paired peer's federation
+ * identity, i.e. its trust domain (`outpost-binding.ts` refuses anything else); every object
+ * carries `originDomainId` — the trust domain that authored it; ADR-0017 §1 puts one outpost
+ * deployment per trust domain. So a target's outpost is THE `outpost` OBJECT WHOSE `peerDomainId`
+ * EQUALS THE TARGET'S `originDomainId`. No new data. Never derived from the target's name, and
+ * never from its containment `domain_id` (GLOSSARY: containment has nothing to do with deployment
+ * topology).
+ *
+ * Four states, each STATED — the identity fields are nullable per state, and a client renders the
+ * state it is given rather than guessing from which fields happen to be null:
+ *   - `outpost`               — the target's origin is a paired peer that has an `outpost` object.
+ *                               `id`/`name` are that object's; `trustTier` its declared tier (null
+ *                               when the object declares none, or one this build does not know —
+ *                               `outposts-repo.ts`'s `readTrustTier`, never defaulted);
+ *                               `peerDomainId` the peer's id (the link target on the commander site,
+ *                               `/federation/outposts/$peerDomainId`).
+ *   - `self`                  — the target's origin IS this instance (`federation_self`). `name` is
+ *                               this instance's federation name; the rest null. On the commander this
+ *                               is the honest consequence of the rule for a commander-authored target
+ *                               (§10.2: in the model those targets would be authored by their outposts).
+ *   - `peer-without-outpost`  — the origin is a paired peer with NO `outpost` object registered.
+ *                               `name` is the PEER's name and `peerDomainId` its id, so a client can
+ *                               say who, and that an outpost record can be declared for it.
+ *   - `unknown-domain`        — the origin names no peer known here (a replica whose peer row has not
+ *                               arrived; a foreign origin this instance never paired with).
+ *                               `peerDomainId` carries the raw origin id; the rest null. Not "ours".
+ */
+export const ComponentPipelineTargetOutpostSchema = z.object({
+  state: z.enum(["outpost", "self", "peer-without-outpost", "unknown-domain"]),
+  /** The `outpost` object's id — `outpost` only. */
+  id: z.string().uuid().nullable(),
+  /** `outpost`: the object's name; `self`: this instance's name; `peer-without-outpost`: the peer's
+   *  name; `unknown-domain`: null. */
+  name: z.string().nullable(),
+  /** The outpost object's declared `trustTier`, verbatim when this build recognises it; else null. */
+  trustTier: z.string().nullable(),
+  /** The trust-domain id the state is about: the peer's id (`outpost`, `peer-without-outpost`) or
+   *  the raw unrecognised origin (`unknown-domain`); null for `self`. */
+  peerDomainId: z.string().nullable()
+});
+export type ComponentPipelineTargetOutpost = z.infer<typeof ComponentPipelineTargetOutpostSchema>;
+
 /** Which topology wave declares a stage, and where it sits in release order. */
 export const ComponentPipelineWaveSchema = z.object({
   index: z.number().int(),
@@ -303,6 +349,10 @@ export const ComponentPipelineStageSchema = z.object({
   }),
   /** WHOSE DOMAIN maintains this place — see `ComponentPipelineDomainSchema`. */
   maintainedBy: ComponentPipelineDomainSchema,
+  /** WHICH OUTPOST this place is part of — see `ComponentPipelineTargetOutpostSchema` (§10.2).
+   *  Required: the server always resolves it (a state, never an omission), and a required additive
+   *  response property is the class #222 measured oasdiff accepts. */
+  outpost: ComponentPipelineTargetOutpostSchema,
   /** `<origin domain>-[<region>-]<environment>` (ADR-0026 D1). Null when the target carries no
    *  `environment`: not every deployment-target is a stage, and inventing a name would be a lie. */
   stageName: z.string().nullable(),
@@ -402,6 +452,9 @@ export const ComponentPipelineUnplacedStageSchema = z.object({
   /** WHOSE DOMAIN maintains this place. A stage this component never reaches is still somebody's to
    *  run, and saying so is what stops "not placed" reading as "nowhere". */
   maintainedBy: ComponentPipelineDomainSchema,
+  /** WHICH OUTPOST this place is part of — the SAME literal the server pushes into `stages[]`
+   *  (`ComponentPipelineTargetOutpostSchema`, §10.2); the two shapes must not drift. */
+  outpost: ComponentPipelineTargetOutpostSchema,
   /** `<origin domain>-[<region>-]<environment>` (ADR-0026 D1), derived exactly as for a placed
    *  stage — the name is a property of the PLACE, not of this component being at it. */
   stageName: z.string().nullable()

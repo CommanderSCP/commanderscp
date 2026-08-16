@@ -6502,6 +6502,13 @@ export type GetComponentPipelineResponses = {
                 isSelf: boolean;
                 role: string | null;
             };
+            outpost: {
+                state: 'outpost' | 'self' | 'peer-without-outpost' | 'unknown-domain';
+                id: string | null;
+                name: string | null;
+                trustTier: string | null;
+                peerDomainId: string | null;
+            };
             stageName: string | null;
             binding: {
                 externalRef: string | null;
@@ -6597,6 +6604,13 @@ export type GetComponentPipelineResponses = {
                 name: string | null;
                 isSelf: boolean;
                 role: string | null;
+            };
+            outpost: {
+                state: 'outpost' | 'self' | 'peer-without-outpost' | 'unknown-domain';
+                id: string | null;
+                name: string | null;
+                trustTier: string | null;
+                peerDomainId: string | null;
             };
             stageName: string | null;
         }>;

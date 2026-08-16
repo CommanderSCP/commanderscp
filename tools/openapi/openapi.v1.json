@@ -25618,6 +25618,70 @@
                             ],
                             "additionalProperties": false
                           },
+                          "outpost": {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "outpost",
+                                  "self",
+                                  "peer-without-outpost",
+                                  "unknown-domain"
+                                ]
+                              },
+                              "id": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "name": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "trustTier": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "peerDomainId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "id",
+                              "name",
+                              "trustTier",
+                              "peerDomainId"
+                            ],
+                            "additionalProperties": false
+                          },
                           "stageName": {
                             "anyOf": [
                               {
@@ -26192,6 +26256,7 @@
                           "wave",
                           "deploymentTarget",
                           "maintainedBy",
+                          "outpost",
                           "stageName",
                           "binding",
                           "bindings",
@@ -26359,6 +26424,70 @@
                             ],
                             "additionalProperties": false
                           },
+                          "outpost": {
+                            "type": "object",
+                            "properties": {
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "outpost",
+                                  "self",
+                                  "peer-without-outpost",
+                                  "unknown-domain"
+                                ]
+                              },
+                              "id": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "name": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "trustTier": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "peerDomainId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "id",
+                              "name",
+                              "trustTier",
+                              "peerDomainId"
+                            ],
+                            "additionalProperties": false
+                          },
                           "stageName": {
                             "anyOf": [
                               {
@@ -26375,6 +26504,7 @@
                           "wave",
                           "deploymentTarget",
                           "maintainedBy",
+                          "outpost",
                           "stageName"
                         ],
                         "additionalProperties": false
