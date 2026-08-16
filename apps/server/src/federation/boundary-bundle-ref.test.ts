@@ -79,10 +79,12 @@ describe("boundary-bundle-ref: promotionExports[] helpers (§9.4)", () => {
       unparseable: 0
     });
     for (const malformed of ["nope", { checksum: "x" }, 42, true]) {
-      expect(promotionExportsOf({ [PROMOTION_EXPORTS_KEY]: malformed }), String(malformed)).toEqual({
-        entries: [],
-        unparseable: 1
-      });
+      expect(promotionExportsOf({ [PROMOTION_EXPORTS_KEY]: malformed }), String(malformed)).toEqual(
+        {
+          entries: [],
+          unparseable: 1
+        }
+      );
     }
   });
 
