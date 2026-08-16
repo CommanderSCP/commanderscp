@@ -31,10 +31,16 @@ import { cn, focusRing } from "../lib/utils";
  */
 
 // Every interactive element carries the shared focus ring (design spec §2.10).
+// The ACTIVE tab must be unmistakable (owner, 2026-08-14: "make sure we're highlighting which view
+// we're on"). A hairline olive underline on a white bar did not register; the active tab is now a
+// filled army-700 segment with white text — the same treatment the sidebar gives its active entry
+// (§3.2), so "where am I" reads the same way in both navs. Inactive tabs stay quiet text.
 const TAB_BASE = cn(
-  "border-b-2 px-3 py-2 text-sm font-medium transition-colors hover:text-army-800",
+  "rounded-t-md px-3 py-2 text-sm font-medium transition-colors",
   focusRing
 );
+const TAB_INACTIVE = `${TAB_BASE} text-slate-500 hover:bg-army-50 hover:text-army-800`;
+const TAB_ACTIVE = `${TAB_BASE} bg-army-700 text-white shadow-sm`;
 
 export function ComponentDetailLayout(): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
@@ -42,12 +48,12 @@ export function ComponentDetailLayout(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-4">
-      <nav className="flex gap-1 border-b border-army-200" data-testid="component-tabs">
+      <nav className="flex gap-1 border-b-2 border-army-700/30" data-testid="component-tabs">
         <Link
           to="/components/$idOrUrn/infrastructure"
           params={{ idOrUrn }}
-          className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-army-700 text-army-800` }}
+          className={TAB_INACTIVE}
+          activeProps={{ className: TAB_ACTIVE }}
           data-testid="component-tab-infrastructure"
         >
           Infrastructure
@@ -58,8 +64,8 @@ export function ComponentDetailLayout(): React.JSX.Element {
           // `activeOptions.exact` matters: without it this tab stays "active" while a child route is
           // showing, since its path is a prefix of every child's.
           activeOptions={{ exact: true }}
-          className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-army-700 text-army-800` }}
+          className={TAB_INACTIVE}
+          activeProps={{ className: TAB_ACTIVE }}
           data-testid="component-tab-software"
         >
           {/* "Delivery", not "Software": this journey carries BOTH the build (application
@@ -71,8 +77,8 @@ export function ComponentDetailLayout(): React.JSX.Element {
         <Link
           to="/components/$idOrUrn/settings"
           params={{ idOrUrn }}
-          className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-army-700 text-army-800` }}
+          className={TAB_INACTIVE}
+          activeProps={{ className: TAB_ACTIVE }}
           data-testid="component-tab-settings"
         >
           Settings
