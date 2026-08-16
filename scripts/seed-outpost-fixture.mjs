@@ -14,7 +14,11 @@
  *
  * checkout-api is NOT created here — at an outpost it exists only as the commander's replica,
  * brought across by the federation import. If it is absent the script says so and skips every
- * object that depends on it, rather than inventing a second checkout-api.
+ * object that depends on it, rather than inventing a second checkout-api. The same goes for this
+ * outpost's OWN `outpost` record (pipeline-substrate-registry-scan.md §10.5): it is
+ * commander-authored (`field-outpost`, declared by the commander fixture) and arrives replicated —
+ * declaring one here would be a second writer for it. Once replicated, this site's own targets
+ * read `Outpost field-outpost · il5` on their pipeline tiles (object-first resolution).
  *
  * USAGE
  *   node scripts/seed-outpost-fixture.mjs [baseUrl] [username] [password]

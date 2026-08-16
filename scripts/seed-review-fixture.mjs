@@ -913,6 +913,41 @@ async function main() {
     }
   }
 
+  // THE CO-LOCATED OUTPOST (pipeline-substrate-registry-scan.md §10.5, owner 2026-08-16): every
+  // deployment target is part of SOME outpost — the commander's own trust domain has one too, the
+  // "commander and outpost are one and the same" case. Its record binds `peerDomainId` = THIS
+  // instance's own domain id (read off `GET /federation/self`, never minted), which the binding
+  // guard accepts as its second shape; there is no peer row behind it. With it registered, the
+  // commander-authored targets (gamma/prod/us-*) read `Outpost hq-outpost · commercial` on their
+  // pipeline tiles instead of "this instance's domain — no outpost registered". Idempotent
+  // GET-then-create, like field-outpost above. (The OUTPOST fixture declares nothing of the kind:
+  // an outpost site's own record arrives replicated from the commander.)
+  {
+    let self;
+    try {
+      self = await api("GET", "/federation/self");
+    } catch (e) {
+      failed.push(`federation self: ${e.message}`);
+    }
+    if (self?.domainId) {
+      let existing;
+      try {
+        existing = await api("GET", `/federation/outposts/${self.domainId}`);
+      } catch (e) {
+        if (e.status !== 404) failed.push(`outpost hq-outpost lookup: ${e.message}`);
+      }
+      if (existing) {
+        created.push(`/federation/outposts: outpost hq-outpost (commercial, co-located) (exists)`);
+      } else {
+        await post(
+          "/federation/outposts",
+          { peerDomainId: self.domainId, name: "hq-outpost", trustTier: "commercial" },
+          "outpost hq-outpost (commercial) — the co-located outpost (peerDomainId = this instance's domain)"
+        );
+      }
+    }
+  }
+
   console.log(`\n=== created/upserted (${created.length}) ===`);
   for (const c of created) console.log("  +", c);
   if (failed.length) {
