@@ -64,11 +64,15 @@ export function PromotionArrow({
    *  default), this component is pixel-for-pixel what it always was. */
   inert?: boolean;
   /** THE ARROW IS THE SWITCH (owner, 2026-08-14: "enable/disable should be done via clicking on the
-   *  arrow; the colour of the arrow indicates whether it's open or closed"). When supplied, the
-   *  arrow renders as a BUTTON: click flips the source it feeds. Open = the `open` green (the
-   *  connector carries releases); closed = `inert`'s shut slate look, deliberately NOT red —
-   *  red is `blocked`, a gate DENYING a promotion, and a rule the operator paused is not a denial.
-   *  Presentation-only otherwise: the parent owns the mutation and passes `busy` while it runs. */
+   *  arrow; the colour of the arrow indicates whether it's open or closed", then "red should
+   *  signify closed"). When supplied, the arrow renders as a BUTTON: click opens the source's
+   *  open/close dialog. OPEN = green; CLOSED = RED. Red is also `blocked` (a gate denying a
+   *  promotion) — but a switch arrow and a verdict arrow are never the same arrow (a source's
+   *  fan-in vs a wave-to-wave connector), and the switch says its state in words, so there is no
+   *  ambiguity in practice. GREY is reserved for arrows that are NOT switches: chain connectors
+   *  with no verdict, and the commander's opaque input (this domain cannot open/close it) — so
+   *  grey reads as "not yours to click", never as "closed". Presentation-only otherwise: the
+   *  parent owns the mutation and passes `busy` while it runs. */
   onToggle?: () => void;
   busy?: boolean;
   /** Tooltip for the switch — the parent states what a click does and what the colour means. */
@@ -107,9 +111,15 @@ export function PromotionArrow({
             : `promotion ${state}${label ? `: ${label}` : ""}${detail ? ` — ${detail}` : ""}`
       }
     >
-      <div className={`h-7 w-11 rounded-t-sm ${inert ? "bg-slate-200 opacity-60" : style.bar}`} />
       <div
-        className={`h-0 w-0 border-x-[22px] border-x-transparent border-t-[18px] ${inert ? "border-t-slate-200 opacity-60" : style.triangle}`}
+        className={`h-7 w-11 rounded-t-sm ${
+          inert ? (isSwitch ? "bg-red-500" : "bg-slate-200 opacity-60") : style.bar
+        }`}
+      />
+      <div
+        className={`h-0 w-0 border-x-[22px] border-x-transparent border-t-[18px] ${
+          inert ? (isSwitch ? "border-t-red-500" : "border-t-slate-200 opacity-60") : style.triangle
+        }`}
         aria-hidden="true"
       />
       {(label || why) && (
@@ -130,7 +140,7 @@ export function PromotionArrow({
       {isSwitch && (
         // The switch says its state in words too — colour alone must not carry it (a11y, and the
         // "closed" slate is close to `pending`'s slate on a bad monitor).
-        <span className={`mt-0.5 text-[10px] font-medium uppercase tracking-wide ${inert ? "text-slate-400" : "text-green-700"}`}>
+        <span className={`mt-0.5 text-[10px] font-medium uppercase tracking-wide ${inert ? "text-red-700" : "text-green-700"}`}>
           {busy ? "…" : inert ? "closed" : "open"}
         </span>
       )}

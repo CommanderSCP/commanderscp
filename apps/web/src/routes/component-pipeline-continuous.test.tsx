@@ -1215,10 +1215,12 @@ describe("each source tile carries its own fan-in arrow, and its own enable/disa
       'data-inert="true"'
     );
     // THE ARROW IS THE SWITCH (owner, 2026-08-14): a closed source's arrow is a BUTTON that says
-    // "closed", offers "click to open", and is NOT red — red is a gate denial, not a paused rule.
+    // "closed", offers "click to open", and is RED (owner: "red should signify closed") — a
+    // clickable switch, visibly distinct from the GREY of arrows that are not switches at all.
     expect(html).toContain('data-switch="closed"');
     expect(html).toContain("source closed — click to open");
-    expect(html).not.toContain("bg-red-500");
+    expect(html).toContain("bg-red-500");
+    expect(html).toContain(">closed<");
   });
 
   it("the toggle sits on every mapping tile, and NEVER on the commander's opaque input tile", () => {
@@ -1400,5 +1402,44 @@ describe("the arrow opens a dialog — closing offers a period or until-re-opene
     );
     expect(html).toContain('data-switch="open"');
     expect(html).not.toContain("routes nothing");
+  });
+});
+
+/**
+ * GREY MEANS "NOT A SWITCH", NEVER "CLOSED" (owner question, 2026-08-14: "the grey arrows are not
+ * clickable — is that intentional?"). Yes, and this pins the rule so it stays legible: only arrows
+ * this domain can open/close are switches (green open / red closed, always clickable). The
+ * commander's opaque-input arrow and every chain connector are NOT switches — grey, not clickable —
+ * because there is nothing there for the operator to toggle.
+ */
+describe("grey is reserved for arrows that are not switches", () => {
+  it("the commander's opaque-input arrow is grey and NOT a button; a closed mapping's arrow is red AND a button", () => {
+    const html = renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[
+          {
+            id: "019f0000-0000-7000-8000-00000000c001", sourceKind: "gitea", repoPattern: "field/x", pathPattern: null,
+            refPattern: null, type: "infrastructure", category: "infrastructure" as const, classification: null,
+            mirrorOfShared: false, enabled: false, disabledUntil: null, effectivelyEnabled: false, url: null
+          }
+        ]}
+        upstream={{ domainId: "d-cmd", name: "hq-commander", isSelf: false, role: "commander" }}
+        domainLocal={false}
+      />
+    );
+    // Split at the mapping tile: everything before it is the commander tile + its arrow.
+    const cmdPart = html.slice(0, html.indexOf('data-testid="pipeline-source-tile-domain-specific"'));
+    const mapPart = html.slice(html.indexOf('data-testid="pipeline-source-tile-domain-specific"'));
+    // Commander arrow: a plain div, grey (pending slate), no data-switch, not red.
+    expect(cmdPart).toContain('data-testid="promotion-arrow"');
+    expect(cmdPart).not.toContain("data-switch=");
+    expect(cmdPart).toContain("bg-slate-300");
+    expect(cmdPart).not.toContain("bg-red-500");
+    // Mapping arrow (closed): a BUTTON, red, says closed — clickable to re-open.
+    expect(mapPart).toContain('data-switch="closed"');
+    expect(mapPart).toContain("<button");
+    expect(mapPart).toContain("bg-red-500");
+    expect(mapPart).not.toContain("bg-slate-200 opacity-60");
   });
 });
