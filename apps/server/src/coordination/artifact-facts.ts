@@ -29,7 +29,8 @@ import { promotionExportsOf } from "../federation/boundary-bundle-ref.js";
  * scan step (`promotion-scan-step.ts::ociDigestsOf`, which then normalizes to `sha256:<hex>`
  * because it must build a pull ref) and the gate orchestrator's control-context digest
  * (`gate-orchestrator.ts::resolveChangeArtifactDigest`, first digest) delegate here too — ONE
- * function, every reader (§10.4: the importer's `artifactDigests[]` widened all of them at once).
+ * function, every reader (§10.4: the importer's stamp — typed `artifacts[]`, else the flat
+ * `artifactDigests[]` minus blobs — widened all of them at once).
  * The exporter's set is VERBATIM (no normalization — the bundle and the gate carry the digest as
  * tracked).
  *
@@ -38,13 +39,11 @@ import { promotionExportsOf } from "../federation/boundary-bundle-ref.js";
  * not a re-implementation that could drift from it.
  */
 
-/** The three `sourceRef` keys under which a change tracks its OCI digest(s), in read order. The
- *  SQL prefilter in `pickArtifactChange` probes exactly this list — keep the two together. */
-export const ARTIFACT_DIGEST_SOURCE_REF_KEYS = [
-  "artifact_digest",
-  "artifactDigest",
-  "artifactDigests"
-] as const;
+/** The ORIGIN's two `sourceRef` keys under which a change tracks its OCI digest(s), in read order.
+ *  The IMPORTER's stamp (§10.4) is `artifacts[]` (typed) beside `artifactDigests[]` (flat) — see
+ *  {@link importedOciDigestsOf}. The SQL prefilter in `pickArtifactChange` probes these two keys
+ *  plus a NON-EMPTY `artifactDigests` — keep the three places together. */
+export const ARTIFACT_DIGEST_SOURCE_REF_KEYS = ["artifact_digest", "artifactDigest"] as const;
 
 /** One key's value as a digest list: string ⇒ `[it]`, array ⇒ its string members, else `[]`. */
 function digestListOf(raw: unknown): string[] {
@@ -55,21 +54,46 @@ function digestListOf(raw: unknown): string[] {
       : [];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The OCI digests the IMPORTER stamped on a promoted change (§10.4). The importer writes TWO
+ * shapes side by side: the TYPED set `sourceRef.artifacts[]` (`{type, digest}` — present whenever
+ * the exporter's set was non-empty; the same field `crossBoundaryManifestOf` trusts) and the FLAT
+ * `sourceRef.artifactDigests[]` (`artifacts.map(a => a.digest)` — the Ed25519-checksummed
+ * projection, which therefore ALSO names every SBOM `blob` digest). Reading the flat list as OCI
+ * digests would make the SBOM blob a phantom image on every receiving site (E6 `fail`, a refused
+ * re-export naming `oci:<sbom digest>`, a scan step pulling the SBOM as an image) — so the typed
+ * set is read when it is there, and ONLY WITHOUT it does the flat list count, MINUS every digest
+ * the change states as a blob (`sbom.digest`). Malformed ⇒ `[]`.
+ */
+function importedOciDigestsOf(ref: Record<string, unknown>): string[] {
+  if (Array.isArray(ref.artifacts)) {
+    return ref.artifacts
+      .filter(isRecord)
+      .filter((a) => a.type === "oci" && typeof a.digest === "string")
+      .map((a) => a.digest as string);
+  }
+  const blobDigests = new Set<string>();
+  if (isRecord(ref.sbom) && typeof ref.sbom.digest === "string") blobDigests.add(ref.sbom.digest);
+  return digestListOf(ref.artifactDigests).filter((d) => !blobDigests.has(d));
+}
+
 /** The OCI digests a change tracks, VERBATIM, de-duplicated, in a deterministic order:
  *  `sourceRef.artifact_digest` (canonical, lifted by `canonicalizeSourceRef`) ELSE
  *  `sourceRef.artifactDigest` (the report's own key) — the origin's tracked digest(s), string or
- *  string[] — FOLLOWED BY the importer's `sourceRef.artifactDigests` (string[]; §10.4 — stamped on a
- *  promoted change at import beside `promotionManifest`, the flat digest list the Ed25519 checksum
- *  anchors). The two are a UNION, not a preference: an imported change usually carries the origin's
- *  key too (the exporter's `sourceRef` is spread onto the import), and when both name the same
- *  digest the union says it once; a change stamped ONLY by the importer is picked by the stamp
- *  alone. Malformed ⇒ `[]`. */
+ *  string[] — FOLLOWED BY the importer's stamp (§10.4 — `sourceRef.artifacts[]` typed `oci`
+ *  entries, else `sourceRef.artifactDigests[]` minus the blob digests; see
+ *  {@link importedOciDigestsOf}). The two are a UNION, not a preference: an imported change usually
+ *  carries the origin's key too (the exporter's `sourceRef` is spread onto the import), and when
+ *  both name the same digest the union says it once; a change stamped ONLY by the importer is
+ *  picked by the stamp alone. Malformed ⇒ `[]`. */
 export function ociDigestsOfSourceRef(sourceRef: unknown): string[] {
-  if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) return [];
-  const ref = sourceRef as Record<string, unknown>;
-  const origin = digestListOf(ref.artifact_digest ?? ref.artifactDigest);
-  const imported = digestListOf(ref.artifactDigests);
-  return [...new Set([...origin, ...imported])];
+  if (!isRecord(sourceRef)) return [];
+  const origin = digestListOf(sourceRef.artifact_digest ?? sourceRef.artifactDigest);
+  return [...new Set([...origin, ...importedOciDigestsOf(sourceRef)])];
 }
 
 /**
@@ -182,9 +206,13 @@ async function pickArtifactChange(
     if (hit) return hit;
   }
 
-  // The fallback: newest digest-carrying change of the component. The `?|` key probe is a coarse
-  // SQL prefilter (either key present); the JS reader decides whether what is under it IS a digest
-  // (string or string[]), which is why a bounded page is scanned rather than `LIMIT 1` trusted.
+  // The fallback: newest digest-carrying change of the component. The key probe is a coarse SQL
+  // prefilter — either ORIGIN key present, OR the importer's `artifactDigests` present AND NON-EMPTY
+  // (the importer stamps it on EVERY promoted change, `[]` included for a metadata-only promotion,
+  // so a presence-only probe would let digest-less imports fill the page and push the real newest
+  // artifact-carrying change out of it); the JS reader decides whether what is under a key IS an
+  // OCI digest (string, string[], typed `oci` entry), which is why a bounded page is scanned rather
+  // than `LIMIT 1` trusted.
   const rows = await tx
     .select({
       id: objects.id,
@@ -200,9 +228,9 @@ async function pickArtifactChange(
         eq(objects.typeId, "change"),
         isNull(objects.deletedAt),
         sql`${objects.properties} @> ${JSON.stringify({ targets: [componentId] })}::jsonb`,
-        sql`${changes.sourceRef} ?| ${sql.raw(
+        sql`(${changes.sourceRef} ?| ${sql.raw(
           `array[${ARTIFACT_DIGEST_SOURCE_REF_KEYS.map((k) => `'${k}'`).join(", ")}]`
-        )}`
+        )} OR (jsonb_typeof(${changes.sourceRef} -> 'artifactDigests') = 'array' AND jsonb_array_length(${changes.sourceRef} -> 'artifactDigests') > 0))`
       )
     )
     .orderBy(desc(changes.createdAt), desc(changes.objectId))

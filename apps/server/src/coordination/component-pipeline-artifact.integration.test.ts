@@ -282,6 +282,35 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     expect(p.artifact!.digests).toEqual([digestOf("1")]);
   });
 
+  it("the fallback pick is not pushed out of its page by NEWER metadata-only promotion imports (the importer stamps `artifactDigests: []` on every promoted change; the SQL prefilter admits the importer's key only when NON-EMPTY)", async () => {
+    const component = await createOrphanComponent(admin, uniq("page-pressure"));
+    const carrier = await proposeWith(component.id, { artifactDigest: digestOf("7") });
+    expect((await pipelineOf(component.id)).artifact!.changeId).toBe(carrier.id);
+
+    // 30 newer changes, each stamped exactly as the importer stamps a metadata-only promotion
+    // (`artifactDigests: []`, no typed set, no origin key) — more than the 25-row page.
+    for (let i = 0; i < 30; i++) {
+      const c = await proposeWith(component.id, { repo: "acme/config" });
+      await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        tx
+          .update(changes)
+          .set({
+            sourceRef: {
+              repo: "acme/config",
+              promotedFromDomain: randomUUID(),
+              sourceChangeObjectId: randomUUID(),
+              artifactDigests: []
+            }
+          })
+          .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, c.id)))
+      );
+    }
+    const { artifact } = await pipelineOf(component.id);
+    expect(artifact, "the real artifact-carrying change, not a silent null").not.toBeNull();
+    expect(artifact!.changeId).toBe(carrier.id);
+    expect(artifact!.digests).toEqual([digestOf("7")]);
+  });
+
   it("an unparseable `sbom` reads null and is STATED under unknownFields — the digests are unaffected", async () => {
     const component = await createOrphanComponent(admin, uniq("bad-sbom"));
     const digest = digestOf("f");
@@ -492,11 +521,13 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   // §10.4 — the IMPORTER's stamps. `promotion-repo.ts`'s import writes, on the imported change's
-  // sourceRef, `promotedFromDomain`, `sourceChangeObjectId`, `artifactDigests[]`, `promotionManifest`,
-  // `manifestSignature` (+ `boundaryBundleChecksums`). These tests write the SAME shape by a bare
-  // UPDATE (the stamps are server-owned; `POST /changes` cannot plant them) and pin what the
-  // projection READS off it. The real A→B round trip lives in `federation.integration.test.ts`
-  // ("§10.4 ROUND TRIP"), where `exporterName` resolves to a real peer row; here there is no peer.
+  // sourceRef, `promotedFromDomain`, `sourceChangeObjectId`, `artifactDigests[]` (the FLAT list —
+  // `artifacts.map(a => a.digest)`, so it names the SBOM blob's digest too), `artifacts[]` (the
+  // TYPED set, when non-empty), `promotionManifest`, `manifestSignature` (+
+  // `boundaryBundleChecksums`). These tests write the SAME shape by a bare UPDATE (the stamps are
+  // server-owned; `POST /changes` cannot plant them) and pin what the projection READS off it. The
+  // real A→B round trip lives in `federation.integration.test.ts` ("§10.4 ROUND TRIP"), where
+  // `exporterName` resolves to a real peer row; here there is no peer.
   const importedStamp = (digest: string, exporterDomainId: string) => ({
     manifestVersion: "scp-promotion-manifest/v1",
     createdAt: "2026-08-16T00:00:00.000Z",
@@ -510,7 +541,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     ]
   });
 
-  it("§10.4: a change stamped ONLY the way the importer stamps (`artifactDigests[]`, no `artifact_digest`) is PICKED, and `signing.importedManifest` carries the manifest + signature verbatim, `exporterName: null` when no peer row names the exporter", async () => {
+  it("§10.4: a change stamped ONLY the way the importer stamps (`artifacts[]` + `artifactDigests[]`, no `artifact_digest`) is PICKED and reads ONLY the typed `oci` digest (never the SBOM blob's, which the flat list also names), and `signing.importedManifest` carries the manifest + signature verbatim, `exporterName: null` when no peer row names the exporter", async () => {
     const component = await createOrphanComponent(admin, uniq("imported"));
     const digest = digestOf("8");
     const exporterDomainId = randomUUID();
@@ -529,7 +560,10 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
             repo: "acme/checkout",
             promotedFromDomain,
             sourceChangeObjectId: manifest.sourceChangeObjectId,
-            artifactDigests: [digest],
+            // The importer's REAL shape: the flat list is `artifacts.map(a => a.digest)` — it names
+            // the SBOM blob's digest beside the image's — and the typed set rides beside it.
+            artifactDigests: [digest, digestOf("b")],
+            artifacts: manifest.artifacts,
             promotionManifest: manifest,
             manifestSignature: "MEUCIQDimported==",
             boundaryBundleChecksums: ["d".repeat(64)]
@@ -539,9 +573,12 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     );
 
     const { artifact } = await pipelineOf(component.id);
-    expect(artifact, "picked by the importer's `artifactDigests[]` alone").not.toBeNull();
+    expect(artifact, "picked by the importer's stamp alone").not.toBeNull();
     expect(artifact!.changeId).toBe(change.id);
-    expect(artifact!.digests).toEqual([digest]);
+    expect(
+      artifact!.digests,
+      "the typed `oci` entry ONLY — the SBOM blob's digest is in the flat list, never an image"
+    ).toEqual([digest]);
     expect(artifact!.signing.importedManifest).toEqual({
       manifest,
       manifestSignature: "MEUCIQDimported==",
@@ -560,7 +597,12 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
         .set({
           sourceRef: {
             artifact_digest: [digestOf("9"), digest],
-            artifactDigests: [digest, digestOf("9")],
+            artifactDigests: [digest, digestOf("9"), digestOf("b")],
+            artifacts: [
+              { type: "oci", digest },
+              { type: "oci", digest: digestOf("9") },
+              { type: "blob", digest: digestOf("b") }
+            ],
             promotedFromDomain,
             promotionManifest: manifest,
             manifestSignature: "MEUCIQDimported=="
@@ -571,6 +613,31 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     const both = (await pipelineOf(component.id)).artifact!;
     expect(both.digests).toEqual([digestOf("9"), digest]);
     expect(both.signing.importedManifest!.artifactCount).toBe(2);
+
+    // WITHOUT the typed set (a pre-E3 exporter's bundle carries only the flat list), the flat list
+    // is read MINUS every digest the change states as a blob — the spread `sbom` from the exporter's
+    // sourceRef — so an SBOM-carrying import still names ONE image and its E6 re-check stays honest.
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .update(changes)
+        .set({
+          sourceRef: {
+            sbom: { format: "cyclonedx", digest: digestOf("b"), location: "oci://r.invalid/sbom" },
+            artifactDigests: [digest, digestOf("b")],
+            promotedFromDomain,
+            promotionManifest: manifest,
+            manifestSignature: "MEUCIQDimported=="
+          }
+        })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    const flatOnly = (await pipelineOf(component.id)).artifact!;
+    expect(flatOnly.digests, "flat list minus the stated blob").toEqual([digest]);
+    expect(flatOnly.sbom).toEqual({
+      format: "cyclonedx",
+      digest: digestOf("b"),
+      location: "oci://r.invalid/sbom"
+    });
   });
 
   it("§10.4: a stamped manifest WITHOUT a signature is null + `importedManifest:unsigned`; one that does not parse is null + `importedManifest:unparseable`; a `promotedFromDomain` that is not a string reads null", async () => {
