@@ -2671,6 +2671,19 @@ describe("the REGISTRY review dialog body renders the imported manifest VERBATIM
     expect(html).toContain('data-testid="registry-review-signature"');
     expect(html).toContain("present · verified at import");
     expect(html, "the signature bytes are not a field to read").not.toContain(IMPORTED_SIG);
+
+    // The wire type admits an EMPTY signature (today's server turns one into null +
+    // `importedManifest:unsigned`, so nothing shipped emits it) — should one arrive, the row says
+    // `absent` and NEVER `verified at import`: an absent signature is not a verified one.
+    const empty = renderToStaticMarkup(
+      <RegistryReviewBody artifact={importedArtifact({ manifestSignature: "" })} />
+    );
+    const row = empty.slice(empty.indexOf('data-testid="registry-review-signature"'));
+    const rowText = row.slice(0, row.indexOf("</span>"));
+    expect(rowText).toContain("absent");
+    expect(rowText, "absent · verified at import is a contradiction").not.toContain(
+      "verified at import"
+    );
     const rows = html.split('data-testid="registry-review-artifact"').length - 1;
     expect(rows).toBe(2);
     expect(html).toContain(">oci</td>");

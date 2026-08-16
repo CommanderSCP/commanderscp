@@ -3186,7 +3186,9 @@ function RegistryReviewDialog({
  * the importer stamped it (§10.4 — manifestVersion, createdAt, exporterDomainId + the peer's name,
  * peerDomainId, changeUrn, importedFromDomain, artifacts[] type/digest/signatureRef), the signature's
  * presence, and — should the wire state one — the `importedManifest:*` unknown as a note. Nothing
- * is re-verified here; the "verified at import" claim is the importer's (it refuses otherwise).
+ * is re-verified here; the "verified at import" claim is the importer's (it refuses otherwise) and
+ * is made ONLY of a present signature — the wire type admits an empty string (today's server turns
+ * one into null + `importedManifest:unsigned`), and an absent signature must never read verified.
  */
 export function RegistryReviewBody({
   artifact
@@ -3229,8 +3231,9 @@ export function RegistryReviewBody({
                   label: "signature",
                   value: (
                     <span data-testid="registry-review-signature">
-                      {imported.manifestSignature.length > 0 ? "present" : "absent"} · verified at
-                      import
+                      {imported.manifestSignature.length > 0
+                        ? "present · verified at import"
+                        : "absent"}
                     </span>
                   )
                 }
