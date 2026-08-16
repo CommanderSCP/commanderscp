@@ -2296,7 +2296,7 @@ export function buildProgram(): Command {
       const report = await client.doctor.report();
 
       if (opts.output === "json") {
-        printResult(report, opts.output, (item) => item as Record<string, string>);
+        printResult(report, opts.output, (item) => item as Record<string, unknown>);
       } else {
         printResult(report.checks, opts.output, (item) => {
           const check = item as DoctorCheck;
@@ -2939,7 +2939,7 @@ export function buildProgram(): Command {
           }))
         ],
         opts.output,
-        (item) => item as Record<string, string>
+        (item) => item as Record<string, unknown>
       );
     });
 
@@ -3040,7 +3040,7 @@ export function buildProgram(): Command {
           },
           operatorToken
         );
-        printResult(floor, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(floor, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -3338,7 +3338,7 @@ export function buildProgram(): Command {
       async (opts: BaseCliOpts & { name: string; role: "commander" | "outpost" | "retrans" }) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.federation.init({ name: opts.name, role: opts.role });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -3352,7 +3352,7 @@ export function buildProgram(): Command {
     .action(async (opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const self = await client.federation.self();
-      printResult(self, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(self, opts.output, (item) => item as Record<string, unknown>);
     });
 
   federationCmd
@@ -3925,7 +3925,7 @@ export function buildProgram(): Command {
       }
       const parsed: unknown = JSON.parse(raw);
       const result = await client.federation.import(parsed as ImportBundleRequest);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   // M15.5(c) — the retrans validate-then-relay (ADR-0019 §2). `relay` runs on the RETRANS-role
@@ -4038,7 +4038,7 @@ export function buildProgram(): Command {
           name: opts.name,
           properties: parseJsonOption(opts.properties, "--properties")
         });
-        printResult(object, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(object, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4068,7 +4068,7 @@ export function buildProgram(): Command {
           name: opts.name,
           properties: parseJsonOption(opts.properties, "--properties")
         });
-        printResult(overlay, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(overlay, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4107,7 +4107,7 @@ export function buildProgram(): Command {
     .action(async (key: string, opts: BaseCliOpts & { value: string }) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.secrets.put(key, { value: opts.value });
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   secretCmd
@@ -4339,7 +4339,7 @@ export function buildProgram(): Command {
                 type: opts.type
               }
         );
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4352,7 +4352,7 @@ export function buildProgram(): Command {
     .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.executors.getBinding(idOrUrn, opts.type);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   // M12 P5c binding primitives: list all / detach / relabel-type.
@@ -4364,7 +4364,7 @@ export function buildProgram(): Command {
     .action(async (idOrUrn: string, opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const items = await client.executors.listBindings(idOrUrn);
-      printResult(items, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(items, opts.output, (item) => item as Record<string, unknown>);
     });
 
   executorCmd
@@ -4376,7 +4376,7 @@ export function buildProgram(): Command {
     .action(async (idOrUrn: string, opts: BaseCliOpts & { type?: ExecutorType }) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.executors.deleteBinding(idOrUrn, opts.type);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   executorCmd
@@ -4393,7 +4393,7 @@ export function buildProgram(): Command {
       async (idOrUrn: string, opts: BaseCliOpts & { to: ExecutorType; from?: ExecutorType }) => {
         const client = await clientFromStoredCredentials(opts);
         const result = await client.executors.repurposeBinding(idOrUrn, opts.to, opts.from);
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4410,7 +4410,7 @@ export function buildProgram(): Command {
       const client = await clientFromStoredCredentials(opts);
       const view = await client.executors.getRegionalExecutors(environment, opts.type);
       if (opts.output === "json") {
-        printResult(view, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(view, opts.output, (item) => item as Record<string, unknown>);
         return;
       }
       // Table view: one row per region, then the verdict + any problems.
@@ -4474,7 +4474,7 @@ export function buildProgram(): Command {
           allowedHosts: parseList(opts.allowedHosts),
           minSeverity: opts.minSeverity
         });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4486,7 +4486,7 @@ export function buildProgram(): Command {
     .action(async (opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const page = await client.notifications.listBindings();
-      printResult(page.items, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(page.items, opts.output, (item) => item as Record<string, unknown>);
     });
 
   notifyCmd
@@ -4578,7 +4578,7 @@ export function buildProgram(): Command {
         domainId: opts.domain,
         proposal: proposal as never
       });
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   // M12 P5 follow-up: automated backfill of source_mappings onto ALREADY-imported components (the 50
@@ -4602,7 +4602,7 @@ export function buildProgram(): Command {
         : await readFile(opts.proposal, "utf8");
       const proposal = JSON.parse(raw) as never;
       const result = await client.discovery.backfillSourceMappings(proposal);
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   const changeSourceCmd = program
@@ -4667,7 +4667,7 @@ export function buildProgram(): Command {
           ...(opts.mirrorOfShared ? { mirrorOfShared: true } : {}),
           ...(opts.disabled ? { enabled: false } : {})
         });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
@@ -4679,7 +4679,7 @@ export function buildProgram(): Command {
     .action(async (sourceKind: string, opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.changeSources.listMappings(sourceKind);
-      printResult(result.items, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result.items, opts.output, (item) => item as Record<string, unknown>);
     });
 
   changeSourceCmd
@@ -4693,7 +4693,7 @@ export function buildProgram(): Command {
       const result = await client.changeSources.putWebhookSecret(sourceKind, {
         secret: opts.secret
       });
-      printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+      printResult(result, opts.output, (item) => item as Record<string, unknown>);
     });
 
   changeSourceCmd
@@ -4843,7 +4843,7 @@ export function buildProgram(): Command {
           requires: parseRequiresFlag(opts.requires),
           stageDependencies: parseStageDependenciesFlags(opts.stageDependsOn, opts.stageDependsAt)
         });
-        printResult(result, opts.output, (item) => item as unknown as Record<string, string>);
+        printResult(result, opts.output, (item) => item as Record<string, unknown>);
       }
     );
 
