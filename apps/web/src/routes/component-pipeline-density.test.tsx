@@ -34,6 +34,8 @@ import type {
  * | `GateSummary` reads `gate.checks.length` for the "none" branch instead of `gate.policies.length` | the approval-only gate test FAILS — an approval-gated stage reads "none" |
  * | `scanSummary` folds a `fail` row as `pass` when another row passed | the fail-verdict test FAILS |
  * | put the Registry's "from change" back on the compact digest line | the Registry compact test FAILS on "from change" |
+ * | drop `aria-label` from the `TileDetails` button (or pass no `label` from `NodeShell`) | the disclosure-ARIA test and the "every kind of tile names WHOSE details" test FAIL |
+ * | render the Registry's imported-manifest line for every role (drop the `!== "commander"` guard) | the §10.1 imported-manifest test FAILS on the commander half |
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -76,7 +78,14 @@ function stage(over: Partial<ComponentPipelineStage> = {}): ComponentPipelineSta
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
-    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
+    outpost: {
+      state: "self",
+      id: null,
+      name: "commercial",
+      trustTier: null,
+      peerDomainId: null,
+      peerRole: null
+    },
     binding: {
       externalRef: "my-app",
       type: "configuration",
@@ -131,7 +140,14 @@ function unplaced(
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
-    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
+    outpost: {
+      state: "self",
+      id: null,
+      name: "commercial",
+      trustTier: null,
+      peerDomainId: null,
+      peerRole: null
+    },
     ...over
   };
 }
@@ -320,6 +336,43 @@ describe("§10.3 — a PLACED target tile: identity + state compact, everything 
     expect(html, "a lucide chevron, never a glyph literal").toContain("lucide-chevron-right");
     expect(html).not.toContain("▸");
     expect(html).toContain(">Details</button>");
+    // Its ACCESSIBLE NAME is per tile — `Details of <title>` — so a page of N tiles does not hand a
+    // rotor/screen-reader user N indistinguishable "Details, collapsed, button" controls; the
+    // visible text stays the plain word.
+    expect(button).toContain('aria-label="Details of commercial-nyc3-prod"');
+  });
+
+  it("every kind of tile names WHOSE details its toggle opens — the target's stage name, `Registry`, `Scan & sign`", () => {
+    const labelOf = (html: string) =>
+      /aria-label="([^"]+)"/.exec(
+        /<button[^>]*data-testid="tile-details-toggle"[^>]*>/.exec(html)?.[0] ?? ""
+      )?.[1];
+    expect(labelOf(renderToStaticMarkup(<StageCardForTest stage={stage()} />))).toBe(
+      "Details of commercial-nyc3-prod"
+    );
+    expect(
+      labelOf(renderToStaticMarkup(<StageCardForTest stage={stage({ stageName: null })} />)),
+      "no stage name → the target's name, the same fallback the heading uses"
+    ).toBe("Details of prod");
+    expect(
+      labelOf(
+        renderWithQueryClient(
+          <UnplacedStageCardForTest
+            stage={unplaced()}
+            componentId="c"
+            pipelineKey={["pipeline", "c"]}
+          />
+        )
+      )
+    ).toBe("Details of commercial-nyc3-prod");
+    expect(
+      labelOf(
+        renderToStaticMarkup(<RegistryNodeForTest registry={registryDeclared} artifact={null} />)
+      )
+    ).toBe("Details of Registry");
+    expect(labelOf(renderToStaticMarkup(<ScanSignNodeForTest artifact={artifact()} />))).toBe(
+      "Details of Scan &amp; sign" // the entity is renderToStaticMarkup's; the DOM reads "&"
+    );
   });
 
   it("the hold moves under Details too — the header pill still says `held` in the compact part", () => {
@@ -533,6 +586,54 @@ describe("§10.3 — the REGISTRY tile: header + digest compact; provenance / ex
     expect(unknownOpen).toContain('data-artifact-state="unknown"');
     expect(unknownOpen).toContain('data-testid="pipeline-registry-explanation"');
     expect(unknownOpen).toContain("does not project the artifact on the component pipeline");
+  });
+
+  it("§10.1 — off the commander, the IMPORTED manifest is a stated unknown under Details (`imported manifest not projected yet`), never a silent absence; the commander imports none and says nothing", () => {
+    const MARK = 'data-testid="pipeline-registry-imported-manifest"';
+    for (const role of ["outpost", "retrans", undefined] as const) {
+      const compact = renderToStaticMarkup(
+        <RegistryNodeForTest
+          registry={registryDeclared}
+          artifact={artifact()}
+          instanceRole={role}
+        />
+      );
+      expect(compact, `role=${String(role)}: Details, not compact`).not.toContain(MARK);
+      const open = renderToStaticMarkup(
+        <RegistryNodeForTest
+          detailsExpanded
+          registry={registryDeclared}
+          artifact={artifact()}
+          instanceRole={role}
+        />
+      );
+      expect(open, `role=${String(role)}`).toContain(MARK);
+      expect(open).toContain("imported manifest not projected yet");
+      expect(open, "the title says WHY: the wire has no field for it").toContain(
+        "sourceRef.promotionManifest) is not projected on the component pipeline yet"
+      );
+    }
+    // With NO artifact on the wire the line is still there — it is about the manifest, not the digest.
+    expect(
+      renderToStaticMarkup(
+        <RegistryNodeForTest
+          detailsExpanded
+          registry={registryDeclared}
+          artifact={null}
+          instanceRole="outpost"
+        />
+      )
+    ).toContain(MARK);
+    const commander = renderToStaticMarkup(
+      <RegistryNodeForTest
+        detailsExpanded
+        registry={registryDeclared}
+        artifact={artifact()}
+        instanceRole="commander"
+      />
+    );
+    expect(commander).not.toContain(MARK);
+    expect(commander).not.toContain("imported manifest");
   });
 });
 
