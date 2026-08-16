@@ -667,6 +667,17 @@ export const sourceMappings = pgTable(
     // disabled_until = T → closed while now() < T, then OPEN again automatically, on time, with
     // zero moving parts. `enabled` stays the operator's declared intent; this column bounds it.
     disabledUntil: timestamp("disabled_until", { withTimezone: true }),
+    // The operator's DECLARED reach of this mapping's repo, migration 0066 /
+    // pipeline-substrate-registry-scan.md §10.6 (owner, 2026-08-16): `global` = a cross-domain
+    // shared repo authored and tracked at the commander; `domain` = tracked only in one domain.
+    // NULL = NOT DECLARED → the pipeline renders NO label and NOTHING is inferred (not from the
+    // site's federation role, not from the repo host, not from a name pattern) — a pre-0066 row on
+    // the commander is not thereby global. Orthogonal to `mirrorOfShared` above (a `domain`-scope
+    // mapping may mirror a global one; the mirror wins the eyebrow). Like `classification` and
+    // `mirrorOfShared`, NEVER an enforcement input: `correlation.ts` does not read it (pinned by
+    // source-mapping-scope.integration.test.ts). Plain text with a CHECK on the two values — the
+    // value set is closed at both ends because a third value would render as no label, silently.
+    scope: text("scope"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [index("source_mappings_org_source").on(table.orgId, table.sourceKind)]

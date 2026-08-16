@@ -12,6 +12,7 @@ import {
   CreateWebhookSecretRequestSchema,
   ProblemSchema,
   SetSourceMappingEnabledRequestSchema,
+  SetSourceMappingScopeRequestSchema,
   SourceMappingIdParamSchema,
   SourceMappingListResponseSchema,
   SourceMappingSchema,
@@ -30,7 +31,8 @@ import {
   createSourceMapping,
   deleteSourceMappingsMatching,
   listSourceMappingsForSource,
-  setSourceMappingEnabled
+  setSourceMappingEnabled,
+  setSourceMappingScope
 } from "../coordination/source-mappings-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { resolveWebhookSecret, verifierForSourceKind } from "../coordination/webhook-signature.js";
@@ -414,7 +416,8 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           type: request.body.type,
           classification: request.body.classification,
           mirrorOfShared: request.body.mirrorOfShared,
-          enabled: request.body.enabled
+          enabled: request.body.enabled,
+          scope: request.body.scope
         });
       });
       reply.status(201).send(mapping);
@@ -467,6 +470,56 @@ export function registerChangeSourceRoutes(app: FastifyInstance, deps: AppDeps):
           request.params.id,
           request.body.enabled,
           request.body.disabledUntil ? new Date(request.body.disabledUntil) : null
+        );
+      });
+      reply.status(200).send(mapping);
+    }
+  });
+
+  /**
+   * PATCH a source_mapping's declared SCOPE (migration 0066, §10.6) — a SIBLING of the pause switch
+   * above rather than a field on it, so `setSourceMappingEnabled`'s contract stays byte-identical
+   * and a caller labelling a mapping never has to restate (and never clobbers) its pause state. Same
+   * by-id addressing (one row, never its byte-identical siblings), same auth/tenant-tx idiom. A
+   * label only: nothing here changes what a push correlates to.
+   */
+  typed.route({
+    method: "PATCH",
+    url: "/api/v1/change-sources/:sourceKind/mappings/:id/scope",
+    schema: {
+      params: SourceMappingIdParamSchema,
+      body: SetSourceMappingScopeRequestSchema,
+      response: {
+        200: SourceMappingSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "setSourceMappingScope",
+        summary:
+          "Set or clear a source_mapping's declared scope (global | domain | null) — a label read by pipelines, IaC and the CLI, never a routing input",
+        tags: ["change-sources"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const mapping = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: auth.orgId
+        });
+        return setSourceMappingScope(
+          tx,
+          auth.orgId,
+          request.params.sourceKind,
+          request.params.id,
+          request.body.scope
         );
       });
       reply.status(200).send(mapping);

@@ -480,7 +480,10 @@ export async function getComponentPipeline(
       enabled: m.enabled,
       disabledUntil: m.disabledUntil,
       effectivelyEnabled: m.effectivelyEnabled,
-      url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null)
+      url: repoConsoleUrl(m.sourceKind, m.repoPattern ?? null),
+      // Declared reach (§10.6) — carried through as READ; null stays null (no label, no inference
+      // from this site's role).
+      scope: m.scope
     }))
     .sort(
       (a, b) =>

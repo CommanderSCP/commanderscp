@@ -463,6 +463,13 @@
       "when": 1788093770502,
       "breakpoints": true,
       "tag": "0065_target_facet_and_publishes_to"
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1788099911505,
+      "breakpoints": true,
+      "tag": "0066_source_mapping_scope"
     }
   ]
 }
