@@ -173,6 +173,8 @@ export type PluginModule =
   | "pipeline-generic"
   | "managed-iac"
   | "managed-scan"
+  // M21.5 — the third managed executor (charter `scp-managed-dep` amendment 2026-08-13).
+  | "managed-dep"
   | "webhook-notify"
   | "smtp-notify"
   | "federation-https"

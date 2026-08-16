@@ -6,7 +6,10 @@ import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
 import { ensureFederationSelf } from "./self-repo.js";
-import { assertEnforceableDependencySubscriptionScope } from "../dependencies/subscription-authoring-guard.js";
+import {
+  assertEnforceableDependencySubscriptionScope,
+  assertNoDelegatedDependencyUpdates
+} from "../dependencies/subscription-authoring-guard.js";
 
 /**
  * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
@@ -107,6 +110,14 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
 export async function handFillObject(tx: TenantTx, input: HandFillInput): Promise<GraphObject> {
   await assertHandFillableType(tx, input);
   assertEnforceableDependencySubscriptionScope({
+    typeId: input.typeId,
+    properties: input.properties
+  });
+  // M21.5 — the same door, the same closing. `handFillObject` wears the `federationImport` flag that
+  // exempts the choke point, so both dependency-subscription authoring refusals must be called here
+  // explicitly or a `federation:write` holder has the bypass they exist to close.
+  await assertNoDelegatedDependencyUpdates(tx, {
+    orgId: input.orgId,
     typeId: input.typeId,
     properties: input.properties
   });

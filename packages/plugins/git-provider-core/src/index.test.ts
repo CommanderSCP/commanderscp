@@ -336,4 +336,46 @@ describe("verb delegation to the adapter", () => {
     const result = await adapter.readFileAtRef(fakeCtx(), { path: "go.mod", ref: "main" });
     expect(result.outcome).toBe("found");
   });
+
+  /**
+   * ================================================================================================
+   * `GitProviderAdapter` IS READ-ONLY, AND A WRITE HOOK MAY NOT REAPPEAR ON IT (owner decision
+   * 2026-08-15; ADR-0032 §9)
+   * ================================================================================================
+   * §9 justifies this adapter's existence as an escape hatch on TWO things: the `ExecutorPlugin`
+   * object is unchanged, AND — in its own words — "It also only READS." M21.5 briefly grew
+   * `createBranch`/`putFileOnBranch`/`openPullRequest` here, which contradicts the second half of
+   * that argument: extending the same mechanism to writes leaves the verb set intact while moving
+   * repository-write authority into a package every git-provider plugin loads and that is not one of
+   * the charter's enumerated managed classes. The write authority therefore lives inside
+   * `scp-managed-dep` (`packages/plugins/managed-dep`), where the charter's containment
+   * preconditions actually bind, and this interface reads.
+   *
+   * The absence is pinned TWO ways, because they fail at different times and catch different edits:
+   *
+   *  - the TYPE-LEVEL pin fails `tsc` the moment a write hook is DECLARED on the interface, which is
+   *    the edit that would reopen this. A runtime `in` check cannot see an interface at all;
+   *  - the key-set assertion in the test above already fails if such a hook were also surfaced as a
+   *    fifth verb.
+   *
+   * The read hook is asserted PRESENT in the same breath, so this cannot go green by the whole
+   * capability quietly disappearing — the vacuous-pass shape this repository has been bitten by.
+   */
+  it("declares NO repository-write hook — §9's escape hatch is justified by 'It also only READS'", () => {
+    // Type-level: this alias is `never` unless the interface is free of all three, so the assignment
+    // below is what makes a reintroduced hook a COMPILE error rather than a comment nobody reads.
+    type WriteHookName = "createBranch" | "putFileOnBranch" | "openPullRequest";
+    type AdapterIsReadOnly =
+      Extract<keyof GitProviderAdapter, WriteHookName> extends never ? true : never;
+    const readOnly: AdapterIsReadOnly = true;
+    expect(readOnly).toBe(true);
+
+    // Runtime, over the fake that satisfies the interface: it neither has nor needs them, while the
+    // read hook it DOES need is present.
+    const { adapter } = buildFakeAdapter();
+    for (const hook of ["createBranch", "putFileOnBranch", "openPullRequest"]) {
+      expect(hook in adapter, `${hook} must not be on a GitProviderAdapter`).toBe(false);
+    }
+    expect(typeof adapter.readFileAtRef).toBe("function");
+  });
 });

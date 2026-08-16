@@ -424,7 +424,14 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "terraform",
   "pipeline-generic",
   "managed-iac",
-  "managed-scan"
+  "managed-scan",
+  // M21.5 — the third managed executor (charter `scp-managed-dep` amendment 2026-08-13). It joins
+  // this list for the same reason `managed-scan` did: the allowlist is checked at BOTH write time
+  // (`routes/executors.ts`) and dispatch time (`resolveExecutorPluginInstance`, below), and missing
+  // either end fails closed as a confusing "unknown method" RPC error rather than a legible refusal.
+  // Its ORDINARY dispatch is server-side and binding-free — see `managedDepServerSettings` for why
+  // it needs no executor `type`.
+  "managed-dep"
 ];
 
 /**
@@ -598,6 +605,57 @@ export function managedRunnerSettings(): { dockerBinary: string } {
   return { dockerBinary: managedRunnerDockerBinary() };
 }
 
+/**
+ * SERVER/OPERATOR-GOVERNED `scp-managed-dep` runner settings (M21.5, charter amendment 2026-08-13) —
+ * the exact same never-tenant-suppliable trust tier as `managedIacServerSettings` and
+ * `managedScanServerSettings` above, and read here for the same reason: the plugin subprocess never
+ * sees `process.env` (host.ts's `minimalChildEnv` strips it), so the config this function injects is
+ * the ONLY channel these values have.
+ *
+ *  - SCP_MANAGED_DEP_RUNNER_IMAGE — the vetted, pinned `scp-runner-dep` image. UNSET IS THE DEFAULT
+ *    AND IT MEANS OFF: with no image, a managed-dep dispatch fails closed here before a container
+ *    could be launched or a credential minted. That is the deployment-level expression of "managed
+ *    execution is never a default" (ADR-0006) for the one class that writes to a user's repository.
+ *  - SCP_MANAGED_DEP_NETWORK_MODE — `docker create --network`, default `none`. THE RUNNER REACHES NO
+ *    HOSTS: it receives the manifest bytes by `docker cp`, edits them offline, and returns them the
+ *    same way. The ORCHESTRATOR (the plugin) is what holds the per-run repository-write credential
+ *    and reaches the git host — the same split `scp-managed-scan` already ships, where the SERVER
+ *    pulls the subject's bytes and the runner has no network. See
+ *    `packages/plugins/managed-dep/src/repo-write.ts` for the charter clauses this reconciles.
+ *  - SCP_MANAGED_DEP_WORKSPACE_ROOT — operator root under which per-run scratch dirs are made.
+ *
+ * WHY THERE IS NO NEW EXECUTOR `type` FOR THIS CLASS (schemas/executors.ts's closed enum
+ * image|rpm|deb|npm|infrastructure|configuration, "extensible only by deliberate owner decision").
+ *
+ * A dependency bump fits NONE of the six honestly. It is not a build (it turns no source into an
+ * artifact), not `infrastructure`, and not `configuration` (it applies no desired state to a running
+ * system). The `npm` member is a near-miss worth naming explicitly so nobody reaches for it later:
+ * it means "an executor that BUILDS an npm artifact", not "an executor that touches npm packages",
+ * and binding a bump actuator there would silently contend for the `UNIQUE(org, target, type)` slot
+ * a component's real npm build pipeline occupies.
+ *
+ * The right answer is that the class needs no Type at all, and the precedent is `scp-managed-scan`:
+ * it is in this same allowlist yet is never routed through `executor_bindings` in practice —
+ * `federation/promotion-scan-step.ts` constructs the plugin and a `PluginContext` directly, because
+ * it is a first-class step of the commander's own process rather than a tenant-bound pipeline. The
+ * bump actuator is the same shape: its work-list comes from the subscription resolution, not from a
+ * wave target, so nothing ever asks "which binding drives this target's <Type> pipeline?".
+ *
+ * The settings are still injected below for a managed-dep binding an operator creates by hand, so
+ * that path cannot become the one that runs an unvetted image on an unrestricted network.
+ */
+export function managedDepServerSettings(): {
+  runnerImage: string | undefined;
+  networkMode: string;
+  workspaceRoot: string;
+} {
+  return {
+    runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
+    networkMode: process.env.SCP_MANAGED_DEP_NETWORK_MODE ?? "none",
+    workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep")
+  };
+}
+
 function pluginStateDir(): string {
   return process.env.SCP_PLUGIN_STATE_DIR ?? join(tmpdir(), "scp-plugin-state");
 }
@@ -744,6 +802,18 @@ export async function resolveExecutorPluginInstance(
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
     serverInjected.dockerBinary = managedRunnerDockerBinary();
+  }
+
+  if (pluginModule === "managed-dep") {
+    const settings = managedDepServerSettings();
+    if (!settings.runnerImage) {
+      throw new Error(
+        "managed-dep binding used but dependency-bump authoring is not enabled (SCP_MANAGED_DEP_RUNNER_IMAGE is unset)"
+      );
+    }
+    serverInjected.runnerImage = settings.runnerImage;
+    serverInjected.networkMode = settings.networkMode;
+    serverInjected.workspaceRoot = settings.workspaceRoot;
   }
 
   return {

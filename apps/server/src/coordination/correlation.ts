@@ -295,3 +295,95 @@ export async function linkToCoordinatedChange(
 
   return groupId;
 }
+
+/**
+ * ================================================================================================
+ * M21.5 — A COMMIT COMMANDERSCP AUTHORED, COMING BACK IN (ADR-0032 §9, charter amendment 2026-08-13)
+ * ================================================================================================
+ * "A commit SCP authors is observed back in via the normal webhook path, so the bump change must be
+ * recorded such that the returning event CORRELATES TO IT rather than minting a second, unrelated
+ * change."
+ *
+ * WHAT WOULD HAPPEN WITHOUT THIS. `scp-managed-dep` pushes a branch to a component's repository. That
+ * push is an entirely ordinary provider event: `matchComponentForSource` above finds the component's
+ * ordinary source mapping, `processChangeSourceEvents` calls `proposeChange`, and the bump exists
+ * TWICE — once as the change SCP recorded when it decided to author, once as the change the webhook
+ * minted when the commit arrived. Two changes for one release, gating independently, neither aware of
+ * the other. Nothing errors; it simply reads as two releases.
+ *
+ * THE JOIN IS THE BRANCH, AND BOTH SIDES MUST DECLARE IT. `dependencies/bump-actuator.ts` records the
+ * change first and authors on `refs/heads/scp/dep-bump/<changeObjectId>`, and it writes that same
+ * repo+ref onto the change under `source_ref.scp_authored`. This function requires BOTH halves: the
+ * incoming ref must NAME a change, and that change must CLAIM this repo and this ref.
+ *
+ * REQUIRING BOTH IS LOAD-BEARING, NOT DEFENSIVE. A branch name is attacker-typable — anyone able to
+ * push to any repository this instance observes could create `scp/dep-bump/<some-uuid>` and, on a
+ * one-sided check, attach their push to another team's change and inherit whatever that change had
+ * already been granted. Reading the change's OWN declaration makes the correlation a fact SCP
+ * asserted, never a claim the payload made. Same rule, same reason, as ADR-0030 §2's "declared, never
+ * inferred".
+ *
+ * WHY THE BRANCH RATHER THAN THE COMMIT SHA. The sha is known only after the push, so a webhook that
+ * beat the actuator's recording of it would find nothing — and the losing side of that race is
+ * precisely the duplicate change this exists to prevent. The branch is chosen before anything is
+ * written at all.
+ *
+ * THIS ONLY EVER ATTACHES; IT NEVER PROPOSES. When it returns a change id, the caller marks the event
+ * processed against that EXISTING change. When it returns `null`, ingress proceeds exactly as it
+ * always has — so every non-bump event in the system is untouched by this function's existence.
+ */
+
+/** Restated from `dependencies/bump-actuator.ts` rather than imported, to keep this module free of a
+ *  dependency on the dependencies subsystem; `bump-provenance.integration.test.ts` pins the two
+ *  against each other, which is where a drift would actually bite. */
+export const BUMP_AUTHORED_REF_PREFIX = "refs/heads/scp/dep-bump/";
+
+/**
+ * Does this event's ref name a change THIS instance authored a bump on, which claims this very repo
+ * and ref? Returns that change's object id, or `null`.
+ *
+ * Every early return below is the fail-closed direction: an event with no ref, a ref outside the
+ * authored namespace, an id that resolves to no change, a change whose declaration is absent or
+ * disagrees — all of them mean "not ours", and the caller mints a change exactly as before.
+ */
+export async function matchAuthoredBumpChange(
+  tx: TenantTx,
+  orgId: string,
+  hint: { repo?: string; ref?: string }
+): Promise<string | null> {
+  const ref = hint.ref;
+  if (!ref || !ref.startsWith(BUMP_AUTHORED_REF_PREFIX)) return null;
+  const changeObjectId = ref.slice(BUMP_AUTHORED_REF_PREFIX.length);
+  // The remainder must be an object id and nothing more. A ref like
+  // `refs/heads/scp/dep-bump/<uuid>/extra` is NOT that change's branch and must not resolve to it.
+  if (!/^[0-9a-fA-F-]{36}$/.test(changeObjectId)) return null;
+
+  const row = await tx.query.changes.findFirst({
+    where: (t, { eq: eqOp, and: andOp }) =>
+      andOp(eqOp(t.orgId, orgId), eqOp(t.objectId, changeObjectId))
+  });
+  if (!row) return null;
+
+  const authored = (row.sourceRef as { scp_authored?: { repo?: unknown; ref?: unknown } } | null)
+    ?.scp_authored;
+  if (!authored) return null;
+  // The change must claim THIS ref. Compared byte-for-byte: a ref is an identifier, and a normalised
+  // comparison here would be the place a `refs/heads/x` and a `refs/heads/X` quietly became the same
+  // branch on a case-sensitive provider.
+  if (authored.ref !== ref) return null;
+  // …and THIS repo. Case-insensitive, because all three providers address repository paths that way
+  // — the same rule and the same sentence as `dependencies/manifest-reader.ts`'s
+  // `normalizeRepoIdentity`. An event carrying no repo can never satisfy this, which is correct: a
+  // declaration naming a repository is not matched by an event that names none.
+  //
+  // `source_ref` is a jsonb column, so `authored.repo` is genuinely `unknown` at this boundary: a row
+  // written by an older build, a hand-edited record, or a future shape of the key can carry anything.
+  // A non-string is treated as NO CLAIM — the fail-closed direction, and the caller then mints a
+  // change exactly as it always has.
+  const claimedRepo = typeof authored.repo === "string" ? authored.repo : undefined;
+  if (!claimedRepo || !hint.repo) return null;
+  if (hint.repo.trim().toLowerCase() !== claimedRepo.trim().toLowerCase()) {
+    return null;
+  }
+  return row.objectId;
+}

@@ -23,7 +23,10 @@ import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { assertOutpostPeerBinding, isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
-import { assertEnforceableDependencySubscriptionScope } from "../dependencies/subscription-authoring-guard.js";
+import {
+  assertEnforceableDependencySubscriptionScope,
+  assertNoDelegatedDependencyUpdates
+} from "../dependencies/subscription-authoring-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 
@@ -305,6 +308,15 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // blocks above, for the identical reason, against the identical two-module census.
   if (!input.federationImport) {
     assertEnforceableDependencySubscriptionScope({ typeId: input.typeId, properties });
+    // M21.5 — the SECOND dependency-subscription authoring refusal, installed at this same choke
+    // point for the same reasons and under the same `federationImport` exemption (see above and
+    // `subscription-authoring-guard.ts`'s M21.5 section). It is `await`ed because it reads a stored
+    // probe verdict; it performs no provider I/O and holds nothing open across a network call.
+    await assertNoDelegatedDependencyUpdates(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      properties
+    });
   }
 
   const urn = input.urn ?? deriveUrn(input.orgId, input.typeId, input.name);
@@ -720,6 +732,14 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   // fail-closed direction.
   if (!input.federationImport) {
     assertEnforceableDependencySubscriptionScope({
+      typeId: input.typeId,
+      properties: nextProperties
+    });
+    // M21.5 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the line above is: an ordinary PATCH that rewrites `scope`/`effects` can
+    // turn an inert policy into an enabling one without ever passing through a create.
+    await assertNoDelegatedDependencyUpdates(tx, {
+      orgId: input.orgId,
       typeId: input.typeId,
       properties: nextProperties
     });

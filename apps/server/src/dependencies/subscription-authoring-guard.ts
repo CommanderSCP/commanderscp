@@ -1,5 +1,7 @@
-import { badRequest } from "../errors.js";
+import { badRequest, conflict } from "../errors.js";
 import { DependencySubscriptionEffectSchema } from "@scp/schemas";
+import type { TenantTx } from "../db/tenant-tx.js";
+import { delegationRefusalMessage, readStandingDelegationVerdict } from "./delegation-detection.js";
 
 /**
  * A GROUP-SCOPED `dependencySubscription` EFFECT IS REFUSED AT AUTHORING TIME — IN BOTH DIRECTIONS
@@ -172,4 +174,102 @@ export function assertEnforceableDependencySubscriptionScope(args: {
             "asking."
     );
   }
+}
+
+/**
+ * ================================================================================================
+ * M21.5 — ENABLING SUBSCRIPTIONS FOR A COMPONENT WHOSE REPOSITORY ALREADY DELEGATES IS REFUSED
+ * (charter `scp-managed-dep` amendment 2026-08-13; ADR-0032 §8)
+ * ================================================================================================
+ * "CommanderSCP refuses to enable dependency subscriptions for a component whose repository already
+ * delegates the same manifests to another dependency-update system."
+ *
+ * WHY IT LIVES BESIDE THE SCOPE GUARD, AND AT THE SAME CHOKE POINT. Everything this file's header
+ * establishes about WHERE an authoring-time refusal belongs applies here unchanged and is not
+ * re-argued: the typed `/policies` route was never the boundary, three free-form-`typeId` doors
+ * (`POST /plans` + apply, `POST /federation/hand-fill`, `POST /federation/overlays`) reach
+ * `createObject` with the same document, and adding a fourth, fifth and sixth call rebuilds the same
+ * rake. So this is installed at `graph/objects-repo.ts`'s `createObject`/`updateObject` — the ONE
+ * choke point every local write door funnels through — with the identical `federationImport`
+ * exemption and the identical closing of that exemption at `handfill-repo.ts`.
+ *
+ * WHY IT IS ASYNC WHEN ITS SIBLING IS NOT. The sibling decides from the DOCUMENT alone. This one
+ * needs a fact about a repository, and the fact cannot be fetched here: `createObject` runs inside a
+ * tenant transaction holding two per-org advisory locks to commit, and provider I/O there would hold
+ * them across a network call. The fact is therefore probed asynchronously (where the repository is
+ * already being read) and persisted as a Decision; this performs ONE indexed read of it. See
+ * `delegation-detection.ts`'s module doc for why a Decision is the right home rather than a
+ * convenient one, and for what an ABSENT probe means.
+ *
+ * ONLY AN ENABLE IS REFUSED. An `enabled: false` effect is an OPT-OUT, and refusing to author an
+ * opt-out for a delegating component would refuse the very document that turns SCP's authoring OFF —
+ * the direction the conflict wants. So the direction is read, not just the presence of the effect.
+ * (Note the contrast with the scope guard above, which refuses BOTH directions: there, both
+ * directions were broken; here, only one of them can collide with another actuator.)
+ *
+ * ONLY AN `objectRef` SCOPE CAN BE DECIDED HERE, AND THE RESIDUAL IS COVERED ELSEWHERE. A
+ * `selector`-scoped enable names no component — by design, since "a `selector` is designed to match
+ * objects that do not exist yet" (this file's own residual note on the sibling guard). There is
+ * therefore no repository to have probed, and no refusal that could be issued honestly. That gap is
+ * NOT left open: `dependencies/bump-actuator.ts` re-reads the same standing verdict before every
+ * authored bump, so a component reached by a selector-scoped enable is refused at the moment SCP
+ * would write to it. One stored fact, two readers, neither fail-open.
+ *
+ * A 409 RATHER THAN A 400, carrying the probe's `decision_id`. This is not a malformed document —
+ * it is a well-formed one that conflicts with the state of the world, which is what 409 means; and
+ * charter principle 6 requires every blocked response to carry a `decision_id`, which here is the
+ * probe that found the file. An operator can `GET /decisions/{id}` and see exactly which config was
+ * read, at which ref, and which manifests it claimed.
+ */
+export async function assertNoDelegatedDependencyUpdates(
+  tx: TenantTx,
+  args: {
+    orgId: string;
+    /** As with the sibling guard, taken as an argument so every installation site — including the
+     *  free-form-`typeId` doors — is correct by construction rather than by remembering. */
+    typeId: string;
+    properties: Record<string, unknown> | undefined;
+  }
+): Promise<void> {
+  if (args.typeId !== "policy") return;
+
+  const effects = args.properties?.effects;
+  if (!Array.isArray(effects)) return;
+
+  // Does this document ENABLE anything at all? An opt-out-only policy is never refused — see the
+  // header. Parsed with the same schema the resolver uses, so a document that would contribute
+  // nothing at resolution time cannot be refused here either.
+  const enables = effects.some((raw) => {
+    const candidate = (raw as { dependencySubscription?: unknown } | null)?.dependencySubscription;
+    if (candidate === undefined) return false;
+    const parsed = DependencySubscriptionEffectSchema.safeParse(candidate);
+    return parsed.success && parsed.data.enabled;
+  });
+  if (!enables) return;
+
+  const scope = args.properties?.scope as { objectRef?: unknown } | undefined;
+  const objectRef = typeof scope?.objectRef === "string" ? scope.objectRef.trim() : "";
+  if (objectRef === "") return; // see "ONLY AN `objectRef` SCOPE CAN BE DECIDED HERE"
+
+  // Resolved exactly as `governance/policy-resolve.ts`'s own `resolveRef` does — id or URN — because
+  // the object this refusal is about must be the same object the matcher would later attach to. A
+  // ref that resolves to nothing is a dangling reference, which is already broken in ways this guard
+  // is not responsible for (the sibling guard's residual note says the same of the same case).
+  const row = /^[0-9a-fA-F-]{36}$/.test(objectRef)
+    ? await tx.query.objects.findFirst({
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(eqOp(t.orgId, args.orgId), eqOp(t.id, objectRef))
+      })
+    : await tx.query.objects.findFirst({
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(eqOp(t.orgId, args.orgId), eqOp(t.urn, objectRef))
+      });
+  if (!row) return;
+
+  const standing = await readStandingDelegationVerdict(tx, args.orgId, row.id);
+  if (!standing?.delegated) return;
+
+  throw conflict(delegationRefusalMessage(standing.collisions), {
+    decisionId: standing.decisionId
+  });
 }

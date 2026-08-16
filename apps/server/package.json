@@ -41,6 +41,7 @@
     "@scp/plugin-github-check": "workspace:*",
     "@scp/plugin-gitlab": "workspace:*",
     "@scp/plugin-harbor": "workspace:*",
+    "@scp/plugin-managed-dep": "workspace:*",
     "@scp/plugin-managed-iac": "workspace:*",
     "@scp/plugin-managed-scan": "workspace:*",
     "@scp/plugin-pipeline-generic": "workspace:*",

@@ -14,7 +14,11 @@ import { changeSourceEvents } from "../db/schema.js";
 import { badRequest, ProblemError } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { insertDecision } from "./decisions-repo.js";
-import { linkToCoordinatedChange, matchComponentForSource } from "./correlation.js";
+import {
+  linkToCoordinatedChange,
+  matchAuthoredBumpChange,
+  matchComponentForSource
+} from "./correlation.js";
 import { proposeChange } from "./changes-repo.js";
 import { deriveUrn } from "../graph/urn.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -347,6 +351,28 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
 
   for (const row of rows) {
     const hint = extractHint(row.sourceKind, row.headers, row.payload);
+
+    // M21.5 THE PROVENANCE LOOP (ADR-0032 §9) — BEFORE source-mapping correlation, because a bump SCP
+    // authored WOULD match the component's ordinary mapping and would then be proposed as a second,
+    // unrelated change for a release that already has one. Attaching here is what makes the returning
+    // event the originating change's own rather than a duplicate of it.
+    //
+    // Deliberately NOT a filter on `sourceKind` or on the mapping: the push arrives through the
+    // component's own git provider, so it is indistinguishable from any other push except by the ref
+    // SCP chose and the change that claims it. See `correlation.ts`'s `matchAuthoredBumpChange` for
+    // why BOTH halves of that claim are required.
+    const authoredChangeId = await matchAuthoredBumpChange(tx, orgId, {
+      repo: hint.repo,
+      ref: hint.ref
+    });
+    if (authoredChangeId) {
+      await tx
+        .update(changeSourceEvents)
+        .set({ processedAt: new Date(), resultingChangeObjectId: authoredChangeId })
+        .where(eq(changeSourceEvents.id, row.id));
+      continue;
+    }
+
     const match = await matchComponentForSource(tx, orgId, {
       sourceKind: row.sourceKind,
       repo: hint.repo,
