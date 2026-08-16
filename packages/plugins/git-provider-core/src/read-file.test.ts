@@ -93,7 +93,7 @@ describe("base64DecodedByteLength", () => {
 });
 
 // -------------------------------------------------------------------------------------------
-// decodeBoundedBase64 — the four gates
+// decodeBoundedBase64 — the gates
 // -------------------------------------------------------------------------------------------
 
 describe("decodeBoundedBase64", () => {
@@ -124,6 +124,69 @@ describe("decodeBoundedBase64", () => {
     expect(result.content).toBe(text);
     expect(result.sizeBytes).toBe(Buffer.byteLength(text, "utf8"));
     expect(result.sizeBytes).toBeGreaterThan(result.content.length);
+  });
+
+  describe("gate 3b — a body SHORTER than the provider declares is not the file", () => {
+    /**
+     * THE ONLY EVIDENCE OF TRUNCATION THERE IS. Every one of ADR-0032's six manifest formats is
+     * line-oriented or brace-balanced, and the first N bytes of a `requirements.txt` are still a
+     * valid `requirements.txt` — so no parser and no consumer can see this from the content. Its
+     * one consumer PRUNES a manifest's declarations down to what it just parsed, so a body missing
+     * its second half deletes the declarations that never arrived.
+     *
+     * Gates 2 and 3 each compare ONE size against the decode bound; this is the only place the two
+     * sizes are compared with each other.
+     */
+    it("refuses a payload that decodes to fewer bytes than the declared size", () => {
+      const arrived = "requests==2.31.0\n";
+      const result = decodeBoundedBase64(
+        decodeInput({
+          base64: Buffer.from(arrived, "utf8").toString("base64"),
+          // The provider says the file is far bigger than what arrived — a cut response.
+          declaredSizeBytes: 4096
+        })
+      );
+      expect(result).toMatchObject({
+        outcome: "refused",
+        reason: "incomplete_body",
+        sizeBytes: Buffer.byteLength(arrived, "utf8")
+      });
+      if (result.outcome !== "refused") throw new Error("unreachable");
+      expect(result.detail).toContain("4096");
+    });
+
+    it("PASSES a payload whose length matches — the ordinary read is not made to fail", () => {
+      // The negative control without which the assertion above proves only that something refuses.
+      const body = "requests==2.31.0\nurllib3==2.2.1\n";
+      const result = decodeBoundedBase64(
+        decodeInput({
+          base64: Buffer.from(body, "utf8").toString("base64"),
+          declaredSizeBytes: Buffer.byteLength(body, "utf8")
+        })
+      );
+      expect(result.outcome).toBe("found");
+    });
+
+    it("does NOT refuse a payload LONGER than declared — the direction that deletes is the short one", () => {
+      // `size` is provider metadata. A provider that under-reports it (a stale index entry, a size
+      // computed before a filter) would otherwise make every manifest in that repo unreadable —
+      // failing closed over a discrepancy that cannot truncate anything.
+      const body = "requests==2.31.0\nurllib3==2.2.1\n";
+      const result = decodeBoundedBase64(
+        decodeInput({
+          base64: Buffer.from(body, "utf8").toString("base64"),
+          declaredSizeBytes: 4
+        })
+      );
+      expect(result.outcome).toBe("found");
+    });
+
+    it("says nothing about completeness when the provider declares no size", () => {
+      const result = decodeBoundedBase64(
+        decodeInput({ base64: Buffer.from("x", "utf8").toString("base64") })
+      );
+      expect(result.outcome).toBe("found");
+    });
   });
 
   it("refuses on the PROVIDER-DECLARED size, before the payload is decoded", () => {

@@ -107,6 +107,172 @@ ADR-0013 keeps SBOM bytes out of SCP deliberately, and a stored closure is that 
 queries the feature needs — *"which components subscribe to P?"* and *"what does C declare?"* — are
 single-hop index lookups.
 
+### 4a. WHAT ACTUALLY WRITES THE INVENTORY (2026-08-16, M21.2)
+
+§4 says what the inventory IS — "what a component's own manifests declare" — and says nothing about
+what reads them. Built without that, nothing did: `upsertComponentDependency` and
+`pruneComponentDependencies` had **no non-test caller anywhere in the tree**, so
+`component_dependencies` was empty on every real deployment. That is not one dead function. §6's
+work-list, §7's third-party poll and §7a's manifest-path lookup all derive from that table, so the
+whole feature above it resolved over nothing while every test passed — the **fifth** M21 component
+built and never installed. The clauses below are normative because "there is a function that does
+this" is not the same claim as "this happens".
+
+1. **THE TRIGGER IS AN ACCEPTED CHANGE, THROUGH A ROUTER, ON THIS CAPABILITY'S OWN QUEUE.** Same
+   shape and same reason as §7c clause 2: `boss.work()` is a competing consumer, so a second worker
+   on `domain-events` would split the jobs with internal detection rather than add a listener. The
+   two capabilities register two ROUTERS on the shared stream and one queue each. The accept — not
+   the proposal — is the trigger, because it is the point this domain has decided is real and it is
+   the same commit §7a derives a released version from, so the inventory and the released version
+   are read at ONE commit rather than two. The manifest fetch happens **outside any transaction**
+   (§7c clause 2 again).
+
+2. **INGESTION IS GATED BY THE CHAIN'S FIRST TWO CONJUNCTS; THE THIRD SUBTRACTS DOWNSTREAM.** §6's
+   consequence is stated in two deliberately different verbs — "a disabled component is never
+   FETCHED and an opted-out dependency is never POLLED" — and building it showed the distinction is
+   load-bearing rather than stylistic. Ingestion prunes each manifest down to exactly the lines it
+   just read, so an opt-out that suppressed the WRITE would delete the record that the component
+   declares that dependency at all; the inventory, the UI and §8's conflict check would then stop
+   being able to see a dependency a team merely asked not to be bumped on, and re-enabling would
+   need a fresh push to recover it. **An opt-out subtracts a SUBSCRIPTION, never an OBSERVATION.**
+   The component-level gate is computed by `mergeDependencySubscription` itself over WITNESS lines
+   built from the candidates' own selectors — an exact decision procedure, not a sample, and not the
+   AND written a second time in a place no test of the merge can reach.
+
+3. **MANIFEST PATHS ARE NOT DERIVABLE FROM ANYTHING STORED, SO THEY ARE PROBED — AND THE PROBE IS
+   SCOPED TO THE REPOSITORY THIS PASS READS.** `source_mappings.path_pattern` is nullable and, where
+   discovery writes one, it is a directory GLOB: a containment predicate, which can answer "is this
+   path mine?" and cannot enumerate. There is no directory-listing primitive reachable from the
+   server — `readFileAtRef` takes one path and refuses a directory. So ingestion GENERATES a
+   candidate set (the six manifest filenames under the literal head of each `path_pattern`) and then
+   FILTERS it back through the mapping's own predicate — generation guesses, the predicate decides —
+   which `readFileAtRef`'s contract explicitly sanctions ("`not_found` is a routine answer"). It
+   ALWAYS re-reads the paths already recorded for that component **in this repository** first: those
+   are the only way a manifest at a non-standard location, or one that has been DELETED, stays
+   visible. The reads are bounded per run and the paths the budget did not reach are reported BY
+   NAME, because "42 candidates were not read" leaves an operator with no way to learn which
+   manifests are frozen.
+
+   Two derivations here are stated as rules because building them without saying so produced two
+   defects. **The candidate set comes only from the mappings that name THIS repository**: deriving
+   it from all of a component's mappings spends reads in the wrong repo and manufactures the
+   `not_found` that clause 4's prune then acts on. **The repo root is a prefix only when a mapping
+   constrains no path**: seeding it unconditionally made two components in one monorepo both claim
+   the root `package.json` as their own declarations, even where `path_pattern` scoped each to a
+   different subdirectory. A wildcard-free `path_pattern` is genuinely ambiguous between a file and
+   a directory, and the one closed set that is knowable resolves it — a pattern ending in one of the
+   six manifest filenames names that manifest, anything else is read both ways.
+
+   *Known limit, stated rather than discovered:* a manifest at an unguessable path that has never
+   been recorded is not found. The honest fix is to widen the discovery walk, which already observes
+   the marker filenames and discards them at its `hasMarker` boolean; that is a change to three
+   adapters and the `DiscoveryProposal` shape.
+
+4. **A MANIFEST IS PRUNED ONLY ON POSITIVE EVIDENCE ABOUT ITS CONTENT.** Either it was read and
+   parsed (prune to what it declares), or the provider said the PATH is not there (prune to nothing
+   — the file was deleted). Every other outcome leaves that path's rows untouched and is reported
+   with its own reason: a reader throw, a missing REF, an indeterminate not-found, each of
+   `read-file.ts`'s four decode refusals, a Git-LFS pointer, an unparseable body. **Unreadable is
+   not empty**, and the consequence of collapsing the two is not cosmetic: `listSubscribedComponentLines`
+   derives subscription FROM these rows, so a component whose inventory is emptied by a bad read is
+   silently unsubscribed from everything. Two splits carry this clause and neither is optional:
+   `not_found` is split on `missing` (a force-pushed branch must not empty every component in the
+   repo), and a Git-LFS pointer is detected STRUCTURALLY, because `parseRequirementsTxt` never
+   throws and would otherwise turn the pointer's own lines into the component's python inventory.
+
+4a. **THE PRUNE IS SCOPED TO THE REPOSITORY THE EVIDENCE CAME FROM** (2026-08-16). Clause 4 is a
+   statement about CONTENT and it needed a second half about PLACE. A pass reads one repository, and
+   `component_dependencies` recorded `observed_ref` — a commit sha, which names no repository — and
+   nothing else about where a declaration came from. A component fed by two repositories (a
+   supported shape: `source_mappings` is many-per-component and the correlator matches on
+   `repo_pattern`) therefore had every one of its known manifest paths probed in whichever repo the
+   release came from, and the `not_found: "path"` that came back for the OTHER repo's paths is the
+   branch that prunes. It lost one repository's entire inventory on every release from the other,
+   silently, which by clause 4's own reasoning unsubscribes it. `component_dependencies.observed_repo`
+   (drizzle/0063) records where each declaration was read from and the prune cannot delete outside
+   it. The column is NULLABLE and a row with no recorded repository is matched by no pass — stale
+   and visible beats deleted and silent — and a re-observation stamps it. Clause 3's repo-scoped
+   probe is the other half; neither alone is sufficient, because two repositories both mapped at
+   their root produce identical candidate paths and no path-shaped rule can attribute one of them.
+
+4b. **A PARTIAL BODY IS NOT AN EMPTY MANIFEST, AND ONLY THE BYTE COUNT CAN SEE THAT** (2026-08-16).
+   Clause 4's structural guard was written for the Git-LFS spelling of "this body is not the
+   manifest" and covered only that one. Every format in §10 is line-oriented or brace-balanced, so
+   the first N bytes of a `requirements.txt` are a valid `requirements.txt` — a truncated response
+   parses as FEWER dependencies and the rest are pruned with no skip entry at all. No parser and no
+   consumer can detect it; the provider's declared size and the payload's own length are in hand at
+   exactly one point, so `decodeBoundedBase64` refuses a payload SHORTER than the declared size as
+   `incomplete_body`, which reaches ingestion as an ordinary refusal and prunes nothing. Short only:
+   `size` is provider metadata, and failing closed on an over-long payload would make every manifest
+   in a repo whose provider under-reports unreadable, for a discrepancy that cannot truncate
+   anything.
+
+4c. **AN OLDER PASS MAY NOT LAND AFTER A NEWER ONE** (2026-08-16). Both delivery hops are
+   at-least-once and the queue is a competing consumer, so a retry of an earlier accept can arrive
+   after a later one; applied out of order, the older pass prunes each manifest down to what the
+   OLDER commit declared and deletes what the newer one added. `observed_ref` cannot order them —
+   it is a commit sha, two shas carry no order, and deciding ancestry needs a history walk §9 keeps
+   out of the plugin seam. What is orderable is WHEN each pass read, so `observed_at` is stamped
+   from the read rather than from the write, and a pass whose read is older than what the row
+   already carries applies nothing and writes no Decision. *The residue, stated:* this orders by
+   when a pass LOOKED, not by commit ancestry; two passes whose reads and commits are ordered
+   oppositely still land wrongly, and the next accepted change or a backfill re-derives the truth.
+
+5. **A BACKFILL IS PART OF THE FEATURE, NOT AN OPERATIONAL EXTRA.** An event-driven ingestion covers
+   components that RELEASE and nothing else, so on an existing estate the inventory stays empty
+   until each team happens to commit, and a component that never pushes again never acquires one.
+   `POST /api/v1/dependencies/inventory/backfill` follows the shipped
+   `POST /discovery/backfill-source-mappings` precedent exactly: operator-triggered, idempotent, and
+   it reports every skip. It resolves the repo from the component's OWN `source_mappings` and
+   refuses (rather than guesses) where they name a glob or two different repos, and it cannot weaken
+   the gate — there is no flag that skips it. Two properties of the RECEIPT are normative, because a
+   backfill is the one caller a human reads the output of: it reports the DESTRUCTIVE half
+   (`declarationsPruned` / `manifestsRemoved`), without which a run that emptied a component's whole
+   inventory at the wrong ref is indistinguishable from a clean one; and the live provider I/O it
+   performs inline is BOUNDED (`fetchBudget`), with the components it did not reach reported as
+   `not_attempted`, because a whole-org run otherwise holds unbounded round trips against a user's
+   provider inside one request.
+
+6. **THE INGRESS HAD TO BE FIXED FOR ANY OF THIS TO WORK ON REAL DATA.** `changes.source_ref` carried
+   no `repo` for any provider webhook (GitHub nests it at `repository.full_name`) and **no `commit`
+   for any driver at all** — measured filterlessly, nothing non-test in the tree ever wrote that key,
+   though every git adapter's `mapEvent` had always returned one. `canonicalizeSourceRef` now lifts
+   all three flat keys beside the verbatim raw payload, the same way it already lifted
+   `artifact_digest`. This is not M21.2 scope creep: §7a's three language ecosystems refuse with
+   `no_released_commit` without it and `manifest-reader.ts` throws without a repo, so M21.4's
+   internal detection could not succeed on any real delivery either.
+
+6a. **THE INGESTION DECISION IS A FUNCTION OF WHAT THE COMPONENT DECLARES, AND OF NOTHING ELSE**
+   (2026-08-16). It is written through `insertDecisionIfChanged`, so a field that moves while the
+   subject does not re-opens the persist-on-change guard that exists because a churning Decision
+   measured 1.44 GB/day (ADR-0024). That is a claim about EVERY field, and it was false in three
+   until each was removed: a skip's free-text `detail` interpolated the ref (so a component whose
+   commit never resolves wrote a fresh Decision per accepted change), a manifest's `pruned` count
+   describes the PREVIOUS state rather than this observation, and the gate's `witness` is one line
+   the merge happened to be satisfied on. The reason tree carries each skip's PATH and REASON, and
+   the gate's `contributions` — all stable, and all that "which level decided this, and what could
+   not be read" needs. Separately, the witness is now chosen in a canonical order rather than as the
+   first selector out of an unordered `SELECT`, because a value that differs between two identical
+   runs is a hazard for whichever consumer reads it next.
+
+6b. **THE COMPONENT GATE'S WITNESSES RESPECT `ecosystem`'s CLOSED DOMAIN** (2026-08-16). The gate
+   decides the existential "is there ANY line this component would be subscribed to?" by asking the
+   real merge about witness lines built from each candidate's own selector, filling unspelled fields
+   with a value no candidate names. That is correct for `coordinate` and `major`, which are open
+   strings. It is wrong for `ecosystem`, whose entire domain is §10's five members: a witness
+   carrying an invented sixth is matched by no ecosystem-scoped opt-out, so a component with an
+   org-wide enable and one opt-out per ecosystem — five effects that between them cover every line
+   that could exist — kept an OPEN gate and was fetched, and therefore pruned, on every accepted
+   change forever. A selector naming no ecosystem now expands to one witness per real ecosystem, and
+   the existential stays exact in both directions.
+
+7. **THE ROLE GUARD MATCHES INTERNAL DETECTION, DERIVED FROM INGESTION'S OWN FACTS.** The process
+   axis applies (background work belongs to `all`/`worker`). The federation axis does not: §7c
+   clause 3 makes the poll commander-only because it **dials public package registries on a timer**,
+   while ingestion initiates no timed egress and reads through the git binding this domain's
+   executors already coordinate over. §3 says each domain derives its own inventory, so a
+   commander-only guard would leave every outpost's `component_dependencies` permanently empty.
+
 ### 5. Package dependencies never use `depends_on`
 
 They mint no `depends_on` edge, so the plan compiler's toposort and cycle check cannot see them

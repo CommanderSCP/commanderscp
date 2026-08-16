@@ -59,6 +59,19 @@ export interface ExtractedHint {
    *  `refPattern` source mapping matches against (ADR-0030 §1). Undefined for any source that has
    *  no ref (a registry/package push), which simply never matches a ref-scoped mapping. */
   ref?: string;
+  /**
+   * The COMMIT this event is about — `head_commit.id`/`after` for a push, the head sha for a PR or
+   * a workflow run. Every git-provider adapter's `mapEvent` has always returned one; until M21.2
+   * nothing on this side read it, so it was dropped at this boundary and `changes.source_ref` carried
+   * no commit AT ALL (measured filterlessly: no non-test module in the tree ever wrote
+   * `source_ref.commit`).
+   *
+   * That was not a cosmetic gap. A ref is a moving label and a commit is an identity, so every
+   * consumer that must read a repo AT THE RELEASED POINT was blocked on it: M21.4's language
+   * ecosystems refused every release with `no_released_commit`, and M21.2's inventory ingestion
+   * would otherwise read a branch head that has since moved past the release it is recording.
+   */
+  commitSha?: string;
   /** OCI/image artifact digest (`sha256:…`) for a registry/package push (harbor's `PUSH_ARTIFACT`,
    *  gitea's `package`) — threaded into the proposed Change's `sourceRef.artifact_digest`, the
    *  connective tissue the M17.1 scan gate binds to (ADR-0013). Additive (M15.3c): forwarded here
@@ -146,6 +159,16 @@ function genericHint(payload: unknown): ExtractedHint {
     // declared there a CI step sending one got a validation REFUSAL, not a route — reading it here
     // would have been necessary and not sufficient.
     ref: typeof p.ref === "string" && p.ref.length > 0 ? p.ref : undefined,
+    // Read under BOTH spellings a first-party body uses today: `observe()` writes the flat payload
+    // it correlates from with `commitSha` (`coordination/observe.ts`), while a hand-crafted
+    // `/webhook` body and the canonical `source_ref` both spell it `commit`. Accepting one and not
+    // the other would make the poll-vs-push equivalence DESIGN §12 claims false for this field.
+    commitSha:
+      typeof p.commitSha === "string" && p.commitSha.length > 0
+        ? p.commitSha
+        : typeof p.commit === "string" && p.commit.length > 0
+          ? p.commit
+          : undefined,
     correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined,
     artifactDigest:
       typeof p.artifactDigest === "string" && p.artifactDigest.length > 0
@@ -214,6 +237,10 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // (a package push) sets no ref, so this correctly falls through to the generic shape and then
     // to undefined — and an event with no ref matches no ref-scoped mapping, fail-closed.
     ref: providerHint.ref ?? generic.ref,
+    // Same adapter-wins precedence as every field above. Carried through EXPLICITLY because this
+    // branch reconstructs field-by-field rather than spreading `generic` — the omission of this one
+    // line is what dropped every provider's commit sha at this boundary until M21.2.
+    commitSha: providerHint.commitSha ?? generic.commitSha,
     correlationKey: providerHint.correlationKey ?? generic.correlationKey,
     // Additive forwarding (M15.3c): git-provider hints that don't set a digest leave this undefined,
     // so nothing about their behavior changes; harbor/gitea package pushes carry it through to
@@ -257,6 +284,23 @@ export function canonicalizeSourceRef(
 ): Record<string, unknown> {
   const raw = ((rawPayload as Record<string, unknown>) ?? {}) as Record<string, unknown>;
   const sourceRef: Record<string, unknown> = { ...raw };
+  // M21.2 — THE TWO KEYS THAT NAME *WHERE* AND *WHICH POINT*, lifted for the first time.
+  //
+  // `internal-release-detection.ts` and `inventory-ingestion-loop.ts` both read `source_ref` as
+  // flat `{repo, ref, commit}`, and until now that read found almost nothing: a GitHub push nests
+  // its repo at `repository.full_name` and its commit at `head_commit.id`, so `repo` was absent for
+  // every provider webhook and `commit` was absent for EVERY driver in the tree, `observe()`
+  // included (it writes `commitSha`). The measured downstream cost was two hard refusals —
+  // `manifest-reader.ts` throws when `repo` is empty and `internal-release-version.ts` refuses with
+  // `no_released_commit` when `commit` is — so three of the five ecosystems could not resolve a
+  // released version on ANY real delivery, and nothing could read a manifest at the released point.
+  //
+  // Lifted here rather than defended in each reader for the reason `artifact_digest` is: this is the
+  // one place canonical `source_ref` keys are minted, and a reader that dug into a provider's own
+  // payload shape would be a per-provider parser in a module that must stay provider-neutral.
+  if (hint.repo) sourceRef.repo = hint.repo;
+  if (hint.ref) sourceRef.ref = hint.ref;
+  if (hint.commitSha) sourceRef.commit = hint.commitSha;
   if (hint.artifactDigest) sourceRef.artifact_digest = hint.artifactDigest;
   if (hint.sbom) {
     // Normalize the SBOM DOCUMENT's digest to `sha256:<lowercase-hex>` so what is persisted always

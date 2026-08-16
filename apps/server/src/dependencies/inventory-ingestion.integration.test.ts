@@ -1,0 +1,1286 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
+import pg from "pg";
+import { v7 as uuidv7 } from "uuid";
+import { ScpClient } from "@scp/sdk";
+import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
+import { changes, decisions, users } from "../db/schema.js";
+import { createSourceMapping } from "../coordination/source-mappings-repo.js";
+import { upsertExecutorBinding } from "../coordination/executor-bindings-repo.js";
+import { DOMAIN_EVENTS_QUEUE, startPgBoss } from "../events/pgboss.js";
+import type { GitFileReadPluginClient, PluginHost } from "../plugin-host/contract.js";
+import {
+  createOrphanComponent,
+  createTestOrg,
+  listenTestServer,
+  testDatabaseUrl,
+  waitUntil,
+  type ListeningTestServer,
+  type TestOrg
+} from "../test-support/harness.js";
+import {
+  listComponentDependencies,
+  listDependencyLinesByIds
+} from "./dependency-inventory-repo.js";
+import {
+  DEPENDENCY_INVENTORY_DECISION_KIND,
+  ingestComponentManifests
+} from "./inventory-ingestion.js";
+import { resolveComponentIngestionGate } from "./subscription-resolution.js";
+import { SYSTEM_ACTOR_ID } from "../coordination/system-actor.js";
+import {
+  ingestChangeInventory,
+  inventoryIngestionRouter,
+  runInventoryIngestionJob,
+  startInventoryIngestionLoop,
+  type InventoryIngestionLoopHandle
+} from "./inventory-ingestion-loop.js";
+
+/**
+ * M21.2 — DEPENDENCY-INVENTORY INGESTION AGAINST REAL POSTGRES (ADR-0032 §4, §6).
+ *
+ * ============================================================================================
+ * WHAT THIS FILE IS FOR
+ * ============================================================================================
+ * `upsertComponentDependency` and `pruneComponentDependencies` had NO non-test caller, so
+ * `component_dependencies` was empty on every real deployment and every capability above it —
+ * the enablement work-list, the version poll, internal detection's manifest-path lookup — resolved
+ * over nothing. Four earlier M21 components failed the same way and every one had passing tests,
+ * because the tests called the component directly.
+ *
+ * So the assertions here are about the REAL PATH: the worker's own job function
+ * (`runInventoryIngestionJob`), driving the real change row, the real `source_ref`, the real
+ * enablement resolution and the real repo functions. Only the git provider is faked — and it is
+ * faked with a RECORDER, not a mock, because the load-bearing claim about a disabled component is
+ * that NOTHING WAS FETCHED, and the only honest evidence for that is an empty recording.
+ *
+ * ============================================================================================
+ * THE FIVE PROPERTIES
+ * ============================================================================================
+ *  1. WIRED — the exact function the pg-boss worker calls, given the change id its router enqueues,
+ *     writes the component's inventory. Deleting the wiring makes this red.
+ *  2. GATED BY CONSTRUCTION — a component with no enabling subscription produces ZERO recorded
+ *     reads, and the caller cannot opt out of that.
+ *  3. UNREADABLE IS NOT EMPTY — each failure mode separately: a 404 HTML body, an LFS pointer, a
+ *     truncated file, a size refusal, a reader throw, a missing REF. Every one leaves the existing
+ *     inventory intact. A missing PATH is the one case that does prune, because it is the one case
+ *     that is evidence about the manifest.
+ *  4. IDEMPOTENT — a second pass over unchanged manifests adds no row, deletes no row, preserves
+ *     `created_at`, and writes NO new Decision.
+ *  5. PRUNE IS PER MANIFEST PATH — re-reading a `go.mod` never deletes what a `Dockerfile` declared.
+ */
+describe("M21.2 dependency-inventory ingestion (ADR-0032 §4/§6)", () => {
+  let server: ListeningTestServer;
+  let org: TestOrg;
+  let admin: ScpClient;
+  let actorObjectId: string;
+
+  const inOrg = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> =>
+    withTenantTx(server.deps.db, org.orgId, fn);
+
+  /** Operator-written over the ADMIN connection — `scp_app` holds no write grant on the singleton
+   *  (0062's two barriers). Instance-global, so it is removed at teardown regardless of exit. */
+  async function setInstanceUnlock(unlocked: boolean | null): Promise<void> {
+    const pool = new pg.Pool({ connectionString: testDatabaseUrl(), max: 1 });
+    try {
+      if (unlocked === null) {
+        await pool.query(`DELETE FROM dependency_subscription_unlock WHERE id = 'default'`);
+        return;
+      }
+      await pool.query(
+        `INSERT INTO dependency_subscription_unlock (id, unlocked, note, updated_at)
+           VALUES ('default', $1, 'M21.2 ingestion fixture', now())
+         ON CONFLICT (id) DO UPDATE SET unlocked = EXCLUDED.unlocked, updated_at = now()`,
+        [unlocked]
+      );
+    } finally {
+      await pool.end();
+    }
+  }
+
+  /**
+   * A recording fake git provider.
+   *
+   * IT RECORDS EVERY CALL, and that is the point rather than a convenience: "a disabled component is
+   * never fetched" is an assertion about calls that did NOT happen, and a mock's `not.toHaveBeenCalled`
+   * proves the same thing only if the mock is the ONLY route to the provider. A recorder that the
+   * ingestion is handed, and whose log is asserted empty, is evidence about this run.
+   */
+  function recordingReader(files: Record<string, string | ReadFileAtRefResult>) {
+    const reads: { repo: string | undefined; path: string; ref: string }[] = [];
+    const read = async (request: ReadFileAtRefRequest): Promise<ReadFileAtRefResult> => {
+      reads.push({ repo: request.repo, path: request.path, ref: request.ref });
+      const entry = files[request.path];
+      if (entry === undefined) {
+        // The routine answer to a probe: four of the five ecosystems are absent on any given
+        // component (`read-file.ts`), so this must not throw and must not be an error.
+        return {
+          outcome: "not_found",
+          missing: "path",
+          path: request.path,
+          requestedRef: request.ref
+        };
+      }
+      if (typeof entry !== "string") return entry;
+      return {
+        outcome: "found",
+        path: request.path,
+        requestedRef: request.ref,
+        // Deliberately NOT the requested ref: `readFileAtRef` returns what the ref RESOLVED to, and
+        // that resolved commit is what must land on the row.
+        commitSha: RESOLVED_COMMIT,
+        content: entry,
+        sizeBytes: Buffer.byteLength(entry, "utf8")
+      };
+    };
+    return { read, reads };
+  }
+
+  const RESOLVED_COMMIT = "a".repeat(40);
+  const REPO = "acme/widgets";
+
+  const GO_MOD = `module github.com/acme/widgets
+
+go 1.22
+
+require (
+	github.com/Masterminds/semver/v3 v3.2.1
+	github.com/spf13/cobra v1.8.0
+)
+`;
+  const DOCKERFILE = `FROM node:18.19.0-alpine\nRUN echo hi\n`;
+
+  /** Enable dependency subscriptions for one component at `objectRef` scope — the whole authoring
+   *  surface (ADR-0032 §3a). `objectRef` rather than `group` because the event-driven path resolves
+   *  as the system sentinel, which is a member of nothing (§6a). */
+  async function enable(componentObjectId: string): Promise<void> {
+    const name = `sub-${uuidv7()}`;
+    await admin.policies.create({
+      name,
+      urn: `urn:scp:${org.orgId}:policy:${name}`,
+      properties: {
+        scope: { objectRef: componentObjectId },
+        enforcement: "advisory",
+        effects: [{ dependencySubscription: { enabled: true } }]
+      }
+    });
+  }
+
+  /** A component with a `source_mappings` row, which is where the probe prefix comes from. */
+  async function componentWithMapping(
+    label: string,
+    pathPattern: string | null,
+    repoPattern: string = REPO
+  ): Promise<string> {
+    const component = await createOrphanComponent(admin, `${label}-${uuidv7()}`);
+    await addMapping(component.id, pathPattern, repoPattern);
+    return component.id;
+  }
+
+  /** A second (third, …) `source_mappings` row for an existing component — the shape a component
+   *  fed by two repositories actually has. */
+  async function addMapping(
+    componentIdOrUrn: string,
+    pathPattern: string | null,
+    repoPattern: string
+  ): Promise<void> {
+    await inOrg((tx) =>
+      createSourceMapping(tx, {
+        orgId: org.orgId,
+        sourceKind: "github",
+        repoPattern,
+        ...(pathPattern !== null ? { pathPattern } : {}),
+        componentIdOrUrn,
+        type: "configuration"
+      })
+    );
+  }
+
+  /**
+   * An ACCEPTED change targeting `componentObjectId`, carrying the canonical `source_ref` keys the
+   * webhook ingress now lifts.
+   *
+   * The state is set directly because this file is about ingestion, not about the acceptance gate —
+   * and it is READ BACK, because a fixture that silently did not apply would make every assertion
+   * below pass for the wrong reason (`changes` is under `org_isolation` RLS, so a write on the bare
+   * pool matches zero rows and says so nowhere).
+   */
+  async function acceptedChange(
+    componentObjectId: string,
+    sourceRef: Record<string, unknown>
+  ): Promise<string> {
+    const change = await admin.changes.propose({
+      name: `rel-${uuidv7()}`,
+      targets: [componentObjectId]
+    });
+    await inOrg((tx) =>
+      tx
+        .update(changes)
+        .set({ state: "accepted", sourceRef })
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    const [row] = await inOrg((tx) =>
+      tx
+        .select({ state: changes.state, sourceRef: changes.sourceRef })
+        .from(changes)
+        .where(and(eq(changes.orgId, org.orgId), eq(changes.objectId, change.id)))
+    );
+    expect(row?.state, "the accepted-change fixture must have taken").toBe("accepted");
+    expect(row?.sourceRef, "the source_ref fixture must have taken").toMatchObject(sourceRef);
+    return change.id;
+  }
+
+  const inventoryOf = (componentObjectId: string) =>
+    inOrg((tx) => listComponentDependencies(tx, org.orgId, componentObjectId));
+
+  async function coordinatesOf(componentObjectId: string): Promise<string[]> {
+    const rows = await inventoryOf(componentObjectId);
+    const lines = await inOrg((tx) =>
+      listDependencyLinesByIds(
+        tx,
+        org.orgId,
+        rows.map((r) => r.lineId)
+      )
+    );
+    const byId = new Map(lines.map((l) => [l.id, l]));
+    return rows
+      .map(
+        (r) => `${r.manifestPath}:${byId.get(r.lineId)?.coordinate}@${byId.get(r.lineId)?.major}`
+      )
+      .sort();
+  }
+
+  const decisionsFor = (subjectId: string) =>
+    inOrg((tx) =>
+      tx
+        .select({ id: decisions.id })
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, subjectId),
+            eq(decisions.kind, DEPENDENCY_INVENTORY_DECISION_KIND)
+          )
+        )
+    );
+
+  beforeAll(async () => {
+    server = await listenTestServer();
+    org = await createTestOrg(server, "dep-inventory-ingest");
+    admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const [adminRow] = await server.deps.db
+      .select({ objectId: users.objectId })
+      .from(users)
+      .where(eq(users.username, org.adminUsername));
+    if (!adminRow?.objectId) throw new Error("expected the bootstrap admin to have a user object");
+    actorObjectId = adminRow.objectId;
+    await setInstanceUnlock(true);
+  });
+
+  afterAll(async () => {
+    await setInstanceUnlock(null).catch(() => undefined);
+    await server?.close();
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 1. WIRED
+  // -------------------------------------------------------------------------------------------
+  describe("the real path", () => {
+    it("the worker's own job function ingests an accepted change's component inventory", async () => {
+      const component = await componentWithMapping("wired", "svc/api/**");
+      await enable(component);
+      const changeId = await acceptedChange(component, {
+        repo: REPO,
+        ref: "refs/heads/main",
+        commit: RESOLVED_COMMIT
+      });
+      const reader = recordingReader({
+        "svc/api/go.mod": GO_MOD,
+        "svc/api/Dockerfile": DOCKERFILE
+      });
+
+      // THE EXACT FUNCTION `startInventoryIngestionLoop`'s worker calls, with the EXACT job shape
+      // `inventoryIngestionRouter` enqueues — not a copy of either, and with the REAL manifest
+      // reader the job builds for itself.
+      const outcome = await runInventoryIngestionJob(
+        {
+          db: server.deps.db,
+          host: server.deps.pluginHost!,
+          config: server.deps.config
+        },
+        { orgId: org.orgId, changeObjectId: changeId }
+      );
+
+      // THE WIRING ASSERTION. The job read the change row, resolved its target to this component,
+      // passed the enablement gate and reached the provider — which legibly refuses, because this
+      // test org has no git-provider binding for `acme/widgets` and SCP will not read one repo with
+      // another binding's credential (`manifest-reader.ts`). Every hop except the provider is real,
+      // and the refusal is the receipt that the last hop was attempted.
+      expect(outcome.verdict).toBe("evaluated");
+      expect(outcome.components.map((c) => c.componentObjectId)).toEqual([component]);
+      const attempted = outcome.components[0]!;
+      expect(attempted.verdict).toBe("ingested");
+      expect(attempted.reads).toBeGreaterThan(0);
+      expect(attempted.skipped.every((s) => s.reason === "read_failed")).toBe(true);
+      expect(attempted.skipped[0]?.detail).toContain("executor binding");
+      // And it asked for the right paths at the right point: the prefix came from the component's
+      // own `source_mappings`, and the ref from `source_ref.commit`.
+      expect(attempted.skipped.map((s) => s.path)).toContain("svc/api/go.mod");
+
+      // Now the same ingestion with a recording reader, to assert what it WRITES.
+      const ingest = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      expect(ingest.verdict).toBe("ingested");
+
+      expect(await coordinatesOf(component)).toEqual([
+        "svc/api/Dockerfile:node@18",
+        "svc/api/go.mod:github.com/Masterminds/semver/v3@3",
+        "svc/api/go.mod:github.com/spf13/cobra@1"
+      ]);
+
+      // The row records the RESOLVED commit, not the ref that was asked for — a branch name is not
+      // an identity.
+      const rows = await inventoryOf(component);
+      expect(new Set(rows.map((r) => r.observedRef))).toEqual(new Set([RESOLVED_COMMIT]));
+
+      // `oci` carries its literal variant suffix onto the line; the language ecosystems never do.
+      const lines = await inOrg((tx) =>
+        listDependencyLinesByIds(
+          tx,
+          org.orgId,
+          rows.map((r) => r.lineId)
+        )
+      );
+      expect(lines.find((l) => l.ecosystem === "oci")?.tagPattern).toBe("-alpine");
+      expect(lines.filter((l) => l.ecosystem === "go").every((l) => l.tagPattern === null)).toBe(
+        true
+      );
+      // NOTHING declared a producer. `produced_by_object_id` is a separate verb precisely so
+      // ingestion cannot set it as a side effect of observing a manifest.
+      expect(lines.every((l) => l.producedByObjectId === null)).toBe(true);
+    });
+
+    it("drives from the change: a change targeting no component ingests nothing", async () => {
+      const service = await admin.object("service").create({ name: `svc-${uuidv7()}` });
+      const changeId = await acceptedChange(service.id, { repo: REPO, commit: RESOLVED_COMMIT });
+      const outcome = await ingestChangeInventory(
+        { db: server.deps.db, host: server.deps.pluginHost!, config: server.deps.config },
+        { orgId: org.orgId, changeObjectId: changeId }
+      );
+      expect(outcome.verdict).toBe("not_applicable");
+    });
+
+    it("re-reads the change's state rather than trusting the event that delivered it", async () => {
+      const component = await componentWithMapping("stale-event", null);
+      await enable(component);
+      const change = await admin.changes.propose({
+        name: `rel-${uuidv7()}`,
+        targets: [component]
+      });
+      // Never accepted. The router only enqueues on `toState === 'accepted'`, but delivery is
+      // at-least-once and out of band, so the handler must not act on a change that has moved on.
+      const outcome = await ingestChangeInventory(
+        { db: server.deps.db, host: server.deps.pluginHost!, config: server.deps.config },
+        { orgId: org.orgId, changeObjectId: change.id }
+      );
+      expect(outcome.verdict).toBe("not_applicable");
+      expect(outcome.detail).toContain("not 'accepted'");
+      expect(await inventoryOf(component)).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 2. GATED BY CONSTRUCTION
+  // -------------------------------------------------------------------------------------------
+  describe("the enablement gate", () => {
+    it("a component with NO enabling subscription is never fetched — zero recorded reads", async () => {
+      const component = await componentWithMapping("disabled", null);
+      // Deliberately NOT enabled.
+      const reader = recordingReader({ "go.mod": GO_MOD });
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      expect(outcome.verdict).toBe("not_enabled");
+      // THE ASSERTION THIS FILE EXISTS FOR: not "the mock was not called" but "this run made no
+      // request of the provider at all".
+      expect(reader.reads).toEqual([]);
+      expect(outcome.reads).toBe(0);
+      expect(await inventoryOf(component)).toEqual([]);
+      // And no Decision: a component that is simply not subscribed is the common case on any
+      // estate, and a row per accepted change saying so is the 1.44 GB/day shape.
+      expect(await decisionsFor(component)).toEqual([]);
+    });
+
+    it("a LOCKED deployment fetches nothing, however enabled the component is", async () => {
+      const component = await componentWithMapping("locked", null);
+      await enable(component);
+      await setInstanceUnlock(false);
+      try {
+        const reader = recordingReader({ "go.mod": GO_MOD });
+        const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+          componentObjectId: component,
+          repo: REPO,
+          ref: RESOLVED_COMMIT,
+          readManifest: reader.read
+        });
+        expect(outcome.verdict).toBe("not_enabled");
+        expect(reader.reads).toEqual([]);
+      } finally {
+        await setInstanceUnlock(true);
+      }
+      // The NEGATIVE CONTROL, without which the absence above proves nothing: the same component,
+      // the same reader, with the deployment unlocked again.
+      const reader = recordingReader({ "go.mod": GO_MOD });
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      expect(outcome.verdict).toBe("ingested");
+      expect(reader.reads.length).toBeGreaterThan(0);
+    });
+
+    it("an opted-out LINE is still INVENTORIED — an opt-out subtracts a subscription, not an observation", async () => {
+      const component = await componentWithMapping("opted-out", null);
+      await enable(component);
+      const name = `optout-${uuidv7()}`;
+      await admin.policies.create({
+        name,
+        urn: `urn:scp:${org.orgId}:policy:${name}`,
+        properties: {
+          scope: { objectRef: component },
+          enforcement: "advisory",
+          effects: [
+            {
+              dependencySubscription: { coordinate: "github.com/spf13/cobra", enabled: false }
+            }
+          ]
+        }
+      });
+      const reader = recordingReader({ "go.mod": GO_MOD });
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      // Both lines are recorded. If the opt-out had suppressed the write, the prune would then have
+      // deleted the row, the inventory would forget the component declares cobra at all, and
+      // re-enabling would need a fresh push to recover it.
+      expect(await coordinatesOf(component)).toEqual([
+        "go.mod:github.com/Masterminds/semver/v3@3",
+        "go.mod:github.com/spf13/cobra@1"
+      ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 3. UNREADABLE IS NOT EMPTY — every failure mode, separately
+  // -------------------------------------------------------------------------------------------
+  describe("a manifest that cannot be read is skipped, never treated as declaring nothing", () => {
+    /** A component with a populated inventory, ready to be re-ingested against a broken read.
+     *  Returns the coordinates that must survive. */
+    async function seeded(
+      label: string,
+      files: Record<string, string> = { "go.mod": GO_MOD }
+    ): Promise<{ component: string; before: string[] }> {
+      const component = await componentWithMapping(label, null);
+      await enable(component);
+      const reader = recordingReader(files);
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      expect(outcome.verdict).toBe("ingested");
+      const before = await coordinatesOf(component);
+      expect(
+        before.length,
+        "the seed must have taken, or every survival check below is vacuous"
+      ).toBeGreaterThan(0);
+      return { component, before };
+    }
+
+    async function reingest(
+      component: string,
+      files: Record<string, string | ReadFileAtRefResult>
+    ) {
+      return ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader(files).read
+      });
+    }
+
+    it("a 404 HTML body — ManifestParseError, caught per manifest", async () => {
+      const { component, before } = await seeded("html-404");
+      const outcome = await reingest(component, {
+        "go.mod": "<!DOCTYPE html>\n<html><body>Not Found</body></html>\n"
+      });
+      expect(outcome.skipped.map((s) => s.reason)).toContain("manifest_unparseable");
+      expect(await coordinatesOf(component)).toEqual(before);
+    });
+
+    it("an unexpanded Git-LFS pointer — valid text that the one non-throwing parser would ACCEPT", async () => {
+      // ON `requirements.txt` DELIBERATELY. A pointer handed to `parseGoMod` throws and lands in the
+      // parse-error arm anyway, so a go.mod case would pass with the LFS guard deleted and prove
+      // nothing. `parseRequirementsTxt` NEVER throws (the format has no required construct to miss),
+      // so the pointer's own lines would become this component's python inventory and the prune
+      // would then delete the real declarations. This is the case the guard exists for.
+      const { component, before } = await seeded("lfs", {
+        "requirements.txt": "requests==2.31.0\nurllib3==2.2.1\n"
+      });
+      expect(before).toEqual(["requirements.txt:requests@2", "requirements.txt:urllib3@2"]);
+      const outcome = await reingest(component, {
+        "requirements.txt":
+          "version https://git-lfs.github.com/spec/v1\noid sha256:deadbeef\nsize 42\n"
+      });
+      expect(outcome.skipped.find((s) => s.path === "requirements.txt")?.reason).toBe(
+        "lfs_pointer"
+      );
+      expect(await coordinatesOf(component)).toEqual(before);
+    });
+
+    it("a TRUNCATED file — the bytes that arrived are not the format", async () => {
+      // Seeded FROM the manifest that is then truncated, so the survival assertion is about the
+      // rows this truncation could actually have destroyed. Seeding from a different manifest would
+      // make the check pass on the per-path prune alone and prove nothing about truncation.
+      const { component, before } = await seeded("truncated", { Dockerfile: DOCKERFILE });
+      expect(before).toEqual(["Dockerfile:node@18"]);
+      const outcome = await reingest(component, {
+        // The response was cut before the `FROM` arrived: valid text, plausibly a Dockerfile, and
+        // not one. `parseDockerfile` throws rather than reporting a base-image-free build.
+        Dockerfile: "# syntax=docker/dockerfile:1\n# build the widget service\n"
+      });
+      expect(outcome.skipped.find((s) => s.path === "Dockerfile")?.reason).toBe(
+        "manifest_unparseable"
+      );
+      expect(await coordinatesOf(component)).toEqual(before);
+    });
+
+    it("a file the provider REFUSED to decode — the file is there and was not read", async () => {
+      const { component, before } = await seeded("too-large");
+      const outcome = await reingest(component, {
+        "go.mod": {
+          outcome: "refused",
+          reason: "too_large",
+          detail: "42000000 bytes exceeds the decode bound",
+          path: "go.mod",
+          requestedRef: RESOLVED_COMMIT,
+          sizeBytes: 42_000_000
+        }
+      });
+      expect(outcome.skipped.find((s) => s.path === "go.mod")?.reason).toBe("too_large");
+      expect(await coordinatesOf(component)).toEqual(before);
+    });
+
+    it("a reader that THROWS — no binding, an auth failure, an egress refusal", async () => {
+      const { component, before } = await seeded("throws");
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: async () => {
+          throw new Error("no github/gitea/gitlab executor binding is configured for this repo");
+        }
+      });
+      expect(outcome.skipped.every((s) => s.reason === "read_failed")).toBe(true);
+      expect(await coordinatesOf(component)).toEqual(before);
+    });
+
+    it("a missing REF is evidence about the ref, NOT about the manifest — nothing is pruned", async () => {
+      const { component, before } = await seeded("bad-ref");
+      const outcome = await reingest(component, {
+        "go.mod": {
+          outcome: "not_found",
+          missing: "ref",
+          path: "go.mod",
+          requestedRef: RESOLVED_COMMIT,
+          detail: "no commit b0b0 in acme/widgets"
+        }
+      });
+      expect(outcome.skipped.find((s) => s.path === "go.mod")?.reason).toBe("ref_not_found");
+      // A force-pushed branch must not empty the inventory of every component in the repo.
+      expect(await coordinatesOf(component)).toEqual(before);
+    });
+
+    it("an INDETERMINATE not-found (GitLab answers both questions in one call) prunes nothing", async () => {
+      const { component, before } = await seeded("indeterminate");
+      const outcome = await reingest(component, {
+        "go.mod": {
+          outcome: "not_found",
+          missing: "unknown",
+          path: "go.mod",
+          requestedRef: RESOLVED_COMMIT,
+          detail: "404 Project Not Found"
+        }
+      });
+      expect(outcome.skipped.find((s) => s.path === "go.mod")?.reason).toBe("read_indeterminate");
+      expect(await coordinatesOf(component)).toEqual(before);
+    });
+
+    it("a missing PATH is the ONE case that does prune — the manifest was deleted", async () => {
+      const { component, before } = await seeded("deleted");
+      expect(before.length).toBe(2);
+      // The recorder answers `not_found: path` for anything it does not hold, so an empty file set
+      // IS "the manifest is gone from the repo".
+      const outcome = await reingest(component, {});
+      expect(outcome.manifests).toEqual([
+        { path: "go.mod", declared: 0, pruned: 2, removed: true }
+      ]);
+      expect(await coordinatesOf(component)).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 4. IDEMPOTENT
+  // -------------------------------------------------------------------------------------------
+  describe("idempotency", () => {
+    it("re-ingesting an unchanged manifest adds no row, deletes no row, and writes NO new Decision", async () => {
+      const component = await componentWithMapping("idempotent", null);
+      await enable(component);
+      const files = { "go.mod": GO_MOD, Dockerfile: DOCKERFILE };
+
+      const first = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader(files).read
+      });
+      expect(first.decision?.created).toBe(true);
+      const rowsBefore = await inventoryOf(component);
+      const createdAtBefore = rowsBefore.map((r) => r.createdAt).sort();
+      expect(rowsBefore.length).toBe(3);
+
+      const second = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        // A DIFFERENT ref, deliberately: the second pass is a later commit with identical manifest
+        // content, which is the ordinary case and the one that would churn a Decision per push if
+        // the commit were part of the Decision's inputs.
+        repo: REPO,
+        ref: "b".repeat(40),
+        readManifest: recordingReader(files).read
+      });
+      expect(second.manifests.every((m) => m.pruned === 0)).toBe(true);
+      expect(second.decision?.created, "a byte-identical verdict must not append a row").toBe(
+        false
+      );
+      expect(second.decision?.id).toBe(first.decision?.id);
+
+      const rowsAfter = await inventoryOf(component);
+      expect(rowsAfter.length).toBe(3);
+      // `created_at` records when a declaration was FIRST seen; re-observing must not reset it.
+      expect(rowsAfter.map((r) => r.createdAt).sort()).toEqual(createdAtBefore);
+      expect(await decisionsFor(component)).toHaveLength(1);
+    });
+
+    it("a CHANGED manifest updates in place and prunes only what it dropped", async () => {
+      const component = await componentWithMapping("changed", null);
+      await enable(component);
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD, Dockerfile: DOCKERFILE }).read
+      });
+      expect(await coordinatesOf(component)).toHaveLength(3);
+
+      const dropped = GO_MOD.replace(/\tgithub.com\/spf13\/cobra v1.8.0\n/, "");
+      expect(dropped).not.toContain("cobra");
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": dropped, Dockerfile: DOCKERFILE }).read
+      });
+
+      // THE PRUNE IS PER MANIFEST PATH: the `go.mod` lost one dependency and the `Dockerfile`'s
+      // declaration is untouched. A component-wide prune would have deleted the image line too.
+      expect(outcome.manifests.find((m) => m.path === "go.mod")?.pruned).toBe(1);
+      expect(outcome.manifests.find((m) => m.path === "Dockerfile")?.pruned).toBe(0);
+      expect(await coordinatesOf(component)).toEqual([
+        "Dockerfile:node@18",
+        "go.mod:github.com/Masterminds/semver/v3@3"
+      ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 5. WHAT CANNOT BE PLACED ON A LINE
+  // -------------------------------------------------------------------------------------------
+  it("a declaration with no comparable version is reported, never guessed onto a line", async () => {
+    const component = await componentWithMapping("unpinned", null);
+    await enable(component);
+    const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: component,
+      repo: REPO,
+      ref: RESOLVED_COMMIT,
+      // `FROM alpine` pins nothing; Docker's implicit `:latest` is a RESOLUTION rule and writing it
+      // as a version would invent text the author never wrote.
+      readManifest: recordingReader({ Dockerfile: "FROM alpine\n" }).read
+    });
+    expect(outcome.declarationsSkipped).toEqual([
+      {
+        path: "Dockerfile",
+        ecosystem: "oci",
+        coordinate: "alpine",
+        reason: "no_comparable_version",
+        detail: expect.stringContaining("no comparable numeric core")
+      }
+    ]);
+    expect(await inventoryOf(component)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 6. A COMPONENT FED BY TWO REPOSITORIES — the shape that silently emptied an inventory
+  // -------------------------------------------------------------------------------------------
+  describe("two repositories feed one component", () => {
+    const OTHER_REPO = "acme/charts";
+
+    it("a release from the SECOND repo does not delete the first repo's inventory", async () => {
+      // THE BLOCKER, in the shape no path-scoped rule can resolve: BOTH mappings constrain no path,
+      // so both passes probe exactly the same root candidates. Repo A has the `go.mod`, repo B has
+      // the `Dockerfile`, and each pass therefore sees the OTHER's manifest as `not_found: "path"`
+      // — the one branch that prunes. Attribution has to be on the row (`observed_repo`) or it is
+      // not recoverable at all.
+      const component = await componentWithMapping("two-repo-root", null, REPO);
+      await addMapping(component, null, OTHER_REPO);
+      await enable(component);
+
+      const fromCode = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD }).read
+      });
+      expect(fromCode.verdict).toBe("ingested");
+      const fromCharts = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: OTHER_REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ Dockerfile: DOCKERFILE }).read
+      });
+      expect(fromCharts.verdict).toBe("ingested");
+
+      // BOTH repositories' declarations coexist. Before the fix the second pass's probe of
+      // `go.mod` in `acme/charts` came back not-found and deleted the first pass's two rows.
+      expect(await coordinatesOf(component)).toEqual([
+        "Dockerfile:node@18",
+        "go.mod:github.com/Masterminds/semver/v3@3",
+        "go.mod:github.com/spf13/cobra@1"
+      ]);
+
+      // AND IT SURVIVES A THIRD PASS, i.e. the steady state of a component that releases from both
+      // repositories — which is when this used to lose one side's inventory on EVERY release.
+      const again = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD }).read
+      });
+      expect(again.manifests.every((m) => m.pruned === 0)).toBe(true);
+      expect(await coordinatesOf(component)).toHaveLength(3);
+
+      // The rows say WHERE each came from, which is what makes the prune attributable at all.
+      const rows = await inventoryOf(component);
+      expect(rows.find((r) => r.manifestPath === "Dockerfile")?.observedRepo).toBe(OTHER_REPO);
+      expect(rows.filter((r) => r.manifestPath === "go.mod").map((r) => r.observedRepo)).toEqual([
+        REPO,
+        REPO
+      ]);
+    });
+
+    it("a pass does not even PROBE the other repository's manifest paths", async () => {
+      // The other half of the fix, one level earlier: the candidate set comes from the mappings
+      // that name THIS repo. Deriving it from every mapping spent reads in the wrong repository and
+      // manufactured the `not_found` that the prune then acted on.
+      const component = await componentWithMapping("two-repo-subtree", "svc/api/**", REPO);
+      await addMapping(component, "deploy/**", OTHER_REPO);
+      await enable(component);
+
+      const reader = recordingReader({ "svc/api/go.mod": GO_MOD });
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      expect(reader.reads.length).toBeGreaterThan(0);
+      expect(reader.reads.every((r) => r.path.startsWith("svc/api/"))).toBe(true);
+      expect(reader.reads.some((r) => r.path.startsWith("deploy/"))).toBe(false);
+    });
+
+    it("a repository NONE of the component's mappings names is refused, unfetched", async () => {
+      const component = await componentWithMapping("wrong-repo", null, REPO);
+      await enable(component);
+      const reader = recordingReader({ "go.mod": GO_MOD });
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: "someone/else",
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      expect(outcome.verdict).toBe("not_addressable");
+      expect(reader.reads).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 7. THE REPO ROOT IS NOT EVERY COMPONENT'S OWN
+  // -------------------------------------------------------------------------------------------
+  it("a component scoped to a subdirectory never claims the monorepo ROOT's manifests", async () => {
+    // Two components in one repository, each scoped by `path_pattern` to its own subtree, and a
+    // root `package.json` sitting between them. The root used to be an unconditional probe prefix,
+    // so BOTH components ingested it as their own declarations — one file, two owners, and a prune
+    // from either one acting on it.
+    const alpha = await componentWithMapping("mono-alpha", "svc/alpha/**");
+    const beta = await componentWithMapping("mono-beta", "svc/beta/**");
+    await enable(alpha);
+    await enable(beta);
+    const files = {
+      "package.json": JSON.stringify({ dependencies: { "@root/only": "^9.9.9" } }),
+      "svc/alpha/go.mod": GO_MOD,
+      "svc/beta/Dockerfile": DOCKERFILE
+    };
+
+    const alphaReader = recordingReader(files);
+    await ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: alpha,
+      repo: REPO,
+      ref: RESOLVED_COMMIT,
+      readManifest: alphaReader.read
+    });
+    const betaReader = recordingReader(files);
+    await ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: beta,
+      repo: REPO,
+      ref: RESOLVED_COMMIT,
+      readManifest: betaReader.read
+    });
+
+    expect(alphaReader.reads.some((r) => r.path === "package.json")).toBe(false);
+    expect(betaReader.reads.some((r) => r.path === "package.json")).toBe(false);
+    expect(await coordinatesOf(alpha)).toEqual([
+      "svc/alpha/go.mod:github.com/Masterminds/semver/v3@3",
+      "svc/alpha/go.mod:github.com/spf13/cobra@1"
+    ]);
+    expect(await coordinatesOf(beta)).toEqual(["svc/beta/Dockerfile:node@18"]);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 8. AN INCOMPLETE BODY IS NOT AN EMPTY MANIFEST
+  // -------------------------------------------------------------------------------------------
+  it("a PARTIAL body is refused upstream and prunes nothing — the case no parser can see", async () => {
+    // `parseRequirementsTxt` cannot throw (its format has no required construct to miss), so a body
+    // cut in half parses "successfully" as FEWER dependencies and the prune deletes the rest. The
+    // structural guard for that is the byte count, not the text — `decodeBoundedBase64` refuses a
+    // payload shorter than the size the provider declares, and it arrives here as a refusal, which
+    // this module already treats as "the file is there and was not read".
+    const component = await componentWithMapping("partial", null);
+    await enable(component);
+    const full = "requests==2.31.0\nurllib3==2.2.1\nboto3==1.34.0\n";
+    await ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: component,
+      repo: REPO,
+      ref: RESOLVED_COMMIT,
+      readManifest: recordingReader({ "requirements.txt": full }).read
+    });
+    const before = await coordinatesOf(component);
+    expect(before).toHaveLength(3);
+
+    const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: component,
+      repo: REPO,
+      ref: RESOLVED_COMMIT,
+      readManifest: recordingReader({
+        "requirements.txt": {
+          outcome: "refused",
+          reason: "incomplete_body",
+          detail: "github: 'requirements.txt' arrived as 17 bytes but the provider declares 46",
+          path: "requirements.txt",
+          requestedRef: RESOLVED_COMMIT,
+          sizeBytes: 17
+        }
+      }).read
+    });
+    expect(outcome.skipped.find((s) => s.path === "requirements.txt")?.reason).toBe(
+      "incomplete_body"
+    );
+    expect(await coordinatesOf(component)).toEqual(before);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 9. TWO PASSES ARE ORDERED — an older one may not land last
+  // -------------------------------------------------------------------------------------------
+  it("an OLDER pass that lands after a newer one writes NOTHING and prunes nothing", async () => {
+    // Nothing orders two passes: both delivery hops are at-least-once and the queue is a competing
+    // consumer, so a retry of an earlier accept can arrive after a later one. Applied out of order,
+    // the older pass prunes each manifest down to what the OLDER commit declared.
+    //
+    // The interleave is REAL here, not simulated by editing a timestamp: the old pass's reader
+    // blocks inside phase 2 until the newer pass has fully committed, then returns.
+    const component = await componentWithMapping("ordering", null);
+    await enable(component);
+    const OLD_GO_MOD = GO_MOD.replace(/\tgithub.com\/spf13\/cobra v1.8.0\n/, "");
+    expect(OLD_GO_MOD).not.toContain("cobra");
+
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const oldPass = ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: component,
+      repo: REPO,
+      ref: "0".repeat(40),
+      readManifest: async (request) => {
+        await gate;
+        if (request.path !== "go.mod") {
+          return {
+            outcome: "not_found",
+            missing: "path",
+            path: request.path,
+            requestedRef: request.ref
+          };
+        }
+        return {
+          outcome: "found",
+          path: request.path,
+          requestedRef: request.ref,
+          commitSha: "0".repeat(40),
+          content: OLD_GO_MOD,
+          sizeBytes: Buffer.byteLength(OLD_GO_MOD, "utf8")
+        };
+      }
+    });
+
+    // The NEWER pass runs to completion while the older one is still reading.
+    const newer = await ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: component,
+      repo: REPO,
+      ref: RESOLVED_COMMIT,
+      readManifest: recordingReader({ "go.mod": GO_MOD }).read
+    });
+    expect(newer.verdict).toBe("ingested");
+    expect(await coordinatesOf(component)).toHaveLength(2);
+
+    release();
+    const older = await oldPass;
+    expect(older.verdict).toBe("superseded");
+    expect(older.reads).toBeGreaterThan(0);
+    // The newer commit's declaration survives. Without the guard the older pass's prune deletes
+    // `cobra` — a dependency the component currently declares — and the M21.4 poll stops seeing it.
+    expect(await coordinatesOf(component)).toEqual([
+      "go.mod:github.com/Masterminds/semver/v3@3",
+      "go.mod:github.com/spf13/cobra@1"
+    ]);
+    // NOTHING was recorded for the superseded pass, not even a Decision: an alternating verdict is
+    // the persist-on-change shape `insertDecisionIfChanged` exists to refuse.
+    const decisionRows = await decisionsFor(component);
+    expect(decisionRows).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 10. THE DECISION IS A FUNCTION OF WHAT THE COMPONENT DECLARES — of nothing else
+  // -------------------------------------------------------------------------------------------
+  describe("Decision idempotency, field by field", () => {
+    it("a component whose REF never resolves writes ONE Decision, not one per change", async () => {
+      // The stated invariant was "the inputs carry NO ref, NO commit and NO timestamp", and it was
+      // false in this branch: the skip's `detail` interpolated `input.ref`, and the provider's own
+      // `detail` names the commit too. Every accepted change therefore appended a Decision saying
+      // the same thing about the same component.
+      const component = await componentWithMapping("bad-ref-decision", null);
+      await enable(component);
+      const badRef = (ref: string) => async (request: { path: string }) => ({
+        outcome: "not_found" as const,
+        missing: "ref" as const,
+        path: request.path,
+        requestedRef: ref,
+        detail: `no commit ${ref.slice(0, 8)} in ${REPO}`
+      });
+
+      const first = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: "1".repeat(40),
+        readManifest: badRef("1".repeat(40))
+      });
+      expect(first.decision?.created).toBe(true);
+      expect(first.skipped.some((s) => s.reason === "ref_not_found")).toBe(true);
+
+      const second = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: "2".repeat(40),
+        readManifest: badRef("2".repeat(40))
+      });
+      expect(second.decision?.created).toBe(false);
+      expect(await decisionsFor(component)).toHaveLength(1);
+    });
+
+    it("does not carry the gate's WITNESS, which is not a function of what the component declares", async () => {
+      // The dedup key used to include the witness — ONE line the merge happened to be satisfied on,
+      // taken as the first selector out of `matchPoliciesForTargets`' UNORDERED result. Two
+      // identical runs could therefore disagree, and `insertDecisionIfChanged` compares against the
+      // LATEST row, so an alternating value appends forever (ADR-0024's measured 1.44 GB/day).
+      //
+      // The order is now canonical (pinned behaviourally in `component-ingestion-gate.test.ts`,
+      // where reversing the candidate list must produce the same witness) AND the Decision does not
+      // carry it at all. This asserts the second half against the PERSISTED row: `contributions`
+      // survives, so "which level decided this" is still answerable, and the witness does not.
+      const component = await componentWithMapping("witness-free", null);
+      await enable(component);
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD }).read
+      });
+      expect(outcome.decision?.created).toBe(true);
+
+      const [row] = await inOrg((tx) =>
+        tx
+          .select({ reasonTree: decisions.reasonTree })
+          .from(decisions)
+          .where(and(eq(decisions.orgId, org.orgId), eq(decisions.id, outcome.decision!.id)))
+      );
+      const gate = (row?.reasonTree as { gate?: Record<string, unknown> } | null)?.gate;
+      expect(gate?.contributions, "the explanation is still there").toBeDefined();
+      expect(gate).not.toHaveProperty("witness");
+      // The gate STILL produced one — this is not passing because the resolution stopped computing
+      // it, which is the way an assertion about an absent key goes vacuous.
+      expect(
+        (
+          await inOrg((tx) =>
+            resolveComponentIngestionGate(tx, {
+              orgId: org.orgId,
+              componentObjectId: component,
+              actorObjectId: SYSTEM_ACTOR_ID
+            })
+          )
+        ).witness
+      ).toBeDefined();
+    });
+  });
+
+  it("the backfill actor is threaded, so a human's own enablement is what a backfill sees", async () => {
+    // The event path resolves as the system sentinel (a member of no group); the backfill route
+    // passes the requesting principal. Proven here at the ingestion's own seam rather than through
+    // the route, which needs a live plugin host.
+    const component = await componentWithMapping("actor", null);
+    await enable(component);
+    const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+      componentObjectId: component,
+      repo: REPO,
+      ref: RESOLVED_COMMIT,
+      readManifest: recordingReader({ "go.mod": GO_MOD }).read,
+      actorObjectId
+    });
+    expect(outcome.verdict).toBe("ingested");
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 11. THE PRODUCTION PATH, END TO END — a domain event puts ROWS IN THE TABLE
+  // -------------------------------------------------------------------------------------------
+  /**
+   * EVERY TEST ABOVE CALLS `ingestComponentManifests` (or the job function) DIRECTLY, and the one
+   * that claimed to be "the real path" reached the provider and had EVERY READ FAIL — the rows it
+   * asserted came from a separate call with a hand-supplied reader. So the suite proved the repo
+   * layer and proved nothing about the path that fills the table in production.
+   *
+   * Two distinct gaps close here, and they are distinct on purpose:
+   *
+   *  A. THE WIRING IS EXECUTED. Deleting `startInventoryIngestionLoop`'s `boss.createQueue` AND its
+   *     `boss.work` left the ENTIRE suite green — only a substring match on `main.ts` still passed,
+   *     and a substring match is not a test of behaviour. This drives the real loop over a real
+   *     pg-boss, from the exact payload `events/outbox-relay.ts` puts on the domain-event queue.
+   *
+   *  B. A ROW REACHES THE TABLE THROUGH IT. The manifest read goes through
+   *     `createGitProviderManifestReader` -> the repo's own git binding -> `host.gitFileRead`, so
+   *     the only thing faked is the provider itself.
+   *
+   *   outbox -> domain-events -> inventoryIngestionRouter -> dependency-inventory-ingestion queue
+   *          -> this loop's worker -> ingestComponentManifests -> component_dependencies
+   */
+  describe("the production path: a domain event lands rows (wiring + end to end)", () => {
+    let boss: Awaited<ReturnType<typeof startPgBoss>> | undefined;
+    let loop: InventoryIngestionLoopHandle | undefined;
+    const fileReads: { instanceId: string; request: ReadFileAtRefRequest }[] = [];
+    const WIRED_REPO = "acme/wired-inventory";
+    /** The disabled component lives in its OWN repository so "was it fetched for?" is answerable
+     *  from the recorded reads. Sharing a repo with the enabled one would make that assertion
+     *  vacuous — every read would be attributable to either component. */
+    const DISABLED_REPO = "acme/wired-disabled";
+    const PACKAGE_JSON = JSON.stringify({
+      name: "@acme/wired",
+      dependencies: { "@acme/lib": "^2.3.4" }
+    });
+
+    /** A host that answers the file read and records WHICH INSTANCE was asked — the instance id is
+     *  the proof the repo's own binding, not a guess, chose the credential. */
+    function recordingHost(): PluginHost {
+      const notWired = (): never => {
+        throw new Error("this fixture only wires gitFileRead()");
+      };
+      const bodies: Record<string, string> = {
+        "package.json": PACKAGE_JSON,
+        Dockerfile: DOCKERFILE
+      };
+      return {
+        async start() {},
+        async stop() {},
+        async stopInstances() {},
+        executor: notWired,
+        control: notWired,
+        discovery: notWired,
+        notification: notWired,
+        federationTransport: notWired,
+        dependencyIndex: notWired,
+        gitFileRead(instanceId: string): GitFileReadPluginClient {
+          return {
+            readFileAtRef: async (request): Promise<ReadFileAtRefResult> => {
+              fileReads.push({ instanceId, request });
+              const body = bodies[request.path];
+              if (body === undefined) {
+                return {
+                  outcome: "not_found",
+                  missing: "path",
+                  path: request.path,
+                  requestedRef: request.ref
+                };
+              }
+              return {
+                outcome: "found",
+                path: request.path,
+                requestedRef: request.ref,
+                commitSha: RESOLVED_COMMIT,
+                content: body,
+                sizeBytes: Buffer.byteLength(body, "utf8")
+              };
+            }
+          };
+        }
+      };
+    }
+
+    beforeAll(async () => {
+      // The ROUTER is registered with pg-boss, because `boss.work()` is a competing consumer: a
+      // second worker on `domain-events` would steal half the events rather than add a listener.
+      boss = await startPgBoss(server.deps.config.pgBossDatabaseUrl, [inventoryIngestionRouter()]);
+      loop = await startInventoryIngestionLoop(boss, {
+        db: server.deps.db,
+        host: recordingHost(),
+        config: server.deps.config
+      });
+    }, 60_000);
+
+    afterAll(async () => {
+      await loop?.stop();
+      await boss?.stop({ graceful: false, timeout: 1000 }).catch(() => undefined);
+    });
+
+    /** The exact payload `events/outbox-relay.ts` sends for a change transition. */
+    async function deliverAccept(changeObjectId: string): Promise<void> {
+      await boss!.send(DOMAIN_EVENTS_QUEUE, {
+        id: uuidv7(),
+        orgId: org.orgId,
+        type: "scp.change.transitioned",
+        source: `/changes/${changeObjectId}`,
+        subject: changeObjectId,
+        data: { fromState: "validating", toState: "accepted", trigger: null }
+      });
+    }
+
+    /** A component in `WIRED_REPO` with the git binding `manifest-reader.ts` resolves the read
+     *  through. Without the binding SCP refuses to read the repo with another binding's credential,
+     *  which is exactly how the delivered "real path" test ended up asserting nothing. */
+    async function wiredComponent(label: string, repo = WIRED_REPO): Promise<string> {
+      const component = await componentWithMapping(label, null, repo);
+      await inOrg((tx) =>
+        upsertExecutorBinding(tx, {
+          orgId: org.orgId,
+          targetObjectId: component,
+          pluginModule: "github",
+          pluginInstanceId: `gh-${uuidv7()}`,
+          config: {
+            appId: "1",
+            installationId: "2",
+            owner: repo.split("/")[0],
+            repo: repo.split("/")[1]
+          }
+        })
+      );
+      return component;
+    }
+
+    it("an ENABLED component's manifests reach component_dependencies; a DISABLED one's do not", async () => {
+      const enabled = await wiredComponent("wired-enabled");
+      const disabled = await wiredComponent("wired-disabled", DISABLED_REPO);
+      await enable(enabled);
+      // `disabled` is deliberately NOT enabled — the negative control that the enabled one provides
+      // the positive half of, in the SAME delivery through the SAME loop.
+
+      const changeId = await acceptedChange(enabled, {
+        repo: WIRED_REPO,
+        ref: "refs/heads/main",
+        commit: RESOLVED_COMMIT
+      });
+      const disabledChangeId = await acceptedChange(disabled, {
+        repo: DISABLED_REPO,
+        ref: "refs/heads/main",
+        commit: RESOLVED_COMMIT
+      });
+
+      await deliverAccept(changeId);
+      await deliverAccept(disabledChangeId);
+
+      const rows = await waitUntil(
+        async () => {
+          const current = await inventoryOf(enabled);
+          return current.length >= 2 ? current : undefined;
+        },
+        {
+          describe:
+            "the inventory-ingestion loop to write this component's declarations from a domain event",
+          timeoutMs: 30_000,
+          intervalMs: 200
+        }
+      );
+
+      // THE ROWS THEMSELVES, through the production caller — not through a direct call with a
+      // hand-supplied reader.
+      expect(await coordinatesOf(enabled)).toEqual([
+        "Dockerfile:node@18",
+        "package.json:@acme/lib@2"
+      ]);
+      // The RESOLVED commit, the repository, and the declared text verbatim.
+      expect(new Set(rows.map((r) => r.observedRef))).toEqual(new Set([RESOLVED_COMMIT]));
+      expect(new Set(rows.map((r) => r.observedRepo))).toEqual(new Set([WIRED_REPO]));
+      expect(rows.find((r) => r.manifestPath === "package.json")?.declaredVersion).toBe("^2.3.4");
+
+      // And it went through the plugin-host file-read client, at the released commit, on the
+      // instance the repo's OWN binding names.
+      const read = fileReads.find(
+        (r) => r.request.repo === WIRED_REPO && r.request.path === "package.json"
+      );
+      expect(read, "the manifest was read through host.gitFileRead").toBeDefined();
+      expect(read?.request.ref).toBe(RESOLVED_COMMIT);
+
+      // THE NEGATIVE CONTROL, and it is only meaningful beside the positive one above: the same
+      // loop, the same repo, the same binding, one accepted change each — and the unsubscribed
+      // component has no rows and was never fetched for.
+      expect(await inventoryOf(disabled)).toEqual([]);
+      expect(fileReads.some((r) => r.request.repo === DISABLED_REPO)).toBe(false);
+    }, 60_000);
+  });
+});

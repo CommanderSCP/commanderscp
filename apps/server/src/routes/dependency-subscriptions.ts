@@ -1,27 +1,35 @@
 import { timingSafeEqual } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import pg from "pg";
 import {
+  BackfillDependencyInventoryRequestSchema,
+  BackfillDependencyInventoryResponseSchema,
+  DEFAULT_DEPENDENCY_INVENTORY_BACKFILL_FETCH_BUDGET,
   DependencyLineKeySchema,
   DependencySubscriptionResolutionResponseSchema,
   DependencySubscriptionUnlockSchema,
   ProblemSchema,
   PutDependencySubscriptionUnlockRequestSchema,
   RegistryIdOrUrnParamSchema,
+  type DependencyInventoryBackfillComponent,
   type DependencySubscriptionUnlock
 } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
+import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
 import { getObjectByIdOrUrn } from "../graph/objects-repo.js";
+import { listSourceMappingsForComponents } from "../coordination/source-mappings-repo.js";
 import {
   readInstanceSubscriptionUnlock,
   resolveDependencySubscription
 } from "../dependencies/subscription-resolution.js";
+import { ingestComponentManifests, literalRepoFor } from "../dependencies/inventory-ingestion.js";
+import { createGitProviderManifestReader } from "../dependencies/manifest-reader.js";
 
 /**
  * M21.3 — the DEPENDENCY-SUBSCRIPTION ENABLEMENT API (ADR-0032 §3a, §6), API-first per charter
@@ -267,6 +275,192 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
         return { componentObjectId: component.id, line, resolution };
       });
       reply.status(200).send(result);
+    }
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // POST /dependencies/inventory/backfill — M21.2 (ADR-0032 §4).
+  //
+  // WHY A ROUTE EXISTS AT ALL. Ingestion is event-driven: a correlated, accepted change re-reads its
+  // component's dependency manifests. That is the right trigger and it covers only components that
+  // release from now on — so on an existing estate the inventory stays EMPTY until each team happens
+  // to commit, and every capability above it (the enablement work-list, the version poll, internal
+  // detection's manifest-path lookup) resolves over nothing in the meantime. The precedent is
+  // `POST /discovery/backfill-source-mappings`, which exists for exactly this class of problem and
+  // is operator-triggered, idempotent, and reports every skip.
+  //
+  // THE GATE IS NOT WEAKER HERE. `ingestComponentManifests` resolves enablement itself, before it
+  // touches a repo, so a backfill over the whole org reads nothing for an unsubscribed component —
+  // this route cannot pass a flag to skip that, because there is none.
+  //
+  // THE ACTOR IS THE REQUESTING PRINCIPAL, not the system sentinel, and that is a real difference:
+  // `matchPoliciesForTargets` resolves `scope.group` against the actor and the sentinel is a member
+  // of nothing (ADR-0032 §6a), so a human running a backfill sees the same enablement the resolution
+  // API reports to them.
+  // -------------------------------------------------------------------------------------------
+  typed.route({
+    method: "POST",
+    url: "/api/v1/dependencies/inventory/backfill",
+    schema: {
+      body: BackfillDependencyInventoryRequestSchema,
+      response: {
+        200: BackfillDependencyInventoryResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "backfillDependencyInventory",
+        summary:
+          "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4)",
+        tags: ["dependencies"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const host = deps.pluginHost;
+      if (!host) {
+        // Reading a manifest is a live plugin call, exactly as `POST /discovery/run` is. `main.ts`
+        // constructs a host for every role, so this is reachable only for a `buildApp` handed no
+        // host (tests, `openapi:emit`).
+        throw badRequest(
+          "dependency-inventory backfill requires a plugin-host-capable process: it reads each component's dependency manifests through its git-provider binding"
+        );
+      }
+      const ref = request.body.ref ?? "HEAD";
+
+      // ONE transaction for the authorization and the WORK-LIST, closed before any provider call —
+      // a network round trip must not run behind a held, RLS-scoped pooled connection (ADR-0032
+      // §7c clause 2).
+      const targets = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // Ingestion WRITES the org's inventory, so it is authorized as a write at the org scope —
+        // the same permission and scope `POST /discovery/backfill-source-mappings` requires for the
+        // same "create rows onto existing components" shape.
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          scopeObjectId: auth.orgId
+        });
+        const components: { id: string; name: string }[] = [];
+        if (request.body.componentIdsOrUrns === undefined) {
+          const rows = await tx
+            .select({ id: objects.id, name: objects.name })
+            .from(objects)
+            .where(
+              and(
+                eq(objects.orgId, auth.orgId),
+                eq(objects.typeId, "component"),
+                isNull(objects.deletedAt)
+              )
+            )
+            .orderBy(objects.name, objects.id);
+          components.push(...rows);
+        } else {
+          for (const idOrUrn of request.body.componentIdsOrUrns) {
+            // 404 on an unknown component rather than a silent skip: an operator who named a
+            // component must not be told "0 ingested" when the name was simply wrong.
+            const component = await getObjectByIdOrUrn(tx, auth.orgId, "component", idOrUrn);
+            components.push({ id: component.id, name: component.name });
+          }
+        }
+        // The repo comes from DECLARED config — the component's own `source_mappings` — and is
+        // `null` when they name none literally, or name two different ones. Resolved here so the
+        // fetch phase below opens no transaction of its own.
+        const mappings = await listSourceMappingsForComponents(
+          tx,
+          auth.orgId,
+          components.map((c) => c.id)
+        );
+        return components.map((component) => ({
+          ...component,
+          repo: literalRepoFor(
+            mappings
+              .filter((m) => m.componentObjectId === component.id)
+              .map((m) => m.repoPattern ?? null)
+          )
+        }));
+      });
+
+      const readManifest = createGitProviderManifestReader({
+        db: deps.db,
+        host,
+        orgId: auth.orgId,
+        masterKey: deps.config.secretsMasterKey
+      });
+
+      const components: DependencyInventoryBackfillComponent[] = [];
+      // THE FETCH BUDGET IS SPENT ONLY BY COMPONENTS THAT ACTUALLY FETCHED. An unsubscribed
+      // component costs no provider call at all (the gate refuses before a repo is touched), so a
+      // whole-org run still reports every component's enablement while bounding the live I/O this
+      // one request performs. Without a bound, `componentIdsOrUrns: undefined` walked every
+      // component in the org inline, at up to `MAX_MANIFEST_READS` git-provider round trips each.
+      const fetchBudget =
+        request.body.fetchBudget ?? DEFAULT_DEPENDENCY_INVENTORY_BACKFILL_FETCH_BUDGET;
+      let fetched = 0;
+
+      for (const target of targets) {
+        if (fetched >= fetchBudget) {
+          components.push({
+            componentObjectId: target.id,
+            name: target.name,
+            verdict: "not_attempted",
+            detail:
+              `the fetch budget of ${fetchBudget} component(s) was spent before this one was ` +
+              `reached — nothing was read and nothing was written for it; re-run (or narrow the ` +
+              `run with componentIdsOrUrns) to continue`,
+            manifestsIngested: 0,
+            declarationsRecorded: 0,
+            declarationsPruned: 0,
+            manifestsRemoved: 0,
+            manifestsSkipped: 0,
+            reads: 0
+          });
+          continue;
+        }
+        const outcome = await ingestComponentManifests(deps.db, auth.orgId, {
+          componentObjectId: target.id,
+          repo: target.repo ?? undefined,
+          ref,
+          readManifest,
+          actorObjectId: auth.subjectObjectId
+        });
+        if (outcome.reads > 0) fetched += 1;
+        components.push({
+          componentObjectId: target.id,
+          name: target.name,
+          verdict: outcome.verdict,
+          detail:
+            outcome.verdict === "not_addressable" && target.repo === null
+              ? "this component's source_mappings name no single literal repo (none, a glob, or two different repos), so there is no repository to read its dependency manifests from"
+              : outcome.detail,
+          manifestsIngested: outcome.manifests.length,
+          declarationsRecorded: outcome.manifests.reduce((sum, m) => sum + m.declared, 0),
+          // THE DESTRUCTIVE HALF, CARRIED THROUGH THE PROJECTION. `ingestComponentManifests`
+          // returns `pruned`/`removed` per manifest and this route used to drop both, so a run that
+          // deleted a component's whole inventory reported `verdict: "ingested"` and was
+          // indistinguishable from a clean one. A receipt that only counts what was added cannot
+          // tell an operator they backfilled at the wrong ref.
+          declarationsPruned: outcome.manifests.reduce((sum, m) => sum + m.pruned, 0),
+          manifestsRemoved: outcome.manifests.filter((m) => m.removed).length,
+          manifestsSkipped: outcome.skipped.length,
+          reads: outcome.reads
+        });
+      }
+
+      reply.status(200).send({
+        ref,
+        components,
+        ingested: components.filter((c) => c.verdict === "ingested").length,
+        notEnabled: components.filter((c) => c.verdict === "not_enabled").length,
+        notAddressable: components.filter((c) => c.verdict === "not_addressable").length,
+        superseded: components.filter((c) => c.verdict === "superseded").length,
+        notAttempted: components.filter((c) => c.verdict === "not_attempted").length,
+        declarationsPruned: components.reduce((sum, c) => sum + c.declarationsPruned, 0)
+      });
     }
   });
 

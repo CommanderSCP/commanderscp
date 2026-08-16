@@ -73,6 +73,7 @@ function toComponentDependency(
     declaredVersion: row.declaredVersion,
     resolvedVersion: row.resolvedVersion,
     resolvedDigest: row.resolvedDigest,
+    observedRepo: row.observedRepo,
     observedRef: row.observedRef,
     observedAt: row.observedAt.toISOString(),
     createdAt: row.createdAt.toISOString()
@@ -333,7 +334,7 @@ export async function upsertComponentDependency(
   orgId: string,
   input: UpsertComponentDependencyInput
 ): Promise<ComponentDependency> {
-  const observedAt = new Date();
+  const observedAt = input.observedAt ?? new Date();
   const [row] = await tx
     .insert(componentDependencies)
     .values({
@@ -344,6 +345,7 @@ export async function upsertComponentDependency(
       declaredVersion: input.declaredVersion,
       resolvedVersion: input.resolvedVersion ?? null,
       resolvedDigest: input.resolvedDigest ?? null,
+      observedRepo: input.observedRepo ?? null,
       observedRef: input.observedRef ?? null,
       observedAt
     })
@@ -358,6 +360,7 @@ export async function upsertComponentDependency(
         declaredVersion: input.declaredVersion,
         resolvedVersion: input.resolvedVersion ?? null,
         resolvedDigest: input.resolvedDigest ?? null,
+        observedRepo: input.observedRepo ?? null,
         observedRef: input.observedRef ?? null,
         observedAt
       }
@@ -414,16 +417,30 @@ export async function listComponentsDeclaringLine(
 }
 
 /**
- * Prune the declarations for ONE (component, dependency manifest) down to exactly `keepLineIds` —
- * the "the manifest dropped a dependency" path, and the reason `component_dependencies` carries a
- * DELETE grant while `dependency_lines` does not (0060 header; the precedent is 0050, which added
- * `source_mappings`' DELETE grant for the same "the declaration went away" reason).
+ * Prune the declarations for ONE (component, REPOSITORY, dependency manifest) down to exactly
+ * `keepLineIds` — the "the manifest dropped a dependency" path, and the reason
+ * `component_dependencies` carries a DELETE grant while `dependency_lines` does not (0060 header;
+ * the precedent is 0050, which added `source_mappings`' DELETE grant for the same "the declaration
+ * went away" reason).
  *
- * Scoped to one manifest path deliberately. A component's `go.mod` re-read must never prune what its
- * `Dockerfile` declared: an ingestion run that parsed only one manifest would otherwise delete every
- * declaration from the manifests it did not read, and the inventory would silently empty itself one
- * ecosystem at a time. Returns the number of rows removed so a caller can tell a real prune from a
- * no-op.
+ * THE SCOPE IS THE EVIDENCE, and it has three parts because a caller only ever has evidence about
+ * all three:
+ *
+ *  - ONE COMPONENT, because this is that component's inventory;
+ *  - ONE REPOSITORY (`observedRepo`), because an ingestion pass reads exactly one, and "there is no
+ *    `package.json` here" is a statement about the repo that was read and about no other. Without
+ *    this conjunct a pass over a component fed by two repositories deleted the OTHER repository's
+ *    declarations on every release — silently unsubscribing the component, since
+ *    `listSubscribedComponentLines` derives subscription from these rows (drizzle/0063);
+ *  - ONE MANIFEST PATH, because a `go.mod` re-read must never prune what a `Dockerfile` declared —
+ *    a run that parsed one manifest would otherwise empty the inventory one ecosystem at a time.
+ *
+ * A row whose `observed_repo` is NULL is matched by NO repository and is therefore never pruned.
+ * That is deliberate rather than incidental: the column records where a declaration came from, and
+ * a row that never recorded one cannot be shown stale by evidence from anywhere. Stale and visible
+ * beats deleted and silent; a re-observation stamps the column and the row becomes prunable again.
+ *
+ * Returns the number of rows removed so a caller can tell a real prune from a no-op.
  *
  * An EMPTY `keepLineIds` means "this manifest now declares nothing" and removes every row for it —
  * which is a legitimate outcome, so it is expressed rather than short-circuited. `notInArray` with an
@@ -432,11 +449,18 @@ export async function listComponentsDeclaringLine(
 export async function pruneComponentDependencies(
   tx: TenantTx,
   orgId: string,
-  input: { componentObjectId: string; manifestPath: string; keepLineIds: string[] }
+  input: {
+    componentObjectId: string;
+    /** The repository this run READ. Only rows observed in it are candidates for deletion. */
+    observedRepo: string;
+    manifestPath: string;
+    keepLineIds: string[];
+  }
 ): Promise<number> {
   const scope = and(
     eq(componentDependencies.orgId, orgId),
     eq(componentDependencies.componentObjectId, input.componentObjectId),
+    eq(componentDependencies.observedRepo, input.observedRepo),
     eq(componentDependencies.manifestPath, input.manifestPath)
   );
   const rows = await tx

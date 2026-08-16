@@ -5252,6 +5252,37 @@ export const zGetComponentDependencySubscriptionResponse = z.object({
 /**
  * Success
  */
+export const zBackfillDependencyInventoryResponse = z.object({
+    ref: z.string(),
+    components: z.array(z.object({
+        componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        verdict: z.enum([
+            'not_enabled',
+            'not_addressable',
+            'superseded',
+            'ingested',
+            'not_attempted'
+        ]),
+        detail: z.string(),
+        manifestsIngested: z.int().gte(0).lte(9007199254740991),
+        declarationsRecorded: z.int().gte(0).lte(9007199254740991),
+        declarationsPruned: z.int().gte(0).lte(9007199254740991),
+        manifestsRemoved: z.int().gte(0).lte(9007199254740991),
+        manifestsSkipped: z.int().gte(0).lte(9007199254740991),
+        reads: z.int().gte(0).lte(9007199254740991)
+    })),
+    ingested: z.int().gte(0).lte(9007199254740991),
+    notEnabled: z.int().gte(0).lte(9007199254740991),
+    notAddressable: z.int().gte(0).lte(9007199254740991),
+    superseded: z.int().gte(0).lte(9007199254740991),
+    notAttempted: z.int().gte(0).lte(9007199254740991),
+    declarationsPruned: z.int().gte(0).lte(9007199254740991)
+});
+
+/**
+ * Success
+ */
 export const zListCampaignsResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

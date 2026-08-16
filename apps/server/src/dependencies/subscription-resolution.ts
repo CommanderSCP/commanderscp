@@ -2,6 +2,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   DEFAULT_DEPENDENCY_SUBSCRIPTION_DELIVERY,
   DEFAULT_DEPENDENCY_SUBSCRIPTION_GRANULARITY,
+  DependencyEcosystemSchema,
   DependencySubscriptionEffectSchema,
   type DependencyLineKey,
   type DependencySubscriptionContribution,
@@ -423,6 +424,219 @@ export function mergeDependencySubscription(
 }
 
 // -------------------------------------------------------------------------------------------
+// THE COMPONENT-LEVEL GATE — "may this component's manifests be FETCHED at all?" (M21.2 ingestion)
+// -------------------------------------------------------------------------------------------
+
+/**
+ * ADR-0032 §6's chain has three levels, and they do not all answer the same question:
+ *
+ *     effective_enabled(component, line) =
+ *         instance_unlocked  AND  component_enabled  AND  NOT dependency_opted_out
+ *
+ * The ADR then states the consequence in two halves that are deliberately different verbs — "a
+ * disabled component is never FETCHED and an opted-out dependency is never POLLED". Ingestion is a
+ * FETCH, so it is gated by the first two conjuncts; the third subtracts individual lines from what
+ * is POLLED and BUMPED, downstream, in {@link listSubscribedComponentLines}.
+ *
+ * THAT SPLIT IS LOAD-BEARING, NOT A CONVENIENCE. Ingestion prunes each manifest down to exactly the
+ * lines it just read, so if an opted-out line were also excluded from what ingestion WRITES, the
+ * opt-out would delete the component's record that it declares that dependency at all — and the
+ * inventory, the UI and the M21.5 conflict check would all stop being able to see a dependency the
+ * team merely asked not to be bumped on. An opt-out subtracts a SUBSCRIPTION, never an observation.
+ */
+export interface ComponentIngestionGate {
+  /** May this component's dependency manifests be read? FALSE means no provider call is made. */
+  readonly enabled: boolean;
+  readonly reason: "enabled" | "instance_locked" | "no_enabling_contribution";
+  /** The contributions of the resolution that decided it — the same explanation
+   *  `resolveDependencySubscription` returns, so "which level closed this?" is answerable
+   *  (charter principle 6). */
+  readonly contributions: DependencySubscriptionContribution[];
+  /**
+   * When the gate is OPEN: the line the merge was satisfied on, chosen in a canonical order so it
+   * is the same answer on every run over the same inputs.
+   *
+   * It is EVIDENCE FOR A READER, not a Decision input — the ingestion deliberately keeps it out of
+   * the Decision it writes, because it moves whenever a policy anywhere in the chain is added,
+   * removed or re-worded, for a component whose declared dependencies did not change, and a
+   * Decision field that moves without the subject moving is the persist-on-change hazard (ADR-0024).
+   */
+  readonly witness?: DependencyLineKey;
+}
+
+/**
+ * A value for one selector field that NO candidate names — so a witness built with it is matched
+ * only by contributions that leave that field WILDCARD.
+ *
+ * THE LOOP is what makes the gate exact, not the starting string: whatever an adversarial selector
+ * spells, the result differs from every value any candidate named. The starting string is therefore
+ * chosen purely to be READABLE, because the witness is carried into the ingestion Decision and
+ * "which line was this gate satisfied on?" should be answerable by reading it.
+ *
+ * PLAIN PRINTABLE ASCII, deliberately. The first cut used a NUL as an "impossible" value; it is
+ * impossible in the right way and unstorable in a fatal one — Postgres refuses a NUL inside `jsonb`
+ * outright (`22P05: unsupported Unicode escape sequence`), so every Decision carrying this witness
+ * failed to insert. Caught by the integration test rather than by reading it, which is most of the
+ * argument for having one.
+ */
+function freshSelectorValue(taken: ReadonlySet<string>): string {
+  let value = "(no dependency line has this)";
+  while (taken.has(value)) value += "!";
+  return value;
+}
+
+/** The enum is non-empty by construction; named once so the closing explanation below reads as a
+ *  deliberate choice of a REAL ecosystem rather than an index into a possibly-empty list. */
+const FIRST_ECOSYSTEM: DependencyLineKey["ecosystem"] =
+  DependencyEcosystemSchema.options[0] ?? "npm";
+
+/** A deterministic order over witness lines, over the three fields that identify one. */
+function witnessSortKey(line: DependencyLineKey): string {
+  return `${line.ecosystem}|${line.coordinate}|${line.major}`;
+}
+
+/**
+ * THE INGESTION GATE, COMPUTED BY {@link mergeDependencySubscription} ITSELF — never by a second
+ * expression of the AND.
+ *
+ * The question is existential: *is there ANY line this component would be subscribed to?* If there
+ * is not, nothing this component declares could ever be subscribed, so fetching its manifests is
+ * work that can produce no subscription — and ADR-0032 §6 says such a component is never fetched.
+ *
+ * WHY A WITNESS RATHER THAN A RE-WRITTEN PREDICATE. The tempting implementation is
+ * `instance.unlocked && candidates.some(isEnabling)`. That is the AND's first two conjuncts written
+ * a SECOND time, in a place no test of the merge can reach — the specific mistake
+ * {@link listSubscribedComponentLines} already refuses to make ("writing the AND a second time
+ * anywhere is the specific mistake that would let the work-list and a UI verdict disagree"). So the
+ * gate instead builds candidate LINES and asks the real merge about them.
+ *
+ * WHY THE WITNESSES ARE EXACT, NOT A SAMPLE. A `dependencySubscription` selector is a conjunction of
+ * EQUALITIES over three fields, so for each candidate `E` the set of lines it matches is "every line
+ * agreeing with E on the fields E spells". Take E's own fields and fill the rest with values nothing
+ * names: a disabling candidate `D` matches that witness **iff** every field D spells is also spelled
+ * by E with the same value — which is exactly the condition under which D covers ALL of E's lines.
+ * So the witness is subscribed iff E subscribes something, and the existential is decided, not
+ * sampled. Concretely: an org-wide `enabled: true` beside `{coordinate: "left-pad", enabled: false}`
+ * leaves the gate OPEN (every other line is still subscribed), while the same enable beside a
+ * selector-free `enabled: false` closes it.
+ *
+ * The witnesses come from EVERY candidate, enabling or not — deciding which candidates are enabling
+ * is the merge's job, and duplicating that test here is the same second-expression hazard one level
+ * down. The selector parse below reads only the three selector fields; it never reads `enabled`.
+ *
+ * ============================================================================================
+ * `ecosystem` IS A CLOSED ENUM, SO A "VALUE NOTHING NAMES" IS NOT A LINE THAT CAN EXIST
+ * ============================================================================================
+ * The fresh-value trick is correct for `coordinate` and `major`, which are open strings: a value no
+ * selector names is a value some real line could have. It is WRONG for `ecosystem`, whose entire
+ * domain is the five members of `DependencyEcosystemSchema`. A witness carrying a sixth, invented
+ * ecosystem is matched by no per-ecosystem opt-out at all — so a component with an org-wide enable
+ * and one opt-out per ecosystem (five effects that between them cover every line that could ever
+ * exist) had an OPEN gate, and was therefore fetched, and therefore pruned, on every accepted
+ * change, forever, for a subscription that can never produce a single subscribed line.
+ *
+ * So a selector that names no ecosystem expands to one witness PER REAL ECOSYSTEM. The existential
+ * stays exact in both directions: opt out of `npm` alone and the `oci` witness still opens the
+ * gate; opt out of all five and nothing does.
+ *
+ * ============================================================================================
+ * THE WITNESSES ARE TRIED IN A CANONICAL ORDER
+ * ============================================================================================
+ * `input.candidates` arrives in whatever order `matchPoliciesForTargets` returned, which is a
+ * relevance-ordered SELECT and not a total order — two rows tying on every ordering key can come
+ * back either way round. "The first selector that opens the gate" is therefore not a stable answer,
+ * and the witness used to be carried into the ingestion Decision, where an unstable value re-opens
+ * the persist-on-change guard that exists because a churning Decision measured 1.44 GB/day
+ * (ADR-0024). The Decision no longer carries it, and the order is canonical anyway: a value that
+ * changes between two identical runs is a hazard whichever consumer happens to read it today.
+ */
+export function mergeComponentIngestionGate(
+  input: Omit<MergeDependencySubscriptionInput, "line">
+): ComponentIngestionGate {
+  const named: Record<"ecosystem" | "coordinate" | "major", Set<string>> = {
+    ecosystem: new Set(),
+    coordinate: new Set(),
+    major: new Set()
+  };
+  const selectors: Partial<Record<"ecosystem" | "coordinate" | "major", string>>[] = [];
+  for (const candidate of input.candidates) {
+    const parsed = DependencySubscriptionEffectSchema.safeParse(candidate.effect);
+    // A malformed effect contributes no witness, exactly as it contributes to neither side of the
+    // merge. It is still REPORTED, because the closing explanation below runs the real merge.
+    if (!parsed.success) continue;
+    const effect = parsed.data;
+    if (effect.ecosystem !== undefined) named.ecosystem.add(effect.ecosystem);
+    if (effect.coordinate !== undefined) named.coordinate.add(effect.coordinate);
+    if (effect.major !== undefined) named.major.add(effect.major);
+    selectors.push({
+      ...(effect.ecosystem !== undefined ? { ecosystem: effect.ecosystem } : {}),
+      ...(effect.coordinate !== undefined ? { coordinate: effect.coordinate } : {}),
+      ...(effect.major !== undefined ? { major: effect.major } : {})
+    });
+  }
+
+  const freshCoordinate = freshSelectorValue(named.coordinate);
+  const freshMajor = freshSelectorValue(named.major);
+
+  // The three fields expand differently BECAUSE THEIR DOMAINS DIFFER: `ecosystem` over the closed
+  // enum (a witness outside it is not a line that can exist), the two open strings over a value
+  // nothing names.
+  const witnesses: DependencyLineKey[] = [];
+  for (const selector of selectors) {
+    const ecosystems =
+      selector.ecosystem !== undefined
+        ? [selector.ecosystem as DependencyLineKey["ecosystem"]]
+        : DependencyEcosystemSchema.options;
+    for (const ecosystem of ecosystems) {
+      witnesses.push({
+        ecosystem,
+        coordinate: selector.coordinate ?? freshCoordinate,
+        major: selector.major ?? freshMajor
+      });
+    }
+  }
+  // CANONICAL ORDER, so "which line was this satisfied on?" is the same answer on every run over
+  // the same inputs — the candidate order it used to inherit is not a total order.
+  witnesses.sort((a, b) => (witnessSortKey(a) < witnessSortKey(b) ? -1 : 1));
+
+  for (const witness of witnesses) {
+    const resolution = mergeDependencySubscription({
+      line: witness,
+      instance: input.instance,
+      candidates: input.candidates
+    });
+    if (resolution.enabled) {
+      return {
+        enabled: true,
+        reason: "enabled",
+        contributions: resolution.contributions,
+        witness
+      };
+    }
+  }
+
+  // NOTHING OPENED IT. The explanation still comes from the merge — run once over a line no
+  // contribution names — so a locked deployment reports the instance `lock` contribution rather
+  // than an empty array, and "which level turned this off" stays answerable. The ecosystem here is
+  // a real one for the same reason as above: an invented member would be matched by no
+  // ecosystem-scoped contribution, and this call exists to surface the contributions.
+  const closed = mergeDependencySubscription({
+    line: {
+      ecosystem: FIRST_ECOSYSTEM,
+      coordinate: freshCoordinate,
+      major: freshMajor
+    },
+    instance: input.instance,
+    candidates: input.candidates
+  });
+  return {
+    enabled: false,
+    reason: input.instance.unlocked ? "no_enabling_contribution" : "instance_locked",
+    contributions: closed.contributions
+  };
+}
+
+// -------------------------------------------------------------------------------------------
 // The database-backed half
 // -------------------------------------------------------------------------------------------
 
@@ -539,6 +753,33 @@ export async function resolveDependencySubscription(
     gatherSubscriptionCandidates(tx, input)
   ]);
   return mergeDependencySubscription({ line: input.line, instance, candidates });
+}
+
+/**
+ * MAY THIS COMPONENT'S DEPENDENCY MANIFESTS BE FETCHED? (ADR-0032 §6, M21.2 ingestion.)
+ *
+ * The same two calls `resolveDependencySubscription` makes — the instance unlock and this
+ * component's matched policy contributions — handed to {@link mergeComponentIngestionGate}, which
+ * decides by running the real merge. No new query, no new predicate, no second AND.
+ *
+ * THIS IS NOT A FILTER A CALLER APPLIES. `inventory-ingestion.ts` calls it as its FIRST act, before
+ * it holds a repo, a ref or a reader, so "a disabled component is never fetched" is a property of
+ * the ingestion function rather than of its call sites — the distinction ADR-0032 §6 draws when it
+ * says the work-list is DERIVED from this resolution rather than filtered by one.
+ *
+ * THE ACTOR IS THE SYSTEM SENTINEL on the event-driven path, with the consequence ADR-0032 §6a
+ * names: it is a member of no group, so a `group`-scoped effect never contributes here. That is why
+ * the authoring guard refuses group scope in both directions.
+ */
+export async function resolveComponentIngestionGate(
+  tx: TenantTx,
+  input: GatherSubscriptionCandidatesInput
+): Promise<ComponentIngestionGate> {
+  const [instance, candidates] = await Promise.all([
+    readInstanceSubscriptionUnlock(tx),
+    gatherSubscriptionCandidates(tx, input)
+  ]);
+  return mergeComponentIngestionGate({ instance, candidates });
 }
 
 /** One entry of the ingestion work-list: a (component, line) pair whose effective enablement is
