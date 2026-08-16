@@ -541,7 +541,10 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     );
     const stamped = promotionExportsOf(row.sourceRef);
     expect(stamped.unparseable, "every stamp parses back through the stamp schema").toBe(0);
-    expect(stamped.entries, "two exports ⇒ two records — the concurrent one was not clobbered").toHaveLength(2);
+    expect(
+      stamped.entries,
+      "two exports ⇒ two records — the concurrent one was not clobbered"
+    ).toHaveLength(2);
 
     // Each record is THE record of its export: keyed to the same checksum the ledger join carries,
     // addressed to that peer, holding the very manifest + signature the bundle carried.
@@ -564,13 +567,21 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     for (const rec of stamped.entries) {
       expect(rec.keyFingerprint).toBe(cosignPub.fingerprint);
       expect(
-        await verifyBlob(canonicalStringify(rec.manifest), rec.manifestSignature, cosignPub.publicKey),
+        await verifyBlob(
+          canonicalStringify(rec.manifest),
+          rec.manifestSignature,
+          cosignPub.publicKey
+        ),
         "the persisted signature verifies over the persisted manifest"
       ).toBe(true);
       // Negative control: the persisted signature is bound to THIS manifest, not any manifest.
       const other = stamped.entries.find((e) => e.checksum !== rec.checksum)!;
       expect(
-        await verifyBlob(canonicalStringify(other.manifest), rec.manifestSignature, cosignPub.publicKey)
+        await verifyBlob(
+          canonicalStringify(other.manifest),
+          rec.manifestSignature,
+          cosignPub.publicKey
+        )
       ).toBe(false);
     }
 

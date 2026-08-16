@@ -39,15 +39,17 @@ describe("boundary-bundle-ref: promotionExports[] helpers (§9.4)", () => {
   });
 
   it("appends in order, dedupes on checksum, and never touches other keys", () => {
-    const one = withPromotionExport({ repo: "acme/x", boundaryBundleChecksums: ["c1"] }, stamp("c1"));
+    const one = withPromotionExport(
+      { repo: "acme/x", boundaryBundleChecksums: ["c1"] },
+      stamp("c1")
+    );
     const two = withPromotionExport(one, stamp("c2"));
     const again = withPromotionExport(two, stamp("c1"));
     expect(again.repo).toBe("acme/x");
     expect(again.boundaryBundleChecksums).toEqual(["c1"]);
-    expect((again[PROMOTION_EXPORTS_KEY] as PromotionExportStamp[]).map((e) => e.checksum)).toEqual([
-      "c1",
-      "c2"
-    ]);
+    expect((again[PROMOTION_EXPORTS_KEY] as PromotionExportStamp[]).map((e) => e.checksum)).toEqual(
+      ["c1", "c2"]
+    );
   });
 
   it("stamps onto a non-object sourceRef by starting a fresh bag", () => {
