@@ -289,7 +289,7 @@ type TargetOutpost = ComponentPipelineStage["outpost"];
  *                               `title` (an outpost object is declared under Federation › Outposts).
  *   - `unknown-domain`        → `origin domain not known here` — never "ours".
  *
- * `instanceRole` is a PARAMETER (read by the page off `useAuth()`, threaded down like `BuildNode`'s)
+ * `instanceRole` is a PARAMETER (read by the page off `useAuth()`, threaded down like `laneNodes`'s)
  * rather than a hook call here, so the test renderers stay provider-free. Undefined reads as "not
  * known to be the commander" → plain text.
  */
@@ -2488,11 +2488,10 @@ function ExportsUnparseableNote({
   );
 }
 
-/** Whether a Build tile has anything to REVIEW: an SBOM reference or at least one signed export. */
+/** Whether a Build tile has anything to REVIEW: an SBOM reference (§10.1 — the Build tile carries
+ *  the SBOM ALONE; the promotion manifest is a Scan & sign fact and is reviewed there). */
 export function buildHasReview(artifact: ArtifactOnWire): boolean {
-  return Boolean(
-    artifact && (artifact.sbom !== null || artifact.signing.promotionExports.length > 0)
-  );
+  return Boolean(artifact && artifact.sbom !== null);
 }
 
 /** Whether a Scan & sign tile has anything to REVIEW: at least one scan row or one signed export. */
@@ -2532,27 +2531,24 @@ function ArtifactFieldList({
  * A BUILD NODE — what turns the source into an artifact. Hoisted out of the deploy stages: a build
  * happens once per release, not once per place, whatever scope its binding happens to hang off.
  *
- * §9.3 (owner §7.2) hangs two ARTIFACT facts under the executor line, each present or stated absent:
- *   - SBOM — the reference the first-party change report carried (`sourceRef.sbom`; SCP never
- *     generates one and stores no bytes), or "no SBOM reported for this artifact" — or, when the
- *     projection STATES `sbom:unparseable`, "recorded but unreadable" (never an absence over an
- *     unreadable presence; `sbomUnparseable`);
- *   - PM   — the promotion manifest the commander signed at the newest export (§9.4), or, on the
- *     commander, "not created — a promotion manifest is created at export to a peer". On an outpost
- *     the imported manifest (`sourceRef.promotionManifest`, written by the importer) is NOT on this
- *     wire — the tile says so ("imported manifest not projected yet") rather than inventing one.
- *     `promotionExports:unparseable` is stated on the line either way (`exportsUnparseable`).
- * The tile is clickable ONLY when an SBOM or a signed export exists (`buildHasReview`); the review
- * dialog renders both verbatim.
+ * §9.3 (owner §7.2), narrowed by §10.1: ONE artifact fact hangs under the executor line — the SBOM,
+ * a BUILD-TIME fact: the reference the first-party change report carried (`sourceRef.sbom`; SCP
+ * never generates one and stores no bytes), or "no SBOM reported for this artifact" — or, when the
+ * projection STATES `sbom:unparseable`, "recorded but unreadable" (never an absence over an
+ * unreadable presence; `sbomUnparseable`).
+ *
+ * THE PROMOTION MANIFEST IS NOT HERE (§10.1, owner). The code's export order is scan step → E6 gate
+ * → build manifest → sign manifest (promotion-repo.ts phases 1.5–3): the PM is created AFTER the
+ * scan and BEFORE the signature, so it is a Scan & sign fact and lives on that tile
+ * (`ScanSignLines`, between the E6 line and the sign lines). The tile is clickable ONLY when an SBOM
+ * exists (`buildHasReview`); the review dialog renders the SBOM alone.
  */
 function BuildNode({
   bindings,
-  artifact,
-  instanceRole
+  artifact
 }: {
   bindings: ComponentPipelineStage["bindings"];
   artifact: ArtifactOnWire;
-  instanceRole: InstanceRole | undefined;
 }): React.JSX.Element {
   const [open, setOpen] = useState(false);
   const reviewable = buildHasReview(artifact);
@@ -2566,7 +2562,7 @@ function BuildNode({
         muted={bindings.length === 0 && !reviewable}
         review={
           reviewable
-            ? { ariaLabel: "Review SBOM and promotion manifest", onOpen: () => setOpen(true) }
+            ? { ariaLabel: "Review SBOM reference", onOpen: () => setOpen(true) }
             : undefined
         }
       >
@@ -2589,7 +2585,7 @@ function BuildNode({
             </div>
           ))
         )}
-        <BuildArtifactLines artifact={artifact} instanceRole={instanceRole} />
+        <BuildArtifactLines artifact={artifact} />
       </NodeShell>
       {artifact ? (
         <BuildReviewDialog open={open} onOpenChange={setOpen} artifact={artifact} />
@@ -2598,16 +2594,10 @@ function BuildNode({
   );
 }
 
-/** The SBOM and PM lines of the Build tile — see `BuildNode`. */
-function BuildArtifactLines({
-  artifact,
-  instanceRole
-}: {
-  artifact: ArtifactOnWire;
-  instanceRole: InstanceRole | undefined;
-}): React.JSX.Element | null {
+/** The SBOM line of the Build tile — see `BuildNode`. */
+function BuildArtifactLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.Element | null {
   if (artifact === undefined) {
-    // Older server: the `artifact` field is not on the wire, so neither fact is known either way.
+    // Older server: the `artifact` field is not on the wire, so the fact is not known either way.
     return null;
   }
   if (artifact === null) {
@@ -2621,74 +2611,37 @@ function BuildArtifactLines({
       </p>
     );
   }
-  const newest = latestExport(artifact);
   const sbomState = artifact.sbom
     ? "present"
     : sbomUnparseable(artifact)
       ? "unparseable"
       : "absent";
-  const pmState = newest ? "signed" : exportsUnparseable(artifact) ? "unparseable" : "absent";
   return (
-    <>
-      <p data-testid="pipeline-build-sbom" data-sbom-state={sbomState}>
-        <span className="text-slate-400">SBOM</span>{" "}
-        {artifact.sbom ? (
-          (() => {
-            const href = sbomLocationHref(artifact.sbom.location);
-            const line = sbomLine(artifact.sbom);
-            return href ? (
-              <ConsoleLink href={href} testid="pipeline-build-sbom-link">
-                {line}
-              </ConsoleLink>
-            ) : (
-              <span title={artifact.sbom.location}>{line}</span>
-            );
-          })()
-        ) : sbomState === "unparseable" ? (
-          <span
-            className="text-amber-700"
-            title="The change's sourceRef.sbom is set but does not parse as an SBOM reference (SbomRef) — the projection states it as unreadable, so this is neither a present SBOM nor a stated absence."
-          >
-            {SBOM_UNPARSEABLE_TEXT}
-          </span>
-        ) : (
-          <span className="text-slate-400">no SBOM reported for this artifact</span>
-        )}
-      </p>
-      <p data-testid="pipeline-build-pm" data-pm-state={pmState}>
-        <span className="text-slate-400">PM</span>{" "}
-        {newest ? (
-          <>
-            <span
-              title={`Promotion manifest signed at export ${newest.exportedAt} for peer ${newest.peerDomainId}.`}
-            >
-              signed for <span className="font-mono">{peerLabel(newest)}</span> ·{" "}
-              {whenLabel(newest.exportedAt)} · {newest.manifest.artifacts.length} artifact
-              {newest.manifest.artifacts.length === 1 ? "" : "s"}
-            </span>
-            <ExportsUnparseableNote artifact={artifact} />
-          </>
-        ) : pmState === "unparseable" ? (
-          <span className="text-amber-700" title={EXPORTS_UNPARSEABLE_TITLE}>
-            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
-          </span>
-        ) : instanceRole === "commander" ? (
-          <span className="text-slate-400">
-            not created — a promotion manifest is created at export to a peer
-          </span>
-        ) : (
-          // The importer stores `sourceRef.promotionManifest` + `manifestSignature` (§8 "PM"), but
-          // the component-pipeline wire carries no field for them yet — so this is an honest
-          // "not projected", never a claim about whether one was imported.
-          <span
-            className="text-slate-400"
-            title="This site's imported promotion manifest (sourceRef.promotionManifest) is not projected on the component pipeline yet — the wire has no field for it, so nothing is claimed either way."
-          >
-            imported manifest not projected yet
-          </span>
-        )}
-      </p>
-    </>
+    <p data-testid="pipeline-build-sbom" data-sbom-state={sbomState}>
+      <span className="text-slate-400">SBOM</span>{" "}
+      {artifact.sbom ? (
+        (() => {
+          const href = sbomLocationHref(artifact.sbom.location);
+          const line = sbomLine(artifact.sbom);
+          return href ? (
+            <ConsoleLink href={href} testid="pipeline-build-sbom-link">
+              {line}
+            </ConsoleLink>
+          ) : (
+            <span title={artifact.sbom.location}>{line}</span>
+          );
+        })()
+      ) : sbomState === "unparseable" ? (
+        <span
+          className="text-amber-700"
+          title="The change's sourceRef.sbom is set but does not parse as an SBOM reference (SbomRef) — the projection states it as unreadable, so this is neither a present SBOM nor a stated absence."
+        >
+          {SBOM_UNPARSEABLE_TEXT}
+        </span>
+      ) : (
+        <span className="text-slate-400">no SBOM reported for this artifact</span>
+      )}
+    </p>
   );
 }
 
@@ -2706,7 +2659,7 @@ function BuildReviewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl" data-testid="build-review-dialog">
         <DialogHeader>
-          <DialogTitle>SBOM and promotion manifest</DialogTitle>
+          <DialogTitle>SBOM reference</DialogTitle>
         </DialogHeader>
         <BuildReviewBody artifact={artifact} />
       </DialogContent>
@@ -2717,18 +2670,17 @@ function BuildReviewDialog({
 /**
  * The Build review dialog's CONTENT, portal-free — exported for the test (Radix portals nothing
  * under renderToStaticMarkup; same reason `SourceOpenCloseBody` is exported). Every field is the
- * stored value VERBATIM: the SBOM reference as reported, and each signed export's manifest as the
- * commander stamped it — the manifest, whether a signature is present, and the key fingerprint.
+ * stored value VERBATIM: the SBOM reference as reported. The promotion manifest is reviewed on the
+ * Scan & sign tile (§10.1, `ScanSignReviewBody`), not here.
  */
 export function BuildReviewBody({
   artifact
 }: {
   artifact: ComponentPipelineArtifact;
 }): React.JSX.Element {
-  const exports = artifact.signing.promotionExports;
   return (
     <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto text-sm text-slate-700">
-      <span className="sr-only">SBOM and promotion manifest</span>
+      <span className="sr-only">SBOM reference</span>
       <p className="text-xs text-slate-500">
         change <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
       </p>
@@ -2767,85 +2719,6 @@ export function BuildReviewBody({
           <p className="text-xs text-slate-400">no SBOM reported for this artifact</p>
         )}
       </section>
-      <section data-testid="build-review-pm">
-        <SectionLabel>Promotion manifest{exports.length > 1 ? "s" : ""}</SectionLabel>
-        {exports.length === 0 && exportsUnparseable(artifact) ? (
-          <p className="text-xs text-amber-700" data-testid="build-review-exports-unparseable">
-            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
-          </p>
-        ) : exports.length === 0 ? (
-          <p className="text-xs text-slate-400">
-            not created — a promotion manifest is created at export to a peer
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {exports.map((entry) => (
-              <div
-                key={`${entry.peerDomainId}:${entry.exportedAt}:${entry.checksum}`}
-                className="rounded-md border border-slate-200 p-3"
-                data-testid="build-review-export"
-              >
-                <ArtifactFieldList
-                  rows={[
-                    { label: "manifestVersion", value: entry.manifest.manifestVersion, mono: true },
-                    { label: "createdAt", value: entry.manifest.createdAt, mono: true },
-                    {
-                      label: "exporterDomainId",
-                      value: entry.manifest.exporterDomainId,
-                      mono: true
-                    },
-                    {
-                      label: "peer",
-                      value: (
-                        <>
-                          {entry.peerName ? <>{entry.peerName} · </> : null}
-                          <span className="font-mono">{entry.manifest.peerDomainId}</span>
-                        </>
-                      )
-                    },
-                    { label: "changeUrn", value: entry.manifest.changeUrn, mono: true },
-                    { label: "exportedAt", value: entry.exportedAt, mono: true },
-                    {
-                      label: "signature",
-                      value: entry.manifestSignature.length > 0 ? "present" : "absent"
-                    },
-                    {
-                      label: "keyFingerprint",
-                      value: entry.keyFingerprint ?? "not recorded",
-                      mono: true
-                    }
-                  ]}
-                />
-                <Table className="mt-2">
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>type</TableHead>
-                      <TableHead>digest</TableHead>
-                      <TableHead>signatureRef</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {entry.manifest.artifacts.map((a) => (
-                      <TableRow key={`${a.type}:${a.digest}`} data-testid="build-review-artifact">
-                        <TableCell>{a.type}</TableCell>
-                        <TableCell className="break-all font-mono text-xs">{a.digest}</TableCell>
-                        <TableCell className="break-all font-mono text-xs">
-                          {a.signatureRef ?? "—"}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            ))}
-            {exportsUnparseable(artifact) ? (
-              <p className="text-xs text-amber-700" data-testid="build-review-exports-unparseable">
-                {EXPORTS_UNPARSEABLE_TEXT} — they are neither listed above nor counted as absent
-              </p>
-            ) : null}
-          </div>
-        )}
-      </section>
     </div>
   );
 }
@@ -2854,15 +2727,8 @@ export function BuildReviewBody({
 export function BuildNodeForTest(props: {
   bindings: ComponentPipelineStage["bindings"];
   artifact: ArtifactOnWire;
-  instanceRole?: InstanceRole;
 }): React.JSX.Element {
-  return (
-    <BuildNode
-      bindings={props.bindings}
-      artifact={props.artifact}
-      instanceRole={props.instanceRole}
-    />
-  );
+  return <BuildNode bindings={props.bindings} artifact={props.artifact} />;
 }
 
 /* ------------------------------------------------------------------------------------------------
@@ -2985,9 +2851,13 @@ function exportGateLabel(gate: ComponentPipelineArtifact["exportGate"]): string 
  *                        when`, the commander's own managed step marked "managed" (the wire's ONE
  *                        discriminator; never inferred from the scanner);
  *   then "export gate (E6): pass|fail|not run" (E6's own predicate, applied read-only), then the
- *   sign lines — one per export "manifest signed for <peer> <when> (key <fp>)", or "not signed
- *   yet — the promotion manifest is signed at export to a peer" — and the origin-signature line,
- *   "not recorded" unless a `signatureRef` exists (SCP never signs an origin artifact, ADR-0015).
+ *   PM line (§10.1 — the manifest is BUILT after the gate and BEFORE the signature, promotion-repo.ts
+ *   phases 1.5–3, so it reads in that order): "PM created for <peer> · <when> · N artifacts" from
+ *   the NEWEST export, or "PM not created — created at export to a peer", or the unreadable-stamp
+ *   wording; then the sign lines — one per export "manifest signed for <peer> <when> (key <fp>)", or
+ *   "not signed yet — the promotion manifest is signed at export to a peer" — and the
+ *   origin-signature line, "not recorded" unless a `signatureRef` exists (SCP never signs an origin
+ *   artifact, ADR-0015).
  * Clickable ONLY when a scan row or an export exists (`scanSignHasReview`); the review dialog holds
  * the full tables and a link to the change for the raw evidence. No CVE rows anywhere: none are
  * stored (§8 "Scan").
@@ -3040,6 +2910,8 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
   }
   const digest = latestDigest(artifact);
   const exports = artifact.signing.promotionExports;
+  const newest = latestExport(artifact);
+  const pmState = newest ? "created" : exportsUnparseable(artifact) ? "unparseable" : "absent";
   return (
     <>
       {artifact.scans.length === 0 ? (
@@ -3116,6 +2988,27 @@ function ScanSignLines({ artifact }: { artifact: ArtifactOnWire }): React.JSX.El
         >
           {exportGateLabel(artifact.exportGate)}
         </span>
+      </p>
+      <p data-testid="pipeline-scan-pm" data-pm-state={pmState}>
+        <span className="text-slate-400">PM</span>{" "}
+        {newest ? (
+          <>
+            <span
+              title={`Promotion manifest created at export ${newest.exportedAt} for peer ${newest.peerDomainId} (manifest createdAt ${newest.manifest.createdAt}).`}
+            >
+              created for <span className="font-mono">{peerLabel(newest)}</span> ·{" "}
+              {whenLabel(newest.exportedAt)} · {newest.manifest.artifacts.length} artifact
+              {newest.manifest.artifacts.length === 1 ? "" : "s"}
+            </span>
+            <ExportsUnparseableNote artifact={artifact} />
+          </>
+        ) : pmState === "unparseable" ? (
+          <span className="text-amber-700" title={EXPORTS_UNPARSEABLE_TITLE}>
+            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
+          </span>
+        ) : (
+          <span className="text-slate-400">not created — created at export to a peer</span>
+        )}
       </p>
       {exports.length === 0 && exportsUnparseable(artifact) ? (
         <p
@@ -3201,9 +3094,12 @@ function ScanSignReviewDialog({
 
 /**
  * The Scan & sign review dialog's CONTENT, portal-free — exported for the test. A scan table with
- * every `ScanRunSummary` field (threshold as its JSON when present, digest match, managed), an
- * exports table, and a link to the change's detail page, which renders every control run's raw
- * evidence JSON (`change-detail.tsx`) — the one place the underlying rows live.
+ * every `ScanRunSummary` field (threshold as its JSON when present, digest match, managed), then the
+ * PROMOTION MANIFEST(S) verbatim (§10.1 — manifestVersion, createdAt, exporterDomainId, peer,
+ * changeUrn, artifacts[] type/digest/signatureRef, per export), then an exports table (what was
+ * signed: checksum, key fingerprint, signature presence), and a link to the change's detail page,
+ * which renders every control run's raw evidence JSON (`change-detail.tsx`) — the one place the
+ * underlying rows live.
  */
 export function ScanSignReviewBody({
   artifact
@@ -3270,6 +3166,68 @@ export function ScanSignReviewBody({
               ))}
             </TableBody>
           </Table>
+        )}
+      </section>
+      <section data-testid="scan-review-pm">
+        <SectionLabel>Promotion manifest{exports.length > 1 ? "s" : ""}</SectionLabel>
+        {exports.length === 0 && exportsUnparseable(artifact) ? (
+          <p className="text-xs text-amber-700" data-testid="scan-review-pm-unparseable">
+            export stamp recorded but unreadable — {EXPORTS_UNPARSEABLE_TEXT}
+          </p>
+        ) : exports.length === 0 ? (
+          <p className="text-xs text-slate-400">not created — created at export to a peer</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {exports.map((entry) => (
+              <div
+                key={`${entry.peerDomainId}:${entry.exportedAt}:${entry.checksum}`}
+                className="rounded-md border border-slate-200 p-3"
+                data-testid="scan-review-manifest"
+              >
+                <ArtifactFieldList
+                  rows={[
+                    { label: "manifestVersion", value: entry.manifest.manifestVersion, mono: true },
+                    { label: "createdAt", value: entry.manifest.createdAt, mono: true },
+                    {
+                      label: "exporterDomainId",
+                      value: entry.manifest.exporterDomainId,
+                      mono: true
+                    },
+                    {
+                      label: "peer",
+                      value: (
+                        <>
+                          {entry.peerName ? <>{entry.peerName} · </> : null}
+                          <span className="font-mono">{entry.manifest.peerDomainId}</span>
+                        </>
+                      )
+                    },
+                    { label: "changeUrn", value: entry.manifest.changeUrn, mono: true }
+                  ]}
+                />
+                <Table className="mt-2">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>type</TableHead>
+                      <TableHead>digest</TableHead>
+                      <TableHead>signatureRef</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {entry.manifest.artifacts.map((a) => (
+                      <TableRow key={`${a.type}:${a.digest}`} data-testid="scan-review-artifact">
+                        <TableCell>{a.type}</TableCell>
+                        <TableCell className="break-all font-mono text-xs">{a.digest}</TableCell>
+                        <TableCell className="break-all font-mono text-xs">
+                          {a.signatureRef ?? "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ))}
+          </div>
         )}
       </section>
       <section data-testid="scan-review-exports">
@@ -3619,8 +3577,9 @@ export function ComponentPipelinePage({
   const idOrUrn = useIdOrUrnParam();
   // WHICH SITE THIS IS — the install-time `instanceRole` off `/auth/me`, read the way `router.tsx`
   // and `AppShell.tsx` read it (§8 "Commander-only signal"). It decides whether the Scan & sign
-  // node is drawn at all and how the Build tile words an absent promotion manifest. Deliberately
-  // NOT `component.maintainedBy.role`, which is the object's origin, not this instance's role.
+  // node is drawn at all and whether a target tile's Outpost line LINKS to the outpost page
+  // (§10.2 — that route exists only on the commander site). Deliberately NOT
+  // `component.maintainedBy.role`, which is the object's origin, not this instance's role.
   const { user } = useAuth();
   const instanceRole = user?.instanceRole;
   const pipelineKey = componentPipelineKey(idOrUrn ?? "");
@@ -3771,11 +3730,7 @@ export function ComponentPipelinePage({
                       />
                     )}
                     {node.kind === "build" && (
-                      <BuildNode
-                        bindings={node.bindings}
-                        artifact={node.artifact}
-                        instanceRole={instanceRole}
-                      />
+                      <BuildNode bindings={node.bindings} artifact={node.artifact} />
                     )}
                     {node.kind === "registry" && (
                       <RegistryNode registry={node.registry} artifact={node.artifact} />

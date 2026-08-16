@@ -54,7 +54,11 @@ import type {
  * | take the FIRST digest as "latest" | the several-digests test FAILS |
  * | link an SBOM location whatever its scheme | the OCI-ref test FAILS — a non-URL is drawn as somewhere to go |
  * | render `artifact: null` through the "not observed" (unknown) branch of the Registry body | the absence-vs-unknown test FAILS |
- * | word the outpost's absent PM the way the commander's is | the outpost test FAILS — the tile would claim "not created" about a manifest another site may well have imported |
+ * | word the outpost's absent PM the way the commander's is | (pre-§10.1) the outpost test FAILED — superseded: the PM no longer renders on Build at all |
+ * | keep the PM line on the Build tile (§10.1) | the "PM is ABSENT from the Build tile" test FAILS on `pipeline-build-pm` |
+ * | make the Build tile reviewable on an export alone | the "an export alone does NOT make the Build tile clickable" test FAILS |
+ * | render the PM line AFTER the sign lines | the scan → E6 → PM → sign order test FAILS |
+ * | drop the manifest section from `ScanSignReviewBody` | the PM section test FAILS |
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -2214,7 +2218,7 @@ const ONE_WAVE = buildJourney({
   unplacedStages: []
 });
 
-const REVIEW_BUILD = 'aria-label="Review SBOM and promotion manifest"';
+const REVIEW_BUILD = 'aria-label="Review SBOM reference"';
 const REVIEW_SCAN = 'aria-label="Review scan and signing results"';
 
 describe("the Scan & sign node — commander only, after Registry, before Config", () => {
@@ -2359,13 +2363,12 @@ describe("the REGISTRY node body — the latest digest, or the stated absence", 
   });
 });
 
-describe("the BUILD tile — SBOM and promotion manifest, present or stated absent", () => {
-  it("older server: no SBOM/PM lines and no review affordance", () => {
+describe("the BUILD tile — the SBOM alone (§10.1), present or stated absent; the PM is NOT here", () => {
+  it("older server: no SBOM line and no review affordance", () => {
     const html = renderToStaticMarkup(
       <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={undefined} />
     );
     expect(html).not.toContain("pipeline-build-sbom");
-    expect(html).not.toContain("pipeline-build-pm");
     expect(html).not.toContain(REVIEW_BUILD);
     expect(html, "the executor line is kept").toContain("pipeline-build-executor");
   });
@@ -2381,44 +2384,58 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     expect(html).not.toContain("data-reviewable");
   });
 
-  it("commander, artifact with neither SBOM nor export: both absences stated, no click affordance", () => {
+  it("artifact with no SBOM: the absence stated, no click affordance", () => {
     const html = renderToStaticMarkup(
-      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={artifact()} instanceRole="commander" />
+      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={artifact()} />
     );
     expect(html).toContain("no SBOM reported for this artifact");
-    expect(html).toContain("not created — a promotion manifest is created at export to a peer");
     expect(html).toContain('data-sbom-state="absent"');
-    expect(html).toContain('data-pm-state="absent"');
     expect(html, "nothing to review → no button").not.toContain(REVIEW_BUILD);
     expect(html).not.toContain("data-reviewable");
     expect(html).not.toContain("<button");
   });
 
-  it("outpost, no export: the imported manifest is NOT on this wire, and the tile says so rather than inventing one", () => {
+  it("the PROMOTION MANIFEST is ABSENT from the Build tile — with or without exports (§10.1: it is a Scan & sign fact)", () => {
+    for (const art of [
+      artifact(),
+      artifact({ signing: { promotionExports: [promotionExport()], originSignatureRefs: [] } }),
+      artifact({ unknownFields: ["promotionExports:unparseable"] })
+    ]) {
+      const html = renderToStaticMarkup(
+        <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={art} />
+      );
+      expect(html).not.toContain("pipeline-build-pm");
+      expect(html).not.toContain(">PM<");
+      expect(html).not.toContain("signed for");
+      expect(html).not.toContain("created for");
+      expect(html).not.toContain("not created");
+      expect(html).not.toContain("imported manifest");
+      expect(html).not.toContain("export stamp");
+    }
+  });
+
+  it("an export alone does NOT make the Build tile clickable — there is no manifest to review here", () => {
     const html = renderToStaticMarkup(
-      <BuildNodeForTest bindings={[]} artifact={artifact()} instanceRole="outpost" />
+      <BuildNodeForTest
+        bindings={[]}
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+        })}
+      />
     );
-    expect(html).toContain("imported manifest not projected yet");
-    expect(html).not.toContain("not created — a promotion manifest is created at export to a peer");
     expect(html).not.toContain(REVIEW_BUILD);
+    expect(html).not.toContain("data-reviewable");
   });
 
   it("SBOM present: `format specVersion · scanner scannerVersion · generatedAt`, linked to an http(s) location — and the tile IS clickable", () => {
     const html = renderToStaticMarkup(
-      <BuildNodeForTest
-        bindings={[BUILD_BINDING]}
-        artifact={artifact({ sbom: sbom() })}
-        instanceRole="commander"
-      />
+      <BuildNodeForTest bindings={[BUILD_BINDING]} artifact={artifact({ sbom: sbom() })} />
     );
     expect(html).toContain("cyclonedx 1.5 · syft 1.0.0 · 2026-08-15T08:59:00Z");
     expect(html).toContain('href="https://ci.acme.invalid/sbom/checkout-api.cdx.json"');
     expect(html).toContain('data-sbom-state="present"');
     expect(html).toContain(REVIEW_BUILD);
     expect(html).toContain('data-reviewable="true"');
-    expect(html, "the PM half is still absent, and still says so").toContain(
-      "not created — a promotion manifest is created at export to a peer"
-    );
   });
 
   it("SBOM whose location is an OCI ref (not http): text with the ref in title, NO link", () => {
@@ -2442,65 +2459,11 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     );
   });
 
-  it("PM present: `signed for <peer> · <when> · N artifacts` from the NEWEST export, and the tile IS clickable", () => {
-    const older = promotionExport({
-      exportedAt: "2026-08-14T11:00:00.000Z",
-      peerName: "old-peer",
-      peerDomainId: "019f0000-0000-7000-8000-00000000fee0"
-    });
-    const html = renderToStaticMarkup(
-      <BuildNodeForTest
-        bindings={[BUILD_BINDING]}
-        artifact={artifact({
-          signing: { promotionExports: [older, promotionExport()], originSignatureRefs: [] }
-        })}
-        instanceRole="commander"
-      />
-    );
-    expect(html).toContain("signed for");
-    expect(html).toContain("field-outpost");
-    expect(html, "the NEWEST (last) export, not the first").not.toContain("old-peer");
-    expect(html).toContain("2 artifacts");
-    expect(html).toContain('data-pm-state="signed"');
-    expect(html).toContain(REVIEW_BUILD);
-  });
-
-  it("PM peer with no name left here → the peer DOMAIN ID verbatim, never a guess", () => {
-    const html = renderToStaticMarkup(
-      <BuildNodeForTest
-        bindings={[]}
-        artifact={artifact({
-          signing: {
-            promotionExports: [promotionExport({ peerName: null })],
-            originSignatureRefs: []
-          }
-        })}
-        instanceRole="commander"
-      />
-    );
-    expect(html).toContain(`signed for <span class="font-mono">${PEER_ID}</span>`);
-  });
-
-  it("an export ALSO makes an outpost's tile clickable (a downstream re-export is a signed manifest too)", () => {
-    const html = renderToStaticMarkup(
-      <BuildNodeForTest
-        bindings={[]}
-        artifact={artifact({
-          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
-        })}
-        instanceRole="outpost"
-      />
-    );
-    expect(html).toContain(REVIEW_BUILD);
-    expect(html).not.toContain("imported manifest not projected yet");
-  });
-
-  it("`sbom:unparseable` STATED by the projection → 'recorded but unreadable', NEVER 'no SBOM reported' (an unreadable presence is not an absence)", () => {
+  it("`sbom:unparseable` STATED by the projection → 'recorded but unreadable', NEVER 'no SBOM reported' (an unreadable presence is not an absence) — and still no affordance", () => {
     const html = renderToStaticMarkup(
       <BuildNodeForTest
         bindings={[BUILD_BINDING]}
         artifact={artifact({ sbom: null, unknownFields: ["sbom:unparseable"] })}
-        instanceRole="commander"
       />
     );
     expect(html).toContain('data-sbom-state="unparseable"');
@@ -2509,59 +2472,12 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
     );
     expect(html).not.toContain("no SBOM reported for this artifact");
     expect(html).not.toContain('data-sbom-state="absent"');
-    expect(html, "the PM half is untouched by the SBOM flag").toContain('data-pm-state="absent"');
     expect(html, "nothing parseable to review → still no affordance").not.toContain(REVIEW_BUILD);
   });
 
-  it("`promotionExports:unparseable` with NO readable export → PM 'recorded but unreadable', never 'not created' — on the commander AND the outpost", () => {
-    for (const role of ["commander", "outpost"] as const) {
-      const html = renderToStaticMarkup(
-        <BuildNodeForTest
-          bindings={[]}
-          artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })}
-          instanceRole={role}
-        />
-      );
-      expect(html, role).toContain('data-pm-state="unparseable"');
-      expect(html, role).toContain(
-        "export stamp recorded but unreadable — some export stamps could not be read"
-      );
-      expect(html, role).not.toContain(
-        "not created — a promotion manifest is created at export to a peer"
-      );
-      expect(html, role).not.toContain("imported manifest not projected yet");
-      expect(html, `${role}: the SBOM half is untouched by the exports flag`).toContain(
-        'data-sbom-state="absent"'
-      );
-    }
-  });
-
-  it("`promotionExports:unparseable` BESIDE a readable export → the signed line keeps its facts and says some stamps could not be read", () => {
+  it("an empty unknownFields renders NO unparseable wording (the flag is read, not assumed)", () => {
     const html = renderToStaticMarkup(
-      <BuildNodeForTest
-        bindings={[]}
-        artifact={artifact({
-          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
-          unknownFields: ["promotionExports:unparseable"]
-        })}
-        instanceRole="commander"
-      />
-    );
-    expect(html).toContain('data-pm-state="signed"');
-    expect(html).toContain("signed for");
-    expect(html).toContain("(some export stamps could not be read)");
-    expect(html).toContain('data-testid="pipeline-exports-unparseable"');
-  });
-
-  it("an empty unknownFields renders NO unparseable wording anywhere (the flag is read, not assumed)", () => {
-    const html = renderToStaticMarkup(
-      <BuildNodeForTest
-        bindings={[]}
-        artifact={artifact({
-          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
-        })}
-        instanceRole="commander"
-      />
+      <BuildNodeForTest bindings={[]} artifact={artifact({ sbom: sbom() })} />
     );
     expect(html).not.toContain("unreadable");
     expect(html).not.toContain("could not be read");
@@ -2596,9 +2512,10 @@ describe("the BUILD tile — SBOM and promotion manifest, present or stated abse
   });
 });
 
-describe("the BUILD review dialog body renders the SBOM and the manifest VERBATIM (portal-free)", () => {
-  it("every SBOM reference field, by its wire name", () => {
+describe("the BUILD review dialog body renders the SBOM VERBATIM, and NOTHING of the manifest (portal-free)", () => {
+  it("every SBOM reference field, by its wire name; the dialog is titled 'SBOM reference'", () => {
     const html = renderToStaticMarkup(<BuildReviewBody artifact={artifact({ sbom: sbom() })} />);
+    expect(html).toContain("SBOM reference");
     for (const [label, value] of [
       ["format", "cyclonedx"],
       ["specVersion", "1.5"],
@@ -2613,78 +2530,34 @@ describe("the BUILD review dialog body renders the SBOM and the manifest VERBATI
       expect(html, `label ${label}`).toContain(`>${label}</dt>`);
       expect(html, `value of ${label}`).toContain(value!);
     }
-    expect(html, "no export → the PM absence, stated").toContain(
-      "not created — a promotion manifest is created at export to a peer"
-    );
   });
 
-  it("every promotion-manifest field, the artifacts table, signature presence and the key fingerprint", () => {
+  it("no manifest section, even when exports exist — the PM is reviewed on Scan & sign (§10.1)", () => {
     const html = renderToStaticMarkup(
       <BuildReviewBody
         artifact={artifact({
-          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
-        })}
-      />
-    );
-    expect(html).toContain("scp-promotion-manifest/v1");
-    expect(html).toContain(">createdAt</dt>");
-    expect(html).toContain("2026-08-15T11:00:00.000Z");
-    expect(html).toContain(EXPORTER_ID);
-    expect(html).toContain("field-outpost");
-    expect(html).toContain(PEER_ID);
-    expect(html).toContain("urn:scp:o:change:acme/checkout-api@1.4.2");
-    expect(html).toContain(">oci</td>");
-    expect(html).toContain(">blob</td>");
-    expect(html).toContain(DIGEST);
-    expect(html).toContain("sig://sbom");
-    expect(html).toContain(">present</dd>");
-    expect(html).toContain(KEY_FP);
-    expect(html, "no SBOM → its absence, stated").toContain("no SBOM reported for this artifact");
-  });
-
-  it("a stamp with no fingerprint says 'not recorded'; an empty signature says 'absent'", () => {
-    const html = renderToStaticMarkup(
-      <BuildReviewBody
-        artifact={artifact({
-          signing: {
-            promotionExports: [promotionExport({ keyFingerprint: null, manifestSignature: "" })],
-            originSignatureRefs: []
-          }
-        })}
-      />
-    );
-    expect(html).toContain(">not recorded</dd>");
-    expect(html).toContain(">absent</dd>");
-  });
-
-  it("the review body states the projection's unknowns too: an unparseable SBOM, and unreadable stamps with or without a readable one beside them", () => {
-    const bothUnreadable = renderToStaticMarkup(
-      <BuildReviewBody
-        artifact={artifact({ unknownFields: ["sbom:unparseable", "promotionExports:unparseable"] })}
-      />
-    );
-    expect(bothUnreadable).toContain('data-testid="build-review-sbom-unparseable"');
-    expect(bothUnreadable).toContain("SBOM reference recorded but unreadable");
-    expect(bothUnreadable).not.toContain("no SBOM reported for this artifact");
-    expect(bothUnreadable).toContain('data-testid="build-review-exports-unparseable"');
-    expect(bothUnreadable).toContain("export stamp recorded but unreadable");
-    expect(bothUnreadable).not.toContain(
-      "not created — a promotion manifest is created at export to a peer"
-    );
-
-    const besideReadable = renderToStaticMarkup(
-      <BuildReviewBody
-        artifact={artifact({
+          sbom: sbom(),
           signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
           unknownFields: ["promotionExports:unparseable"]
         })}
       />
     );
-    expect(besideReadable, "the readable stamp is still rendered in full").toContain(
-      "scp-promotion-manifest/v1"
+    expect(html).not.toContain("build-review-pm");
+    expect(html).not.toContain("Promotion manifest");
+    expect(html).not.toContain("scp-promotion-manifest/v1");
+    expect(html).not.toContain(EXPORTER_ID);
+    expect(html).not.toContain("not created");
+    expect(html).not.toContain("build-review-exports-unparseable");
+    expect(html).not.toContain("could not be read");
+  });
+
+  it("the review body states an unparseable SBOM as unreadable, never as absent", () => {
+    const html = renderToStaticMarkup(
+      <BuildReviewBody artifact={artifact({ unknownFields: ["sbom:unparseable"] })} />
     );
-    expect(besideReadable).toContain('data-testid="build-review-exports-unparseable"');
-    expect(besideReadable).toContain("some export stamps could not be read");
+    expect(html).toContain('data-testid="build-review-sbom-unparseable"');
+    expect(html).toContain("SBOM reference recorded but unreadable");
+    expect(html).not.toContain("no SBOM reported for this artifact");
   });
 });
 
@@ -2706,11 +2579,105 @@ describe("the SCAN & SIGN tile — each state stated, clickable only with someth
     expect(html).toContain("export gate (E6):");
     expect(html).toContain('data-export-gate="not_run"');
     expect(html).toContain(">not run</span>");
+    expect(html).toContain('data-pm-state="absent"');
+    expect(html).toContain("not created — created at export to a peer");
     expect(html).toContain("not signed yet — the promotion manifest is signed at export to a peer");
     expect(html).toContain("origin artifact signature:");
     expect(html).toContain(">not recorded</span>");
     expect(html).not.toContain(REVIEW_SCAN);
     expect(html).not.toContain("<button");
+  });
+
+  it("the PM line (§10.1) sits between the E6 line and the sign line — scan → E6 → PM → sign → origin signature", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({
+          scans: [scan()],
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+        })}
+      />
+    );
+    const at = (id: string) => html.indexOf(`data-testid="${id}"`);
+    for (const id of [
+      "pipeline-scan-state",
+      "pipeline-scan-export-gate",
+      "pipeline-scan-pm",
+      "pipeline-sign-state",
+      "pipeline-origin-signature"
+    ]) {
+      expect(at(id), id).toBeGreaterThan(-1);
+    }
+    expect(at("pipeline-scan-state")).toBeLessThan(at("pipeline-scan-export-gate"));
+    expect(at("pipeline-scan-export-gate")).toBeLessThan(at("pipeline-scan-pm"));
+    expect(at("pipeline-scan-pm")).toBeLessThan(at("pipeline-sign-state"));
+    expect(at("pipeline-sign-state")).toBeLessThan(at("pipeline-origin-signature"));
+  });
+
+  it("PM present: `created for <peer> · <when> · N artifacts` from the NEWEST export — and the tile IS clickable", () => {
+    const older = promotionExport({
+      exportedAt: "2026-08-14T11:00:00.000Z",
+      peerName: "old-peer",
+      peerDomainId: "019f0000-0000-7000-8000-00000000fee0"
+    });
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({
+          signing: { promotionExports: [older, promotionExport()], originSignatureRefs: [] }
+        })}
+      />
+    );
+    const pm = /data-testid="pipeline-scan-pm"[^>]*>(.*?)<\/p>/s.exec(html)?.[1] ?? "";
+    expect(html).toContain('data-pm-state="created"');
+    expect(pm).toContain("created for");
+    expect(pm).toContain("field-outpost");
+    expect(pm, "the NEWEST (last) export, not the first").not.toContain("old-peer");
+    expect(pm).toContain("2 artifacts");
+    expect(pm, "the PM is CREATED, the manifest is SIGNED — two facts, two lines").not.toContain(
+      "signed for"
+    );
+    expect(html).toContain(REVIEW_SCAN);
+  });
+
+  it("PM peer with no name left here → the peer DOMAIN ID verbatim, never a guess", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({
+          signing: {
+            promotionExports: [promotionExport({ peerName: null })],
+            originSignatureRefs: []
+          }
+        })}
+      />
+    );
+    expect(html).toContain(`created for <span class="font-mono">${PEER_ID}</span>`);
+  });
+
+  it("`promotionExports:unparseable` with NO readable export → PM 'recorded but unreadable', never 'not created'", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({ unknownFields: ["promotionExports:unparseable"] })}
+      />
+    );
+    expect(html).toContain('data-pm-state="unparseable"');
+    expect(html).toContain(
+      "export stamp recorded but unreadable — some export stamps could not be read"
+    );
+    expect(html).not.toContain("not created — created at export to a peer");
+  });
+
+  it("`promotionExports:unparseable` BESIDE a readable export → the PM line keeps its facts and says some stamps could not be read", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignNodeForTest
+        artifact={artifact({
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] },
+          unknownFields: ["promotionExports:unparseable"]
+        })}
+      />
+    );
+    const pm = /data-testid="pipeline-scan-pm"[^>]*>(.*?)<\/p>/s.exec(html)?.[1] ?? "";
+    expect(html).toContain('data-pm-state="created"');
+    expect(pm).toContain("created for");
+    expect(pm).toContain("(some export stamps could not be read)");
   });
 
   it("scan rows: `scanner version · digest · status · C H M L · when`, the managed step marked from the FLAG (never the scanner name) — and clickable", () => {
@@ -2954,9 +2921,39 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
     expect(html.toLowerCase(), "no CVE list is stored, so none is drawn").not.toContain("cve");
   });
 
-  it("with no scans and no exports, both absences are stated in the dialog too", () => {
+  it("the PROMOTION MANIFEST section (§10.1) — every field by its wire name and the artifacts table, BETWEEN the scan table and the exports table", () => {
+    const html = renderToStaticMarkup(
+      <ScanSignReviewBody
+        artifact={artifact({
+          scans: [scan()],
+          signing: { promotionExports: [promotionExport()], originSignatureRefs: [] }
+        })}
+      />
+    );
+    const pm = /data-testid="scan-review-pm">(.*?)<\/section>/s.exec(html)?.[1] ?? "";
+    expect(pm).toContain("scp-promotion-manifest/v1");
+    for (const label of ["manifestVersion", "createdAt", "exporterDomainId", "peer", "changeUrn"]) {
+      expect(pm, `label ${label}`).toContain(`>${label}</dt>`);
+    }
+    expect(pm).toContain("2026-08-15T11:00:00.000Z");
+    expect(pm).toContain(EXPORTER_ID);
+    expect(pm).toContain("field-outpost");
+    expect(pm).toContain(PEER_ID);
+    expect(pm).toContain("urn:scp:o:change:acme/checkout-api@1.4.2");
+    expect(pm.split('data-testid="scan-review-artifact"').length - 1).toBe(2);
+    expect(pm).toContain(">oci</td>");
+    expect(pm).toContain(">blob</td>");
+    expect(pm).toContain(DIGEST);
+    expect(pm).toContain("sig://sbom");
+    const at = (id: string) => html.indexOf(`data-testid="${id}"`);
+    expect(at("scan-review-scans")).toBeLessThan(at("scan-review-pm"));
+    expect(at("scan-review-pm")).toBeLessThan(at("scan-review-exports"));
+  });
+
+  it("with no scans and no exports, all three absences are stated in the dialog too", () => {
     const html = renderToStaticMarkup(<ScanSignReviewBody artifact={artifact()} />);
     expect(html).toContain("not run — no scan result recorded");
+    expect(html).toContain("not created — created at export to a peer");
     expect(html).toContain("not signed yet — the promotion manifest is signed at export to a peer");
   });
 
@@ -2969,6 +2966,8 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
     expect(alone).toContain('data-testid="scan-review-exports-unparseable"');
     expect(alone).toContain("signing recorded but unreadable");
     expect(alone).not.toContain("not signed yet");
+    expect(alone).toContain('data-testid="scan-review-pm-unparseable"');
+    expect(alone).not.toContain("not created");
 
     const beside = renderToStaticMarkup(
       <ScanSignReviewBody
