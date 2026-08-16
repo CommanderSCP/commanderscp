@@ -69,16 +69,19 @@
 # ============================================================================================
 # There is no `RUN` that installs anything: the base image is the whole toolchain, so this build
 # needs exactly one pinned base and no package repository, no module proxy and no registry index.
-# That is a stronger air-gap posture than either sibling runner (scp-runner-scan bakes a Trivy DB
-# and dnf-installs oscap; scp-runner-iac FROMs an upstream toolchain image), and it is the direct
-# consequence of the class being manifest-only: an editor that must never resolve a dependency
-# graph has no data to vendor.
+# That is a stronger air-gap posture than either sibling runner, and it is the direct consequence
+# of the class being manifest-only: an editor that must never resolve a dependency graph has no
+# data to vendor. (The comparison with the sibling runners' toolchains is in README.md — naming
+# them here trips `managed-scan`'s ADR-0020 containment gate, which flags a scanner named anywhere
+# in a Dockerfile INCLUDING a comment, deliberately: "the only reason to mention a scanner in a
+# Dockerfile is to put one in the image". This file is a genuine exception to that premise, and
+# prose is the wrong place to spend the gate's precision.)
 #
 # ============================================================================================
 # THE BASE IS A DIGEST, AND IT IS A LITERAL — NOT A TAG, AND NOT A BUILD ARG
 # ============================================================================================
-# `tools/busybox/pin.env` is the single source of truth (BUSYBOX_PINNED_IMAGE), exactly as
-# tools/trivy/pin.env and tools/openscap/pin.env are for scp-runner-scan;
+# `tools/busybox/pin.env` is the single source of truth (BUSYBOX_PINNED_IMAGE), exactly as the
+# sibling runners' own `tools/*/pin.env` files are for them;
 # `packages/plugins/managed-dep/src/runner-image.test.ts` fails if this line drifts from that file.
 # The multi-arch INDEX digest is pinned rather than a platform digest so it resolves per build-host
 # architecture — the same deviation, for the same reason, as both sibling runners' pins.

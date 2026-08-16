@@ -110,3 +110,21 @@ transform and exits. The orchestrator re-reads its output against the input with
 verifiers (`verifyManifestBump`, textual and descriptor-anchored; `verifyManifestOnlyEdit`, a parse
 anchored on the document) and mints an HMAC proof; `publishBump` refuses content without one. Bytes
 this container produced cannot reach a repository unless both verifiers agreed with them.
+
+## Why this runner installs nothing at build time
+
+`scp-runner-dep` has no `RUN` that installs anything: the pinned base is the whole toolchain, so the
+build needs no package repository, no module proxy and no registry index. That is a stronger
+air-gap posture than either sibling runner — `scp-runner-scan` bakes a Trivy database and
+dnf-installs the OpenSCAP scanner, and `scp-runner-iac` derives from an upstream toolchain image —
+and it falls directly out of the class being manifest-only: an editor that must never resolve a
+dependency graph has no data to vendor.
+
+That comparison lives here rather than in the Dockerfile on purpose. `managed-scan`'s ADR-0020
+containment gate (`scanner-containment.test.ts`) fails on a scanner named **anywhere** in a
+Dockerfile, comments included, on the stated premise that "the only reason to mention a scanner in a
+Dockerfile is to put one in the image". This file's prose was a genuine counterexample to that
+premise — and the right response was to move the prose, not to loosen a deliberate gate. Its own
+sibling detector warns why: flagging prose "would make the gate unmaintainable (and therefore,
+eventually, disabled)", and the way a gate gets disabled is somebody meeting a false positive and
+weakening it instead of moving their comment.
