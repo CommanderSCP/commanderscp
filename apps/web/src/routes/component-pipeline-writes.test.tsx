@@ -77,6 +77,7 @@ function placedStage(over: Partial<ComponentPipelineStage> = {}): ComponentPipel
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
+    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
     binding: null,
     bindings: [],
     current: null,
@@ -105,6 +106,7 @@ function unplacedStage(
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
+    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
     ...over
   };
 }
@@ -162,7 +164,11 @@ describe("A1 — source-mapping authoring", () => {
 
   it("SourceMappingForm offers exactly the request schema's operator-facing fields — component is implicit (this page IS the component), nothing else is added or missing", () => {
     const html = renderWithQueryClient(
-      <SourceMappingForm componentId="comp-1" pipelineKey={["pipeline", "comp-1"]} onDone={() => {}} />
+      <SourceMappingForm
+        componentId="comp-1"
+        pipelineKey={["pipeline", "comp-1"]}
+        onDone={() => {}}
+      />
     );
     for (const testid of [
       "mapping-source-kind-select",
@@ -203,7 +209,12 @@ describe("A1 — source-mapping authoring", () => {
 
   it("buildDeleteMappingPayload sends the full identity tuple (component + repo/path/ref/type), never an id", () => {
     const payload = buildDeleteMappingPayload(
-      { repoPattern: "jag8765/agentkit-bootstrap", pathPattern: null, refPattern: null, type: "configuration" },
+      {
+        repoPattern: "jag8765/agentkit-bootstrap",
+        pathPattern: null,
+        refPattern: null,
+        type: "configuration"
+      },
       "comp-1"
     );
     expect(payload).toEqual({

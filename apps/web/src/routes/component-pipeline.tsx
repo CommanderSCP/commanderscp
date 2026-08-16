@@ -271,6 +271,99 @@ function TargetFacet({ target }: { target: DeploymentTargetFacet }): React.JSX.E
   );
 }
 
+/** The wire's per-target outpost resolution — the same shape on both stage arrays (§10.2). */
+type TargetOutpost = ComponentPipelineStage["outpost"];
+
+/**
+ * WHICH OUTPOST THIS PLACE IS PART OF (pipeline-substrate-registry-scan.md §10.2) — one quiet line
+ * in the compact part of every target tile, rendered from the server's STATED `outpost.state`, never
+ * from the target's name or its containment domain (GLOSSARY: containment has nothing to do with
+ * deployment topology). Four states, four sentences:
+ *
+ *   - `outpost`               → `outpost <name> · <trustTier>` — a Link to that outpost's page on the
+ *                               COMMANDER site only (`/federation/outposts/$peerDomainId` exists only
+ *                               there — router.tsx); plain text anywhere else. The tier is appended
+ *                               only when the server read one (`null` = none declared, not "commercial").
+ *   - `self`                  → `this instance (<name>)`.
+ *   - `peer-without-outpost`  → `peer <name> — no outpost record`, quiet, with the way to fix it in
+ *                               `title` (an outpost object is declared under Federation › Outposts).
+ *   - `unknown-domain`        → `origin domain not known here` — never "ours".
+ *
+ * `instanceRole` is a PARAMETER (read by the page off `useAuth()`, threaded down like `BuildNode`'s)
+ * rather than a hook call here, so the test renderers stay provider-free. Undefined reads as "not
+ * known to be the commander" → plain text.
+ */
+function TargetOutpostLine({
+  outpost,
+  instanceRole
+}: {
+  outpost: TargetOutpost;
+  instanceRole: InstanceRole | undefined;
+}): React.JSX.Element {
+  const body = (() => {
+    switch (outpost.state) {
+      case "outpost": {
+        const label = (
+          <>
+            outpost <span className="font-medium text-slate-600">{outpost.name}</span>
+            {outpost.trustTier ? ` · ${outpost.trustTier}` : ""}
+          </>
+        );
+        return instanceRole === "commander" && outpost.peerDomainId ? (
+          <Link
+            to="/federation/outposts/$peerDomainId"
+            params={{ peerDomainId: outpost.peerDomainId }}
+            className={cn("rounded underline hover:text-slate-900", focusRing)}
+            data-testid="pipeline-target-outpost-link"
+          >
+            {label}
+          </Link>
+        ) : (
+          <span>{label}</span>
+        );
+      }
+      case "self":
+        return (
+          <span title="This target was authored by this instance's own trust domain — the trust-domain rule (§10.2) puts it here.">
+            this instance{outpost.name ? ` (${outpost.name})` : ""}
+          </span>
+        );
+      case "peer-without-outpost":
+        return (
+          <span
+            className="text-slate-400"
+            title={`This target's origin is the paired peer ${outpost.name ?? outpost.peerDomainId ?? ""}, which has no outpost object registered here — one can be declared under Federation › Outposts.`}
+          >
+            peer <span className="font-medium text-slate-500">{outpost.name}</span> — no outpost
+            record
+          </span>
+        );
+      case "unknown-domain":
+        return (
+          <span
+            className="italic text-slate-400"
+            title={
+              outpost.peerDomainId
+                ? `This target's origin domain (${outpost.peerDomainId}) matches neither this instance nor any paired peer.`
+                : "This target's origin domain matches neither this instance nor any paired peer."
+            }
+          >
+            origin domain not known here
+          </span>
+        );
+    }
+  })();
+  return (
+    <div
+      className="text-slate-400"
+      data-testid="pipeline-target-outpost"
+      data-outpost-state={outpost.state}
+    >
+      Outpost {body}
+    </div>
+  );
+}
+
 /** One entry of the journey — the two response arrays rejoined and discriminated. */
 type JourneyEntry =
   | { placed: true; order: number; waveIndex: number | null; stage: ComponentPipelineStage }
@@ -357,13 +450,17 @@ function currentFor(stage: ComponentPipelineStage, lane: Lane): ComponentPipelin
 export function StageCardForTest({
   stage,
   lane = LANES[0]!,
-  pipelineKey
+  pipelineKey,
+  instanceRole
 }: {
   stage: ComponentPipelineStage;
   lane?: Lane;
   pipelineKey?: unknown[];
+  instanceRole?: InstanceRole;
 }): React.JSX.Element {
-  return <StageCard stage={stage} lane={lane} pipelineKey={pipelineKey} />;
+  return (
+    <StageCard stage={stage} lane={lane} pipelineKey={pipelineKey} instanceRole={instanceRole} />
+  );
 }
 
 /** Exported for the same reason as `StageCardForTest` — the "not placed" treatment is a contract.
@@ -372,13 +469,22 @@ export function StageCardForTest({
 export function UnplacedStageCardForTest({
   stage,
   componentId,
-  pipelineKey
+  pipelineKey,
+  instanceRole
 }: {
   stage: ComponentPipelineUnplacedStage;
   componentId?: string;
   pipelineKey?: unknown[];
+  instanceRole?: InstanceRole;
 }): React.JSX.Element {
-  return <UnplacedStageCard stage={stage} componentId={componentId} pipelineKey={pipelineKey} />;
+  return (
+    <UnplacedStageCard
+      stage={stage}
+      componentId={componentId}
+      pipelineKey={pipelineKey}
+      instanceRole={instanceRole}
+    />
+  );
 }
 
 /** Exported for `component-pipeline-continuous.test.tsx` — the ONE-TILE-PER-SOURCE rule (owner,
@@ -665,7 +771,8 @@ function RemovePlacementButton({
 function StageCard({
   stage,
   lane,
-  pipelineKey
+  pipelineKey,
+  instanceRole
 }: {
   stage: ComponentPipelineStage;
   lane: Lane;
@@ -673,6 +780,8 @@ function StageCard({
    *  in scope) keep rendering exactly as before; the remove-placement affordance mounts only when
    *  the real page supplies it. */
   pipelineKey?: unknown[];
+  /** §10.2 — decides whether the outpost line LINKS (commander site only). See `TargetOutpostLine`. */
+  instanceRole?: InstanceRole | undefined;
 }): React.JSX.Element {
   const versionUnknown = stage.unknownFields.includes("version");
   const bindings = bindingsFor(stage, lane);
@@ -709,6 +818,8 @@ function StageCard({
         />
       </CardHeader>
       <CardContent className="space-y-2 pl-[3.4rem] text-xs text-slate-600">
+        {/* §10.2 — the compact part: right under the facet in the header, before the maintainer. */}
+        <TargetOutpostLine outpost={stage.outpost} instanceRole={instanceRole} />
         <MaintainerLine maintainedBy={stage.maintainedBy} />
         <GateSubnode gate={stage.gate} />
         {hold && <HoldSubnode hold={hold} />}
@@ -931,13 +1042,16 @@ export function PlaceAtTargetPicker({
 function UnplacedStageCard({
   stage,
   componentId,
-  pipelineKey
+  pipelineKey,
+  instanceRole
 }: {
   stage: ComponentPipelineUnplacedStage;
   /** B2 — optional so pre-B2 callers (no query client in scope) render exactly as before; see
    *  `UnplacedStageCardForTest`. */
   componentId?: string;
   pipelineKey?: unknown[];
+  /** §10.2 — see `StageCard`. */
+  instanceRole?: InstanceRole | undefined;
 }): React.JSX.Element {
   return (
     <Card
@@ -963,6 +1077,7 @@ function UnplacedStageCard({
         />
       </CardHeader>
       <CardContent className="space-y-2 pl-[3.4rem] text-xs text-slate-400">
+        <TargetOutpostLine outpost={stage.outpost} instanceRole={instanceRole} />
         <MaintainerLine maintainedBy={stage.maintainedBy} />
         <p>This component has no placement here, so its releases never reach this stage.</p>
         {componentId && pipelineKey && (
@@ -3431,12 +3546,14 @@ function WaveRow({
   wave,
   lane,
   componentId,
-  pipelineKey
+  pipelineKey,
+  instanceRole
 }: {
   wave: JourneyWave;
   lane: Lane;
   componentId: string;
   pipelineKey: unknown[];
+  instanceRole?: InstanceRole | undefined;
 }): React.JSX.Element {
   return (
     <div className="w-full" data-testid="pipeline-wave">
@@ -3471,6 +3588,7 @@ function WaveRow({
               stage={entry.stage}
               lane={lane}
               pipelineKey={pipelineKey}
+              instanceRole={instanceRole}
             />
           ) : (
             <UnplacedStageCard
@@ -3478,6 +3596,7 @@ function WaveRow({
               stage={entry.stage}
               componentId={componentId}
               pipelineKey={pipelineKey}
+              instanceRole={instanceRole}
             />
           )
         )}
@@ -3668,6 +3787,7 @@ export function ComponentPipelinePage({
                         lane={lane}
                         componentId={data.component.id}
                         pipelineKey={pipelineKey}
+                        instanceRole={instanceRole}
                       />
                     )}
                   </div>

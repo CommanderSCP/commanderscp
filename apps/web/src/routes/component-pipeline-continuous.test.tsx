@@ -113,6 +113,7 @@ function stage(over: Partial<ComponentPipelineStage> = {}): ComponentPipelineSta
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
+    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
     binding: {
       externalRef: "my-app",
       type: "configuration",
@@ -157,6 +158,7 @@ function unplaced(
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
+    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
     ...over
   };
 }
@@ -1175,6 +1177,202 @@ describe("who MAINTAINS a place", () => {
     expect(html, "'not placed' must not read as 'nowhere'").toContain("Maintained by");
   });
 });
+
+/**
+ * pipeline-substrate-registry-scan.md §10.2 — WHICH OUTPOST a target is part of, by the owner's
+ * TRUST-DOMAIN RULE. The server resolves it (`stages[].outpost` / `unplacedStages[].outpost`) and
+ * the tile RENDERS THE STATE IT IS GIVEN. Every fixture below deliberately names the target
+ * something outpost-shaped (`field-cluster`) with a stated outpost that is NOT the target's name, so
+ * a tile that derived the line from `deploymentTarget.name` fails.
+ *
+ * MUTATION LOG (each applied ALONE, then reverted)
+ * | Mutation | Result |
+ * |---|---|
+ * | render `outpost {deploymentTarget.name}` (derive from the name) | the "never reads the target name" tests FAIL |
+ * | link the outpost line regardless of `instanceRole` | the plain-text-on-an-outpost-site test FAILS |
+ * | render `peer-without-outpost` through the `outpost` branch | the peer test FAILS on "no outpost record" |
+ * | render `unknown-domain` as `this instance` | the unknown test FAILS |
+ * | drop the line from `UnplacedStageCard` | the unplaced test FAILS |
+ */
+describe("which OUTPOST a place is part of — the server's stated resolution, never the target's name", () => {
+  const PEER = "019f0000-0000-7000-8000-00000000fe1d";
+  const OUTPOST_TARGET = {
+    id: "019f0000-0000-7000-8000-00000000bbbb",
+    name: "field-cluster",
+    environment: "prod",
+    region: null,
+    substrate: "kubernetes",
+    account: null,
+    cluster: "field-eks"
+  };
+  const outpostLine = (html: string): string =>
+    /data-testid="pipeline-target-outpost"[^>]*>(.*?)<\/div>/s.exec(html)?.[1] ?? "";
+
+  it("`outpost` on the COMMANDER site: `outpost <name> · <tier>`, LINKED to that outpost's page", () => {
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        instanceRole="commander"
+        stage={stage({
+          deploymentTarget: OUTPOST_TARGET,
+          outpost: {
+            state: "outpost",
+            id: "019f0000-0000-7000-8000-00000000abcd",
+            name: "field-outpost",
+            trustTier: "il5",
+            peerDomainId: PEER
+          }
+        })}
+      />
+    );
+    expect(html).toContain('data-testid="pipeline-target-outpost"');
+    expect(html).toContain('data-outpost-state="outpost"');
+    const line = outlineText(outpostLine(html));
+    expect(line).toContain("outpost field-outpost · il5");
+    // The router `Link` is mocked to a bare `<a>` at the top of this file (so `data-testid`/`to`
+    // do not survive) — the assertion is that the outpost words are INSIDE an anchor.
+    expect(outpostLine(html), "linked on the commander site").toMatch(
+      /<a>outpost <span[^>]*>field-outpost/
+    );
+    expect(line, "never the target's name").not.toContain("field-cluster");
+  });
+
+  it("`outpost` on an OUTPOST site (or an unknown role): the same words, PLAIN TEXT — the route exists only on the commander", () => {
+    const stageWithOutpost = stage({
+      deploymentTarget: OUTPOST_TARGET,
+      outpost: {
+        state: "outpost",
+        id: "019f0000-0000-7000-8000-00000000abcd",
+        name: "field-outpost",
+        trustTier: "il5",
+        peerDomainId: PEER
+      }
+    });
+    for (const role of ["outpost", undefined] as const) {
+      const html = renderToStaticMarkup(
+        <StageCardForTest instanceRole={role} stage={stageWithOutpost} />
+      );
+      expect(outlineText(outpostLine(html))).toContain("outpost field-outpost · il5");
+      expect(outpostLine(html), `role=${String(role)} must not link`).not.toContain("<a");
+    }
+  });
+
+  it("`outpost` with NO declared tier omits the tier — nothing is defaulted", () => {
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          outpost: {
+            state: "outpost",
+            id: "019f0000-0000-7000-8000-00000000abcd",
+            name: "field-outpost",
+            trustTier: null,
+            peerDomainId: PEER
+          }
+        })}
+      />
+    );
+    const line = outlineText(outpostLine(html));
+    expect(line).toContain("outpost field-outpost");
+    expect(line).not.toContain("·");
+    expect(line).not.toContain("commercial");
+  });
+
+  it("`self`: `this instance (<name>)`", () => {
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          deploymentTarget: OUTPOST_TARGET,
+          outpost: {
+            state: "self",
+            id: null,
+            name: "hq-commander",
+            trustTier: null,
+            peerDomainId: null
+          }
+        })}
+      />
+    );
+    expect(html).toContain('data-outpost-state="self"');
+    const line = outlineText(outpostLine(html));
+    expect(line).toContain("this instance (hq-commander)");
+    expect(line).not.toContain("field-cluster");
+  });
+
+  it("`peer-without-outpost`: names the PEER and says there is no outpost record — quiet, with the fix in the title", () => {
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          deploymentTarget: OUTPOST_TARGET,
+          outpost: {
+            state: "peer-without-outpost",
+            id: null,
+            name: "prod-highside",
+            trustTier: null,
+            peerDomainId: PEER
+          }
+        })}
+      />
+    );
+    expect(html).toContain('data-outpost-state="peer-without-outpost"');
+    const line = outlineText(outpostLine(html));
+    expect(line).toContain("peer prod-highside — no outpost record");
+    expect(html).toContain("Federation › Outposts");
+    expect(line).not.toContain("field-cluster");
+  });
+
+  it("`unknown-domain`: `origin domain not known here` — never `this instance`", () => {
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          deploymentTarget: OUTPOST_TARGET,
+          outpost: {
+            state: "unknown-domain",
+            id: null,
+            name: null,
+            trustTier: null,
+            peerDomainId: "019f0000-0000-7000-8000-00000000dead"
+          }
+        })}
+      />
+    );
+    expect(html).toContain('data-outpost-state="unknown-domain"');
+    const line = outlineText(outpostLine(html));
+    expect(line).toContain("origin domain not known here");
+    expect(line).not.toContain("this instance");
+    expect(line).not.toContain("field-cluster");
+  });
+
+  it("an UNPLACED stage carries the same line — the place is part of an outpost whether or not this component reaches it", () => {
+    const html = renderToStaticMarkup(
+      <UnplacedStageCardForTest
+        instanceRole="commander"
+        stage={unplaced({
+          deploymentTarget: OUTPOST_TARGET,
+          outpost: {
+            state: "outpost",
+            id: "019f0000-0000-7000-8000-00000000abcd",
+            name: "field-outpost",
+            trustTier: "il5",
+            peerDomainId: PEER
+          }
+        })}
+      />
+    );
+    expect(html).toContain('data-outpost-state="outpost"');
+    expect(outlineText(outpostLine(html))).toContain("outpost field-outpost · il5");
+    expect(outpostLine(html)).toMatch(/<a>outpost <span[^>]*>field-outpost/);
+  });
+});
+
+/** Tags stripped, entities decoded — the words a reader sees. */
+function outlineText(fragment: string): string {
+  return fragment
+    .replace(/<[^>]+>/g, "")
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 /**
  * ADR-0028 INCREMENT 4 — A HELD STAGE IS LEGIBLE AS ONE.
