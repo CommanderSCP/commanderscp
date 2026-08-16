@@ -34,15 +34,24 @@ const execFileAsync = promisify(execFile);
  * ephemeral container produced). So this plugin adds NO new verb (charter principle 1): `observe()`
  * returns `[]`, `trigger()` runs the container, `status()`/`abort()` report it.
  *
- * SECURITY MODEL (mirrors managed-iac's adversarial-review CRITICAL #1): `runnerImage`/`networkMode`/
- * `workspaceRoot` decide WHAT image runs and on WHICH network — they are **operator/server-governed,
- * NEVER tenant-suppliable**. The manifest `configSchema` below is `additionalProperties: false` and
- * lists ONLY `timeoutMs`, so a binding that tries to set the server-governed fields is rejected at
- * create/update; the server injects them into this plugin's config when it provisions the instance
- * (`coordination/executor-bindings-repo.ts`'s `resolveExecutorPluginInstance`, spread LAST so they
- * win). The runner is launched with NO docker socket mount, NO bind mount (the workspace is `docker
- * cp`'d in/out, never mounted — a host-path escape is structurally impossible), and the server-fixed
- * `--network` (default `none` — the runner reaches no hosts).
+ * SECURITY MODEL (mirrors managed-iac's adversarial-review CRITICAL #1): `dockerBinary` decides WHAT
+ * EXECUTABLE runs, and `runnerImage`/`networkMode`/`workspaceRoot` decide what image runs and on
+ * which network — they are **operator/server-governed, NEVER tenant-suppliable**. The manifest
+ * `configSchema` below is `additionalProperties: false` and lists ONLY `timeoutMs`, so a binding that
+ * tries to set any of them is rejected at create/update; the server injects them into this plugin's
+ * config when it provisions the instance (`coordination/executor-bindings-repo.ts`'s
+ * `resolveExecutorPluginInstance`, spread LAST so they win). The runner is launched with NO docker
+ * socket mount, NO bind mount (the workspace is `docker cp`'d in/out, never mounted — a host-path
+ * escape is structurally impossible), and the server-fixed `--network` (default `none` — the runner
+ * reaches no hosts).
+ *
+ * THAT SCHEMA IS ONLY A GATE IF THE SERVER RUNS IT. It did not, for this module: `managed-scan` was
+ * on `KNOWN_EXECUTOR_MODULES` but absent from `apps/server`'s `MANIFEST_BY_MODULE`, and
+ * `validatePluginConfig` returned early for a module it had no manifest for — so a tenant binding
+ * could set `dockerBinary` to any host path and this plugin would `execFile` it. The paragraph above
+ * described a protection that was never wired up. Both halves are now pinned by tests
+ * (`plugin-manifests-fail-closed.test.ts`): the schema refuses the governed keys, AND every
+ * allowlisted executor module is asserted to HAVE a manifest.
  *
  * SYNCHRONOUS TRIGGER (deliberate v1 simplification, exactly as managed-iac): `trigger()` runs the
  * container to completion; a scan is a short, read-only analysis of an artifact already materialized
@@ -56,7 +65,9 @@ export interface ManagedScanConfig {
   networkMode: string;
   /** ms before the container run is killed as hung (TENANT config). Default 10 minutes. */
   timeoutMs?: number;
-  /** Override for tests only; default "docker". Server-injected in production. */
+  /** SERVER-INJECTED (never tenant): the container CLI to exec. Refused by the manifest schema and
+   *  injected by `resolveExecutorPluginInstance` from `SCP_MANAGED_RUNNER_DOCKER_BINARY`, so the
+   *  `?? "docker"` below is a fallback for this package's own unit tests, not a tenant hook. */
   dockerBinary?: string;
 }
 
@@ -343,9 +354,9 @@ export function createManagedScanExecutorPlugin(): ExecutorPlugin {
 
 /**
  * Manifest `configSchema` is the TENANT-facing surface only — `additionalProperties: false` so a
- * binding that tries to set the server-governed `runnerImage`/`networkMode` fields is REJECTED at
- * create/update. The server injects those fields into this plugin's runtime config itself
- * (executor-bindings-repo.ts's `managedScanServerSettings`).
+ * binding that tries to set the server-governed `dockerBinary`/`runnerImage`/`networkMode`/
+ * `workspaceRoot` fields is REJECTED at create/update. The server injects those fields into this
+ * plugin's runtime config itself (executor-bindings-repo.ts's `managedScanServerSettings`).
  */
 export const manifest: PluginManifest = {
   id: "managed-scan",

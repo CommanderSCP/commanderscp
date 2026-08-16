@@ -10,6 +10,7 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
+import { assertEveryModuleHasManifest } from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
  *  the same execution system shares this id, so they share one observe() poll + cursor. */
@@ -427,6 +428,22 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
 ];
 
 /**
+ * BEING ON THE ALLOWLIST ABOVE AND HAVING A CONFIG SCHEMA ARE TWO DIFFERENT PROPERTIES, and only
+ * the first was ever checked. The allowlist decides WHICH MODULE may be provisioned; the manifest
+ * decides WHAT CONFIG that module may be provisioned with. `fake-executor`, `pipeline-generic` and
+ * `managed-scan` passed the first and failed the second, and `validatePluginConfig` skipped a
+ * module it had no manifest for — so their binding configs were stored entirely unvalidated. The
+ * sharpest consequence: `@scp/plugin-managed-scan` runs `execFile(config.dockerBinary ?? "docker")`,
+ * and `dockerBinary` is not among the keys `resolveExecutorPluginInstance` injects, so a tenant
+ * binding could name any host executable.
+ *
+ * Asserted HERE, at module load, because this file is where the allowlist lives — the invariant
+ * belongs beside the list it constrains, not in a test that a future edit can be made without
+ * running. Adding a module below without a manifest now fails at BOOT, naming the module.
+ */
+assertEveryModuleHasManifest(KNOWN_EXECUTOR_MODULES, "KNOWN_EXECUTOR_MODULES");
+
+/**
  * Exported (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): until
  * now this check ran ONLY here, at dispatch time (`resolveExecutorPluginInstance`, below) — a
  * binding with an unknown/wrong-kind `pluginModule` (e.g. `webhook-control`, a `ControlPlugin`, or
@@ -550,6 +567,35 @@ export function managedScanServerSettings(): {
       process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-scan"),
     dbCacheDir: dbCacheDir && dbCacheDir.trim().length > 0 ? dbCacheDir.trim() : undefined
   };
+}
+
+/**
+ * DEFENCE IN DEPTH for the managed executors' `dockerBinary` — the config key that decides WHICH
+ * EXECUTABLE `@scp/plugin-managed-iac` and `@scp/plugin-managed-scan` `execFile`.
+ *
+ * DECISION (and it is a deliberate one, not a reflex): yes, inject it, for every managed executor,
+ * regardless of schema. Both plugins already did `config.dockerBinary ?? "docker"`, and the ONLY
+ * thing that stopped a tenant choosing that value was `validatePluginConfig` refusing the key at the
+ * write door. That is a single point of failure of exactly the kind that just failed: `managed-scan`
+ * carried a doc comment claiming the schema protected it while the schema was never consulted at all
+ * (no entry in `MANIFEST_BY_MODULE`). Injecting here — LAST in the spread, so it wins — means a
+ * future regression in the write-door gate downgrades from remote code execution to an accepted-but-
+ * inert config key. The two defences now fail independently.
+ *
+ * SCP_MANAGED_RUNNER_DOCKER_BINARY — operator/server-governed, same trust tier as
+ * SCP_MANAGED_IAC_RUNNER_IMAGE. Default `"docker"`, i.e. byte-identical behaviour to before for
+ * every deployment that does not set it; an operator running podman-as-docker sets it once.
+ */
+function managedRunnerDockerBinary(): string {
+  const value = process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY?.trim();
+  return value && value.length > 0 ? value : "docker";
+}
+
+/** Exported so the commander's promotion scan step, which constructs a `managed-scan` plugin context
+ *  directly rather than through a binding, resolves the SAME operator-governed binary. Two code
+ *  paths reading one knob; the alternative is a setting that silently applies to half the runs. */
+export function managedRunnerSettings(): { dockerBinary: string } {
+  return { dockerBinary: managedRunnerDockerBinary() };
 }
 
 function pluginStateDir(): string {
@@ -684,6 +730,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
+    serverInjected.dockerBinary = managedRunnerDockerBinary();
   }
 
   if (pluginModule === "managed-scan") {
@@ -696,6 +743,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
+    serverInjected.dockerBinary = managedRunnerDockerBinary();
   }
 
   return {

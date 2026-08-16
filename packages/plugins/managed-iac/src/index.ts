@@ -73,7 +73,9 @@ export interface ManagedIacConfig {
   infraCredsSecretKeys?: Record<string, string>;
   /** ms before the container run is killed as hung (TENANT config). Default 10 minutes. */
   timeoutMs?: number;
-  /** Override for tests only; default "docker". Server-injected in production. */
+  /** SERVER-INJECTED (never tenant): the container CLI to exec. Refused by the manifest schema and
+   *  injected by `resolveExecutorPluginInstance` from `SCP_MANAGED_RUNNER_DOCKER_BINARY`, so the
+   *  `?? "docker"` fallback below is for this package's own unit tests, not a tenant hook. */
   dockerBinary?: string;
 }
 

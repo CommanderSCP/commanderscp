@@ -34,6 +34,7 @@ import type {
   ExecutorPlugin,
   ExternalRunRef,
   PluginContext,
+  PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
 
@@ -271,3 +272,37 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
 export function createFakeExecutorPlugin(): ExecutorPlugin {
   return new FakeExecutorPlugin();
 }
+
+/**
+ * Manifest — added because "never shipped to a real org" (module doc, above) is a statement about
+ * INTENT, not about reach: `fake-executor` is on `executor-bindings-repo.ts`'s
+ * `KNOWN_EXECUTOR_MODULES` **and** is `DEFAULT_EXECUTOR_MODULE`, so a tenant `PUT /executors/{id}/
+ * binding` naming it is accepted on any deployment. While this package had no manifest,
+ * `validatePluginConfig` had no schema to gate on and returned early — every key of that binding's
+ * config was stored unread.
+ *
+ * `additionalProperties: false` with `statePath` DELIBERATELY ABSENT, the `managed-iac` shape: the
+ * server injects `statePath` itself for every executor instance (`resolveExecutorPluginInstance`,
+ * spread LAST), so it is server-governed here exactly as `runnerImage` is there — a binding that
+ * sets it is refused rather than silently overridden. The remaining keys are this plugin's
+ * deterministic test hooks, which ARE the tenant-facing surface.
+ */
+export const manifest: PluginManifest = {
+  id: "fake-executor",
+  kind: "executor",
+  version: "0.1.0",
+  configSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      autoSucceedAfterMs: { type: "integer", minimum: 0, default: DEFAULT_AUTO_SUCCEED_MS },
+      forcePhase: { type: "object", additionalProperties: { type: "string" } },
+      observeEvents: { type: "array", items: { type: "object" } },
+      imagesByTarget: {
+        type: "object",
+        additionalProperties: { type: "array", items: { type: "string" } }
+      },
+      rolloutByTarget: { type: "object", additionalProperties: { type: "object" } }
+    }
+  }
+};

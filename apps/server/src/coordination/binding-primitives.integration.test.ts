@@ -38,7 +38,10 @@ describe("executor-binding primitives (M12 P5c)", () => {
     admin.executors.putBinding(targetId, {
       pluginModule: "fake-executor",
       pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
-      config: { statePath: "/tmp/x" },
+      // `autoSucceedAfterMs`, not the `statePath` this used to send: `statePath` is
+      // SERVER-INJECTED for every executor instance, so fake-executor's manifest schema now refuses
+      // it at the write door (it was always overridden at dispatch — inert, just unvalidated).
+      config: { autoSucceedAfterMs: 200 },
       allowedHosts: [],
       type
     });
