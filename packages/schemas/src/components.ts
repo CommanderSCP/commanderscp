@@ -575,6 +575,37 @@ export type ComponentPipelinePromotionExport = z.infer<
 >;
 
 /**
+ * THE IMPORTED PROMOTION MANIFEST (§10.4) — what an OUTPOST's Registry tile shows about the artifact
+ * that ARRIVED there. At promotion import the receiving instance stamps, on the imported change's
+ * `sourceRef`, the exporter's `promotionManifest` + detached cosign `manifestSignature` (plus
+ * `promotedFromDomain`, `artifactDigests[]`, `artifacts[]`, `boundaryBundleChecksums`). Import
+ * REJECTS on any signature / set-equality / digest-tie failure (`verifyPromotionManifest`), so a
+ * manifest stored here was verified at import BY CONSTRUCTION — the projection re-verifies nothing.
+ *
+ * Non-null ONLY when BOTH the manifest (parsing as `PromotionManifestSchema`) AND the signature are
+ * stamped. A manifest without a signature is stated in `artifact.unknownFields` as
+ * `importedManifest:unsigned`; a manifest that does not parse as `importedManifest:unparseable`;
+ * neither key ⇒ null with no note (nothing arrived — the commander site reads this).
+ *
+ *   - `exporterDomainId` — `manifest.exporterDomainId`, verbatim.
+ *   - `exporterName`     — the paired peer's `name` here when a `federation_peers` row carries that
+ *                          domain id (the exporter IS a paired peer at the importer); null otherwise.
+ *   - `importedFromDomain` — `sourceRef.promotedFromDomain` when it is a string; null otherwise.
+ *   - `artifactCount`    — `manifest.artifacts.length`.
+ */
+export const ComponentPipelineImportedManifestSchema = z.object({
+  manifest: PromotionManifestSchema,
+  manifestSignature: z.string(),
+  exporterDomainId: z.string(),
+  exporterName: z.string().nullable(),
+  importedFromDomain: z.string().nullable(),
+  artifactCount: z.number().int().nonnegative()
+});
+export type ComponentPipelineImportedManifest = z.infer<
+  typeof ComponentPipelineImportedManifestSchema
+>;
+
+/**
  * THE ARTIFACT this pipeline is about, and every CHANGE-SCOPED fact the projection holds about it
  * (§9.3). The pipeline is component-scoped; a digest, an SBOM reference, a scan verdict and a
  * signed manifest are all facts about ONE CHANGE — so the projection PICKS a change and STATES the
@@ -584,7 +615,9 @@ export type ComponentPipelinePromotionExport = z.infer<
  * `artifact: null` — "no artifact yet", not an empty artifact.
  *
  * Every field is READ from stored data or stated absent:
- *   - `digests`     — `sourceRef.artifact_digest` / `artifactDigest` (string or string[]), verbatim.
+ *   - `digests`     — `sourceRef.artifact_digest` / `artifactDigest` (string or string[]) plus the
+ *                     importer's `artifactDigests[]` stamp, union in that order, de-duplicated,
+ *                     verbatim.
  *   - `sbom`        — `sourceRef.sbom` when it parses as `SbomRefSchema`; else null and
  *                     `unknownFields` carries `sbom:unparseable` (a malformed reference is stated,
  *                     not silently dropped).
@@ -596,6 +629,9 @@ export type ComponentPipelinePromotionExport = z.infer<
  *   - `signing.originSignatureRefs` — every ORIGIN `signatureRef` the sourceRef holds (today only
  *                     the SBOM blob's; there is no artifact-level one — an empty array is the honest
  *                     answer, never a fabricated ref).
+ *   - `signing.importedManifest` — §10.4, see `ComponentPipelineImportedManifestSchema`. Optional
+ *                     on the wire (additive; an older server omits it), null when nothing arrived
+ *                     under a signed manifest.
  */
 export const ComponentPipelineArtifactSchema = z.object({
   changeId: z.string().uuid(),
@@ -607,7 +643,8 @@ export const ComponentPipelineArtifactSchema = z.object({
   exportGate: z.enum(["pass", "fail", "not_run"]),
   signing: z.object({
     promotionExports: z.array(ComponentPipelinePromotionExportSchema),
-    originSignatureRefs: z.array(z.string())
+    originSignatureRefs: z.array(z.string()),
+    importedManifest: ComponentPipelineImportedManifestSchema.nullable().optional()
   }),
   unknownFields: z.array(z.string())
 });

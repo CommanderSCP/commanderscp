@@ -6688,6 +6688,26 @@ export type GetComponentPipelineResponses = {
                     keyFingerprint: string | null;
                 }>;
                 originSignatureRefs: Array<string>;
+                importedManifest?: {
+                    manifest: {
+                        manifestVersion: 'scp-promotion-manifest/v1';
+                        createdAt: string;
+                        sourceChangeObjectId: string;
+                        exporterDomainId: string;
+                        peerDomainId: string;
+                        changeUrn: string;
+                        artifacts: Array<{
+                            type: 'oci' | 'blob';
+                            digest: string;
+                            signatureRef?: string;
+                        }>;
+                    };
+                    manifestSignature: string;
+                    exporterDomainId: string;
+                    exporterName: string | null;
+                    importedFromDomain: string | null;
+                    artifactCount: number;
+                } | null;
             };
             unknownFields: Array<string>;
         } | null;
