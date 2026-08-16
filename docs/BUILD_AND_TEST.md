@@ -292,6 +292,8 @@ docker compose -f deploy/compose/docker-compose.yml up
 
 `pnpm seed` (and `SCP_SEED_DEMO=true` in the compose file, on by default for the eval stack) idempotently creates via the **public API only**: a demo org, one domain, bootstrap admin (`admin` / printed one-time password), the fake executor connected, two services with components, ownership/`depends_on`/`consumes` edges, one policy, and one in-flight change sitting at an approval gate. A fresh user therefore sees the charter's five-minute path — deploy → register service → register component → connect executor → see useful information — already alive, and the README walks them through repeating it themselves with `scp service register …`. The seed script doubles as the E2E fixture, so the demo experience is itself under test.
 
+Separately from the seed, two throwaway **UI review fixtures** (public API only, idempotent, not under test) populate a paired local commander + outpost so every page renders non-empty: `node scripts/seed-review-fixture.mjs [baseUrl] [user] [password]` against the commander (default `:8080`), then — after the federation import has carried `checkout-api` across — `node scripts/seed-outpost-fixture.mjs [baseUrl] [user] [password]` against the outpost (default `:8082`) for the outpost-only objects (its own target with the substrate facet, the `field/*` mirror mappings, the placement, its domain-local registry and `publishes_to` edge; docs/proposals/pipeline-substrate-registry-scan.md §9.5).
+
 ### 5.4 Everyday commands
 
 ```bash

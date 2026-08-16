@@ -10,7 +10,16 @@
  *
  * Idempotent: every object is upserted by URN, so re-running converges instead of duplicating.
  *
+ * USAGE
  *   node scripts/seed-review-fixture.mjs [baseUrl] [username] [password]
+ *     baseUrl   default http://localhost:8080 (the COMMANDER review instance)
+ *     username  default admin
+ *     password  default $SCP_ADMIN_PASSWORD (the bootstrap one-time password the server printed)
+ *
+ * PAIRING: this is the commander half of the review pair. The outpost half — the objects that exist
+ * only at the outpost site (field-cluster, the field/* mirror mappings, field-registry) — is
+ * `scripts/seed-outpost-fixture.mjs`, run against the outpost instance (default :8082) AFTER this
+ * one has run and the federation import has brought checkout-api across.
  */
 
 const BASE = process.argv[2] ?? "http://localhost:8080";
@@ -117,19 +126,48 @@ async function main() {
   // ------------------------------------------------------- deployment targets
   // Deliberately three DIFFERENT senses of the (intentionally broad) type — a cluster, a region
   // and a host — so the page shows the breadth the GLOSSARY warns about rather than three clusters.
+  //
+  // The SUBSTRATE FACET (pipeline-substrate-registry-scan.md §9.1, migration 0065): typed optional
+  // `substrate / account / region / cluster` strings on the target's properties, so the stage tile
+  // can answer "AWS or hardware? which account?" from STORED data — never from the name. Four AWS
+  // targets in one account and two hardware-ish ones with no account, so both answers are visible.
+  // `PUT` REPLACES the properties bag (objects-repo upsert), so every body carries the whole facet —
+  // a `{name}`-only PUT on an existing row would silently reset it to `{}`.
+  // `environment` is deliberately NOT set: a target with BOTH environment and region non-empty is
+  // a "declared region target" and reconcile REFUSES its deploys without a region binding (M15.6
+  // regional gate) — the facet must describe the place, not arm a gate the fixture has no binding
+  // to satisfy.
+  const AWS_ACCOUNT = "210987654321";
   const targets = {};
-  for (const [slug, name] of [
-    ["gamma-cluster", "gamma-cluster (k8s)"],
-    ["prod-cluster", "prod-cluster (k8s)"],
+  for (const [slug, name, properties] of [
+    [
+      "gamma-cluster",
+      "gamma-cluster (k8s)",
+      { substrate: "aws", account: AWS_ACCOUNT, region: "us-east-1", cluster: "gamma-eks" }
+    ],
+    [
+      "prod-cluster",
+      "prod-cluster (k8s)",
+      { substrate: "aws", account: AWS_ACCOUNT, region: "us-east-1", cluster: "prod-eks" }
+    ],
     // Two prod REGIONS: the owner's example (2026-08-14) of what one wave legitimately fans out
     // to in parallel — "us-east-1-prod & us-west-1-prod in a single wave" — as opposed to gamma,
     // which is its OWN wave ahead of prod. Both are places checkout-api's prod wave deploys to.
-    ["us-east-1-prod", "us-east-1-prod (k8s)"],
-    ["us-west-1-prod", "us-west-1-prod (k8s)"],
-    ["edge-eu", "edge-eu (region)"],
-    ["build-host-01", "build-host-01 (host)"]
+    [
+      "us-east-1-prod",
+      "us-east-1-prod (k8s)",
+      { substrate: "aws", account: AWS_ACCOUNT, region: "us-east-1", cluster: "prod-eks" }
+    ],
+    [
+      "us-west-1-prod",
+      "us-west-1-prod (k8s)",
+      { substrate: "aws", account: AWS_ACCOUNT, region: "us-west-1", cluster: "prod-eks-west" }
+    ],
+    // The hardware-ish pair: no account, no cluster — the tile joins only what is present.
+    ["edge-eu", "edge-eu (region)", { substrate: "vm" }],
+    ["build-host-01", "build-host-01 (host)", { substrate: "bare-metal" }]
   ]) {
-    const t = await put("deployment-targets", urn("deployment-target", slug), { name });
+    const t = await put("deployment-targets", urn("deployment-target", slug), { name, properties });
     if (t) targets[slug] = t.id;
   }
 
@@ -455,6 +493,147 @@ async function main() {
       failed.push(`binding ${comp}: ${e.message}`);
     }
   }
+
+  // ------------------------------------------ registry + artifact (substrate-registry-scan §9.5)
+  // The commander's per-site image registry: an `execution-system` of kind gitea (ADR-0012's default
+  // unified registry) created `domainLocal:true` — a registry is a place inside ONE security domain,
+  // and the edge below never journals because one endpoint is domain-local, so each site's Delivery
+  // lane names only its own registry (§9.2). It is NOT bound as an executor (a registry-kind system
+  // cannot be: KNOWN_EXECUTOR_MODULES) — the `image` binding above is what BUILDS, this is where the
+  // artifact LANDS, and `publishes_to` is the graph fact joining the two.
+  // GET-then-create rather than PUT: `domainLocal:true` on a PUT is a precondition on re-runs and the
+  // same one-way publish story as transit-gateway-attachments applies; a plain existence check keeps
+  // this converging whatever a reviewer did to the row.
+  const registryUrn = urn("execution-system", "hq-registry");
+  let hqRegistry;
+  try {
+    hqRegistry = await api("GET", `/objects/execution-system/${encodeURIComponent(registryUrn)}`);
+    created.push("execution-system: hq-registry (exists)");
+  } catch (e) {
+    if (e.status !== 404) {
+      failed.push(`execution-system hq-registry: ${e.message}`);
+    } else {
+      try {
+        hqRegistry = await api("POST", "/objects/execution-system", {
+          urn: registryUrn,
+          name: "hq-registry",
+          properties: {
+            kind: "gitea",
+            serverUrl: "https://registry.hq.invalid",
+            webUrl: "https://registry.hq.invalid"
+          },
+          domainLocal: true
+        });
+        created.push("execution-system: hq-registry (gitea, domain-local)");
+      } catch (e2) {
+        failed.push(`execution-system hq-registry: ${e2.message}`);
+      }
+    }
+  }
+  // checkout-api --publishes_to--> hq-registry {repository}. `POST /relationships` 409s on an exact
+  // duplicate, but list the outgoing `publishes_to` edges first anyway: the projection states
+  // `ambiguous` for >1 edge, and a fixture must never be the thing that makes it ambiguous.
+  if (hqRegistry && components["checkout-api"]) {
+    try {
+      const edges =
+        (
+          await api(
+            "GET",
+            `/relationships?fromId=${components["checkout-api"]}&typeId=publishes_to&limit=100`
+          )
+        )?.items ?? [];
+      if (edges.some((e) => e.toId === hqRegistry.id)) {
+        created.push("relationship: checkout-api publishes_to hq-registry (exists)");
+      } else {
+        await post(
+          "/relationships",
+          {
+            typeId: "publishes_to",
+            fromId: components["checkout-api"],
+            toId: hqRegistry.id,
+            properties: { repository: "acme/checkout-api" }
+          },
+          "checkout-api publishes_to hq-registry (acme/checkout-api)"
+        );
+      }
+    } catch (e) {
+      failed.push(`relationship checkout-api publishes_to hq-registry: ${e.message}`);
+    }
+  }
+
+  // A FIRST-PARTY CHANGE REPORT for checkout-api — the one typed ingress that carries an artifact
+  // digest AND an SBOM reference (`POST /change-sources/{kind}/report`, M17.2). It matches the
+  // `github acme/checkout services/api/**` mapping above, so the next reconcile tick correlates it
+  // into an `image` change of checkout-api whose `sourceRef` holds `artifact_digest` + `sbom` — the
+  // stored facts the Build and Registry tiles read (§9.3). SCP stores the SBOM REFERENCE only, never
+  // bytes; the location is a stable non-resolving URL, like every other host in this file.
+  // Idempotent twice over: (1) the route dedupes an identical body by its hash (same event id back,
+  // no second change) — so the body below is FIXED, nothing time-dependent in it; (2) belt and
+  // braces, skip the POST when a change already carries this digest, so a later edit to the body
+  // (or a different serialization) can never mint a second artifact for the same digest.
+  const ARTIFACT_DIGEST =
+    "sha256:9c1f2e6b0a4d5c8e7f3b2a1d0e9c8b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d1c";
+  const SBOM_DIGEST = "sha256:4e2a9d7c1b6f0e3a8c5d2b7f9a1e6c3d0b8f5a2e7c4d1b9f6a3e0c7d5b2f8a4e";
+  if (components["checkout-api"]) {
+    let alreadyReported = false;
+    try {
+      let cursor;
+      do {
+        const page = await api(
+          "GET",
+          `/changes?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`
+        );
+        for (const ch of page?.items ?? []) {
+          const ref = ch.sourceRef ?? {};
+          const digest = ref.artifact_digest ?? ref.artifactDigest;
+          const digests = Array.isArray(digest) ? digest : [digest];
+          if (digests.includes(ARTIFACT_DIGEST)) alreadyReported = true;
+        }
+        cursor = page?.nextCursor ?? undefined;
+      } while (cursor && !alreadyReported);
+    } catch (e) {
+      failed.push(`changes scan for reported digest: ${e.message}`);
+    }
+    if (alreadyReported) {
+      created.push("change report: checkout-api artifact (change already carries the digest)");
+    } else {
+      await post(
+        "/change-sources/github/report",
+        {
+          repo: "acme/checkout",
+          path: "services/api/Dockerfile",
+          ref: "refs/heads/main",
+          status: "applied",
+          artifactDigest: ARTIFACT_DIGEST,
+          sbom: {
+            format: "cyclonedx",
+            specVersion: "1.5",
+            digest: SBOM_DIGEST,
+            location: "https://ci.acme.invalid/sbom/checkout-api.cdx.json",
+            mediaType: "application/vnd.cyclonedx+json",
+            scanner: "syft",
+            scannerVersion: "1.4.1",
+            generatedAt: "2026-08-15T09:30:00.000Z"
+          }
+        },
+        "change report: checkout-api image (artifactDigest + cyclonedx SBOM ref) — correlated by the next reconcile tick"
+      );
+    }
+  }
+  // NO SCAN EVIDENCE IS SEEDED — the Scan & sign tile honestly reads "not run" for this artifact.
+  // The designed org-pipeline path (M17.1) is: a `control` object bound via
+  // `PUT /controls/{id}/binding {pluginModule:"scan-result-control", config:{url}}`, a `policy` with
+  // `requireControls:[control]` firing at the prod wave, and the change reaching that wave gate,
+  // whereupon the worker's PLUGIN HOST calls the plugin, which PULLS a Trivy result JSON from
+  // `config.url` over host-mediated HTTP (packages/plugins/scan-result-control: "a scan verdict is
+  // a resource to READ, not a context to POST" — there is no inbox to post a verdict to) and
+  // deposits ScanEvidence. That is not reachable from this script: it needs a subprocess plugin-host
+  // round trip against a Trivy JSON document served at a URL the SERVER can fetch (a `.invalid` or
+  // private-IP URL fails CLOSED to a `fail` row, and the SSRF guard blocks private ranges), and the
+  // change advancing to the prod wave. Seeding a control with an unreachable URL would deposit a
+  // fail-closed `fail` verdict — evidence about the fixture's plumbing, not about the artifact — so
+  // nothing is bound here (no direct SQL, no invented evidence; §9.5). The commander's other scan
+  // writer, the managed scan step, runs only inside `POST /federation/exports/promotion`.
 
   // ------------------------------------------- shared infrastructure (proposal example)
   // The worked example for docs/proposals/shared-infrastructure-pipelines.md §3: genuinely shared
