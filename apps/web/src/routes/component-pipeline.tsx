@@ -2098,9 +2098,12 @@ function SourceNode({
   // at BOTH ends: N source tiles → build → registry → M target tiles per wave. Grouped by declared
   // provenance (mirror-of-shared before domain-specific), each tile carrying its own provenance
   // eyebrow, so three kinds of input read as three tiles rather than one list.
+  // §10.6 (owner, 2026-08-16): the eyebrow is READ off each mapping's own `scope`/`mirrorOfShared`
+  // and renders on EVERY site — the commander's included (it used to hide unless a commander input
+  // or a domain-local component was present, which left the commander's own global sources
+  // unlabelled). No site-role inference: an undeclared scope renders NO eyebrow anywhere.
   const mirrors = sources.filter((s) => s.mirrorOfShared);
   const domainSpecific = sources.filter((s) => !s.mirrorOfShared);
-  const showProvenance = hasCommanderInput || domainLocal;
   const tileCount = (hasCommanderInput ? 1 : 0) + sources.length;
 
   return (
@@ -2185,15 +2188,7 @@ function SourceNode({
             <SourceTile
               key={source.id}
               source={source}
-              provenance={
-                !showProvenance
-                  ? null
-                  : source.mirrorOfShared
-                    ? "mirror"
-                    : domainLocal
-                      ? "local"
-                      : "domain"
-              }
+              provenance={sourceProvenance(source)}
               componentId={componentId}
               pipelineKey={pipelineKey}
             />
@@ -2236,14 +2231,35 @@ function SourceNode({
 }
 
 /**
+ * The declared provenance of ONE mapping, READ off its own fields (§10.6, outpost-ui.md §9.3a) —
+ * never off the site's role or the component's upstream:
+ *   "mirror" — `mirrorOfShared`: a local copy of a commander-shared repo (wins over `scope`, since a
+ *              `domain`-scope mapping may mirror a global one and the mirror is the more specific fact);
+ *   "global" — `scope: "global"`: shared across domains, tracked at the commander;
+ *   "domain" — `scope: "domain"`: tracked only in this domain;
+ *   null     — scope NOT DECLARED and not a mirror: NO eyebrow, nothing inferred (the tile's title
+ *              says how to declare it). `scope` is read as possibly-absent so a pre-0066 server's
+ *              response degrades to the same "not declared" rendering rather than throwing.
+ * Exported for the test file only.
+ */
+export function sourceProvenance(source: {
+  mirrorOfShared: boolean;
+  scope?: "global" | "domain" | null;
+}): "mirror" | "global" | "domain" | null {
+  if (source.mirrorOfShared) return "mirror";
+  if (source.scope === "global") return "global";
+  if (source.scope === "domain") return "domain";
+  return null;
+}
+
+/**
  * ONE SOURCE TILE — one repo rule, its own card, sitting beside its siblings in the source row, and
  * (owner, 2026-08-14) its own downward arrow beneath it: `tile, then arrow` in one column, so N
  * tiles read as N converging fan-in lines rather than one shared connector for the whole row.
- * `provenance` is the declared kind (outpost-ui.md §9.3a): "mirror" = a local copy of a commander-
- * shared repo; "domain" = domain-specific, tracked only here; "local" = a repo of a domain-local
- * component (nothing upstream); null = don't label (the commander's own site, where these are
- * simply its repos). The row body below is the pre-existing per-mapping rendering, unchanged —
- * every testid it carried still carries.
+ * `provenance` is the declared kind — see `sourceProvenance` above (§10.6): "mirror" | "global" |
+ * "domain" | null (undeclared — no eyebrow, and the card's title says how to declare one). The row
+ * body below is the pre-existing per-mapping rendering, unchanged — every testid it carried still
+ * carries.
  */
 function SourceTile({
   source,
@@ -2252,7 +2268,7 @@ function SourceTile({
   pipelineKey
 }: {
   source: ComponentPipelineResponse["sources"][number];
-  provenance: "mirror" | "domain" | "local" | null;
+  provenance: "mirror" | "global" | "domain" | null;
   componentId: string;
   pipelineKey: unknown[];
 }): React.JSX.Element {
@@ -2288,31 +2304,41 @@ function SourceTile({
           title:
             "A local COPY of a source the commander owns — declared by the operator at create, never inferred from the repo host. Its source of truth is the commander."
         }
-      : provenance === "domain"
+      : provenance === "global"
         ? {
-            text: "Domain-specific — tracked only here",
+            text: "Global — shared across domains",
             title:
-              "Tracked only by this domain's outpost — network configuration, CIDR bands, anything that stays in-domain for classification. Its source of truth is here."
+              "Declared scope: global — a cross-domain shared repo authored and tracked at the commander; every outpost's pipeline takes it as input (there it reads 'source: the commander'). Declared by the operator (--scope global), never inferred."
           }
-        : provenance === "local"
+        : provenance === "domain"
           ? {
-              text: "Domain-local",
+              text: "Domain-specific — tracked only here",
               title:
-                "A domain-local component's repo (ADR-0031): the whole source of truth, nothing upstream."
+                "Declared scope: domain — tracked only in this domain: network configuration, CIDR bands, anything that stays in-domain for classification. Its source of truth is here. Declared by the operator (--scope domain), never inferred."
             }
           : null;
   const testid =
     provenance === "mirror"
       ? "pipeline-source-tile-mirror"
-      : provenance === "domain" || provenance === "local"
-        ? "pipeline-source-tile-domain-specific"
-        : "pipeline-source-tile";
+      : provenance === "global"
+        ? "pipeline-source-tile-global"
+        : provenance === "domain"
+          ? "pipeline-source-tile-domain-specific"
+          : "pipeline-source-tile";
   const hasHeader = Boolean(eyebrow) || !enabled;
   return (
     <div className="flex min-w-[14rem] flex-1 basis-[14rem] flex-col items-center gap-1">
       <Card
         className={cn("w-full", !enabled && "border-dashed bg-slate-50/60 shadow-none")}
         data-testid={testid}
+        // Undeclared: NO eyebrow (nothing is inferred from this site's role), and the card itself
+        // says how to declare one — the absence is stated, not filled in.
+        {...(provenance === null
+          ? {
+              title:
+                "scope not declared — set it with `--scope global|domain` (scp change-source set-mapping-scope)"
+            }
+          : {})}
       >
         {hasHeader && (
           <CardHeader className="pb-1">

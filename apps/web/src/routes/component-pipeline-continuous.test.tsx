@@ -93,6 +93,7 @@ const {
   ScanSignReviewBody,
   buildJourney,
   laneNodes,
+  sourceProvenance,
   sharedConnectorVisible,
   targetFacetValues,
   sbomLine,
@@ -589,6 +590,8 @@ function source(over: Partial<ComponentPipelineResponse["sources"][number]> = {}
     disabledUntil: null,
     effectivelyEnabled: true,
     url: "https://github.com/AgentKitProject/agentkit",
+    // migration 0066 (§10.6): NOT declared by default — no eyebrow; tests that care declare it.
+    scope: null,
     ...over
   };
 }
@@ -1772,6 +1775,7 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     disabledUntil: null,
     effectivelyEnabled: true,
     url: null,
+    scope: null,
     ...over
   });
   const tiles = (html: string, testid: string) =>
@@ -1782,8 +1786,12 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
       <SourceNodeForTest
         label="Source code"
         sources={[
-          src({ repoPattern: "field/mirror-of-shared-asg-iac", mirrorOfShared: true }),
-          src({ repoPattern: "field/checkout-network-cidr" })
+          src({
+            repoPattern: "field/mirror-of-shared-asg-iac",
+            mirrorOfShared: true,
+            scope: "domain"
+          }),
+          src({ repoPattern: "field/checkout-network-cidr", scope: "domain" })
         ]}
         upstream={COMMANDER}
         domainLocal={false}
@@ -1800,7 +1808,7 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     expect(html).toContain("repos not visible in this domain");
   });
 
-  it("N domain repos on a self-maintained component render as N unlabelled tiles (the commander's own site)", () => {
+  it("N UNDECLARED repos on a self-maintained component render as N unlabelled tiles — nothing is inferred from the site being the commander", () => {
     const html = renderWithQueryClient(
       <SourceNodeForTest
         label="Source code"
@@ -1815,9 +1823,12 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     );
     expect(tiles(html, "pipeline-source-tile")).toBe(3);
     expect(tiles(html, "pipeline-source-commander-input")).toBe(0);
-    // No provenance eyebrows where they'd be noise: on its own site these are simply its repos.
+    // §10.6: scope NOT declared → NO eyebrow of any kind — the commander's own site does not make
+    // its repos "global" by inference. Declared scopes DO render here (see the §10.6 describe below).
     expect(html).not.toContain("Mirror of global");
     expect(html).not.toContain("Domain-specific — tracked only here");
+    expect(html).not.toContain("Global — shared across domains");
+    expect(html).toContain("scope not declared");
   });
 
   it("zero inputs render ONE honest empty tile, not zero tiles", () => {
@@ -1826,6 +1837,93 @@ describe("the SOURCE side is a row of tiles — one per input", () => {
     );
     expect(tiles(html, "pipeline-source-tile-none")).toBe(1);
     expect(html).toContain("No repo is mapped to this component here");
+  });
+});
+
+/**
+ * §10.6 (owner, 2026-08-16): "Global sources should be labeled as such in pipelines." The eyebrow is
+ * READ off each mapping's own `scope` / `mirrorOfShared` — four cases — and it renders on EVERY site,
+ * the commander's included (the old `showProvenance` gate hid every eyebrow unless a commander input
+ * or a domain-local component was present, which is exactly the site whose global sources went
+ * unlabelled). Nothing here reads `upstream` or the site's role: an undeclared scope on the
+ * commander is NOT global, it is undeclared, and the tile says so in its title rather than guessing.
+ * `sourceProvenance` is the one derivation; the render tests pin that the tiles honour it.
+ */
+describe("§10.6 — the source tile's eyebrow is READ off scope/mirrorOfShared, on every site", () => {
+  const SELF = { domainId: "d-self", name: "hq-commander", isSelf: true, role: "commander" };
+  const src = (over: Partial<ComponentPipelineResponse["sources"][number]>) => ({
+    id: `019f0000-0000-7000-8000-${String(Math.random()).slice(2, 14).padEnd(12, "0")}`,
+    sourceKind: "github",
+    repoPattern: "acme/platform-iac",
+    pathPattern: "asg/**",
+    refPattern: null,
+    type: "infrastructure",
+    category: "infrastructure" as const,
+    classification: null,
+    mirrorOfShared: false,
+    enabled: true,
+    disabledUntil: null,
+    effectivelyEnabled: true,
+    url: null,
+    scope: null,
+    ...over
+  });
+  const tiles = (html: string, testid: string) =>
+    (html.match(new RegExp(`data-testid="${testid}"`, "g")) ?? []).length;
+  const render = (source: ReturnType<typeof src>) =>
+    renderWithQueryClient(
+      <SourceNodeForTest
+        label="Source code"
+        sources={[source]}
+        upstream={SELF}
+        domainLocal={false}
+      />
+    );
+
+  it("scope: global → 'Global — shared across domains', ON THE COMMANDER'S OWN SITE (no commander input, not domain-local)", () => {
+    const html = render(src({ scope: "global" }));
+    expect(tiles(html, "pipeline-source-tile-global")).toBe(1);
+    expect(html).toContain("Global — shared across domains");
+    expect(html).not.toContain("scope not declared");
+  });
+
+  it("scope: domain → 'Domain-specific — tracked only here'", () => {
+    const html = render(src({ scope: "domain" }));
+    expect(tiles(html, "pipeline-source-tile-domain-specific")).toBe(1);
+    expect(html).toContain("Domain-specific — tracked only here");
+    expect(html).not.toContain("Global — shared across domains");
+  });
+
+  it("mirrorOfShared → 'Mirror of global — held in this domain', and it WINS over a declared domain scope", () => {
+    const html = render(src({ scope: "domain", mirrorOfShared: true }));
+    expect(tiles(html, "pipeline-source-tile-mirror")).toBe(1);
+    expect(html).toContain("Mirror of global — held in this domain");
+    expect(html).not.toContain("Domain-specific — tracked only here");
+  });
+
+  it("scope null and not a mirror → NO eyebrow; the tile's title says how to declare one", () => {
+    const html = render(src({ scope: null }));
+    expect(tiles(html, "pipeline-source-tile")).toBe(1);
+    expect(html).not.toContain("Global — shared across domains");
+    expect(html).not.toContain("Domain-specific — tracked only here");
+    expect(html).not.toContain("Mirror of global");
+    expect(html).toContain("scope not declared — set it with `--scope global|domain`");
+  });
+
+  it("a pre-0066 response with NO scope key renders as undeclared — the same absence, never a throw", () => {
+    const legacy = src({});
+    delete (legacy as { scope?: unknown }).scope;
+    const html = render(legacy);
+    expect(tiles(html, "pipeline-source-tile")).toBe(1);
+    expect(html).toContain("scope not declared");
+  });
+
+  it("sourceProvenance is the ONE derivation: mirror > global > domain > null", () => {
+    expect(sourceProvenance({ mirrorOfShared: true, scope: "global" })).toBe("mirror");
+    expect(sourceProvenance({ mirrorOfShared: false, scope: "global" })).toBe("global");
+    expect(sourceProvenance({ mirrorOfShared: false, scope: "domain" })).toBe("domain");
+    expect(sourceProvenance({ mirrorOfShared: false, scope: null })).toBeNull();
+    expect(sourceProvenance({ mirrorOfShared: false })).toBeNull();
   });
 });
 
@@ -2061,6 +2159,7 @@ describe("the arrow opens a dialog — closing offers a period or until-re-opene
     disabledUntil: null,
     effectivelyEnabled: true,
     url: null,
+    scope: null,
     ...over
   });
 
@@ -2192,7 +2291,9 @@ describe("grey is reserved for arrows that are not switches", () => {
             enabled: false,
             disabledUntil: null,
             effectivelyEnabled: false,
-            url: null
+            url: null,
+            // Declared, so the tile carries the domain-specific testid this test splits on.
+            scope: "domain"
           }
         ]}
         upstream={{ domainId: "d-cmd", name: "hq-commander", isSelf: false, role: "commander" }}

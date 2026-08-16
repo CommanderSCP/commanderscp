@@ -58,7 +58,8 @@ const MAPPING: ComponentPipelineResponse["sources"][number] = {
   enabled: true,
   disabledUntil: null,
   effectivelyEnabled: true,
-  url: "https://github.com/jag8765/agentkit-bootstrap"
+  url: "https://github.com/jag8765/agentkit-bootstrap",
+  scope: null
 };
 
 function placedStage(over: Partial<ComponentPipelineStage> = {}): ComponentPipelineStage {
