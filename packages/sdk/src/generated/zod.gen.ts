@@ -2101,12 +2101,14 @@ export const zGetComponentPipelineResponse = z.object({
                 'outpost',
                 'self',
                 'peer-without-outpost',
+                'peer-not-outpost',
                 'unknown-domain'
             ]),
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
             name: z.string().nullable(),
             trustTier: z.string().nullable(),
-            peerDomainId: z.string().nullable()
+            peerDomainId: z.string().nullable(),
+            peerRole: z.string().nullable()
         }),
         stageName: z.string().nullable(),
         binding: z.object({
@@ -2252,12 +2254,14 @@ export const zGetComponentPipelineResponse = z.object({
                 'outpost',
                 'self',
                 'peer-without-outpost',
+                'peer-not-outpost',
                 'unknown-domain'
             ]),
             id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
             name: z.string().nullable(),
             trustTier: z.string().nullable(),
-            peerDomainId: z.string().nullable()
+            peerDomainId: z.string().nullable(),
+            peerRole: z.string().nullable()
         }),
         stageName: z.string().nullable()
     })),

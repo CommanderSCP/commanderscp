@@ -25627,6 +25627,7 @@
                                   "outpost",
                                   "self",
                                   "peer-without-outpost",
+                                  "peer-not-outpost",
                                   "unknown-domain"
                                 ]
                               },
@@ -25671,6 +25672,16 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "peerRole": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
                               }
                             },
                             "required": [
@@ -25678,7 +25689,8 @@
                               "id",
                               "name",
                               "trustTier",
-                              "peerDomainId"
+                              "peerDomainId",
+                              "peerRole"
                             ],
                             "additionalProperties": false
                           },
@@ -26433,6 +26445,7 @@
                                   "outpost",
                                   "self",
                                   "peer-without-outpost",
+                                  "peer-not-outpost",
                                   "unknown-domain"
                                 ]
                               },
@@ -26477,6 +26490,16 @@
                                     "type": "null"
                                   }
                                 ]
+                              },
+                              "peerRole": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
                               }
                             },
                             "required": [
@@ -26484,7 +26507,8 @@
                               "id",
                               "name",
                               "trustTier",
-                              "peerDomainId"
+                              "peerDomainId",
+                              "peerRole"
                             ],
                             "additionalProperties": false
                           },

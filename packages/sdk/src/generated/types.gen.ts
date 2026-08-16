@@ -6503,11 +6503,12 @@ export type GetComponentPipelineResponses = {
                 role: string | null;
             };
             outpost: {
-                state: 'outpost' | 'self' | 'peer-without-outpost' | 'unknown-domain';
+                state: 'outpost' | 'self' | 'peer-without-outpost' | 'peer-not-outpost' | 'unknown-domain';
                 id: string | null;
                 name: string | null;
                 trustTier: string | null;
                 peerDomainId: string | null;
+                peerRole: string | null;
             };
             stageName: string | null;
             binding: {
@@ -6606,11 +6607,12 @@ export type GetComponentPipelineResponses = {
                 role: string | null;
             };
             outpost: {
-                state: 'outpost' | 'self' | 'peer-without-outpost' | 'unknown-domain';
+                state: 'outpost' | 'self' | 'peer-without-outpost' | 'peer-not-outpost' | 'unknown-domain';
                 id: string | null;
                 name: string | null;
                 trustTier: string | null;
                 peerDomainId: string | null;
+                peerRole: string | null;
             };
             stageName: string | null;
         }>;

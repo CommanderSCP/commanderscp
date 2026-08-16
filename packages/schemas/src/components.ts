@@ -57,8 +57,11 @@ export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSche
  * never from its containment `domain_id` (GLOSSARY: containment has nothing to do with deployment
  * topology).
  *
- * Four states, each STATED — the identity fields are nullable per state, and a client renders the
- * state it is given rather than guessing from which fields happen to be null:
+ * Five states, each STATED — the identity fields are nullable per state, and a client renders the
+ * state it is given rather than guessing from which fields happen to be null. PRECEDENCE: `self` is
+ * decided FIRST, before the outpost-object lookup — so on an outpost site, whose replica of its own
+ * config is exactly "an `outpost` object whose `peerDomainId` names self", its own targets read
+ * `self`, never `outpost <its own name>`; the object lookup and the peer lookup follow in that order.
  *   - `outpost`               — the target's origin is a paired peer that has an `outpost` object.
  *                               `id`/`name` are that object's; `trustTier` its declared tier (null
  *                               when the object declares none, or one this build does not know —
@@ -69,25 +72,38 @@ export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSche
  *                               this instance's federation name; the rest null. On the commander this
  *                               is the honest consequence of the rule for a commander-authored target
  *                               (§10.2: in the model those targets would be authored by their outposts).
- *   - `peer-without-outpost`  — the origin is a paired peer with NO `outpost` object registered.
- *                               `name` is the PEER's name and `peerDomainId` its id, so a client can
- *                               say who, and that an outpost record can be declared for it.
+ *   - `peer-without-outpost`  — the origin is a paired peer of role `outpost` with NO `outpost` object
+ *                               registered. `name` is the PEER's name and `peerDomainId` its id, so a
+ *                               client can say who — and, because the peer's role IS `outpost`, that an
+ *                               outpost record CAN be declared for it (POST /federation/outposts
+ *                               accepts only `outpost`-role peers — `outpost-binding.ts`).
+ *   - `peer-not-outpost`      — the origin is a paired peer whose role is NOT `outpost` (`commander`
+ *                               or `retrans`). This is what EVERY commander-authored (replicated)
+ *                               target reads on an outpost site. `name` is the peer's name,
+ *                               `peerDomainId` its id, `peerRole` its role. No outpost record can be
+ *                               declared for it — the API refuses (400) — so a client must NOT offer
+ *                               that fix; it says `commander <name>` / `relay <name>`.
  *   - `unknown-domain`        — the origin names no peer known here (a replica whose peer row has not
  *                               arrived; a foreign origin this instance never paired with).
  *                               `peerDomainId` carries the raw origin id; the rest null. Not "ours".
  */
 export const ComponentPipelineTargetOutpostSchema = z.object({
-  state: z.enum(["outpost", "self", "peer-without-outpost", "unknown-domain"]),
+  state: z.enum(["outpost", "self", "peer-without-outpost", "peer-not-outpost", "unknown-domain"]),
   /** The `outpost` object's id — `outpost` only. */
   id: z.string().uuid().nullable(),
-  /** `outpost`: the object's name; `self`: this instance's name; `peer-without-outpost`: the peer's
-   *  name; `unknown-domain`: null. */
+  /** `outpost`: the object's name; `self`: this instance's name; `peer-without-outpost` /
+   *  `peer-not-outpost`: the peer's name; `unknown-domain`: null. */
   name: z.string().nullable(),
   /** The outpost object's declared `trustTier`, verbatim when this build recognises it; else null. */
   trustTier: z.string().nullable(),
-  /** The trust-domain id the state is about: the peer's id (`outpost`, `peer-without-outpost`) or
-   *  the raw unrecognised origin (`unknown-domain`); null for `self`. */
-  peerDomainId: z.string().nullable()
+  /** The trust-domain id the state is about: the peer's id (`outpost`, `peer-without-outpost`,
+   *  `peer-not-outpost`) or the raw unrecognised origin (`unknown-domain`); null for `self`. */
+  peerDomainId: z.string().nullable(),
+  /** The paired peer's federation ROLE (`commander` / `outpost` / `retrans`), READ off its peer row,
+   *  for the three peer states — the word a client uses for `peer-not-outpost` (`commander …` /
+   *  `relay …`). Null for `self` and `unknown-domain`, and for an `outpost` object whose
+   *  `peerDomainId` names no peer row held here. */
+  peerRole: z.string().nullable()
 });
 export type ComponentPipelineTargetOutpost = z.infer<typeof ComponentPipelineTargetOutpostSchema>;
 
