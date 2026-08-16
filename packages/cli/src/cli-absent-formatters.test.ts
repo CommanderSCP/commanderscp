@@ -388,6 +388,15 @@ describe("outpostConfigRow: an omitted `unknownFields` must not kill six command
     expect(outpostConfigRow(baseOutpostConfig()).notObservable).toBe("trustTier");
     expect(outpostConfigRow(baseOutpostConfig({ unknownFields: [] })).notObservable).toBe("-");
   });
+
+  it("§10.5 `binding`: `this instance` for a self-bound (co-located) record, `peer` for a peer-bound one, `?` when an older server does not say", () => {
+    expect(outpostConfigRow(baseOutpostConfig({ peerIsSelf: true })).binding).toBe("this instance");
+    expect(outpostConfigRow(baseOutpostConfig({ peerIsSelf: false })).binding).toBe("peer");
+    const config: Partial<OutpostConfig> = baseOutpostConfig();
+    delete config.peerIsSelf;
+    // Absence is NOT "peer": an older server that never resolved the flag has made no statement.
+    expect(outpostConfigRow(config as OutpostConfig).binding).toBe("?");
+  });
 });
 
 // cli.ts — formatReconcileResultLines removal buckets (Z4)
