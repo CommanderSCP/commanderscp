@@ -5,7 +5,7 @@ import { ScpClient } from "@scp/sdk";
 import { asTrustDomainId } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { initFederationSelf } from "../federation/self-repo.js";
-import { upsertObjectByUrn } from "../graph/objects-repo.js";
+import { deleteObject, upsertObjectByUrn } from "../graph/objects-repo.js";
 import {
   createOrphanComponent,
   createTestOrg,
@@ -31,6 +31,17 @@ import {
  *     raw origin id and nothing else — and does NOT read as `self`.
  *   - the outpost's `trustTier` is READ off the object (`il5`), never defaulted; a peer whose object
  *     declares NO tier reads null.
+ *   - `peer-not-outpost`: a target under a `retrans` peer AND one under a `commander` peer each name
+ *     the peer WITH its role and are NOT `peer-without-outpost` — pinned beside the proof that the
+ *     state is needed: `createOutpost` for that peer answers 400 (outpost-binding.ts takes only
+ *     `outpost`-role peers), so a client offering "declare an outpost record" would be lying.
+ *   - a soft-deleted outpost object stops matching (`isNull(deletedAt)` in
+ *     `resolveOutpostObjectsByPeer`) — the target falls back to `peer-without-outpost`.
+ *   - two live rows on one peer resolve by `byAuthority` — a verified replica outranks an OLDER
+ *     `provenance:'manual'` shadow — and `GET /federation/outposts/{peer}` picks the same row.
+ *   - precedence: `self` is decided BEFORE the outpost-object lookup, so an outpost object whose
+ *     `peerDomainId` is self (an outpost site's replica of its own config) leaves a locally-authored
+ *     target at `self`.
  *
  * MUTATION LOG (each applied ALONE, then reverted)
  * | Mutation | Result |
@@ -40,6 +51,11 @@ import {
  * | push `outpost` into `stages[]` only | the unplaced half of the outpost test FAILS (zod response validation refuses the missing required field) |
  * | default `trustTier` to `"commercial"` when absent | the tierless test FAILS |
  * | key `outpostByPeer` on the object's `name` instead of `properties.peerDomainId` | the outpost test FAILS — the object is named differently from the peer on purpose |
+ * | state every paired peer without an object as `peer-without-outpost` (drop the role split) | both `peer-not-outpost` tests FAIL (`state`) |
+ * | remove `isNull(objects.deletedAt)` from `resolveOutpostObjectsByPeer` | the soft-deleted test FAILS (`expected { state: 'outpost', … }`) |
+ * | `const winner = list[0]` instead of `byAuthority(list, self.domainId)[0]` | the two-rows test FAILS — the shadow wins |
+ * | consult `outpostByPeer` BEFORE the self check | the precedence test FAILS (`state: 'outpost'`) |
+ * | `peerRole: null` on every state | outpost / peer-without-outpost / peer-not-outpost tests FAIL |
  */
 describe("component pipeline: which outpost each target is part of (§10.2 trust-domain rule)", () => {
   let server: ListeningTestServer;
@@ -54,12 +70,87 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     return publicKey.export({ format: "der", type: "spki" }).toString("base64");
   }
 
-  /** Pairs an OUTPOST-role peer through the real API; returns its trust-domain id + name. */
-  async function pairOutpostPeer(label: string): Promise<{ id: string; name: string }> {
+  /** Pairs a peer of `role` through the real API; returns its trust-domain id + name. */
+  async function pairPeer(
+    label: string,
+    role: "outpost" | "commander" | "retrans"
+  ): Promise<{ id: string; name: string }> {
     const id = randomUUID();
     const name = `${label}-${id.slice(0, 8)}`;
-    await admin.federation.pair({ domainId: id, name, role: "outpost", publicKey: publicKeyB64() });
+    await admin.federation.pair({ domainId: id, name, role, publicKey: publicKeyB64() });
     return { id, name };
+  }
+  const pairOutpostPeer = (label: string) => pairPeer(label, "outpost");
+
+  /** A deployment-target planted UNDERNEATH with `originDomainId` as its origin — as `import-repo`
+   *  writes a replica — for origins the hand-fill door will not take (a non-outpost peer, self). */
+  async function plantTargetUnder(originDomainId: string, slug: string) {
+    const name = uniq(slug);
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { object } = await upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "deployment-target",
+        actorObjectId: org.orgId,
+        requestId: `test-plant-${name}`,
+        urn: `urn:scp:${org.orgId}:deployment-target:${name}`,
+        name,
+        properties: { environment: "prod" },
+        federationImport: {
+          originDomainId: asTrustDomainId(originDomainId),
+          revision: 1,
+          provenance: null
+        }
+      });
+      return object;
+    });
+  }
+
+  /** An `outpost` OBJECT planted underneath (a foreign-origin replica or a `provenance:'manual'`
+   *  shadow) — the shapes the create door refuses (it 409s any second live claimant, and self is
+   *  not a peer) but a database can still HOLD. */
+  async function plantOutpostObject(opts: {
+    originDomainId: string;
+    peerDomainId: string;
+    name: string;
+    provenance: "manual" | null;
+    trustTier?: string;
+  }) {
+    return withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { object } = await upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "outpost",
+        actorObjectId: org.orgId,
+        requestId: `test-plant-outpost-${opts.name}-${randomUUID()}`,
+        urn: `urn:scp:${randomUUID()}:outpost:${opts.peerDomainId}`,
+        name: opts.name,
+        properties: {
+          peerDomainId: opts.peerDomainId,
+          ...(opts.trustTier ? { trustTier: opts.trustTier } : {})
+        },
+        federationImport: {
+          originDomainId: asTrustDomainId(opts.originDomainId),
+          revision: 1,
+          provenance: opts.provenance
+        }
+      });
+      return object;
+    });
+  }
+
+  async function placedComponentOn(targetId: string, slug: string) {
+    const component = await createOrphanComponent(admin, uniq(slug));
+    await admin.placements.create({ component: component.id, deploymentTarget: targetId });
+    return component;
+  }
+
+  /** `createOutpost` for `peerDomainId`, returning the HTTP status it failed with (0 = it succeeded). */
+  async function createOutpostStatus(peerDomainId: string): Promise<number> {
+    try {
+      await admin.federation.createOutpost({ peerDomainId, trustTier: "il5" });
+      return 0;
+    } catch (e) {
+      return (e as { status?: number }).status ?? -1;
+    }
   }
 
   /** A deployment-target AUTHORED UNDER `peer` (origin = that peer), through the hand-fill door —
@@ -76,11 +167,12 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
   }
 
   type Outpost = {
-    state: "outpost" | "self" | "peer-without-outpost" | "unknown-domain";
+    state: "outpost" | "self" | "peer-without-outpost" | "peer-not-outpost" | "unknown-domain";
     id: string | null;
     name: string | null;
     trustTier: string | null;
     peerDomainId: string | null;
+    peerRole: string | null;
   };
 
   async function pipelineOf(componentId: string) {
@@ -110,14 +202,17 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     });
   }
 
+  let selfDomainId: string;
+
   beforeAll(async () => {
     server = await listenTestServer();
     org = await createTestOrg(server, "pipeline-target-outpost");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     // This instance is the COMMANDER, under a name that is neither the org id nor a peer's.
-    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+    const self = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       initFederationSelf(tx, { orgId: org.orgId, name: SELF_NAME, role: "commander" })
     );
+    selfDomainId = self.domainId;
   }, 120_000);
 
   afterAll(async () => {
@@ -140,7 +235,8 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       id: null,
       name: SELF_NAME,
       trustTier: null,
-      peerDomainId: null
+      peerDomainId: null,
+      peerRole: null
     });
   });
 
@@ -169,7 +265,8 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       id: config.objectId,
       name: `${peer.name}-config`,
       trustTier: "il5",
-      peerDomainId: peer.id
+      peerDomainId: peer.id,
+      peerRole: "outpost"
     };
     const placed = p.stages.find((s) => s.deploymentTarget.id === placedTarget.id);
     expect(placed, "the placed stage is on the wire").toBeDefined();
@@ -193,7 +290,8 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       id: null,
       name: peer.name,
       trustTier: null,
-      peerDomainId: peer.id
+      peerDomainId: peer.id,
+      peerRole: "outpost"
     });
   });
 
@@ -230,7 +328,8 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       id: null,
       name: null,
       trustTier: null,
-      peerDomainId: foreign
+      peerDomainId: foreign,
+      peerRole: null
     });
   });
 
@@ -248,7 +347,142 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
       id: config.objectId,
       name: config.name,
       trustTier: null,
-      peerDomainId: peer.id
+      peerDomainId: peer.id,
+      peerRole: "outpost"
+    });
+  });
+
+  it("`peer-not-outpost` — a target under a RETRANS-role peer names the peer with its role, and is NOT `peer-without-outpost`: the outposts API refuses (400) to declare one for it", async () => {
+    const peer = await pairPeer("relay", "retrans");
+    const target = await plantTargetUnder(peer.id, "relay-cluster");
+    const component = await placedComponentOn(target.id, "relay-component");
+
+    const p = await pipelineOf(component.id);
+
+    expect(p.stages[0]!.outpost).toEqual({
+      state: "peer-not-outpost",
+      id: null,
+      name: peer.name,
+      trustTier: null,
+      peerDomainId: peer.id,
+      peerRole: "retrans"
+    });
+    // The state exists BECAUSE this door is shut: `peer-without-outpost` promises an outpost record
+    // can be declared, and for a retrans peer it cannot.
+    expect(await createOutpostStatus(peer.id), "createOutpost for a retrans peer").toBe(400);
+  });
+
+  it("`peer-not-outpost` — a target under a COMMANDER-role peer (what EVERY commander-authored target reads on an outpost site) — same state, role `commander`, createOutpost 400s", async () => {
+    const peer = await pairPeer("hq", "commander");
+    const target = await plantTargetUnder(peer.id, "hq-cluster");
+    const component = await placedComponentOn(target.id, "hq-component");
+
+    const p = await pipelineOf(component.id);
+
+    expect(p.stages[0]!.outpost).toEqual({
+      state: "peer-not-outpost",
+      id: null,
+      name: peer.name,
+      trustTier: null,
+      peerDomainId: peer.id,
+      peerRole: "commander"
+    });
+    expect(await createOutpostStatus(peer.id), "createOutpost for a commander peer").toBe(400);
+  });
+
+  it("a soft-DELETED outpost object no longer matches — the target falls back to `peer-without-outpost`", async () => {
+    const peer = await pairOutpostPeer("del-outpost");
+    const config = await admin.federation.createOutpost({
+      peerDomainId: peer.id,
+      trustTier: "il5"
+    });
+    const target = await targetUnderPeer(peer, "del-cluster");
+    const component = await placedComponentOn(target.id, "del-component");
+    expect((await pipelineOf(component.id)).stages[0]!.outpost).toMatchObject({
+      state: "outpost",
+      id: config.objectId
+    });
+
+    await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      deleteObject(tx, {
+        orgId: org.orgId,
+        typeId: "outpost",
+        actorObjectId: org.orgId,
+        requestId: `test-del-${config.objectId}`,
+        idOrUrn: config.objectId
+      })
+    );
+
+    expect((await pipelineOf(component.id)).stages[0]!.outpost).toEqual({
+      state: "peer-without-outpost",
+      id: null,
+      name: peer.name,
+      trustTier: null,
+      peerDomainId: peer.id,
+      peerRole: "outpost"
+    });
+  });
+
+  it("TWO live outpost objects on one peer — `byAuthority` picks the VERIFIED replica over an older `provenance:'manual'` shadow, and the outposts API's own pick agrees", async () => {
+    const peer = await pairOutpostPeer("dup-outpost");
+    // The shadow is created FIRST, so a `list[0]` / created_at pick lands on it — wrongly.
+    const shadow = await plantOutpostObject({
+      originDomainId: randomUUID(),
+      peerDomainId: peer.id,
+      name: "shadow-first",
+      provenance: "manual",
+      trustTier: "commercial"
+    });
+    // The create door 409s any second live claimant, so the second row is a VERIFIED foreign
+    // replica planted underneath, created AFTER the shadow.
+    expect(await createOutpostStatus(peer.id), "the create door refuses a second row").toBe(409);
+    const verified = await plantOutpostObject({
+      originDomainId: randomUUID(),
+      peerDomainId: peer.id,
+      name: "verified-second",
+      provenance: null,
+      trustTier: "il5"
+    });
+    const target = await targetUnderPeer(peer, "dup-cluster");
+    const component = await placedComponentOn(target.id, "dup-component");
+
+    const outpost = (await pipelineOf(component.id)).stages[0]!.outpost;
+
+    expect(outpost).toEqual({
+      state: "outpost",
+      id: verified.id,
+      name: "verified-second",
+      trustTier: "il5",
+      peerDomainId: peer.id,
+      peerRole: "outpost"
+    });
+    expect(outpost.id).not.toBe(shadow.id);
+    // GET /federation/outposts/{peer} resolves by the same rule — the page the link opens agrees.
+    const viaApi = await admin.federation.getOutpost(peer.id);
+    expect(viaApi.objectId).toBe(verified.id);
+  });
+
+  it("PRECEDENCE — an outpost object naming SELF's domain (the replica shape every OUTPOST SITE holds of its own config) does not turn a locally-authored target into `outpost`: `self` is decided first", async () => {
+    await plantOutpostObject({
+      originDomainId: randomUUID(),
+      peerDomainId: selfDomainId,
+      name: "replica-of-me",
+      provenance: null,
+      trustTier: "airgap"
+    });
+    const target = await admin.deploymentTargets.create({
+      name: uniq("mine"),
+      properties: { environment: "prod" }
+    });
+    const component = await placedComponentOn(target.id, "mine-component");
+
+    expect((await pipelineOf(component.id)).stages[0]!.outpost).toEqual({
+      state: "self",
+      id: null,
+      name: SELF_NAME,
+      trustTier: null,
+      peerDomainId: null,
+      peerRole: null
     });
   });
 });

@@ -534,12 +534,23 @@ export async function getComponentPipeline(
   // `federation_self` and `federation_peers` reads `maintainerOf` already made.
   const outpostByPeer = await resolveOutpostObjectsByPeer(tx, orgId);
   const outpostOf = (originDomainId: string | null): ComponentPipelineTargetOutpost => {
+    // PRECEDENCE — `self` FIRST, before the outpost-object lookup. An outpost site holds a replica of
+    // its own config, i.e. an `outpost` object whose `peerDomainId` names SELF; consulting the objects
+    // first would make that site's own targets read `outpost <its own name>` instead of `self`.
     if (originDomainId && originDomainId === self.domainId) {
       // Authored by THIS instance. On a commander this is every commander-authored target — the
       // honest consequence of the rule (in the model, an outpost's targets are authored by that
       // outpost); on an outpost it is its own targets.
-      return { state: "self", id: null, name: self.name, trustTier: null, peerDomainId: null };
+      return {
+        state: "self",
+        id: null,
+        name: self.name,
+        trustTier: null,
+        peerDomainId: null,
+        peerRole: null
+      };
     }
+    const peer = originDomainId ? peerById.get(originDomainId) : undefined;
     const outpost = originDomainId ? outpostByPeer.get(originDomainId) : undefined;
     if (outpost && originDomainId) {
       return {
@@ -547,19 +558,24 @@ export async function getComponentPipeline(
         id: outpost.id,
         name: outpost.name,
         trustTier: outpost.trustTier,
-        peerDomainId: originDomainId
+        peerDomainId: originDomainId,
+        peerRole: peer?.role ?? null
       };
     }
-    const peer = originDomainId ? peerById.get(originDomainId) : undefined;
     if (peer && originDomainId) {
-      // A paired peer with no `outpost` object registered — say WHO, so the operator knows which
-      // peer an outpost record can be declared for (POST /federation/outposts).
+      // A paired peer with no `outpost` object registered. Say WHO — and say WHETHER one can be
+      // declared for it: POST /federation/outposts binds ONLY to a peer of role `outpost`
+      // (outpost-binding.ts REQUIRED_PEER_ROLE, 400 otherwise). A `commander` or `retrans` peer is
+      // NOT "missing an outpost record" — on every outpost site that is what every commander-authored
+      // (replicated) target's origin is — so it is stated as its own thing, with the role, and a
+      // client must not offer the declare-an-outpost fix for it.
       return {
-        state: "peer-without-outpost",
+        state: peer.role === "outpost" ? "peer-without-outpost" : "peer-not-outpost",
         id: null,
         name: peer.name,
         trustTier: null,
-        peerDomainId: originDomainId
+        peerDomainId: originDomainId,
+        peerRole: peer.role
       };
     }
     // Neither self nor a known peer (a replica whose peer row has not arrived; a foreign origin never
@@ -570,7 +586,8 @@ export async function getComponentPipeline(
       id: null,
       name: null,
       trustTier: null,
-      peerDomainId: originDomainId
+      peerDomainId: originDomainId,
+      peerRole: null
     };
   };
   const resolved = await resolvePipelineForTarget(tx, orgId, component.id);
