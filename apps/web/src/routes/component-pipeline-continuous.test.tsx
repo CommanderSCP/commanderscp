@@ -117,7 +117,14 @@ function stage(over: Partial<ComponentPipelineStage> = {}): ComponentPipelineSta
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
-    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
+    outpost: {
+      state: "self",
+      id: null,
+      name: "commercial",
+      trustTier: null,
+      peerDomainId: null,
+      peerRole: null
+    },
     binding: {
       externalRef: "my-app",
       type: "configuration",
@@ -162,7 +169,14 @@ function unplaced(
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
-    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
+    outpost: {
+      state: "self",
+      id: null,
+      name: "commercial",
+      trustTier: null,
+      peerDomainId: null,
+      peerRole: null
+    },
     ...over
   };
 }
@@ -1219,6 +1233,8 @@ describe("who MAINTAINS a place", () => {
  * | link the outpost line regardless of `instanceRole` | the plain-text-on-an-outpost-site test FAILS |
  * | render `peer-without-outpost` through the `outpost` branch | the peer test FAILS on "no outpost record" |
  * | render `unknown-domain` as `this instance` | the unknown test FAILS |
+ * | render `peer-not-outpost` through the `peer-without-outpost` branch | the peer-not-outpost test FAILS on "no outpost record" / "Federation › Outposts" |
+ * | word `peer-not-outpost` as `commander` regardless of `peerRole` | the retrans half ("relay …") and the "unset" tail FAIL |
  * | drop the line from `UnplacedStageCard` | the unplaced test FAILS |
  */
 describe("which OUTPOST a place is part of — the server's stated resolution, never the target's name", () => {
@@ -1246,7 +1262,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
             id: "019f0000-0000-7000-8000-00000000abcd",
             name: "field-outpost",
             trustTier: "il5",
-            peerDomainId: PEER
+            peerDomainId: PEER,
+            peerRole: "outpost"
           }
         })}
       />
@@ -1271,7 +1288,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
         id: "019f0000-0000-7000-8000-00000000abcd",
         name: "field-outpost",
         trustTier: "il5",
-        peerDomainId: PEER
+        peerDomainId: PEER,
+        peerRole: "outpost"
       }
     });
     for (const role of ["outpost", undefined] as const) {
@@ -1292,7 +1310,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
             id: "019f0000-0000-7000-8000-00000000abcd",
             name: "field-outpost",
             trustTier: null,
-            peerDomainId: PEER
+            peerDomainId: PEER,
+            peerRole: "outpost"
           }
         })}
       />
@@ -1313,7 +1332,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
             id: null,
             name: "hq-commander",
             trustTier: null,
-            peerDomainId: null
+            peerDomainId: null,
+            peerRole: null
           }
         })}
       />
@@ -1334,7 +1354,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
             id: null,
             name: "prod-highside",
             trustTier: null,
-            peerDomainId: PEER
+            peerDomainId: PEER,
+            peerRole: "outpost"
           }
         })}
       />
@@ -1344,6 +1365,61 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     expect(line).toContain("peer prod-highside — no outpost record");
     expect(html).toContain("Federation › Outposts");
     expect(line).not.toContain("field-cluster");
+  });
+
+  it("`peer-not-outpost`: `commander <name>` / `relay <name>` from the wire's ROLE — no 'no outpost record', NO declare hint (the API refuses one), no link", () => {
+    for (const [peerRole, word] of [
+      ["commander", "commander"],
+      ["retrans", "relay"]
+    ] as const) {
+      const html = renderToStaticMarkup(
+        <StageCardForTest
+          instanceRole="outpost"
+          stage={stage({
+            deploymentTarget: OUTPOST_TARGET,
+            outpost: {
+              state: "peer-not-outpost",
+              id: null,
+              name: "hq-commander",
+              trustTier: null,
+              peerDomainId: PEER,
+              peerRole
+            }
+          })}
+        />
+      );
+      expect(html).toContain('data-outpost-state="peer-not-outpost"');
+      const line = outlineText(outpostLine(html));
+      expect(line, peerRole).toContain(`${word} hq-commander`);
+      expect(line, "not a missing record").not.toContain("no outpost record");
+      expect(html, "no declare hint — the outposts API 400s a non-outpost peer").not.toContain(
+        "Federation › Outposts"
+      );
+      expect(html).not.toContain("can be declared");
+      expect(outpostLine(html)).not.toContain("<a");
+      expect(line).not.toContain("field-cluster");
+    }
+    // A role this build has no word for is still stated, with the role, never as "commander".
+    const other = outlineText(
+      outpostLine(
+        renderToStaticMarkup(
+          <StageCardForTest
+            stage={stage({
+              outpost: {
+                state: "peer-not-outpost",
+                id: null,
+                name: "odd-peer",
+                trustTier: null,
+                peerDomainId: PEER,
+                peerRole: "unset"
+              }
+            })}
+          />
+        )
+      )
+    );
+    expect(other).toContain("peer odd-peer (unset)");
+    expect(other).not.toContain("commander");
   });
 
   it("`unknown-domain`: `origin domain not known here` — never `this instance`", () => {
@@ -1356,7 +1432,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
             id: null,
             name: null,
             trustTier: null,
-            peerDomainId: "019f0000-0000-7000-8000-00000000dead"
+            peerDomainId: "019f0000-0000-7000-8000-00000000dead",
+            peerRole: null
           }
         })}
       />
@@ -1379,7 +1456,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
             id: "019f0000-0000-7000-8000-00000000abcd",
             name: "field-outpost",
             trustTier: "il5",
-            peerDomainId: PEER
+            peerDomainId: PEER,
+            peerRole: "outpost"
           }
         })}
       />

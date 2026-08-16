@@ -77,7 +77,14 @@ function placedStage(over: Partial<ComponentPipelineStage> = {}): ComponentPipel
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
-    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
+    outpost: {
+      state: "self",
+      id: null,
+      name: "commercial",
+      trustTier: null,
+      peerDomainId: null,
+      peerRole: null
+    },
     binding: null,
     bindings: [],
     current: null,
@@ -106,7 +113,14 @@ function unplacedStage(
     },
     stageName: "commercial-nyc3-prod",
     maintainedBy: { domainId: null, name: "commercial", isSelf: true, role: "commander" },
-    outpost: { state: "self", id: null, name: "commercial", trustTier: null, peerDomainId: null },
+    outpost: {
+      state: "self",
+      id: null,
+      name: "commercial",
+      trustTier: null,
+      peerDomainId: null,
+      peerRole: null
+    },
     ...over
   };
 }

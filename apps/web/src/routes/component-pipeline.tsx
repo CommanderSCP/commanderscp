@@ -282,15 +282,25 @@ type TargetOutpost = ComponentPipelineStage["outpost"];
  * WHICH OUTPOST THIS PLACE IS PART OF (pipeline-substrate-registry-scan.md §10.2) — one quiet line
  * in the compact part of every target tile, rendered from the server's STATED `outpost.state`, never
  * from the target's name or its containment domain (GLOSSARY: containment has nothing to do with
- * deployment topology). Four states, four sentences:
+ * deployment topology). Five states, five sentences:
  *
  *   - `outpost`               → `outpost <name> · <trustTier>` — a Link to that outpost's page on the
- *                               COMMANDER site only (`/federation/outposts/$peerDomainId` exists only
- *                               there — router.tsx); plain text anywhere else. The tier is appended
- *                               only when the server read one (`null` = none declared, not "commercial").
+ *                               COMMANDER site only: the outpost pages are commander-managed — reachable
+ *                               only from the commander's nav (AppShell gates the Federation › Outposts
+ *                               entry on `instanceRole`; router.tsx registers the route everywhere) and
+ *                               their writes are the commander's; plain text anywhere else. The tier is
+ *                               appended only when the server read one (`null` = none declared, not
+ *                               "commercial").
  *   - `self`                  → `this instance (<name>)`.
  *   - `peer-without-outpost`  → `peer <name> — no outpost record`, quiet, with the way to fix it in
  *                               `title` (an outpost object is declared under Federation › Outposts).
+ *                               The server states this ONLY for an `outpost`-role peer — the one kind
+ *                               that door accepts.
+ *   - `peer-not-outpost`      → `commander <name>` / `relay <name>` (from the wire's `peerRole`; any
+ *                               other role reads `peer <name> (<role>)`) — a paired peer that is NOT an
+ *                               outpost, so there is no "missing record" and NO declare hint: the API
+ *                               refuses an outpost record for it. On an outpost site this is every
+ *                               commander-authored target.
  *   - `unknown-domain`        → `origin domain not known here` — never "ours".
  *
  * `instanceRole` is a PARAMETER (read by the page off `useAuth()`, threaded down like `laneNodes`'s)
@@ -342,6 +352,25 @@ function TargetOutpostLine({
             record
           </span>
         );
+      case "peer-not-outpost": {
+        // The word is the peer's ROLE, read off the wire — never a guess from the name.
+        const word =
+          outpost.peerRole === "commander"
+            ? "commander"
+            : outpost.peerRole === "retrans"
+              ? "relay"
+              : "peer";
+        return (
+          <span
+            title={`This target's origin is the paired ${
+              outpost.peerRole ?? "peer"
+            } ${outpost.name ?? outpost.peerDomainId ?? ""} — not an outpost, so it has no outpost record to declare.`}
+          >
+            {word} <span className="font-medium text-slate-600">{outpost.name}</span>
+            {word === "peer" && outpost.peerRole ? ` (${outpost.peerRole})` : ""}
+          </span>
+        );
+      }
       case "unknown-domain":
         return (
           <span
@@ -854,7 +883,7 @@ function StageCard({
             then the entry gate as ONE line. Everything else the tile knows sits under Details. */}
         <TargetOutpostLine outpost={stage.outpost} instanceRole={instanceRole} />
         <GateSummary gate={stage.gate} />
-        <TileDetails>
+        <TileDetails label={stage.stageName ?? stage.deploymentTarget.name}>
           <MaintainerLine maintainedBy={stage.maintainedBy} />
           <GateSubnode gate={stage.gate} />
           {hold && <HoldSubnode hold={hold} />}
@@ -1117,7 +1146,7 @@ function UnplacedStageCard({
             unplaced stage has no gate on the wire). The consequence sentence, the maintainer and
             the Place-at-target action are the Details. */}
         <TargetOutpostLine outpost={stage.outpost} instanceRole={instanceRole} />
-        <TileDetails>
+        <TileDetails label={stage.stageName ?? stage.deploymentTarget.name}>
           <MaintainerLine maintainedBy={stage.maintainedBy} />
           <p>This component has no placement here, so its releases never reach this stage.</p>
           {componentId && pipelineKey && (
@@ -1514,11 +1543,16 @@ function useTileDetails(): { open: boolean; toggle: () => void } {
  *  put inside — a toggle over nothing is a lie about the tile. */
 function TileDetails({
   children,
-  className = "space-y-2"
+  className = "space-y-2",
+  label
 }: {
   children: React.ReactNode;
   /** The region's row spacing — matches the compact part's, so open and shut read as one body. */
   className?: string;
+  /** WHOSE details — the tile's title. Becomes the button's `aria-label` (`Details of <title>`) so
+   *  a page of N tiles does not expose N indistinguishable "Details" controls to a rotor/screen-
+   *  reader user; the visible text stays "Details". */
+  label?: string;
 }): React.JSX.Element {
   const { open, toggle } = useTileDetails();
   const regionId = useId();
@@ -1534,6 +1568,7 @@ function TileDetails({
         )}
         aria-expanded={open}
         aria-controls={regionId}
+        aria-label={label ? `Details of ${label}` : undefined}
         onClick={toggle}
         data-testid="tile-details-toggle"
         data-state={state}
@@ -1633,7 +1668,9 @@ function NodeShell({
       <CardContent className="space-y-1 pl-[3.4rem] text-xs text-slate-600">
         {children}
         {details !== undefined && details !== null ? (
-          <TileDetails className="space-y-1">{details}</TileDetails>
+          <TileDetails className="space-y-1" label={title}>
+            {details}
+          </TileDetails>
         ) : null}
       </CardContent>
     </Card>
@@ -2944,16 +2981,28 @@ const REGISTRY_UNKNOWN_WHY =
 const REGISTRY_NONE_WHY =
   "No change of this component carries an artifact digest in its sourceRef — the first-party change report is the sole way one arrives.";
 
+/** §10.1 — where the IMPORTED promotion manifest belongs on a non-commander site (the Registry: it is
+ *  where the artifact lands there), and what is honestly sayable about it TODAY: the importer stores
+ *  `sourceRef.promotionManifest` + `manifestSignature` (§8 "PM"), but the component-pipeline wire
+ *  carries no field for them yet — so this is a stated "not projected", never a claim either way. */
+const IMPORTED_MANIFEST_NOT_PROJECTED_TITLE =
+  "This site's imported promotion manifest (sourceRef.promotionManifest) is not projected on the component pipeline yet — the wire has no field for it, so nothing is claimed either way.";
+
 function RegistryNode({
   registry,
-  artifact
+  artifact,
+  instanceRole
 }: {
   registry: ComponentPipelineRegistry | null;
   artifact: ArtifactOnWire;
+  /** §10.1 — on a NON-commander site (outpost, retrans, unknown) the Details carry the imported-
+   *  manifest line; the commander creates manifests (Scan & sign) and imports none. */
+  instanceRole?: InstanceRole | undefined;
 }): React.JSX.Element {
   const digest = artifact ? latestDigest(artifact) : null;
   // §10.3 — compact: the digest line alone. Details: WHICH change it came from, or the sentence
-  // explaining the stated absence / unknown (the same words the compact line carries in `title`).
+  // explaining the stated absence / unknown (the same words the compact line carries in `title`),
+  // then — off the commander — the imported-manifest line (§10.1).
   return (
     <NodeShell
       kind="registry"
@@ -2962,16 +3011,27 @@ function RegistryNode({
       testid="pipeline-node-registry"
       muted={digest === null}
       details={
-        digest !== null && artifact ? (
-          <p className="text-slate-500" data-testid="pipeline-registry-provenance">
-            from change{" "}
-            <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
-          </p>
-        ) : (
-          <p className="text-slate-400" data-testid="pipeline-registry-explanation">
-            {artifact === undefined ? REGISTRY_UNKNOWN_WHY : REGISTRY_NONE_WHY}
-          </p>
-        )
+        <>
+          {digest !== null && artifact ? (
+            <p className="text-slate-500" data-testid="pipeline-registry-provenance">
+              from change{" "}
+              <span className="font-mono">{artifact.changeName ?? artifact.changeId}</span>
+            </p>
+          ) : (
+            <p className="text-slate-400" data-testid="pipeline-registry-explanation">
+              {artifact === undefined ? REGISTRY_UNKNOWN_WHY : REGISTRY_NONE_WHY}
+            </p>
+          )}
+          {instanceRole !== "commander" ? (
+            <p
+              className="text-slate-400"
+              data-testid="pipeline-registry-imported-manifest"
+              title={IMPORTED_MANIFEST_NOT_PROJECTED_TITLE}
+            >
+              imported manifest not projected yet
+            </p>
+          ) : null}
+        </>
       }
     >
       {digest !== null && artifact ? (
@@ -3018,16 +3078,19 @@ function RegistryNode({
 export function RegistryNodeForTest({
   registry,
   artifact,
-  detailsExpanded
+  detailsExpanded,
+  instanceRole
 }: {
   registry: ComponentPipelineRegistry | null;
   artifact?: ArtifactOnWire;
   /** §10.3 — see `StageCardForTest`. */
   detailsExpanded?: boolean;
+  /** §10.1 — see `RegistryNode`. */
+  instanceRole?: InstanceRole | undefined;
 }): React.JSX.Element {
   return (
     <TileDetailsForTest expanded={detailsExpanded}>
-      <RegistryNode registry={registry} artifact={artifact} />
+      <RegistryNode registry={registry} artifact={artifact} instanceRole={instanceRole} />
     </TileDetailsForTest>
   );
 }
@@ -4136,7 +4199,11 @@ export function ComponentPipelinePage({
                         <BuildNode bindings={node.bindings} artifact={node.artifact} />
                       )}
                       {node.kind === "registry" && (
-                        <RegistryNode registry={node.registry} artifact={node.artifact} />
+                        <RegistryNode
+                          registry={node.registry}
+                          artifact={node.artifact}
+                          instanceRole={instanceRole}
+                        />
                       )}
                       {node.kind === "scan-sign" && <ScanSignNode artifact={node.artifact} />}
                       {node.kind === "wave" && (
