@@ -38,6 +38,13 @@ import type {
  * | drop the "none required" text when a gate asks for no control | the gate test FAILS — a blank Checks line reads as "we cannot see checks", when none are configured |
  * | render the stage's deployment row from `stage.current` instead of the lane's | the per-lane release test already covers it; noted here because the deployment row is the SECOND consumer of that field |
  * | sort the journey by `wave.index` instead of `order` | ALL TESTS STAY GREEN, and that is CORRECT, not a gap: the server emits `order` as the union index with null-wave entries last, so the two orderings agree on every response it can produce. Recorded here so nobody "fixes" this by writing a test that pins an ordering the API does not promise |
+ * | fall back to `deploymentTarget.name` when no facet value is declared | the no-facet test FAILS — the element appears carrying the name, which is exactly the "derived from what it is called" trap |
+ * | join the facet as substrate · region · account · cluster | the four-value test FAILS on the fixed order |
+ * | draw the registry node only on `buildsHere` (ignore `registry`) | the outpost-case and ambiguous node-order tests FAIL — a declared registry with no build draws nothing |
+ * | draw the registry node for `state: "none"` too | the stated-absence test FAILS — a node appears for a fact the server said is absent |
+ * | draw the registry node in the INFRA lane when a registry is declared | the infra-lane test FAILS |
+ * | render `ambiguous` through the `declared` branch | the ambiguous header test FAILS — no count, no amber |
+ * | link the registry name to `url + "/" + repository` (a guessed deep path) | the declared header test FAILS on the base-only href |
  */
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -58,9 +65,11 @@ const {
   SourceOpenCloseDialogForTest,
   WaveRowForTest,
   arrowInto,
+  RegistryNodeForTest,
   buildJourney,
   laneNodes,
   sharedConnectorVisible,
+  targetFacetValues,
   LANES
 } = await import("./component-pipeline");
 
@@ -314,6 +323,127 @@ describe("a stage the component is NOT placed at", () => {
   });
 });
 
+describe("the target's SUBSTRATE FACET — read from the target's declared properties, never its name", () => {
+  // pipeline-substrate-registry-scan.md §9.1: `substrate`, `account`, `region`, `cluster` are
+  // typed, optional string properties of a deployment-target (migration 0065). A quiet line beside
+  // the hint joins ONLY the values that are declared. Null is an ABSENCE of a declaration, not an
+  // unknown observation, so it earns no `—` and no badge — and nothing declared means no line at
+  // all. `name` is never read: `us-east-1-prod (k8s)` looks parseable and is exactly the trap.
+  const facetOf = (html: string): string | null =>
+    html.match(/data-testid="pipeline-target-facet"[^>]*>([^<]*)</)?.[1] ?? null;
+
+  it("joins all four values in the fixed order substrate · account · region · cluster", () => {
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          deploymentTarget: {
+            id: "019f0000-0000-7000-8000-00000000bbbb",
+            name: "us-east-1-prod (k8s)",
+            environment: "prod",
+            region: "us-east-1",
+            substrate: "aws",
+            account: "210987654321",
+            cluster: "prod-eks"
+          }
+        })}
+      />
+    );
+    expect(facetOf(html)).toBe("aws · 210987654321 · us-east-1 · prod-eks");
+    expect(html, "the hint sentence the older test pins is still there, beside it").toContain(
+      "deploys to us-east-1-prod (k8s)"
+    );
+  });
+
+  it("joins ONLY the present values — no placeholder, no dangling separator", () => {
+    // An on-prem cluster: substrate + cluster, no account, no region. Two values, one separator.
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          deploymentTarget: {
+            id: "019f0000-0000-7000-8000-00000000bbbb",
+            name: "field-cluster",
+            environment: "prod",
+            region: null,
+            substrate: "kubernetes",
+            account: null,
+            cluster: "field-eks"
+          }
+        })}
+      />
+    );
+    expect(facetOf(html)).toBe("kubernetes · field-eks");
+    expect(facetOf(html), "null is an absence, not an unknown — no em-dash").not.toContain("—");
+  });
+
+  it("renders NO facet element when nothing is declared, and never falls back to the name", () => {
+    // The name is deliberately shaped like something a naive renderer would parse into a facet.
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          deploymentTarget: {
+            id: "019f0000-0000-7000-8000-00000000bbbb",
+            name: "aws-us-east-1-prod-eks",
+            environment: "prod",
+            region: null,
+            substrate: null,
+            account: null,
+            cluster: null
+          }
+        })}
+      />
+    );
+    expect(html, "no values → no element, not an empty span").not.toContain("pipeline-target-facet");
+    // The name legitimately appears in the title and the hint; what must NOT happen is a facet
+    // element carrying any of it. Assert on the helper directly for the same target.
+    expect(
+      targetFacetValues({ substrate: null, account: null, region: null, cluster: null }),
+      "the helper never derives anything from a name it is not even given"
+    ).toEqual([]);
+  });
+
+  it("appears on an UNPLACED stage too — the target is the stage there, and it still has a substrate", () => {
+    const html = renderToStaticMarkup(
+      <UnplacedStageCardForTest
+        stage={unplaced({
+          deploymentTarget: {
+            id: "019f0000-0000-7000-8000-00000000dddd",
+            name: "prod (DOKS hosted)",
+            environment: "prod",
+            region: "nyc3",
+            substrate: "kubernetes",
+            account: null,
+            cluster: "doks-prod"
+          }
+        })}
+      />
+    );
+    expect(facetOf(html)).toBe("kubernetes · nyc3 · doks-prod");
+    expect(html, "the older hint sentence is still beside it").toContain(
+      "declared at prod (DOKS hosted)"
+    );
+  });
+
+  it("does not read the name even when the facet is PARTLY declared", () => {
+    // Region declared, substrate not — the name says "k8s" and the line must not.
+    const html = renderToStaticMarkup(
+      <StageCardForTest
+        stage={stage({
+          deploymentTarget: {
+            id: "019f0000-0000-7000-8000-00000000bbbb",
+            name: "nyc3 (k8s)",
+            environment: "prod",
+            region: "nyc3",
+            substrate: null,
+            account: null,
+            cluster: null
+          }
+        })}
+      />
+    );
+    expect(facetOf(html)).toBe("nyc3");
+  });
+});
+
 describe("the journey rejoins the response's two arrays", () => {
   it("interleaves placed and unplaced stages by `order`, not by array", () => {
     // gamma placed, staging unplaced, prod placed — the arrays alternate, so a naive
@@ -528,6 +658,189 @@ describe("a pipeline is a CHAIN OF NODES, in the order the glossary defines", ()
       infraRepos,
       "the infra repo belongs to the infra pipeline, not beside the app's"
     ).toEqual(["s3"]);
+  });
+
+  // pipeline-substrate-registry-scan.md §9.2: the registry node is drawn when the component builds
+  // here OR when a registry is DECLARED here — an outpost builds nothing, but its registry still
+  // receives the promoted image, and leaving the node out there would say the image lands nowhere.
+  it("draws the registry node for a DECLARED registry even when nothing builds here (the outpost case)", () => {
+    const nodes = laneNodes(
+      { sources: [source()], stages: [stage()], registry: registryDeclared() },
+      waves,
+      SOFTWARE_LANE
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["registry", "source", "wave"]);
+    const node = nodes[0] as { registry: { name: string | null } | null };
+    expect(node.registry?.name, "and the node CARRIES the fact, so the tile can name it").toBe(
+      "hq-registry"
+    );
+  });
+
+  it("draws it for an AMBIGUOUS registry too — a stated fact, not a chosen one", () => {
+    const nodes = laneNodes(
+      {
+        sources: [source()],
+        stages: [stage()],
+        registry: {
+          state: "ambiguous",
+          executionSystemId: null,
+          name: null,
+          kind: null,
+          url: null,
+          repository: null,
+          edgeCount: 2
+        }
+      },
+      waves,
+      SOFTWARE_LANE
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["registry", "source", "wave"]);
+  });
+
+  it("does NOT draw it for `state: none` without a build — a stated absence draws no node", () => {
+    const nodes = laneNodes(
+      {
+        sources: [source()],
+        stages: [stage()],
+        registry: {
+          state: "none",
+          executionSystemId: null,
+          name: null,
+          kind: null,
+          url: null,
+          repository: null,
+          edgeCount: 0
+        }
+      },
+      waves,
+      SOFTWARE_LANE
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["source", "wave"]);
+  });
+
+  it("keeps the registry between build and config when both a build AND a declared registry exist", () => {
+    const nodes = laneNodes(
+      {
+        sources: [source({ id: "s1", type: "image", category: "build" }), source()],
+        stages: [stage()],
+        registry: registryDeclared()
+      },
+      waves,
+      SOFTWARE_LANE
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["source", "build", "registry", "source", "wave"]);
+    const node = nodes[2] as { registry: { state: string } | null };
+    expect(node.registry?.state).toBe("declared");
+  });
+
+  it("never draws it in the INFRASTRUCTURE lane, declared registry or not", () => {
+    const nodes = laneNodes(
+      {
+        sources: [source({ id: "s3", type: "infrastructure", category: "infrastructure" })],
+        stages: [stage()],
+        registry: registryDeclared()
+      },
+      waves,
+      INFRA_LANE
+    );
+    expect(nodes.map((n) => n.kind)).toEqual(["source", "wave"]);
+  });
+});
+
+/** A `declared` registry — one `publishes_to` edge, joined to its execution-system. */
+function registryDeclared(
+  over: Partial<NonNullable<ComponentPipelineResponse["registry"]>> = {}
+): NonNullable<ComponentPipelineResponse["registry"]> {
+  return {
+    state: "declared",
+    executionSystemId: "019f0000-0000-7000-8000-00000000fff0",
+    name: "hq-registry",
+    kind: "gitea",
+    url: "https://registry.hq.invalid",
+    repository: "acme/checkout-api",
+    edgeCount: 1,
+    ...over
+  };
+}
+
+describe("the REGISTRY node names the registry this component publishes to, at this site", () => {
+  // §9.2: the header states `declared | ambiguous | none`. It is READ off `publishes_to`, never
+  // the image binding (that names what BUILDS the artifact). `ambiguous` is stated, not resolved.
+  it("declared → `name (kind) · repository`, the name a console link to the registry's BASE url", () => {
+    const html = renderToStaticMarkup(<RegistryNodeForTest registry={registryDeclared()} />);
+    expect(html).toContain('data-testid="pipeline-node-registry"');
+    expect(html).toContain('data-registry-state="declared"');
+    const name = html.match(/data-testid="pipeline-registry-name"[^>]*>(.*?)<\/span>/)?.[1] ?? "";
+    expect(name, "the name and kind are read off the execution-system").toContain("hq-registry (gitea)");
+    expect(html, "the repository is the edge's own property, after a separator").toMatch(
+      /hq-registry \(gitea\).*·.*acme\/checkout-api/
+    );
+    expect(html, "the link is the console base — no guessed deep path").toContain(
+      'href="https://registry.hq.invalid"'
+    );
+    expect(html, "the body is still an explicit unknown until §9.3 lands a digest").toContain(
+      "not observed yet"
+    );
+  });
+
+  it("declared with no url → plain text, no link (a node is clickable exactly when there is somewhere real to go)", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest registry={registryDeclared({ url: null, repository: null })} />
+    );
+    expect(html).toContain("hq-registry (gitea)");
+    expect(html).not.toContain("<a ");
+    expect(html, "no repository → no dangling separator").not.toMatch(/\(gitea\)<\/span><\/span> ·/);
+  });
+
+  it("ambiguous → says HOW MANY, in the amber attention tone, and does not name either", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest
+        registry={{
+          state: "ambiguous",
+          executionSystemId: null,
+          name: null,
+          kind: null,
+          url: null,
+          repository: null,
+          edgeCount: 2
+        }}
+      />
+    );
+    expect(html).toContain("2 registries declared — ambiguous");
+    expect(html).toContain('data-registry-state="ambiguous"');
+    expect(html, "design-system amber for 'operator should notice'").toMatch(
+      /class="[^"]*text-amber-700[^"]*"[^>]*data-testid="pipeline-registry-state"/
+    );
+    expect(html, "and a tooltip that says what to do").toMatch(/title="[^"]*publishes_to[^"]*"/);
+    expect(html).not.toContain("pipeline-registry-name");
+  });
+
+  it("none → 'no registry declared for this component here' — an absence, not an unknown", () => {
+    const html = renderToStaticMarkup(
+      <RegistryNodeForTest
+        registry={{
+          state: "none",
+          executionSystemId: null,
+          name: null,
+          kind: null,
+          url: null,
+          repository: null,
+          edgeCount: 0
+        }}
+      />
+    );
+    expect(html).toContain("no registry declared for this component here");
+    expect(html).toContain('data-registry-state="none"');
+    expect(html, "no amber: a stated absence is not an attention signal").not.toContain(
+      "text-amber-700"
+    );
+    expect(html).not.toContain("pipeline-registry-name");
+  });
+
+  it("older server (no `registry` on the wire) → the pre-§9.2 sentence, no state claimed", () => {
+    const html = renderToStaticMarkup(<RegistryNodeForTest registry={null} />);
+    expect(html).toContain("where the built artifact lands");
+    expect(html).not.toContain("pipeline-registry-state");
   });
 });
 

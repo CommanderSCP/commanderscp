@@ -199,6 +199,50 @@ export const LANES: readonly Lane[] = [
   }
 ];
 
+/** The per-site registry (pipeline-substrate-registry-scan.md §9.2) — optional on the wire because
+ *  it shipped after `/v1` did; absent/null means an OLDER SERVER, not "none" (`state: "none"` is
+ *  itself a value the server always emits once it knows the field). */
+type ComponentPipelineRegistry = NonNullable<ComponentPipelineResponse["registry"]>;
+
+/** The target's substrate facet as the wire carries it on both stage shapes (§9.1). */
+type DeploymentTargetFacet = Pick<
+  ComponentPipelineStage["deploymentTarget"],
+  "substrate" | "account" | "region" | "cluster"
+>;
+
+/**
+ * THE SUBSTRATE FACET VALUES that are actually DECLARED on a target, in the fixed order
+ * substrate · account · region · cluster — e.g. `["aws", "210987654321", "us-east-1", "prod-eks"]`.
+ *
+ * Only PRESENT values are kept: null is an absence of a declaration, not an unknown observation, so
+ * it earns neither a `—` nor a badge (`ComponentPipelineStageSchema.deploymentTarget.substrate`).
+ * An empty string is treated the same way — there is nothing to show, and ` · aws` would draw a
+ * separator for a value that has no width.
+ * `name` is deliberately not in the input type: fixture names like `us-east-1-prod (k8s)` look
+ * parseable and are exactly the trap — every rendered value here is READ from the target's own
+ * declared properties, never derived from what it is called.
+ *
+ * Exported for `component-pipeline-continuous.test.tsx`.
+ */
+export function targetFacetValues(target: DeploymentTargetFacet): string[] {
+  return [target.substrate, target.account, target.region, target.cluster].filter(
+    (value): value is string => typeof value === "string" && value.length > 0
+  );
+}
+
+/** The facet as a quiet line BESIDE a stage's hint (`deploys to …` / `declared at …`), joined
+ *  with ` · `. Renders NOTHING when nothing is declared — no element at all, so an undeclared
+ *  target's header is byte-identical to what it was before the facet existed. */
+function TargetFacet({ target }: { target: DeploymentTargetFacet }): React.JSX.Element | null {
+  const values = targetFacetValues(target);
+  if (values.length === 0) return null;
+  return (
+    <span className="ml-1.5 text-slate-400" data-testid="pipeline-target-facet">
+      {values.join(" · ")}
+    </span>
+  );
+}
+
 /** One entry of the journey — the two response arrays rejoined and discriminated. */
 type JourneyEntry =
   | { placed: true; order: number; waveIndex: number | null; stage: ComponentPipelineStage }
@@ -608,7 +652,12 @@ function StageCard({
         <NodeHeading
           kind="stage"
           title={stage.stageName ?? stage.deploymentTarget.name}
-          hint={`deploys to ${stage.deploymentTarget.name}`}
+          hint={
+            <>
+              deploys to {stage.deploymentTarget.name}
+              <TargetFacet target={stage.deploymentTarget} />
+            </>
+          }
           right={
             <span className="flex items-center gap-1.5">
               <StatusPill current={current} hold={hold} />
@@ -865,7 +914,12 @@ function UnplacedStageCard({
         <NodeHeading
           kind="unplaced"
           title={stage.stageName ?? stage.deploymentTarget.name}
-          hint={`declared at ${stage.deploymentTarget.name}`}
+          hint={
+            <>
+              declared at {stage.deploymentTarget.name}
+              <TargetFacet target={stage.deploymentTarget} />
+            </>
+          }
           muted
           right={
             <Badge variant="neutral" className="text-slate-500" data-testid="stage-not-placed">
@@ -949,27 +1003,30 @@ export function arrowInto(
  * Two nodes are deliberately CONDITIONAL, because drawing them unconditionally would draw steps that
  * nothing runs:
  *
- *   - **build + registry** appear only when this component actually has a build pipeline (a
- *     `build`-Category binding or source rule). All 148 source mappings on the live estate are
- *     `configuration`, so for most components today the software pipeline genuinely starts at a
- *     config change, and a permanently-empty "Build" box would be decoration.
- *   - **registry** is drawn as EXPLICITLY UNKNOWN even when it does appear. There is no `artifact`
- *     object type in the graph, and the digest and scan verdict that give the node its value are
- *     `coordination-ui-views.md` Layer B — unbuilt. It renders as a named, empty node saying so,
- *     which is the same unknown-not-blank rule the version cell follows.
+ *   - **build** appears only when this component actually has a build pipeline (a `build`-Category
+ *     binding or source rule). All 148 source mappings on the live estate are `configuration`, so
+ *     for most components today the software pipeline genuinely starts at a config change, and a
+ *     permanently-empty "Build" box would be decoration.
+ *   - **registry** appears when the component builds here OR when a registry is DECLARED here
+ *     (`data.registry.state !== "none"` — pipeline-substrate-registry-scan.md §9.2): an outpost
+ *     builds nothing, but its registry still receives the promoted image, and leaving the node out
+ *     there would say the image lands nowhere. The node carries the per-site `registry` fact so
+ *     `RegistryNode` can NAME it; its body is still the explicit "not observed yet" (§9.3 is what
+ *     gives it a digest), which is the same unknown-not-blank rule the version cell follows.
  */
 type LaneNode =
   | { kind: "source"; key: string; label: string; sources: ComponentPipelineResponse["sources"] }
   | { kind: "build"; key: string; bindings: ComponentPipelineStage["bindings"] }
-  | { kind: "registry"; key: string }
+  | { kind: "registry"; key: string; registry: ComponentPipelineRegistry | null }
   | { kind: "wave"; key: string; wave: JourneyWave };
 
 /**
  * Builds one lane's node chain. Exported for `component-pipeline-continuous.test.tsx` — which nodes
- * appear, and in what order, is the contract this view now IS.
+ * appear, and in what order, is the contract this view now IS. `registry` is optional on the wire
+ * (older servers), so a caller may omit it: the pre-§9.2 chain then comes back unchanged.
  */
 export function laneNodes(
-  data: Pick<ComponentPipelineResponse, "sources" | "stages">,
+  data: Pick<ComponentPipelineResponse, "sources" | "stages" | "registry">,
   waves: JourneyWave[],
   lane: Lane
 ): LaneNode[] {
@@ -986,11 +1043,20 @@ export function laneNodes(
   const nodes: LaneNode[] = [];
   const buildSources = sourcesIn(lane.buildCategories);
   const buildsHere = uniqueBuilds.length > 0 || buildSources.length > 0;
+  const registry = data.registry ?? null;
+  // Declared here, at this site. `none` is the server SAYING there is no `publishes_to` edge — a
+  // stated absence, which does not draw a node on its own; a null/absent field is an older server,
+  // which likewise draws nothing beyond what `buildsHere` earns.
+  const registryDeclaredHere = registry !== null && registry.state !== "none";
 
   if (buildsHere) {
     nodes.push({ kind: "source", key: "src-build", label: "Source code", sources: buildSources });
     nodes.push({ kind: "build", key: "build", bindings: uniqueBuilds });
-    if (lane.hasRegistry) nodes.push({ kind: "registry", key: "registry" });
+  }
+  // Between build and config, where the GLOSSARY puts it — and only in a lane that has one at all
+  // (infra produces no registry artifact to advance by digest).
+  if (lane.hasRegistry && (buildsHere || registryDeclaredHere)) {
+    nodes.push({ kind: "registry", key: "registry", registry });
   }
 
   const stageSources = sourcesIn(lane.stageCategories);
@@ -1110,7 +1176,9 @@ function NodeHeading({
 }: {
   kind: NodeKind;
   title: string;
-  hint: string;
+  /** A node's one-line "what this step DOES". A ReactNode so a stage can hang its target's
+   *  substrate facet (`TargetFacet`) beside the sentence without a second row. */
+  hint: React.ReactNode;
   muted?: boolean;
   right?: React.ReactNode;
 }): React.JSX.Element {
@@ -1140,7 +1208,7 @@ function NodeShell({
 }: {
   kind: NodeKind;
   title: string;
-  hint: string;
+  hint: React.ReactNode;
   testid: string;
   muted?: boolean;
   children: React.ReactNode;
@@ -2049,18 +2117,36 @@ function BuildNode({
 /**
  * A REGISTRY NODE — where the built artifact lands, and what promotion advances by digest.
  *
- * It renders as a NAMED EMPTY node on purpose. The glossary puts `registry` between build and
- * config, so leaving it out would misdraw the pipeline; but everything that would give it content —
- * the digest, the scan verdict — is `coordination-ui-views.md` Layer B and uncaptured, and there is
- * no `artifact` object type to read from. Saying "not observed" is the same rule the version cell
- * follows: an explicit unknown, never a confident blank.
+ * The HEADER names the registry this component publishes to AT THIS SITE, read off the response's
+ * `registry` (pipeline-substrate-registry-scan.md §9.2 — the component's `publishes_to` edge to a
+ * domain-local execution-system, never the `image` executor binding, whose Type says what BUILDS
+ * the artifact rather than where it lands). Three states, each STATED rather than chosen:
+ *
+ *   - `declared`  — `name (kind) · repository`, the name a console link to the registry's base URL
+ *                   when the server knew one (base only: no registry deep-link shape is known here,
+ *                   and a guessed path is a lie);
+ *   - `ambiguous` — more than one `publishes_to` edge. The server does not pick, so neither does
+ *                   this node: it says how many, in the design system's amber "operator should
+ *                   notice" tone, and the tooltip says what to do about it;
+ *   - `none`      — "no registry declared for this component here". An absence, not an unknown —
+ *                   the node only appears in this state because the component BUILDS here.
+ *
+ * A null/absent `registry` is an older server; the header then falls back to the pre-§9.2 sentence.
+ *
+ * The BODY is still an explicit unknown: the digest and the scan verdict that give the node its
+ * value are §9.3, and there is no `artifact` object type to read from yet. Saying "not observed" is
+ * the same rule the version cell follows: an explicit unknown, never a confident blank.
  */
-function RegistryNode(): React.JSX.Element {
+function RegistryNode({
+  registry
+}: {
+  registry: ComponentPipelineRegistry | null;
+}): React.JSX.Element {
   return (
     <NodeShell
       kind="registry"
       title="Registry"
-      hint="where the built artifact lands — promotion advances the same digest"
+      hint={<RegistryHeadline registry={registry} />}
       testid="pipeline-node-registry"
       muted
     >
@@ -2071,6 +2157,63 @@ function RegistryNode(): React.JSX.Element {
         not observed yet — no artifact digest or scan verdict is captured
       </p>
     </NodeShell>
+  );
+}
+
+/** Exported ONLY for `component-pipeline-continuous.test.tsx` — the three-state header is a
+ *  contract, and rendering the whole page would drag in the query client for no added coverage. */
+export function RegistryNodeForTest({
+  registry
+}: {
+  registry: ComponentPipelineRegistry | null;
+}): React.JSX.Element {
+  return <RegistryNode registry={registry} />;
+}
+
+/** The registry node's one-line header — see `RegistryNode` for the three states. */
+function RegistryHeadline({
+  registry
+}: {
+  registry: ComponentPipelineRegistry | null;
+}): React.JSX.Element {
+  if (registry === null) {
+    // Older server: the field is not on the wire, so nothing here is known either way.
+    return <>where the built artifact lands — promotion advances the same digest</>;
+  }
+  if (registry.state === "ambiguous") {
+    return (
+      <span
+        className="text-amber-700"
+        data-testid="pipeline-registry-state"
+        data-registry-state="ambiguous"
+        title={`This component has ${registry.edgeCount} publishes_to edges here. The projection states that rather than picking one — remove the extra edge(s) so the Delivery lane can name the registry.`}
+      >
+        {registry.edgeCount} registries declared — ambiguous
+      </span>
+    );
+  }
+  if (registry.state === "none") {
+    return (
+      <span data-testid="pipeline-registry-state" data-registry-state="none">
+        no registry declared for this component here
+      </span>
+    );
+  }
+  return (
+    <span data-testid="pipeline-registry-state" data-registry-state="declared">
+      <span data-testid="pipeline-registry-name">
+        <ConsoleLink href={registry.url} testid="pipeline-registry-link">
+          {registry.name ?? "—"}
+          {registry.kind ? ` (${registry.kind})` : ""}
+        </ConsoleLink>
+      </span>
+      {registry.repository ? (
+        <>
+          {" · "}
+          <span className="font-mono">{registry.repository}</span>
+        </>
+      ) : null}
+    </span>
   );
 }
 
@@ -2436,7 +2579,7 @@ export function ComponentPipelinePage({
                       />
                     )}
                     {node.kind === "build" && <BuildNode bindings={node.bindings} />}
-                    {node.kind === "registry" && <RegistryNode />}
+                    {node.kind === "registry" && <RegistryNode registry={node.registry} />}
                     {node.kind === "wave" && (
                       <WaveRow
                         wave={node.wave}
