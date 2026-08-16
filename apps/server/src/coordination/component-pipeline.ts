@@ -28,6 +28,7 @@ import { resolveStageDependencyStatus } from "./stage-dependency-status.js";
 import { parseTopologyWaves } from "./topology-waves.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { federationPeers } from "../db/schema.js";
+import { artifactFactsForComponent } from "./artifact-facts.js";
 
 /**
  * A COMPONENT'S PIPELINE — its stages, derived from durable graph state.
@@ -771,6 +772,22 @@ export async function getComponentPipeline(
 
   const registry = await registryForComponent(tx, orgId, component.id);
 
+  // §9.3 — THE ARTIFACT and its change-scoped facts. The pick prefers the releases the stages are
+  // already showing (currents + holds), so the tile and the journey describe the same change when
+  // there is one; `artifact-facts.ts` owns the pick and every reduction. Peer names resolve through
+  // the same `federation_peers` read `maintainerOf` uses.
+  const preferredChangeIds = [
+    ...[...currents.values()].flatMap((list) => list.map((c) => c.changeId)),
+    ...[...holds.values()].map((h) => h.changeId)
+  ];
+  const artifact = await artifactFactsForComponent(
+    tx,
+    orgId,
+    component.id,
+    preferredChangeIds,
+    (peerDomainId) => peerById.get(peerDomainId)?.name ?? null
+  );
+
   return {
     component: {
       id: component.id,
@@ -790,6 +807,7 @@ export async function getComponentPipeline(
     stages,
     unplacedStages,
     registry,
+    artifact,
     unknownFields: []
   };
 }

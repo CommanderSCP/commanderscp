@@ -3,7 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { BoundarySegment, PromotionBundle } from "@scp/schemas";
-import { signBlob } from "@scp/cosign";
+import { signBlob, verifyBlob } from "@scp/cosign";
+import { canonicalStringify } from "@scp/schemas/federation-journal";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { roleBindings, roles } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
@@ -21,7 +22,10 @@ import {
   createIsolatedDomain,
   type IsolatedDomain
 } from "../federation/test-support/isolated-domain.js";
-import { boundaryBundleChecksumsOf } from "../federation/boundary-bundle-ref.js";
+import {
+  boundaryBundleChecksumsOf,
+  promotionExportsOf
+} from "../federation/boundary-bundle-ref.js";
 import {
   getChange,
   getChangeRow,
@@ -516,6 +520,74 @@ describe("M16.1 boundary segment: two federated domains (Testcontainers)", () =>
     );
     expect(new Set(segment!.transfer.hops.map((h) => h.peerDomainId)).size).toBe(2);
     commanderNeverClaimsVerified("after a concurrent fan-out export to two peers", segment!);
+  }, 240_000);
+
+  // -------------------------------------------------------------------------------------------
+  // (7) §9.4 (pipeline-substrate-registry-scan.md) — WHAT THE COMMANDER SIGNED is persisted at
+  // export, beside the checksum, under the SAME lock. Before this the exporter kept nothing of the
+  // manifest or its signature (only the importer did), so the commander could say "exported" and
+  // never "signed what, for whom, with which key".
+  // -------------------------------------------------------------------------------------------
+
+  it("§9.4: exporting ONE change to TWO peers stamps TWO `promotionExports[]` records, and each manifestSignature verifies with the instance public key", async () => {
+    const { changeId } = await approvedBlobChange();
+    const [bundleA, bundleB] = await Promise.all([
+      exportTo(outpost, changeId),
+      exportTo(outpostB, changeId)
+    ]);
+
+    const row = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getChangeRow(tx, commander.orgId, changeId)
+    );
+    const stamped = promotionExportsOf(row.sourceRef);
+    expect(stamped.unparseable, "every stamp parses back through the stamp schema").toBe(0);
+    expect(stamped.entries, "two exports ⇒ two records — the concurrent one was not clobbered").toHaveLength(2);
+
+    // Each record is THE record of its export: keyed to the same checksum the ledger join carries,
+    // addressed to that peer, holding the very manifest + signature the bundle carried.
+    for (const bundle of [bundleA, bundleB]) {
+      const rec = stamped.entries.find((e) => e.checksum === bundle.checksum);
+      expect(rec, `a record for checksum ${bundle.checksum}`).toBeDefined();
+      expect(rec!.peerDomainId).toBe(bundle.header.peerDomainId);
+      expect(rec!.exportedAt).toBe(bundle.header.exportedAt);
+      expect(rec!.manifest).toEqual(bundle.promotionManifest);
+      expect(rec!.manifestSignature).toBe(bundle.manifestSignature);
+    }
+    expect(new Set(stamped.entries.map((e) => e.peerDomainId)).size).toBe(2);
+    // The two lists share the join key — a checksum in one is in the other.
+    expect(boundaryBundleChecksumsOf(row.sourceRef).sort()).toEqual(
+      stamped.entries.map((e) => e.checksum).sort()
+    );
+
+    // The signature is REAL and verifies against the instance key whose fingerprint the record names.
+    const cosignPub = await getInstanceCosignPublicKey(commander.db, commander.orgId);
+    for (const rec of stamped.entries) {
+      expect(rec.keyFingerprint).toBe(cosignPub.fingerprint);
+      expect(
+        await verifyBlob(canonicalStringify(rec.manifest), rec.manifestSignature, cosignPub.publicKey),
+        "the persisted signature verifies over the persisted manifest"
+      ).toBe(true);
+      // Negative control: the persisted signature is bound to THIS manifest, not any manifest.
+      const other = stamped.entries.find((e) => e.checksum !== rec.checksum)!;
+      expect(
+        await verifyBlob(canonicalStringify(other.manifest), rec.manifestSignature, cosignPub.publicKey)
+      ).toBe(false);
+    }
+
+    // The exported PAYLOAD never carries the local stamps — one peer's signed manifest is not
+    // another peer's business, and a re-export stays byte-identical to a first export.
+    // (`bundleB` was gathered concurrently, so assert on a THIRD, strictly-later export.)
+    const again = await exportTo(outpost, changeId);
+    expect(again.change.sourceRef).not.toHaveProperty("promotionExports");
+    expect(again.change.sourceRef).not.toHaveProperty("boundaryBundleChecksums");
+    // ...and that third export is a THIRD record (a new `exportedAt` ⇒ a new checksum ⇒ a new
+    // export, appended after the two — append order is the wire's "newest last").
+    const rowAfter = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      getChangeRow(tx, commander.orgId, changeId)
+    );
+    const after = promotionExportsOf(rowAfter.sourceRef).entries;
+    expect(after).toHaveLength(3);
+    expect(after[2]!.checksum).toBe(again.checksum);
   }, 240_000);
 
   // -------------------------------------------------------------------------------------------

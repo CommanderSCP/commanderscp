@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { ScanEvidenceSchema, type TrustDomainId } from "@scp/schemas";
+import type { TrustDomainId } from "@scp/schemas";
 import type {
   ArtifactRef,
   ImportPromotionResponse,
@@ -39,8 +39,13 @@ import {
 } from "../coordination/changes-repo.js";
 import {
   BOUNDARY_BUNDLE_CHECKSUMS_KEY,
-  withoutBoundaryBundleChecksums
+  withoutBoundaryBundleChecksums,
+  withoutPromotionExports
 } from "./boundary-bundle-ref.js";
+import {
+  artifactSetOfSourceRef,
+  evaluatePromotionScanGate
+} from "../coordination/artifact-facts.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
 import {
   listApprovalRequestsForChange,
@@ -122,43 +127,9 @@ export type ExportPromotionResult =
   | { refused: false; bundle: PromotionBundle }
   | { refused: true; decisionId: string; reason: string };
 
-/**
- * M17.3 (E6) EXPORT SCAN GATE — the boundary re-check (defense in depth). For EACH SUBSTANTIVE
- * artifact (everything in `artifacts[]` EXCEPT `type: "blob"` — the SBOM is the scan's OUTPUT, not a
- * scanned input, so it is EXEMPT) there MUST exist a control run for this change whose evidence
- * parses as `ScanEvidenceSchema` with the run `status === "pass"`, `digestMatch === true`, and a
- * scanned `artifactDigest` EQUAL to the artifact's promoted digest (M17.1 digest binding). This is
- * UNIVERSAL and fail-closed: a MISSING scan refuses exactly like a FAILED one, whether or not a
- * scan-requirement policy was ever bound. Control runs carry no plugin-id column, so a scan outcome
- * is identified purely by `ScanEvidenceSchema.safeParse(evidence)`. This NEVER runs a scan
- * (coordinate-not-execute) — it only re-verifies existence + digest-binding of an outcome an
- * execution system already produced.
- */
-function evaluatePromotionScanGate(
-  substantiveArtifacts: ArtifactRef[],
-  controlOutcomes: Array<{ status: string; evidence: Record<string, unknown> }>
-): { ok: true } | { ok: false; reason: string; artifactType: string; artifactDigest: string } {
-  for (const artifact of substantiveArtifacts) {
-    const passing = controlOutcomes.some((outcome) => {
-      if (outcome.status !== "pass") return false;
-      const parsed = ScanEvidenceSchema.safeParse(outcome.evidence);
-      if (!parsed.success) return false;
-      return parsed.data.digestMatch === true && parsed.data.artifactDigest === artifact.digest;
-    });
-    if (!passing) {
-      return {
-        ok: false,
-        artifactType: artifact.type,
-        artifactDigest: artifact.digest,
-        reason:
-          `export refused: substantive artifact ${artifact.type}:${artifact.digest} has no passing, ` +
-          `digest-bound scan outcome — every cross-boundary artifact must carry a passing scan whose ` +
-          `scanned digest matches (fail-closed, M17.3 E6)`
-      };
-    }
-  }
-  return { ok: true };
-}
+// M17.3 (E6) EXPORT SCAN GATE — `evaluatePromotionScanGate` lives in
+// `coordination/artifact-facts.ts` (moved verbatim, §9.3): the component pipeline's `artifact.exportGate`
+// re-runs the SAME predicate read-only, so the two cannot drift. Its contract is documented there.
 
 /** Build the SELF-BINDING promotion manifest — binds the bundle identity (exporter/peer/change/
  *  artifact digest set) so a cosign signature over it cannot be lifted onto a different bundle. */
@@ -312,30 +283,10 @@ export async function exportPromotionBundle(
     // `artifactDigests` FROM it. `artifacts` is the rich source; `artifactDigests` is the backward-
     // compatible flattening an older outpost reads. The OCI digest(s) are carried VERBATIM (identical
     // to the pre-E3 projection); the SBOM travels as a `blob` entry.
-    const sourceRef = change.sourceRef ?? {};
-    const artifactDigest =
-      (sourceRef as Record<string, unknown>).artifact_digest ??
-      (sourceRef as Record<string, unknown>).artifactDigest;
-    const ociDigests =
-      typeof artifactDigest === "string"
-        ? [artifactDigest]
-        : Array.isArray(artifactDigest)
-          ? artifactDigest.filter((d): d is string => typeof d === "string")
-          : [];
-
-    const artifactSet: ArtifactRef[] = ociDigests.map((digest) => ({ type: "oci", digest }));
-
-    const sbom = (sourceRef as Record<string, unknown>).sbom;
-    if (sbom && typeof sbom === "object" && !Array.isArray(sbom)) {
-      const sbomRef = sbom as Record<string, unknown>;
-      if (typeof sbomRef.digest === "string") {
-        const blob: ArtifactRef = { type: "blob", digest: sbomRef.digest };
-        if (typeof sbomRef.location === "string") blob.location = sbomRef.location;
-        if (typeof sbomRef.format === "string") blob.format = sbomRef.format;
-        if (typeof sbomRef.signatureRef === "string") blob.signatureRef = sbomRef.signatureRef;
-        artifactSet.push(blob);
-      }
-    }
+    // The reader is SHARED with the component pipeline's artifact projection
+    // (`coordination/artifact-facts.ts`, §9.3) so the digests the bundle carries and the digests the
+    // tile shows are read the same way from the same keys.
+    const artifactSet: ArtifactRef[] = artifactSetOfSourceRef(change.sourceRef ?? {});
 
     // M17.3 (E6) EXPORT SCAN GATE — HARD-REFUSE, fail-closed. The SBOM (`type: "blob"`) is EXEMPT
     // (it is the scan's output). EDGE CASE: a promotion carrying NO substantive artifact has nothing
@@ -397,7 +348,9 @@ export async function exportPromotionBundle(
       // re-export of an already-exported change produces a byte-identical canonical bundle string
       // (and hence the same Ed25519 checksum) as it would have before this key existed. The
       // exporter's ledger checksums are meaningless on the far side — the receiver stamps its own.
-      sourceRef: withoutBoundaryBundleChecksums(change.sourceRef)
+      // §9.4: the SAME holds for `promotionExports[]` (what this exporter signed for OTHER peers) —
+      // local bookkeeping, stripped for the same byte-identity reason.
+      sourceRef: withoutPromotionExports(withoutBoundaryBundleChecksums(change.sourceRef))
     };
 
     // The SELF-BINDING manifest — binds THIS bundle's identity + artifact set (built here so it sees
@@ -465,11 +418,25 @@ export async function exportPromotionBundle(
     // this row is and stays `created` on THIS instance (the ledger is INSERT-only and every
     // `submitted`/`confirmed` row is written by a LATER hop's own instance), so the boundary
     // segment may say "exported" here and must call the handoff unknown.
+    //
+    // §9.4 (pipeline-substrate-registry-scan.md) — AND WHAT WAS SIGNED. Under the SAME row lock and
+    // in the SAME UPDATE, the record of this export: peer, when, the checksum (the join to the
+    // ledger row above), the manifest, its cosign signature (phase 3, outside any tx — persisted
+    // here in the tx that already exists), and the fingerprint of the key that signed it. Before
+    // this the exporter kept nothing of what it signed; only the importer did.
     await stampBoundaryBundleChecksum(
       tx,
       input.orgId,
       gathered.header.sourceChangeObjectId,
-      checksum
+      checksum,
+      {
+        peerDomainId: gathered.header.peerDomainId,
+        exportedAt: gathered.header.exportedAt,
+        checksum,
+        manifest: gathered.manifest,
+        manifestSignature,
+        keyFingerprint: cosignPair.fingerprint
+      }
     );
 
     return {

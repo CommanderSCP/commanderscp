@@ -1,3 +1,6 @@
+import { z } from "zod";
+import { PromotionManifestSchema } from "@scp/schemas";
+
 /**
  * M16.1 (I1) — THE PER-CHANGE JOIN between a change and the bundle transfers that carried it.
  *
@@ -76,5 +79,98 @@ export function withoutBoundaryBundleChecksums(
   if (!sourceRef) return sourceRef ?? null;
   if (!(BOUNDARY_BUNDLE_CHECKSUMS_KEY in sourceRef)) return sourceRef;
   const { [BOUNDARY_BUNDLE_CHECKSUMS_KEY]: _dropped, ...rest } = sourceRef;
+  return rest;
+}
+
+// ---------------------------------------------------------------------------------------------
+// §9.4 (pipeline-substrate-registry-scan.md) — WHAT THE COMMANDER SIGNED, persisted at export.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The `sourceRef` key holding one record PER EXPORT of this change: the peer it was addressed to,
+ * when, the bundle checksum (the same value `boundaryBundleChecksums[]` carries — the join key
+ * between the two lists), the SELF-BINDING promotion manifest the commander built, its detached
+ * cosign signature, and the fingerprint of the instance key that signed it.
+ *
+ * WHY IT EXISTS. Before this key the exporter persisted NOTHING of what it signed: the manifest and
+ * `manifestSignature` were created in `exportPromotionBundle` phase 3, placed in the returned bundle,
+ * and forgotten; only the IMPORTER stored them (on the imported change). So the commander could say
+ * "exported (checksum …)" and could not say "signed WHAT, for WHOM, with WHICH key" — the Build/Scan &
+ * sign tiles' PM/sign facts had no source. Same lock, same UPDATE, same non-journalled bare write as
+ * the checksum stamp (`changes-repo.ts::stampBoundaryBundleChecksum`).
+ *
+ * WHY THE EXPORTED PAYLOAD IS STRIPPED. Exactly the reason `withoutBoundaryBundleChecksums` exists:
+ * a re-export must stay byte-identical, and one peer's signed manifest is local bookkeeping that
+ * means nothing to another peer (which verifies the manifest it RECEIVES, as a sibling of the bundle).
+ */
+export const PROMOTION_EXPORTS_KEY = "promotionExports";
+
+/** One stamped export record — the shape written by `withPromotionExport` and read back leniently
+ *  by `promotionExportsOf`. `keyFingerprint` is nullable so a stamp written by an instance that did
+ *  not record one still parses. */
+export const PromotionExportStampSchema = z.object({
+  peerDomainId: z.string(),
+  exportedAt: z.string(),
+  checksum: z.string(),
+  manifest: PromotionManifestSchema,
+  manifestSignature: z.string(),
+  keyFingerprint: z.string().nullable()
+});
+export type PromotionExportStamp = z.infer<typeof PromotionExportStampSchema>;
+
+/** The export records stamped on a change's `sourceRef`, defensively read: entries that do not
+ *  parse are COUNTED (`unparseable`) rather than dropped silently or fabricated — the projection
+ *  states the count in `unknownFields`. A missing/malformed list is `[]` with `unparseable: 0`. */
+export function promotionExportsOf(sourceRef: unknown): {
+  entries: PromotionExportStamp[];
+  unparseable: number;
+} {
+  if (!sourceRef || typeof sourceRef !== "object" || Array.isArray(sourceRef)) {
+    return { entries: [], unparseable: 0 };
+  }
+  const raw = (sourceRef as Record<string, unknown>)[PROMOTION_EXPORTS_KEY];
+  if (!Array.isArray(raw)) return { entries: [], unparseable: 0 };
+  const entries: PromotionExportStamp[] = [];
+  let unparseable = 0;
+  for (const item of raw) {
+    const parsed = PromotionExportStampSchema.safeParse(item);
+    if (parsed.success) entries.push(parsed.data);
+    else unparseable += 1;
+  }
+  return { entries, unparseable };
+}
+
+/** `sourceRef` with `record` APPENDED to `promotionExports[]` — the export side. Deduped on
+ *  `checksum` (a re-run stamping the same bundle twice records one export, exactly as
+ *  `withBoundaryBundleChecksum` dedupes the checksum itself), order-preserving. Pre-existing entries
+ *  are carried VERBATIM, parseable or not — this function never rewrites what an earlier stamp wrote. */
+export function withPromotionExport(
+  sourceRef: unknown,
+  record: PromotionExportStamp
+): Record<string, unknown> {
+  const base =
+    sourceRef && typeof sourceRef === "object" && !Array.isArray(sourceRef)
+      ? { ...(sourceRef as Record<string, unknown>) }
+      : {};
+  const raw = base[PROMOTION_EXPORTS_KEY];
+  const existing: unknown[] = Array.isArray(raw) ? [...raw] : [];
+  const alreadyStamped = existing.some(
+    (e) =>
+      !!e &&
+      typeof e === "object" &&
+      !Array.isArray(e) &&
+      (e as Record<string, unknown>).checksum === record.checksum
+  );
+  base[PROMOTION_EXPORTS_KEY] = alreadyStamped ? existing : [...existing, record];
+  return base;
+}
+
+/** `sourceRef` with the key REMOVED — the exported bundle payload only (see the header above). */
+export function withoutPromotionExports(
+  sourceRef: Record<string, unknown> | null | undefined
+): Record<string, unknown> | null {
+  if (!sourceRef) return sourceRef ?? null;
+  if (!(PROMOTION_EXPORTS_KEY in sourceRef)) return sourceRef;
+  const { [PROMOTION_EXPORTS_KEY]: _dropped, ...rest } = sourceRef;
   return rest;
 }

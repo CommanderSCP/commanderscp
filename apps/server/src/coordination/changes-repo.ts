@@ -22,7 +22,11 @@ import {
   type PipelineRung
 } from "./pipeline-resolution.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
-import { withBoundaryBundleChecksum } from "../federation/boundary-bundle-ref.js";
+import {
+  withBoundaryBundleChecksum,
+  withPromotionExport,
+  type PromotionExportStamp
+} from "../federation/boundary-bundle-ref.js";
 
 /** `change_status` journal entries aren't tied to a graph object's own `content_hash` (that one
  *  covers the change's static metadata; this covers the lifecycle-state snapshot) — hashed
@@ -757,6 +761,14 @@ export async function markChangeReconcileBlocked(
  * Additive to whatever `sourceRef` already holds; no other key is touched, and the value is a
  * deduped list because one change may be exported to several peers.
  *
+ * §9.4 (pipeline-substrate-registry-scan.md): the SAME read-modify-write, when given
+ * `promotionExport`, also appends the record of WHAT THE COMMANDER SIGNED for this export
+ * (`sourceRef.promotionExports[]` — peer, exportedAt, checksum, manifest, manifestSignature,
+ * keyFingerprint; `boundary-bundle-ref.ts`). One lock, one UPDATE: the two lists are written from
+ * the same locked read, so a concurrent export to another peer can clobber neither. This is
+ * deliberately NOT a sibling function with its own read — a second unlocked (or separately locked)
+ * read is precisely the lost-update shape the `FOR UPDATE` below exists to rule out.
+ *
  * ## Journalling — what is actually true
  *
  * The intent is that a replica of this change on another domain does NOT inherit this domain's
@@ -783,7 +795,8 @@ export async function stampBoundaryBundleChecksum(
   tx: TenantTx,
   orgId: string,
   changeObjectId: string,
-  checksum: string
+  checksum: string,
+  promotionExport?: PromotionExportStamp
 ): Promise<void> {
   // `FOR UPDATE`. This is a read-modify-write of an opaque JSONB column, and the LIST shape exists
   // precisely because one change can be exported to SEVERAL peers — concurrently, in the ordinary
@@ -803,7 +816,8 @@ export async function stampBoundaryBundleChecksum(
     .limit(1)
     .for("update");
   if (!row) return; // change vanished (cancelled/purged mid-export) — nothing to decorate.
-  const next = withBoundaryBundleChecksum(row.sourceRef, checksum);
+  const stamped = withBoundaryBundleChecksum(row.sourceRef, checksum);
+  const next = promotionExport ? withPromotionExport(stamped, promotionExport) : stamped;
   await tx
     .update(changes)
     .set({ sourceRef: next, updatedAt: new Date() })
