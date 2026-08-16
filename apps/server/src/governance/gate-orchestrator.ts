@@ -378,8 +378,8 @@ function buildControlContext(input: {
 
 /**
  * Runs (never blocks, never writes a Decision) every required control a change's targets'
- * effective policies reference, and materializes every requireApprovals effect's approval
- * request — so that by the time a HUMAN calls `POST /changes/{id}/accept` (the host-less
+ * effective policies reference, and — unless `materializeApprovals: false` — materializes every
+ * requireApprovals effect's approval request — so that by the time a HUMAN calls `POST /changes/{id}/accept` (the host-less
  * lifecycle-edge gate, `coordination/gates.ts`'s module doc), the outcomes it needs to READ
  * already exist. Called by `coordination/reconcile.ts` once per tick for every change sitting in
  * `validating` (the only state a required-control-bearing policy could otherwise starve forever,
@@ -393,7 +393,25 @@ export async function prewarmGovernanceForChange(
   tx: TenantTx,
   sandbox: CelSandbox,
   host: PluginHost,
-  input: { orgId: string; changeObjectId: string; targetObjectIds: string[]; actorObjectId: string }
+  input: {
+    orgId: string;
+    changeObjectId: string;
+    targetObjectIds: string[];
+    actorObjectId: string;
+    /**
+     * Materialize firing policies' `requireApprovals` effects as approval requests. DEFAULT TRUE —
+     * the behaviour every existing caller has, and the reason this function exists for a change on
+     * its way through the lifecycle.
+     *
+     * `dependencies/bump-gate.ts` passes FALSE, and that is not an optimisation. It runs this
+     * function for a bump change that is DELIBERATELY NEVER ADVANCED (a bump is a proposed edit to a
+     * manifest, not a deployment), so nothing will ever consult — or clear — an approval request
+     * materialized for it. Every bump would leave one permanently-pending approval task per firing
+     * policy in somebody's queue, forever. Only the CONTROLS are evidence, and only the controls are
+     * what that job needs.
+     */
+    materializeApprovals?: boolean;
+  }
 ): Promise<void> {
   const matches = await matchPoliciesForTargets(tx, {
     orgId: input.orgId,
@@ -481,6 +499,7 @@ export async function prewarmGovernanceForChange(
     });
   }
 
+  if (input.materializeApprovals === false) return;
   for (const fp of fired) {
     for (const req of fp.requireApprovals) {
       const scopeObjectId = await resolveApprovalScope(tx, input.orgId, primaryTarget, req.scope);

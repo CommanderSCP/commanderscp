@@ -39,6 +39,8 @@ export const DECLARED_MANIFEST_PATHS = ["package.json"];
 /** A proof MINTED BY THE REAL VERIFIER for {@link PACKAGE_JSON_BUMPED}, never hand-built. */
 export function realProof(): ManifestEditProof {
   return verifyManifestOnlyEdit({
+    repo: WRITE_TARGET.repo,
+    headBranch: WRITE_TARGET.headBranch,
     path: BUMP_SPEC.manifestPath,
     declaredManifestPaths: DECLARED_MANIFEST_PATHS,
     ecosystem: BUMP_SPEC.ecosystem,
@@ -53,6 +55,17 @@ export const WRITE_TARGET = {
   baseBranch: "main",
   headBranch: "scp/dep-bump/c1"
 };
+
+/** The commit a governed control evidenced — the merge precondition every merge in this class
+ *  carries. Full-length, because `assertWriteCommit` refuses anything shorter, and the reason it
+ *  does is that an abbreviated value would never match a head and so would stop being a
+ *  precondition at all. */
+export const EVIDENCED_COMMIT = "a1b2c3d4".repeat(5);
+
+/** The pull request CommanderSCP itself opened, as the SERVER recorded it. The merge is addressed to
+ *  this number; the fixture below answers `GET /pulls/7` with a pull request whose head, base and
+ *  state all agree with {@link WRITE_TARGET}, so a suite can contradict exactly one of them. */
+export const AUTHORED_PULL_REQUEST = 7;
 
 export interface RecordedCall {
   method: string;
@@ -100,9 +113,22 @@ export function recordingCtx(handler: (req: ScopedHttpRequest) => ScopedHttpResp
  * substrings so a suite can turn one step of the sequence into any status it wants.
  */
 export function githubHandler(
-  overrides: Record<string, ScopedHttpResponse> = {}
+  overrides: Record<string, ScopedHttpResponse> = {},
+  /** WHAT THE PROVIDER SAYS THE PULL REQUEST IS. Defaults to a pull request that agrees with
+   *  {@link WRITE_TARGET} on every axis the merge path compares — open, from SCP's branch, into the
+   *  granted base — so a suite states only the axis it is contradicting. It is a PARAMETER rather
+   *  than a constant because the head branch is derived from the change id, and different suites
+   *  merge different changes. */
+  pullRequest: { state?: string; headRef?: string; baseRef?: string } = {}
 ): (req: ScopedHttpRequest) => ScopedHttpResponse {
   const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+  const pr = {
+    number: AUTHORED_PULL_REQUEST,
+    html_url: "https://x/pull/7",
+    state: pullRequest.state ?? "open",
+    head: { ref: pullRequest.headRef ?? WRITE_TARGET.headBranch },
+    base: { ref: pullRequest.baseRef ?? WRITE_TARGET.baseBranch }
+  };
   return (req: ScopedHttpRequest): ScopedHttpResponse => {
     for (const [fragment, response] of Object.entries(overrides)) {
       if (req.url.includes(fragment)) return response;
@@ -132,6 +158,18 @@ export function githubHandler(
     }
     if (req.method === "POST" && req.url.endsWith("/pulls")) {
       return { status: 201, headers: {}, body: { number: 7, html_url: "https://x/pull/7" } };
+    }
+    // The open-pull-request lookup the DUPLICATE-PUBLISH path uses. It carries `head` and `base`
+    // because the caller compares both: the provider's own query filters are treated as a narrowing,
+    // never as a guarantee, so a fixture that omitted them would make the comparison unreachable.
+    if (req.method === "GET" && req.url.includes("/pulls?state=open")) {
+      return { status: 200, headers: {}, body: [pr] };
+    }
+    // THE MERGE'S OWN READ: one pull request, by the number the server recorded. Answered with the
+    // shape the merge path compares against — an open pull request from SCP's branch into the base
+    // the governed grant named.
+    if (req.method === "GET" && /\/pulls\/\d+$/.test(req.url)) {
+      return { status: 200, headers: {}, body: pr };
     }
     if (req.method === "PUT" && req.url.includes("/pulls/7/merge")) {
       return { status: 200, headers: {}, body: { merged: true } };

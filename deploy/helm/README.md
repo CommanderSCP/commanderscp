@@ -256,6 +256,7 @@ present and correct when enabled) so the next one cannot be forgotten silently.
 | `operatorApi.enabled`          | `SCP_OPERATOR_TOKEN` (secretKeyRef)                                       | Requires `appSecrets.existingSecret`; render fails fast without it.                      |
 | `internalBaseUrl`              | `SCP_INTERNAL_BASE_URL`                                                   | How this instance names itself to a human — the CLI device-login URL.                    |
 | `api.role`                     | `SCP_ROLE` on the api pods                                                | `api` (default) or `all`.                                                                |
+| `managedDep.*`                 | `SCP_MANAGED_DEP_RUNNER_IMAGE` / `_WORKSPACE_ROOT`                        | M21.5 dependency-bump actuator. Empty image (default) = OFF, fail-closed at dispatch.    |
 
 **Still NOT settable, and why.** The retrans **byte plumbing** — `SCP_RELAY_OUT_DIR` / `IN_DIR` /
 `BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`, and the `SCP_DELIVERY_ROOTS`
@@ -265,7 +266,10 @@ directory is polled by a **third-party intake watcher**, so it needs a volume sh
 true` forbids improvising one. A retrans can therefore be _switched on_ here but not yet _given
 somewhere to drop_; both loops resolve no target and defer with a named problem, consuming no
 attempt. Same for the managed-scan runner (`SCP_MANAGED_SCAN_RUNNER_IMAGE`) — note the chart
-currently provisions the scan-DB PVC (`scanDbCache`) for a scanner it cannot start.
+currently provisions the scan-DB PVC (`scanDbCache`) for a scanner it cannot start. (The
+managed-DEP runner is NOT in that list: `managedDep.runnerImage` reaches
+`SCP_MANAGED_DEP_RUNNER_IMAGE`, because a class that cannot be switched on by any shipped
+deployment is a class whose charter clauses are enforced by nothing — ADR-0032 §8e.)
 
 ## Other known gaps (honestly flagged, not silently worked around)
 

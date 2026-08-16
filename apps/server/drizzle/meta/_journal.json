@@ -449,6 +449,13 @@
       "when": 1788079137000,
       "tag": "0063_component_dependency_observed_repo",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1788089137000,
+      "tag": "0064_bump_authorship",
+      "breakpoints": true
     }
   ]
 }

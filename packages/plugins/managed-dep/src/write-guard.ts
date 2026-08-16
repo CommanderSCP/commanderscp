@@ -120,6 +120,10 @@ export type RepoWriteRefusalReason =
   | "not_declared_by_component"
   /** The branch to write IS the base ref — a write to the branch the PR would target. */
   | "branch_is_base_ref"
+  /** A commit id that is not a full-length hex object id. Its only use is as a MERGE PRECONDITION,
+   *  where an abbreviated or malformed value is the difference between "merge exactly this tree"
+   *  and "merge whatever the branch happens to be at now". */
+  | "unsafe_commit"
   // --- What the edit itself may be ----------------------------------------------------------
   /** Base and edited content are byte-identical: there is nothing to propose. */
   | "content_unchanged"
@@ -307,6 +311,29 @@ export function assertBranchIsNotBase(provider: string, branch: string, baseRef:
     refuse(
       "branch_is_base_ref",
       `${provider} repo write: the bump branch and the base ref are both '${baseRef}'. A bump is DELIVERED as a pull request; it is never committed to the branch it would target`
+    );
+  }
+}
+
+/**
+ * The commit id a MERGE is conditioned on.
+ *
+ * This is not URL safety — the value is a request-body field, never a route segment. It is a
+ * PRECONDITION guard, and its shape is the control: GitHub's merge endpoint refuses the merge when
+ * its `sha` parameter does not equal the pull request's current head, which is the mechanism that
+ * turns "a governed control evidenced commit X" into "the tree that merged IS commit X". A shortened
+ * sha would not match that head and would fail the merge for the wrong reason (looking like a
+ * provider refusal rather than a malformed request), and an empty string would be dropped from the
+ * body and silently remove the precondition altogether — the fail-OPEN this exists to prevent.
+ *
+ * Full-length hex only, both cases accepted (providers spell object ids either way), 40 for SHA-1
+ * and 64 for SHA-256 repositories.
+ */
+export function assertWriteCommit(provider: string, commit: string): void {
+  if (!/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/.test(commit)) {
+    refuse(
+      "unsafe_commit",
+      `${provider} repo write: '${commit}' is not a full-length hex commit id — a merge precondition must name exactly one tree, and an abbreviated or malformed id would silently stop being a precondition`
     );
   }
 }
@@ -523,6 +550,18 @@ const PROOF_KEY = randomBytes(32);
  * that may be written — the proof does not travel with the content, it BINDS to it.
  */
 export interface ManifestEditProof {
+  /**
+   * WHICH REPOSITORY AND WHICH BRANCH these bytes were verified FOR.
+   *
+   * They are in the proof because the guarantee it states is "these bytes may be written", and a
+   * write has a destination. Without them the proof bound path + content and said nothing about
+   * where they were going, so a proof minted for `acme/widget@scp/dep-bump/<id>` verified cleanly
+   * against a publish to a different repository, or to the BASE branch, at the same path — the
+   * guarantee was one field short of what it claimed. `publishBump` re-checks both against the
+   * target it is about to send to, which is the only place the pairing is observable.
+   */
+  readonly repo: string;
+  readonly headBranch: string;
   readonly path: string;
   readonly ecosystem: DependencyEcosystem;
   readonly coordinate: string;
@@ -537,6 +576,8 @@ export interface ManifestEditProof {
 function proofPayload(proof: Omit<ManifestEditProof, "signature">): string {
   // Length-prefixed so no two different field tuples can serialise to the same string.
   return [
+    proof.repo,
+    proof.headBranch,
     proof.path,
     proof.ecosystem,
     proof.coordinate,
@@ -569,9 +610,32 @@ function sha256Hex(content: string): string {
  */
 export function assertManifestEditProof(
   provider: string,
-  input: { path: string; content: string; proof: ManifestEditProof }
+  input: {
+    /** The repository the write is about to go to. */
+    repo: string;
+    /** The branch the write is about to go to. */
+    headBranch: string;
+    path: string;
+    content: string;
+    proof: ManifestEditProof;
+  }
 ): void {
-  const { path, content, proof } = input;
+  const { repo, headBranch, path, content, proof } = input;
+  // WHERE, before WHAT. A proof states that specific bytes may be written to a specific file on a
+  // specific branch of a specific repository; checking only the last two would accept a proof minted
+  // for another destination in the same run.
+  if (proof.repo !== repo) {
+    refuse(
+      "proof_mismatch",
+      `${provider} repo write: the manifest-only proof was minted for repository '${proof.repo}' but the write targets '${repo}' — refused`
+    );
+  }
+  if (proof.headBranch !== headBranch) {
+    refuse(
+      "proof_mismatch",
+      `${provider} repo write: the manifest-only proof was minted for branch '${proof.headBranch}' but the write targets '${headBranch}' — refused`
+    );
+  }
   if (proof.path !== path) {
     refuse(
       "proof_mismatch",
@@ -586,6 +650,8 @@ export function assertManifestEditProof(
   }
   const expected = Buffer.from(
     signProof({
+      repo: proof.repo,
+      headBranch: proof.headBranch,
       path: proof.path,
       ecosystem: proof.ecosystem,
       coordinate: proof.coordinate,
@@ -612,6 +678,13 @@ export function assertManifestEditProof(
 
 /** What {@link verifyManifestOnlyEdit} is asked to prove. */
 export interface ManifestOnlyEditInput {
+  /** The repository the verified bytes are authorised for — carried into the proof, see
+   *  {@link ManifestEditProof.repo}. */
+  repo: string;
+  /** The branch the verified bytes are authorised for. Never the base branch: `assertBranchIsNotBase`
+   *  refuses that pairing at the descriptor and again at the splice site, and binding it here means a
+   *  proof cannot be re-aimed at one either. */
+  headBranch: string;
   /** Repo-relative path of the manifest being edited. */
   path: string;
   /** Every manifest path this component's inventory declares (ADR-0032 §3 projection rows). */
@@ -830,6 +903,8 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
   assertChangeConfinedToVersionText(path, coordinate, baseContent, newContent, before, after);
 
   const unsigned = {
+    repo: input.repo,
+    headBranch: input.headBranch,
     path,
     ecosystem,
     coordinate,

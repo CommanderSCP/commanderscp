@@ -15,13 +15,16 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents, changes, objects } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
-import { insertControlRun } from "../governance/controls-repo.js";
+import { insertControlRun, upsertControlBinding } from "../governance/controls-repo.js";
 import {
   assertComponentNotDelegated,
+  readAuthoredBumpClaim,
   recordBumpChange,
   resolveEffectiveDelivery
 } from "./bump-actuator.js";
 import { DEPENDENCY_DELEGATION_DECISION_KIND } from "./delegation-detection.js";
+import { readBumpAuthorship } from "./bump-authorship-repo.js";
+import { upsertDependencyLine } from "./dependency-inventory-repo.js";
 
 /**
  * M21.5 — THE TWO THINGS THE SERVER SIDE OF `scp-managed-dep` HAS TO GET RIGHT, END TO END
@@ -287,31 +290,259 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
   it("downgrades auto_merge to a pull request when NO governed control has evidenced anything", async () => {
     const { changeObjectId } = await authorBump("acme/widget", "auto_merge");
     const resolved = await inOrg((tx) =>
-      resolveEffectiveDelivery(tx, org.orgId, { changeObjectId, requested: "auto_merge" })
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo: "acme/widget"
+      })
     );
     expect(resolved.delivery).toBe("pull_request");
     expect(resolved.reason).toMatch(/absent never means passed/);
   });
 
-  it("grants auto_merge only once a governed control run PASSED for that change", async () => {
-    const { changeObjectId } = await authorBump("acme/widget", "auto_merge");
+  /** A `control` object BOUND to a plugin module, with one run whose evidence names `ref` — the
+   *  shape `governance/control-runner.ts` deposits, and the only place the KIND of question a
+   *  control asked is recorded. */
+  async function plantControlRun(input: {
+    changeObjectId: string;
+    status: "pass" | "fail" | "expired";
+    ref: string;
+    /** WHICH REPOSITORY the control looked at — recorded as the API URL `@scp/plugin-github-check`
+     *  actually queries, which is the only field in its evidence that says so. */
+    repo: string;
+    module?: string;
+  }): Promise<string> {
     const controlObjectId = randomUUID();
-    await inOrg((tx) =>
-      insertControlRun(tx, {
+    const pluginModule = input.module ?? "github-check";
+    await inOrg(async (tx) => {
+      await upsertControlBinding(tx, {
+        orgId: org.orgId,
+        controlObjectId,
+        pluginModule,
+        pluginInstanceId: `ctl-${randomUUID()}`
+      });
+      await insertControlRun(tx, {
+        orgId: org.orgId,
+        controlObjectId,
+        changeObjectId: input.changeObjectId,
+        gateKind: "lifecycle_edge",
+        gateRef: { fromState: "validating", toState: "approved" },
+        status: input.status,
+        // STAMPED ON THE RUN, exactly as `control-runner.ts` does — never left to a join against the
+        // CURRENT binding, which a later re-point would rewrite the meaning of.
+        pluginModule,
+        evidence: {
+          url: `https://api.github.com/repos/${input.repo}/commits/${input.ref}/check-runs`,
+          ref: input.ref,
+          checkRuns: []
+        }
+      });
+    });
+    return controlObjectId;
+  }
+
+  const OBSERVED_COMMIT = "cafebabe".repeat(5);
+
+  it("grants auto_merge only for the component's OWN checks, on the bump's OWN commit", async () => {
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const { changeObjectId, authoredRef, componentObjectId } = await authorBump(repo, "auto_merge");
+    await admin.changeSources.createMapping("github", {
+      repoPattern: repo,
+      component: componentObjectId
+    });
+    // The bump's own push coming back is what records the commit its branch is at. Until then there
+    // is nothing to bind CI evidence TO — which is why a FIRST dispatch can never auto-merge.
+    await deliverGithubPush(repo, authoredRef);
+    await inOrg((tx) => processChangeSourceEvents(tx, org.orgId));
+    const claim = await inOrg((tx) => readAuthoredBumpClaim(tx, org.orgId, changeObjectId));
+    expect(claim?.headCommit).toBe(OBSERVED_COMMIT);
+    // AND IN SERVER-OWNED STORAGE, which is the copy every merge decision actually reads. The
+    // readable claim above is the explanation; this is the authority (ADR-0032 §8f).
+    const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+    expect(authorship?.headCommit).toBe(OBSERVED_COMMIT);
+    expect(authorship?.repo).toBe(repo);
+
+    const controlObjectId = await plantControlRun({
+      changeObjectId,
+      status: "pass",
+      ref: OBSERVED_COMMIT,
+      repo
+    });
+    const resolved = await inOrg((tx) =>
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo: authorship?.repo,
+        authoredHeadCommit: authorship?.headCommit
+      })
+    );
+    expect(resolved.delivery).toBe("auto_merge");
+    expect(resolved.controlObjectId).toBe(controlObjectId);
+  });
+
+  /**
+   * ==============================================================================================
+   * THE MODULE NAME BINDS THE EVIDENCE TO NOTHING ON ITS OWN
+   * ==============================================================================================
+   * "The component's OWN checks" was enforced as a MODULE-NAME STRING plus a commit id. A commit id
+   * is a content hash and travels between repositories freely — a fork, a mirror, a vendored copy —
+   * so a `github-check` control an operator configured against an UNRELATED repository containing
+   * the same commit object reported green for exactly the right commit and the merge was granted.
+   */
+  it("an own-check PASS in a DIFFERENT repository grants nothing", async () => {
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const { changeObjectId } = await authorBump(repo, "auto_merge");
+    // Right module, right status, right commit — wrong repository.
+    await plantControlRun({
+      changeObjectId,
+      status: "pass",
+      ref: OBSERVED_COMMIT,
+      repo: "someone-else/fork"
+    });
+    const resolved = await inOrg((tx) =>
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo,
+        authoredHeadCommit: OBSERVED_COMMIT
+      })
+    );
+    expect(resolved.delivery).toBe("pull_request");
+    expect(resolved.reason).toMatch(/cannot be attributed to/);
+  });
+
+  it("an own-check PASS whose evidence names NO repository at all grants nothing", async () => {
+    // A control run from an older build, or a module added to the own-check list later, can carry
+    // any evidence shape. One this cannot attribute is not a grant — the fail-closed direction,
+    // which costs a pull request rather than an unattended merge on evidence nobody can place.
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const { changeObjectId } = await authorBump(repo, "auto_merge");
+    const controlObjectId = randomUUID();
+    await inOrg(async (tx) => {
+      await upsertControlBinding(tx, {
+        orgId: org.orgId,
+        controlObjectId,
+        pluginModule: "github-check",
+        pluginInstanceId: `ctl-${randomUUID()}`
+      });
+      await insertControlRun(tx, {
         orgId: org.orgId,
         controlObjectId,
         changeObjectId,
         gateKind: "lifecycle_edge",
-        gateRef: { fromState: "validating", toState: "approved" },
+        gateRef: {},
         status: "pass",
-        evidence: { ci: "green" }
+        pluginModule: "github-check",
+        evidence: { ref: OBSERVED_COMMIT }
+      });
+    });
+    const resolved = await inOrg((tx) =>
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo,
+        authoredHeadCommit: OBSERVED_COMMIT
+      })
+    );
+    expect(resolved.delivery).toBe("pull_request");
+  });
+
+  /**
+   * ==============================================================================================
+   * A BINDING RE-POINTED LATER MUST NOT RE-NARRATE WHAT AN OLD RUN EVIDENCED
+   * ==============================================================================================
+   * The module used to be read from the CURRENT `control_bindings` row by LEFT JOIN, and a binding
+   * is mutable: re-pointing one control from `webhook-control` to `github-check` retroactively
+   * relabelled every historical pass of that control as an own-check pass — and this grant reads
+   * historical runs. It is now stamped on the run at insert (migration 0063).
+   */
+  it("re-pointing a control's binding does NOT retroactively relabel its old runs as own-checks", async () => {
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const { changeObjectId } = await authorBump(repo, "auto_merge");
+    // The run happened while the control asked a DIFFERENT question — an operator-configured webhook.
+    const controlObjectId = await plantControlRun({
+      changeObjectId,
+      status: "pass",
+      ref: OBSERVED_COMMIT,
+      repo,
+      module: "webhook-control"
+    });
+    // ...and the binding is later re-pointed at the component's CI.
+    await inOrg((tx) =>
+      upsertControlBinding(tx, {
+        orgId: org.orgId,
+        controlObjectId,
+        pluginModule: "github-check",
+        pluginInstanceId: `ctl-${randomUUID()}`
       })
     );
     const resolved = await inOrg((tx) =>
-      resolveEffectiveDelivery(tx, org.orgId, { changeObjectId, requested: "auto_merge" })
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo,
+        authoredHeadCommit: OBSERVED_COMMIT
+      })
     );
-    expect(resolved.delivery).toBe("auto_merge");
-    expect(resolved.controlObjectId).toBe(controlObjectId);
+    expect(resolved.delivery).toBe("pull_request");
+    expect(resolved.reason).toMatch(/webhook-control/);
+  });
+
+  it("a PASS from a control that is NOT the component's own checks grants nothing", async () => {
+    // The defect this closes: the runs were read unfiltered, so ANY passing control satisfied "the
+    // component's own checks passed" — a scan verdict, a webhook approval pointed at an operator's
+    // own URL, a commander promotion-scan row. Each is a governed control; none is CI on this bump.
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const { changeObjectId } = await authorBump(repo, "auto_merge");
+    await plantControlRun({
+      changeObjectId,
+      status: "pass",
+      ref: OBSERVED_COMMIT,
+      repo,
+      module: "scan-result-control"
+    });
+    const resolved = await inOrg((tx) =>
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo,
+        authoredHeadCommit: OBSERVED_COMMIT
+      })
+    );
+    expect(resolved.delivery).toBe("pull_request");
+    expect(resolved.reason).toMatch(
+      /came from a control that evidences the component's OWN checks/
+    );
+  });
+
+  it("an own-check PASS for a DIFFERENT commit grants nothing — green on main is not green here", async () => {
+    // The sharper half. `github-check` falls back to its operator-pinned `expectedRef` when the
+    // change tracks no commit, so without the commit binding a control could report CI green for the
+    // BASE branch and the bump would merge into it on exactly that evidence.
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const { changeObjectId } = await authorBump(repo, "auto_merge");
+    await plantControlRun({ changeObjectId, status: "pass", ref: "deadbeef".repeat(5), repo });
+    const resolved = await inOrg((tx) =>
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo,
+        authoredHeadCommit: OBSERVED_COMMIT
+      })
+    );
+    expect(resolved.delivery).toBe("pull_request");
+    expect(resolved.reason).toMatch(/other than the bump's own head/);
+  });
+
+  it("an own-check PASS grants nothing while the bump's own commit has not been observed back", async () => {
+    const repo = `acme/${randomUUID().slice(0, 8)}`;
+    const { changeObjectId } = await authorBump(repo, "auto_merge");
+    await plantControlRun({ changeObjectId, status: "pass", ref: OBSERVED_COMMIT, repo });
+    const resolved = await inOrg((tx) =>
+      resolveEffectiveDelivery(tx, org.orgId, { changeObjectId, requested: "auto_merge", repo })
+    );
+    expect(resolved.delivery).toBe("pull_request");
+    expect(resolved.reason).toMatch(/has not been observed back yet/);
   });
 
   it("a single objecting control defeats a passing one — the same asymmetry the merge itself uses", async () => {
@@ -337,7 +568,12 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
       });
     });
     const resolved = await inOrg((tx) =>
-      resolveEffectiveDelivery(tx, org.orgId, { changeObjectId, requested: "auto_merge" })
+      resolveEffectiveDelivery(tx, org.orgId, {
+        changeObjectId,
+        requested: "auto_merge",
+        repo: "acme/widget",
+        authoredHeadCommit: OBSERVED_COMMIT
+      })
     );
     expect(resolved.delivery).toBe("pull_request");
     expect(resolved.reason).toMatch(/reported 'fail'/);
@@ -355,11 +591,26 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     const component = await createTestComponent(admin, {
       name: `dep-bump-${randomUUID().slice(0, 8)}`
     });
+    // A REAL dependency line: `dependency_bump_authorships` carries a composite `(org_id, line_id)`
+    // foreign key into `dependency_lines`, the same cross-org barrier 0061 established for the
+    // inventory. A synthetic uuid here would not just fail the constraint — it would mean the
+    // fixture was recording an authorship for a subscription that cannot exist.
+    const line = await inOrg((tx) =>
+      upsertDependencyLine(tx, org.orgId, {
+        ecosystem: "npm",
+        coordinate: `@acme/lib-${randomUUID().slice(0, 8)}`,
+        major: "1"
+      })
+    );
+    const changeObjectId = randomUUID();
     const recorded = await inOrg((tx) =>
       recordBumpChange(tx, {
         orgId: org.orgId,
+        changeObjectId,
         requestId: `test-${randomUUID()}`,
         componentObjectId: component.id,
+        // The line the bump is for — what `bump-gate.ts` re-resolves the subscription by.
+        lineId: line.id,
         repo,
         baseBranch: "main",
         ecosystem: "npm",

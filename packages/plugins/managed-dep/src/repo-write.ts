@@ -11,6 +11,7 @@ import {
   assertWriteBaseBranch,
   assertWriteBaseRef,
   assertWriteBranch,
+  assertWriteCommit,
   assertWritePath,
   assertWriteRepo,
   type ManifestEditProof
@@ -116,12 +117,72 @@ export interface RepoFile {
 
 /**
  * The operations available WHILE the run's credential is alive. There is no general-purpose
- * repository write behind this interface: one read of one path, and one publish of one edited file
- * as one pull request.
+ * repository write behind this interface: one read of one path, one publish of one edited file as
+ * one pull request, and one merge of a pull request this same class authored.
  */
 export interface RepoSession {
   readFile(path: string, ref: string): Promise<RepoFile | undefined>;
   publishBump(input: PublishBumpInput): Promise<RepoWriteResult>;
+  /** {@link mergeAuthoredBranch} — the merge as its own act, for a branch that already exists and a
+   *  commit a governed control already evidenced. See {@link MergeAuthoredBranchInput}. */
+  mergeAuthoredBranch(input: MergeAuthoredBranchInput): Promise<MergeOutcome>;
+}
+
+/**
+ * ============================================================================================
+ * MERGING IS A SECOND, NARROWER AUTHORITY — AND IT IS EXPRESSED AS ITS OWN INPUT SHAPE
+ * ============================================================================================
+ * Until M21.5's auto-merge link, the only merge in the tree was the tail of {@link PublishBumpInput}
+ * — reachable only by a run that had just authored the commit it was about to merge. That is the
+ * wrong shape for the charter clause it has to satisfy: "automatic merge is permitted only where a
+ * governed control evidences that the component's OWN checks passed". Evidence names a COMMIT, and a
+ * commit a run just created cannot have been evidenced before the run started.
+ *
+ * So the merge exists separately, and every field here is a narrowing rather than a parameter:
+ *
+ *  * `target.headBranch` is NOT free text. The caller composes it from the originating change's id
+ *    (`index.ts`'s `bumpBranchFor`), and the server takes that id from the SERVER-OWNED
+ *    `dependency_bump_authorships` row for that change. A branch name arriving from anywhere else is
+ *    how this authority would become "merge whatever you are told to".
+ *  * `pullRequestNumber` IS THE ADDRESS, and it replaced a search. This action used to LIST open pull
+ *    requests filtered on `head=owner:<branch>` and merge `list.body[0]`: WHICH pull request got
+ *    merged was therefore provider list ordering, and nothing ever read its base. Anyone with write
+ *    or triage on the repository could retarget SCP's pull request, or open a second one from SCP's
+ *    branch against a protected branch, and this would merge a tree the governed grant never
+ *    authorised. So the merge is addressed to the pull request SCP ITSELF OPENED, by the number SCP
+ *    recorded when it opened it — a fact SCP asserted, not one read back out of the provider.
+ *  * `target.baseBranch` is COMPARED, not merely carried. It used to be asserted and then discarded:
+ *    never sent, never checked. The pull request's OWN `base.ref` must equal the base the governed
+ *    grant was about, or the merge refuses. Same for its `head.ref` and its open state — a pull
+ *    request a human has closed is a human's decision about this bump.
+ *  * `expectedHeadCommit` is the PRECONDITION, not a label. It is sent as the provider's merge `sha`
+ *    parameter, which refuses the merge unless the pull request's head is exactly that commit — so
+ *    "the tree that merged is the tree the control passed" is enforced by the provider rather than
+ *    by this process's belief about what the branch is at. A push that landed on the branch between
+ *    the evidence and this call therefore REFUSES the merge instead of merging an unevidenced tree.
+ *
+ * The four together are one rule: EVERY INPUT TO A MERGE IS A FACT THE SERVER RECORDED, and the only
+ * thing taken from the provider is a yes/no about whether its own state still matches them.
+ */
+export interface MergeAuthoredBranchInput {
+  target: RepoWriteTarget;
+  /** The pull request SCP opened for this bump, as the server recorded it. Never a search result. */
+  pullRequestNumber: number;
+  /** The commit a governed control evidenced. Sent as the merge precondition — see the type doc. */
+  expectedHeadCommit: string;
+  /** The commit subject for the merge commit. Derived by the caller from the bump descriptor,
+   *  never supplied by a tenant policy — same narrowing as {@link bumpCommitMessage}. */
+  commitTitle: string;
+}
+
+export interface MergeOutcome {
+  /** 0 when no open pull request for this branch was found — which is a refusal, not a merge. */
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  merged: boolean;
+  /** Set whenever `merged` is false. The pull request (if any) stands and is the honest outcome, so
+   *  this is REPORTED rather than thrown or retried. */
+  mergeRefusal?: string;
 }
 
 /**
@@ -142,6 +203,17 @@ export interface PublishBumpInput {
   /** Minted by `verifyManifestOnlyEdit` for exactly these bytes at exactly this path. */
   proof: ManifestEditProof;
   delivery: BumpDelivery;
+  /**
+   * REQUIRED when `delivery === "auto_merge"`, and the requirement is the charter clause.
+   *
+   * The server grants `auto_merge` on a governed control's evidence, and that evidence names one
+   * commit — the one the bump's branch was at when the control ran. This publish may itself move the
+   * branch (a redelivered dispatch re-PUTs the manifest), and a merge of a commit the control never
+   * saw is precisely "green somewhere else used as proof that here is green". Passing it through as
+   * the provider's merge precondition means such a run REFUSES the merge and leaves the pull request
+   * open, rather than merging an unevidenced tree.
+   */
+  expectedHeadCommit?: string;
 }
 
 /**
@@ -335,6 +407,139 @@ async function githubApi(
 /** The provider name every refusal message from this arm carries. */
 const PROVIDER = "github";
 
+type GithubApi = (
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown
+) => Promise<{ status: number; body: unknown }>;
+
+/** One pull request as the provider currently describes it — the shape both the list route and the
+ *  single-pull-request route return the interesting parts of. */
+interface ProviderPullRequest {
+  number: number;
+  url: string;
+  state: string;
+  headRef: string;
+  baseRef: string;
+}
+
+function readPullRequest(body: unknown): ProviderPullRequest | undefined {
+  if (body === null || typeof body !== "object") return undefined;
+  const pr = body as {
+    number?: unknown;
+    html_url?: unknown;
+    state?: unknown;
+    head?: { ref?: unknown };
+    base?: { ref?: unknown };
+  };
+  if (typeof pr.number !== "number" || pr.number <= 0) return undefined;
+  return {
+    number: pr.number,
+    url: typeof pr.html_url === "string" ? pr.html_url : "",
+    // A field this cannot read comes back as the empty string, which matches no branch and no state
+    // — the fail-closed direction, since every caller COMPARES these rather than displaying them.
+    state: typeof pr.state === "string" ? pr.state : "",
+    headRef: typeof pr.head?.ref === "string" ? pr.head.ref : "",
+    baseRef: typeof pr.base?.ref === "string" ? pr.base.ref : ""
+  };
+}
+
+/**
+ * The OPEN pull request from `headBranch` INTO `baseBranch`, or `undefined`.
+ *
+ * BOTH REFS ARE COMPARED, not just the one the query filters on. `head=owner:<branch>` is a provider
+ * filter and `list.body[0]` is provider ORDERING; taking the first entry and using it means whichever
+ * pull request the provider happened to list first decides what this class acts on, and its base was
+ * never looked at. One branch can legitimately have several open pull requests against several bases,
+ * and anyone with write or triage on the repository can create the second one.
+ *
+ * Only the publish path's duplicate-detection uses this. The MERGE addresses a pull request by the
+ * number the server recorded — see {@link MergeAuthoredBranchInput}.
+ */
+async function findOpenPullRequest(
+  api: GithubApi,
+  repo: string,
+  headBranch: string,
+  baseBranch: string
+): Promise<ProviderPullRequest | undefined> {
+  const owner = repo.split("/")[0] ?? "";
+  const list = await api(
+    "GET",
+    `/repos/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${headBranch}`)}&base=${encodeURIComponent(baseBranch)}`
+  );
+  if (!Array.isArray(list.body)) return undefined;
+  for (const entry of list.body) {
+    const pr = readPullRequest(entry);
+    // The provider's own filters are treated as a NARROWING, never as a guarantee: every field they
+    // claim to have filtered on is re-compared here.
+    if (!pr || pr.state !== "open") continue;
+    if (pr.headRef !== headBranch || pr.baseRef !== baseBranch) continue;
+    return pr;
+  }
+  return undefined;
+}
+
+/** Read ONE pull request by number. */
+async function getPullRequest(
+  api: GithubApi,
+  repo: string,
+  number: number
+): Promise<ProviderPullRequest | undefined> {
+  const res = await api("GET", `/repos/${repo}/pulls/${number}`);
+  if (res.status !== 200) return undefined;
+  return readPullRequest(res.body);
+}
+
+/**
+ * THE ONE MERGE CALL IN THE TREE. Both the publish tail and the standalone merge action reach the
+ * provider through here, deliberately: a second merge implementation is the same class of mistake
+ * `write-guard.ts`'s header records for the URL validators — a fix applied to an instance rather
+ * than to the property — and the property here is "a merge is conditioned on the evidenced commit".
+ *
+ * `sha` is what makes that structural. GitHub's merge endpoint documents it as the SHA the pull
+ * request's head must match for the merge to be allowed, so a branch that moved between the control
+ * run and this call yields a 409 and an OPEN pull request instead of a merged one. The precondition
+ * is asserted full-length ({@link assertWriteCommit}) because an empty or abbreviated value would be
+ * dropped or never match, and either way stops being a precondition.
+ *
+ * A provider refusal — branch protection, a required review, a check that went red since the gate —
+ * is REPORTED, never retried into a force-merge and never reported as if it had merged.
+ */
+async function mergeEvidencedPullRequest(
+  api: GithubApi,
+  input: {
+    repo: string;
+    pullRequestNumber: number;
+    pullRequestUrl: string;
+    expectedHeadCommit: string;
+    commitTitle: string;
+  }
+): Promise<MergeOutcome> {
+  assertWriteCommit(PROVIDER, input.expectedHeadCommit);
+  const merge = await api("PUT", `/repos/${input.repo}/pulls/${input.pullRequestNumber}/merge`, {
+    commit_title: input.commitTitle,
+    merge_method: "merge",
+    // THE PRECONDITION — see this function's doc. Never omitted, never abbreviated.
+    sha: input.expectedHeadCommit
+  });
+  if (merge.status >= 200 && merge.status < 300) {
+    return {
+      pullRequestNumber: input.pullRequestNumber,
+      pullRequestUrl: input.pullRequestUrl,
+      merged: true
+    };
+  }
+  return {
+    pullRequestNumber: input.pullRequestNumber,
+    pullRequestUrl: input.pullRequestUrl,
+    merged: false,
+    mergeRefusal:
+      merge.status === 409
+        ? `provider refused the merge (HTTP 409): the pull request's head is no longer ${input.expectedHeadCommit}, which is the commit the governed control evidenced — the pull request is open and awaits a human`
+        : `provider refused the merge (HTTP ${merge.status}); the pull request is open and awaits a human`
+  };
+}
+
 export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): RepoWriter {
   const apiBaseUrl = config.apiBaseUrl ?? DEFAULT_API_BASE_URL;
 
@@ -397,7 +602,14 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           };
         },
 
-        async publishBump({ target, spec, content, proof, delivery }): Promise<RepoWriteResult> {
+        async publishBump({
+          target,
+          spec,
+          content,
+          proof,
+          delivery,
+          expectedHeadCommit
+        }): Promise<RepoWriteResult> {
           // ----------------------------------------------------------------------------------
           // EVERY REFUSAL, BEFORE THE FIRST REQUEST OF THE PUBLISH. Order is the enforcement:
           // nothing partial can be left behind by a refusal, because a refusal happens before a
@@ -409,6 +621,11 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           assertWriteBaseBranch(PROVIDER, target.baseBranch);
           assertWriteBranch(PROVIDER, target.headBranch);
           assertBranchIsNotBase(PROVIDER, target.headBranch, target.baseBranch);
+          // AN AUTO-MERGE WITH NOTHING TO CONDITION IT ON IS REFUSED BEFORE THE FIRST REQUEST, not
+          // downgraded quietly at the end. Merging on the server's grant alone would merge whatever
+          // this run's own PUT left the branch at, which is not the commit the grant was evidenced
+          // against — see `PublishBumpInput.expectedHeadCommit`.
+          if (delivery === "auto_merge") assertWriteCommit(PROVIDER, expectedHeadCommit ?? "");
           // The prose SCP writes alongside the edit is DERIVED here, never passed in (see
           // `bumpCommitMessage`/`bumpPullRequestBody` for why that is a narrowing rather than a
           // convenience) — but derived is not the same as bounded: it is composed from a coordinate
@@ -424,6 +641,8 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           // process. Nothing about the input is trusted: the proof is HMAC-bound to these exact
           // bytes and this exact path, so content mutated after verification is refused here.
           assertManifestEditProof(PROVIDER, {
+            repo: target.repo,
+            headBranch: target.headBranch,
             path: spec.manifestPath,
             content,
             proof
@@ -510,21 +729,23 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
             prNumber = typeof b.number === "number" ? b.number : 0;
             prUrl = typeof b.html_url === "string" ? b.html_url : "";
           } else if (pr.status === 422) {
-            const owner = target.repo.split("/")[0] ?? "";
-            const list = await api(
-              "GET",
-              `/repos/${target.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${target.headBranch}`)}`
+            // The duplicate this run is a retry of is the pull request from OUR branch INTO OUR base.
+            // Looking one up on the head alone would let a pull request somebody else opened from
+            // the same branch, to a different base, become the one this run reports (and, for an
+            // `auto_merge` delivery, the one it merges).
+            const existingPr = await findOpenPullRequest(
+              api,
+              target.repo,
+              target.headBranch,
+              target.baseBranch
             );
-            const first = Array.isArray(list.body)
-              ? (list.body[0] as { number?: unknown; html_url?: unknown } | undefined)
-              : undefined;
-            prNumber = typeof first?.number === "number" ? first.number : 0;
-            prUrl = typeof first?.html_url === "string" ? first.html_url : "";
-            if (prNumber === 0) {
+            if (!existingPr) {
               throw new Error(
-                `managed-dep: the pull request for '${target.headBranch}' was refused as a duplicate but no open pull request was found`
+                `managed-dep: the pull request for '${target.headBranch}' -> '${target.baseBranch}' on '${target.repo}' was refused as a duplicate, but no OPEN pull request between exactly those two branches exists — refusing to guess which pull request was meant`
               );
             }
+            prNumber = existingPr.number;
+            prUrl = existingPr.url;
           } else {
             throw new Error(
               `managed-dep: opening a pull request for '${target.headBranch}' on '${target.repo}' failed (HTTP ${pr.status})`
@@ -538,24 +759,121 @@ export function createGithubAppRepoWriter(config: GithubAppRepoWriterConfig): Re
           // 6. AUTO-MERGE. Reaching here already means a governed control evidenced this component's
           //    own checks passed — the SERVER decided that, with the existing gate machinery, before
           //    this plugin was dispatched (see `index.ts`, "AUTO-MERGE IS NOT DECIDED HERE"). This
-          //    call actuates that decision; it is never a second judgement of it.
-          const merge = await api("PUT", `/repos/${target.repo}/pulls/${prNumber}/merge`, {
-            commit_title: commitMessage,
-            merge_method: "merge"
-          });
-          if (merge.status >= 200 && merge.status < 300) {
-            return { commitSha, pullRequestNumber: prNumber, pullRequestUrl: prUrl, merged: true };
-          }
-          // The provider refused (branch protection, a required review, a check that went red
-          // between the gate and now). The pull request stands and is the honest outcome — reported,
-          // never retried into a force-merge, and never reported as if it had merged.
-          return {
-            commitSha,
+          //    call actuates that decision; it is never a second judgement of it. It IS conditioned
+          //    on the evidenced commit, so a publish that moved the branch away from it refuses.
+          const merged = await mergeEvidencedPullRequest(api, {
+            repo: target.repo,
             pullRequestNumber: prNumber,
             pullRequestUrl: prUrl,
-            merged: false,
-            mergeRefusal: `provider refused the merge (HTTP ${merge.status}); the pull request is open and awaits a human`
+            expectedHeadCommit: expectedHeadCommit as string,
+            commitTitle: commitMessage
+          });
+          return {
+            commitSha,
+            pullRequestNumber: merged.pullRequestNumber,
+            pullRequestUrl: merged.pullRequestUrl,
+            merged: merged.merged,
+            ...(merged.mergeRefusal ? { mergeRefusal: merged.mergeRefusal } : {})
           };
+        },
+
+        /**
+         * MERGE AN ALREADY-AUTHORED BUMP. The narrowest write this class has, and the only one that
+         * is reachable without an edit.
+         *
+         * Everything it touches is re-asserted at the splice site, exactly as `publishBump` does and
+         * for the same reason `write-guard.ts`'s header gives: `repo` and the branch names are part
+         * of REST routes, `encodeURIComponent("..") === ".."`, and validation — not encoding — is
+         * the control. `assertBranchIsNotBase` is not defence in depth here either: a caller that
+         * managed to name the base branch as the head would ask the provider to merge `main` into
+         * `main`, and the refusal names that rather than letting the provider return something
+         * ambiguous.
+         *
+         * ==========================================================================================
+         * THE PULL REQUEST IS ADDRESSED, AND THEN ITS OWN BASE IS CHECKED
+         * ==========================================================================================
+         * This used to LIST open pull requests filtered on `head=owner:<branch>` and merge
+         * `list.body[0]`. Two things were wrong with that and they are the same thing twice: WHICH
+         * pull request got merged was provider list ordering, and its BASE was never read — the
+         * `baseBranch` the caller passed was asserted and then discarded, never sent and never
+         * compared. So an open pull request from SCP's branch to `production`, while the governed
+         * grant was about `main`, merged; and it recorded a `merged` Decision naming `main`. Anyone
+         * with write or triage on the repository can retarget a pull request or open a second one
+         * from a branch they can see.
+         *
+         * Now: the merge is addressed to the number the SERVER recorded when SCP opened the pull
+         * request, and the provider's description of that pull request must agree with every fact
+         * the grant was about — it is OPEN, its head is the branch this change authored, and its base
+         * is the base the grant named. Each disagreement is its own refusal with its own sentence,
+         * because "it did not merge" is not an operator-actionable answer.
+         *
+         * NO OPEN PULL REQUEST IS A REFUSAL, NOT AN INVITATION TO OPEN ONE. This action never
+         * authors: if the pull request the bump opened has been closed by a human, that is a human's
+         * decision about this bump and the merge stops there.
+         */
+        async mergeAuthoredBranch({
+          target,
+          pullRequestNumber,
+          expectedHeadCommit,
+          commitTitle
+        }): Promise<MergeOutcome> {
+          assertWriteRepo(PROVIDER, target.repo, 2);
+          assertWriteBaseBranch(PROVIDER, target.baseBranch);
+          assertWriteBranch(PROVIDER, target.headBranch);
+          assertBranchIsNotBase(PROVIDER, target.headBranch, target.baseBranch);
+          assertWriteCommit(PROVIDER, expectedHeadCommit);
+          assertMessageBound(commitTitle, MAX_PR_TITLE_CHARS, "merge commit title");
+          // BEFORE THE FIRST REQUEST. The number is spliced into every route below, and a merge with
+          // no pull request to address is not a merge this class can perform at all.
+          if (!Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) {
+            throw new Error(
+              `managed-dep: pullRequestNumber must be a positive integer (got ${JSON.stringify(pullRequestNumber)}) — the merge is addressed to the pull request CommanderSCP itself opened, never to whichever one a provider listing happens to return first`
+            );
+          }
+
+          const pr = await getPullRequest(api, target.repo, pullRequestNumber);
+          if (!pr) {
+            return {
+              pullRequestNumber,
+              pullRequestUrl: "",
+              merged: false,
+              mergeRefusal: `pull request #${pullRequestNumber} on '${target.repo}' could not be read — nothing is merged, and nothing is opened either`
+            };
+          }
+          if (pr.state !== "open") {
+            return {
+              pullRequestNumber: pr.number,
+              pullRequestUrl: pr.url,
+              merged: false,
+              mergeRefusal: `pull request #${pr.number} on '${target.repo}' is '${pr.state}', not open — a closed bump is a human's decision about it, and this action never re-opens one`
+            };
+          }
+          if (pr.headRef !== target.headBranch) {
+            return {
+              pullRequestNumber: pr.number,
+              pullRequestUrl: pr.url,
+              merged: false,
+              mergeRefusal: `pull request #${pr.number} on '${target.repo}' has head '${pr.headRef}', not '${target.headBranch}' — that is not the branch this change's own bump authored`
+            };
+          }
+          if (pr.baseRef !== target.baseBranch) {
+            // THE ONE THAT WAS MISSING ENTIRELY. A retargeted pull request merges a tree into a
+            // branch the governed grant was never about, and the Decision would have named the base
+            // the server believed rather than the base the provider used.
+            return {
+              pullRequestNumber: pr.number,
+              pullRequestUrl: pr.url,
+              merged: false,
+              mergeRefusal: `pull request #${pr.number} on '${target.repo}' targets '${pr.baseRef}', but the governed grant is for '${target.baseBranch}' — a merge into a base nobody evidenced is refused, and the pull request stands`
+            };
+          }
+          return mergeEvidencedPullRequest(api, {
+            repo: target.repo,
+            pullRequestNumber: pr.number,
+            pullRequestUrl: pr.url,
+            expectedHeadCommit,
+            commitTitle
+          });
         }
       };
 

@@ -874,6 +874,12 @@ export const controlRuns = pgTable(
     evidence: jsonb("evidence").notNull().default({}),
     detail: text("detail"),
     decisionId: uuid("decision_id"),
+    /** The `control_bindings.plugin_module` that PRODUCED this run, stamped at insert (0063).
+     *  Deliberately not read from the binding at query time: a binding is mutable, so re-pointing
+     *  one control at `github-check` would retroactively relabel every historical run of it as "the
+     *  component's own checks passed" — which is the label `dependencies/bump-actuator.ts` grants an
+     *  unattended merge on. NULL on pre-0063 rows and on rows no bound plugin produced. */
+    pluginModule: text("plugin_module"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [
@@ -1923,5 +1929,95 @@ export const componentDependencies = pgTable(
     // The REVERSE lookup — "which components declare line L?" — the fan-out list a dependency
     // subscription resolves against. One index descent; deliberately not a traversal.
     index("component_dependencies_org_line").on(table.orgId, table.lineId)
+  ]
+);
+
+/**
+ * ================================================================================================
+ * WHAT COMMANDERSCP ITSELF AUTHORED FOR A DEPENDENCY BUMP (migration 0063, ADR-0032 §8/§9)
+ * ================================================================================================
+ * SERVER-OWNED STORAGE, AND THAT IS THE ENTIRE POINT OF THE TABLE.
+ *
+ * Every input that decides whose credential merges what — the repository, the authored ref, the base
+ * branch, the component, the line, the branch's head commit, the pull request — used to be read out
+ * of `changes.source_ref.scp_authored`. `source_ref` is the raw delivery payload plus a few lifted
+ * keys, and ANY authenticated principal can write it verbatim through `POST /api/v1/changes`; the
+ * event that starts the merge gate can likewise be produced through `POST
+ * /change-sources/{kind}/report`. A tenant could therefore fabricate a "bump" naming any repository
+ * and have SCP merge into it with SCP's own installation credential — a confused deputy, not a
+ * validation gap, and no amount of validating an attacker-writable field fixes one.
+ *
+ * A merge is the one irreversible thing this feature does, so it acts ONLY on facts SCP ITSELF
+ * RECORDED. These rows are written by `dependencies/bump-actuator.ts` when SCP decides to author, and
+ * updated only by the ingress that observes SCP's own branch coming back and by the gate that
+ * actuates the merge. There is no route, no IaC type and no federation importer that reaches them. A
+ * change with no row here is NOT a bump change and never reaches the merge path.
+ *
+ * `changes.source_ref.scp_authored` is still written — as the human-readable explanation on the
+ * change (principle 6) — and is no longer READ by anything that decides a write.
+ */
+export const dependencyBumpAuthorships = pgTable(
+  "dependency_bump_authorships",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** The bump change. Org-unbound `references(objects.id)`, the same form `changes.objectId` uses
+     *  (0061's barrier-2 note: `objects` has no `(org_id, id)` unique constraint to reference). */
+    changeObjectId: uuid("change_object_id")
+      .notNull()
+      .references(() => objects.id),
+    componentObjectId: uuid("component_object_id")
+      .notNull()
+      .references(() => objects.id),
+    lineId: uuid("line_id").notNull(),
+    /** `owner/repo` — THE authority for which repository a merge may touch. */
+    repo: text("repo").notNull(),
+    /** The branch the pull request targets. The plugin asserts the provider agrees the pull
+     *  request's OWN base is this before merging, so a retargeted pull request refuses. */
+    baseBranch: text("base_branch").notNull(),
+    /** `refs/heads/scp/dep-bump/<changeObjectId>` — recorded rather than only derived, so both sides
+     *  of the provenance join are facts on disk. */
+    authoredRef: text("authored_ref").notNull(),
+    ecosystem: text("ecosystem").notNull(),
+    coordinate: text("coordinate").notNull(),
+    manifestPath: text("manifest_path").notNull(),
+    fromVersion: text("from_version").notNull(),
+    toVersion: text("to_version").notNull(),
+    /** The commit SCP's own branch is at, written when the authored push is observed back through
+     *  the two-sided branch check. NULL until then — a real state, and the reason a FIRST dispatch
+     *  can never auto-merge. */
+    headCommit: text("head_commit"),
+    /** The pull request SCP opened, read back from the authoring run's own `status().stateRef`. The
+     *  merge is addressed to THIS NUMBER, never to the first entry of a provider list. */
+    pullRequestNumber: integer("pull_request_number"),
+    /** Set once the provider confirms the merge — what stops the merge commit's OWN webhook from
+     *  re-running the gate and overwriting the audit trail with a refusal for a bump that merged. */
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    primaryKey({
+      name: "dependency_bump_authorships_pk",
+      columns: [table.orgId, table.changeObjectId]
+    }),
+    foreignKey({
+      name: "dependency_bump_authorships_line_fk",
+      columns: [table.orgId, table.lineId],
+      foreignColumns: [dependencyLines.orgId, dependencyLines.id]
+    }),
+    // "Which bump is this commit the head of?" — the CI-conclusion correlation route, which ran as
+    // an unbounded scan of every dependency-bump change in the org inside the ingress transaction.
+    // PARTIAL in 0063, and mirrored here so the two do not disagree about what is indexed.
+    index("dependency_bump_authorships_org_head_commit")
+      .on(table.orgId, table.headCommit)
+      .where(sql`${table.headCommit} is not null`),
+    // The idempotency lookup a redelivered head-advance takes.
+    index("dependency_bump_authorships_org_subject").on(
+      table.orgId,
+      table.componentObjectId,
+      table.manifestPath,
+      table.coordinate,
+      table.toVersion
+    )
   ]
 );

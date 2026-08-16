@@ -459,6 +459,10 @@ export async function runPromotionScanStep(
         status: d.status,
         evidence: d.evidence,
         detail: d.detail
+        // NO `pluginModule` (0063), deliberately: these rows are deposited under a SYNTHETIC control
+        // id with no `control_bindings` row, so there is no module that produced them. NULL is the
+        // honest answer and is what keeps a caller asking "what kind of evidence is this?" able to
+        // tell a commander scan deposit apart from a bound plugin's verdict.
       });
     }
   });

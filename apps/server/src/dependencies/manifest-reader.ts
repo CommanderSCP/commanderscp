@@ -87,6 +87,36 @@ export function bindingRepoIdentity(config: unknown): string | null {
   return null;
 }
 
+/**
+ * The same identity, VERBATIM — the form a request is ADDRESSED to rather than compared with.
+ *
+ * {@link bindingRepoIdentity} case-folds, which is right for deciding "is this the binding for that
+ * repo?" and wrong for everything else: `owner/Repo` and `owner/repo` are the same repository to all
+ * three providers, but a branch created under the folded spelling is a different string in every
+ * audit record and in the pull request's own URL. M21.5's bump dispatcher authors INTO the repo, so
+ * it needs what the operator actually configured.
+ *
+ * Two functions rather than one with a flag, because the two answers are used for different things
+ * and a caller that picked the wrong one would still work — until the first binding configured with
+ * a capital letter.
+ */
+export function bindingRepoPath(config: unknown): string | null {
+  if (config === null || typeof config !== "object") return null;
+  const c = config as { projectPath?: unknown; owner?: unknown; repo?: unknown };
+  if (typeof c.projectPath === "string" && c.projectPath.trim() !== "") {
+    return c.projectPath.trim().replace(/^\/+|\/+$/g, "");
+  }
+  if (
+    typeof c.owner === "string" &&
+    c.owner.trim() !== "" &&
+    typeof c.repo === "string" &&
+    c.repo.trim() !== ""
+  ) {
+    return `${c.owner.trim()}/${c.repo.trim()}`;
+  }
+  return null;
+}
+
 /** Trimmed, stripped of surrounding slashes and case-folded — the comparison form only. The binding
  *  and the request are both put through this, never one of them. */
 export function normalizeRepoIdentity(repo: string): string {

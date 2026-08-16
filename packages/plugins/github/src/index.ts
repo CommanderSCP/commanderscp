@@ -319,10 +319,22 @@ export function mapGithubWebhookEventToHint(
       };
     }
     case "pull_request": {
-      const pr = p.pull_request as { head?: { sha?: string }; number?: number } | undefined;
+      const pr = p.pull_request as
+        { head?: { sha?: string; ref?: string }; number?: number } | undefined;
       return {
         repo,
         commitSha: pr?.head?.sha,
+        // THE SOURCE BRANCH, under its own name — NOT `ref`. GitHub spells a pull request's head
+        // branch unqualified (`scp/dep-bump/<id>`), so it is qualified here to the one spelling
+        // every consumer of a ref in this tree uses. It is deliberately not `ref`: a `refPattern`
+        // source mapping matches `ref`, and populating it here would start routing pull-request
+        // events by their head branch in every existing deployment. See
+        // `GitProviderEventHint.headRef` for the one consumer and the duplicate change its absence
+        // produced.
+        headRef:
+          typeof pr?.head?.ref === "string" && pr.head.ref.length > 0
+            ? `refs/heads/${pr.head.ref}`
+            : undefined,
         correlationKey: pr?.number !== undefined ? `pr-${pr.number}` : undefined
       };
     }

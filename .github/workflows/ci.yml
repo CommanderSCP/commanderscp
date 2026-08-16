@@ -223,8 +223,9 @@ jobs:
 
   runner-images:
     name: "4c. Prebuild + publish runner images to GHCR (content-hash tags)"
-    # LEVER 1: the integration tests need two ephemeral runner images — scp-runner-scan (promotion
-    # scan step) and scp-runner-iac (managed-IaC). They used to `docker build` them in-process on
+    # LEVER 1: the integration tests need three ephemeral runner images — scp-runner-scan (promotion
+    # scan step), scp-runner-iac (managed-IaC) and scp-runner-dep (managed-dep's manifest editor,
+    # M21.5). They used to `docker build` them in-process on
     # EVERY integration run (minutes per run). This job builds them ONCE per content change and
     # publishes them to GHCR by a content-hash tag (scripts/runner-image-tags.sh — the single source
     # of truth for the tag formula, shared with the integration job's pull step); the integration
@@ -240,7 +241,8 @@ jobs:
     # cache miss, PULLS `docker/dockerfile:1.7` from Docker Hub — an unauthenticated, rate-limitable
     # external dependency, against CLAUDE.md #5 (vendored tooling, no outside calls). Keeping the
     # legacy builder keeps the build hermetic. (`apps/runner-scan/Dockerfile` is also MULTI-stage —
-    # `FROM ... AS trivy` + `COPY --from=trivy` — which the legacy builder handles fine; multi-stage
+    # `FROM ... AS trivy` + `COPY --from=trivy` — as is `apps/runner-dep/Dockerfile` (an assemble
+    # stage feeding a `FROM scratch`), which the legacy builder handles fine; multi-stage
     # long predates BuildKit. An earlier revision of this comment claimed both Dockerfiles were
     # "plain single-stage ... with no BuildKit-only features": both halves were false.)
     # The ORIGINAL DinD justification (PR #126: BuildKit's embedded gRPC session deadlocking against
@@ -272,6 +274,13 @@ jobs:
           }
           build_and_push "$SCP_RUNNER_SCAN_IMAGE_REF" apps/runner-scan
           build_and_push "$SCP_RUNNER_IAC_IMAGE_REF" apps/runner-iac
+          # M21.5 — scp-runner-dep, the isolated editor scp-managed-dep launches per bump. Built and
+          # published on the SAME terms as its two siblings, because the four charter clauses it
+          # carries ("never runs a package manager", "never resolves a lockfile", "never
+          # builds/compiles/tests", "the runner contains no package manager") are properties of the
+          # IMAGE, and an image nothing builds enforces nothing. `runner-image.integration.test.ts`
+          # is what asks the built artifact those questions, and it needs this ref to exist.
+          build_and_push "$SCP_RUNNER_DEP_IMAGE_REF" apps/runner-dep
 
   testcontainer-images:
     name: "4d. Mirror Testcontainer images to GHCR (postgres, nats, registry, minio)"
@@ -592,6 +601,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$SCP_RUNNER_SCAN_IMAGE_REF"
           docker pull "$SCP_RUNNER_IAC_IMAGE_REF"
+          docker pull "$SCP_RUNNER_DEP_IMAGE_REF"
       # Pull the Testcontainer images (job 4d) from GHCR and re-tag them back to the literal
       # strings the integration suites pass to `new GenericContainer(...)` /
       # `new PostgreSqlContainer(...)` — Testcontainers only pulls an image it can't already find
@@ -607,7 +617,8 @@ jobs:
             docker tag "$mirror_ref" "$upstream"
           done
       # LEVER 2: `--shard=i/2` (turbo forwards args after `--` to every test:integration task —
-      # @scp/server AND @scp/plugin-managed-iac; both configs pass `--passWithNoTests`, so the
+      # @scp/server, @scp/plugin-managed-iac AND @scp/plugin-managed-dep; every config passes
+      # `--passWithNoTests`, so the
       # single-file managed-iac suite runs in whichever shard vitest assigns it and no-ops in the
       # other). vitest shards at FILE granularity, so shard 1/2 + shard 2/2 together cover every
       # file exactly once — verified locally (file counts sum to the full suite, none dropped or

@@ -11,6 +11,7 @@ import {
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { componentDependencies, dependencyLines } from "../db/schema.js";
+import { writeOutboxEvent } from "../events/outbox-repo.js";
 import {
   asThirdPartyLine,
   evaluateHeadMovement,
@@ -226,6 +227,13 @@ export async function declareDependencyLineProducer(
 /** What {@link recordDependencyLineHead} did, and why — the caller puts this in its Decision, so a
  *  refusal is as legible as a move (charter principle 6). `line` is the row as it stands AFTER the
  *  call in both branches, so a refused caller can report the head that actually survived. */
+/**
+ * The CloudEvents `type` emitted when a line's head ADVANCES (M21.5). Declared here — beside the
+ * only function that can emit it — and consumed by `dependencies/bump-dispatch.ts`'s router, so the
+ * producer and the consumer read one constant rather than two string literals.
+ */
+export const DEPENDENCY_LINE_HEAD_ADVANCED_EVENT = "scp.dependency.line_head_advanced";
+
 export type RecordDependencyLineHeadOutcome =
   | {
       readonly recorded: true;
@@ -307,11 +315,55 @@ export async function recordDependencyLineHead(
     .where(and(eq(dependencyLines.orgId, orgId), eq(dependencyLines.id, input.lineId)))
     .returning();
   if (!row) throw new Error(`dependency line not found: ${input.lineId}`);
+  const after = toDependencyLine(row);
+
+  // ============================================================================================
+  // AND THIS IS WHERE THE BUMP STARTS — EMITTED AT THE WRITE DOOR, NOT AT EACH INGRESS (M21.5)
+  // ============================================================================================
+  // "A new head on a subscribed line produces a bump" is the whole point of M21.5, and it has to be
+  // true of BOTH ingresses and of any third one. Emitting it here rather than in
+  // `internal-release-detection.ts` and `version-poll.ts` is the same argument that put the head
+  // RULES here (this function's own header; ADR-0032 §7b's closing line): a fact applied by each
+  // caller has one place per caller to regress, and this file exists precisely because the two
+  // callers demonstrably disagreed about what these columns meant. A future ingress — an air-gap
+  // feed import, an operator-supplied head — dispatches a bump by construction rather than by
+  // remembering to.
+  //
+  // ONLY ON `advanced`, never on `restated`. A restatement is the same point on the line
+  // re-observed: the daily poll re-reads an unchanged head every day for every third-party line, and
+  // enqueuing a job for each of those is a per-day-per-dependency job for work already done. Nothing
+  // is lost — a component still declaring an older version is picked up by the next advance, and the
+  // dispatch job re-derives from the row rather than from the event.
+  //
+  // The event rides the ORDINARY OUTBOX in this same transaction (DESIGN §8), so it is atomic with
+  // the head write: a head that moved cannot fail to notify, and an event cannot name a head whose
+  // transaction rolled back. Its consumer is a ROUTER on `domain-events`
+  // (`dependencies/bump-dispatch.ts`), never a second worker on that queue — see `events/pgboss.ts`'s
+  // `DomainEventRouter` for why that distinction is load-bearing.
+  if (movement.movement === "advanced") {
+    await writeOutboxEvent(tx, {
+      orgId,
+      type: DEPENDENCY_LINE_HEAD_ADVANCED_EVENT,
+      source: "/dependencies/lines",
+      // The LINE is the subject; the dispatcher re-derives everything else from the row, so a
+      // redelivered event cannot make it act on facts that have since moved.
+      subject: after.id,
+      data: {
+        lineId: after.id,
+        ecosystem: after.ecosystem,
+        coordinate: after.coordinate,
+        major: after.major,
+        latestVersion: after.latestVersion,
+        latestDigest: after.latestDigest
+      }
+    });
+  }
+
   return {
     recorded: true,
     movement: movement.movement,
     detail: movement.detail,
-    line: toDependencyLine(row)
+    line: after
   };
 }
 

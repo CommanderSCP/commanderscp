@@ -1,4 +1,4 @@
-name: Publish product images (scpd + scp-runner-iac + scp-runner-scan)
+name: Publish product images (scpd + scp-runner-iac + scp-runner-scan + scp-runner-dep)
 
 # Publishes the PRODUCT images to GHCR so real deployments (first consumer: the
 # homelab-gitops ArgoCD app for the agentkit coordination trial) can pull them —
@@ -11,6 +11,8 @@ name: Publish product images (scpd + scp-runner-iac + scp-runner-scan)
 # the consuming gitops repo. Tags:
 #   ghcr.io/commanderscp/scpd:sha-<full commit sha>
 #   ghcr.io/commanderscp/scp-runner-iac:sha-<full commit sha>
+#   ghcr.io/commanderscp/scp-runner-scan:sha-<full commit sha>
+#   ghcr.io/commanderscp/scp-runner-dep:sha-<full commit sha>
 # plus a moving :latest for humans browsing the registry (never deployed from).
 # Auth: the workflow GITHUB_TOKEN (packages:write) — same proven pattern as
 # ci.yml's ci-image job. Runs on GitHub-hosted `ubuntu-latest` (needs a Docker
@@ -27,13 +29,13 @@ on:
 
 jobs:
   publish:
-    name: "Build + push scpd and scp-runner-iac to GHCR"
-    # DISK WATCH ITEM (hosted-runner swap): this job builds THREE images in one job on a runner with
+    name: "Build + push scpd and the three runner images to GHCR"
+    # DISK WATCH ITEM (hosted-runner swap): this job builds FOUR images in one job on a runner with
     # ~14 GB free. No cleanup step is wired in, deliberately — it stands up no cluster and pulls no
     # Kubernetes control plane, which is what actually blows the budget in deploy-drills.yml, and
     # this workflow is manual and trivially re-runnable. If a publish ever fails on "no space left on
     # device", the fix is one line: `- run: bash .github/scripts/free-disk.sh` as the first step
-    # (that script exists and documents itself), or `docker image prune -f` between the three builds.
+    # (that script exists and documents itself), or `docker image prune -f` between the four builds.
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -65,6 +67,19 @@ jobs:
           docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/runner-scan
           docker push "$IMAGE:sha-${{ github.sha }}"
           docker push "$IMAGE:latest"
+      - name: Build + push scp-runner-dep (apps/runner-dep)
+        # M21.5 — the managed-dep executor's ephemeral MANIFEST EDITOR. Published on the same terms
+        # as its two siblings, and for a reason sharper than symmetry: four clauses of the charter's
+        # `scp-managed-dep` amendment ("never runs a package manager", "never resolves or regenerates
+        # a lockfile", "never builds, compiles, or tests", "the runner contains no package manager")
+        # are properties of THIS IMAGE, and the class fails closed without it —
+        # `SCP_MANAGED_DEP_RUNNER_IMAGE` unset means dependency-bump authoring is off. An image no
+        # workflow publishes is a class no deployment can enable.
+        run: |
+          IMAGE="ghcr.io/commanderscp/scp-runner-dep"
+          docker build -t "$IMAGE:sha-${{ github.sha }}" -t "$IMAGE:latest" apps/runner-dep
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:latest"
       - name: Emit pinned refs + digests (paste into the consuming gitops values)
         run: |
           {
@@ -76,5 +91,7 @@ jobs:
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-iac:sha-${{ github.sha }}" || true
             echo "scp-runner-scan: ghcr.io/commanderscp/scp-runner-scan:sha-${{ github.sha }}"
             docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-scan:sha-${{ github.sha }}" || true
+            echo "scp-runner-dep: ghcr.io/commanderscp/scp-runner-dep:sha-${{ github.sha }}"
+            docker inspect --format='  digest: {{index .RepoDigests 0}}' "ghcr.io/commanderscp/scp-runner-dep:sha-${{ github.sha }}" || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

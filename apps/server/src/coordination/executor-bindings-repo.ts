@@ -616,13 +616,23 @@ export function managedRunnerSettings(): { dockerBinary: string } {
  *    AND IT MEANS OFF: with no image, a managed-dep dispatch fails closed here before a container
  *    could be launched or a credential minted. That is the deployment-level expression of "managed
  *    execution is never a default" (ADR-0006) for the one class that writes to a user's repository.
- *  - SCP_MANAGED_DEP_NETWORK_MODE — `docker create --network`, default `none`. THE RUNNER REACHES NO
- *    HOSTS: it receives the manifest bytes by `docker cp`, edits them offline, and returns them the
- *    same way. The ORCHESTRATOR (the plugin) is what holds the per-run repository-write credential
- *    and reaches the git host — the same split `scp-managed-scan` already ships, where the SERVER
- *    pulls the subject's bytes and the runner has no network. See
- *    `packages/plugins/managed-dep/src/repo-write.ts` for the charter clauses this reconciles.
  *  - SCP_MANAGED_DEP_WORKSPACE_ROOT — operator root under which per-run scratch dirs are made.
+ *
+ * THERE IS DELIBERATELY NO NETWORK-MODE SETTING, and its absence IS the charter rather than an
+ * omission. `managedIacServerSettings` and `managedScanServerSettings` each carry one because their
+ * classes' network clauses are QUALIFIED — managed-scan's by the 2026-07-23 amendment, "excepting
+ * operator-allowlisted registry pulls for the subject artifact's bytes". The `scp-managed-dep` clause
+ * is not: "Runner network egress is `--network none`; the runner holds no credential, contains no
+ * package manager, and edits only the bytes handed to it" (2026-08-15, unqualified). A knob with a
+ * `none` default is an operator-facing way to contradict that, so the value is a LITERAL in the
+ * plugin (`@scp/plugin-managed-dep`'s `RUNNER_NETWORK_MODE`) and there is nothing here to inject.
+ * `SCP_MANAGED_DEP_NETWORK_MODE` is read by nothing; setting it does nothing.
+ *
+ * THE RUNNER REACHES NO HOSTS: it receives the manifest bytes by `docker cp`, edits them offline,
+ * and returns them the same way. The ORCHESTRATOR (the plugin) is what holds the per-run
+ * repository-write credential and reaches the git host — the same split `scp-managed-scan` already
+ * ships, where the SERVER pulls the subject's bytes and the runner has no network. See
+ * `packages/plugins/managed-dep/src/repo-write.ts` for the charter clauses this reconciles.
  *
  * WHY THERE IS NO NEW EXECUTOR `type` FOR THIS CLASS (schemas/executors.ts's closed enum
  * image|rpm|deb|npm|infrastructure|configuration, "extensible only by deliberate owner decision").
@@ -646,12 +656,10 @@ export function managedRunnerSettings(): { dockerBinary: string } {
  */
 export function managedDepServerSettings(): {
   runnerImage: string | undefined;
-  networkMode: string;
   workspaceRoot: string;
 } {
   return {
     runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
-    networkMode: process.env.SCP_MANAGED_DEP_NETWORK_MODE ?? "none",
     workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep")
   };
 }
@@ -812,7 +820,7 @@ export async function resolveExecutorPluginInstance(
       );
     }
     serverInjected.runnerImage = settings.runnerImage;
-    serverInjected.networkMode = settings.networkMode;
+    // No `networkMode` — see `managedDepServerSettings`. The plugin uses a literal.
     serverInjected.workspaceRoot = settings.workspaceRoot;
   }
 

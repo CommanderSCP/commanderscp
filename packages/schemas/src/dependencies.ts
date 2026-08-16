@@ -294,8 +294,26 @@ export type DependencySubscriptionGranularity = z.infer<
  * silent — that policy must declare `auto_merge` too. That is the safe direction of the trade, and
  * it is the direction the owner's requirement points ("teams choose").
  *
- * (`delivery` describes intent; §8 does not ship until the charter amendment adding
- * `scp-managed-dep` lands — reading this type is not evidence the code bumps anything.)
+ * ============================================================================================
+ * `auto_merge` IS ACTUATED, AND NEVER ON A BUMP'S FIRST LOOK (M21.5, ADR-0032 §8c)
+ * ============================================================================================
+ * The charter grants automatic merge only where a governed control evidences the component's OWN
+ * checks passed ON THE BUMP'S OWN COMMIT — which cannot be true when the bump is authored, because
+ * the commit the control would have to have passed is the one that run is about to create. So the
+ * FIRST dispatch of an `auto_merge` subscription always resolves to `pull_request`, whatever the
+ * subscription asked for, and records why on the change: the option is visibly declined rather than
+ * silently ignored.
+ *
+ * The SECOND look is what merges, and it exists (`apps/server/src/dependencies/bump-gate.ts`): when
+ * an observed provider event correlates to a bump SCP authored — the authored push, then the CI
+ * conclusion that names its commit — the EXISTING governance gate is run for that change, and the
+ * delivery question is asked again against what it deposited. A grant additionally requires the
+ * evidence to name the bump's own repository AND its own head commit, both read from SCP's own
+ * server-owned record of what it authored, and the merge is then addressed to the pull request SCP
+ * itself opened.
+ *
+ * "The bump merges on its second look, never on its first" is the property. `bump-actuator.ts`'s
+ * `resolveEffectiveDelivery` states every narrowing and what each one closes.
  */
 export const DependencySubscriptionDeliverySchema = z.enum(["pull_request", "auto_merge"]);
 export type DependencySubscriptionDelivery = z.infer<typeof DependencySubscriptionDeliverySchema>;

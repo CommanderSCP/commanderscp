@@ -366,6 +366,16 @@ export interface DelegationProbeSubject {
 export interface DelegationProbeResult {
   /** True when at least one config was found that covers at least one of the component's manifests. */
   delegated: boolean;
+  /**
+   * True only when EVERY candidate path in {@link DELEGATION_CONFIG_PATHS} was answered — found or
+   * genuinely absent. False the moment one of them could not be read.
+   *
+   * It is a separate field from `delegated` because the two answer different questions and the
+   * difference is the whole refusal: `delegated: false` means "no delegating config was found",
+   * which is a claim about the repository, and it may only be made when the repository was actually
+   * readable. See {@link delegationProbeIsInconclusive}.
+   */
+  conclusive: boolean;
   /** The configs found, whether or not they collide. */
   configs: DelegationConfig[];
   /** For each colliding config, which of the component's manifests it claims. */
@@ -373,6 +383,36 @@ export interface DelegationProbeResult {
   /** Config paths whose read failed, with the reason. A probe that could not read is NOT a probe
    *  that found nothing, and the difference is carried rather than flattened. */
   unreadable: { configPath: string; detail: string }[];
+}
+
+/**
+ * ============================================================================================
+ * "WE COULD NOT CHECK" MUST NEVER RESOLVE TO "GO AHEAD AND WRITE TO IT"
+ * ============================================================================================
+ * A probe that read nothing looks EXACTLY like a probe that found nothing — same `configs: []`, same
+ * `collisions: []`, same `delegated: false` — and that is how a bad credential, a provider 5xx or an
+ * egress refusal turned into an `allow` verdict and an authored commit. This is the one refusal
+ * standing between CommanderSCP and two actuators editing one file, and the cost of the two mistakes
+ * is not symmetric: a refused bump is a component that keeps declaring an older version and says so;
+ * a wrong one is a commit in somebody else's repository, racing Renovate on every release.
+ *
+ * So an inconclusive probe is not a verdict at all. It is recorded as NOTHING —
+ * {@link recordDelegationProbe} refuses to persist it rather than writing a weaker `allow`, because
+ * a stored `allow` would then be read as a standing fact by both readers long after the outage that
+ * produced it. The dispatcher skips the candidate with a named cause and re-derives on the next
+ * advance.
+ *
+ * A probe that DID find a collision is conclusive enough to refuse whatever else failed to read:
+ * more unread config could only add collisions, never remove the one already found. That is why the
+ * test is `!delegated && !conclusive` rather than `!conclusive`.
+ */
+export function delegationProbeIsInconclusive(result: DelegationProbeResult): boolean {
+  return !result.delegated && !result.conclusive;
+}
+
+/** The sentence an inconclusive probe is reported with, in one place because two callers emit it. */
+export function delegationProbeFailureDetail(result: DelegationProbeResult): string {
+  return result.unreadable.map((u) => `${u.configPath} (${u.detail})`).join("; ");
 }
 
 /**
@@ -429,7 +469,16 @@ export async function probeDependencyUpdateDelegation(
     }
   }
 
-  return { delegated: collisions.length > 0, configs, collisions, unreadable };
+  return {
+    delegated: collisions.length > 0,
+    // EVERY candidate path answered, or this probe does not get to say "no delegation here" — see
+    // {@link delegationProbeIsInconclusive}. Derived here rather than left to each caller, because a
+    // rule applied per caller has one place per caller to regress.
+    conclusive: unreadable.length === 0,
+    configs,
+    collisions,
+    unreadable
+  };
 }
 
 /**
@@ -440,6 +489,12 @@ export async function probeDependencyUpdateDelegation(
  * produced 1.44 GB/day of byte-identical rows elsewhere in this system. A repository's delegation
  * status changes when somebody adds or deletes a file; the verdict should be written then and not
  * once per pass.
+ *
+ * AN INCONCLUSIVE PROBE IS REFUSED HERE, not merely skipped by the one caller that exists today.
+ * The refusal belongs at the WRITER because that is the only place every future producer of this
+ * verdict must pass through: a caller that forgot the check would otherwise persist an `allow` that
+ * both readers then treat as a standing fact about a repository nobody could read. It throws BEFORE
+ * touching `tx`, so it is a decision about the argument rather than a database outcome.
  */
 export async function recordDelegationProbe(
   tx: TenantTx,
@@ -447,6 +502,16 @@ export async function recordDelegationProbe(
   subject: DelegationProbeSubject,
   result: DelegationProbeResult
 ): Promise<Decision> {
+  if (delegationProbeIsInconclusive(result)) {
+    throw new Error(
+      `dependency-delegation probe for '${subject.repo}@${subject.ref}' could not read ` +
+        `${result.unreadable.length} of the ${DELEGATION_CONFIG_PATHS.length} candidate config ` +
+        `paths, so it cannot state that this repository delegates nothing: ` +
+        `${delegationProbeFailureDetail(result)}. No verdict is recorded — "we could not check ` +
+        `whether another dependency-update system owns these manifests" never resolves to "go ` +
+        `ahead and write to them"`
+    );
+  }
   const recorded = await insertDecisionIfChanged(tx, {
     orgId,
     kind: DEPENDENCY_DELEGATION_DECISION_KIND,

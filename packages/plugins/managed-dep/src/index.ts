@@ -23,6 +23,7 @@ import {
 import {
   resolveRepoWriter,
   type BumpDelivery,
+  type MergeOutcome,
   type RepoWriter,
   type RepoWriteResult
 } from "./repo-write.js";
@@ -30,6 +31,7 @@ import {
   assertBranchIsNotBase,
   assertWriteBaseBranch,
   assertWriteBranch,
+  assertWriteCommit,
   assertWritePath,
   assertWriteRepo,
   verifyManifestOnlyEdit
@@ -93,7 +95,7 @@ const execFileAsync = promisify(execFile);
  * this plugin READS them from the repository itself, with the run's own credential.
  *
  * ============================================================================================
- * AUTO-MERGE IS NOT DECIDED HERE
+ * AUTO-MERGE IS NOT DECIDED HERE — BUT IT IS CONDITIONED HERE
  * ============================================================================================
  * "Automatic merge is permitted only where a governed control evidences that the component's own
  * checks passed" (charter; ADR-0032 §8: "expressed as a governed control so the existing gate
@@ -105,6 +107,24 @@ const execFileAsync = promisify(execFile);
  * second gate ADR-0032 §8 forbids, and it would be the WEAKER of the two — a plugin cannot read
  * `control_runs`, so it would have had to re-ask the provider, which is a different question asked
  * of a different system at a different time than the one the gate machinery answered.
+ *
+ * What this plugin DOES enforce is the binding between that decision and a TREE. Every merge it
+ * performs carries `expectedHeadCommit` as the provider's merge precondition, so the commit that
+ * merges is the commit the control passed and no other. The decision is the server's; the guarantee
+ * that it was actuated against what it was about is this file's.
+ *
+ * ============================================================================================
+ * TWO ACTIONS, AND THE SECOND ONE IS WHAT MAKES AUTO-MERGE REACHABLE (M21.5, ADR-0032 §8c)
+ * ============================================================================================
+ * `action: "bump"` (the default) authors the edit and opens the pull request. `action: "merge"`
+ * merges a pull request THIS class already authored, and nothing else — it never edits, never
+ * pushes, and never opens a pull request that a human has since closed.
+ *
+ * They are separate because evidence names a commit and the authoring run CREATES that commit: at
+ * the moment a bump is authored there is no commit for a control to have passed, so an authoring run
+ * can only ever merge on evidence about something else. The server's gate job re-runs the governed
+ * gate once the component's checks conclude on the authored commit and then dispatches the merge
+ * action against exactly that commit.
  *
  * ============================================================================================
  * SYNCHRONOUS TRIGGER, exactly as both siblings
@@ -128,15 +148,25 @@ const execFileAsync = promisify(execFile);
 export interface ManagedDepConfig {
   /** SERVER-INJECTED (never tenant): the vetted, pinned `scp-runner-dep` image reference. */
   runnerImage: string;
-  /** SERVER-INJECTED (never tenant): `docker create --network <value>`, default `"none"`. The
-   *  runner reaches no hosts; the ORCHESTRATOR holds the credential (see `repo-write.ts`). */
-  networkMode: string;
   /** SERVER-INJECTED (never tenant): operator root under which per-run scratch dirs are made. */
   workspaceRoot: string;
   /** ms before the container run is killed as hung (TENANT config). Default 5 minutes — a manifest
    *  edit is a text transform on one small file, so a run that takes longer is stuck, not busy. */
   timeoutMs?: number;
-  /** Override for tests only; default "docker". Server-injected in production. */
+  /**
+   * The docker CLI to spawn. Defaults to `"docker"`, resolved on the subprocess's PATH, and NOTHING
+   * SETS IT IN PRODUCTION — a test/fixture seam, exactly as it is for `@scp/plugin-managed-iac` and
+   * `@scp/plugin-managed-scan`.
+   *
+   * It used to say "Server-injected in production", which was false: `executor-bindings-repo.ts`'s
+   * `managedDepServerSettings` injects `runnerImage` and `workspaceRoot` and nothing else. That is
+   * the same shape as the shipped managed-scan schema hole — a comment describing a control that
+   * does not exist — and a reader who trusted it would believe an operator governs which executable
+   * this plugin spawns. What actually keeps a TENANT from setting it is the manifest at the bottom
+   * of this file: `additionalProperties: false` with `dockerBinary` absent, so a binding carrying it
+   * is rejected at create/update by `routes/executors.ts`
+   * (`plugin-manifests-managed-dep.test.ts` pins that refusal by name).
+   */
   dockerBinary?: string;
 
   // --- The git-provider identity (TENANT config — the App the component's team installed) --------
@@ -151,7 +181,27 @@ export interface ManagedDepConfig {
 }
 
 const DEFAULT_TIMEOUT_MS = 5 * 60_000;
-const DEFAULT_NETWORK_MODE = "none";
+
+/**
+ * `docker create --network <this>` — A LITERAL, NOT A DEFAULT, AND THE DIFFERENCE IS THE CHARTER.
+ *
+ * The 2026-08-15 amendment says, of this class and without qualification: "Runner network egress is
+ * `--network none`; the runner holds no credential, contains no package manager, and edits only the
+ * bytes handed to it." Compare `scp-managed-scan`, whose otherwise-identical clause the 2026-07-23
+ * amendment DOES qualify ("excepting operator-allowlisted registry pulls for the subject artifact's
+ * bytes") — which is why that class reads an operator setting and this one must not.
+ *
+ * This was briefly built as a server-injected `networkMode` with a `"none"` default, read from
+ * `SCP_MANAGED_DEP_NETWORK_MODE`. A default is a value an operator may change, and an
+ * operator-settable knob is an operator-facing way to contradict an unqualified charter clause —
+ * "the runner reaches no hosts" would have been true of the shipped default and false of a
+ * deployment. There is nothing to configure here, so there is no configuration for it: the setting
+ * is gone from the plugin manifest, from `ManagedDepConfig`, and from
+ * `coordination/executor-bindings-repo.ts`'s `managedDepServerSettings`.
+ *
+ * Exported so `runner-containment.test.ts` can assert the launched argv rather than this constant.
+ */
+export const RUNNER_NETWORK_MODE = "none";
 
 /**
  * THE BRANCH PREFIX IS PART OF THE PROVENANCE CONTRACT, not cosmetics.
@@ -188,9 +238,16 @@ export const CONTENT_BEARING_KEYS = [
   "command"
 ] as const;
 
+/** Which of the two acts an intent is asking for. Absent means `bump`, so every intent built before
+ *  the merge action existed keeps its meaning — and a value this plugin does not know is REFUSED
+ *  rather than defaulted, because defaulting an unknown action to the authoring one would silently
+ *  edit a repository for a request that asked for something else. */
+export type ManagedDepAction = "bump" | "merge";
+
 /** What the SERVER's actuator seam sends. Every field is a reference to something that already
  *  exists, or a version token. Nothing here can hold a file body. */
 export interface ManagedDepIntentParameters {
+  action?: ManagedDepAction;
   ecosystem: DependencyEcosystem;
   coordinate: string;
   manifestPath: string;
@@ -209,6 +266,13 @@ export interface ManagedDepIntentParameters {
   /** Resolved by the server from the subscription merge AND, for `auto_merge`, from a passing
    *  governed control. This plugin never upgrades it. */
   delivery: BumpDelivery;
+  /** The commit a governed control evidenced. REQUIRED for any merge — see
+   *  `PublishBumpInput.expectedHeadCommit` and `MergeAuthoredBranchInput`. */
+  expectedHeadCommit?: string;
+  /** `action: "merge"` only — the pull request CommanderSCP itself opened for this bump, as the
+   *  SERVER recorded it (`dependency_bump_authorships.pull_request_number`). The merge is addressed
+   *  to this number rather than found by listing. */
+  pullRequestNumber?: number;
 }
 
 export interface ParsedBumpDescriptor {
@@ -219,6 +283,19 @@ export interface ParsedBumpDescriptor {
   declaredManifestPaths: string[];
   changeObjectId: string;
   delivery: BumpDelivery;
+  expectedHeadCommit?: string;
+}
+
+/** What `action: "merge"` needs, and nothing more. No ecosystem, no manifest, no versions: a merge
+ *  is not an edit and may not describe one. */
+export interface ParsedMergeDescriptor {
+  repo: string;
+  baseBranch: string;
+  headBranch: string;
+  changeObjectId: string;
+  expectedHeadCommit: string;
+  pullRequestNumber: number;
+  commitTitle: string;
 }
 
 /** The provider name descriptor-time refusals carry. The descriptor is validated before a provider
@@ -241,14 +318,10 @@ const DESCRIPTOR_PROVIDER = "github";
  * the same one the write itself re-applies at the splice site.
  */
 
-/**
- * Turn an intent into a descriptor, or throw. Every refusal below is a REFUSAL rather than a
- * fallback: a bump whose target cannot be stated precisely is a bump that must not happen, because
- * the alternative is guessing which declaration in somebody else's repository to rewrite.
- */
-export function parseBumpDescriptor(intent: TriggerIntent): ParsedBumpDescriptor {
-  const params = (intent.parameters ?? {}) as Record<string, unknown>;
-
+/** The content-bearing-key refusal, applied to EVERY action rather than to the one that happens to
+ *  edit a file. A merge intent has no legitimate use for these keys either, and the channel ADR-0032
+ *  §9 forbids is forbidden per-plugin, not per-code-path. */
+function refuseContentBearingKeys(params: Record<string, unknown>): void {
   for (const key of CONTENT_BEARING_KEYS) {
     if (key in params) {
       throw new Error(
@@ -258,16 +331,58 @@ export function parseBumpDescriptor(intent: TriggerIntent): ParsedBumpDescriptor
       );
     }
   }
+}
 
-  const str = (key: keyof ManagedDepIntentParameters): string => {
-    const value = params[key];
-    if (typeof value !== "string" || value.trim() === "") {
-      throw new Error(
-        `managed-dep: intent.parameters.${key} is required and must be a non-empty string`
-      );
-    }
-    return value;
-  };
+function requiredString(
+  params: Record<string, unknown>,
+  key: keyof ManagedDepIntentParameters
+): string {
+  const value = params[key];
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(
+      `managed-dep: intent.parameters.${key} is required and must be a non-empty string`
+    );
+  }
+  return value;
+}
+
+/** The change id, validated as the thing it BECOMES — a branch name. Shared by both actions so the
+ *  merge target is composed by exactly the rule the authoring run composed it by. */
+function requiredChangeObjectId(params: Record<string, unknown>): string {
+  const changeObjectId = requiredString(params, "changeObjectId");
+  if (!/^[A-Za-z0-9-]{1,64}$/.test(changeObjectId)) {
+    throw new Error(
+      `managed-dep: changeObjectId '${changeObjectId}' is not an object id — it becomes the branch name, so it must be one`
+    );
+  }
+  return changeObjectId;
+}
+
+/**
+ * Which act this intent asks for. `undefined` is `bump` (every intent built before the merge action
+ * existed), and anything else is REFUSED — an unrecognised action must never fall through to the
+ * one that writes a commit.
+ */
+export function parseIntentAction(intent: TriggerIntent): ManagedDepAction {
+  const raw = (intent.parameters ?? {})["action" satisfies keyof ManagedDepIntentParameters];
+  if (raw === undefined || raw === "bump") return "bump";
+  if (raw === "merge") return "merge";
+  throw new Error(
+    `managed-dep: intent.parameters.action must be 'bump' or 'merge' (got ${JSON.stringify(raw)})`
+  );
+}
+
+/**
+ * Turn an intent into a descriptor, or throw. Every refusal below is a REFUSAL rather than a
+ * fallback: a bump whose target cannot be stated precisely is a bump that must not happen, because
+ * the alternative is guessing which declaration in somebody else's repository to rewrite.
+ */
+export function parseBumpDescriptor(intent: TriggerIntent): ParsedBumpDescriptor {
+  const params = (intent.parameters ?? {}) as Record<string, unknown>;
+
+  refuseContentBearingKeys(params);
+
+  const str = (key: keyof ManagedDepIntentParameters): string => requiredString(params, key);
 
   const ecosystem = str("ecosystem");
   if (!isDependencyEcosystem(ecosystem)) {
@@ -310,12 +425,7 @@ export function parseBumpDescriptor(intent: TriggerIntent): ParsedBumpDescriptor
     );
   }
 
-  const changeObjectId = str("changeObjectId");
-  if (!/^[A-Za-z0-9-]{1,64}$/.test(changeObjectId)) {
-    throw new Error(
-      `managed-dep: changeObjectId '${changeObjectId}' is not an object id — it becomes the branch name, so it must be one`
-    );
-  }
+  const changeObjectId = requiredChangeObjectId(params);
   const fromVersion = str("fromVersion");
   const toVersion = str("toVersion");
   // A version TOKEN never spans lines and never carries control characters. This matters because
@@ -346,6 +456,16 @@ export function parseBumpDescriptor(intent: TriggerIntent): ParsedBumpDescriptor
       `managed-dep: intent.parameters.delivery must be 'pull_request' or 'auto_merge' (got ${JSON.stringify(delivery)})`
     );
   }
+  // A GRANT WITHOUT A COMMIT IS REFUSED AT THE DESCRIPTOR, before a credential is minted. The server
+  // only ever resolves `auto_merge` from a control run whose evidence names the bump's own head
+  // commit, so an `auto_merge` intent that carries no commit did not come from that resolution —
+  // and merging on it would merge whatever the branch is at, which is the fail-open the whole
+  // evidence chain exists to close.
+  const expectedHeadCommit =
+    delivery === "auto_merge" ? requiredString(params, "expectedHeadCommit") : undefined;
+  if (expectedHeadCommit !== undefined) {
+    assertWriteCommit(DESCRIPTOR_PROVIDER, expectedHeadCommit);
+  }
 
   const headBranch = bumpBranchFor(changeObjectId);
   // Composed here, but asserted anyway: the prefix is a constant and the id is validated above, so
@@ -367,7 +487,80 @@ export function parseBumpDescriptor(intent: TriggerIntent): ParsedBumpDescriptor
     headBranch,
     declaredManifestPaths,
     changeObjectId,
-    delivery
+    delivery,
+    ...(expectedHeadCommit ? { expectedHeadCommit } : {})
+  };
+}
+
+/**
+ * Turn a `action: "merge"` intent into a merge descriptor, or throw.
+ *
+ * WHAT IS DELIBERATELY NOT READABLE FROM THIS INTENT: a head branch. It is COMPOSED from
+ * `changeObjectId` by {@link bumpBranchFor} — the same function the authoring run used — so the only
+ * branch this action can ever merge is the branch a bump of that change authored. A caller-supplied
+ * branch name would turn the narrowest write in the tree into "merge whatever you are told to",
+ * which is precisely the widening the charter amendment does not grant.
+ *
+ * `expectedHeadCommit` is required and full-length. It is the merge precondition, and the server
+ * takes it from `dependency_bump_authorships.head_commit` — SERVER-OWNED storage of what SCP's own
+ * branch is at, written when the authored push came back through the two-sided branch check — never
+ * from `changes.source_ref`, which any authenticated principal can write, and never from anything the
+ * payload of this intent asserts about the world.
+ *
+ * `pullRequestNumber` is required for the same reason and closes a wider hole: without it this action
+ * LISTED open pull requests on the head branch and merged the first one, so provider ordering chose
+ * what got merged and no base was ever compared. The server records the number when SCP's own
+ * authoring run reports the pull request it opened; the write path then re-reads that pull request
+ * and refuses unless its state, head and base all still match the grant.
+ */
+export function parseBumpMergeDescriptor(intent: TriggerIntent): ParsedMergeDescriptor {
+  const params = (intent.parameters ?? {}) as Record<string, unknown>;
+  refuseContentBearingKeys(params);
+
+  const repo = requiredString(params, "repo");
+  assertWriteRepo(DESCRIPTOR_PROVIDER, repo, 2);
+  const baseBranch = requiredString(params, "baseBranch");
+  assertWriteBaseBranch(DESCRIPTOR_PROVIDER, baseBranch);
+  const changeObjectId = requiredChangeObjectId(params);
+  const expectedHeadCommit = requiredString(params, "expectedHeadCommit");
+  assertWriteCommit(DESCRIPTOR_PROVIDER, expectedHeadCommit);
+  // A POSITIVE INTEGER, refused at the descriptor before a credential is minted. There is no
+  // fallback to "find one": a merge intent that does not name the pull request SCP opened did not
+  // come from the server's gate, and searching for a substitute is exactly the behaviour that let
+  // provider list ordering decide what got merged.
+  const pullRequestNumber = params.pullRequestNumber;
+  if (
+    typeof pullRequestNumber !== "number" ||
+    !Number.isInteger(pullRequestNumber) ||
+    pullRequestNumber <= 0
+  ) {
+    throw new Error(
+      `managed-dep: intent.parameters.pullRequestNumber must be a positive integer (got ${JSON.stringify(pullRequestNumber)}) — a merge is addressed to the pull request CommanderSCP itself opened, never to whichever one a listing returns first`
+    );
+  }
+  // Stated rather than implied: a merge intent that asks for `pull_request` delivery is a
+  // contradiction, and treating it as "merge anyway" would make the field decorative.
+  const delivery = params.delivery;
+  if (delivery !== undefined && delivery !== "auto_merge") {
+    throw new Error(
+      `managed-dep: a merge intent's delivery must be 'auto_merge' (got ${JSON.stringify(delivery)}) — a merge is the actuation of that resolution, not an override of another one`
+    );
+  }
+
+  const headBranch = bumpBranchFor(changeObjectId);
+  assertWriteBranch(DESCRIPTOR_PROVIDER, headBranch);
+  assertBranchIsNotBase(DESCRIPTOR_PROVIDER, headBranch, baseBranch);
+
+  return {
+    repo,
+    baseBranch,
+    headBranch,
+    changeObjectId,
+    expectedHeadCommit,
+    pullRequestNumber,
+    // DERIVED here, never passed in — same narrowing as `bumpCommitMessage`: the only strings this
+    // class writes into somebody's repository are ones it composed itself.
+    commitTitle: `chore(deps): merge SCP-authored bump ${changeObjectId}`
   };
 }
 
@@ -385,7 +578,6 @@ function asConfig(config: unknown): ManagedDepConfig {
     ...c,
     runnerImage: c.runnerImage,
     workspaceRoot: c.workspaceRoot,
-    networkMode: c.networkMode ?? DEFAULT_NETWORK_MODE,
     timeoutMs: c.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     dockerBinary: c.dockerBinary ?? "docker"
   };
@@ -414,8 +606,9 @@ async function runEditorContainer(
     docker,
     [
       "create",
+      // THE LITERAL, never a config read — see {@link RUNNER_NETWORK_MODE}.
       "--network",
-      config.networkMode,
+      RUNNER_NETWORK_MODE,
       config.runnerImage,
       spec.ecosystem,
       spec.manifestPath,
@@ -470,6 +663,9 @@ interface RunOutcome {
   succeeded: boolean;
   detail: string;
   result?: RepoWriteResult;
+  /** Set by the merge action. Reported through `status().stateRef` so the SERVER records what the
+   *  provider actually did rather than what it asked for. */
+  merge?: MergeOutcome;
 }
 
 /** Synchronous-trigger outcome cache, keyed by externalId. In-memory like managed-scan's: a bump is
@@ -491,11 +687,96 @@ async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEv
   return [];
 }
 
+/**
+ * The merge half of `trigger()`. Separate because it has NO workspace, NO container, and NO edit:
+ * it mints the run credential, merges the pull request the bump already opened, and revokes it.
+ *
+ * The runner is not involved at all, and that is correct rather than an omission — the runner exists
+ * to perform an offline text edit, and there is no text here.
+ */
+async function triggerMerge(
+  ctx: PluginContext,
+  intent: TriggerIntent,
+  writerConfig: ManagedDepConfig,
+  externalId: string
+): Promise<void> {
+  let descriptor: ParsedMergeDescriptor;
+  try {
+    descriptor = parseBumpMergeDescriptor(intent);
+  } catch (err) {
+    outcomes.set(externalId, {
+      succeeded: false,
+      detail: err instanceof Error ? err.message : String(err)
+    });
+    return;
+  }
+
+  let writer: RepoWriter;
+  try {
+    writer = resolveRepoWriter(writerConfig);
+  } catch (err) {
+    outcomes.set(externalId, {
+      succeeded: false,
+      detail: err instanceof Error ? err.message : String(err)
+    });
+    return;
+  }
+
+  try {
+    const merge = await writer.withRunCredential(ctx, descriptor.repo, (session) =>
+      session.mergeAuthoredBranch({
+        target: {
+          repo: descriptor.repo,
+          baseBranch: descriptor.baseBranch,
+          headBranch: descriptor.headBranch
+        },
+        pullRequestNumber: descriptor.pullRequestNumber,
+        expectedHeadCommit: descriptor.expectedHeadCommit,
+        commitTitle: descriptor.commitTitle
+      })
+    );
+    outcomes.set(externalId, {
+      // A PROVIDER REFUSAL IS A FAILED RUN, not a succeeded one with a note. The server records the
+      // phase, and "the merge did not happen" must not read as "done".
+      succeeded: merge.merged,
+      merge,
+      detail: merge.merged
+        ? `managed-dep: merged pull request #${merge.pullRequestNumber} on '${descriptor.repo}' at the evidenced commit ${descriptor.expectedHeadCommit}`
+        : `managed-dep: NOT merged — ${merge.mergeRefusal ?? "the provider refused"}`
+    });
+    ctx.logger.info("managed-dep: merge run complete", {
+      externalId,
+      repo: descriptor.repo,
+      merged: merge.merged
+    });
+  } catch (err) {
+    outcomes.set(externalId, {
+      succeeded: false,
+      detail: `managed-dep: ${err instanceof Error ? err.message : String(err)}`
+    });
+  }
+}
+
 async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const externalId = `managed-dep::${intent.idempotencyKey ?? `${Date.now()}`}`;
   const cached = outcomes.get(externalId);
   if (cached) return { externalId };
+
+  let action: ManagedDepAction;
+  try {
+    action = parseIntentAction(intent);
+  } catch (err) {
+    outcomes.set(externalId, {
+      succeeded: false,
+      detail: err instanceof Error ? err.message : String(err)
+    });
+    return { externalId };
+  }
+  if (action === "merge") {
+    await triggerMerge(ctx, intent, config, externalId);
+    return { externalId };
+  }
 
   let descriptor: ParsedBumpDescriptor;
   try {
@@ -585,6 +866,11 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
       //    did not pass verification cannot reach a repository, because there is no way to call the
       //    write without a proof and no way to obtain a proof except by passing.
       const proof = verifyManifestOnlyEdit({
+        // WHERE these bytes are authorised to go, bound into the proof — see
+        // `ManifestEditProof.repo`. `publishBump` re-checks both against the target it is about to
+        // send to, so a proof cannot be re-aimed at another repository or at the base branch.
+        repo: descriptor.repo,
+        headBranch: descriptor.headBranch,
         path: descriptor.spec.manifestPath,
         declaredManifestPaths: descriptor.declaredManifestPaths,
         ecosystem: descriptor.spec.ecosystem,
@@ -603,7 +889,10 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
         spec: descriptor.spec,
         content: verdict.after,
         proof,
-        delivery: descriptor.delivery
+        delivery: descriptor.delivery,
+        ...(descriptor.expectedHeadCommit
+          ? { expectedHeadCommit: descriptor.expectedHeadCommit }
+          : {})
       });
       return {
         succeeded: true,
@@ -641,9 +930,9 @@ async function status(_ctx: PluginContext, ref: ExternalRunRef): Promise<Executi
   return {
     phase: outcome.succeeded ? "succeeded" : "failed",
     detail: outcome.detail.slice(0, 4000),
-    // The authored commit + pull request, so the server can record what this run actually did
-    // without re-asking the provider.
-    stateRef: outcome.result,
+    // The authored commit + pull request (or, for a merge run, what the provider actually did), so
+    // the server can record the outcome without re-asking the provider.
+    stateRef: outcome.result ?? outcome.merge,
     progress: 1
   };
 }
@@ -714,6 +1003,8 @@ export * from "./bump-edit.js";
 export * from "./write-guard.js";
 export type {
   BumpDelivery,
+  MergeAuthoredBranchInput,
+  MergeOutcome,
   PublishBumpInput,
   RepoSession,
   RepoWriteResult,

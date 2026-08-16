@@ -81,7 +81,8 @@ vi.mock("node:child_process", () => {
   };
 });
 
-const { createManagedDepExecutorPlugin, __resetManagedDepOutcomes } = await import("./index.js");
+const { createManagedDepExecutorPlugin, __resetManagedDepOutcomes, RUNNER_NETWORK_MODE } =
+  await import("./index.js");
 
 let scratch: string;
 
@@ -207,16 +208,24 @@ describe("the runner half — no network, no credential, no host", () => {
     }
   });
 
-  it("honours the SERVER-injected networkMode verbatim — it is never a tenant default", async () => {
-    // Mirrors managed-scan's identical assertion. The value is not tenant-suppliable (the manifest's
-    // `configSchema` is `additionalProperties: false` and does not list it, and the server spreads
-    // its own settings LAST); this pins that the plugin passes through what it is given rather than
-    // hard-coding a value that would make the operator setting a decoration.
+  it("launches `--network none` UNCONDITIONALLY — a config naming another mode changes nothing", async () => {
+    // THIS ASSERTION IS THE INVERSE OF WHAT IT USED TO BE, and the reversal is the charter rather
+    // than a change of mind. It previously mirrored `managed-scan`'s "honours the server-injected
+    // networkMode" — correct THERE, because the 2026-07-23 amendment QUALIFIES that class's network
+    // clause ("excepting operator-allowlisted registry pulls for the subject artifact's bytes"), so
+    // an operator setting is exactly what the charter contemplates for it.
+    //
+    // The `scp-managed-dep` clause carries no such qualifier: "Runner network egress is `--network
+    // none`; the runner holds no credential, contains no package manager, and edits only the bytes
+    // handed to it" (2026-08-15). An operator-settable knob with a `none` default is an
+    // operator-facing way to contradict an unqualified clause, so the value is a LITERAL
+    // (`RUNNER_NETWORK_MODE`) and `SCP_MANAGED_DEP_NETWORK_MODE` is now read by nothing.
     const plugin = createManagedDepExecutorPlugin();
     const { ctx } = runCtx({ networkMode: "bridge-for-test" });
     await plugin.trigger(ctx, bumpIntent());
     const args = createCall()!.args;
-    expect(args[args.indexOf("--network") + 1]).toBe("bridge-for-test");
+    expect(RUNNER_NETWORK_MODE).toBe("none");
+    expect(args[args.indexOf("--network") + 1]).toBe("none");
   });
 });
 

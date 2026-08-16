@@ -1,11 +1,17 @@
 import { describe, expect, it } from "vitest";
+import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
+import type { TenantTx } from "../db/tenant-tx.js";
 import { BUMP_BRANCH_PREFIX, buildBumpIntentParameters, bumpRefFor } from "./bump-actuator.js";
 import {
   DELEGATION_CONFIG_PATHS,
   delegationCoversManifest,
+  delegationProbeIsInconclusive,
   delegationRefusalMessage,
   parseDelegationConfig,
-  parseDependabotConfig
+  parseDependabotConfig,
+  probeDependencyUpdateDelegation,
+  recordDelegationProbe,
+  type DelegationProbeSubject
 } from "./delegation-detection.js";
 
 /**
@@ -135,6 +141,154 @@ describe("the candidate path list", () => {
   });
 });
 
+/**
+ * ================================================================================================
+ * "WE COULD NOT CHECK" IS NOT "NOTHING TO FIND" — EACH FAILURE MODE, SEPARATELY
+ * ================================================================================================
+ * The probe used to swallow every read failure into `unreadable` and return `delegated: false`, so a
+ * bad credential, a provider 5xx, an egress refusal and a refused blob all produced a result
+ * BYTE-IDENTICAL to a clean repository: `configs: []`, `collisions: []`, `delegated: false`. The
+ * dispatcher then wrote an `allow` Decision and authored the bump, and the `delegation_probe_failed`
+ * branch it has for exactly this was unreachable.
+ *
+ * Each mode is asserted on its own rather than as one "the reader failed" case, because they arrive
+ * through DIFFERENT limbs — three of them as a THROW from the reader (the git adapter's own auth/HTTP
+ * failure, and the plugin host's egress guard) and one as a `refused` OUTCOME the reader returns
+ * normally. A single test would have proven only whichever limb it happened to take.
+ */
+describe("a probe that could not READ never resolves to 'no delegation here'", () => {
+  const subject: DelegationProbeSubject = {
+    componentObjectId: "component-1",
+    repo: "acme/widgets",
+    ref: "refs/heads/main",
+    manifests: [{ manifestPath: "package.json", ecosystem: "npm" }]
+  };
+
+  /** A reader that answers every candidate path the same way. */
+  const readerThatAlways = (
+    answer: (request: ReadFileAtRefRequest) => ReadFileAtRefResult
+  ): ((request: ReadFileAtRefRequest) => Promise<ReadFileAtRefResult>) => {
+    return async (request) => answer(request);
+  };
+  const notFound = (request: ReadFileAtRefRequest): ReadFileAtRefResult => ({
+    outcome: "not_found",
+    missing: "path",
+    path: request.path,
+    requestedRef: request.ref,
+    detail: "fixture: absent"
+  });
+
+  it.each([
+    [
+      "a bad credential (the adapter throws a 401)",
+      async () => {
+        throw new Error("github readFileAtRef: HTTP 401 (bad credentials)");
+      }
+    ],
+    [
+      "a provider 5xx (the adapter throws)",
+      async () => {
+        throw new Error("github readFileAtRef: HTTP 502 from api.github.com");
+      }
+    ],
+    [
+      "an egress refusal (the plugin host's guard throws before the request leaves)",
+      async () => {
+        throw new Error(
+          "plugin egress refused: host 'api.github.com' resolves to a private address and no allowlist permits it"
+        );
+      }
+    ]
+  ] as const)("is INCONCLUSIVE on %s, and records NOTHING", async (_label, reader) => {
+    const probe = await probeDependencyUpdateDelegation(
+      reader as unknown as (r: ReadFileAtRefRequest) => Promise<ReadFileAtRefResult>,
+      subject
+    );
+    // The shape that used to be indistinguishable from a clean repository...
+    expect(probe.delegated).toBe(false);
+    expect(probe.configs).toEqual([]);
+    expect(probe.collisions).toEqual([]);
+    // ...is now distinguished, on every candidate path.
+    expect(probe.conclusive).toBe(false);
+    expect(probe.unreadable).toHaveLength(DELEGATION_CONFIG_PATHS.length);
+    expect(delegationProbeIsInconclusive(probe)).toBe(true);
+
+    // AND THE WRITER REFUSES IT. This is where the rule lives rather than in the one caller, so a
+    // second producer of this verdict inherits the refusal instead of re-deriving it. It throws
+    // before touching `tx`, which is why a stub is enough here.
+    await expect(
+      recordDelegationProbe(null as unknown as TenantTx, "org-1", subject, probe)
+    ).rejects.toThrow(/never resolves to "go ahead and write to them"/);
+  });
+
+  it("is INCONCLUSIVE on a REFUSED read outcome too — the limb that is not a throw", async () => {
+    const probe = await probeDependencyUpdateDelegation(
+      readerThatAlways((request) =>
+        request.path === "renovate.json"
+          ? {
+              outcome: "refused",
+              reason: "too_large",
+              detail: "declared 40000000 bytes, over the 1048576-byte ceiling",
+              path: request.path,
+              requestedRef: request.ref
+            }
+          : notFound(request)
+      ),
+      subject
+    );
+    expect(probe.delegated).toBe(false);
+    expect(probe.conclusive).toBe(false);
+    // ONE unreadable path out of ten is enough: the file that could not be read is exactly the one
+    // that might have delegated these manifests.
+    expect(probe.unreadable.map((u) => u.configPath)).toEqual(["renovate.json"]);
+    await expect(
+      recordDelegationProbe(null as unknown as TenantTx, "org-1", subject, probe)
+    ).rejects.toThrow(/could not read 1 of the/);
+  });
+
+  it("stays CONCLUSIVE when every candidate path answered — the clean repository still gets its allow", async () => {
+    const probe = await probeDependencyUpdateDelegation(readerThatAlways(notFound), subject);
+    expect(probe.delegated).toBe(false);
+    expect(probe.conclusive).toBe(true);
+    expect(probe.unreadable).toEqual([]);
+    expect(delegationProbeIsInconclusive(probe)).toBe(false);
+  });
+
+  it("a COLLISION found is conclusive enough to refuse, whatever else failed to read", async () => {
+    // The asymmetry is deliberate and is why the test is `!delegated && !conclusive`: more unread
+    // config could only ADD collisions, never remove the one already found. Blocking on partial
+    // evidence of delegation is the safe direction; allowing on partial evidence is not.
+    const probe = await probeDependencyUpdateDelegation(
+      readerThatAlways((request) => {
+        if (request.path === "renovate.json") {
+          return {
+            outcome: "found",
+            path: request.path,
+            requestedRef: request.ref,
+            commitSha: "deadbeef",
+            content: '{"extends":["config:recommended"]}',
+            sizeBytes: 34
+          };
+        }
+        if (request.path === ".github/dependabot.yml") {
+          return {
+            outcome: "refused",
+            reason: "not_a_file",
+            detail: "fixture: a directory",
+            path: request.path,
+            requestedRef: request.ref
+          };
+        }
+        return notFound(request);
+      }),
+      subject
+    );
+    expect(probe.delegated).toBe(true);
+    expect(probe.conclusive).toBe(false);
+    expect(delegationProbeIsInconclusive(probe)).toBe(false);
+  });
+});
+
 describe("the refusal message", () => {
   it("names the file found, which is what an operator has to act on", () => {
     const message = delegationRefusalMessage([
@@ -177,6 +331,7 @@ describe("the authored-branch contract, pinned across the two modules that resta
       orgId: "org",
       requestId: "req",
       componentObjectId: "component",
+      lineId: "0198f3c1-2222-7000-8000-000000000002",
       repo: "acme/widget",
       baseBranch: "main",
       ecosystem: "npm",
