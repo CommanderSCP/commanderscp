@@ -8,7 +8,8 @@ import type {
   PlanPlacementDiffEntry,
   PlanRelationshipDiffEntry,
   PlanSourceMappingDiffEntry,
-  PipelineClassification
+  PipelineClassification,
+  SourceMappingScope
 } from "@scp/schemas";
 import { canonicalJson } from "../graph/objects-repo.js";
 
@@ -88,6 +89,13 @@ export interface ResolvedManifestSourceMapping {
    *  of the route. (It IS an enforcement input at the correlation matcher — but that read happens
    *  off the live table, never off this diff, so it has no bearing on identity here.) */
   enabled: boolean;
+  /** Declared reach (migration 0066, §10.6) — an attribute, NOT part of `sourceMappingKey`, but the
+   *  ONE attribute this diff CONVERGES on an existing tuple (an `update` verdict; apply sets it in
+   *  place on every row sharing the tuple). Three states on the DESIRED side: `undefined` = this
+   *  manifest does not manage the scope (never proposes an update, and a create writes NULL);
+   *  `null` = declare it undeclared (clears a label); a value = that value. On the ACTUAL side
+   *  (`managedSourceMappings`) always `null` or a value — what the row holds. */
+  scope?: SourceMappingScope | null;
 }
 
 /**
@@ -467,7 +475,15 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   // is only WHERE ownership comes from — the row's owning object, not a label on the row.
   // -----------------------------------------------------------------------------------------
 
-  const existingMappingKeys = new Set(snapshot.managedSourceMappings.map(sourceMappingKey));
+  // Keyed to the ROWS (not a bare key set) so the scope convergence below can read what the live
+  // tuple currently holds; several rows may share one key (no unique constraint on the table).
+  const existingMappingsByKey = new Map<string, ResolvedManifestSourceMapping[]>();
+  for (const managed of snapshot.managedSourceMappings) {
+    const key = sourceMappingKey(managed);
+    const rows = existingMappingsByKey.get(key);
+    if (rows) rows.push(managed);
+    else existingMappingsByKey.set(key, [managed]);
+  }
   const manifestMappingKeys = new Set<string>();
   const sourceMappingEntries: PlanSourceMappingDiffEntry[] = [];
 
@@ -478,10 +494,23 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     // one; the second declaration is redundant, not a second mapping.
     if (manifestMappingKeys.has(key)) continue;
     manifestMappingKeys.add(key);
-    const exists = existingMappingKeys.has(key);
+    const existing = existingMappingsByKey.get(key);
+    // §10.6 — the ONE in-place convergence this diff performs on a mapping. A declared scope that
+    // differs from the live row's is an `update` (an attribute changed, not the identity — never a
+    // delete + create of a live route). An OMITTED scope manages nothing: the row's current value
+    // is reported and left alone, so a manifest that predates the field never clears a label an
+    // operator set by hand. Duplicate rows sharing the tuple: any one differing is enough to
+    // propose the update — apply converges every row matching the tuple, so the plan converges.
+    const desiredScope = mapping.scope;
+    const scopeDrifts =
+      existing !== undefined &&
+      desiredScope !== undefined &&
+      existing.some((row) => (row.scope ?? null) !== desiredScope);
+    const action = existing === undefined ? "create" : scopeDrifts ? "update" : "noop";
+    const currentScope = existing?.[0]?.scope ?? null;
     sourceMappingEntries.push({
       kind: "source-mapping",
-      action: exists ? "noop" : "create",
+      action,
       componentUrn: mapping.componentUrn,
       sourceKind: mapping.sourceKind,
       repoPattern: mapping.repoPattern,
@@ -491,9 +520,18 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       classification: mapping.classification,
       mirrorOfShared: mapping.mirrorOfShared,
       enabled: mapping.enabled,
-      reason: exists ? "matches current state" : "no existing source mapping with this identity"
+      // What the row WILL hold after apply: the declaration for create/update; the live value
+      // (unmanaged, or already equal) for noop.
+      scope: desiredScope !== undefined ? desiredScope : currentScope,
+      reason:
+        action === "create"
+          ? "no existing source mapping with this identity"
+          : action === "update"
+            ? `scope differs: ${currentScope ?? "not declared"} -> ${desiredScope ?? "not declared"}`
+            : "matches current state"
     });
-    if (exists) noops++;
+    if (action === "noop") noops++;
+    else if (action === "update") updates++;
     else creates++;
   }
 
@@ -562,6 +600,7 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
       classification: managed.classification,
       mirrorOfShared: managed.mirrorOfShared,
       enabled: managed.enabled,
+      scope: managed.scope ?? null,
       reason:
         "on an object this stack owns, no longer present in the desired manifest's sourceMappings"
     });

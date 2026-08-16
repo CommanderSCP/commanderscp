@@ -64,7 +64,8 @@ import {
 import {
   createSourceMapping,
   deleteSourceMappingsMatching,
-  listSourceMappingsForComponents
+  listSourceMappingsForComponents,
+  setSourceMappingScopeMatching
 } from "../coordination/source-mappings-repo.js";
 import { validatePluginConfig } from "../plugin-host/plugin-manifests.js";
 
@@ -425,7 +426,9 @@ export async function computeDiffForManifest(
       type: row.type,
       classification: row.classification,
       mirrorOfShared: row.mirrorOfShared,
-      enabled: row.enabled
+      enabled: row.enabled,
+      // The ACTUAL side's scope — what the diff's `update` verdict compares against (§10.6).
+      scope: row.scope
     });
   }
 
@@ -494,7 +497,11 @@ export async function computeDiffForManifest(
       // The pause switch (migration 0063) — also descriptive here (see `sourceMappingKey`).
       // Omitted ⇒ enabled, the pre-0063 behaviour and the safer default for a hand-authored
       // manifest that has never heard of this field.
-      enabled: m.enabled ?? true
+      enabled: m.enabled ?? true,
+      // §10.6 — deliberately NOT defaulted: `undefined` means "this manifest does not manage the
+      // scope" (no update proposed, a create writes NULL), `null` means "declare it undeclared".
+      // Collapsing the two would make every pre-0066 manifest clear every hand-set scope on apply.
+      ...(m.scope !== undefined ? { scope: m.scope } : {})
     })),
     placements: (manifest.placements ?? []).map((pl) => ({
       componentUrn: pl.componentUrn,
@@ -1172,6 +1179,32 @@ export async function executePlanDiff(
   }
 
   for (const entry of diff.sourceMappings ?? []) {
+    if (entry.action === "update") {
+      // §10.6 — the in-place convergence of the ONE non-identity attribute the diff manages. Every
+      // row sharing the tuple, for the same reason `deleteSourceMappingsMatching` takes them all: a
+      // byte-identical sibling left behind would re-propose this update on every plan forever. A
+      // plan stored without a scope key (`undefined`) cannot have produced an `update` verdict, so
+      // reading it as null here is unreachable rather than a silent clear.
+      const converged = await setSourceMappingScopeMatching(
+        tx,
+        {
+          orgId,
+          componentObjectId: endpointId(entry.componentUrn),
+          sourceKind: entry.sourceKind,
+          repoPattern: entry.repoPattern,
+          pathPattern: entry.pathPattern,
+          refPattern: entry.refPattern,
+          type: entry.type
+        },
+        entry.scope ?? null
+      );
+      if (converged === 0) {
+        throw notFound(
+          `no live source mapping '${entry.sourceKind}' -> '${entry.componentUrn}' (${entry.type}) to update`
+        );
+      }
+      continue;
+    }
     if (entry.action !== "create") continue;
     await createSourceMapping(tx, {
       orgId,
@@ -1185,7 +1218,9 @@ export async function executePlanDiff(
       ...(entry.mirrorOfShared ? { mirrorOfShared: true } : {}),
       // `createSourceMapping` defaults `enabled` to `true`, so only pass it through when the plan
       // says the row should be created already-paused.
-      ...(entry.enabled === false ? { enabled: false } : {})
+      ...(entry.enabled === false ? { enabled: false } : {}),
+      // Declared reach (§10.6) — written as the plan showed it; absent/null ⇒ not declared.
+      ...(entry.scope ? { scope: entry.scope } : {})
     });
   }
 

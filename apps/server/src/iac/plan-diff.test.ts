@@ -674,6 +674,8 @@ describe("iac/plan-diff: source mappings (C1)", () => {
         classification: null,
         mirrorOfShared: false,
         enabled: true,
+        // Not declared by the manifest, no live row → the row will hold NULL.
+        scope: null,
         reason: "no existing source mapping with this identity"
       }
     ]);
@@ -714,6 +716,81 @@ describe("iac/plan-diff: source mappings (C1)", () => {
       managedSourceMappings: [mapping(), mapping()]
     });
     expect(diff.sourceMappings).toHaveLength(1);
+  });
+
+  // §10.6 — `scope` is an ATTRIBUTE outside the identity tuple, and the ONE attribute the diff
+  // converges on an existing tuple: an `update` verdict, in place, never delete + create of a live
+  // route. Three desired-side states matter, and the omitted one is the trap: a manifest that has
+  // never heard of the field must not clear a scope an operator set by hand.
+  describe("scope (§10.6): the additive `update` verdict", () => {
+    it("a declared scope that differs from the live row's is an UPDATE — counted as one, no delete, no create", () => {
+      const diff = computePlanDiff(manifestWith([mapping({ scope: "global" })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ scope: null })]
+      });
+      expect(diff.sourceMappings).toEqual([
+        expect.objectContaining({
+          action: "update",
+          scope: "global",
+          reason: "scope differs: not declared -> global"
+        })
+      ]);
+      expect(diff.summary.updates).toBe(1);
+      expect(diff.summary.deletes).toBe(0);
+      expect(diff.summary.creates).toBe(1); // the component only
+    });
+
+    it("an explicit `null` CLEARS a live scope — an update to 'not declared'", () => {
+      const diff = computePlanDiff(manifestWith([mapping({ scope: null })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ scope: "domain" })]
+      });
+      expect(diff.sourceMappings?.[0]).toMatchObject({
+        action: "update",
+        scope: null,
+        reason: "scope differs: domain -> not declared"
+      });
+    });
+
+    it("an OMITTED scope manages nothing: the live value is reported and the verdict is noop", () => {
+      const desired = mapping();
+      delete (desired as { scope?: unknown }).scope;
+      const diff = computePlanDiff(manifestWith([desired]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ scope: "global" })]
+      });
+      expect(diff.sourceMappings?.[0]).toMatchObject({ action: "noop", scope: "global" });
+      expect(diff.summary.updates).toBe(0);
+    });
+
+    it("an equal declared scope is a noop", () => {
+      const diff = computePlanDiff(manifestWith([mapping({ scope: "domain" })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ scope: "domain" })]
+      });
+      expect(diff.sourceMappings?.map((m) => m.action)).toEqual(["noop"]);
+    });
+
+    it("duplicate live rows sharing the tuple: ANY one differing is enough to propose the update (apply converges them all)", () => {
+      const diff = computePlanDiff(manifestWith([mapping({ scope: "global" })]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ scope: "global" }), mapping({ scope: null })]
+      });
+      expect(diff.sourceMappings?.map((m) => m.action)).toEqual(["update"]);
+    });
+
+    it("a create carries the declared scope; a prune carries the live row's", () => {
+      const created = computePlanDiff(
+        manifestWith([mapping({ scope: "domain" })]),
+        emptySnapshot()
+      );
+      expect(created.sourceMappings?.[0]).toMatchObject({ action: "create", scope: "domain" });
+      const pruned = computePlanDiff(manifestWith([]), {
+        ...emptySnapshot(),
+        managedSourceMappings: [mapping({ scope: "global" })]
+      });
+      expect(pruned.sourceMappings?.[0]).toMatchObject({ action: "delete", scope: "global" });
+    });
   });
 });
 

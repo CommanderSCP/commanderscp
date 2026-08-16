@@ -6,7 +6,8 @@ import {
   type ManifestObject,
   type ManifestRelationship,
   type ManifestPlacement,
-  type ManifestSourceMapping
+  type ManifestSourceMapping,
+  type SourceMappingScope
 } from "@scp/schemas";
 import { deriveConstructUrn } from "./urn.js";
 
@@ -90,6 +91,11 @@ export interface SourceMappingSpec {
   pathPattern?: string;
   /** Which pipeline of the component this source drives (ADR-0007). Omitted ⇒ `configuration`. */
   type?: ExecutorType;
+  /** Declared reach of the repo (pipeline-substrate-registry-scan.md §10.6): `global` (shared across
+   *  domains, tracked at the commander) | `domain` (tracked only in one domain). Omitted ⇒ this
+   *  program does not manage the scope (an apply never clears one set by hand); explicit `null` ⇒
+   *  declare it undeclared. A label read by pipelines, the CLI and plans — never a routing input. */
+  scope?: SourceMappingScope | null;
 }
 
 /**
@@ -161,7 +167,9 @@ export class Stack extends Construct {
       sourceKind: spec.sourceKind,
       ...(spec.repoPattern !== undefined ? { repoPattern: spec.repoPattern } : {}),
       ...(spec.pathPattern !== undefined ? { pathPattern: spec.pathPattern } : {}),
-      ...(spec.type !== undefined ? { type: spec.type } : {})
+      ...(spec.type !== undefined ? { type: spec.type } : {}),
+      // Omitted stays OMITTED (not `null`): the two mean different things server-side (§10.6).
+      ...(spec.scope !== undefined ? { scope: spec.scope } : {})
     });
     return this;
   }

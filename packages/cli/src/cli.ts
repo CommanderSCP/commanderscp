@@ -19,6 +19,8 @@ import type {
   DoctorCheck,
   ExecutorType,
   PipelineClassification,
+  SourceMapping,
+  SourceMappingScope,
   Freeze,
   GraphObject,
   NamedGraphQuery,
@@ -62,7 +64,8 @@ import {
   DesiredStateManifestSchema,
   outpostClaimantTokens,
   OutpostTrustTierSchema,
-  ScanMethodSchema
+  ScanMethodSchema,
+  SourceMappingScopeSchema
 } from "@scp/schemas";
 // Node-only hashing (`node:crypto`) — deliberately a separate subpath from `@scp/schemas`'
 // default entry, which `apps/web` also imports (browser build) — see audit-chain.ts's module doc.
@@ -760,6 +763,46 @@ async function readManifestFile(manifestPath: string): Promise<DesiredStateManif
     );
   }
   return DesiredStateManifestSchema.parse(parsed);
+}
+
+/**
+ * One `source_mappings` row as a table row (`scp change-source list-mappings`), lifted out of the
+ * action closure and exported for the reason `federationStatusRow` gives. Column order is the order an
+ * operator reads a rule in: what routes where, then the labels on it. `scope` (§10.6, migration 0066)
+ * prints BLANK when not declared — the printer's absent-field convention, and the honest one: no
+ * label was set, and nothing here guesses one from the site's role. `?` when an OLDER server does not
+ * send the field at all (absence is not "undeclared").
+ */
+export function sourceMappingRow(m: SourceMapping): Record<string, string> {
+  // Widened on purpose: the SDK type says `scope` is required, but an older server's response
+  // predates the field — read it as possibly-absent so that case prints `?`, not a crash or a blank.
+  const scope = (m as { scope?: SourceMappingScope | null }).scope;
+  return {
+    id: m.id,
+    sourceKind: m.sourceKind,
+    component: m.componentObjectId,
+    repo: m.repoPattern ?? "*",
+    path: m.pathPattern ?? "*",
+    ref: m.refPattern ?? "*",
+    type: m.type,
+    classification: m.classification ?? "",
+    scope: scope === undefined ? "?" : (scope ?? ""),
+    mirrorOfShared: String(m.mirrorOfShared),
+    enabled: String(m.enabled),
+    effectivelyEnabled: String(m.effectivelyEnabled),
+    disabledUntil: m.disabledUntil ?? ""
+  };
+}
+
+/** Parses a `--scope` flag value: `global` | `domain`, or `none` to CLEAR (`null`). Anything else is
+ *  a usage error naming the accepted values — never silently dropped as undeclared. */
+export function parseScopeFlag(value: string): SourceMappingScope | null {
+  if (value === "none") return null;
+  const parsed = SourceMappingScopeSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`--scope must be one of global|domain|none (got '${value}')`);
+  }
+  return parsed.data;
 }
 
 type PlanDiffEntry =
@@ -4650,6 +4693,10 @@ export function buildProgram(): Command {
       "--disabled",
       "create this mapping already PAUSED (migration 0063) — declared but routes nothing until enabled; default is enabled"
     )
+    .option(
+      "--scope <scope>",
+      "declared reach of this repo (§10.6): global (shared across domains, tracked at the commander) | domain (tracked only here); omit = not declared (no label, nothing inferred); UI/reporting/IaC only, never a routing input"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(
@@ -4664,8 +4711,17 @@ export function buildProgram(): Command {
           classification?: PipelineClassification;
           mirrorOfShared?: boolean;
           disabled?: boolean;
+          scope?: string;
         }
       ) => {
+        // Parsed BEFORE the client is built so a typo is a usage error, not a 400 after login.
+        // `none` is meaningless at create (omitted already means undeclared) — reject it as such.
+        const scope = opts.scope === undefined ? undefined : parseScopeFlag(opts.scope);
+        if (opts.scope !== undefined && scope === null) {
+          throw new Error(
+            "--scope none is not meaningful at create — omit --scope for an undeclared scope"
+          );
+        }
         const client = await clientFromStoredCredentials(opts);
         const result = await client.changeSources.createMapping(sourceKind, {
           component: opts.component,
@@ -4675,21 +4731,42 @@ export function buildProgram(): Command {
           type: opts.type,
           classification: opts.classification,
           ...(opts.mirrorOfShared ? { mirrorOfShared: true } : {}),
-          ...(opts.disabled ? { enabled: false } : {})
+          ...(opts.disabled ? { enabled: false } : {}),
+          ...(scope ? { scope } : {})
         });
-        printResult(result, opts.output, (item) => item as Record<string, unknown>);
+        printResult(result, opts.output, (item) => sourceMappingRow(item as SourceMapping));
       }
     );
 
   changeSourceCmd
     .command("list-mappings <sourceKind>")
-    .description("List source_mappings for one source kind")
+    .description(
+      "List source_mappings for one source kind (SCOPE column: global|domain, blank = not declared)"
+    )
     .option("--base-url <url>", "API base URL override")
     .option("--output <format>", "json|table", "table")
     .action(async (sourceKind: string, opts: BaseCliOpts) => {
       const client = await clientFromStoredCredentials(opts);
       const result = await client.changeSources.listMappings(sourceKind);
-      printResult(result.items, opts.output, (item) => item as Record<string, unknown>);
+      printResult(result.items, opts.output, (item) => sourceMappingRow(item as SourceMapping));
+    });
+
+  // §10.6 — the after-the-fact door for the label `create-mapping --scope` sets at create. By id
+  // (`list-mappings` shows it), because this is a genuine update of ONE row and must never reach a
+  // byte-identical sibling. `--scope none` clears it. A label only: routing is untouched.
+  changeSourceCmd
+    .command("set-mapping-scope <sourceKind> <id>")
+    .description(
+      "Set or clear a source_mapping's declared scope — global (shared across domains) | domain (tracked only here) | none (clear); a label read by pipelines, IaC and this CLI, never a routing input"
+    )
+    .requiredOption("--scope <scope>", "global|domain|none")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (sourceKind: string, id: string, opts: BaseCliOpts & { scope: string }) => {
+      const scope = parseScopeFlag(opts.scope);
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.changeSources.setMappingScope(sourceKind, id, scope);
+      printResult(result, opts.output, (item) => sourceMappingRow(item as SourceMapping));
     });
 
   changeSourceCmd
