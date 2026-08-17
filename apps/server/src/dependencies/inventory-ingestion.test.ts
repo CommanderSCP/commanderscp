@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { join } from "node:path";
-import { readStripped } from "@scp/source-census";
+import type PgBoss from "pg-boss";
 import { ManifestParseError } from "@scp/dependency-manifests";
+import { BACKGROUND_LOOPS } from "../background-work.js";
 import { DOMAIN_EVENT_ROUTERS, domainEventRouters } from "../events/domain-event-registry.js";
 import {
   INVENTORY_INGESTION_QUEUE,
   inventoryIngestionRoleGuard,
-  inventoryIngestionRouter
+  inventoryIngestionRouter,
+  startInventoryIngestionLoop
 } from "./inventory-ingestion-loop.js";
 import {
   candidateManifestPaths,
@@ -394,25 +395,25 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
      * that can regress the wiring is an edit to the composition root, which no unit or integration
      * test of this module would otherwise touch.
      *
-     * WHAT A SUBSTRING MATCH DOES NOT PROVE, said plainly: the two `main.ts` assertions below are
-     * text, and text cannot tell a live call from a dead one — deleting
-     * `startInventoryIngestionLoop`'s OWN `boss.createQueue` and `boss.work` left this green, and
-     * left the entire suite green, because nothing executed the loop. The ROUTER half no longer
-     * has that weakness: M21.7 moved the router list out of `main.ts` into the importable
-     * `events/domain-event-registry.ts`, so this capability's registration is asserted below by
-     * running it.
+     * NEITHER HALF IS A SUBSTRING ANY MORE, and it took three rounds to get here — which is the
+     * most useful thing this comment can record.
      *
-     * That paragraph was honest and STILL not enough: until 2026-08-17 this read `main.ts` raw, so
-     * it could not tell a live call from a COMMENTED-OUT one either — commenting the whole
-     * `startInventoryIngestionLoop` block out left all 38 cases here green. `readStripped` closes
-     * that one gap and no other; its doc lists the ones that remain.
+     * Round 1: both halves matched text in `main.ts`. Deleting `startInventoryIngestionLoop`'s OWN
+     * `boss.createQueue`/`boss.work` left this green and left the entire suite green, because
+     * nothing executed the loop.
+     * Round 2 (M21.7): the ROUTER list moved into the importable `events/domain-event-registry.ts`
+     * and its registration became a real assertion. The LOOP half stayed text, and was read RAW, so
+     * commenting the whole `startInventoryIngestionLoop` block out left all 38 cases green.
+     * `readStripped` closed the comment case and no other.
+     * Round 3 (2026-08-17): stripping was still not enough — flipping `main.ts`'s background-work
+     * condition to `false` killed this loop with the file green, because text cannot see a dead
+     * branch. The loop startups moved into `background-work.ts`'s importable `BACKGROUND_LOOPS`,
+     * and the assertions below now RUN the registry entry.
      *
-     * The behavioural half is `inventory-ingestion.integration.test.ts`'s "the production path"
+     * The end-to-end half is still `inventory-ingestion.integration.test.ts`'s "the production path"
      * block: a real pg-boss, this capability's real router, `startInventoryIngestionLoop` itself,
-     * and the assertion that a domain event lands ROWS IN THE TABLE. That is what fails when the
-     * wiring is deleted.
+     * and the assertion that a domain event lands ROWS IN THE TABLE.
      */
-    const mainTs = readStripped(join(import.meta.dirname, "..", "main.ts"));
 
     it("the production registry registers THIS router, under THIS capability's guard", () => {
       // By function identity, not by name: the mis-binding this rules out is the registry pairing
@@ -464,12 +465,41 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
       ).not.toContain(INVENTORY_INGESTION_QUEUE);
     });
 
-    it("main.ts starts the WORKER — without it the queue fills and nothing drains it", () => {
-      expect(mainTs).toContain("startInventoryIngestionLoop(boss, {");
-    });
+    it("the production loop registry starts THIS worker — without it the queue fills and nothing drains it", async () => {
+      // By function IDENTITY against the registry `main.ts` actually runs, then by BEHAVIOUR: the
+      // entry is started and must create this capability's own queue. `background-work.test.ts`
+      // proves the registry as a whole (every entry starts, and `stop()` stops every one it
+      // started); this is the link a reader of the ingestion feature would come here to check.
+      const entries = BACKGROUND_LOOPS.filter(
+        (entry) => entry.loop === startInventoryIngestionLoop
+      );
+      expect(entries).toHaveLength(1);
 
-    it("main.ts stops the loop on close, so a shutdown does not tear the pool out from under it", () => {
-      expect(mainTs).toContain("inventoryIngestionLoop.stop()");
+      const created: string[] = [];
+      const handle = await entries[0]!.start({
+        boss: {
+          createQueue: async (queue: string) => void created.push(queue),
+          work: async () => "worker-id",
+          send: async () => "job-id",
+          schedule: async () => undefined
+        } as unknown as PgBoss,
+        db: undefined as never,
+        host: undefined as never,
+        sandbox: undefined as never,
+        config: {
+          role: "worker",
+          federationRole: "commander",
+          federationRoleDeclared: true,
+          secretsMasterKey: Buffer.alloc(32)
+        } as never
+      });
+      // Stopping is not decoration here: the shutdown ordering exists so a close does not tear the
+      // pool out from under an in-flight ingestion transaction. `startBackgroundLoops` stops every
+      // handle it started, which is asserted in `background-work.test.ts` — there is no longer a
+      // hand-written `.stop()` line per loop that a twelfth loop could be omitted from.
+      await handle.stop();
+
+      expect(created).toContain(INVENTORY_INGESTION_QUEUE);
     });
   });
 });

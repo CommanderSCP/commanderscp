@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type PgBoss from "pg-boss";
 import { describe, expect, it } from "vitest";
 import type { DependencyLine } from "@scp/schemas";
-import { readStripped } from "@scp/source-census";
+import { BACKGROUND_LOOPS } from "../background-work.js";
 import type { DomainEventJob } from "../events/pgboss.js";
 import {
   DOMAIN_EVENT_ROUTERS,
@@ -14,6 +16,7 @@ import {
   bumpDispatchRoleGuard,
   isLineHeadAdvancedEvent,
   planBump,
+  startBumpDispatchLoop,
   DEPENDENCY_BUMP_QUEUE
 } from "./bump-dispatch.js";
 import { DEPENDENCY_LINE_HEAD_ADVANCED_EVENT } from "./dependency-inventory-repo.js";
@@ -47,21 +50,26 @@ const npmLine = (
  * nothing, forever, with a green suite. That is the EXACT failure this milestone exists to close,
  * four times over, so it gets an assertion of its own rather than a reviewer's attention.
  *
- * The ROUTER half is asserted by RUNNING the registration (M21.7): the router list lives in
- * `events/domain-event-registry.ts`, a pure importable value, precisely so this does not have to be
- * a substring match on a file that cannot be imported. The LOOP half still is one — `main.ts` calls
- * `main()` at module scope — and is labelled as such.
+ * BOTH HALVES ARE NOW ASSERTED BY RUNNING THEM, and neither is a substring any more.
  *
- * `readStripped`, NOT `readFileSync`. This census read `main.ts` as RAW TEXT until 2026-08-17, and
- * a source census that does not strip comments does not check wiring at all: commenting out
- * `const bumpDispatchLoop = await startBumpDispatchLoop(boss, {…})` left this describe block —
- * INCLUDING the case named "starts the worker, and stops it on shutdown" — passing 20/20, and the
- * whole apps/server unit suite green at 972/972. Read `readStripped`'s doc for what a source census
- * still cannot prove after stripping.
+ * The ROUTER half moved first (M21.7): the router list lives in `events/domain-event-registry.ts`,
+ * a pure importable value. The LOOP half followed (2026-08-17): the eleven loop startups moved out
+ * of `main.ts` into `background-work.ts`'s `BACKGROUND_LOOPS`, for exactly the same reason and after
+ * exactly the same measurement.
+ *
+ * WHAT THE SUBSTRING VERSION OF THIS BLOCK WAS WORTH, measured twice:
+ *   - commenting out `const bumpDispatchLoop = await startBumpDispatchLoop(boss, {…})` left this
+ *     describe block — INCLUDING the case named "starts the worker, and stops it on shutdown" —
+ *     passing 20/20, and the whole apps/server unit suite green at 972/972 (M21.7, on RAW text);
+ *   - flipping `main.ts`'s background-work condition to `false`, killing this loop and ten others,
+ *     left it green again — this time even with comments stripped, because stripping cannot see a
+ *     dead branch.
+ *
+ * So the claim below is now membership in a registry that `background-work.test.ts` STARTS, checked
+ * by FUNCTION IDENTITY. `@scp/source-census`'s package doc lists what the text version could never
+ * have proven; this file no longer relies on any of it.
  */
 describe("the composition root actually wires it", () => {
-  const mainTs = readStripped(join(dirname(fileURLToPath(import.meta.url)), "..", "main.ts"));
-
   it("registers the router in the production registry, under THIS capability's guard", () => {
     // Identity, not name: the mis-binding this rules out is the registry pairing this router with
     // some OTHER capability's guard, and thereby authoring repository writes from an outpost. Until
@@ -97,12 +105,60 @@ describe("the composition root actually wires it", () => {
     ).not.toContain(DEPENDENCY_BUMP_QUEUE);
   });
 
-  it("starts the worker, and stops it on shutdown (source census — main.ts cannot be imported)", () => {
-    expect(mainTs).toMatch(/startBumpDispatchLoop\(/);
-    expect(mainTs).toMatch(/bumpDispatchLoop\.stop\(\)/);
-    // …and the capability never takes a `boss.work(DOMAIN_EVENTS_QUEUE, …)` of its own, which would
-    // steal M21.4's events: `boss.work` on that queue is a competing consumer.
-    expect(mainTs).not.toMatch(/work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/);
+  it("is in the production loop registry — the thing that actually starts it", () => {
+    // IDENTITY, not a name and not a substring: the registry holds the function object this test
+    // imported. A local shadow, a wrapper, or a lookalike in another module is a different object
+    // and fails here. `background-work.test.ts` then STARTS every registry entry against a probe
+    // boss and asserts each one creates its own queue — so "registered" is not a paper claim.
+    const entries = BACKGROUND_LOOPS.filter((entry) => entry.loop === startBumpDispatchLoop);
+    expect(entries).toHaveLength(1);
+  });
+
+  it("actually starts and creates ITS OWN queue when the registry runs it", async () => {
+    // The behavioural half, driven through the REAL registry entry rather than by calling the
+    // starter directly — which is the difference between "this loop works" and "this loop is wired".
+    const created: string[] = [];
+    const boss = {
+      createQueue: async (queue: string) => void created.push(queue),
+      work: async () => "worker-id",
+      send: async () => "job-id",
+      schedule: async () => undefined
+    } as unknown as PgBoss;
+
+    const entry = BACKGROUND_LOOPS.find((candidate) => candidate.loop === startBumpDispatchLoop)!;
+    const handle = await entry.start({
+      boss,
+      db: undefined as never,
+      host: undefined as never,
+      sandbox: undefined as never,
+      config: {
+        role: "worker",
+        federationRole: "commander",
+        federationRoleDeclared: true,
+        secretsMasterKey: Buffer.alloc(32)
+      } as never
+    });
+    await handle.stop();
+
+    expect(created).toContain(DEPENDENCY_BUMP_QUEUE);
+  });
+
+  it("never takes a competing consumer on the shared domain-event stream", async () => {
+    // `boss.work` on `domain-events` does not deduplicate — a second worker there STEALS M21.4's
+    // events and receives roughly half of its own. An ABSENCE assertion, so it deliberately reads
+    // the files RAW: a comment marker only makes a violation harder to hide, and stripping would
+    // narrow what counts as one (`@scp/source-census`'s hash.ts doc states this rule).
+    //
+    // Both composition files, because the loops MOVED: checking only `main.ts` after 2026-08-17
+    // would be a census aimed at where the code used to be — the exact "fixed some call sites"
+    // failure CLAUDE.md names.
+    const srcDir = dirname(fileURLToPath(new URL(".", import.meta.url)));
+    for (const file of ["main.ts", "background-work.ts"]) {
+      const raw = readFileSync(join(srcDir, file), "utf8");
+      expect(raw, `${file} registers a competing consumer on domain-events`).not.toMatch(
+        /work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/
+      );
+    }
   });
 });
 

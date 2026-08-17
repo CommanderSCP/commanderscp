@@ -1,0 +1,23 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  // WHY THIS FILE EXISTS. `e2e/openapi-conformance.test.ts` runs in the CACHEABLE unit `test` task,
+  // not in the Playwright job — `vitest.config.ts` excludes only `e2e/**/*.spec.ts`, and this is a
+  // `.test.ts` on purpose (its header calls itself "the guard on the guard … against the real
+  // emitted contract, in the unit-test job"). It reads `tools/openapi/openapi.v1.json` through
+  // `loadOpenApiDocument`'s default argument, which turbo did not hash for this package.
+  //
+  // The read is deliberate and the comment on it explains why it must stay a read: "deliberately the
+  // FILE the SDK is generated from … never a list re-typed here: a test that carries its own copy of
+  // the truth can agree with a browser that is wrong". A gate written that carefully, then served
+  // from a cache that cannot see its subject change, is the failure this repo has now measured
+  // three times — see `tools/helm-verify/turbo.json` for the one reproduced end to end.
+  //
+  // `$TURBO_DEFAULT$` MUST STAY FIRST: declaring `inputs` REPLACES the default package-scoped set.
+  "tasks": {
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/tools/openapi/openapi.v1.json"]
+    }
+  }
+}
