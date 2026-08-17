@@ -1283,3 +1283,60 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     //     nothing to loop into without adding one — which is a review-time decision, deliberately.
   });
 });
+
+/**
+ * ================================================================================================
+ * THE LIVE DATABASE'S OWN DESCRIPTION OF THE TABLE AGREES WITH §7d (M21.7 follow-up, LOW 6)
+ * ================================================================================================
+ * `drizzle/0061` ended `dependency_lines`'s COMMENT with "Does NOT federate; each domain derives its
+ * own." ADR-0032 §7d (2026-08-17) reverses the second half: all dependency automation is
+ * commander-only, so no domain but the commander derives anything here and an EMPTY inventory on an
+ * outpost is the correct state.
+ *
+ * WHY A TEST AND NOT JUST A MIGRATION. This is the exact artefact CLAUDE.md's census rule warns
+ * about — a well-written comment that talks the next reader into deleting a guard. An operator
+ * running `\d+ dependency_lines` on an outpost, or an engineer reading the catalog while wondering
+ * why the ingestion loop refuses there, meets ONE authoritative-looking sentence, and it used to say
+ * the guard was wrong. 0061 is merged and cannot be edited in place, so `drizzle/0066` restates it —
+ * and this asserts the RESTATEMENT REACHED THE DATABASE rather than only the file, which is the
+ * difference between a migration that is written and a migration that is journalled and applied.
+ *
+ * Read over the RAW `scp_app` connection: the catalog is what an operator sees, not what the ORM
+ * believes.
+ */
+describe("dependency_lines' COMMENT (drizzle/0066 — the §7d restatement is APPLIED, not just written)", () => {
+  it("carries the §7d reversal, with 0061's clause quoted and MARKED rather than left standing", async () => {
+    const raw = await RawScpAppClient.connect();
+    try {
+      const result = await raw.query<{ comment: string | null }>(
+        "SELECT obj_description('dependency_lines'::regclass, 'pg_class') AS comment"
+      );
+      const comment = result.rows[0]?.comment ?? "";
+      // Anti-vacuity first: a dropped or never-applied comment is an empty string, and every
+      // "does not contain" assertion below would pass over it.
+      expect(comment.length).toBeGreaterThan(200);
+      expect(comment).toContain("ADR-0032");
+
+      // THE REVERSED CLAUSE APPEARS EXACTLY ONCE AND ONLY IN ITS MARKED FORM. It is quoted rather
+      // than deleted, per the ADR-0026 D4 convention this milestone's docs follow — an original
+      // clause is preserved verbatim beside what overturned it, never silently rewritten, because a
+      // reader who remembers the old rule has to be able to find out what happened to it. But a
+      // `\d+` reader sees one paragraph with no section headings, so the quote MUST NOT be able to
+      // drift away from its marker: this asserts the two as one string, which is the only form in
+      // which the sentence is safe to leave in the catalog.
+      const marked = '0061 said "each domain derives its own" and that half is REVERSED';
+      expect(comment).toContain(marked);
+      expect(comment.split("each domain derives its own").length - 1).toBe(1);
+      // The half that was NOT reversed is still there (§3's projection-table argument is what
+      // justifies the principle-2 bend, and dropping it would overcorrect)...
+      expect(comment).toContain("Does NOT federate");
+      // ...and what replaced it says where the rows live and what an empty table on an outpost
+      // MEANS, because "not each domain" alone does not tell an operator whether to worry.
+      expect(comment).toMatch(/COMMANDER ONLY/i);
+      expect(comment).toContain("EMPTY on an outpost");
+      expect(comment).toContain("§7d");
+    } finally {
+      await raw.close();
+    }
+  });
+});

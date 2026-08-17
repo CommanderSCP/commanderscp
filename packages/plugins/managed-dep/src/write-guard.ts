@@ -423,8 +423,11 @@ export type ManifestParser = (content: string) => DeclaredDependency[];
  *
  * Being an ALLOWLIST is the charter clause "never edits a file that declares no dependency" made
  * structural. It is checked in addition to the component's own declared-manifest set, not instead of
- * it: the declared set comes from the inventory projection tables, which are derived, per-domain and
- * high-churn, so a bug or a stale row there must not be able to widen what kind of file SCP writes.
+ * it: the declared set comes from the inventory projection tables, which are derived and high-churn,
+ * so a bug or a stale row there must not be able to widen what kind of file SCP writes. (They were
+ * also described as "per-domain" here, quoting ADR-0032 §3; §7d reverses that — they are derived on
+ * the commander only. It changes nothing about this allowlist's reason for existing, which is that a
+ * DERIVED set must not decide what SCP writes.)
  */
 const MANIFEST_MATCHERS: ReadonlyArray<{
   ecosystem: DependencyEcosystem;

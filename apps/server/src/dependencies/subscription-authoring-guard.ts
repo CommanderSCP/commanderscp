@@ -10,62 +10,93 @@ import { delegationRefusalMessage, readStandingDelegationVerdict } from "./deleg
  * ================================================================================================
  * WHY THIS GUARD EXISTS AND WHY IT LIVES HERE RATHER THAN IN THE MATCHER
  * ================================================================================================
- * `matchPoliciesForTargets` returns a `scope.group` policy ONLY when the ACTING SUBJECT is a
- * transitive `member_of` that group (`governance/policy-resolve.ts:186-193`, via `isMemberOf` at
- * :72-89). That is the right semantics for "this rule governs work done BY this group". It is the
- * WRONG semantics for a constraint, because a constraint that fails to match is a constraint that
- * does not apply.
+ * A `scope.group` policy matches on EITHER of two independent halves (DESIGN §10.1's "acting or
+ * owning subject"; `governance/policy-resolve.ts:292-322`):
+ *   (i)  THE ACTING HALF (`:298`, via `isMemberOf` at `:104-123`) — the ACTING SUBJECT is a
+ *        transitive `member_of` the group.
+ *   (ii) THE OWNING HALF (`:313`, via `ownedByGroupOrItsMembers` at `:150-173`) — the group, or any
+ *        transitive `member_of` member of it, holds an `owns` edge on SOMETHING IN THE TARGET'S
+ *        CONTAINMENT CHAIN. This half NEVER READS `actorObjectId`.
+ * Either is right for "this rule governs work done by, or on the things owned by, this group". Neither
+ * is sufficient for a CONSTRAINT, because a constraint that fails to match is a constraint that does
+ * not apply — and whether either half matches is a fact about membership and ownership, never a fact
+ * about what the author wrote.
  *
- * THE OPT-OUT DIRECTION — fails OPEN. A group-scoped OPT-OUT that fails to match yields
- * STILL-ENABLED. SCP then authors a bump for a dependency a team explicitly opted out of, which is
- * precisely the case the opt-out exists to serve: "one or more dependencies are causing issues when
- * upgraded, so we want to handle that manually" (the owner's stated requirement, proposal §1).
+ * THE OPT-OUT DIRECTION — fails OPEN, AND SINCE 2026-08-17 THIS IS THE SOLE GROUND FOR THE REFUSAL
+ * (ADR-0032 §6a-ii). Where the named group owns nothing on the component's chain and the actor is not
+ * a member, a group-scoped OPT-OUT contributes nothing: `disabledBy` is never set
+ * (`subscription-resolution.ts:342-348`) and the AND at `:402` returns STILL-ENABLED. SCP then authors
+ * a bump for a dependency a team explicitly opted out of, which is precisely the case the opt-out
+ * exists to serve: "one or more dependencies are causing issues when upgraded, so we want to handle
+ * that manually" (the owner's stated requirement, proposal §1).
+ *
+ * IT IS NOT A CORNER CASE. The ENABLE routinely arrives from a broader, actor-independent scope — an
+ * org- or service-wide `objectRef`, or a `selector` — while the opt-out is the narrow, team-shaped
+ * thing someone writes at group scope. NOTHING TIES THE TWO SCOPES' REACH TOGETHER, so "the enable
+ * applied here" implies nothing whatever about "the opt-out will apply here".
  *
  * The failure is silent in both halves — the matcher returns fewer rows, the merge sees fewer
  * contributions, and `enabled: true` is a perfectly ordinary-looking answer. Nothing errors and
  * nothing logs. An operator would learn about it from a pull request they explicitly asked never to
  * receive.
  *
+ * AND THE OWNING HALF SHARPENED THIS RATHER THAN SOFTENING IT: ITS REACH IS MUTABLE GRAPH DATA.
+ * `owns` edges are created and deleted at runtime through the ordinary ownership API
+ * (`routes/ownership.ts:156-165` creates one, `:235-262` deletes one, both plain
+ * `relationship:write`). For a policy that TIGHTENS — every enforcing consumer ADR-0016 §2a was
+ * written for — that is exactly right and monotone. For an OPT-OUT the same property is a FAIL-OPEN
+ * TRAPDOOR: revoking an `owns` edge, in a re-org or a cleanup that is not about this policy at all,
+ * silently RE-SUBSCRIBES a component whose team opted out. No error, no log, and no Decision that
+ * says a subscription came back.
+ *
  * ================================================================================================
- * THE ENABLE DIRECTION — INERT, AND M21.4 IS WHAT MADE THAT MEASURABLE (ADR-0032 §6a, 2026-08-15)
+ * THE ENABLE DIRECTION — STILL REFUSED, BUT NOT FOR THE REASON THIS FILE USED TO GIVE
+ * (ADR-0032 §6a-ii, 2026-08-17)
  * ================================================================================================
  * M21.3 permitted a group-scoped ENABLE on the reasoning that failing to match yields NOT-enabled,
- * which is the safe direction, so nothing is lost. That reasoning was INCOMPLETE, and M21.4 is
- * where the missing half became a fact rather than a worry.
+ * which is the safe direction. M21.4 refused it on the reasoning that it is PERMANENTLY INERT: the
+ * background jobs resolve as `SYSTEM_ACTOR_ID` — the all-zero sentinel which by its own doc comment
+ * is "never a real graph object id (no `objects` row exists at this id)"
+ * (`coordination/system-actor.ts:9`) — and a principal with no `objects` row is a transitive
+ * `member_of` nothing.
  *
- * The background jobs that ACT on a subscription resolve as `SYSTEM_ACTOR_ID` — the all-zero
- * sentinel, which by its own doc comment is "never a real graph object id (no `objects` row exists
- * at this id)" (`coordination/system-actor.ts:9`). A principal with no `objects` row is a transitive
- * `member_of` NOTHING, so `matchPoliciesForTargets` can never return a `scope.group` policy for it.
- * A group-scoped ENABLE is therefore PERMANENTLY INERT on every path that does work:
- * `internal-release-detection.ts`'s subscriber gate and the third-party poll's work-list both go
- * through `listSubscribedComponentLines` with that actor.
+ * THAT SECOND REASONING IS FALSE, and was already false the day it was written. ADR-0016 §2a
+ * (PR #237, 2026-08-15 — the same date M21.4 widened this guard) shipped the OWNING half above, and
+ * that half does not consult the actor at all. So a group-scoped ENABLE **does** fire for
+ * `SYSTEM_ACTOR_ID` wherever the group owns anything on the chain;
+ * `governance/group-scope-ownership.integration.test.ts:188` ("it applies to SYSTEM_ACTOR_ID too")
+ * pins exactly that. Do not re-derive "inert" from the sentinel's membership: that fact is still
+ * true, and it is now irrelevant.
  *
- * What makes it a footgun rather than merely a no-op is that the SAME policy resolves ENABLED for a
- * human team member who asks — they are in the group, so the matcher hands it back, the merge
- * enables the pair, and the API says `enabled: true`. The team sees a working subscription and
- * receives nothing, forever, with no error anywhere. "Nothing is lost" is true only of the
- * enablement algebra; it is false of the feature, and a subscription that silently never fires is
- * its own kind of failure — the mirror image of an opt-out that silently never applies.
+ * WHAT THE ENABLE DIRECTION RESTS ON NOW, stated honestly rather than re-justified: its own original
+ * ground is gone and no equally strong one replaces it. What remains is the same mutable-reach
+ * property read the other way — such an enable fires exactly where the group HAPPENS to own something
+ * on the chain, which is a fact about the ownership graph rather than a set the author named, and it
+ * changes whenever an `owns` edge does. It is kept in the refusal for three reasons, in decreasing
+ * weight: the remedy is identical (`objectRef`/`selector`), so the cost of keeping it is only
+ * ergonomic; one scope kind must not mean two different things depending on the sign of `enabled`, or
+ * authors end up reasoning about this guard instead of about scope; and re-permitting it would reopen
+ * the narrowing below, which is proven and load-bearing.
  *
- * So the refusal now covers BOTH directions, for two different reasons that happen to have the same
- * remedy. THIS CAN BE RELAXED for the enable direction if a future design resolves subscriptions
- * PER OWNER rather than per acting subject (evaluating each subscribing component's own team
- * membership instead of the job's), at which point a group-scoped enable would be meaningful and
- * only the opt-out's fail-open would remain. Nothing in the tree does that today.
+ * THIS CAN BE RELAXED for the enable direction if a future design resolves subscriptions PER OWNER
+ * DELIBERATELY — taking each subscribing component's own team as an explicit input rather than
+ * inheriting whatever the ownership graph happens to say. NOTE THE TRIGGER HAS MOVED: the old wording
+ * ("once the actor is no longer the system sentinel") no longer names anything, because the owning
+ * half made the actor irrelevant.
  *
- * SO WHY NOT FIX THE MATCHER? Because that would be fixing the instance from the wrong end. The same
- * exposure exists for `scanThreshold` (ADR-0016, shipped): a group-scoped scan CEILING silently does
- * not contribute for a non-member, leaving the effective threshold LOOSER than the operator
- * authored. Changing `matchPoliciesForTargets` here would change that shipped gate's behaviour as a
- * side effect of a dependency feature — which is how a governance change gets made without anyone
- * deciding to make one. The matcher is where both consumers meet and is tracked separately.
+ * SO WHY NOT FIX THE MATCHER? The matcher WAS fixed, on its OTHER consumer's terms: ADR-0016 §2a
+ * added the owning half for `scanThreshold`, in the TIGHTENING direction, which is why it needed no
+ * permission from this feature. What survives of the original argument is its boundary, not its
+ * prohibition — this guard governs THIS FEATURE'S USE of the matcher and changes no matcher
+ * behaviour. A group-scoped scan CEILING that matches on neither half still leaves the effective
+ * threshold LOOSER than the operator authored; that residue belongs to the matcher, is tracked for
+ * both consumers at once, and is not touched here.
  *
- * What this guard does instead is REFUSE TO DEPEND ON THE BROKEN PART. It converts a silent
+ * What this guard does instead is REFUSE TO DEPEND ON A REACH NOBODY DECLARED. It converts a silent
  * fail-open at evaluation time into a loud refusal at authoring time, which is the same move
  * `0061`'s declared-producer CHECK makes: make the unusable state unrepresentable rather than
- * guarded. An author who wants a group-wide opt-out writes it at `objectRef`/`selector` scope, where
- * matching does not depend on who is asking.
+ * guarded. An author who wants a group-wide opt-out writes it at `objectRef`/`selector` scope, whose
+ * reach is exactly what the author wrote down.
  *
  * ================================================================================================
  * WHERE IT IS INSTALLED — THE CHOKE POINT, NOT THE ROUTE (M21.3 review round)
@@ -88,18 +119,19 @@ import { delegationRefusalMessage, readStandingDelegationVerdict } from "./deleg
  * inspected, and only when `group` is the ONLY scope the policy carries. Every other effect type is
  * untouched and every other object type is untouched — this guard must not become the place where
  * unrelated policy rules accumulate. What it no longer narrows on is the effect's DIRECTION: both
- * `enabled: false` and `enabled: true` are refused, for the two different reasons above.
+ * `enabled: false` and `enabled: true` are refused — since ADR-0032 §6a-ii, on ONE ground rather
+ * than two.
  *
  * ================================================================================================
  * WHY `group` MUST BE THE *ONLY* SCOPE FOR THIS TO REFUSE
  * ================================================================================================
  * `matchPoliciesForTargets` evaluates the three scope kinds INDEPENDENTLY, not as alternatives: the
- * `objectRef` branch (`policy-resolve.ts:161-169`) and the `selector` branch (:171-181) each record a
- * match on their own, before the actor-dependent `group` branch (:183-193) is even reached, and the
- * `record()` map dedups by (policy, matched object). So a policy carrying BOTH `group` and
- * `objectRef` contributes for EVERY caller through the `objectRef` route — member or not. The hazard
- * this guard exists for is simply absent there, and refusing it would emit a 400 telling the author
- * to do the thing they had already done.
+ * `objectRef` branch (`policy-resolve.ts:271-279`) and the `selector` branch (:281-290) each record a
+ * match on their own, before the `group` branch (:292-322) is even reached, and the `record()` map
+ * dedups by (policy, matched object). So a policy carrying BOTH `group` and `objectRef` contributes
+ * for EVERY caller through the `objectRef` route, whatever the group's membership or ownership says.
+ * The hazard this guard exists for is simply absent there, and refusing it would emit a 400 telling
+ * the author to do the thing they had already done.
  *
  * RESIDUAL, stated rather than papered over: "carries an `objectRef`/`selector`" is a STRUCTURAL
  * test, not a proof that the non-group scope will actually match something. An `objectRef` naming a
@@ -114,7 +146,7 @@ import { delegationRefusalMessage, readStandingDelegationVerdict } from "./deleg
  */
 export function assertEnforceableDependencySubscriptionScope(args: {
   /** The object type being written. The guard applies to `policy` ONLY — `listPolicyCandidates`
-   *  (`policy-resolve.ts:41-57`) selects `type_id = 'policy'` and nothing else, so a
+   *  (`policy-resolve.ts:71-87`) selects `type_id = 'policy'` and nothing else, so a
    *  `dependencySubscription` effect on any other type is never resolved and carries no hazard.
    *  Taken as an argument rather than checked by each caller so that every installation site —
    *  including the free-form-`typeId` doors (hand-fill, overlay, IaC manifests) — is correct by
@@ -126,15 +158,16 @@ export function assertEnforceableDependencySubscriptionScope(args: {
 
   const scope = args.properties?.scope as
     { group?: unknown; objectRef?: unknown; selector?: unknown } | undefined;
-  // Only `group` matching is actor-dependent. `objectRef` and `selector` resolve against the graph
-  // and are answered identically whoever asks, so they carry no such hazard.
+  // Only `group` matching depends on something the author did not write down — the actor's
+  // membership, or an `owns` edge somewhere on the target's chain. `objectRef` and `selector` resolve
+  // against the graph and reach exactly what they name, so they carry no such hazard.
   if (!scope || typeof scope.group !== "string" || scope.group === "") return;
 
   // Mirrors the matcher's own truthiness tests exactly, because what matters is whether the OTHER
   // branch runs, not whether the field looks plausible:
-  //   - `if (scope.objectRef)` at :161 — a non-string or empty value reaches `resolveRef` and
+  //   - `if (scope.objectRef)` at :271 — a non-string or empty value reaches `resolveRef` and
   //     resolves to nothing, so it is not a live route;
-  //   - `if (scope.selector?.labels)` at :171 — note `{}` IS live: `labelsMatch` is an `every()`
+  //   - `if (scope.selector?.labels)` at :281 — note `{}` IS live: `labelsMatch` is an `every()`
   //     over zero entries, which is `true` for every ancestor. `selector: {}` with no `labels` is
   //     not.
   const hasObjectRef = typeof scope.objectRef === "string" && scope.objectRef !== "";
@@ -154,24 +187,26 @@ export function assertEnforceableDependencySubscriptionScope(args: {
     // of the effect's shape, and the two would drift.
     if (!parsed.success) continue;
 
-    // BOTH DIRECTIONS, ONE REMEDY, TWO REASONS (ADR-0032 §6a) — the message names the direction's
-    // own failure, because "scope it differently" without the reason is an instruction an author
-    // has to take on faith.
+    // BOTH DIRECTIONS, ONE REMEDY, ONE GROUND (ADR-0032 §6a-ii) — the message names the direction's
+    // own failure, because "scope it differently" without the reason is an instruction an author has
+    // to take on faith. It must NOT say "the job belongs to no group": that was the M21.4 wording and
+    // it is false (§6a-ii), and an author who checks it will find a counter-example and dismiss the
+    // whole refusal.
     throw badRequest(
       parsed.data.enabled
         ? "A dependency-subscription enable (enabled: true) cannot be scoped to a group. " +
-            "A group-scoped policy is only matched when the acting subject belongs to that group, " +
-            "and the background job that acts on a subscription runs as the system actor, which " +
-            "belongs to no group — so an enable authored this way would read as enabled in the " +
-            "API for a team member and never actually fetch or bump anything. Scope it with " +
-            "`objectRef` or `selector` instead — those resolve against the graph and apply " +
-            "regardless of who is asking."
+            "A group-scoped policy applies where the acting subject belongs to that group OR where " +
+            "the group owns something on the target's containment chain — so which components this " +
+            "enable actually reaches is decided by `owns` edges rather than by anything written " +
+            "here, and it changes silently whenever ownership is edited. Scope it with `objectRef` " +
+            "or `selector` instead — those reach exactly what they name, for every caller."
         : "A dependency-subscription opt-out (enabled: false) cannot be scoped to a group. " +
-            "A group-scoped policy is only matched when the acting subject belongs to that group, " +
-            "so an opt-out authored this way would silently fail to apply for everyone else and " +
-            "the dependency would keep being bumped. Scope the opt-out with `objectRef` or " +
-            "`selector` instead — those resolve against the graph and apply regardless of who is " +
-            "asking."
+            "A group-scoped policy applies only where the acting subject belongs to that group or " +
+            "the group owns something on the target's containment chain, so an opt-out authored " +
+            "this way would silently fail to apply everywhere else and the dependency would keep " +
+            "being bumped — and removing an `owns` edge later would silently re-subscribe a " +
+            "component you opted out. Scope the opt-out with `objectRef` or `selector` instead — " +
+            "those reach exactly what they name, for every caller."
     );
   }
 }

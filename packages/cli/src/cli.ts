@@ -576,11 +576,22 @@ export function dependencySubscriptionUnlockRow(
  * newer server omits arrives as `undefined` whatever the type says, and printing the literal
  * `undefined` in a DELIVERY column — where the two values are "open a PR" and "merge it
  * automatically" — is a fabrication with teeth.
+ *
+ * `managedHere`/`managedReason` carry the server's `dependencyManagement` envelope (ADR-0032 §7d),
+ * printed BESIDE the verdict because they QUALIFY it: on a deployment that is not an explicitly
+ * declared commander, `enabled: true` is arithmetically correct and NOTHING THERE WILL EVER ACT ON
+ * IT. Guarded like the pair above, and for a sharper reason — a server that omits the key must
+ * render `-`, never a fabricated `true`, because inventing "yes, managed here" is the exact false
+ * reassurance the envelope exists to remove.
  */
 export function dependencySubscriptionResolutionRow(
   response: DependencySubscriptionResolutionResponse
 ): Record<string, string> {
   const r = response.resolution;
+  const managed = response.dependencyManagement as
+    DependencySubscriptionResolutionResponse["dependencyManagement"] | undefined;
+  const managedHere = managed?.managedHere;
+  const managedReason = managed?.reason;
   return {
     component: response.componentObjectId,
     ecosystem: response.line.ecosystem,
@@ -589,8 +600,40 @@ export function dependencySubscriptionResolutionRow(
     enabled: String(r.enabled),
     reason: r.reason,
     granularity: isAbsent(r.granularity) ? "-" : r.granularity,
-    delivery: isAbsent(r.delivery) ? "-" : r.delivery
+    delivery: isAbsent(r.delivery) ? "-" : r.delivery,
+    managedHere: isAbsent(managedHere) ? "-" : String(managedHere),
+    managedReason: isAbsent(managedReason) ? "-" : managedReason
   };
+}
+
+/**
+ * …AND THE SAME THING IN WORDS, when nothing on this deployment will act on the verdict (ADR-0032
+ * §7d). `undefined` means print nothing.
+ *
+ * A `false` in a column is easy to read past, and the whole point of the envelope is that an
+ * operator reading `enabled: true` on a field outpost is being told something true and misleading at
+ * once. Printed ONLY for the refusals: a declared commander needs no caveat, and a caveat on every
+ * invocation is one nobody reads.
+ *
+ * EXPORTED, AND OUTSIDE THE `.action()` CLOSURE, FOR THE REASON THE FORMATTERS ABOVE RECORD. This
+ * lived inline in the resolve command's Commander closure, where no test can reach it: inverting the
+ * condition — so the note prints on a healthy commander and is SILENT on the deployment it exists to
+ * warn, the one inversion that matters — left the entire suite green. `dependency-subscription-cli.
+ * test.ts` now pins BOTH directions, which is the only shape in which a conditional caveat is held.
+ *
+ * ABSENT IS NOT A REFUSAL. A server that omits the envelope gets no note (`=== false`, never
+ * falsy): the row already renders `-` there rather than fabricating a posture, and asserting a
+ * refusal the server never claimed would be the same fabrication with a louder voice.
+ */
+export function dependencyManagementNote(
+  managed: DependencySubscriptionResolutionResponse["dependencyManagement"] | undefined
+): string | undefined {
+  if (managed?.managedHere !== false) return undefined;
+  return (
+    `NOTE: dependency management does NOT run on this deployment (${managed.reason}), ` +
+    `so nothing here will act on the verdict above — the subscription is resolved from policies ` +
+    `that federated down, and any bump is authored on the COMMANDER (ADR-0032 §7d).`
+  );
 }
 
 /** ONE contribution to the enablement AND. `contributed` is the load-bearing column: `lock`/`disable`
@@ -3539,14 +3582,14 @@ export function buildProgram(): Command {
   //
   // THERE IS NO `subscribe` VERB, AND ONE MUST NOT BE ADDED. A dependency subscription IS a
   // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored
-  // with `scp policy create` — the same command, versioning and federation path every other policy
+  // with `scp policy register` — the same command, versioning and federation path every other policy
   // uses. `scp dependency-subscriptions --help` says so out loud, because the first thing someone
   // will look for here is the verb that does not exist.
   // -------------------------------------------------------------------------------------
   const depSubsCmd = program
     .command("dependency-subscriptions")
     .description(
-      "Dependency subscriptions (ADR-0032 §6) — the instance unlock and the (component, line) enablement resolution. Subscriptions THEMSELVES are policy effects: author them with `scp policy create` carrying effects: [{ dependencySubscription: { enabled: true } }]"
+      "Dependency subscriptions (ADR-0032 §6) — the instance unlock and the (component, line) enablement resolution. Subscriptions THEMSELVES are policy effects: author them with `scp policy register` carrying effects: [{ dependencySubscription: { enabled: true } }]"
     );
 
   depSubsCmd
@@ -3641,6 +3684,14 @@ export function buildProgram(): Command {
         printResult(response, "table", (raw) =>
           dependencySubscriptionResolutionRow(raw as DependencySubscriptionResolutionResponse)
         );
+        // AND SAY IT IN WORDS WHEN NOTHING HERE WILL ACT ON THE VERDICT (ADR-0032 §7d). Both the
+        // condition and the sentence live in `dependencyManagementNote`, outside this closure, so
+        // they are reachable by a test — inline here, inverting the condition was fully green.
+        const note = dependencyManagementNote(response.dependencyManagement);
+        if (note !== undefined) {
+          console.log("");
+          console.log(note);
+        }
         // THE CONTRIBUTIONS ARE THE POINT (charter principle 6). Printed as their own table rather
         // than squeezed into a cell — "which level turned this off" is the question this command
         // exists to answer, and the verdict alone does not answer it.
@@ -3658,10 +3709,16 @@ export function buildProgram(): Command {
   // manifests. That covers components that RELEASE and nothing else, so an existing estate — and any
   // component that has not pushed since it was enabled — needs this once. Idempotent, so running it
   // twice is a no-op, and it reports every skip rather than a bare count.
+  //
+  // POINT IT AT THE COMMANDER. All dependency automation is commander-only (ADR-0032 §7d), so an
+  // instance whose `SCP_FEDERATION_ROLE` is not an explicitly declared `commander` answers 409 with
+  // a detail naming why — including the fail-closed case where the role was never declared at all.
+  // It is said in the description because that 409 is a mistake an operator makes when choosing
+  // `--base-url`, not a mistake in the request, and the flag is right here.
   depSubsCmd
     .command("backfill-inventory")
     .description(
-      "Read enabled components' dependency manifests and (re)build their inventory (ADR-0032 §4). Idempotent. A component with no enabling subscription is REFUSED BEFORE ITS REPO IS READ — this command cannot bypass the enablement chain"
+      "Read enabled components' dependency manifests and (re)build their inventory (ADR-0032 §4). Idempotent. A component with no enabling subscription is REFUSED BEFORE ITS REPO IS READ — this command cannot bypass the enablement chain. COMMANDER-ONLY: run it against the commander; an outpost, or a deployment that never declared its federation role, answers 409"
     )
     // Repeatable rather than comma-separated: a component URN legitimately contains punctuation, and
     // the existing repeatable flags on `scp change create` set the precedent.

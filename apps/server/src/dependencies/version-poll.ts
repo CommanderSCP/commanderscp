@@ -111,16 +111,25 @@ export interface DependencyVersionPollRoleVerdict {
  * federation API, and advisory (config.ts's own doc comment, and M15.4's helm-verify note). A
  * background job that decided whether to reach the internet from tenant-writable data would be
  * exactly the runtime/install-time fork M15.4 declined to create.
+ *
+ * THE BRANCH ORDER IS PART OF THE CONTRACT, NOT A DETAIL OF THIS COPY (M21.7 follow-up, LOW 5).
+ * This body is hand-written rather than delegating to {@link commanderOnlyJobVerdict} because its
+ * refusal TEXT carries a fact a shared string cannot ("dials package registries from an air-gapped
+ * site") — but the VERDICT and the ORDER the axes are tested in are shared. It used to test
+ * federation first, so a deployment misconfigured on more than one axis was sent to a DIFFERENT
+ * setting depending on which job complained: the poll said "federationRole is 'outpost'", the
+ * dispatcher said "SCP_ROLE is 'api'", for one and the same deployment. Process axis FIRST, then
+ * the undeclared case, then the declared non-commander — the order `commanderOnlyJobVerdict`
+ * documents and `commander-only.test.ts` pins across every copy by comparing each multi-axis
+ * refusal against the single-axis refusal it must be identical to.
  */
 export function dependencyVersionPollRoleGuard(
   config: Pick<ServerConfig, "role" | "federationRole" | "federationRoleDeclared">
 ): DependencyVersionPollRoleVerdict {
-  if (config.federationRole !== "commander") {
+  if (config.role !== "all" && config.role !== "worker") {
     return {
       allowed: false,
-      reason:
-        `federationRole is '${config.federationRole}' — the third-party version poll runs on a ` +
-        `commander only. An outpost is frequently air-gapped and must not dial registries on a timer`
+      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
     };
   }
   if (!config.federationRoleDeclared) {
@@ -145,10 +154,12 @@ export function dependencyVersionPollRoleGuard(
         "explicitly (Helm: `federationRole`) to turn it on"
     };
   }
-  if (config.role !== "all" && config.role !== "worker") {
+  if (config.federationRole !== "commander") {
     return {
       allowed: false,
-      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
+      reason:
+        `federationRole is '${config.federationRole}' — the third-party version poll runs on a ` +
+        `commander only. An outpost is frequently air-gapped and must not dial registries on a timer`
     };
   }
   return {
@@ -206,11 +217,13 @@ export async function buildLineWorkList(db: Db, orgId: string): Promise<LineWork
     // THE WORK-LIST IS THE RESOLUTION (property 1 in the module doc). Not filtered afterwards.
     const subscribed = await listSubscribedComponentLines(tx, orgId, {
       // A background tick has no human actor. `SYSTEM_ACTOR_ID` is the same sentinel the reconcile
-      // loop threads into `matchPoliciesForTargets`, and its consequence here is stated rather than
-      // discovered: it is a member of no group, so a `group`-scoped ENABLE does not contribute for
-      // this caller — which is the SAFE direction (§6's "absent never means enabled") and yields
-      // not-enabled, never a spurious poll. The unsafe direction — a group-scoped OPT-OUT failing to
-      // subtract — cannot arise, because ADR-0032 §6a refuses authoring one at all.
+      // loop threads into `matchPoliciesForTargets`. This comment used to draw a conclusion from that
+      // which is FALSE (ADR-0032 §6a-ii): "it is a member of no group, so a `group`-scoped ENABLE
+      // does not contribute for this caller — the SAFE direction". The sentinel's membership is
+      // still nothing, but group scope's OWNING half never reads the actor, so a group-scoped enable
+      // DOES contribute here wherever that group owns something on the component's chain. Neither
+      // direction is therefore inert for this caller; what makes both safe is upstream, not here —
+      // ADR-0032 §6a refuses authoring a group-scoped effect at all, in either direction.
       actorObjectId: SYSTEM_ACTOR_ID
     });
     if (subscribed.length === 0) return [];

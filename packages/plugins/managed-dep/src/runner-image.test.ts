@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { atLineStart, stripHashComments } from "@scp/source-census";
 
 /**
  * M21.5 — THE FOUR CHARTER CLAUSES THAT ARE PROPERTIES OF THE `scp-runner-dep` IMAGE.
@@ -68,11 +69,10 @@ describe("scp-runner-dep contains no toolchain — the charter clauses, as prope
     "node"
   ];
 
-  /** The Dockerfile with comments stripped — what the build actually executes. */
-  const instructions = dockerfile
-    .split("\n")
-    .filter((line) => !line.trimStart().startsWith("#"))
-    .join("\n");
+  /** The Dockerfile with comments stripped — what the build actually executes. Via
+   *  `@scp/source-census` rather than a local filter: this file had the right idea and three
+   *  hand-rolled copies of it, and two OTHER assertions below still read `runSh` raw. */
+  const instructions = stripHashComments(dockerfile);
 
   it("installs nothing at all — there is no RUN that reaches a package repository", () => {
     // The stronger statement, and the one that makes the list below almost redundant: this image has
@@ -94,9 +94,8 @@ describe("scp-runner-dep contains no toolchain — the charter clauses, as prope
     // refusal message names the five ecosystems, one of which is literally `npm`), and `case` arm
     // LABELS (`go|oci|npm|python|maven)` is the ecosystem validation, not an invocation). What
     // remains is what the shell would actually execute.
-    const commands = runSh
+    const commands = stripHashComments(runSh)
       .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#"))
       .map((line) => line.replace(/"[^"]*"/g, '""'))
       .map((line) => line.replace(/^\s*[A-Za-z0-9|*]+\)/, ""))
       .join("\n");
@@ -164,14 +163,16 @@ describe("scp-runner-dep contains no toolchain — the charter clauses, as prope
     // `manifestPath` names a path in somebody's REPOSITORY. This container has no repository, so a
     // path there could only address the container's own filesystem; refusing to treat it as a path
     // is what keeps that true.
-    expect(runSh).toContain("IN=in/manifest");
-    expect(runSh).toContain("OUT=out/manifest");
+    // ANCHORED, and the reason this file is in the M21.7 sweep at all: these two were the last
+    // raw-text PRESENCE assertions here, so commenting out `IN=in/manifest` in run.sh left this
+    // file green at 22/22 — measured — while its own comment above correctly named the property
+    // and its Dockerfile reads handled it. A well-written note naming a hazard is a signal to
+    // sweep, not evidence it was handled (CLAUDE.md).
+    expect(runSh).toMatch(atLineStart("IN=in/manifest"));
+    expect(runSh).toMatch(atLineStart("OUT=out/manifest"));
     // …resolved against the image's own WORKDIR, which is what makes those /work/in and /work/out.
     expect(dockerfile).toMatch(/^WORKDIR \/work$/m);
-    const shimBody = runSh
-      .split("\n")
-      .filter((line) => !line.trimStart().startsWith("#"))
-      .join("\n");
+    const shimBody = stripHashComments(runSh);
     // The variable is read for messages only; it must never be the operand of a redirect or a read.
     expect(shimBody).not.toMatch(/[<>]\s*"\$MANIFEST_PATH"/);
     expect(shimBody).not.toMatch(/\bcat\s+"\$MANIFEST_PATH"/);

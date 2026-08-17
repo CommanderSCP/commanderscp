@@ -60080,12 +60080,35 @@
                         "contributions"
                       ],
                       "additionalProperties": false
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
                     "componentObjectId",
                     "line",
-                    "resolution"
+                    "resolution",
+                    "dependencyManagement"
                   ],
                   "additionalProperties": false
                 }
@@ -60271,7 +60294,7 @@
     "/dependencies/inventory/backfill": {
       "post": {
         "operationId": "backfillDependencyInventory",
-        "summary": "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4)",
+        "summary": "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4). COMMANDER-ONLY: a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409 (ADR-0032 §7d)",
         "tags": [
           "dependencies"
         ],
@@ -60564,6 +60587,48 @@
             }
           },
           "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
             "description": "Error",
             "content": {
               "application/problem+json": {

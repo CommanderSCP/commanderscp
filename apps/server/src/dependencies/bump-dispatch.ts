@@ -111,22 +111,26 @@ import {
  *  - the head is RE-READ from the row rather than trusted from the event.
  *
  * ============================================================================================
- * THE ROLE GUARD — DERIVED, NOT COPIED FROM EITHER M21.4 JOB
+ * THE ROLE GUARD — COMMANDER-ONLY, WITH ITS OWN REASON ON TOP OF THE SHARED ONE
  * ============================================================================================
- * M21.4's two jobs reached OPPOSITE verdicts on the federation axis and both were right, so neither
- * verdict can be inherited; what carries over is the QUESTION. ADR-0032 §7c clause 3 states it:
- * the poll is commander-only because it "dials the public internet on a timer", and internal
- * detection runs everywhere because it "initiates no timed egress" and derives from evidence that
- * exists only where the change executed.
+ * Since ADR-0032 §7d (owner decision, 2026-08-17) EVERY dependency job is commander-only, so this
+ * verdict is no longer the strict one in a split field — it is the shared rule, and the shared
+ * reason lives in `commander-only.ts`: dependency automation exists to pull from PUBLIC
+ * repositories, which a FIELD outpost has no need to do, because the resulting change is pushed down
+ * the global pipeline the commander manages. ("Field" is load-bearing — an HQ outpost is the outpost
+ * in the commander's own trust domain and is this very process; see `commander-only.ts`, which reads
+ * that out of the code. Every deployment this guard actually refuses is a field outpost, so the
+ * refusal strings below say "outpost" exactly.) (This paragraph used to open by contrasting M21.4's
+ * two jobs, which "reached OPPOSITE verdicts on the federation axis"; they no longer do, and internal
+ * detection no longer "runs everywhere" — §7d marks that clause reversed.)
  *
- * Asked of THIS job the answer is commander-only, and for a reason neither of those has: it does not
- * merely READ from the internet, it WRITES to somebody's source repository, with a credential, on a
- * trigger nobody watched. An air-gapped or high-side outpost must never do that — and it is exactly
- * the population that would, because internal detection DOES run there (so heads DO advance there)
- * and `SCP_FEDERATION_ROLE` defaults to `commander` for deployments that predate the setting. So the
- * guard is fail-CLOSED on an UNDECLARED deployment, the same shape as the poll's and for a
- * strictly stronger reason. It also logs when it ALLOWS: a posture that writes to a user's
- * repository must not be the invisible one.
+ * THIS JOB'S OWN REASON SURVIVES THE CONVERGENCE AND IS STILL WORTH STATING, because it is what
+ * would keep the guard here even if the shared rule were ever relaxed: it does not merely READ from
+ * the internet, it WRITES to somebody's source repository, with a credential, on a trigger nobody
+ * watched. An air-gapped or high-side outpost must never do that. The guard is fail-CLOSED on an
+ * UNDECLARED deployment, because `SCP_FEDERATION_ROLE` defaults to `commander` for deployments that
+ * predate the setting — and that is exactly the population most likely to be air-gapped. It also
+ * logs when it ALLOWS: a posture that writes to a user's repository must not be the invisible one.
  *
  * The process axis (`SCP_ROLE`) applies unchanged — background work belongs to `all`/`worker`.
  *
@@ -421,9 +425,12 @@ export async function runBumpDispatchJob(
     if (componentObjectIds.length === 0) return { line, candidates: [] };
 
     const subscribed = await listSubscribedComponentLines(tx, job.orgId, {
-      // The system actor, exactly as M21.4's two ingresses resolve — and the reason a GROUP-scoped
-      // `dependencySubscription` effect is refused at authoring time (ADR-0032 §6a): this principal
-      // has no `objects` row, so it is a transitive `member_of` nothing.
+      // The system actor, exactly as M21.4's two ingresses resolve. It has no `objects` row and so
+      // is a transitive `member_of` nothing — which is NOT, as this comment used to claim, the
+      // reason a GROUP-scoped `dependencySubscription` effect is refused at authoring time. Group
+      // scope's OWNING half ignores the actor entirely, so such a policy can match right here
+      // (ADR-0032 §6a-ii). The refusal is about a reach decided by mutable `owns` edges instead of
+      // by the author.
       actorObjectId: SYSTEM_ACTOR_ID,
       componentObjectIds
     });
@@ -795,17 +802,27 @@ async function dispatchOneBump(
   // row. Recording it is what makes "the pull request SCP itself opened" a fact on disk instead of a
   // search performed against a mutable provider.
   //
+  // THE URL IS TAKEN FROM THE SAME OUTCOME, AND THIS IS THE ONLY MOMENT IT EXISTS. The plugin gets
+  // it from the provider's own response (`html_url` on the created pull request, or on the one its
+  // 422 retry path re-reads) and hands it back on the same `stateRef` as the number. Nothing
+  // downstream can recover it: `repo` + number composes a working link for github.com and for
+  // nothing else, and an outpost-local Gitea (M15) is both a different host AND a different path
+  // segment. A consumer that synthesised one would render a confidently-broken link on every
+  // Gitea-authored bump, so the honest value is captured here or not at all (migration 0066).
+  // `recordBumpPullRequest` decides what is storable — this path does not repair or compose one.
+  //
   // A FAILURE HERE IS NOT A FAILED BUMP. The pull request may well exist; what is missing is our
   // record of its number, and the consequence is that the merge gate refuses for lack of one — the
   // fail-closed direction. So it is logged and swallowed rather than thrown, exactly as the rest of
   // this per-declaration path treats a partial outcome.
   try {
     const status = await executor.status(ref);
-    const opened = (status.stateRef as { pullRequestNumber?: unknown } | undefined)
-      ?.pullRequestNumber;
+    const outcome = status.stateRef as
+      { pullRequestNumber?: unknown; pullRequestUrl?: unknown } | undefined;
+    const opened = outcome?.pullRequestNumber;
     if (typeof opened === "number" && Number.isInteger(opened) && opened > 0) {
       await withTenantTx(deps.db, orgId, (tx) =>
-        recordBumpPullRequest(tx, orgId, prepared.changeObjectId, opened)
+        recordBumpPullRequest(tx, orgId, prepared.changeObjectId, opened, outcome?.pullRequestUrl)
       );
     }
   } catch (err) {
@@ -833,8 +850,9 @@ export interface BumpDispatchLoopHandle {
 
 /**
  * Register the capability's worker. Returns nothing the caller has to remember to wire: the ROUTER
- * is built separately by `main.ts` under the same guard, and a refused guard contributes NO router,
- * so an event is not even enqueued for a queue nothing will drain.
+ * is registered separately, by `events/domain-event-registry.ts` under `bumpDispatchRoleGuard` —
+ * this same guard, by import rather than by copy — and a refused guard contributes NO router, so an
+ * event is not even enqueued for a queue nothing will drain.
  *
  * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE — the same shape the version
  * poll, the internal-release loop and the inbox loop use, and for the same reason: a process that

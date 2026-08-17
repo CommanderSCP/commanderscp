@@ -539,7 +539,7 @@ export const DEFAULT_DEPENDENCY_SUBSCRIPTION_DELIVERY: DependencySubscriptionDel
 // THERE IS NO SUBSCRIPTION-WRITE SHAPE HERE, ON PURPOSE. A dependency subscription IS a
 // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored,
 // listed, versioned and federated through the EXISTING policy surface
-// (`CreatePolicyRequestSchema` / `scp policy create`). A bespoke create/update/delete shape here
+// (`CreateObjectRequestSchema` / `scp policy register`). A bespoke create/update/delete shape here
 // would be a second authoring path for one concept — it would need its own versioning, its own
 // journal handling and its own scope semantics, and the two would drift. Do not add one.
 // ===========================================================================================
@@ -580,6 +580,80 @@ export type PutDependencySubscriptionUnlockRequest = z.infer<
 >;
 
 /**
+ * WHICH DEPLOYMENT SHAPE ANSWERED, in the vocabulary of `SCP_FEDERATION_ROLE` — plus the one value
+ * that is NOT a role.
+ *
+ * `role_undeclared` IS ITS OWN VALUE AND IS NEVER FOLDED INTO `commander`. That is the whole point
+ * of carrying a reason rather than a bare boolean. `config.federationRole` DEFAULTS to `commander`
+ * when `SCP_FEDERATION_ROLE` is unset, so an outpost that predates the setting, or a chart that
+ * omits it, reads as a commander on the value alone — and dependency automation FAILS CLOSED there
+ * (ADR-0032 §7d, `apps/server/src/dependencies/commander-only.ts`). A reader handed `commander` for
+ * that deployment would be told the opposite of the truth: it looks like the place work happens, and
+ * it is precisely the place nothing will run. It is a distinct value so the remedy is distinct too —
+ * an outpost's operator calls the commander, an undeclared deployment's operator sets one env var.
+ */
+export const DependencyManagementReasonSchema = z.enum([
+  /** An EXPLICITLY declared commander. The one shape that manages dependencies. */
+  "commander",
+  /** A declared outpost. It RECEIVES bumps down the global pipeline; it never originates one. */
+  "outpost",
+  /** A declared retrans (CDS-boundary relay). It originates nothing either. */
+  "retrans",
+  /** `SCP_FEDERATION_ROLE` was never set, so nobody has said what this deployment is. Fail-closed. */
+  "role_undeclared"
+]);
+export type DependencyManagementReason = z.infer<typeof DependencyManagementReasonSchema>;
+
+/**
+ * DOES DEPENDENCY MANAGEMENT ACTUALLY HAPPEN ON THE DEPLOYMENT THAT ANSWERED THIS REQUEST?
+ *
+ * ============================================================================================
+ * WHEN `managedHere` IS FALSE, THE REST OF THE ENVELOPE IS NOT TO BE INTERPRETED
+ * ============================================================================================
+ * All dependency automation is COMMANDER-ONLY (ADR-0032 §7d): a FIELD outpost runs no dependency job
+ * and holds no dependency inventory, because the point of the feature is to pull from PUBLIC
+ * repositories and the resulting change is pushed down the global pipeline the commander manages.
+ * ("Field" is load-bearing, not decoration: an HQ outpost is the outpost in the COMMANDER'S OWN
+ * trust domain, so its inventory simply IS the commander's. Nothing on this wire can be one, which
+ * is why the values below need no fourth member — a `reason` of `outpost` means the answering
+ * deployment DECLARED `SCP_FEDERATION_ROLE=outpost`, and that is a field outpost by construction.
+ * `apps/server/src/dependencies/commander-only.ts` reads the distinction out of the code.)
+ * So on any deployment where `managedHere` is false:
+ *
+ *   - inventory-shaped answers are STRUCTURALLY EMPTY — not "this component declares nothing", but
+ *     "nothing here ever ingested a dependency manifest, and nothing ever will";
+ *   - a RESOLVE verdict is still computed, and it is still arithmetically correct FOR THIS
+ *     DEPLOYMENT: the policy tiers it merges federated down from the commander. But NOTHING ON THIS
+ *     DEPLOYMENT WILL ACT ON IT. An `enabled: true` here does not mean a bump will be authored here;
+ *     it means a bump would be authored on the commander, for a subscription that also resolves
+ *     there. Nor is it a prediction of the commander's answer: the INSTANCE UNLOCK conjunct is a
+ *     local singleton row that does NOT federate, so `enabled: false, reason: instance_locked` here
+ *     says this deployment is locked and says nothing about whether the commander is. Ask the
+ *     commander — which is what a `managedHere: false` is telling a caller to do.
+ *
+ * That gap is the reason this envelope is REQUIRED rather than advisory. Answering `enabled` where
+ * nothing acts on it is charter principle 6 FAILING — an answer whose reason is unavailable — and
+ * the honest sentence is not "enabled"/"disabled" but "enabled, and not managed here, because this
+ * deployment is an outpost". `reason` is what lets a caller write that sentence without a second
+ * round trip and without inferring a posture from a hostname.
+ *
+ * `managedHere` is the FEDERATION axis only, deliberately, and so it is a fact about the DEPLOYMENT
+ * rather than about the process that served the request. In the split topology every HTTP request
+ * lands on an `SCP_ROLE=api` process while the jobs drain on a `worker`; a `managedHere` that also
+ * read the process axis would tell every caller of a perfectly correct commander that dependencies
+ * are not managed there. See `commanderOnlyFederationVerdict` for that argument in full.
+ */
+export const DependencyManagementSchema = z.object({
+  /** True iff dependency automation RUNS on this deployment — i.e. it is an explicitly declared
+   *  commander. False means no job here will ever act on the answer beside it. */
+  managedHere: z.boolean(),
+  /** WHY. Always `commander` exactly when `managedHere` is true; one of the three refusals
+   *  otherwise, each with a different remedy. */
+  reason: DependencyManagementReasonSchema
+});
+export type DependencyManagement = z.infer<typeof DependencyManagementSchema>;
+
+/**
  * The answer to "is THIS component subscribed to THIS line, and why?" — the resolution plus the
  * inputs it was computed for, so the response stands alone in a log or a Decision.
  *
@@ -596,7 +670,17 @@ export type PutDependencySubscriptionUnlockRequest = z.infer<
 export const DependencySubscriptionResolutionResponseSchema = z.object({
   componentObjectId: z.string().uuid(),
   line: DependencyLineKeySchema,
-  resolution: DependencySubscriptionResolutionSchema
+  resolution: DependencySubscriptionResolutionSchema,
+  /**
+   * WHETHER ANYTHING HERE WILL EVER ACT ON `resolution`. REQUIRED, because a caller that could
+   * receive the verdict without it is exactly the caller this closes the hole for: the answer alone
+   * is unqualified, and on an outpost it is unqualified in the direction that reads as "yes, this is
+   * running". Adding a required response property to this operation was measured against the
+   * vendored oasdiff at the merge base and is not an ERR (nothing existing is removed and no
+   * required property became optional) — the same shape `/components/{idOrUrn}/pipeline` already
+   * carries. See {@link DependencyManagementSchema} for what a `false` does and does not mean.
+   */
+  dependencyManagement: DependencyManagementSchema
 });
 export type DependencySubscriptionResolutionResponse = z.infer<
   typeof DependencySubscriptionResolutionResponseSchema

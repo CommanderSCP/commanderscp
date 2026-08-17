@@ -592,9 +592,9 @@ export interface BumpGateLoopHandle {
 }
 
 /**
- * Register the capability's worker. The ROUTER is built separately by `main.ts` under the SAME
- * guard, and a refused guard contributes no router — so an event is not even enqueued for a queue
- * nothing will drain.
+ * Register the capability's worker. The ROUTER is registered separately, by
+ * `events/domain-event-registry.ts` under the SAME guard as the dispatcher's, and a refused guard
+ * contributes no router — so an event is not even enqueued for a queue nothing will drain.
  *
  * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE, the same shape every other
  * background loop uses and for the same reason: a process that merely skipped the work inside the

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { atLineStart } from "@scp/source-census";
 import {
   PINNED_SKOPEO_IMAGE,
   PINNED_SKOPEO_VERSION,
@@ -12,7 +13,12 @@ import {
 } from "@scp/cosign";
 import { REPO_ROOT } from "./repo-paths.js";
 
-/** Parse `tools/skopeo/pin.env` (the single source of truth) as KEY=VALUE pairs. */
+/**
+ * Parse `tools/skopeo/pin.env` (the single source of truth) as KEY=VALUE pairs.
+ *
+ * Already comment-proof, like cosign-bin.test.ts's twin: the key pattern is anchored to the start
+ * of the trimmed line and admits only `[A-Z_0-9]`, so a `#`-prefixed line cannot become a pin.
+ */
 function readPinEnv(): Record<string, string> {
   const text = readFileSync(path.join(REPO_ROOT, "tools/skopeo/pin.env"), "utf8");
   const out: Record<string, string> = {};
@@ -23,6 +29,9 @@ function readPinEnv(): Record<string, string> {
   return out;
 }
 
+/** Raw bytes. Safe for every use below because each is either ANCHORED at the point of assertion
+ *  (`atLineStart`, which a `#` prefix cannot satisfy) or an ABSENCE assertion, where a comment
+ *  marker only makes the check harder to pass and stripping would weaken it. */
 function readRepoFile(relative: string): string {
   return readFileSync(path.join(REPO_ROOT, relative), "utf8");
 }
@@ -33,6 +42,18 @@ function readRepoFile(relative: string): string {
  * time forces those to agree, so a stale copy would silently mean "the image ships binary A
  * while the code asserts version B". These tests are that forcing function — the same shape as
  * cosign-bin.test.ts, which guards the cosign pin's quadruple coupling.
+ *
+ * IT SHARED THAT FILE'S DEFECT TOO. MEASURED 2026-08-17: commenting out `ARG SKOPEO_IMAGE=` in the
+ * root Dockerfile and `d=/opt/scp/libexec/skopeo` in the wrapper left this file green at 10 passed
+ * / 1 skipped, because `.toContain(…)` over raw text cannot tell a live line from a described one.
+ * Every presence assertion below is therefore anchored with `@scp/source-census`'s `atLineStart` —
+ * each of these lines genuinely begins its line, so the anchor costs nothing and a `#` prefix can
+ * no longer satisfy it.
+ *
+ * THE LIMIT: anchoring fixes the comment case and no more (see the package doc). It cannot see a
+ * `COPY` in a stage the final image never draws from, and it cannot tell that the vendored library
+ * closure is complete. The assertion that cannot be talked out of is the fail-closed `skopeo
+ * --version` check at the bottom of this file, which runs the resolved binary.
  */
 describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", () => {
   const pin = readPinEnv();
@@ -53,21 +74,27 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
 
   it("the Dockerfile vendors exactly the pinned image into exactly the pinned paths", () => {
     const dockerfile = readRepoFile("Dockerfile");
-    expect(dockerfile).toContain(`ARG SKOPEO_IMAGE=${pin.SKOPEO_PINNED_IMAGE}`);
+    expect(dockerfile).toMatch(atLineStart(`ARG SKOPEO_IMAGE=${pin.SKOPEO_PINNED_IMAGE}`));
     // The real ELF binary goes to libexec; the wrapper (which runs it against the vendored
     // loader + libs — the binary is dynamically linked) is what lands on the vendored path.
-    expect(dockerfile).toContain(
-      `COPY --from=skopeo ${pin.SKOPEO_UPSTREAM_PATH} ${pin.SKOPEO_LIBEXEC_DIR}/skopeo`
+    expect(dockerfile).toMatch(
+      atLineStart(`COPY --from=skopeo ${pin.SKOPEO_UPSTREAM_PATH} ${pin.SKOPEO_LIBEXEC_DIR}/skopeo`)
     );
-    expect(dockerfile).toContain(`COPY tools/skopeo/skopeo-wrapper.sh ${pin.SKOPEO_VENDORED_PATH}`);
-    expect(dockerfile).toContain("COPY tools/skopeo/policy.json /etc/containers/policy.json");
+    expect(dockerfile).toMatch(
+      atLineStart(`COPY tools/skopeo/skopeo-wrapper.sh ${pin.SKOPEO_VENDORED_PATH}`)
+    );
+    expect(dockerfile).toMatch(
+      atLineStart("COPY tools/skopeo/policy.json /etc/containers/policy.json")
+    );
   });
 
   it("the wrapper runs the vendored binary against the vendored loader, from the libexec dir", () => {
+    // The wrapper's header comment describes both of these lines in prose, so raw `.toContain`
+    // here was satisfied by the documentation of the wrapper rather than the wrapper.
     const wrapper = readRepoFile("tools/skopeo/skopeo-wrapper.sh");
-    expect(wrapper).toContain(`d=${pin.SKOPEO_LIBEXEC_DIR}`);
-    expect(wrapper).toContain(
-      'exec "$d/lib/ld-linux-x86-64.so.2" --library-path "$d/lib" "$d/skopeo" "$@"'
+    expect(wrapper).toMatch(atLineStart(`d=${pin.SKOPEO_LIBEXEC_DIR}`));
+    expect(wrapper).toMatch(
+      atLineStart('exec "$d/lib/ld-linux-x86-64.so.2" --library-path "$d/lib" "$d/skopeo" "$@"')
     );
   });
 

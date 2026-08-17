@@ -7,7 +7,23 @@
  * detail an air-gapped OPERATOR installing a pre-built bundle neither has nor needs. This file is
  * the thing an operator actually reads: what's in the tarball, how to verify it, how to run
  * install.sh, what "the same bundle is the upgrade package" means in practice.
+ *
+ * The `images/` listing is GENERATED from `bundle-images.ts` rather than written out here. It used
+ * to be prose, and prose drifted: it still named three images long after the bundle had grown to
+ * nine, and it never named `scp-runner-scan`/`scp-runner-dep` because the bundle never carried
+ * them (M21.7 item 1). An operator's inventory of what crossed the air gap is exactly the wrong
+ * thing to maintain by hand in a second place.
  */
+import { BUNDLE_IMAGE_SPECS } from "./bundle-images.js";
+
+/** The `images/` subtree of the contents listing, one entry per canonically-bundled image. */
+function renderImagesTree(): string {
+  const width = Math.max(...BUNDLE_IMAGE_SPECS.map((s) => s.name.length)) + 1;
+  return BUNDLE_IMAGE_SPECS.map(
+    (spec) => `    ${(spec.name + "/").padEnd(width + 1)}  ${spec.doc}`
+  ).join("\n");
+}
+
 export function renderOfflineInstallDoc(bundleVersion: string): string {
   return `# CommanderSCP air-gap bundle — offline install & upgrade
 
@@ -21,14 +37,10 @@ background on the project; neither is required reading to complete an install.
 
 \`\`\`
 scp-bundle-${bundleVersion}/
-  images/                   Every image this release needs, as OCI layout (skopeo-copyable)
-    scpd/                     api + worker + Web UI (the ghcr.io/commanderscp/scpd image)
-    scpd.digest               its pinned manifest digest (sha256:...)
-    scpd.digest.sig           cosign signature over scpd.digest
-    scp-runner-iac/            the isolated managed-IaC executor image (Mode 2 only)
-    scp-runner-iac.digest / .digest.sig
-    postgres-eval/             the unmodified postgres:16 image (evaluation/compose use only)
-    postgres-eval.digest / .digest.sig
+  images/                   Every image this release needs, as OCI layout (skopeo-copyable).
+                            Each <name>/ is accompanied by <name>.digest (its pinned manifest
+                            digest, sha256:...) and <name>.digest.sig (cosign signature over it).
+${renderImagesTree()}
   helm/                      The full Helm chart (deploy/helm) — production Kubernetes installs
   compose/
     docker-compose.yml          the original dev/eval file, for reference (builds from source — do NOT run this one offline)
@@ -95,6 +107,60 @@ Add \`--dry-run\` to perform every step above except the final \`helm upgrade\`/
 See \`install.sh --help\` for the full flag list, and its own header comment for the security
 rationale behind each step (it is deliberately not a script you should treat as trustworthy without
 reading — read it once before running it against a production system).
+
+## The managed-execution runner images (and why install.sh does not switch them on)
+
+The bundle carries all three ephemeral runner images — \`scp-runner-iac\`, \`scp-runner-scan\`,
+\`scp-runner-dep\` — unconditionally, so every managed-execution class is **installable** offline.
+Two things do not follow from that, and both are worth knowing before you plan a rollout: none of
+them is **enabled**, and not every deployment mode can **run** one.
+
+**\`--mode helm\` cannot start any of them today, and no chart value changes that.** The
+orchestrator plugins launch a runner with the docker CLI (\`docker create\` / \`docker cp\` /
+\`docker start\`) against a host Docker daemon. A Kubernetes pod has none, this chart deliberately
+mounts no docker socket (a container-escape risk it will not paper over), and the plugins have no
+Kubernetes-native launch mode yet — see \`helm/templates/runner-iac.yaml\` ("HONEST SCOPE") and
+\`helm/README.md\`. Under helm, \`install.sh\` therefore prints the pinned refs as an **inventory**,
+not as an instruction: there is nothing to set that would make managed execution run.
+\`managedIac.enabled=true\` renders the env vars and the Job-template on-ramp; it does not launch a
+container. \`SCP_MANAGED_SCAN_RUNNER_IMAGE\` has no chart value at all. Plan managed execution on a
+compose/VM instance until that changes.
+
+**\`--mode compose\` — which is also what the \`scp.platform\` Ansible role runs on a VM — is the
+mode where they work.** Each class is off until you name its image, that image setting IS the
+class's on/off control, and here the setting is an environment variable on the \`scp\` service. So
+\`install.sh\` pushes and digest-pins all three, prints the exact refs, and leaves the choice to you:
+
+| Runner | What it does | How to enable (compose/VM) |
+| --- | --- | --- |
+| \`scp-runner-iac\` | managed-IaC releases for orgs without a pipeline | \`SCP_MANAGED_IAC_RUNNER_IMAGE=<printed ref>\` |
+| \`scp-runner-scan\` | the commander's promotion-scan toolchain (trivy + oscap) | \`SCP_MANAGED_SCAN_RUNNER_IMAGE=<printed ref>\` |
+| \`scp-runner-dep\` | the isolated manifest editor for dependency bumps | \`SCP_MANAGED_DEP_RUNNER_IMAGE=<printed ref>\` — this class WRITES to your repositories |
+
+Add the ones you want to the \`scp\` service's \`environment:\` block in the retargeted compose file
+\`install.sh\` wrote, then \`docker compose up -d\` again:
+
+\`\`\`yaml
+services:
+  scp:
+    environment:
+      SCP_MANAGED_SCAN_RUNNER_IMAGE: <the ref install.sh printed>
+\`\`\`
+
+**Two prerequisites, or none of those settings starts anything.** Both widen what the \`scp\`
+container can do to its host, so both are deliberately yours to decide rather than something
+\`install.sh\` arranges:
+
+1. **a docker CLI inside the container** — the scpd image ships none (it carries cosign and skopeo
+   and nothing else). Mount one and point \`SCP_MANAGED_RUNNER_DOCKER_BINARY\` at its path.
+2. **a reachable Docker daemon** — a mounted \`/var/run/docker.sock\`, or \`DOCKER_HOST\`. Each
+   runner is launched with \`docker create\` / \`docker cp\` / \`docker start\`, and the shipped
+   compose file mounts no socket.
+
+Without both, the image ref is set and no runner can be launched.
+
+Use the printed **digest-pinned** ref rather than a tag you compose yourself: the digest is the
+thing this bundle's signatures actually attest to, and a bare tag in your registry is mutable.
 
 ## What "the bundle is the upgrade package" means
 

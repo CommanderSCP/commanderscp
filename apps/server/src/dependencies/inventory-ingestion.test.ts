@@ -1,16 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readStripped } from "@scp/source-census";
 import { ManifestParseError } from "@scp/dependency-manifests";
+import { DOMAIN_EVENT_ROUTERS, domainEventRouters } from "../events/domain-event-registry.js";
+import {
+  INVENTORY_INGESTION_QUEUE,
+  inventoryIngestionRoleGuard,
+  inventoryIngestionRouter
+} from "./inventory-ingestion-loop.js";
 import {
   candidateManifestPaths,
   isGitLfsPointer,
   literalRepoFor,
   manifestBasename,
+  manifestStampOutcome,
   MANIFEST_PARSERS,
   MAX_MANIFEST_READS,
+  projectIngestionStamp,
   repoManifestScope,
-  scopeClaims
+  scopeClaims,
+  type IngestedManifest,
+  type ManifestSkipReason,
+  type SkippedManifest
 } from "./inventory-ingestion.js";
 
 /**
@@ -262,6 +273,116 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
     });
   });
 
+  // -----------------------------------------------------------------------------------------
+  // M21.7 — the stamp projection: which of THREE meanings an empty inventory has
+  // -----------------------------------------------------------------------------------------
+  describe("projectIngestionStamp — an empty inventory has three meanings and this picks one", () => {
+    const read = (path: string, declared: number): IngestedManifest => ({
+      path,
+      declared,
+      pruned: 0,
+      removed: false
+    });
+    const skip = (path: string, reason: ManifestSkipReason): SkippedManifest => ({
+      path,
+      reason,
+      detail: `${path} was skipped because ${reason}`
+    });
+
+    it("READ AND EMPTY is `ok` with rowsWritten 0 — the state that was impossible to express", () => {
+      // The whole reason the table exists. Every probe came back "not there", nothing was known
+      // before, so this pass has positive evidence and the honest answer is "declares nothing".
+      // If this ever became `unreadable`, a component with genuinely no dependencies would be
+      // reported to an operator as broken.
+      expect(projectIngestionStamp({ manifests: [], skipped: [] })).toEqual({
+        outcome: "ok",
+        rowsWritten: 0,
+        manifests: []
+      });
+    });
+
+    it("counts rowsWritten as the DECLARATIONS WRITTEN, summed across manifests", () => {
+      const stamp = projectIngestionStamp({
+        manifests: [read("go.mod", 2), read("Dockerfile", 1)],
+        skipped: []
+      });
+      expect(stamp.outcome).toBe("ok");
+      expect(stamp.rowsWritten).toBe(3);
+    });
+
+    it("a manifest that WENT AWAY is still positive evidence: `ok`, and the entry says so", () => {
+      // `removed` means the provider said the path is not there and its rows were pruned. It is an
+      // answer, not a failure — so it must not drag the component into `unreadable`.
+      const stamp = projectIngestionStamp({
+        manifests: [{ path: "go.mod", declared: 0, pruned: 4, removed: true }],
+        skipped: []
+      });
+      expect(stamp.outcome).toBe("ok");
+      expect(stamp.rowsWritten).toBe(0);
+      expect(stamp.manifests[0]?.path).toBe("go.mod");
+      expect(stamp.manifests[0]?.outcome).toBe("ok");
+      expect(stamp.manifests[0]?.detail).toBeDefined();
+    });
+
+    it("MIXED is `partial`, and names WHICH path failed — a count could not", () => {
+      const stamp = projectIngestionStamp({
+        manifests: [read("package.json", 3)],
+        skipped: [skip("Dockerfile", "manifest_unparseable")]
+      });
+      expect(stamp.outcome).toBe("partial");
+      // The declarations that DID land are still counted: a partial pass wrote real rows.
+      expect(stamp.rowsWritten).toBe(3);
+      expect(stamp.manifests.map((m) => [m.path, m.outcome])).toEqual([
+        ["Dockerfile", "unreadable"],
+        ["package.json", "ok"]
+      ]);
+      // The ingestion's own sentence rides along — WHICH file and WHY is the actionable half.
+      expect(stamp.manifests.find((m) => m.path === "Dockerfile")?.detail).toContain(
+        "manifest_unparseable"
+      );
+    });
+
+    it("NOTHING READ is `unreadable` — never `ok`, which would claim the component declares nothing", () => {
+      const stamp = projectIngestionStamp({
+        manifests: [],
+        skipped: [skip("package.json", "read_failed"), skip("go.mod", "ref_not_found")]
+      });
+      expect(stamp.outcome).toBe("unreadable");
+      expect(stamp.rowsWritten).toBe(0);
+      expect(stamp.manifests.map((m) => m.path)).toEqual(["go.mod", "package.json"]);
+    });
+  });
+
+  describe("manifestStampOutcome — `unsupported` and `unreadable` carry different operator actions", () => {
+    it("splits `manifest_unparseable` STRUCTURALLY, not by reading the skip's prose", () => {
+      // The one reason pushed by two different branches: a malformed body (fix the file, and the
+      // next pass may succeed) and "no parser is registered for this filename in this build"
+      // (nothing to fix). They are told apart by asking MANIFEST_PARSERS the same question the
+      // skipping branch asked — the alternative, matching on the detail sentence, is a label named
+      // after a string that any reword breaks.
+      expect(manifestStampOutcome("services/api/go.mod", "manifest_unparseable")).toBe(
+        "unreadable"
+      );
+      expect(manifestStampOutcome("Cargo.toml", "manifest_unparseable")).toBe("unsupported");
+    });
+
+    it("a file SCP structurally cannot decode is `unsupported` — re-running changes nothing", () => {
+      expect(manifestStampOutcome("package.json", "lfs_pointer")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "too_large")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "not_a_file")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "not_text")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "unsupported_encoding")).toBe("unsupported");
+    });
+
+    it("a read that failed THIS TIME is `unreadable` — the next pass may succeed", () => {
+      expect(manifestStampOutcome("package.json", "read_failed")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "ref_not_found")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "read_indeterminate")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "incomplete_body")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "read_budget_exhausted")).toBe("unreadable");
+    });
+  });
+
   describe("the wiring census — this feature's whole failure mode is being built and not installed", () => {
     /**
      * M21 has shipped FOUR components with no production caller (a guard reaching one of four
@@ -270,26 +391,77 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
      * tests called the component directly.
      *
      * So the acceptance criterion is not "the function works", it is WIRED — and the only thing
-     * that can regress the wiring is an edit to `main.ts`, which no unit or integration test of
-     * this module would otherwise touch. This census reads that file and fails if the two halves
-     * are not both there.
+     * that can regress the wiring is an edit to the composition root, which no unit or integration
+     * test of this module would otherwise touch.
      *
-     * WHAT THIS DOES NOT PROVE, said plainly: A SUBSTRING MATCH IS NOT A TEST OF BEHAVIOUR. It
-     * proves the call sites exist in `main.ts` and nothing else — deleting
+     * WHAT A SUBSTRING MATCH DOES NOT PROVE, said plainly: the two `main.ts` assertions below are
+     * text, and text cannot tell a live call from a dead one — deleting
      * `startInventoryIngestionLoop`'s OWN `boss.createQueue` and `boss.work` left this green, and
-     * left the entire suite green, because nothing executed the loop.
+     * left the entire suite green, because nothing executed the loop. The ROUTER half no longer
+     * has that weakness: M21.7 moved the router list out of `main.ts` into the importable
+     * `events/domain-event-registry.ts`, so this capability's registration is asserted below by
+     * running it.
+     *
+     * That paragraph was honest and STILL not enough: until 2026-08-17 this read `main.ts` raw, so
+     * it could not tell a live call from a COMMENTED-OUT one either — commenting the whole
+     * `startInventoryIngestionLoop` block out left all 38 cases here green. `readStripped` closes
+     * that one gap and no other; its doc lists the ones that remain.
      *
      * The behavioural half is `inventory-ingestion.integration.test.ts`'s "the production path"
      * block: a real pg-boss, this capability's real router, `startInventoryIngestionLoop` itself,
      * and the assertion that a domain event lands ROWS IN THE TABLE. That is what fails when the
-     * wiring is deleted. This census remains only for the one edge it covers that the other cannot
-     * — `main.ts`'s own call sites, which no test of this module would otherwise touch.
+     * wiring is deleted.
      */
-    const mainTs = readFileSync(join(import.meta.dirname, "..", "main.ts"), "utf8");
+    const mainTs = readStripped(join(import.meta.dirname, "..", "main.ts"));
 
-    it("main.ts registers the ROUTER with startPgBoss — without it no event ever reaches the queue", () => {
-      expect(mainTs).toContain("inventoryIngestionRouter()");
-      expect(mainTs).toContain("inventoryIngestionRoleGuard(config)");
+    it("the production registry registers THIS router, under THIS capability's guard", () => {
+      // By function identity, not by name: the mis-binding this rules out is the registry pairing
+      // this router with some other capability's guard, which would register it on processes whose
+      // ingestion worker is refused — an enqueue onto a queue nothing drains.
+      const entries = DOMAIN_EVENT_ROUTERS.filter(
+        (entry) => entry.factory === inventoryIngestionRouter
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.guard).toBe(inventoryIngestionRoleGuard);
+    });
+
+    it("a declared-commander background process gets it, and NO other deployment shape does", () => {
+      const queuesFor = (config: {
+        role: "all" | "api" | "worker";
+        federationRole: "commander" | "outpost" | "retrans";
+        federationRoleDeclared: boolean;
+      }): string[] => domainEventRouters(config).map((router) => router.queue);
+
+      expect(
+        queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: true })
+      ).toContain(INVENTORY_INGESTION_QUEUE);
+
+      // AN OUTPOST NO LONGER GETS IT (ADR-0032 §7d, owner decision 2026-08-17). This assertion was
+      // the exact inverse until then — "every federation role, deliberately (§3: each domain
+      // derives its OWN inventory)" — and it was green, because that is precisely what the guard
+      // did. The decision reversed the QUESTION, not the mechanics: a FIELD outpost never
+      // ORIGINATES a dependency bump, it RECEIVES the resulting change down the global pipeline the
+      // commander manages, so the inventory it used to derive fed nothing that could ever act on
+      // it. A deployment that declares `SCP_FEDERATION_ROLE=outpost` — the config below — IS a
+      // field outpost; an HQ outpost is the commander itself and is the accepted case above
+      // (ADR-0032 §7d's vocabulary note, read out of the code in `commander-only.ts`).
+      expect(
+        queuesFor({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
+      expect(
+        queuesFor({ role: "worker", federationRole: "retrans", federationRoleDeclared: true })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
+
+      // THE FAIL-CLOSED CASE, which is the branch that regresses silently: `federationRole`
+      // DEFAULTS to `commander`, so an outpost predating the setting — or a chart that omits it —
+      // presents here as a commander unless the DECLARATION is required as well.
+      expect(
+        queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: false })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
+
+      expect(
+        queuesFor({ role: "api", federationRole: "commander", federationRoleDeclared: true })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
     });
 
     it("main.ts starts the WORKER — without it the queue fills and nothing drains it", () => {

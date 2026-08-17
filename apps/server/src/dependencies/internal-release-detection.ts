@@ -64,15 +64,27 @@ import {
  * the free-text `rollback_trigger_reason`, which is an English sentence a refactor can change.
  *
  * ============================================================================================
- * DOMAIN-LOCAL CHANGES ARE DOMAIN-VISIBLE ONLY. STATED, NOT WORKED AROUND.
+ * DOMAIN-LOCAL CHANGES ARE OUT OF SCOPE. STATED, NOT WORKED AROUND.
  * ============================================================================================
  * A domain-local change does not journal (`transition.ts:337-360`, ADR-0031): its `change_status`
  * entry is deliberately withheld, because "the commander doesn't need to know when these deploy
- * out" is exactly what domain-locality means. The head this module records for such a release is
- * therefore a fact in THIS domain's `dependency_lines` and travels nowhere — a subscriber in
- * another domain will not learn of it. That is ADR-0031's design, and ADR-0032 §7 records it as a
- * known consequence ("stated, not discovered later"). Nothing here tries to route around it: a
- * feature that federated what locality withheld would defeat the locality decision, not extend it.
+ * out" is exactly what domain-locality means. Until 2026-08-17 this module ran on every federation
+ * role, so the head it recorded for such a release was a fact in THAT domain's `dependency_lines`
+ * that travelled nowhere — "domain-visible only", the consequence ADR-0032 §7 records.
+ *
+ * SINCE ADR-0032 §7d (owner decision, 2026-08-17) THIS MODULE RUNS ON THE COMMANDER ONLY, so the
+ * statement is now stronger: a domain-local release at a FIELD outpost reaches no detection at all,
+ * and its head is recorded NOWHERE. That is the same class as §7d clause 1's field-outpost-only
+ * repositories and is accepted on the same terms — a field outpost never ORIGINATES a bump, it
+ * receives the resulting change down the global pipeline the commander manages. Nothing here tries
+ * to route around it: a feature that federated what locality withheld would defeat the locality
+ * decision, not extend it.
+ *
+ * "FIELD" IS THE QUALIFIER THAT MAKES THIS TRUE (ADR-0032 §7d's vocabulary note). A domain-local
+ * change in the COMMANDER'S OWN trust domain — the HQ outpost, which is not a second deployment but
+ * this process (`dependencies/commander-only.ts` reads that out of the code) — never journals
+ * either, but it does not need to: this module runs here, over those rows, so its head IS recorded.
+ * The loss is confined to domains the commander is not.
  *
  * ============================================================================================
  * WHAT KEEPS THIS FROM WRITING 1.44 GB/DAY
@@ -101,11 +113,15 @@ import {
  * `listComponentsDeclaringLine` (M21.2's reverse lookup). The AND is not re-expressed here; this
  * module cannot disagree with a UI verdict because it does not compute one.
  *
- * THAT IS ALSO WHY THE GROUP-SCOPE GUARD CHANGED. This job resolves as {@link SYSTEM_ACTOR_ID},
- * which is a sentinel with NO `objects` row (`coordination/system-actor.ts:9`) and therefore a
- * member of no group — so `matchPoliciesForTargets` never returns a `scope.group` policy for it and
- * a group-scoped ENABLE is INERT here while reading `enabled` in the API for a human team member.
- * See `subscription-authoring-guard.ts` and ADR-0032 §6a.
+ * THAT IS ALSO WHY THE GROUP-SCOPE GUARD CHANGED — though NOT for the reason this comment used to
+ * give. It said a group-scoped ENABLE is INERT here because this job resolves as
+ * {@link SYSTEM_ACTOR_ID}, a sentinel with NO `objects` row (`coordination/system-actor.ts:9`) and
+ * therefore a member of no group. The membership fact is still true; the conclusion is FALSE
+ * (ADR-0032 §6a-ii). `matchPoliciesForTargets` also matches a group-scoped policy through its
+ * OWNING half, which never reads the actor (`governance/policy-resolve.ts:313`, `:150-173`), so such
+ * a policy DOES contribute here wherever the group owns something on the component's chain. What the
+ * guard actually refuses is a reach nobody declared: membership plus mutable `owns` edges, in place
+ * of what the author wrote. See `subscription-authoring-guard.ts` and ADR-0032 §6a-ii.
  */
 
 /** The Decision `kind` this module writes. One kind, one subject (the change), one row per run. */
@@ -802,10 +818,12 @@ async function listProducedLines(
  * into `listSubscribedComponentLines`, which applies `mergeDependencySubscription` itself. The AND
  * is not restated here, so this gate cannot disagree with what a UI or a Decision reports.
  *
- * THE ACTOR IS THE SYSTEM SENTINEL, and that has a consequence worth naming at the call site: it is
- * a member of no group, so a `group`-scoped `dependencySubscription` effect NEVER contributes for
- * this job. ADR-0032 §6a is amended for exactly this reason and the authoring guard now refuses
- * group scope in both directions.
+ * THE ACTOR IS THE SYSTEM SENTINEL, and the consequence worth naming at the call site is NOT the one
+ * that used to be written here ("it is a member of no group, so a `group`-scoped effect NEVER
+ * contributes for this job"). That is false — group scope's owning half ignores the actor, so such an
+ * effect contributes wherever the group owns something on the chain (ADR-0032 §6a-ii). The real
+ * consequence: whether it contributes is decided by ownership data this job never looks at and the
+ * author never wrote, which is why the authoring guard refuses group scope in both directions.
  */
 async function lineHasSubscriber(tx: TenantTx, orgId: string, lineId: string): Promise<boolean> {
   const declaring = await listComponentsDeclaringLine(tx, orgId, lineId);

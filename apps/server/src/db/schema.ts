@@ -169,10 +169,13 @@ export const objects = pgTable(
   {
     id: uuid("id").primaryKey(), // UUIDv7, client-suppliable
     orgId: uuid("org_id").notNull(),
-    // CONTAINMENT sense (ADR-0021 D4) — the containing `domain` graph object; NULL only for the
-    // org root object. Deliberately branded differently from `originDomainId` nine lines below,
-    // which is the TRUST sense: the two are structurally identical uuids and were freely
-    // interchangeable before branding.
+    // CONTAINMENT sense (ADR-0021 D4) — the containment parent (ANY object; a `domain` in the
+    // common case); NULL only for the org root object. There is deliberately NO FK and NO CHECK
+    // here (0001_graph_core.sql:32) and `resolveContainmentParent` applies no type filter, so a
+    // service id or a component id is valid and is what several shipped tests pass. The brand
+    // asserts the SENSE, never the TYPE. Deliberately branded differently from `originDomainId`
+    // nine lines below, which is the TRUST sense: the two are structurally identical uuids and were
+    // freely interchangeable before branding.
     domainId: uuid("domain_id").$type<ContainmentDomainId>(),
     typeId: text("type_id")
       .notNull()
@@ -1754,9 +1757,24 @@ export const scanRequirementFloors = pgTable(
 // -------------------------------------------------------------------------------------------
 
 /**
- * The identity of ONE MAJOR LINE of one dependency, in one org. Derived, per-domain, high-churn
- * observation data — the category `changeSourceEvents` and `objectHealth` already occupy — so it is
- * a projection table and it does NOT federate; each domain derives its own (ADR-0032 §3).
+ * The identity of ONE MAJOR LINE of one dependency, in one org. Derived, high-churn observation
+ * data — the category `changeSourceEvents` and `objectHealth` already occupy — so it is a
+ * projection table and it does NOT federate (ADR-0032 §3, unchanged: that is what justifies the
+ * principle-2 bend).
+ *
+ * IT IS WRITTEN ON THE COMMANDER ONLY (ADR-0032 §7d, owner decision 2026-08-17). This comment used
+ * to say "per-domain … each domain derives its own", quoting §3; that half is reversed. All
+ * dependency automation is commander-only — a FIELD outpost never ORIGINATES a bump, it receives the
+ * resulting change down the global pipeline the commander manages — so these rows exist in exactly
+ * one place, and an EMPTY `dependency_lines` on a field outpost is correct rather than a sync
+ * failure. "Field" is the qualifier that makes that sentence true: an HQ outpost is the outpost in
+ * the COMMANDER'S OWN trust domain, so its rows ARE these rows (ADR-0032 §7d's vocabulary note,
+ * read out of the code in `dependencies/commander-only.ts`). Any deployment whose
+ * `SCP_FEDERATION_ROLE` reads `outpost` is a field outpost, which is why the table is empty
+ * exactly there and nowhere else.
+ * `drizzle/0061`'s `COMMENT ON` carried the old wording, which is what an operator actually meets
+ * in `\d+ dependency_lines`; 0061 is merged and not editable in place, so `drizzle/0066` restates
+ * it there. The two are meant to be read as one statement — keep them saying the same thing.
  *
  * THE COORDINATE IS NOT A URN, and that is why this is a table. `graph/urn.ts`'s `slugify`
  * lowercases and hyphenate-collapses every non-alphanumeric run, so `@acme/lib`, `acme/lib` and
@@ -1932,6 +1950,146 @@ export const componentDependencies = pgTable(
   ]
 );
 
+/** One entry of {@link dependencyIngestionStamps.manifests} — what a pass established about ONE
+ *  manifest path IN ONE REPOSITORY. Declared here beside the column so the jsonb has a type at
+ *  every read. */
+export interface IngestionStampManifest {
+  /**
+   * THE REPOSITORY THIS ENTRY'S EVIDENCE CAME FROM — which is what makes the array a merge target
+   * rather than something a pass replaces wholesale.
+   *
+   * A pass reads exactly ONE repository, and `source_mappings` is many-per-component: a component
+   * legitimately releases from `acme/widgets` (its `go.mod`) and from `acme/charts` (its
+   * `Dockerfile`). Keyed by `path` alone, a charts pass replaced the entire array and ERASED the
+   * widgets pass's `unreadable` verdict minutes later — state (iii) "manifests unreadable" rendered
+   * as state (ii) "genuinely declares nothing", which is precisely the lie this table was built to
+   * prevent. So the writer replaces only the `(repo, *)` slice it holds evidence over
+   * (`mergeIngestionStamp`), and the component-level `outcome` is computed ACROSS the merged set.
+   */
+  readonly repo: string;
+  /** Repo-relative path, as `component_dependencies.manifest_path` spells it. */
+  readonly path: string;
+  /** `ok` read and parsed; `unreadable` a read or parse that failed THIS TIME and may succeed on
+   *  the next pass; `unsupported` a file SCP structurally cannot read (no parser registered for
+   *  that filename in this build, an LFS pointer, a directory, a binary, an encoding the decoder
+   *  does not implement). The split is by OPERATOR ACTION, which is the test for whether a reason
+   *  deserves its own name (ADR-0032 §7b clause 6). */
+  readonly outcome: "ok" | "unreadable" | "unsupported";
+  /** `component_dependencies` rows THIS manifest's last observation wrote; 0 on an entry that was
+   *  not read and on one whose manifest went away. The row's `rows_written` is the SUM of these
+   *  over the merged set — it has to be, or a second repository's pass would report its own count
+   *  as the whole component's and `ok` + 0 would stop meaning "declares nothing". */
+  readonly rows: number;
+  /** WHEN THE PASS THAT WROTE THIS ENTRY LOOKED, ISO-8601. The only thing that orders two passes
+   *  over the SAME repository: a late-delivered retry of an earlier pass must not replace a newer
+   *  slice (both delivery hops are at-least-once and the ingestion queue is a competing consumer).
+   *  Per entry rather than per row because the row's own `last_attempt_at` is now the newest across
+   *  ALL repositories, which says nothing about whether this repository's slice is stale. */
+  readonly at: string;
+  /** The ingestion's own sentence about this path. Absent on the ordinary `ok` entry. */
+  readonly detail?: string;
+}
+
+/**
+ * ================================================================================================
+ * THE DEPENDENCY INGESTION'S RECEIPT, PER COMPONENT (migration 0065, ADR-0032 §4)
+ * ================================================================================================
+ * `component_dependencies.observed_at` is PER ROW, so a component with ZERO rows carries no
+ * timestamp at all and three different truths produce the same empty list: never ingested;
+ * ingested fine and genuinely declares nothing; ingestion ran and every manifest was unreadable.
+ * The ingestion has always COMPUTED which one — the verdict, the per-manifest skip reason and a
+ * detail are all on `ComponentIngestionOutcome`, the backfill route reports them per component and
+ * the loop logs them — and NOTHING PERSISTED IT, so a reader arriving later has only the absence of
+ * rows to go on and is forced to render "no dependencies" over all three. The third rendered as the
+ * second is a lie told with a straight face: the component is silently unsubscribed from everything
+ * it declares, and the screen says it has nothing to declare.
+ *
+ * ONE ROW PER COMPONENT, UPSERTED. Bounded by the component count, not by the event rate — a pass
+ * updates a row rather than appending one, which is the distinction ADR-0024's 1.44 GB/day
+ * measurement is actually about.
+ *
+ * "NEVER ATTEMPTED" IS THE ABSENCE OF A ROW, never a value: the only writer of "we have never
+ * looked at this component" would be a pass that ran, which is a contradiction. `scp_app` holds no
+ * DELETE grant here for the same reason — deleting a stamp forges that absence.
+ *
+ * WHY NOT THE DECISION THE INGESTION ALREADY WRITES: it writes NO Decision on the refused paths
+ * (not enabled, not addressable), which are exactly the components whose empty list needs
+ * explaining; and it is persist-on-change with the ref, the commit and every timestamp deliberately
+ * excluded, so "when did we last look?" is unanswerable from it BY DESIGN.
+ */
+export const dependencyIngestionStamps = pgTable(
+  "dependency_ingestion_stamps",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** Org-unbound `references(objects.id)` — the form `changes.objectId` and
+     *  `component_dependencies.component_object_id` use. There is NO composite foreign key here and
+     *  that is a finding rather than an omission: `component_dependencies` carries one because a
+     *  row of it points at a `dependency_lines` row and 0061 gave that table a `(org_id, id)`
+     *  UNIQUE constraint expressly so a composite key had something to reference. This table points
+     *  at nothing org-scoped, and `objects` carries no `(org_id, id)` unique constraint to hang one
+     *  on. 0061's barrier-2 residue therefore applies verbatim (drizzle/0065's header states it in
+     *  full, including what a future read route owes). */
+    componentObjectId: uuid("component_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** WHEN THIS PASS LOOKED — the phase-2 read time where a provider was reached, the start of the
+     *  pass where it refused before reaching one. The same clock `component_dependencies.observed_at`
+     *  is stamped from, so a pass's stamp and its rows describe one instant and two overlapping
+     *  passes order identically in both places. */
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }).notNull(),
+    /** `loop` (event-driven, reacting to an accepted change) or `backfill` (an operator ran
+     *  `POST /dependencies/inventory/backfill`) — "is this inventory maintained by the component's
+     *  own releases, or only by whoever last ran a backfill?", two very different freshnesses
+     *  behind one timestamp. Plain text with no CHECK, like `dependencyLines.ecosystem`: the closed
+     *  set is enforced by the union type at the one write door, and `source` is a REQUIRED input of
+     *  `ingestComponentManifests`, so a third producer does not compile until it names itself. */
+    source: text("source").$type<"loop" | "backfill">().notNull(),
+    /** What the component's manifests are KNOWN TO BE, across every repository that feeds it —
+     *  computed over the merged `manifests` set, not reported by whichever pass wrote last. `ok`
+     *  every entry was read; `partial` some read and some not (the mixed case, which `manifests`
+     *  names, and which a component fed by two repositories reaches routinely); `unreadable`
+     *  nothing was read at all; `not_enabled` the gate is closed so nothing is fetched — the empty
+     *  list is correct and is not evidence about the manifests. */
+    outcome: text("outcome").$type<"ok" | "partial" | "unreadable" | "not_enabled">().notNull(),
+    /** The ingestion's own sentence behind `outcome`, and ONLY when the outcome is one a pass
+     *  declared rather than one the merged evidence computed (`not_enabled`, "no repository was
+     *  named"). It exists because `manifests` is keyed BY PATH and those refusals have no path to
+     *  hang an explanation on; where the evidence decides, the per-path details ARE the
+     *  explanation and this is null. */
+    detail: text("detail"),
+    /** `component_dependencies` rows the component's manifests currently account for — the SUM of
+     *  `manifests[].rows` over the merged set, so a pass over one repository cannot report its own
+     *  count as the whole component's. 0 IS LEGAL AND MEANINGFUL: `ok` + 0 is "read fine, genuinely
+     *  declares nothing", the state that could not be expressed before this table. Counts what was
+     *  written, never what was pruned — this describes the observation. */
+    rowsWritten: integer("rows_written").notNull(),
+    /** Per (REPOSITORY, manifest path), sorted. Per path because `manifest_path` is part of
+     *  `component_dependencies`' primary key — one component legitimately declares from several
+     *  manifests, so "one readable, one not" is ordinary rather than hypothetical, and a count
+     *  cannot tell an operator WHICH file to fix. Per REPOSITORY because a pass reads exactly one
+     *  and `source_mappings` is many-per-component: a pass replaces only its own repository's
+     *  slice, so a successful charts release can no longer erase a failed widgets read. `[]` —
+     *  never NULL — states "no manifest is known for this component". */
+    manifests: jsonb("manifests")
+      .$type<IngestionStampManifest[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** When this component was FIRST attempted. Not derivable from `lastAttemptAt`: "attempted once
+     *  months ago and never since" and "attempted for the first time an hour ago" are different
+     *  operational stories behind the same last-attempt timestamp. */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    // `orgId` LEADS, so the primary-key index IS both reads — the point lookup ("what happened to
+    // component C?") and the batched one a list view takes over many components at once. No second
+    // index, because there is no second access path.
+    primaryKey({
+      name: "dependency_ingestion_stamps_pk",
+      columns: [table.orgId, table.componentObjectId]
+    })
+  ]
+);
+
 /**
  * ================================================================================================
  * WHAT COMMANDERSCP ITSELF AUTHORED FOR A DEPENDENCY BUMP (migration 0063, ADR-0032 §8/§9)
@@ -1989,6 +2147,12 @@ export const dependencyBumpAuthorships = pgTable(
     /** The pull request SCP opened, read back from the authoring run's own `status().stateRef`. The
      *  merge is addressed to THIS NUMBER, never to the first entry of a provider list. */
     pullRequestNumber: integer("pull_request_number"),
+    /** That pull request's web URL AS THE PROVIDER RETURNED IT (migration 0066). NOT derived from
+     *  `repo` + `pullRequestNumber`: those compose a working link only for github.com, and nothing
+     *  on this row says which provider authored the bump — an outpost-local Gitea (M15) is another
+     *  host AND spells the path `/pulls/`, GitHub Enterprise is another host again. NULL means SCP
+     *  recorded no link; it never means "compose one". */
+    pullRequestUrl: text("pull_request_url"),
     /** Set once the provider confirms the merge — what stops the merge commit's OWN webhook from
      *  re-running the gate and overwriting the audit trail with a refusal for a bump that merged. */
     mergedAt: timestamp("merged_at", { withTimezone: true }),

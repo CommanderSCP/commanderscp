@@ -44,6 +44,18 @@
 -- federate: a bump is authored by the commander that holds the credential, and an outpost never
 -- authors one (`bumpDispatchRoleGuard`).
 --
+--      >> MARKED 2026-08-17 (ADR-0032 §7d) — same two corrections as `0061`'s reason 4, and marked
+--      >> here rather than rewritten (ADR-0026 D4). (a) "PER-DOMAIN" IS REVERSED: all dependency
+--      >> automation is commander-only, so this bookkeeping exists in exactly ONE place. The rest of
+--      >> the sentence — derived, high-churn, no new type, no advisory locks, single-hop queries —
+--      >> is untouched and is still the whole justification. (b) "AN OUTPOST NEVER AUTHORS ONE" is
+--      >> exact only for a FIELD outpost, one in another trust domain; an HQ outpost is the outpost
+--      >> in the COMMANDER'S OWN trust domain and is the very process that authors the bump. Since
+--      >> every deployment reading `SCP_FEDERATION_ROLE=outpost` IS a field outpost, the guard named
+--      >> above is correct as written — the sentence, quantified over outposts as a class, was not.
+--      >> Marked in place because these are `--` lines that reach no database; the applied
+--      >> statements in this file are untouched, exactly as in `0061`.
+--
 -- ===========================================================================================
 -- THE SECOND CHANGE IN THIS FILE: `control_runs.plugin_module`
 --

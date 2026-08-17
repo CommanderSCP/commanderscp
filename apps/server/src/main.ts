@@ -5,6 +5,7 @@ import { runMigrations } from "./db/migrate.js";
 import { provisionPgBossRole, provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
 import { ensureBootstrapAdmin } from "./auth/local-auth.js";
 import { startPgBoss } from "./events/pgboss.js";
+import { domainEventRouters } from "./events/domain-event-registry.js";
 import { startOutboxRelay } from "./events/outbox-relay.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
@@ -14,22 +15,10 @@ import { startObserveLoop } from "./coordination/observe.js";
 import { startWatchdogLoop } from "./coordination/watchdog.js";
 import { startInboxLoop } from "./federation/inbox-loop.js";
 import { startDependencyVersionPollLoop } from "./dependencies/version-poll.js";
-import {
-  acceptedChangeRouter,
-  internalReleaseDetectionRoleGuard,
-  startInternalReleaseLoop
-} from "./dependencies/internal-release-loop.js";
-import {
-  inventoryIngestionRoleGuard,
-  inventoryIngestionRouter,
-  startInventoryIngestionLoop
-} from "./dependencies/inventory-ingestion-loop.js";
-import {
-  advancedLineHeadRouter,
-  bumpDispatchRoleGuard,
-  startBumpDispatchLoop
-} from "./dependencies/bump-dispatch.js";
-import { observedBumpRouter, startBumpGateLoop } from "./dependencies/bump-gate.js";
+import { startInternalReleaseLoop } from "./dependencies/internal-release-loop.js";
+import { startInventoryIngestionLoop } from "./dependencies/inventory-ingestion-loop.js";
+import { startBumpDispatchLoop } from "./dependencies/bump-dispatch.js";
+import { startBumpGateLoop } from "./dependencies/bump-gate.js";
 import { startAutoRelayLoop } from "./federation/auto-relay.js";
 import { startFederationSyncLoop } from "./federation/federation-sync.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
@@ -167,40 +156,21 @@ async function main(): Promise<void> {
   // schema-scoped `scp_pgboss` login role (M3 tracked security follow-up — pg-boss no longer
   // runs its own schema migrations on the admin/superuser connection).
   if (runsBackgroundWork) {
-    // M21.4 (ADR-0032 §7): the FIRST real consumer of the domain-event stream. `boss.work()` is a
-    // competing consumer, so a feature that reacts to an event registers a ROUTER here rather than a
-    // second worker on `domain-events` — the router makes one cheap decision and enqueues onto this
-    // capability's own queue, which is then worked by `startInternalReleaseLoop` below. Guarded so
-    // an api-only process neither routes nor works (the guard is the job's own property, not a
-    // consequence of sitting inside `runsBackgroundWork`); a refused guard contributes NO router, so
-    // an event is not even enqueued for a queue nothing will drain.
+    // M21.4 (ADR-0032 §7): the domain-event stream's real consumers. `boss.work()` is a competing
+    // consumer, so a feature that reacts to an event registers a ROUTER rather than a second worker
+    // on `domain-events` — the router makes one cheap decision and enqueues onto that capability's
+    // own queue, worked by the `start…Loop` calls below.
     //
-    // M21.2 registers the SECOND router on the same event. Routers are not workers: the
-    // domain-events worker calls every router for every event, so they do not compete — which is
-    // exactly why a router exists rather than a `boss.work()` per capability. Each enqueues onto its
-    // OWN queue, so a slow manifest read cannot starve internal detection or vice versa. The same
-    // reasoning is why this array is the ONE registration site: a router listed twice would be two
-    // enqueues per event, and `boss.work()` on the receiving queue is a competing consumer that
-    // would then do the work twice. Every entry below appears exactly once.
-    const internalReleaseAllowed = internalReleaseDetectionRoleGuard(config).allowed;
-    const inventoryIngestionAllowed = inventoryIngestionRoleGuard(config).allowed;
-    // M21.5 (ADR-0032 §8): a line's head advancing is what makes a bump due, and that event is
-    // emitted by the ONE head write door so both M21.4 ingresses feed it. Its guard is STRICTER than
-    // internal detection's and is derived rather than copied (see `bumpDispatchRoleGuard`): this job
-    // writes to a source repository with a credential, which an air-gapped or high-side outpost must
-    // never do — and internal detection running on every role means heads DO advance there.
-    const bumpDispatchAllowed = bumpDispatchRoleGuard(config).allowed;
-    const boss = await startPgBoss(config.pgBossDatabaseUrl, [
-      ...(internalReleaseAllowed ? [acceptedChangeRouter()] : []),
-      ...(inventoryIngestionAllowed ? [inventoryIngestionRouter()] : []),
-      ...(bumpDispatchAllowed ? [advancedLineHeadRouter()] : []),
-      // M21.5 auto-merge link (ADR-0032 §8c). Its trigger is an observed provider event that
-      // correlated to a bump SCP authored — the authored push, and then the CI conclusion on that
-      // same commit — which is the only moment the delivery question is worth asking a second time.
-      // Same guard as the dispatcher's, by IMPORT rather than by copy: merging is a repository
-      // write, and a strictly more consequential one than opening a pull request.
-      ...(bumpDispatchAllowed ? [observedBumpRouter()] : [])
-    ]);
+    // WHICH routers, and under WHICH role guard, is `events/domain-event-registry.ts` — not a
+    // literal here. Until M21.7 it was a literal here, and that is precisely why nothing could
+    // check it: `main()` runs at module scope, so no test can import this file, so the census that
+    // guarded the list had to read this file as TEXT — and text cannot tell a live registration
+    // from an unreachable one (an inverted guard leaves the factory's name sitting right there in
+    // the source). The registry is a pure value, so `events/domain-event-routers.test.ts` now
+    // EXECUTES it for a matrix of configs and asserts what is actually registered, against the set
+    // of routers it discovers in the tree. The one thing that census still reads as text is the
+    // line below — that this composition root calls `domainEventRouters` at all.
+    const boss = await startPgBoss(config.pgBossDatabaseUrl, domainEventRouters(config));
     // M14.2 (ADR-0009): expose the job queue to request handlers (mirrors `deps.pluginHost` below)
     // so the inbound federation poke endpoint can enqueue an immediate federation-sync tick — the
     // contentless wake that pulls NOW instead of at the next interval, without pulling inline.
@@ -278,10 +248,16 @@ async function main(): Promise<void> {
       config
     );
     // M21.4 internal release detection (ADR-0032 §7) — the other half of the router registered with
-    // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event; it runs
-    // on EVERY federation role, deliberately, since each domain derives its own inventory and the
-    // wave-target evidence exists only where the change executed (the loop's module doc has the
-    // reasoning in full).
+    // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event.
+    // COMMANDER-ONLY, like every dependency job (ADR-0032 §7d, owner decision 2026-08-17): this
+    // comment used to say it ran on EVERY federation role. A FIELD outpost never ORIGINATES a
+    // dependency bump — it receives the resulting change down the global pipeline the commander
+    // manages — so it derives no inventory and detects no releases for this feature. ("Field" is
+    // load-bearing: an HQ outpost is the outpost in the commander's OWN trust domain, which is this
+    // process — see `dependencies/commander-only.ts`, which reads that out of the code.) The loop's
+    // module doc carries the full reasoning and the accepted cost (an internal line released only at
+    // a FIELD outpost keeps a NULL head, which §7 defines as "not observed", never "nothing newer
+    // exists"; a release in the HQ domain is detected here as normal).
     const internalReleaseLoop = await startInternalReleaseLoop(boss, {
       db,
       host: pluginHost,
@@ -290,10 +266,14 @@ async function main(): Promise<void> {
     // M21.2 dependency-inventory ingestion (ADR-0032 §4/§6) — the worker half of the ingestion
     // router registered above. THIS IS WHAT WRITES `component_dependencies`: without it the table is
     // empty on every deployment and the enablement chain, the version poll and internal detection
-    // all resolve over nothing. Same role reasoning as internal detection, derived from ingestion's
-    // own facts in the loop's module doc (it reads this domain's own change and this domain's own
-    // git binding; it never dials a public index on a timer, which is the poll's whole reason for
-    // being commander-only).
+    // all resolve over nothing. Same role answer as internal detection and the poll — COMMANDER-ONLY
+    // (ADR-0032 §7d, owner decision 2026-08-17), where this comment previously pointed at an
+    // ingestion-specific derivation that concluded the opposite. A FIELD outpost holds no dependency
+    // inventory: the only consumer of one is a bump, and the dispatcher below has been
+    // commander-only since M21.5. (An HQ outpost is the commander's own trust domain and is this
+    // process, so its inventory is the one written here — `dependencies/commander-only.ts`.)
+    // Accepted consequence, in the loop's module doc: dependencies declared in FIELD-outpost-only
+    // repositories are out of scope for dependency subscriptions.
     const inventoryIngestionLoop = await startInventoryIngestionLoop(boss, {
       db,
       host: pluginHost,

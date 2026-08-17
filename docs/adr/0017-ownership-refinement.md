@@ -169,8 +169,9 @@ AMER **and** Prod APAC. This is expressed with the existing model, **no new obje
 - The M15.4 **bundled-backend** matrix still carries the "outposts don't build" rationale; reconciling it so a
   **bundled** build engine may run on the outpost role is a noted follow-up (build devolution works today via
   coordinated/BYO engines, so it does not block).
-- The multi-region Argo CD **setting** is not built yet — it lands as a small M15.6 config surface + test;
-  the underlying per-region binding capability already exists.
+- The multi-region Argo CD **setting** — the small M15.6 config surface + test — is **done**
+  (`apps/server/src/coordination/multiregion-argocd.integration.test.ts`; BUILD_AND_TEST.md §8 M15.6);
+  the underlying per-region binding capability it configures already existed at this ADR's acceptance.
 - This ADR is **docs-only** and does **not** block M17.4 / M15.2 / M15.5: cross-hop verify-at-outpost is
   **actor-agnostic** (it verifies the commander-signed manifest + arrived-set equality regardless of *which*
   domain ran the build), so devolving build to the outpost changes nothing about the verify hops.

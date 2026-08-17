@@ -15054,6 +15054,10 @@ export type GetComponentDependencySubscriptionResponses = {
                 delivery?: 'pull_request' | 'auto_merge';
             }>;
         };
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
     };
 };
 
@@ -15108,6 +15112,17 @@ export type BackfillDependencyInventoryErrors = {
      * Error
      */
     404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
         type: string;
         title: string;
         status: number;

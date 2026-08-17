@@ -673,15 +673,20 @@ export interface GatherSubscriptionCandidatesInput {
   orgId: string;
   /** The component whose containment chain is walked for matching policies. */
   componentObjectId: string;
-  /** The acting subject, for `scope.group` matching (DESIGN §10.1) — REQUIRED and threaded exactly
-   *  as `resolveEffectiveScanThreshold` threads it.
+  /** The acting subject, for `scope.group` matching's ACTING half (DESIGN §10.1) — REQUIRED and
+   *  threaded exactly as `resolveEffectiveScanThreshold` threads it. It is only ONE of the two halves:
+   *  `matchPoliciesForTargets` also matches a group-scoped policy when the group OWNS something on
+   *  the component's containment chain, and that half never reads this field
+   *  (`governance/policy-resolve.ts:292-322`, owning half at `:150-173`).
    *
-   *  INHERITED HAZARD, stated rather than discovered: a `group`-scoped policy matches only when THIS
-   *  actor is a transitive `member_of` the group. A group-scoped OPT-OUT therefore does not
-   *  subtract for an actor outside the group — which is the fail-open direction. It is inherited
-   *  from `matchPoliciesForTargets` rather than introduced here (`scanThreshold` has the identical
-   *  exposure: a group-scoped ceiling that fails to match leaves the ceiling looser), and the fix
-   *  belongs in the matcher, for both consumers at once. Author opt-outs at an `objectRef` scope. */
+   *  INHERITED HAZARD, stated rather than discovered (ADR-0032 §6a-ii): where NEITHER half matches —
+   *  the actor is not a member and the group owns nothing on the chain — a group-scoped OPT-OUT does
+   *  not subtract, which is the fail-open direction. Worse, the owning half's reach is MUTABLE: an
+   *  `owns` edge deleted through the ordinary ownership API silently takes the opt-out with it. It is
+   *  inherited from `matchPoliciesForTargets` rather than introduced here (`scanThreshold` has the
+   *  identical exposure: a group-scoped ceiling that matches neither half leaves the ceiling looser),
+   *  and the fix belongs in the matcher, for both consumers at once. Author opt-outs at an `objectRef`
+   *  scope — which is why `subscription-authoring-guard.ts` refuses the group-scoped shape outright. */
   actorObjectId: string;
 }
 
@@ -767,9 +772,13 @@ export async function resolveDependencySubscription(
  * the ingestion function rather than of its call sites — the distinction ADR-0032 §6 draws when it
  * says the work-list is DERIVED from this resolution rather than filtered by one.
  *
- * THE ACTOR IS THE SYSTEM SENTINEL on the event-driven path, with the consequence ADR-0032 §6a
- * names: it is a member of no group, so a `group`-scoped effect never contributes here. That is why
- * the authoring guard refuses group scope in both directions.
+ * THE ACTOR IS THE SYSTEM SENTINEL on the event-driven path. That does NOT mean a `group`-scoped
+ * effect never contributes here — this comment used to say so and it was wrong (ADR-0032 §6a-ii).
+ * The sentinel is `member_of` nothing, so group scope's ACTING half never fires for it, but the
+ * OWNING half ignores the actor and fires wherever the group owns something on the component's
+ * chain. What is actually true, and is why the authoring guard refuses group scope in both
+ * directions: whether a group-scoped effect contributes here is decided by membership and by
+ * mutable `owns` edges, never by what the author wrote.
  */
 export async function resolveComponentIngestionGate(
   tx: TenantTx,

@@ -49,8 +49,18 @@ describe("dependencyVersionPollRoleGuard", () => {
         federationRole: "outpost",
         ...DECLARED
       });
-      expect(verdict.allowed).toBe(false);
-      expect(verdict.reason).toMatch(/air-gapped/);
+      expect(verdict.allowed, role).toBe(false);
+      // The air-gap sentence is THIS capability's own reason for the FEDERATION axis, so it belongs
+      // to the federation branch and only to it. On an `api` process the guard refuses on the
+      // PROCESS axis first (M21.7 follow-up, LOW 5 — all three hand-written copies now test the
+      // axes in one order, so a given misconfiguration sends an operator to ONE setting rather than
+      // to whichever one the job that complained happened to check first); telling that operator
+      // about air-gaps would be naming the wrong remedy.
+      if (role === "api") {
+        expect(verdict.reason, role).toMatch(/SCP_ROLE/);
+      } else {
+        expect(verdict.reason, role).toMatch(/air-gapped/);
+      }
     }
   });
 
