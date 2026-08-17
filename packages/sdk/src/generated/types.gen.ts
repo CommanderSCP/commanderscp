@@ -15414,6 +15414,272 @@ export type GetComponentDependencySubscriptionResponses = {
 
 export type GetComponentDependencySubscriptionResponse = GetComponentDependencySubscriptionResponses[keyof GetComponentDependencySubscriptionResponses];
 
+export type ListComponentDependencyInventoryData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/components/{idOrUrn}/dependency-inventory';
+};
+
+export type ListComponentDependencyInventoryErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentDependencyInventoryError = ListComponentDependencyInventoryErrors[keyof ListComponentDependencyInventoryErrors];
+
+export type ListComponentDependencyInventoryResponses = {
+    /**
+     * Success
+     */
+    200: {
+        component: {
+            id: string;
+            name: string;
+            domainId: string | null;
+        };
+        ingestion?: {
+            lastAttemptAt: string;
+            source: 'loop' | 'backfill';
+            outcome: 'ok' | 'partial' | 'unreadable' | 'not_enabled';
+            rowsWritten: number;
+            manifests: Array<{
+                path: string;
+                outcome: string;
+                detail?: string;
+            }>;
+        } | null;
+        lastIngestionDecision: {
+            decisionId: string;
+            firstObservedAt: string;
+            manifestPathsRead: Array<string>;
+            manifestPathsAbsent: Array<string>;
+            skipped: Array<{
+                path: string;
+                reason: string;
+            }>;
+        } | null;
+        componentGate: {
+            enabled: boolean;
+            reason: 'enabled' | 'instance_locked' | 'no_enabling_contribution';
+            contributions: Array<{
+                tier: 'instance' | 'org' | 'containment_domain' | 'service' | 'component';
+                source: string;
+                objectTypeId?: string;
+                contributed: 'unlock' | 'lock' | 'enable' | 'disable' | 'ignored';
+                ignoredReason?: 'malformed' | 'condition_unevaluable';
+                selector?: {
+                    ecosystem?: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate?: string;
+                    major?: string;
+                };
+                granularity?: 'patch' | 'minor_and_patch';
+                delivery?: 'pull_request' | 'auto_merge';
+            }>;
+        };
+        rows: Array<{
+            line: {
+                id: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                major: string;
+                tagPattern: string | null;
+            };
+            manifestPath: string;
+            declaredVersion: string;
+            resolvedVersion: string | null;
+            resolvedDigest: string | null;
+            observedRepo: string | null;
+            observedRef: string | null;
+            observedAt: string;
+            head: {
+                latestVersion: string | null;
+                latestDigest: string | null;
+                latestObservedAt: string | null;
+            };
+            producer: {
+                objectId: string;
+                name: string;
+            } | null;
+            subscription: {
+                enabled: boolean;
+                reason: 'enabled' | 'instance_locked' | 'disabled' | 'not_enabled';
+                granularity: 'patch' | 'minor_and_patch';
+                delivery: 'pull_request' | 'auto_merge';
+                contributions: Array<{
+                    tier: 'instance' | 'org' | 'containment_domain' | 'service' | 'component';
+                    source: string;
+                    objectTypeId?: string;
+                    contributed: 'unlock' | 'lock' | 'enable' | 'disable' | 'ignored';
+                    ignoredReason?: 'malformed' | 'condition_unevaluable';
+                    selector?: {
+                        ecosystem?: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                        coordinate?: string;
+                        major?: string;
+                    };
+                    granularity?: 'patch' | 'minor_and_patch';
+                    delivery?: 'pull_request' | 'auto_merge';
+                }>;
+            };
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentDependencyInventoryResponse = ListComponentDependencyInventoryResponses[keyof ListComponentDependencyInventoryResponses];
+
+export type ListComponentDependencyBumpsData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/components/{idOrUrn}/dependency-bumps';
+};
+
+export type ListComponentDependencyBumpsErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListComponentDependencyBumpsError = ListComponentDependencyBumpsErrors[keyof ListComponentDependencyBumpsErrors];
+
+export type ListComponentDependencyBumpsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        component: {
+            id: string;
+            name: string;
+            domainId: string | null;
+        };
+        rows: Array<{
+            changeId: string;
+            changeName: string;
+            line: {
+                id: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                major: string;
+            };
+            manifestPath: string;
+            fromVersion: string;
+            toVersion: string;
+            repo: string;
+            baseBranch: string;
+            authoredRef: string;
+            pullRequestNumber: number | null;
+            pullRequestUrl: string | null;
+            headCommit: string | null;
+            dispatchedAt: string;
+            mergedAt: string | null;
+            delivery: 'pull_request' | 'auto_merge' | null;
+            deliveryReason: string | null;
+            merge: {
+                verdict: string;
+                decisionId: string;
+                evaluatedAt: string;
+            } | null;
+        }>;
+        nextCursor: string | null;
+    };
+};
+
+export type ListComponentDependencyBumpsResponse = ListComponentDependencyBumpsResponses[keyof ListComponentDependencyBumpsResponses];
+
 export type BackfillDependencyInventoryData = {
     body: {
         componentIdsOrUrns?: Array<string>;

@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { dependencyBumpAuthorships } from "../db/schema.js";
 
@@ -290,4 +290,57 @@ export async function markBumpMerged(
         sql`${dependencyBumpAuthorships.mergedAt} is null`
       )
     );
+}
+
+/** One page of {@link listBumpAuthorshipsByComponent}. `createdAt` is carried because it is the
+ *  page's ordering key ("dispatched at") and the READ surface projects it. */
+export interface BumpAuthorshipListItem extends BumpAuthorship {
+  createdAt: Date;
+}
+
+/**
+ * THE READ SURFACE'S DOOR — every bump SCP authored for ONE component, newest first, keyset-paged
+ * (M21.6, `GET /components/{idOrUrn}/dependency-bumps`).
+ *
+ * This is the first LIST over this table, and it is deliberately narrow: ONE component, served by
+ * `dependency_bump_authorships_org_subject` (which leads with `component_object_id`), bounded by
+ * `limit`, and read-only. It reads facts SCP itself recorded — the module doc's rule — and hands
+ * back nothing a merge decision could be confused by, because nothing here is written back.
+ *
+ * ORDER IS `(created_at DESC, change_object_id DESC)` — the dispatch order, newest first — and the
+ * cursor is the last row's pair, compared as a row so a page boundary that falls inside one
+ * millisecond neither repeats nor drops a row (the same reasoning `pagination.ts`'s `keysetAfter`
+ * records for the ascending lists; this is its descending twin, written here because the shared
+ * helper is ascending-only and a bump list is read newest-first).
+ */
+export async function listBumpAuthorshipsByComponent(
+  tx: TenantTx,
+  orgId: string,
+  componentObjectId: string,
+  page: { limit: number; cursor?: { createdAt: Date; id: string } | null }
+): Promise<{ items: BumpAuthorshipListItem[]; hasMore: boolean }> {
+  const conditions = [
+    eq(dependencyBumpAuthorships.orgId, orgId),
+    eq(dependencyBumpAuthorships.componentObjectId, componentObjectId)
+  ];
+  if (page.cursor) {
+    conditions.push(
+      sql`(date_trunc('milliseconds', ${dependencyBumpAuthorships.createdAt}), ${dependencyBumpAuthorships.changeObjectId}) < (${page.cursor.createdAt.toISOString()}::timestamptz, ${page.cursor.id}::uuid)`
+    );
+  }
+  const rows = await tx
+    .select()
+    .from(dependencyBumpAuthorships)
+    .where(and(...conditions))
+    .orderBy(
+      sql`date_trunc('milliseconds', ${dependencyBumpAuthorships.createdAt}) desc`,
+      desc(dependencyBumpAuthorships.changeObjectId)
+    )
+    .limit(page.limit + 1);
+  const hasMore = rows.length > page.limit;
+  const pageRows = hasMore ? rows.slice(0, page.limit) : rows;
+  return {
+    items: pageRows.map((row) => ({ ...toAuthorship(row), createdAt: row.createdAt })),
+    hasMore
+  };
 }

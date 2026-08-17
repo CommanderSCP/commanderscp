@@ -5529,6 +5529,204 @@ export const zGetComponentDependencySubscriptionResponse = z.object({
 /**
  * Success
  */
+export const zListComponentDependencyInventoryResponse = z.object({
+    component: z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }),
+    ingestion: z.object({
+        lastAttemptAt: z.string(),
+        source: z.enum(['loop', 'backfill']),
+        outcome: z.enum([
+            'ok',
+            'partial',
+            'unreadable',
+            'not_enabled'
+        ]),
+        rowsWritten: z.int().gte(0).lte(9007199254740991),
+        manifests: z.array(z.object({
+            path: z.string(),
+            outcome: z.string(),
+            detail: z.string().optional()
+        }))
+    }).nullish(),
+    lastIngestionDecision: z.object({
+        decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        firstObservedAt: z.string(),
+        manifestPathsRead: z.array(z.string()),
+        manifestPathsAbsent: z.array(z.string()),
+        skipped: z.array(z.object({
+            path: z.string(),
+            reason: z.string()
+        }))
+    }).nullable(),
+    componentGate: z.object({
+        enabled: z.boolean(),
+        reason: z.enum([
+            'enabled',
+            'instance_locked',
+            'no_enabling_contribution'
+        ]),
+        contributions: z.array(z.object({
+            tier: z.enum([
+                'instance',
+                'org',
+                'containment_domain',
+                'service',
+                'component'
+            ]),
+            source: z.string(),
+            objectTypeId: z.string().optional(),
+            contributed: z.enum([
+                'unlock',
+                'lock',
+                'enable',
+                'disable',
+                'ignored'
+            ]),
+            ignoredReason: z.enum(['malformed', 'condition_unevaluable']).optional(),
+            selector: z.object({
+                ecosystem: z.enum([
+                    'npm',
+                    'go',
+                    'maven',
+                    'python',
+                    'oci'
+                ]).optional(),
+                coordinate: z.string().min(1).max(512).optional(),
+                major: z.string().min(1).max(64).optional()
+            }).optional(),
+            granularity: z.enum(['patch', 'minor_and_patch']).optional(),
+            delivery: z.enum(['pull_request', 'auto_merge']).optional()
+        }))
+    }),
+    rows: z.array(z.object({
+        line: z.object({
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            major: z.string().min(1).max(64),
+            tagPattern: z.string().nullable()
+        }),
+        manifestPath: z.string(),
+        declaredVersion: z.string(),
+        resolvedVersion: z.string().nullable(),
+        resolvedDigest: z.string().nullable(),
+        observedRepo: z.string().nullable(),
+        observedRef: z.string().nullable(),
+        observedAt: z.string(),
+        head: z.object({
+            latestVersion: z.string().nullable(),
+            latestDigest: z.string().nullable(),
+            latestObservedAt: z.string().nullable()
+        }),
+        producer: z.object({
+            objectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string()
+        }).nullable(),
+        subscription: z.object({
+            enabled: z.boolean(),
+            reason: z.enum([
+                'enabled',
+                'instance_locked',
+                'disabled',
+                'not_enabled'
+            ]),
+            granularity: z.enum(['patch', 'minor_and_patch']),
+            delivery: z.enum(['pull_request', 'auto_merge']),
+            contributions: z.array(z.object({
+                tier: z.enum([
+                    'instance',
+                    'org',
+                    'containment_domain',
+                    'service',
+                    'component'
+                ]),
+                source: z.string(),
+                objectTypeId: z.string().optional(),
+                contributed: z.enum([
+                    'unlock',
+                    'lock',
+                    'enable',
+                    'disable',
+                    'ignored'
+                ]),
+                ignoredReason: z.enum(['malformed', 'condition_unevaluable']).optional(),
+                selector: z.object({
+                    ecosystem: z.enum([
+                        'npm',
+                        'go',
+                        'maven',
+                        'python',
+                        'oci'
+                    ]).optional(),
+                    coordinate: z.string().min(1).max(512).optional(),
+                    major: z.string().min(1).max(64).optional()
+                }).optional(),
+                granularity: z.enum(['patch', 'minor_and_patch']).optional(),
+                delivery: z.enum(['pull_request', 'auto_merge']).optional()
+            }))
+        })
+    })),
+    nextCursor: z.string().nullable()
+});
+
+/**
+ * Success
+ */
+export const zListComponentDependencyBumpsResponse = z.object({
+    component: z.object({
+        id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
+    }),
+    rows: z.array(z.object({
+        changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        changeName: z.string(),
+        line: z.object({
+            id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            major: z.string().min(1).max(64)
+        }),
+        manifestPath: z.string(),
+        fromVersion: z.string(),
+        toVersion: z.string(),
+        repo: z.string(),
+        baseBranch: z.string(),
+        authoredRef: z.string(),
+        pullRequestNumber: z.int().gte(-9007199254740991).lte(9007199254740991).nullable(),
+        pullRequestUrl: z.string().nullable(),
+        headCommit: z.string().nullable(),
+        dispatchedAt: z.string(),
+        mergedAt: z.string().nullable(),
+        delivery: z.enum(['pull_request', 'auto_merge']).nullable(),
+        deliveryReason: z.string().nullable(),
+        merge: z.object({
+            verdict: z.string(),
+            decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            evaluatedAt: z.string()
+        }).nullable()
+    })),
+    nextCursor: z.string().nullable()
+});
+
+/**
+ * Success
+ */
 export const zBackfillDependencyInventoryResponse = z.object({
     ref: z.string(),
     components: z.array(z.object({

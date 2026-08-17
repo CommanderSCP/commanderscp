@@ -6,6 +6,9 @@ import pg from "pg";
 import {
   BackfillDependencyInventoryRequestSchema,
   BackfillDependencyInventoryResponseSchema,
+  ComponentDependencyBumpsResponseSchema,
+  ComponentDependencyInventoryResponseSchema,
+  ComponentDependencyPageQuerySchema,
   DEFAULT_DEPENDENCY_INVENTORY_BACKFILL_FETCH_BUDGET,
   DependencyLineKeySchema,
   DependencySubscriptionResolutionResponseSchema,
@@ -30,6 +33,10 @@ import {
 } from "../dependencies/subscription-resolution.js";
 import { ingestComponentManifests, literalRepoFor } from "../dependencies/inventory-ingestion.js";
 import { createGitProviderManifestReader } from "../dependencies/manifest-reader.js";
+import {
+  readComponentDependencyBumps,
+  readComponentDependencyInventory
+} from "../dependencies/dependency-read-surface.js";
 
 /**
  * M21.3 — the DEPENDENCY-SUBSCRIPTION ENABLEMENT API (ADR-0032 §3a, §6), API-first per charter
@@ -54,6 +61,26 @@ import { createGitProviderManifestReader } from "../dependencies/manifest-reader
  *  - **The resolution READ is tenant-facing and authorized like any other read of the component**
  *    (`object:read` at the component's scope, exactly as `GET /components/:idOrUrn/pipeline` does).
  *
+ *  - **The INVENTORY backfill (M21.2)** is an org-scoped WRITE (`object:write` at the org): it reads
+ *    enabled components' dependency manifests through the plugin host and (re)builds their rows.
+ *
+ *  - **The two READ-SURFACE routes (M21.6, docs/proposals/dependency-subscription-ui.md §3.1/§3.2)**
+ *    — `GET /components/:idOrUrn/dependency-inventory` (one row per declared line × dependency
+ *    manifest, each with the line's head, its declared producer and its resolved dependency
+ *    subscription; the component-level ingestion gate; the newest ingestion Decision) and
+ *    `GET /components/:idOrUrn/dependency-bumps` (every bump SCP authored for the component, joined
+ *    to its change name and its dispatch/merge Decisions). Both `object:read` AT THE COMPONENT, both
+ *    paged, both resolved AS THE CALLER, both assembled in `dependencies/dependency-read-surface.ts`
+ *    from the SAME merge every other consumer uses. Neither writes anything.
+ *
+ * THE SURFACE, ENUMERATED (six operations, all tagged `dependencies`):
+ *     GET  /instance/dependency-subscription-unlock          getDependencySubscriptionUnlock
+ *     PUT  /instance/dependency-subscription-unlock          putDependencySubscriptionUnlock (operator)
+ *     GET  /components/:idOrUrn/dependency-subscription      getComponentDependencySubscription
+ *     GET  /components/:idOrUrn/dependency-inventory         listComponentDependencyInventory
+ *     GET  /components/:idOrUrn/dependency-bumps             listComponentDependencyBumps
+ *     POST /dependencies/inventory/backfill                  backfillDependencyInventory
+ *
  * THERE IS NO WRITE PATH FOR A SUBSCRIPTION ITSELF HERE, AND ONE MUST NOT BE ADDED. A dependency
  * subscription IS a `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a) —
  * a team subscribes by authoring a policy at their own component through the EXISTING policy routes
@@ -67,9 +94,10 @@ import { createGitProviderManifestReader } from "../dependencies/manifest-reader
  * own versioning, its own journal handling and its own scope semantics — and the two would drift.
  * The absence is the design, not an omission.
  *
- * NOTHING HERE COMPUTES THE AND. Both handlers read; the merge lives in exactly one place
+ * NOTHING HERE COMPUTES THE AND. Every read handler reads; the merge lives in exactly one place
  * (`dependencies/subscription-resolution.ts`'s `mergeDependencySubscription`), so a UI verdict, a
- * CLI answer and the M21.4 ingestion work-list cannot disagree.
+ * CLI answer, the inventory page's per-row `subscription` and the M21.4 ingestion work-list cannot
+ * disagree.
  */
 
 /** Constant-time comparison of the presented operator token against the configured one — a
@@ -273,6 +301,153 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
           line
         });
         return { componentObjectId: component.id, line, resolution };
+      });
+      reply.status(200).send(result);
+    }
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // GET /components/:idOrUrn/dependency-inventory — M21.6 read surface (proposal §3.1, §8 Q1).
+  //
+  // WHAT A COMPONENT DECLARES, hydrated: one row per (line, dependency manifest) with the line's
+  // observed head, its DECLARED producer and its resolved dependency subscription — plus the
+  // component-level ingestion gate and the newest ingestion Decision, so a consumer can tell "no
+  // rows because nothing is declared" from "no rows because nothing was ever read" without guessing.
+  //
+  // AUTHORIZED AT THE COMPONENT, like the resolution GET and unlike `GET /changes` / `GET
+  // /decisions` (org-scoped): a component-scoped viewer must be able to read their own component's
+  // page, and this is the route that makes the inventory reachable to them at all.
+  //
+  // RESOLVED AS THE CALLER. `actorObjectId` is `auth.subjectObjectId`, exactly as the resolution GET
+  // threads it, so `rows[].subscription` for a line is BYTE-EQUAL to what the resolution GET returns
+  // that same caller for that same line (pinned). The jobs resolve as the SYSTEM actor; a
+  // `scope.group` policy is where the two can differ, and that hazard belongs to the matcher.
+  //
+  // `manifestPath` IS A ROW KEY: one line from two manifests is two rows, as it is in the table's
+  // primary key. `ingestion` (the M21.7 per-attempt stamp) is emitted as `null` — NOT RECORDED —
+  // until `findIngestionStampByComponent` exists on this branch; the M21.7 session owns that read.
+  // -------------------------------------------------------------------------------------------
+  typed.route({
+    method: "GET",
+    url: "/api/v1/components/:idOrUrn/dependency-inventory",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      querystring: ComponentDependencyPageQuerySchema,
+      response: {
+        200: ComponentDependencyInventoryResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "listComponentDependencyInventory",
+        summary:
+          "List a component's declared dependency inventory — one row per (major line, dependency manifest) with the line's observed head, its declared producer and its resolved dependency subscription for the caller — plus the component-level ingestion gate and the newest ingestion Decision (ADR-0032 §4/§6)",
+        tags: ["dependencies"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const component = await getObjectByIdOrUrn(
+          tx,
+          auth.orgId,
+          "component",
+          request.params.idOrUrn
+        );
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: component.id
+        });
+        const page = await readComponentDependencyInventory(tx, {
+          orgId: auth.orgId,
+          componentObjectId: component.id,
+          actorObjectId: auth.subjectObjectId,
+          limit: request.query.limit,
+          cursor: request.query.cursor
+        });
+        return {
+          component: { id: component.id, name: component.name, domainId: component.domainId },
+          // The M21.7 stamp's read (`findIngestionStampByComponent`) does not exist on this branch;
+          // `null` = NOT RECORDED. When it lands, read it here in the same transaction.
+          ingestion: null,
+          lastIngestionDecision: page.lastIngestionDecision,
+          componentGate: page.componentGate,
+          rows: page.rows,
+          nextCursor: page.nextCursor
+        };
+      });
+      reply.status(200).send(result);
+    }
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // GET /components/:idOrUrn/dependency-bumps — M21.6 read surface (proposal §3.2, §8 Q4).
+  //
+  // THE BUMPS SCP AUTHORED for this component, newest first: `dependency_bump_authorships` (every
+  // field server-written) joined to the change's name and to the newest dispatch and merge
+  // Decisions. Progress is `pullRequestNumber` / `headCommit` / `mergedAt` / `merge` — never the
+  // change's `state`, which stays `proposed` for a bump's whole life. `pullRequestUrl` is `null`:
+  // nothing stores it, and it is never composed from `repo` + number (the provider is not known
+  // here; a Gitea-authored bump composed as a GitHub link would 404).
+  //
+  // Authorized at the component, like the inventory. On an outpost, or on a commander whose
+  // federation role was never declared, no bumps are ever dispatched (fail-closed role guards), so
+  // this list is legitimately empty there — a consumer must not render that as "up to date".
+  // -------------------------------------------------------------------------------------------
+  typed.route({
+    method: "GET",
+    url: "/api/v1/components/:idOrUrn/dependency-bumps",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      querystring: ComponentDependencyPageQuerySchema,
+      response: {
+        200: ComponentDependencyBumpsResponseSchema,
+        400: ProblemSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "listComponentDependencyBumps",
+        summary:
+          "List the dependency bumps CommanderSCP authored for a component, newest first — each joined to its change name, its dispatch delivery and the newest merge verdict; pullRequestUrl is null until it is persisted (ADR-0032 §8)",
+        tags: ["dependencies"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const component = await getObjectByIdOrUrn(
+          tx,
+          auth.orgId,
+          "component",
+          request.params.idOrUrn
+        );
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: component.id
+        });
+        const page = await readComponentDependencyBumps(tx, {
+          orgId: auth.orgId,
+          componentObjectId: component.id,
+          limit: request.query.limit,
+          cursor: request.query.cursor
+        });
+        return {
+          component: { id: component.id, name: component.name, domainId: component.domainId },
+          rows: page.rows,
+          nextCursor: page.nextCursor
+        };
       });
       reply.status(200).send(result);
     }
