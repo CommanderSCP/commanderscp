@@ -101,7 +101,10 @@ function refusalDetail(call: () => void): string {
 }
 
 describe("assertSelectorKeysAreGovernanceLabels", () => {
-  const selector = (labels: unknown) => ({ scope: { selector: { labels } }, enforcement: "required" });
+  const selector = (labels: unknown) => ({
+    scope: { selector: { labels } },
+    enforcement: "required"
+  });
 
   it("refuses a selector keyed on an ordinary label — the reported defect", () => {
     expect(
