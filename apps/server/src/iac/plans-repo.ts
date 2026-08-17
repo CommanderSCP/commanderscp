@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type {
   DesiredStateManifest,
@@ -45,6 +45,7 @@ import {
   type ResolvedManifestPlacement,
   type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
+import { stampObjectStackOwnership, stampRelationshipStackOwnership } from "./stack-ownership.js";
 import {
   DEFAULT_BINDING_TYPE,
   EXECUTION_SYSTEM_INSTANCE_PREFIX,
@@ -102,9 +103,9 @@ function assertProjectionsOwned(diff: PlanDiff): void {
   if (unowned.length === 0) return;
   throw badRequest(
     `plan declares source mapping(s)/executor binding(s) on object(s) this stack does not manage: ` +
-      `${unowned.join(", ")}. Neither table carries stack labels, so ownership is inherited from the ` +
-      `object the row hangs off — declare that object in this stack's manifest (which adopts it), or ` +
-      `configure it from the stack that already manages it.`
+      `${unowned.join(", ")}. Neither table carries an owner of its own, so ownership is inherited ` +
+      `from the object the row hangs off — declare that object in this stack's manifest (which ` +
+      `adopts it), or configure it from the stack that already manages it.`
   );
 }
 
@@ -192,7 +193,15 @@ async function fetchObjectsByIds(tx: TenantTx, orgId: string, ids: string[]) {
     .where(and(eq(objects.orgId, orgId), inArray(objects.id, ids), isNull(objects.deletedAt)));
 }
 
-/** Live objects currently carrying `scp:managed-by=iac`/`scp:stack=<stackName>` — the object prune pool. */
+/**
+ * Live objects this stack OWNS — the object prune pool.
+ *
+ * Keyed on the server-written `managed_by_stack` column (drizzle/0068), NOT on
+ * `labels @> {"scp:managed-by":"iac","scp:stack":…}` as it was until then. That containment test
+ * read a map the prune target itself could write under plain `object:write`, so two label keys put
+ * an arbitrary object into this delete pool — or took an object out of it, so its own stack could
+ * never decommission it. `iac/stack-ownership.ts` has the full account.
+ */
 async function fetchManagedObjects(tx: TenantTx, orgId: string, stackName: string) {
   return tx
     .select()
@@ -201,12 +210,12 @@ async function fetchManagedObjects(tx: TenantTx, orgId: string, stackName: strin
       and(
         eq(objects.orgId, orgId),
         isNull(objects.deletedAt),
-        sql`${objects.labels} @> ${JSON.stringify(managedLabels(stackName))}::jsonb`
+        eq(objects.managedByStack, stackName)
       )
     );
 }
 
-/** Live relationships currently carrying this stack's managed-by labels — the relationship prune pool. */
+/** Live relationships this stack owns — the relationship prune pool. Same column, same reason. */
 async function fetchManagedRelationships(tx: TenantTx, orgId: string, stackName: string) {
   return tx
     .select()
@@ -215,7 +224,7 @@ async function fetchManagedRelationships(tx: TenantTx, orgId: string, stackName:
       and(
         eq(relationships.orgId, orgId),
         isNull(relationships.deletedAt),
-        sql`${relationships.labels} @> ${JSON.stringify(managedLabels(stackName))}::jsonb`
+        eq(relationships.managedByStack, stackName)
       )
     );
 }
@@ -330,7 +339,8 @@ export async function computeDiffForManifest(
     name: row.name,
     domainId: row.domainId,
     properties: row.properties as Record<string, unknown>,
-    labels: row.labels as Record<string, unknown>
+    labels: row.labels as Record<string, unknown>,
+    managedByStack: row.managedByStack
   }));
 
   const managedRelationships = managedRelRows
@@ -345,10 +355,11 @@ export async function computeDiffForManifest(
   // ---------------------------------------------------------------------------------------
   // C1 — the ownership pool for `source_mappings`/`executor_bindings`.
   //
-  // Neither table carries labels, so a row's owner is the owner of the object it hangs off. The
-  // pool is therefore "every object this stack will own once this plan applies": the objects it
-  // ALREADY owns (`managedObjectRows` — this stack's labels) UNION the live objects this manifest
-  // declares (apply stamps the stack's labels onto each, so declaring an object adopts it).
+  // Neither table carries an owner of its own, so a row's owner is the owner of the object it hangs
+  // off. The pool is therefore "every object this stack will own once this plan applies": the
+  // objects it ALREADY owns (`managedObjectRows` — `managed_by_stack` = this stack) UNION the live
+  // objects this manifest declares (apply stamps ownership onto each, so declaring an object
+  // adopts it).
   //
   // One pool serves BOTH prune detection and create/noop matching, and that union is what makes it
   // correct. Restricting it to already-labelled objects would make the FIRST apply that adopts a
@@ -1014,6 +1025,30 @@ export async function executePlanDiff(
     });
   }
 
+  // OWNERSHIP, STAMPED FOR EVERY OBJECT THIS MANIFEST DECLARES (drizzle/0068). One statement, and
+  // one rule: a stack owns exactly the rows its manifest declares, plus the rows it already owned.
+  //
+  // `noop` counts, and that is the case worth stating. A declared object that happens to be
+  // byte-identical to what is stored is still an object this stack declares — skipping it because
+  // "nothing changed" would leave it undeletable by the stack that owns it, which is the escape
+  // direction of the very defect this replaces, arrived at by accident. Under the old label scheme
+  // this was accidentally handled: adopting an object rewrote its labels, so it was never a noop on
+  // the apply that adopted it. Ownership is now explicit rather than a side effect of a label merge,
+  // so it has to be said.
+  //
+  // `delete` entries are excluded by construction — they are not in this list — and ownership is
+  // never CLEARED here: a row leaves a stack by being pruned, not by being disowned into an orphan
+  // no stack could ever clean up.
+  await stampObjectStackOwnership(
+    tx,
+    orgId,
+    stackName,
+    diff.objects
+      .filter((entry) => entry.action !== "delete")
+      .map((entry) => objectResolutions.get(entry.urn)?.id)
+      .filter((id): id is string => id !== undefined)
+  );
+
   function endpointId(urn: string): string {
     const resolved = objectResolutions.get(urn);
     if (resolved?.id) return resolved.id;
@@ -1044,9 +1079,28 @@ export async function executePlanDiff(
       typeId: entry.typeId,
       fromId: endpointId(entry.fromUrn),
       toId: endpointId(entry.toUrn),
+      // The descriptive mirror only (see `managedLabels`) — ownership itself is the stamp below.
       labels: managedLabels(stackName)
     });
   }
+
+  // The relationship half of the same stamp, for the same reason, after the creates so a
+  // just-created edge is included. It also closes a gap the label scheme had: only edge CREATES were
+  // ever labelled, so an edge a manifest declared but that some other door had already written
+  // (`POST /components` writes a `contains` edge) stayed declared-but-unowned forever and could
+  // never be pruned by the stack that declared it. Objects never had that gap.
+  await stampRelationshipStackOwnership(
+    tx,
+    orgId,
+    stackName,
+    diff.relationships
+      .filter((entry) => entry.action !== "delete")
+      .map((entry) => ({
+        typeId: entry.typeId,
+        fromId: endpointId(entry.fromUrn),
+        toId: endpointId(entry.toUrn)
+      }))
+  );
 
   // -----------------------------------------------------------------------------------------
   // C1 — projection rows. These run AFTER object creates (a binding needs its deployment-target /

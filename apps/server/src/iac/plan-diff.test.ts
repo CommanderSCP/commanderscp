@@ -99,7 +99,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: "0198f2a0-0000-7000-8000-000000000001",
           properties: { tier: "critical" },
-          labels: managedLabels(STACK) // already carries what the plan would merge in
+          labels: managedLabels(STACK), // already carries what the plan would merge in
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
@@ -144,7 +145,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: null,
           properties: { tier: "critical" },
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
@@ -187,7 +189,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
@@ -219,7 +222,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Decommissioned",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
@@ -261,7 +265,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Unrelated",
           domainId: null,
           properties: {},
-          labels: managedLabels("some-other-stack")
+          labels: managedLabels("some-other-stack"),
+          managedByStack: "some-other-stack"
         },
         {
           urn: unmanagedUrn,
@@ -269,7 +274,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Hand Created",
           domainId: null,
           properties: {},
-          labels: {} // no scp:managed-by label at all
+          labels: {}, // no scp:managed-by label at all
+          managedByStack: null
         }
       ],
       managedRelationships: [],
@@ -327,7 +333,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       name: urn,
       domainId: null,
       properties: {},
-      labels: {}
+      labels: {},
+      managedByStack: null
     });
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [existingObj(fromUrn), existingObj(toUrn)],
@@ -461,7 +468,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Keep",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         },
         {
           urn: updateUrn,
@@ -469,7 +477,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Update Me",
           domainId: null,
           properties: { v: 1 },
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         },
         {
           urn: pruneUrn,
@@ -477,7 +486,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Prune Me",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [{ typeId: "depends_on", fromUrn: pruneUrn, toUrn: keepUrn }],
@@ -554,7 +564,8 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
           name: SVC,
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [{ typeId: "contains", fromUrn: SVC, toUrn: COMP }],
@@ -575,7 +586,15 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
     // verb, so an update needs no contains edge.
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
-        { urn: COMP, typeId: "component", name: "old", domainId: null, properties: {}, labels: {} }
+        {
+          urn: COMP,
+          typeId: "component",
+          name: "old",
+          domainId: null,
+          properties: {},
+          labels: {},
+          managedByStack: null
+        }
       ],
       managedRelationships: [],
       existingRelationships: [],
@@ -608,14 +627,27 @@ describe("iac/plan-diff: isStackManaged / managedLabels", () => {
     expect(managedLabels("my-stack")).toEqual({ "scp:managed-by": "iac", "scp:stack": "my-stack" });
   });
 
-  it("isStackManaged is true only for an exact stack-name match", () => {
-    expect(isStackManaged(managedLabels("my-stack"), "my-stack")).toBe(true);
-    expect(isStackManaged(managedLabels("my-stack"), "other-stack")).toBe(false);
-    expect(isStackManaged({}, "my-stack")).toBe(false);
+  it("isStackManaged is true only for an exact stack-name match on the SERVER-WRITTEN column", () => {
+    expect(isStackManaged("my-stack", "my-stack")).toBe(true);
+    expect(isStackManaged("my-stack", "other-stack")).toBe(false);
     expect(isStackManaged(null, "my-stack")).toBe(false);
-    expect(
-      isStackManaged({ "scp:managed-by": "not-iac", "scp:stack": "my-stack" }, "my-stack")
-    ).toBe(false);
+    expect(isStackManaged(undefined, "my-stack")).toBe(false);
+    // Not a prefix/`startsWith` test, and not case-folded: a stack literally named `my-stack-2`
+    // must not inherit `my-stack`'s prune pool.
+    expect(isStackManaged("my-stack-2", "my-stack")).toBe(false);
+    expect(isStackManaged("My-Stack", "my-stack")).toBe(false);
+    expect(isStackManaged("", "my-stack")).toBe(false);
+  });
+
+  it("the marker LABELS no longer decide anything — the predicate cannot even be handed them", () => {
+    // drizzle/0068. This is a compile-time property expressed as a runtime assertion: the only
+    // argument `isStackManaged` accepts is the column, so the label pair that used to BE ownership
+    // now reaches it only as the plain string it wraps — and the wrapper object is not assignable.
+    // If someone widens the signature back to a labels map, the `@ts-expect-error` below stops
+    // erroring and this test fails, which is the point of writing it here rather than in prose.
+    const labels = managedLabels("my-stack");
+    // @ts-expect-error a labels map is not an ownership value
+    expect(isStackManaged(labels, "my-stack")).toBe(false);
   });
 });
 
@@ -917,7 +949,8 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
           name: "API",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ]
     });

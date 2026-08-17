@@ -735,6 +735,19 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     "coordination/campaign-reconcile.ts": "updatedAt bump on an existing row",
     // Clears `domain_local` / `domain_local_inherited_from` on one existing row (M20.7). Same shape.
     "federation/publish-domain-local.ts": "clears the domain-local columns on an existing row",
+    // Sets `managed_by_stack` on rows an IaC apply DECLARES (drizzle/0068). Same shape as the two
+    // above: no insert, no `type_id` in the `set`, and the rows are selected by an id list the
+    // caller already resolved. It is a raw write on purpose — the column is not federated content
+    // and must not allocate a journal sequence or a revision, so routing it through the choke point
+    // would be wrong, not merely unnecessary.
+    //
+    // WHY IT IS SAFE IS NOT "IT CANNOT MINT A TYPE" ALONE — this column decides which rows an apply
+    // DELETES, so being outside the choke point deserves the second sentence. It is unreachable from
+    // any request: nothing in `objects-repo.ts`'s inputs, no route, and no schema can express it, so
+    // it moves only when `iac/plans-repo.ts`'s apply moves it, on ids that apply already authorized
+    // per entry. That is the entire point of moving stack ownership out of tenant-writable `labels`.
+    "iac/stack-ownership.ts":
+      "sets managed_by_stack on already-resolved ids; no insert, no type_id",
     // Raw SQL, and the ONE instance of that class in the tree — listed rather than filtered out
     // precisely because a raw statement is what layers 1 and 3 are structurally blind to. It is a
     // developer load-generator (not wired into any route or worker) and its `type_id` is the SQL
