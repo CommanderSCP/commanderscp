@@ -13,7 +13,7 @@ import type { CreateComponentRequest, GraphObject } from "@scp/schemas";
 import { loadConfig } from "../config.js";
 import { createDb, createPool } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { roleBindings, roles, users } from "../db/schema.js";
+import { changes, roleBindings, roles, users } from "../db/schema.js";
 import { createObject } from "../graph/objects-repo.js";
 import { ensureBootstrapAdmin } from "../auth/local-auth.js";
 import { startPgBoss } from "../events/pgboss.js";
@@ -520,6 +520,191 @@ export async function waitUntil<T>(
     }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+/**
+ * Reads the engine-private reconcile bookkeeping for one change. `reconcile_cursor_at` and
+ * `reconcile_blocked_at` are deliberately NOT on the public `Change` schema — they are scheduler
+ * queue position and park flag, not anything an API caller should see — so the progress helpers
+ * below read them straight from `changes`, exactly like the fixture surgery this file's other
+ * helpers already do.
+ */
+async function readReconcileRow(
+  server: TestServer,
+  orgId: string,
+  changeObjectId: string
+): Promise<{ state: string; cursorAt: number; blockedAt: Date | null }> {
+  return withTenantTx(server.deps.db, orgId, async (tx) => {
+    const [row] = await tx
+      .select({
+        state: changes.state,
+        cursorAt: changes.reconcileCursorAt,
+        blockedAt: changes.reconcileBlockedAt
+      })
+      .from(changes)
+      .where(and(eq(changes.orgId, orgId), eq(changes.objectId, changeObjectId)));
+    if (!row) {
+      throw new Error(`no changes row for ${changeObjectId} in org ${orgId}`);
+    }
+    return { state: row.state, cursorAt: row.cursorAt?.getTime() ?? 0, blockedAt: row.blockedAt };
+  });
+}
+
+/** The states a change passes through BEFORE the one the caller is waiting to see it hold. Used to
+ *  tell "has not got there yet" (keep waiting, and say so if we run out of time) apart from "went
+ *  straight past it" (fail now, loudly) — the distinction the sleep-based helper could not make. */
+const STATES_BEFORE: Record<"executing" | "waiting", ReadonlySet<string>> = {
+  executing: new Set(["proposed", "evaluated", "coordinated", "waiting"]),
+  waiting: new Set(["proposed", "evaluated", "coordinated"])
+};
+
+/**
+ * "It is still parked", asserted from a POSITIVE signal instead of a fixed sleep.
+ *
+ * ## What this replaces, and why the thing it replaces could only ever be probabilistic
+ *
+ * Three test files had their own copy of `sleep(3_000); expect(state).toBe(X)`, each with a comment
+ * promising the grace was "several reconcile ticks". That form makes two different claims through
+ * one assertion, and gets flaky on the one it never meant to make:
+ *
+ *  1. **Arrival** — "the change has REACHED X". A freshly-proposed change walks `proposed ->
+ *     evaluated -> coordinated -> executing` under the reconcile loop before a wave gate is asked
+ *     anything, so the fixed grace was silently doubling as the WAIT for arrival. A call site that
+ *     ran straight after `changes.propose()` therefore failed under load with
+ *     `expected 'coordinated' to be 'executing'` — a change that had not got there YET, reported
+ *     with the same message as one that had escaped the gate. Same failure text, opposite bug, and
+ *     it cost three sessions a day of chasing phantom regressions on 2026-08-17.
+ *  2. **Non-progression** — "and it did not get past X". Only this one was ever intended.
+ *
+ * ## "Several ticks" was not several ticks
+ *
+ * The graces were sized against `RECONCILE_TICK_INTERVAL_SECONDS` (1s). The real period is not 1s:
+ * the tick re-schedules ITSELF with `startAfter: 1` onto pg-boss, whose `pollingInterval` defaults
+ * to 2000ms and is not overridden anywhere in this repo, and each tick then walks EVERY org in the
+ * database (`runReconcileSweep`, correctly — production is one instance serving many orgs). So the
+ * floor is ~1-3s on an idle box with one org, and it grows with the number of orgs a test FILE has
+ * accumulated by the time a given test runs. A 3s grace is at most one tick, and often zero: the
+ * assertion was near-vacuous when it passed and spurious when it failed.
+ *
+ * ## The positive signal
+ *
+ * `reconcile.ts` bumps `reconcile_cursor_at` on every tick that re-examines a change and leaves it
+ * where it is — the round-robin anti-starvation write (BUMP 1 OF 5 for `waiting`, 3 OF 5 for a
+ * gate-blocked wave), load-bearing enough to have its own regression test and a 13-day production
+ * outage behind it. For a parked change that write happens if and only if the engine looked again
+ * and still refused, which makes an observed cursor advance a direct observation of exactly the
+ * event the test is asserting about.
+ *
+ * So: poll for arrival (deadlined, and reported AS an arrival failure), then watch the cursor
+ * advance `ticks` times, failing the instant the state leaves X or the change is parked out of the
+ * candidate set. Under contention this waits precisely as long as the engine needs; on an idle box
+ * it returns as soon as the ticks land instead of always burning the full grace.
+ */
+async function assertChangeStaysIn(
+  server: TestServer,
+  orgId: string,
+  changeObjectId: string,
+  state: "executing" | "waiting",
+  opts: { ticks?: number; timeoutMs?: number } = {}
+): Promise<void> {
+  const ticks = opts.ticks ?? 2;
+  const timeoutMs = opts.timeoutMs ?? 40_000;
+  const intervalMs = 100;
+  const deadline = Date.now() + timeoutMs;
+  const started = Date.now();
+  const before = STATES_BEFORE[state];
+
+  // Phase 1 — ARRIVAL, polled rather than slept for.
+  let row = await readReconcileRow(server, orgId, changeObjectId);
+  while (row.state !== state) {
+    if (!before.has(row.state)) {
+      throw new Error(
+        `change ${changeObjectId} was expected to stay parked in '${state}' but is '${row.state}' — it progressed PAST '${state}'`
+      );
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `change ${changeObjectId} never reached '${state}' within ${timeoutMs}ms (still '${row.state}'). This is an ARRIVAL timeout — the reconcile loop had not got to it yet — not a governance failure.`
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    row = await readReconcileRow(server, orgId, changeObjectId);
+  }
+
+  // Phase 2 — PROGRESS: `ticks` observed refusals, however long the engine takes to make them.
+  let seen = 0;
+  let cursor = row.cursorAt;
+  while (seen < ticks) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    row = await readReconcileRow(server, orgId, changeObjectId);
+    if (row.state !== state) {
+      throw new Error(
+        `change ${changeObjectId} left '${state}' for '${row.state}' after ${seen} observed reconcile tick(s) — it was expected to stay parked`
+      );
+    }
+    if (row.blockedAt !== null) {
+      throw new Error(
+        `change ${changeObjectId} was PARKED OUT of the candidate set (reconcile_blocked_at set) after ${seen} observed reconcile tick(s) — its wave failed rather than staying gate-blocked, and the loop will never serve it again`
+      );
+    }
+    if (row.cursorAt > cursor) {
+      cursor = row.cursorAt;
+      seen++;
+    }
+    if (seen < ticks && Date.now() >= deadline) {
+      throw new Error(
+        `change ${changeObjectId} is still '${state}' but only ${seen}/${ticks} reconcile tick(s) were observed in ${Date.now() - started}ms — the loop is not serving it (is \`withReconcileLoop: true\` set?), so "it stayed parked" would be vacuous`
+      );
+    }
+  }
+}
+
+/** {@link assertChangeStaysIn} for a wave-gate-blocked change: the gate was re-evaluated and
+ *  refused again, and the change never got past `executing`. */
+export async function assertStaysExecuting(
+  server: TestServer,
+  orgId: string,
+  changeObjectId: string,
+  opts: { ticks?: number; timeoutMs?: number } = {}
+): Promise<void> {
+  await assertChangeStaysIn(server, orgId, changeObjectId, "executing", opts);
+}
+
+/** {@link assertChangeStaysIn} for a change parked on an unsatisfied cross-change prerequisite
+ *  (M12 P4B): `advanceWaitingChanges` looked at it again and its requirements are still unmet. */
+export async function assertStaysWaiting(
+  server: TestServer,
+  orgId: string,
+  changeObjectId: string,
+  opts: { ticks?: number; timeoutMs?: number } = {}
+): Promise<void> {
+  await assertChangeStaysIn(server, orgId, changeObjectId, "waiting", opts);
+}
+
+/**
+ * The companion positive signal for a change whose wave has FAILED: `reconcile.ts`'s failed-wave
+ * branch sets `reconcile_blocked_at`, and `listChangeRowsInStates` filters that column `IS NULL`,
+ * so a parked change is never served again. That makes parking the precise, observable moment
+ * after which "no auto-rollback was triggered" stops being a race and becomes a settled fact —
+ * where a fixed `sleep(3_000)` asserts a negative over a window in which the engine had either
+ * already stopped looking, or (on a loaded box) not yet started.
+ *
+ * Use this before any "and it never did X" assertion about a failed wave.
+ */
+export async function waitForChangeParked(
+  server: TestServer,
+  orgId: string,
+  changeObjectId: string,
+  opts: { timeoutMs?: number } = {}
+): Promise<void> {
+  const timeoutMs = opts.timeoutMs ?? 40_000;
+  await waitUntil(
+    async () => (await readReconcileRow(server, orgId, changeObjectId)).blockedAt !== null,
+    {
+      describe: `change ${changeObjectId} is parked by the reconcile loop (reconcile_blocked_at set — its wave failed, so it will never be served again)`,
+      timeoutMs
+    }
+  );
 }
 
 /**

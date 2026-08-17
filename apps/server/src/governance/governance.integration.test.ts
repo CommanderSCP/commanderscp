@@ -9,10 +9,12 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { changeSourceEvents, changes, controlRuns } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 import {
+  assertStaysExecuting,
   createTestComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
+  waitForChangeParked,
   waitUntil,
   type ListeningTestServer,
   type TestOrg
@@ -204,18 +206,10 @@ async function waitForControlRun(
   );
 }
 
-/** Asserts a change has NOT progressed past `executing` after a grace period long enough for
- *  several reconcile ticks (1s interval) to have had their chance — the direct way to observe "the
- *  wave stayed blocked" without racing the reconcile loop's own timing. */
-async function assertStaysExecuting(
-  admin: ScpClient,
-  changeId: string,
-  graceMs = 3_000
-): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, graceMs));
-  const change = await admin.changes.get(changeId);
-  expect(change.state).toBe("executing");
-}
+/** `assertStaysExecuting` now lives in test-support/harness.ts — see its doc comment for why the
+ *  local `sleep(graceMs); expect(state).toBe("executing")` it replaced was flaky by construction
+ *  (it made the fixed grace double as the wait for the change to ARRIVE in `executing`, so a
+ *  change that had not got there yet failed with the same message as one that had escaped). */
 
 // -----------------------------------------------------------------------------------------
 
@@ -695,7 +689,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // Approval satisfied, control failing -> hybrid still blocks: the wave can never start, so
       // the change can never even reach 'validating' for a 'accept' call to be a meaningful
       // re-test of this same gate — the wave's own blocked gate Decision is the real assertion.
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
 
       const explained = await admin.changes.explain(change.id);
       const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
@@ -745,7 +739,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // The control passes, but no approval has been cast yet -> the wave stays blocked, so the
       // change stays 'executing' (not 'validating' — see waitForApprovalRequest's doc comment).
       await waitForControlRun(admin, change.id, control.id, "pass");
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
 
       // Cast the approval — now both halves are satisfied; the wave's NEXT gate check unblocks
       // it, it executes for real against the fake executor, and the change naturally reaches
@@ -834,7 +828,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     expect(doubleVoteErr.status).toBe(409);
 
     // Quorum not yet reached (1/2) -> the wave stays blocked -> the change stays 'executing'.
-    await assertStaysExecuting(admin, change.id);
+    await assertStaysExecuting(server, org.orgId, change.id);
 
     await clientB.approvals.vote(approvalRequest.id);
     status = await admin.approvals.get(approvalRequest.id);
@@ -1320,7 +1314,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
         name: "normal-change",
         targets: [target.id]
       });
-      await assertStaysExecuting(admin, normalChange.id, 4_000);
+      await assertStaysExecuting(server, org.orgId, normalChange.id);
 
       // Emergency change, proposed by a permitted actor (the bootstrap admin holds Owner, which
       // has change:emergency per the M4 migration) -> gate-orchestrator.ts swaps in ONLY the
@@ -1514,7 +1508,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       ).toBe(1);
 
       // Failed required control -> the wave can never start -> the change stays 'executing'.
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
 
       const explained = await admin.changes.explain(change.id);
       const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
@@ -1607,7 +1601,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(run.detail).toMatch(/digest mismatch/i);
 
       // Clean but mismatched -> still blocked: the wave stays parked.
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
     });
 
     // -------------------------------------------------------------------------------------------
@@ -1655,7 +1649,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(run.detail).toMatch(/digest mismatch/i);
 
       // Clean but bound to a DIFFERENT artifact than the change is accepting -> blocked, audited.
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
       const explained = await admin.changes.explain(change.id);
       const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
       expect(gateBlock).toBeDefined();
@@ -1948,7 +1942,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       });
 
       await waitForControlRun(admin, change.id, control.id, "fail");
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
     });
 
     it("an in-flight (not yet completed) check run maps to 'expired' and blocks WITHOUT permanently deadlocking the wave: once control-runner.ts's expired-recheck cooldown elapses it is re-evaluated, and a later green conclusion then allows", async () => {
@@ -1979,7 +1973,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       await waitForControlRun(admin, change.id, control.id, "expired");
       const callsWhileInFlight = checkSource.callCountFor(sha);
       expect(callsWhileInFlight).toBeGreaterThan(0);
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
 
       // Directly backdate the cached 'expired' row past `control-runner.ts`'s
       // EXPIRED_RECHECK_INTERVAL_MS (30s) — the deterministic, non-flaky way to prove the cooldown
@@ -2075,9 +2069,7 @@ describe("governance integration: automatic rollback on wave failure", () => {
 
     // coordination/reconcile.ts's fix under test: a ROLLBACK change's own failed wave must not
     // recurse — it just parks (like any other non-qualifying failed wave), never triggering a
-    // SECOND rollback_trigger Decision against itself. Give the reconcile loop several more ticks
-    // (it would have looped many times over by now if the fix weren't in place) before asserting
-    // the negative.
+    // SECOND rollback_trigger Decision against itself.
     await waitUntil(
       async () => {
         const explained = await admin.changes.explain(rollbackChangeObjectId);
@@ -2090,7 +2082,12 @@ describe("governance integration: automatic rollback on wave failure", () => {
         timeoutMs: 15_000
       }
     );
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    // The negative below is asserted from a POSITIVE signal, not from a fixed sleep: the failed-wave
+    // branch that WOULD have re-triggered is the same one that sets `reconcile_blocked_at`, and a
+    // parked change is filtered out of `listChangeRowsInStates` forever. Once parking is observed,
+    // the engine has taken its one and only look at this failure — so "no rollback-of-a-rollback"
+    // is settled rather than merely not-yet-observed, and a slow box cannot make it vacuous.
+    await waitForChangeParked(server, org.orgId, rollbackChangeObjectId);
     const rollbackExplained = await admin.changes.explain(rollbackChangeObjectId);
     expect(rollbackExplained.decisions.filter((d) => d.kind === "rollback_trigger")).toHaveLength(
       0
@@ -2112,9 +2109,10 @@ describe("governance integration: automatic rollback on wave failure", () => {
       { describe: `change ${change.id}'s wave fails`, timeoutMs: 20_000 }
     );
 
-    // A few more reconcile ticks (1s interval) — long enough that a wrongly-firing auto-rollback
-    // would have shown up — then assert it genuinely never did.
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    // Same positive signal as the sibling test above: wait until the engine has PARKED this change
+    // (`reconcile_blocked_at`, written by the very branch a wrongly-firing auto-rollback would have
+    // fired from), which is the point past which no rollback can be triggered for this failure.
+    await waitForChangeParked(server, org.orgId, change.id);
     const stillExecuting = await admin.changes.get(change.id);
     expect(stillExecuting.state).toBe("executing");
 
