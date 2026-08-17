@@ -23,10 +23,10 @@ import {
   deleteObject,
   getObjectByIdOrUrn,
   listObjects,
-  resolveDomainId,
   updateObject,
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
+import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire, listObjectsQueryFromWire } from "../domain-id-edge.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 
@@ -193,12 +193,17 @@ export function registerTypedRegistryRoutes(
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
-        const scopeObjectId = await resolveDomainId(
-          tx,
-          auth.orgId,
+        // The declared parent, resolved ONCE and used for both the permission scope and the write
+        // (`graph/containment-parent-authz.ts` — a wire `null` means the org root, never "detach").
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: writePermission,
           // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
-          containmentDomainIdFromWire(request.body.domainId) ?? undefined
-        );
+          declared: containmentDomainIdFromWire(request.body.domainId),
+          current: undefined
+        });
+        const scopeObjectId = declaredParent;
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -236,7 +241,7 @@ export function registerTypedRegistryRoutes(
               id: request.body.id,
               urn: request.body.urn,
               name: request.body.name,
-              domainId: containmentDomainIdFromWire(request.body.domainId) ?? undefined,
+              domainId: declaredParent,
               properties: request.body.properties,
               labels: request.body.labels,
               domainLocal: request.body.domainLocal
@@ -357,6 +362,15 @@ export function registerTypedRegistryRoutes(
             properties: request.body.properties
           });
         }
+        // A MOVE is a write at two places — the check above covered the object, this one covers
+        // where it is going (`graph/containment-parent-authz.ts`).
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: writePermission,
+          declared: containmentDomainIdFromWire(request.body.domainId),
+          current: found
+        });
         return updateObject(tx, {
           orgId: auth.orgId,
           typeId,
@@ -364,7 +378,7 @@ export function registerTypedRegistryRoutes(
           requestId: request.id,
           idOrUrn,
           name: request.body.name,
-          domainId: containmentDomainIdFromWire(request.body.domainId),
+          domainId: declaredParent,
           properties: request.body.properties,
           labels: request.body.labels,
           expectedVersion: request.body.version
@@ -445,13 +459,17 @@ export function registerTypedRegistryRoutes(
         const existing = await tx.query.objects.findFirst({
           where: (t, { eq, and }) => and(eq(t.orgId, auth.orgId), eq(t.urn, urn))
         });
-        const scopeObjectId = existing
-          ? existing.id
-          : ((await resolveDomainId(
-              tx,
-              auth.orgId,
-              containmentDomainIdFromWire(request.body.domainId) ?? undefined
-            )) ?? auth.orgId);
+        // On the CREATE branch the declared parent is the only scope there is; on the UPDATE branch
+        // the object is the scope and the declared parent is separately authorized as a move
+        // (`graph/containment-parent-authz.ts`).
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: writePermission,
+          declared: containmentDomainIdFromWire(request.body.domainId),
+          current: existing
+        });
+        const scopeObjectId = existing ? existing.id : (declaredParent ?? auth.orgId);
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -479,7 +497,7 @@ export function registerTypedRegistryRoutes(
           urn,
           id: request.body.id,
           name: request.body.name,
-          domainId: containmentDomainIdFromWire(request.body.domainId),
+          domainId: declaredParent,
           properties: request.body.properties,
           labels: request.body.labels,
           domainLocal: request.body.domainLocal

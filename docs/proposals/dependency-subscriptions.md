@@ -346,6 +346,55 @@ existing singleton-table precedent (migrations 0029/0035/0036) with operator-tok
 `docs/GLOSSARY.md` is authoritative and new vocabulary belongs there with the reasoning in a
 terminology ADR — **not defined ad hoc in this proposal**. See §10 Q5.
 
+### 5.5 How a component team actually turns their own switch on (added 2026-08-17, M21.7)
+
+§5.1 calls `component_enabled` "the team's own switch" and §5.3 says the switch is a graph object.
+Neither said what a team **sends**, and the one field that decides whether a component team's request
+succeeds — **`domainId`** — appeared **zero times** in this proposal or in ADR-0032 until this
+section was written. The capability shipped with M21.3 and has been asserted by a test ever since;
+it was simply not written down anywhere a team would look. The full argument is
+[ADR-0032 §8g](../adr/0032-dependency-subscriptions.md); this is the short form.
+
+A team owning component `11111111-1111-1111-1111-111111111111` subscribes with:
+
+```http
+POST /api/v1/policies
+
+{
+  "name": "deps-checkout-api",
+  "domainId": "11111111-1111-1111-1111-111111111111",
+  "properties": {
+    "enforcement": "advisory",
+    "scope": { "objectRef": "11111111-1111-1111-1111-111111111111" },
+    "effects": [{ "dependencySubscription": { "enabled": true } }]
+  }
+}
+```
+
+The same component id appears twice and answers two different questions: `domainId` is **custody**
+(where the row is placed, and therefore who may later edit or delete it), `scope.objectRef` is
+**jurisdiction** (what the policy reaches). Placement bounds reach not at all — see
+`apps/server/src/governance/policy-scope-authz.ts`, which is the authority for that separation.
+
+**The component's own id is the right value because it is the only one that works for all three
+actor shapes.** Authority expands strictly upward from the scope object, so a `domainId` of the
+component is accepted whether the author's `policy:write` sits at the component, at its containment
+domain, or at the org root. Sending the component's **containment domain** instead — the intuitive
+choice — works only for the latter two, and so excludes precisely the component-bound team this flow
+exists for.
+
+**Omitting it is the trap.** `domainId` is optional and defaults to **the org root**, so the custody
+check runs there and a narrowly-bound author is refused with
+`403 subject '<uuid>' lacks 'policy:write' at scope '<org-root-uuid>'` — a bare uuid for a scope they
+never asked for, with nothing to suggest that an omitted field is the lever. The natural reading is
+"component teams can't do this", which is false. The refusal is correct; the discoverability was
+not, which is why the fix is documentation at every authoring surface rather than a change to the
+check.
+
+The CLI and IaC surfaces carry the same field with the same default: `scp policy register
+--domain-id <component-id> …`, and `domainId` on a manifest object (see ADR-0032 §8g for the literal
+manifest).
+
 ---
 
 ## 6. Piece 3 — detection

@@ -21,8 +21,62 @@ export const ManifestObjectSchema = z.object({
   urn: UrnSchema,
   typeId: z.string().min(1),
   name: z.string().min(1).max(500),
-  /** Object id this URN's containing domain resolves to; `undefined`/omitted defaults to the org root, same as `CreateObjectRequestSchema.domainId` (graph.ts). */
-  domainId: z.string().uuid().nullable().optional(),
+  /**
+   * Object id this URN's containing domain resolves to; `undefined`/omitted defaults to the org
+   * root, same as `CreateObjectRequestSchema.domainId` (graph.ts) — read that field's `.describe()`
+   * for the full argument, because the default carries the same authorization consequence here:
+   * `iac/plans-repo.ts` runs the SAME custody `authorize` at the resolved parent and the same
+   * `assertPolicyScopeWithinAuthority` at apply time. An omitted `domainId` therefore puts a
+   * narrowly-bound author's check at the org root, and the apply is refused for a scope the manifest
+   * never named.
+   *
+   * The manifest equivalent of ADR-0032 §8g's component-team dependency subscription — note the
+   * component's own id in BOTH places, `domainId` for custody (where the row lives, hence who may
+   * later change it) and `scope.objectRef` for jurisdiction (what the policy reaches):
+   *
+   *     {
+   *       "stackName": "checkout-api",
+   *       "objects": [{
+   *         "urn": "urn:scp:checkout-api:policy:deps-checkout-api",
+   *         "typeId": "policy",
+   *         "name": "deps-checkout-api",
+   *         "domainId": "11111111-1111-1111-1111-111111111111",
+   *         "properties": {
+   *           "enforcement": "advisory",
+   *           "scope": { "objectRef": "11111111-1111-1111-1111-111111111111" },
+   *           "effects": [{ "dependencySubscription": { "enabled": true } }]
+   *         }
+   *       }],
+   *       "relationships": []
+   *     }
+   *
+   * `governance.integration.test.ts`'s IaC case builds its manifests exactly this way and says why
+   * in a comment: `domainId: component.id` is what makes the custody check pass, which is what lets
+   * that test isolate the declared-scope-authority check specifically.
+   *
+   * The `.describe()` below exists for the same reason it does on the create field: a JSDoc comment
+   * does not reach `z.toJSONSchema()`, so a manifest author reading the generated SDK type would see
+   * none of this.
+   */
+  domainId: z
+    .string()
+    .uuid()
+    .nullable()
+    .optional()
+    .describe(
+      "Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a " +
+        "CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author " +
+        "who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On " +
+        "an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root " +
+        "rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org " +
+        "root, so it is not refused for the applier who owns that container. Send the " +
+        "deepest object you hold write authority over. Worked example — a component team declaring a dependency " +
+        'subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-' +
+        'checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":' +
+        '{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":' +
+        '{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), ' +
+        "scope.objectRef is JURISDICTION (what the policy reaches)."
+    ),
   properties: JsonRecordSchema.optional(),
   labels: JsonRecordSchema.optional()
 });

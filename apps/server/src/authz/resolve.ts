@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
-import { placementParentsSql } from "../graph/containment.js";
+import { CONTAINMENT_WALK_MAX_DEPTH, placementParentsSql } from "../graph/containment.js";
 
 /**
  * RBAC permission resolution (DESIGN.md §7). One recursive CTE does both expansions the design
@@ -120,7 +120,14 @@ function scopeExpandCte(orgId: string, scopeObjectId: string) {
         ON parent_o.id = p.parent_id
        AND parent_o.org_id = ${orgId}
        AND parent_o.deleted_at IS NULL
-      WHERE p.parent_id IS NOT NULL AND se.depth < 10
+      -- The SAME bound graph/containment.ts's walk uses, imported rather than re-typed: these two
+      -- walks are hand-synced on their routes (see the header), and a bound that drifted would let
+      -- a scope be governed at a depth authority cannot reach. The member_of SUBJECT walks below
+      -- are a different concept and keep their own literal.
+      -- (No backticks in this comment: it lives inside a JS template literal.)
+      -- sql.raw, not a bound parameter: an untyped $n compared against a recursive CTE's derived
+      -- depth column is where PostgreSQL cannot infer a type.
+      WHERE p.parent_id IS NOT NULL AND se.depth < ${sql.raw(String(CONTAINMENT_WALK_MAX_DEPTH))}
     )
   `;
 }

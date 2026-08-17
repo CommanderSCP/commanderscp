@@ -31,6 +31,7 @@ import {
   upsertObjectByUrn
 } from "../graph/objects-repo.js";
 import { containmentDomainIdFromWire, listObjectsQueryFromWire } from "../domain-id-edge.js";
+import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { createComponentInService, setComponentService } from "../graph/components-repo.js";
 import { mergeComponents } from "../coordination/component-merge-repo.js";
 
@@ -130,7 +131,16 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         // object:write at the target domain gates creating the component; createComponentInService
         // additionally requires relationship:write over the service (the containment parent).
-        const scopeObjectId = request.body.domainId ?? auth.orgId;
+        // The declared parent is resolved ONCE here (`graph/containment-parent-authz.ts`) and used
+        // for both the scope and the write — a wire `null` means the org root, never "detach".
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          declared: containmentDomainIdFromWire(request.body.domainId),
+          current: undefined
+        });
+        const scopeObjectId = declaredParent ?? auth.orgId;
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -163,7 +173,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
               id: request.body.id,
               urn: request.body.urn,
               name: request.body.name,
-              domainId: containmentDomainIdFromWire(request.body.domainId),
+              domainId: declaredParent,
               properties: request.body.properties,
               labels: request.body.labels,
               serviceIdOrUrn: request.body.service,
@@ -271,6 +281,15 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           permission: "object:write",
           scopeObjectId: found.id
         });
+        // A MOVE is a write at two places — the check above covered the object, this one covers
+        // where it is going (`graph/containment-parent-authz.ts`).
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          declared: containmentDomainIdFromWire(request.body.domainId),
+          current: found
+        });
         return updateObject(tx, {
           orgId: auth.orgId,
           typeId: "component",
@@ -278,7 +297,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           requestId: request.id,
           idOrUrn: request.params.idOrUrn,
           name: request.body.name,
-          domainId: containmentDomainIdFromWire(request.body.domainId),
+          domainId: declaredParent,
           properties: request.body.properties,
           labels: request.body.labels,
           expectedVersion: request.body.version
@@ -361,6 +380,16 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
         const existing = await tx.query.objects.findFirst({
           where: (t, { eq, and }) => and(eq(t.orgId, auth.orgId), eq(t.urn, urn))
         });
+        // Both branches, one resolution (`graph/containment-parent-authz.ts`): on the CREATE branch
+        // the declared parent is the only scope there is, and on the UPDATE branch it is separately
+        // authorized as a move. A wire `null` means the org root either way, never "detach".
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          declared: containmentDomainIdFromWire(request.body.domainId),
+          current: existing
+        });
         if (!existing) {
           // Create branch — strict: a service is required.
           if (!request.body.service) {
@@ -368,7 +397,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
               `creating component '${urn}' requires a service — a component must belong to a service`
             );
           }
-          const scopeObjectId = request.body.domainId ?? auth.orgId;
+          const scopeObjectId = declaredParent ?? auth.orgId;
           await authorize(tx, {
             orgId: auth.orgId,
             subjectObjectId: auth.subjectObjectId,
@@ -389,7 +418,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
             urn,
             id: request.body.id,
             name: request.body.name,
-            domainId: containmentDomainIdFromWire(request.body.domainId),
+            domainId: declaredParent,
             properties: request.body.properties,
             labels: request.body.labels,
             serviceIdOrUrn: request.body.service,
@@ -421,7 +450,7 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
           urn,
           id: request.body.id,
           name: request.body.name,
-          domainId: containmentDomainIdFromWire(request.body.domainId),
+          domainId: declaredParent,
           properties: request.body.properties,
           labels: request.body.labels,
           domainLocal: request.body.domainLocal

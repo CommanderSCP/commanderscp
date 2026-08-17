@@ -36,6 +36,38 @@ import { atLineStart, readHashStripped } from "@scp/source-census";
  * text inside a heredoc. What the pin CANNOT be talked out of is the build itself — the
  * `oscap --version | grep -qF` step fails the image build on drift, and `scanner-containment.test.ts`
  * proves the scanners exist nowhere else.
+ *
+ * ================================================================================================
+ * THAT BACKSTOP CLAIM, VERIFIED RATHER THAN ASSERTED (2026-08-17)
+ * ================================================================================================
+ * "The build itself is the real gate" is exactly the shape of claim that turns out to be false — a
+ * signal that is read while no actuator exists. So it was checked, and it holds. Both halves:
+ *
+ *   THE STEP IS REAL. `apps/runner-scan/Dockerfile` names the version assertion three times: lines
+ *   42 and 85 are the PROSE COMMENTS described above, and line 90 is the live `RUN` continuation
+ *   that pipes a `--version` call into `grep -qF` against `${OPENSCAP_PINNED_VERSION}`.
+ *   `readHashStripped` removes whole-line `#` comments, so 42 and 85 are gone by the time the
+ *   assertion below runs and only line 90 can satisfy it. That is the M21.7 fix doing its job,
+ *   confirmed by reading the stripped text rather than by trusting the change.
+ *
+ *   THE QUOTE THAT USED TO BE HERE WAS ITSELF A CONTAINMENT VIOLATION, which is worth leaving a
+ *   note about rather than silently rewording. This paragraph originally reproduced line 90
+ *   verbatim, `&&` and all — and `scanner-containment.test.ts` failed it, because a scanner name in
+ *   shell COMMAND POSITION inside a `packages/**` file is exactly what that gate forbids, and its
+ *   invocation detector reads RAW on purpose so a comment cannot hide one. The gate was right: a
+ *   file explaining a control had started to look like the control. Describe the step; do not
+ *   re-type it. (`packages/source-census`'s own fixture was fixed for the same reason in fb3e1a2,
+ *   by renaming its sample binary to a neutral placeholder.)
+ *
+ *   THE BUILD ACTUALLY RUNS, ON EVERY PR. CI job 4c ("Prebuild + publish runner images to GHCR")
+ *   builds `apps/runner-scan` with no main-only guard — its own comment: "Runs on every push/PR …
+ *   so a PR that touches a runner Dockerfile or a scanner pin rebuilds + republishes before the
+ *   integration job pulls it." A version drift therefore fails a PR check, not just a release.
+ *
+ * The one thing neither half covers: DELETING the `RUN` step. The build would then succeed with no
+ * assertion at all, and only the census below would notice — which is precisely why it is anchored
+ * to the code rather than reading raw text, and why it is worth keeping now that the prose comments
+ * can no longer satisfy it.
  */
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

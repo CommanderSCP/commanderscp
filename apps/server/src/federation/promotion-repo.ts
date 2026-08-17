@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { ScanEvidenceSchema, type TrustDomainId } from "@scp/schemas";
+import type { TrustDomainId } from "@scp/schemas";
 import type {
   ArtifactRef,
   ImportPromotionResponse,
@@ -42,6 +42,14 @@ import {
   withoutBoundaryBundleChecksums
 } from "./boundary-bundle-ref.js";
 import { listControlRunsForChange } from "../governance/controls-repo.js";
+import { readInstanceScanFloors } from "../governance/scan-requirements.js";
+import {
+  evaluateScanCoverage,
+  mergeInstanceFloor,
+  type ScanCoverageRefusalCode,
+  type ScanRunLike,
+  type SeverityCeiling
+} from "./scan-evidence.js";
 import {
   listApprovalRequestsForChange,
   listVotesForRequest
@@ -125,35 +133,50 @@ export type ExportPromotionResult =
 /**
  * M17.3 (E6) EXPORT SCAN GATE — the boundary re-check (defense in depth). For EACH SUBSTANTIVE
  * artifact (everything in `artifacts[]` EXCEPT `type: "blob"` — the SBOM is the scan's OUTPUT, not a
- * scanned input, so it is EXEMPT) there MUST exist a control run for this change whose evidence
- * parses as `ScanEvidenceSchema` with the run `status === "pass"`, `digestMatch === true`, and a
- * scanned `artifactDigest` EQUAL to the artifact's promoted digest (M17.1 digest binding). This is
- * UNIVERSAL and fail-closed: a MISSING scan refuses exactly like a FAILED one, whether or not a
- * scan-requirement policy was ever bound. Control runs carry no plugin-id column, so a scan outcome
- * is identified purely by `ScanEvidenceSchema.safeParse(evidence)`. This NEVER runs a scan
- * (coordinate-not-execute) — it only re-verifies existence + digest-binding of an outcome an
- * execution system already produced.
+ * scanned input, so it is EXEMPT) there MUST exist a CURRENT, digest-bound, floor-satisfying scan
+ * outcome from an ADMITTED PRODUCER. This is UNIVERSAL and fail-closed: a MISSING scan refuses
+ * exactly like a FAILED one, whether or not a scan-requirement policy was ever bound. This NEVER runs
+ * a scan (coordinate-not-execute) — it only re-verifies an outcome an execution system already
+ * produced.
+ *
+ * THE RULE ITSELF LIVES IN `scan-evidence.ts`, shared with the promotion scan step's short-circuit.
+ * Its module doc records the three properties that changed here and why each was an authorization
+ * defect: a scan outcome was identified by the SHAPE of its evidence (which `webhook-control` echoes
+ * verbatim from an operator-configured URL, so a tenant could manufacture one), any HISTORICAL
+ * passing row satisfied the gate forever, and the gate applied no threshold of its own.
+ *
+ * Takes the RAW `control_runs` rows, not the bundle's `controlOutcomes` projection. The projection
+ * drops `plugin_module`, `control_object_id` and `created_at` — which are exactly producer identity
+ * and recency — and it is IN the Ed25519 checksum payload (`promotionChecksumPayload`), so widening
+ * it to carry them would change every bundle's checksum and break verification at every peer. The
+ * gate reads the rows; the bundle keeps its shape byte-for-byte.
  */
 function evaluatePromotionScanGate(
   substantiveArtifacts: ArtifactRef[],
-  controlOutcomes: Array<{ status: string; evidence: Record<string, unknown> }>
-): { ok: true } | { ok: false; reason: string; artifactType: string; artifactDigest: string } {
+  runs: readonly ScanRunLike[],
+  instanceFloor: SeverityCeiling
+):
+  | { ok: true }
+  | {
+      ok: false;
+      reason: string;
+      artifactType: string;
+      artifactDigest: string;
+      code: ScanCoverageRefusalCode;
+      detail: Record<string, unknown>;
+    } {
   for (const artifact of substantiveArtifacts) {
-    const passing = controlOutcomes.some((outcome) => {
-      if (outcome.status !== "pass") return false;
-      const parsed = ScanEvidenceSchema.safeParse(outcome.evidence);
-      if (!parsed.success) return false;
-      return parsed.data.digestMatch === true && parsed.data.artifactDigest === artifact.digest;
-    });
-    if (!passing) {
+    const coverage = evaluateScanCoverage({ digest: artifact.digest, runs, instanceFloor });
+    if (!coverage.covered) {
       return {
         ok: false,
         artifactType: artifact.type,
         artifactDigest: artifact.digest,
+        code: coverage.code,
+        detail: coverage.detail,
         reason:
           `export refused: substantive artifact ${artifact.type}:${artifact.digest} has no passing, ` +
-          `digest-bound scan outcome — every cross-boundary artifact must carry a passing scan whose ` +
-          `scanned digest matches (fail-closed, M17.3 E6)`
+          `digest-bound scan outcome — ${coverage.reason} (fail-closed, M17.3 E6)`
       };
     }
   }
@@ -343,7 +366,11 @@ export async function exportPromotionBundle(
     // oci/rpm/deb/npm/config/infra content) still exports (and still carries a signed manifest over
     // an empty artifact set). "Every substantive artifact is scanned" is trivially true of zero.
     const substantiveArtifacts = artifactSet.filter((a) => a.type !== "blob");
-    const gate = evaluatePromotionScanGate(substantiveArtifacts, controlOutcomes);
+    // The operator's above-org floors (ADR-0016 §3) — read once per export, applied to whichever
+    // outcome ends up satisfying each artifact. Empty (the default: no floor authored) constrains
+    // nothing, which is what makes this addition a no-op on an untouched deployment.
+    const instanceFloor = mergeInstanceFloor(await readInstanceScanFloors(tx));
+    const gate = evaluatePromotionScanGate(substantiveArtifacts, controlRuns, instanceFloor);
     if (!gate.ok) {
       const decision = await insertDecision(tx, {
         orgId: input.orgId,
@@ -358,7 +385,14 @@ export async function exportPromotionBundle(
             type: a.type,
             digest: a.digest
           })),
-          failingArtifact: { type: gate.artifactType, digest: gate.artifactDigest }
+          failingArtifact: { type: gate.artifactType, digest: gate.artifactDigest },
+          // WHICH of the four narrowings refused, machine-readably. A reader of this Decision has to
+          // be able to tell "nothing scanned this" from "something scanned it and failed" from "the
+          // outcome came from a control that is not a scanner" without parsing prose — the prose is
+          // for the human, this is for the query (charter principle 6).
+          refusalCode: gate.code,
+          ...gate.detail,
+          instanceFloor
         },
         reasonTree: { summary: gate.reason }
       });

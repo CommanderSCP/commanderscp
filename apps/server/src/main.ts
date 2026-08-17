@@ -10,17 +10,7 @@ import { startOutboxRelay } from "./events/outbox-relay.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
 import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
-import { startReconcileLoop } from "./coordination/reconcile.js";
-import { startObserveLoop } from "./coordination/observe.js";
-import { startWatchdogLoop } from "./coordination/watchdog.js";
-import { startInboxLoop } from "./federation/inbox-loop.js";
-import { startDependencyVersionPollLoop } from "./dependencies/version-poll.js";
-import { startInternalReleaseLoop } from "./dependencies/internal-release-loop.js";
-import { startInventoryIngestionLoop } from "./dependencies/inventory-ingestion-loop.js";
-import { startBumpDispatchLoop } from "./dependencies/bump-dispatch.js";
-import { startBumpGateLoop } from "./dependencies/bump-gate.js";
-import { startAutoRelayLoop } from "./federation/auto-relay.js";
-import { startFederationSyncLoop } from "./federation/federation-sync.js";
+import { runsBackgroundWork, startBackgroundLoops } from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
@@ -138,12 +128,17 @@ async function main(): Promise<void> {
   // guard is per-plugin-instance, not per-process. Neither boundary moves because a different
   // process dispatches the plugin.
   // ---------------------------------------------------------------------------------------------
-  const runsBackgroundWork = config.role === "all" || config.role === "worker";
+  // `runsBackgroundWork(config)` is IMPORTED, not inlined (`background-work.ts`). It used to be an
+  // inline `config.role === "all" || config.role === "worker"`, and that made it unreachable by any
+  // test: setting it `false` — killing all eleven loops below — left the entire apps/server unit
+  // suite green, because nothing can import this file. The predicate is now a pure exported
+  // function with its own coverage, and the loops it gates are a registry that is STARTED in a test.
+  const backgroundWork = runsBackgroundWork(config);
   const pluginHost = await startPluginHostForRole(deps, config.role);
   // An api-only process owns nothing else to tear down, so it stops the host itself. The
   // background-work branch below keeps stopping it in ITS onClose, ordered after the loops that use
   // it — stopping the host out from under a running reconcile tick is what that ordering avoids.
-  if (!runsBackgroundWork) {
+  if (!backgroundWork) {
     app.addHook("onClose", async () => {
       await pluginHost.stop();
     });
@@ -155,7 +150,7 @@ async function main(): Promise<void> {
   // and assumes the outbox-only `scp_relay` role per transaction; pg-boss connects as the
   // schema-scoped `scp_pgboss` login role (M3 tracked security follow-up — pg-boss no longer
   // runs its own schema migrations on the admin/superuser connection).
-  if (runsBackgroundWork) {
+  if (backgroundWork) {
     // M21.4 (ADR-0032 §7): the domain-event stream's real consumers. `boss.work()` is a competing
     // consumer, so a feature that reacts to an event registers a ROUTER rather than a second worker
     // on `domain-events` — the router makes one cheap decision and enqueues onto that capability's
@@ -195,104 +190,21 @@ async function main(): Promise<void> {
       onEventsRelayed: (orgIds) => pokeSender.onEventsRelayed(orgIds)
     });
 
-    // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the resumable
-    // reconciliation loop, over the plugin host constructed above. The shared fake-executor
-    // instance it relies on (coordination/executor-config.ts documents why: M3 has no
-    // plugin-instance configuration API yet) is registered there under this same role condition,
-    // with its state file under the OS temp dir — durable across the plugin SUBPROCESS restarting
-    // (the plugin-host isolation DoD scenario), not across this whole `scpd` process restarting,
-    // which is fine: fake-executor is never a real system of record.
-    const reconcileLoop = await startReconcileLoop(
+    // EVERY BACKGROUND LOOP THIS PROCESS RUNS — `background-work.ts`'s `BACKGROUND_LOOPS`, not a
+    // list of eleven `const`s here, and not eleven matching `.stop()` calls in the `onClose` below.
+    //
+    // WHY IT MOVED. This block used to hand-write both halves, and both were unverifiable: nothing
+    // can import this file (`main()` runs at module scope), so every test that claimed to check the
+    // wiring was matching SUBSTRINGS. Measured 2026-08-17 — flipping this block's own condition to
+    // `false`, killing all eleven loops, left `bump-dispatch`, `bump-gate`, `inventory-ingestion`
+    // and `domain-event-routers` green at 79/79 and the whole unit suite green. A registry is a pure
+    // importable value, so `background-work.test.ts` STARTS it against a probe boss and asserts what
+    // actually happened, and a loop that is never registered fails that test rather than shipping
+    // inert. Same move, same reason, as M21.7 moving the router list into `domain-event-registry.ts`.
+    //
+    // The one link still checked as text is the CALL BELOW — see that test file, which says so.
+    const backgroundLoops = await startBackgroundLoops({
       boss,
-      db,
-      pluginHost,
-      getSharedCelSandbox(),
-      config.secretsMasterKey
-    );
-    // CRITICAL #1 fix (PR #7 review): the stuck-change watchdog sweep (DESIGN.md §9.4) had no
-    // production caller at all before this — scheduled here the same way the reconcile loop is,
-    // one queue per capability, both under the same `role === "all" || "worker"` guard.
-    const watchdogLoop = await startWatchdogLoop(boss, db, pluginHost, config.secretsMasterKey);
-    // M10.2 observe()-driver: the PULL side of change detection (webhook is push). Same queue-per-
-    // capability pattern under the same `role === "all" || "worker"` guard; a much slower cadence.
-    const observeLoop = await startObserveLoop(boss, db, pluginHost, config.secretsMasterKey);
-    // M13.1a staging-node inbox ingest (proposal §13.1): same queue-per-capability pattern under
-    // the same role guard — but DEFAULT-OFF (explicit `SCP_INBOX_LOOP=1` opt-in; without it this
-    // returns an inert handle and never schedules a tick — an unconfigured instance does not spin).
-    const inboxLoop = await startInboxLoop(boss, db, config.secretsMasterKey);
-    // M13.1b staging-node AUTO-RELAY (proposal §13.1): the last operator-gated step of the CDS
-    // boundary walk — a `role: retrans` instance builds the onward byte tarball for an imported
-    // promotion with no operator command. Same queue-per-capability pattern under the same role
-    // guard, DEFAULT-OFF behind its own explicit `SCP_RETRANS_AUTO_RELAY=1` (unattended byte egress
-    // across a security boundary is opted into separately from unattended INGEST; without it this
-    // returns an inert handle and the queue is never created).
-    const autoRelayLoop = await startAutoRelayLoop(boss, db, config.secretsMasterKey);
-    // M14.0 outpost live-pull scheduler (docs/proposals/outpost-poke.md §"Milestone scope",
-    // ADR-0009): same queue-per-capability pattern under the same role guard — DEFAULT-OFF (explicit
-    // `SCP_FEDERATION_SYNC_LOOP=1` opt-in; without it an inert handle, never a scheduled tick). The
-    // deferred federation-over-HTTP live-sync substrate the poke increments (M14.1–M14.4) optimize;
-    // it pulls+imports commander config over the fail-closed per-peer mTLS outbound dialer
-    // (federation-outbound.ts) and is the sparse-safety-net + pull-on-startup reliability floor.
-    const federationSyncLoop = await startFederationSyncLoop(boss, db);
-    // M21.4 third-party dependency version poll (ADR-0032 §7): same queue-per-capability pattern,
-    // but with a SECOND, explicit guard on top of `runsBackgroundWork` — `config.federationRole`
-    // must be `commander`. An unguarded background job that dials package registries on a timer
-    // would run on AIR-GAPPED OUTPOSTS too, and neither the process-role split nor any runtime
-    // predicate would stop it (`self_domain.role` is per-org, lazy and advisory). The guard lives
-    // in `dependencyVersionPollRoleGuard`, which returns an inert handle and never creates the
-    // queue when it refuses.
-    const dependencyVersionPollLoop = await startDependencyVersionPollLoop(
-      boss,
-      db,
-      pluginHost,
-      config
-    );
-    // M21.4 internal release detection (ADR-0032 §7) — the other half of the router registered with
-    // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event.
-    // COMMANDER-ONLY, like every dependency job (ADR-0032 §7d, owner decision 2026-08-17): this
-    // comment used to say it ran on EVERY federation role. A FIELD outpost never ORIGINATES a
-    // dependency bump — it receives the resulting change down the global pipeline the commander
-    // manages — so it derives no inventory and detects no releases for this feature. ("Field" is
-    // load-bearing: an HQ outpost is the outpost in the commander's OWN trust domain, which is this
-    // process — see `dependencies/commander-only.ts`, which reads that out of the code.) The loop's
-    // module doc carries the full reasoning and the accepted cost (an internal line released only at
-    // a FIELD outpost keeps a NULL head, which §7 defines as "not observed", never "nothing newer
-    // exists"; a release in the HQ domain is detected here as normal).
-    const internalReleaseLoop = await startInternalReleaseLoop(boss, {
-      db,
-      host: pluginHost,
-      config
-    });
-    // M21.2 dependency-inventory ingestion (ADR-0032 §4/§6) — the worker half of the ingestion
-    // router registered above. THIS IS WHAT WRITES `component_dependencies`: without it the table is
-    // empty on every deployment and the enablement chain, the version poll and internal detection
-    // all resolve over nothing. Same role answer as internal detection and the poll — COMMANDER-ONLY
-    // (ADR-0032 §7d, owner decision 2026-08-17), where this comment previously pointed at an
-    // ingestion-specific derivation that concluded the opposite. A FIELD outpost holds no dependency
-    // inventory: the only consumer of one is a bump, and the dispatcher below has been
-    // commander-only since M21.5. (An HQ outpost is the commander's own trust domain and is this
-    // process, so its inventory is the one written here — `dependencies/commander-only.ts`.)
-    // Accepted consequence, in the loop's module doc: dependencies declared in FIELD-outpost-only
-    // repositories are out of scope for dependency subscriptions.
-    const inventoryIngestionLoop = await startInventoryIngestionLoop(boss, {
-      db,
-      host: pluginHost,
-      config
-    });
-    // M21.5 the bump dispatcher (ADR-0032 §8/§9) — the other half of the advanced-line-head router
-    // registered with `startPgBoss` above, and the thing that makes a dependency subscription DO
-    // anything. Same queue-per-capability pattern; commander-only and fail-closed on an undeclared
-    // federation role, because it authors into a user's repository with a per-run credential.
-    const bumpDispatchLoop = await startBumpDispatchLoop(boss, {
-      db,
-      host: pluginHost,
-      config
-    });
-    // M21.5 the auto-merge link (ADR-0032 §8c) — runs the EXISTING governance gate FOR a bump change
-    // once its own commit has been observed back, then merges only if a governed control evidenced
-    // the component's own checks passed for exactly that commit. It shares the CEL sandbox with the
-    // reconcile loop above, which is what makes "the same gate machinery" literally the same.
-    const bumpGateLoop = await startBumpGateLoop(boss, {
       db,
       host: pluginHost,
       sandbox: getSharedCelSandbox(),
@@ -300,17 +212,9 @@ async function main(): Promise<void> {
     });
 
     app.addHook("onClose", async () => {
-      await reconcileLoop.stop();
-      await watchdogLoop.stop();
-      await observeLoop.stop();
-      await inboxLoop.stop();
-      await autoRelayLoop.stop();
-      await federationSyncLoop.stop();
-      await dependencyVersionPollLoop.stop();
-      await internalReleaseLoop.stop();
-      await inventoryIngestionLoop.stop();
-      await bumpDispatchLoop.stop();
-      await bumpGateLoop.stop();
+      // Stops every loop in registration order — the same order this file stopped them in by hand,
+      // and now impossible to get out of step with the list that STARTED them.
+      await backgroundLoops.stop();
       await pluginHost.stop();
       await relay.stop();
       // Stop the poke sender AFTER the relay so no new post-commit hook fires into it; then drain any

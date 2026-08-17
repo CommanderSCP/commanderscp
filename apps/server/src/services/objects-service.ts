@@ -5,7 +5,8 @@ import type {
 } from "@scp/schemas";
 import type { AppDeps } from "../types.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { createObject, listObjects, resolveDomainId } from "../graph/objects-repo.js";
+import { createObject, listObjects } from "../graph/objects-repo.js";
+import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { authorize } from "../authz/resolve.js";
 import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
@@ -48,12 +49,20 @@ export async function createServiceObject(
   idempotencyKey: string | undefined
 ): Promise<ServiceObject> {
   const created = await withTenantTx(deps.db, orgId, async (tx) => {
-    // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
-    const scopeObjectId = await resolveDomainId(
-      tx,
+    // The declared parent, resolved ONCE and used for both the permission scope and the write
+    // (`graph/containment-parent-authz.ts` — a wire `null` means the org root, never "detach").
+    // The parity note above is exactly why this is here: this handler shadows the generic
+    // `/objects/:type` create for the `service` type, so every guard that door grows has to be
+    // grown here too. It was NOT, and a `POST /objects/service {"domainId": null}` wrote a
+    // detached, permanently unreachable row while the generic door wrote an org-root child.
+    const scopeObjectId = await resolveDeclaredContainmentParent(tx, {
       orgId,
-      containmentDomainIdFromWire(body.domainId) ?? undefined
-    );
+      subjectObjectId: actorObjectId,
+      permission: "object:write",
+      // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+      declared: containmentDomainIdFromWire(body.domainId),
+      current: undefined
+    });
     await authorize(tx, {
       orgId,
       subjectObjectId: actorObjectId,
@@ -81,7 +90,7 @@ export async function createServiceObject(
           id: body.id,
           urn: body.urn,
           name: body.name,
-          domainId: containmentDomainIdFromWire(body.domainId),
+          domainId: scopeObjectId,
           properties: body.properties,
           labels: body.labels,
           domainLocal: body.domainLocal

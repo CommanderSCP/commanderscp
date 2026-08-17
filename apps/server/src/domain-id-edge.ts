@@ -26,7 +26,17 @@ import {
  */
 
 /**
- * A `domainId` that names a **containment** parent (a `domain` graph object, or the org root).
+ * A `domainId` that names **the containment parent (any object; a domain in the common case)**.
+ *
+ * The parenthetical is load-bearing and is not a style choice: `objects.domain_id` is a bare `uuid`
+ * with **no foreign key and no CHECK** (`apps/server/drizzle/0001_graph_core.sql:32`), and
+ * `resolveContainmentParent` (`graph/objects-repo.ts`) validates only that the id names an object in
+ * the same org — **no type filter**. Shipped tests deliberately pass a `service.id` and a
+ * `component.id` (`governance/governance.integration.test.ts`,
+ * `dependencies/subscription-authoring-guard.integration.test.ts:263`), and RBAC/policy/freeze scope
+ * walks accept whatever chain results. Anything written against "this must be a `domain` object" is
+ * a constraint the code does not have.
+ *
  * `null`/`undefined` pass through unchanged — both are meaningful to `graph/objects-repo.ts`'s
  * `resolveDomainId` (`undefined` = default to the org root, `null` = this IS the org root).
  */

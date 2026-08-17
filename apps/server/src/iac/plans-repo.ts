@@ -765,6 +765,72 @@ export async function prepareApplyChecks(
     objectResolutions.set(entry.urn, { id: found.id, scopeObjectId: found.id });
     if (entry.action !== "noop") {
       checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: found.id });
+      // A CONTAINMENT MOVE IS A WRITE AT TWO PLACES, and IaC apply is a door like any other.
+      // `executePlanDiff` writes `target.domainId` onto the row through the same `updateObject` the
+      // HTTP doors use, so without this a manifest re-parents an object the actor holds
+      // `object:write` over into a subtree they hold nothing at — and because RBAC scope expands
+      // strictly upward (`authz/resolve.ts`), that hands the destination subtree's holders custody
+      // of it. The apply-path twin of `graph/containment-parent-authz.ts`, written as a `checks`
+      // entry rather than a call to that helper because this path authorizes through one drained
+      // list (module doc above) and because the diff engine has ALREADY decided whether the parent
+      // changes — `plan-diff.ts` records exactly that as the `domainId` changed-field. Only a real
+      // change is checked, so an unchanged re-apply demands nothing extra: the same "re-stating the
+      // current parent is not a move" rule the helper applies, for the same idempotency reason.
+      //
+      // BOTH ends, not just the destination. The entry below was only half of "a write at two
+      // places": authority expands strictly UPWARD, so holding it at the OBJECT says nothing about
+      // the container the object is being taken OUT of, and a manifest could yank a row out of a
+      // subtree the applier holds nothing at — the mirror image of the escalation the destination
+      // entry stops. The same second end `graph/containment-parent-authz.ts` now checks, and the
+      // one `graph/components-repo.ts`'s `setComponentService` has always checked ("the OLD service
+      // too on a move (it loses a child)").
+      //
+      // TWO SOURCES ARE EXEMPT. `found.domainId` is null only for the org root ITSELF, which has no
+      // source container to authorize at — and `found.domainId === orgId`, the org ROOT OBJECT, is
+      // exempt too, because the org root cannot lose custody of anything that stays inside the org:
+      // `updateObject`'s `assertRootedContainmentParent` proves on this same write that the
+      // destination reaches the root, so the root is on the row's chain after the move exactly as it
+      // was before, and the premise of this check ("its holders lose custody") is false for it.
+      //
+      // That second half was missing HERE as well as in the helper — the identical over-broad
+      // refusal, in the identical words, in the twin. It is not an edge case: `createObject` defaults
+      // an unnamed `domainId` to the org root, so MOST rows sit there, and apply refused every
+      // manifest that re-parented one of them unless the applier held ORG-ROOT authority. See
+      // `graph/containment-parent-authz.ts` for the full argument — the two copies must agree, and
+      // `routes/containment-root-source-and-create-rooting.integration.test.ts` pins both doors.
+      //
+      // AND THE DESTINATION IS EXEMPT AT THE ORG ROOT FOR THE MIRROR REASON — the half that was
+      // reasoned about at neither end. A manifest that moves a row BACK to the top level named the
+      // org root as its destination, and demanding authority there refused an applier who owns the
+      // whole subtree the row is leaving. Nobody gains custody: X's chain already terminated at the
+      // org root (the root-reachability invariant), so the org root's holders held it before the move
+      // and hold it after, while the intermediate holders LOSE it — a strictly shrinking custodian
+      // set is not the escalation the destination entry stops. Full argument, including where the
+      // proof is one step weaker than the source-side one, in `graph/containment-parent-authz.ts`;
+      // `routes/containment-root-destination-authz.integration.test.ts` pins both doors.
+      //
+      // Reachable on this path in TWO shapes, not one: an explicit `domainId` naming the org root,
+      // and — because `resolveDomainId` maps an ABSENT `domainId` to the org root — a manifest that
+      // simply omits the field for a row that currently sits inside a domain. The second is the
+      // common one and it is why this refusal bit IaC harder than it bit the HTTP doors.
+      //
+      // The CYCLE half of the same fix is deliberately NOT duplicated here: it is a subject-free
+      // invariant and lives in `graph/objects-repo.ts`'s `updateObject`, which this path writes
+      // through — see the comment there for why the repo, not the doors, owns it. The ROOT-
+      // REACHABILITY half of the CREATE branch above is subject-free for the same reason and lives
+      // in `createObject`, which `executePlanDiff` calls directly.
+      const destination = entry.target?.domainId;
+      if (entry.action === "update" && destination && destination !== found.domainId) {
+        if (destination !== orgId) {
+          checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: destination });
+        }
+        if (found.domainId && found.domainId !== orgId) {
+          checks.push({
+            permission: writePermissionFor(entry.typeId),
+            scopeObjectId: found.domainId
+          });
+        }
+      }
       if (entry.typeId === "policy" && entry.action === "update") {
         await assertPolicyScopeWithinAuthority(tx, {
           orgId,

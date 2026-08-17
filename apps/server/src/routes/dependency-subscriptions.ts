@@ -101,6 +101,44 @@ import {
  * own versioning, its own journal handling and its own scope semantics — and the two would drift.
  * The absence is the design, not an omission.
  *
+ * THE WHOLE REQUEST, BECAUSE THE EFFECT ALONE IS NOT ENOUGH TO SUCCEED (ADR-0032 §8g). Naming the
+ * effect and the route, as the paragraph above did on its own until M21.7, omits the one field that
+ * decides whether a COMPONENT TEAM's request is accepted at all — `domainId`. For the team owning
+ * component `11111111-…`:
+ *
+ *     POST /api/v1/policies
+ *     {
+ *       "name": "deps-checkout-api",
+ *       "domainId": "11111111-1111-1111-1111-111111111111",
+ *       "properties": {
+ *         "enforcement": "advisory",
+ *         "scope": { "objectRef": "11111111-1111-1111-1111-111111111111" },
+ *         "effects": [{ "dependencySubscription": { "enabled": true } }]
+ *       }
+ *     }
+ *
+ * The component id appears TWICE and the two occurrences are different questions —
+ * `governance/policy-scope-authz.ts`'s header is the authority: `domainId` is CUSTODY (where the row
+ * is placed, hence who may later PATCH/DELETE it, since both re-check at the row's own id), while
+ * `scope.objectRef` is JURISDICTION (what the policy reaches). Placement bounds reach not at all.
+ *
+ * WHY THE COMPONENT'S OWN ID. Authority expands strictly upward from the scope object
+ * (`authz/resolve.ts`'s `scopeExpandCte`), so the component's id is the one value accepted for ALL
+ * THREE actor shapes — an author whose `policy:write` sits at the component, at its containment
+ * domain, or at the org root. Sending the component's containment DOMAIN instead works only for the
+ * latter two, and so excludes exactly the component-bound team this flow exists for.
+ *
+ * WHAT OMITTING IT DOES. `domainId` is optional and `resolveContainmentParent`
+ * (`graph/objects-repo.ts`) resolves `undefined` to THE ORG ROOT, so the custody `authorize` runs
+ * there and a narrowly-bound author gets `403 subject '<uuid>' lacks 'policy:write' at scope
+ * '<org-root-uuid>'` — a bare uuid for a scope they never asked for, with nothing pointing at the
+ * field they omitted. The refusal is correct; it just does not explain itself, which is why this is
+ * written here, in ADR-0032 §8g, in the proposal, and on `CreateObjectRequestSchema.domainId` rather
+ * than in one of them.
+ *
+ * Pinned by `governance.integration.test.ts`'s CRITICAL #1b case (d) — a component-scoped author
+ * sending exactly this shape gets a 201 — and its cases (a)–(c), which refuse the broader scopes.
+ *
  * NOTHING HERE COMPUTES THE AND. Both handlers read; the merge lives in exactly one place
  * (`dependencies/subscription-resolution.ts`'s `mergeDependencySubscription`), so a UI verdict, a
  * CLI answer and the M21.4 ingestion work-list cannot disagree.

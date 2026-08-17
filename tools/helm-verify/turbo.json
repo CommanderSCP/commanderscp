@@ -1,0 +1,40 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  // WHY THIS FILE EXISTS — the same reason `deploy/airgap/turbo.json` exists, and this package was
+  // the worst instance of it in the repo: `@scp/helm-verify` contains ONE source file and ZERO test
+  // files, and its `test` script IS the census (`tsx src/verify.ts`). One hundred percent of what it
+  // asserts lives outside this directory, in `deploy/helm` and `deploy/helm-bundled`. With only the
+  // default package-scoped inputs, turbo hashed NONE of its subject.
+  //
+  // MEASURED, not inferred (2026-08-17). Flipping `readOnlyRootFilesystem: true` to `false` in
+  // `deploy/helm/values.yaml` — a real container-hardening regression — and running
+  // `turbo run test --filter @scp/helm-verify` printed
+  //
+  //     helm-verify: all hardened-defaults assertions passed.
+  //     Tasks: 2 successful, 2 total   Cached: 2 cached, 2 total   >>> FULL TURBO
+  //
+  // while running the very same gate directly (`pnpm --filter @scp/helm-verify test`) reported
+  // `14 assertion(s) FAILED`, the first being "container 'api': readOnlyRootFilesystem must be true
+  // (got false)". A cache hit on the exact input a gate is about is the same defect as a gate that
+  // never asserts — and CI job 4 (`pnpm test` → `turbo run test`) is a path that reaches it.
+  //
+  // CI job 4b invokes this through `pnpm --filter`, which bypasses turbo and so was never fooled.
+  // That is not a reason to leave this undeclared: it means the repo had one green path and one
+  // blind one for the same gate, and which one an engineer runs locally is a coin flip.
+  //
+  // WHOLE DIRECTORIES, not named files, deliberately. `verify.ts` renders the CHARTS — every
+  // template, every helper, the Chart.yaml and the values.yaml — so any file under either chart can
+  // change what this gate sees. Naming individual files here is how `deploy/airgap`'s list drifted
+  // out of step with its own tests.
+  "tasks": {
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/deploy/helm/**",
+        "$TURBO_ROOT$/deploy/helm-bundled/**"
+      ]
+    }
+  }
+}

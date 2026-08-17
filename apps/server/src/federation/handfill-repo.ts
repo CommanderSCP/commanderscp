@@ -1,7 +1,9 @@
 import type { GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { badRequest } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
+import { hasPermission } from "../authz/resolve.js";
 import { getPeerByIdOrName } from "./peers-repo.js";
+import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
@@ -30,6 +32,12 @@ import {
  */
 export interface HandFillInput {
   orgId: string;
+  /** The REAL requesting subject, for authorization only — never the write's author. The row is
+   *  still written as `FEDERATION_IMPORT_ACTOR_ID` with `provenance: 'manual'`, which is what makes
+   *  the reconciliation above work. Required rather than optional so a new caller has to decide:
+   *  `assertGovernanceAuthorityForHandFill` below is an authorization check, and an authorization
+   *  check with a defaultable subject is one rename away from being a no-op. */
+  actorObjectId: string;
   peerIdOrName: string;
   typeId: string;
   urn: string;
@@ -80,6 +88,61 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
 }
 
 /**
+ * M21.7 (ADR-0032 §6a census amendment) — THE `policy:write` HALF OF THE SAME PROBLEM, CLOSED BEFORE
+ * IT WAS REACHABLE RATHER THAN AFTER.
+ *
+ * The filterless census of free-form-`typeId` write doors (recorded in
+ * `governance/governance-managed-write-doors.integration.test.ts`) found five, and this is the fifth.
+ * The other four are decided: `/objects/{type}` and `/discovery/accept` refuse the governance types
+ * outright, `POST /plans` + apply and `POST /federation/overlays` demand `policy:write`. This one
+ * demanded only `federation:write` and would have written a `policy` row for anyone holding it.
+ *
+ * THIS ONE WAS NOT A LIVE ESCALATION, AND THAT IS EXACTLY WHY IT NEEDED CLOSING. Measured on the
+ * built-in role set: `federation:write` is granted to Administrator and Owner
+ * (`drizzle/0012_federation.sql:218-219`) and `policy:write` to Administrator and Owner
+ * (`drizzle/0010_governance.sql:174-175`) — the same two roles, and the route authorizes
+ * `federation:write` at the ORG ROOT, where an Administrator's `policy:write` also sits. So no actor
+ * reachable through today's API could use this. The safety was a COINCIDENCE between two independent
+ * grant lists in two independent migrations, held in place by nothing: `roles.org_id` exists for
+ * org-defined roles and `authz/resolve.ts` resolves permissions by list membership, so one custom
+ * role with `federation:write` and no `policy:write` turns the coincidence into the overlay hole
+ * again. The whole lesson of this milestone is that the door which is fine today because of a fact
+ * stated somewhere else is the door the next census misses.
+ *
+ * A PERMISSION CHECK, NOT A TYPE REFUSAL — the overlay treatment, not the discovery one. Hand-fill's
+ * REASON FOR EXISTING (DESIGN §13) is an air-gapped outpost with no bundle transport keying in a
+ * commander-origin object by hand, and a commander-distributed global policy is squarely that. So
+ * `policy` must keep working here; what changes is who may do it. Bar is org-root `policy:write`,
+ * matching `federation/overlay-repo.ts`: hand-fill passes no `domainId`, so the row lands at org-root
+ * containment, and `properties` is free-form, so an unscoped policy matching every target in the org
+ * is one of the documents this admits.
+ *
+ * `input.actorObjectId` is the REAL subject and is used for nothing else. The write below still
+ * carries `FEDERATION_IMPORT_ACTOR_ID`, which is the provenance/single-writer machinery the module
+ * doc describes, and is precisely the synthetic subject an authorization check must never be handed.
+ */
+async function assertGovernanceAuthorityForHandFill(
+  tx: TenantTx,
+  input: HandFillInput
+): Promise<void> {
+  if (!isGovernanceManagedObjectType(input.typeId)) return;
+  const ok = await hasPermission(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.actorObjectId,
+    permission: "policy:write",
+    // The org root object's id IS the org id (auth/local-auth.ts `ensureOrgRootObject`).
+    scopeObjectId: input.orgId
+  });
+  if (!ok) {
+    throw forbidden(
+      `object type '${input.typeId}' is governance-managed: hand-filling one requires 'policy:write' ` +
+        `at the organization root (a hand-filled row lands at org-root containment, and an unscoped ` +
+        `policy matches every target in the org) — 'federation:write' alone is not that authority`
+    );
+  }
+}
+
+/**
  * ADR-0032 §6a — THE SECOND CHECK THIS DOOR HAS TO RUN FOR ITSELF, AND IT IS THE SAME REASON AS THE
  * FIRST.
  *
@@ -109,6 +172,7 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
  */
 export async function handFillObject(tx: TenantTx, input: HandFillInput): Promise<GraphObject> {
   await assertHandFillableType(tx, input);
+  await assertGovernanceAuthorityForHandFill(tx, input);
   assertEnforceableDependencySubscriptionScope({
     typeId: input.typeId,
     properties: input.properties

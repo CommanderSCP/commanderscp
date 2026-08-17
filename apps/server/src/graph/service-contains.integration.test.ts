@@ -34,6 +34,15 @@ import {
  * |---|---|
  * | allow `assembly -> assembly` (drop the app-level refusal) | the assembly-in-assembly test FAILS — the registry's flat from/to arrays admit the pair, so only the app can refuse it |
  * | delete `assertNoContainmentCycle` | **NO TEST FAILS**, and that is recorded rather than hidden. `to_types` excludes `service`, so `assembly -> service` is refused by the endpoint check and a type-legal cycle cannot be built today. The check is unreachable defence-in-depth, kept because widening the arrays makes it live; the loop test pins the OUTCOME, not the mechanism, and says so |
+ *
+ * ============================================================================================
+ * MUTATION LOG — the MIXED-ROUTE loop (M21.7 item E). SUPERSEDES the last row above.
+ * ============================================================================================
+ * | Mutation | Result |
+ * |---|---|
+ * | delete `assertNoContainmentCycle` | the MIXED-loop test FAILS. The row above was true only while the check walked `contains` alone: it was unreachable because a PURE-`contains` cycle is unconstructible by endpoint type. It now walks both containment routes, and the one-hop-of-each loop IS constructible with legal types — so the check is live, and deleting it is caught |
+ * | make the walk `contains`-only again (the pre-M21.7 hand-rolled loop) | the MIXED-loop test FAILS, and nothing else does — which is the measurement of what the old walk could not see |
+ * | refuse every `contains` edge | the CONTROL inside the mixed-loop test FAILS, plus most of this file |
  */
 describe("service --contains--> component (membership, one service per component)", () => {
   let server: ListeningTestServer;
@@ -96,15 +105,18 @@ describe("service --contains--> component (membership, one service per component
     // endpoint at all, so `assembly -> service` is refused one layer earlier and a type-legal cycle
     // is currently unconstructible.
     //
-    // The check is kept anyway as defence-in-depth, because it becomes REACHABLE the moment anyone
-    // widens those arrays — e.g. to allow `service -> service`, which was the rejected alternative
-    // shape for this very level. A containment cycle is not cosmetic: `containmentChain` (policy,
-    // freeze and RBAC scope) and the ADR-0029 binding ladder all walk parents, so a cycle is an
-    // infinite walk in the code that authorizes releases.
+    // The check is kept anyway as defence-in-depth for THIS shape, and it becomes reachable for it
+    // the moment anyone widens those arrays — e.g. to allow `service -> service`, which was the
+    // rejected alternative shape for this very level.
     //
     // What this test therefore pins is the OUTCOME (the loop cannot be closed), not the mechanism.
-    // If you widen the endpoint arrays, come back and make this test construct a type-legal cycle,
-    // or the cycle check goes back to being untested.
+    // If you widen the endpoint arrays, come back and make this test construct a type-legal
+    // PURE-`contains` cycle, or that half of the check goes back to being untested.
+    //
+    // The check is NOT untested overall any more: the MIXED loop below reaches it, and dies when it
+    // is removed. (The claim that used to sit here — "a cycle is an infinite walk in the code that
+    // authorizes releases" — was wrong and has been removed from the check's own doc too. Every walk
+    // named is depth-bounded. What a cycle actually corrupts is measured there.)
     const outer = await admin.object("service").create({ name: `cyc-outer-${Date.now()}` });
     const inner = await admin.object("assembly").create({ name: `cyc-inner-${Date.now()}` });
     await admin.relationships.create({ typeId: "contains", fromId: outer.id, toId: inner.id });
@@ -112,6 +124,43 @@ describe("service --contains--> component (membership, one service per component
     await expect(
       admin.relationships.create({ typeId: "contains", fromId: inner.id, toId: outer.id })
     ).rejects.toThrow();
+  });
+
+  it("REFUSES a MIXED loop — one hop of `contains`, one hop of `domain_id` — which the cycle check could not see", async () => {
+    // THE HOLE THE CHECK HAD, AND THE CASE THAT NOW KILLS IT IF IT IS DELETED.
+    //
+    // Containment has TWO routes (`graph/containment.ts`: `domain_id`, and the `contains` edge walked
+    // backwards). `assertNoContainmentCycle` walked `contains` alone, so this loop — legal endpoint
+    // types, one hop of each route — went straight past it. MEASURED on these doors before the fix:
+    // the edge answered **201** and `svc -> asm -> svc` was in the table.
+    //
+    // It is the same loop the `domain_id` door already refuses (`assertRootedContainmentParent`
+    // checks the whole walk); the two doors simply disagreed about what containment is. Which door
+    // you happen to write it through is not a security or integrity boundary.
+    const asm = await admin.object("assembly").create({ name: `mixed-asm-${Date.now()}` });
+    // Hop 1, via `domain_id`: the assembly CONTAINS the service.
+    const svc = await admin
+      .object("service")
+      .create({ name: `mixed-svc-${Date.now()}`, domainId: asm.id });
+    // THE FIXTURE ITSELF, ASSERTED — if `domainId` were ignored here there would be no first hop,
+    // and the refusal below would be about nothing.
+    expect(svc.domainId).toBe(asm.id);
+
+    // Hop 2, via the edge, closing the loop the other way round.
+    await expect(
+      admin.relationships.create({ typeId: "contains", fromId: svc.id, toId: asm.id })
+    ).rejects.toThrow();
+
+    // AND THE CONTROL, so this is a check and not a ban on `contains` edges into assemblies: the
+    // same edge, between the same two TYPES, with no `domain_id` hop to close the loop.
+    const asm2 = await admin.object("assembly").create({ name: `mixed-asm2-${Date.now()}` });
+    const svc2 = await admin.object("service").create({ name: `mixed-svc2-${Date.now()}` });
+    const ok = await admin.relationships.create({
+      typeId: "contains",
+      fromId: svc2.id,
+      toId: asm2.id
+    });
+    expect(ok.id).toBeTruthy();
   });
 
   it("REFUSES an object containing ITSELF", async () => {
