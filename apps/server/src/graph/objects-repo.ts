@@ -29,6 +29,7 @@ import {
   assertEnforceableDependencySubscriptionScope,
   assertNoDelegatedDependencyUpdates
 } from "../dependencies/subscription-authoring-guard.js";
+import { assertMayUndeclareRegionMembership } from "../coordination/region-membership-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 import {
@@ -843,6 +844,19 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       typeId: input.typeId,
       properties: nextProperties
     });
+    // M15.6 / ADR-0017 §3 — the UPDATE half of the un-declaration guard, checked against
+    // `nextProperties` (the value about to be STORED) beside the two above and for the same reason:
+    // `updateObject` replaces `properties` wholesale, so a full-replacement PUT that merely OMITS
+    // `region` deletes it, and omission is the whole attack. See `region-membership-guard.ts` for
+    // the measured evasion this closes and why the bar is org-root `object:write`.
+    await assertMayUndeclareRegionMembership(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      objectId: existing.id,
+      before: existing.properties as Record<string, unknown>,
+      after: nextProperties
+    });
   }
 
   const nextName = input.name ?? existing.name;
@@ -1306,6 +1320,31 @@ export async function deleteObject(
       }
       removedForeignShadow = true;
     }
+  }
+
+  // M15.6 / ADR-0017 §3 — the DELETE half of the un-declaration guard. Removing the ROW withdraws
+  // the target from its multi-region environment just as surely as blanking `properties.region`
+  // does, and it was the third measured evasion vector: `readDeclaredRegionMembership` filters
+  // `deleted_at IS NULL`, so soft-deleting a region target that a proposed change already names
+  // makes the gate stop firing and the wave target dispatch against the shared default executor.
+  //
+  // FIRST, ahead of the containment-reach capture below, for the reason that capture itself was
+  // placed after `assertRootedContainmentParent` in `updateObject`: a REFUSAL should not pay for
+  // work whose only consumer is the write it refuses. This check is read-only and short-circuits on
+  // `typeId !== 'deployment-target'`, so it costs nothing on the ordinary path, while the reach
+  // capture below runs two recursive containment walks. Ordering them the other way would make
+  // every refused un-declaration pay for a reach diff that is then thrown away with the
+  // transaction. Neither guard reads the other's state — one authorizes, one observes — so the
+  // order is purely a cost decision, and both still run strictly BEFORE the tombstone.
+  if (!input.federationImport) {
+    await assertMayUndeclareRegionMembership(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      objectId: existing.id,
+      before: existing.properties as Record<string, unknown>,
+      after: null
+    });
   }
 
   // CONTAINMENT ROUTE 3 — TOMBSTONING A CONTAINER, which writes no containment field and yet
