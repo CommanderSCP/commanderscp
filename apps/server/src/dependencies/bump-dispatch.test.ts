@@ -430,17 +430,17 @@ describe("planBump — what the bump would SAY, and every refusal that names its
   });
 
   it("refuses a DUE bump into a file this build's editor may not write, BEFORE any container", () => {
-    // M21.7. A `values.yaml` image is inventoried, subscribable and polled — the head IS observed —
-    // and the write allowlist stays closed on it, because the runner's verifier requires the single
-    // changed line to name the coordinate and in `image: {repository, tag}` it does not. Refused
-    // here so the Decision carries a reason an operator can act on; dispatched, it would come back
-    // as the plugin's own `not_a_known_manifest`, which reads as a broken runner.
+    // A file KIND the write allowlist does not name — `kustomization.yaml` is inventoried nowhere
+    // and writable nowhere, and it is the shape that stays refused now that M21.7's split-shape
+    // round opened `values.yaml`. Refused here so the Decision carries a reason an operator can act
+    // on; dispatched, it would come back as the plugin's own `not_a_known_manifest`, which reads as
+    // a broken runner.
     const plan = planBump({
       line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
       declaration: {
         declaredVersion: "3.18.0",
         resolvedVersion: "3.18.0",
-        manifestPath: "chart/values.yaml"
+        manifestPath: "chart/kustomization.yaml"
       },
       granularity: "minor_and_patch"
     });
@@ -468,6 +468,25 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     ).toEqual({ due: true, fromVersion: "3.18.0", toVersion: "3.19.1" });
   });
 
+  it("M21.7 SPLIT SHAPES: the same line and versions in a chart's values.yaml ARE now due", () => {
+    // This is the behaviour change the split-shape round exists for. Until it landed, an image
+    // pinned in Helm values was visible-but-unbumpable: SCP could see 3.19.1 existed and refused to
+    // author the edit. The `values.yaml` basename is now on both restatements of the write
+    // allowlist, and the plugin locates `image: {repository, tag}` by an anchor derived from the
+    // manifest's own parse.
+    expect(
+      planBump({
+        line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
+        declaration: {
+          declaredVersion: "3.18.0",
+          resolvedVersion: "3.18.0",
+          manifestPath: "chart/values.yaml"
+        },
+        granularity: "minor_and_patch"
+      })
+    ).toEqual({ due: true, fromVersion: "3.18.0", toVersion: "3.19.1" });
+  });
+
   it("the editability question is asked LAST — a bump that is not due reports why it is not due", () => {
     // Asking it earlier would replace an accurate "already at head" with a refusal about a file
     // nobody wanted to write, on every poll, forever.
@@ -477,7 +496,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "3.18.0",
           resolvedVersion: "3.18.0",
-          manifestPath: "chart/values.yaml"
+          manifestPath: "chart/kustomization.yaml"
         },
         granularity: "minor_and_patch"
       })
@@ -517,6 +536,13 @@ describe("the write allowlist, pinned across the two modules that restate it", (
     ["oci", "api.Dockerfile"],
     ["oci", "chart/values.yaml"],
     ["oci", "values.yaml"],
+    // The near-misses M21.7 deliberately did NOT open. The ingestion side reads exactly the basename
+    // `values.yaml`, so a spelling it never parses must stay unwritable on both sides — otherwise
+    // SCP would author into a file it has never read a dependency out of.
+    ["oci", "values.yml"],
+    ["oci", "chart/prod-values.yaml"],
+    ["oci", "chart/values.yaml.tpl"],
+    ["oci", "chart/Chart.yaml"],
     ["oci", "deployment.yaml"],
     ["oci", "kustomization.yaml"]
   ];
@@ -537,13 +563,27 @@ describe("the write allowlist, pinned across the two modules that restate it", (
     }
   });
 
-  it("NEGATIVE CONTROL: the two lists are not both 'yes' — `values.yaml` is refused by both", async () => {
+  it("NEGATIVE CONTROL: the two lists are not both 'yes' — `kustomization.yaml` is refused by both", async () => {
     // Otherwise the pinning above is satisfied by two functions that accept everything, and the
-    // fail-closed property this whole seam exists for would be untested.
+    // fail-closed property this whole seam exists for would be untested. `kustomization.yaml` is the
+    // refused YAML now that `values.yaml` is not — chosen deliberately, so the control does not turn
+    // on "YAML is refused" (it no longer is) but on "this file kind is".
     const { manifestParserFor } = await import("@scp/plugin-managed-dep");
-    expect(manifestIsEditableInThisBuild("oci", "chart/values.yaml")).toBe(false);
-    expect(() => manifestParserFor("oci", "chart/values.yaml")).toThrow();
+    expect(manifestIsEditableInThisBuild("oci", "chart/kustomization.yaml")).toBe(false);
+    expect(() => manifestParserFor("oci", "chart/kustomization.yaml")).toThrow();
     // And it is not refusing everything either.
     expect(manifestIsEditableInThisBuild("oci", "Dockerfile")).toBe(true);
+  });
+
+  it("POSITIVE CONTROL: `values.yaml` is now accepted by BOTH, and by the yaml parser", async () => {
+    // The M21.7 split-shape change, pinned on both restatements at once. Asserted on the PARSER
+    // identity rather than on "it did not throw": an entry that matched the basename and handed back
+    // `parseDockerfile` would satisfy a throw-free assertion and mis-read every chart in the org.
+    const { manifestParserFor } = await import("@scp/plugin-managed-dep");
+    expect(manifestIsEditableInThisBuild("oci", "chart/values.yaml")).toBe(true);
+    const parser = manifestParserFor("oci", "chart/values.yaml");
+    expect(parser("image:\n  repository: acme/api\n  tag: 1.2.3\n")).toMatchObject([
+      { ecosystem: "oci", coordinate: "acme/api", declared: "1.2.3", line: 3 }
+    ]);
   });
 });

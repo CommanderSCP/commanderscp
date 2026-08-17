@@ -35,9 +35,40 @@ import type { DependencyEcosystem } from "@scp/dependency-manifests";
  *
  *   * the file has the SAME number of lines           -> nothing was added or removed;
  *   * exactly ONE line differs                        -> no other declaration was touched;
- *   * that line names the coordinate                  -> the right declaration was touched;
+ *   * that line names the coordinate, OR is the line the descriptor ANCHORS to and the coordinate
+ *     rule does not disagree                          -> the right declaration was touched;
  *   * replacing the from-version token with the to-version token in the BEFORE line reproduces the
  *     AFTER line EXACTLY                              -> only the version token changed.
+ *
+ * THE THIRD CLAUSE'S SECOND HALF IS M21.7'S SPLIT-SHAPE WIDENING, and it is worth stating why it is
+ * not a loosening. Helm's commonest image spelling puts the coordinate and the version on DIFFERENT
+ * lines (`repository: acme/api` above `tag: 1.2.3`), and for `{registry, repository, tag}` the
+ * coordinate is a CONSTRUCTION that appears nowhere in the file contiguously — so clause 3 as first
+ * written could never be satisfied, and the charter's own sentence ("the declared version of an
+ * already-declared dependency in a manifest the component already contains") permits the edit that
+ * clause refused. What replaces it, when and only when an anchor is supplied:
+ *
+ *   (a) the file's line at the anchor index equals the anchor text BYTE FOR BYTE;
+ *   (b) that line contains `fromVersion` (the existing `from_version_not_on_line` clause, unchanged,
+ *       now measured on the anchor line because the changed line IS the anchor line);
+ *   (c) the set of lines naming BOTH the coordinate and `fromVersion` is EMPTY, or is exactly the
+ *       anchor line.
+ *
+ * (c) is the load-bearing one: **the anchored mode widens only where the textual rule was silent.**
+ * Wherever any line does name both, the anchor must BE that line, so every refusal the coordinate
+ * rule fires today still fires and nothing that works today gets weaker. (a) makes the anchor
+ * COMPARED, NEVER EMITTED — the output line is rebuilt from the file's own bytes, so a wrong
+ * descriptor can only cause a refusal, never a smuggled byte.
+ *
+ * WHAT IS GIVEN UP, NAMED. For a declaration where NO line names the coordinate — exactly the shapes
+ * refused outright before this — the line→coordinate binding is no longer parser-independent: it
+ * rests on `parseKubernetesImages` associating a `tag` scalar with its sibling `repository`. A wrong
+ * SELECTION is still caught (write-guard gate 6 re-parses the RETURNED bytes and refuses unless the
+ * declaration whose version moved is the subscribed coordinate); a wrong ASSOCIATION is common-mode
+ * with that gate's own parser and is NOT. The comparison is "refused" versus "bumped under a parser
+ * associativity assumption", never "strong guarantee" versus "weak one", and the residual is stated
+ * in `docs/proposals/split-shape-image-bumps.md` §4 as an accepted risk with its own differential
+ * tests.
  *
  * The last clause is the load-bearing one and it is why this is a reconstruction rather than a set of
  * `includes()` assertions: `includes(toVersion)` is satisfied by a line that ALSO gained a
@@ -103,6 +134,23 @@ export interface ManifestBumpSpec {
    *  the caller composes it from `fromVersion`'s shape, so `^1.2.3` bumps to `^1.3.0` rather than
    *  losing its range operator. */
   toVersion: string;
+  /**
+   * WHICH LINE, when the coordinate is not written on it (M21.7 split shapes).
+   *
+   * PLUGIN-INTERNAL AND DERIVED — never transported. `ManifestBumpSpec` is built inside the
+   * orchestrator by `parseBumpDescriptor`, and this field is added by `index.ts` from
+   * `write-guard.ts`'s {@link import("./write-guard.js").locateVersionLine} run over the manifest
+   * bytes it has just read at the base branch. There is no wire schema for it, no `pnpm gen`, no
+   * oasdiff exposure and no column: a line number captured at ingestion and spent at actuation would
+   * be a number derived from a read at one ref and applied to a read at another.
+   *
+   * Its ABSENCE is not an error and never becomes one — with no anchor, the coordinate rule runs
+   * exactly as it always has. That is what keeps the four working ecosystems untouched.
+   *
+   * `text` is COMPARED, NEVER EMITTED. Nothing here is ever written into a file; it is an equality
+   * test against the file's own bytes, so a stale or wrong descriptor can only cause a refusal.
+   */
+  anchor?: { readonly line: number; readonly text: string };
 }
 
 export type BumpRefusalReason =
@@ -126,7 +174,20 @@ export type BumpRefusalReason =
   /** JSON manifest: the set of declared dependencies is not identical. */
   | "declaration_set_changed"
   /** JSON manifest: the returned bytes are not parseable JSON. */
-  | "manifest_unparseable";
+  | "manifest_unparseable"
+  // --- Anchored mode (M21.7): the three refusals clause 3's replacement can produce -------------
+  /** ANCHORED: the file's line at the anchor index is not the bytes the anchor recorded. The
+   *  descriptor was derived from a different revision of this file than the runner was handed, so
+   *  the line number addresses something nobody looked at. */
+  | "anchor_text_mismatch"
+  /** ANCHORED: the ONE line that changed is not the anchor line. The runner edited a line the
+   *  descriptor did not point at, whatever else may be true of it. */
+  | "anchor_line_not_changed"
+  /** ANCHORED: some line DOES name both the coordinate and `fromVersion`, and the anchor is not it
+   *  (or there are several). The anchored mode widens only where the textual rule was silent, so a
+   *  textual rule that speaks always wins — and a disagreement is refused exactly as an ambiguous
+   *  coordinate match is refused in the unanchored mode. */
+  | "coordinate_rule_disagrees";
 
 export type BumpVerification =
   | { ok: true; changedLineIndex: number; before: string; after: string }
@@ -151,6 +212,39 @@ function replaceFirst(haystack: string, from: string, to: string): string {
 }
 
 /**
+ * THE COORDINATE RULE, as one function — every line index naming BOTH the coordinate and the version
+ * the manifest declares today.
+ *
+ * It is the selector `applyManifestBump` has always used and the one `run.sh`'s awk implements in
+ * `index()` terms. It is factored out because the anchored mode needs the same set for its VETO —
+ * "the anchor must agree with the coordinate rule wherever that rule speaks" is only checkable
+ * against the identical set, and a second, subtly different scan is how a veto comes to permit what
+ * the selector refuses.
+ *
+ * Exported so the orchestrator can ask whether this rule has an answer at all, WITHOUT ever using it
+ * to author bytes (`index.ts` uses it for one refusal and for one delivery downgrade). Measuring is
+ * not authoring: the runner remains the only thing that produces content.
+ */
+export function coordinateRuleCandidates(
+  beforeLines: readonly string[],
+  spec: Pick<ManifestBumpSpec, "coordinate" | "fromVersion">
+): number[] {
+  const candidates: number[] = [];
+  for (let i = 0; i < beforeLines.length; i += 1) {
+    const line = beforeLines[i] as string;
+    if (line.includes(spec.coordinate) && line.includes(spec.fromVersion)) candidates.push(i);
+  }
+  return candidates;
+}
+
+/** Does the coordinate rule agree that `index` is the edit target? See clause (c). */
+function coordinateRuleAgrees(candidates: readonly number[], index: number): boolean {
+  // EMPTY is agreement — the rule was silent, which is the only gap the anchor fills. One candidate
+  // must BE the anchor line. Two or more is the ambiguity the unanchored mode refuses today.
+  return candidates.length === 0 || (candidates.length === 1 && candidates[0] === index);
+}
+
+/**
  * THE REFUSAL. Given the bytes the manifest had and the bytes the isolated runner produced, decide
  * whether the difference is EXACTLY "the declared version of this already-declared dependency
  * changed from `fromVersion` to `toVersion`" — and nothing else.
@@ -165,7 +259,16 @@ export function verifyManifestBump(
   after: string,
   spec: ManifestBumpSpec
 ): BumpVerification {
-  if (!before.includes(spec.coordinate)) {
+  const anchor = spec.anchor;
+  // THE FILE-LEVEL CLAUSE IS REPLACED IN THE ANCHORED BRANCH, NOT SUPPLEMENTED. For a
+  // `{registry, repository, tag}` image the coordinate is a CONSTRUCTION (`ghcr.io/acme/api` from a
+  // `registry:` line and a `repository:` line), so it is legitimately absent from the text and this
+  // clause would refuse every such bump as `coordinate_not_declared`. The question it asks — does
+  // this file declare this coordinate? — is answered instead by the anchor's own derivation (which
+  // found a PARSED declaration carrying exactly this coordinate) and re-answered independently on
+  // the RETURNED bytes by `verifyManifestOnlyEdit` gate 6, which refuses unless the base parse
+  // declares it and unless the declaration whose version moved IS it.
+  if (anchor === undefined && !before.includes(spec.coordinate)) {
     return {
       ok: false,
       reason: "coordinate_not_declared",
@@ -214,12 +317,43 @@ export function verifyManifestBump(
 
   const beforeLine = beforeLines[index] as string;
   const afterLine = afterLines[index] as string;
-  if (!beforeLine.includes(spec.coordinate)) {
-    return {
-      ok: false,
-      reason: "wrong_declaration_changed",
-      detail: `line ${index + 1} of '${spec.manifestPath}' changed but does not name '${spec.coordinate}': '${beforeLine.trim()}' -> '${afterLine.trim()}'`
-    };
+  if (anchor === undefined) {
+    // CLAUSE 3, unanchored and unchanged.
+    if (!beforeLine.includes(spec.coordinate)) {
+      return {
+        ok: false,
+        reason: "wrong_declaration_changed",
+        detail: `line ${index + 1} of '${spec.manifestPath}' changed but does not name '${spec.coordinate}': '${beforeLine.trim()}' -> '${afterLine.trim()}'`
+      };
+    }
+  } else {
+    // CLAUSE 3, ANCHORED: (a) the anchor addresses the bytes it was derived from, (b) is the
+    // existing `from_version_not_on_line` check below — which now measures the anchor line, because
+    // the changed line has been proven to BE it — and (c) the coordinate rule keeps its veto.
+    const anchorIndex = anchor.line - 1;
+    const anchoredLine = beforeLines[anchorIndex];
+    if (anchoredLine !== anchor.text) {
+      return {
+        ok: false,
+        reason: "anchor_text_mismatch",
+        detail: `line ${anchor.line} of '${spec.manifestPath}' reads ${JSON.stringify(anchoredLine ?? "<past the end of the file>")}, but the descriptor anchors to ${JSON.stringify(anchor.text)} — the anchor was derived from different bytes than the runner was handed, so it addresses a line nobody looked at`
+      };
+    }
+    if (index !== anchorIndex) {
+      return {
+        ok: false,
+        reason: "anchor_line_not_changed",
+        detail: `line ${index + 1} of '${spec.manifestPath}' changed, but this bump anchors to line ${anchor.line} ('${anchor.text.trim()}') — the runner edited a line the descriptor did not point at`
+      };
+    }
+    const candidates = coordinateRuleCandidates(beforeLines, spec);
+    if (!coordinateRuleAgrees(candidates, anchorIndex)) {
+      return {
+        ok: false,
+        reason: "coordinate_rule_disagrees",
+        detail: `${candidates.length} line(s) of '${spec.manifestPath}' name both '${spec.coordinate}' and '${spec.fromVersion}' (${candidates.map((i) => i + 1).join(", ")}), and the anchor is line ${anchor.line} — an anchor may only widen where the textual rule is silent, never overrule it`
+      };
+    }
   }
   if (!beforeLine.includes(spec.fromVersion)) {
     return {
@@ -329,16 +463,28 @@ function verifyJsonDeclarationSets(
  */
 export function applyManifestBump(before: string, spec: ManifestBumpSpec): string | undefined {
   const beforeLines = lines(before);
-  const candidates: number[] = [];
-  for (let i = 0; i < beforeLines.length; i += 1) {
-    const line = beforeLines[i] as string;
-    if (line.includes(spec.coordinate) && line.includes(spec.fromVersion)) candidates.push(i);
+  const candidates = coordinateRuleCandidates(beforeLines, spec);
+  const anchor = spec.anchor;
+
+  let index: number;
+  if (anchor === undefined) {
+    // Exactly one line must both name the coordinate and carry the declared version. Zero means the
+    // manifest disagrees with the inventory; more than one means the edit target is ambiguous and a
+    // choice here would be a guess about which declaration the subscriber meant.
+    if (candidates.length !== 1) return undefined;
+    index = candidates[0] as number;
+  } else {
+    // THE ANCHORED RULE, IN THE SAME ORDER `run.sh` APPLIES IT: (a) the anchor text still matches
+    // the file's own bytes, (b) that line carries the version to replace, (c) the coordinate rule
+    // does not disagree. Any one failing is a refusal, never a fallback to the other rule — falling
+    // back would mean two selectors could each choose a different line and the shim and this
+    // function would silently disagree about which.
+    index = anchor.line - 1;
+    if (beforeLines[index] !== anchor.text) return undefined;
+    if (!anchor.text.includes(spec.fromVersion)) return undefined;
+    if (!coordinateRuleAgrees(candidates, index)) return undefined;
   }
-  // Exactly one line must both name the coordinate and carry the declared version. Zero means the
-  // manifest disagrees with the inventory; more than one means the edit target is ambiguous and a
-  // choice here would be a guess about which declaration the subscriber meant.
-  if (candidates.length !== 1) return undefined;
-  const index = candidates[0] as number;
+
   const edited = [...beforeLines];
   edited[index] = replaceFirst(beforeLines[index] as string, spec.fromVersion, spec.toVersion);
   return edited.join("\n");

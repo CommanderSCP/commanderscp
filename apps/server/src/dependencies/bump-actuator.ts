@@ -52,15 +52,21 @@ export const BUMP_SOURCE_KIND = "dependency-bump";
  * that restate it" block proves the two agree — including on what each one REFUSES, which is the
  * half a subset check would miss.
  *
- * WHY THE SERVER ASKS AT ALL, when the plugin refuses anyway (M21.7). `values.yaml` is now
- * INVENTORIED, so an image pinned in a chart is subscribable and polled and an operator learns a
- * newer `alpine` exists. It is NOT writable: the runner's verifier requires the single changed line
- * to name the coordinate, and in `image: {repository, tag}` the coordinate is on the other line —
- * in `{registry, repository, tag}` it appears nowhere contiguously at all. Without this check the
- * dispatcher would start a container, hand it a file the allowlist refuses, and surface
- * `not_a_known_manifest`, which reads to an operator as "the runner is broken" rather than as "this
- * build cannot author into that file". The allowlist stays CLOSED and fail-closed; this only decides
- * WHERE the refusal is said, and it says it before a container exists.
+ * WHY THE SERVER ASKS AT ALL, when the plugin refuses anyway. The allowlist is CLOSED and
+ * fail-closed on both sides; this only decides WHERE the refusal is said, and it says it before a
+ * container exists. Without it the dispatcher would start a container, hand it a file the plugin's
+ * allowlist refuses, and surface `not_a_known_manifest`, which reads to an operator as "the runner
+ * is broken" rather than as "this build cannot author into that file".
+ *
+ * `values.yaml` MOVED FROM REFUSED TO ACCEPTED in M21.7's split-shape round, and D4 of
+ * `docs/proposals/split-shape-image-bumps.md` is why it opens WHOLESALE rather than conditionally.
+ * What actually decides whether a chart's image can be edited is whether the manifest's own parser
+ * resolves that declaration to a single line carrying its version — and the server holds no file
+ * content, so it cannot ask that question. It can only ask about the basename. The consequence is
+ * deliberate and stated: `manifest_not_editable_in_this_build` stops being the reason for values
+ * files, and the residue (a stale inventory row, an image declared identically in two places, a
+ * templated tag) is refused plugin-side as `anchor_not_derivable`, which names its own cause
+ * instead of borrowing this one's (ADR-0032 §7b clause 6).
  */
 export function manifestIsEditableInThisBuild(ecosystem: string, manifestPath: string): boolean {
   const cut = manifestPath.lastIndexOf("/");
@@ -75,12 +81,16 @@ export function manifestIsEditableInThisBuild(ecosystem: string, manifestPath: s
     case "python":
       return basename === "pyproject.toml" || /^requirements[A-Za-z0-9._-]*\.txt$/.test(basename);
     case "oci":
-      // The four Dockerfile spellings in ordinary use. `values.yaml` is deliberately NOT here.
+      // The four Dockerfile spellings in ordinary use, plus `values.yaml` — EXACTLY the basename
+      // `inventory-ingestion.ts`'s manifest-candidate map reads. Not `values.yml`, not
+      // `*-values.yaml`: a path this admits and the inventory never parses is a file SCP would
+      // write into without ever having read a dependency out of it.
       return (
         basename === "Dockerfile" ||
         basename === "Containerfile" ||
         basename.startsWith("Dockerfile.") ||
-        basename.endsWith(".Dockerfile")
+        basename.endsWith(".Dockerfile") ||
+        basename === "values.yaml"
       );
     default:
       return false;

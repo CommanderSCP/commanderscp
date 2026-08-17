@@ -270,11 +270,15 @@ export type BumpRefusalReason =
    *  text cannot be composed by replacing it — `resolved_version` and `declared_version` disagree
    *  about what the file says, and rewriting on a guess is how a range operator gets lost. */
   | "declaration_not_composable"
-  /** A bump IS due, and this build's runner cannot author into a file of this kind. M21.7's
-   *  `values.yaml` is the case that exists: it is inventoried, subscribable and polled, and the
-   *  write allowlist stays deliberately closed on it. Refused HERE so the reason is legible on the
-   *  Decision, instead of after a container round trip that ends in the plugin's own
-   *  `not_a_known_manifest` — which reads as a broken runner. */
+  /** A bump IS due, and this build's runner cannot author into a file of this KIND. Refused HERE so
+   *  the reason is legible on the Decision, instead of after a container round trip that ends in the
+   *  plugin's own `not_a_known_manifest` — which reads as a broken runner.
+   *
+   *  `values.yaml` used to be the case that exists and is no longer (M21.7 split-shape round): a
+   *  chart's images are now writable, so what remains here is a genuinely unregistered file kind
+   *  (`kustomization.yaml`, a `build.gradle`, a `Chart.yaml` subchart version). A values file whose
+   *  particular declaration cannot be located is a different question and gets a different name —
+   *  the plugin's `anchor_not_derivable`, which is decidable only with the file's bytes in hand. */
   | "manifest_not_editable_in_this_build";
 
 export type BumpPlan =

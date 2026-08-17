@@ -1,7 +1,9 @@
 # Split-shape image bumps — making `image: {repository, tag}` editable without making the verifier a parser
 
-**Status:** Proposed (2026-08-17). Design only — nothing here is built, and this document changes no
-behaviour.
+**Status:** **BUILT (2026-08-17), M21.7.** Proposed and built the same day; D1–D5 were all adopted as
+recommended. The rule, the derivation, the runner operands, the allowlist opening and the PR-only
+delivery are in the tree, and the clause recording them is
+[ADR-0032 §8g](../adr/0032-dependency-subscriptions.md). §10 below marks what landed.
 **Owner ask:** split-shape Helm image declarations must be BUMPABLE, not merely detected.
 `image: {repository, tag}` is the most common Helm convention; today SCP can see that a newer version
 exists and cannot apply it.
@@ -457,9 +459,22 @@ error.*
 
 ---
 
-## 10. Build-round work items
+## 10. Build-round work items — ALL LANDED (2026-08-17)
 
-Each needs its own named test and a mutation that kills it. None of it is written.
+Each has its own named test and a mutation that kills it; the mutations were run one at a time and
+each killed a NAMED test, not just "something".
+
+**Two things this round changed against the design, both narrowings, both stated:**
+
+- **§3.1's derivation lives in `write-guard.ts` as written, but `coordinateRuleCandidates` was
+  factored out of `bump-edit.ts` and is called by the orchestrator too.** The veto and the reference
+  edit must consult the IDENTICAL set — a second, subtly different scan is how a veto comes to permit
+  what the selector refuses — and D4's `anchor_not_derivable` needs to know whether that set is empty
+  before it starts a container. It MEASURES; it never authors.
+- **§3.2's clause (b) is not new code.** The existing `from_version_not_on_line` clause already
+  measures the changed line, and the anchored branch has already proven the changed line IS the
+  anchor line, so (b) is that clause unchanged rather than a fourth check. Stated because "three
+  clauses replace clause 3" and "two new checks plus one existing one" are different diffs.
 
 1. `packages/dependency-manifests/src/types.ts` — the occurrence count field (D3), with its contract
    stated: how many key paths fed this entry, `1` for an unmerged one.
@@ -492,12 +507,12 @@ Each needs its own named test and a mutation that kills it. None of it is writte
 10. `docs/proposals/kubernetes-image-references.md` §6 Q2 — pointer to this document (done in this
     commit).
 
-### Incidental finding, not part of this design
+### Incidental finding — FIXED in this round, since it touched the parser
 
 `packages/dependency-manifests/src/kubernetes-images.ts` contains three literal **NUL bytes**, used as
 separators in the group key at `toDeclarations` (`` `r ${coordinate}\0${declared}\0${digest}\0${pinned}` ``).
 They are deliberate and correct as a separator choice, but they make `file(1)` report the source as
 `data` and make **`grep` skip the file silently** — a filterless census with grep cannot see this file
-at all, which is precisely the hazard CLAUDE.md's census rule is about. Writing them as `\u0000`
-escapes keeps the separator and restores the file to text. Worth a one-line change in whatever round
-touches the parser next.
+at all, which is precisely the hazard CLAUDE.md's census rule is about. This round touched the parser
+(D3's occurrence count), so the one-line change was taken: they are now `\u0000` escapes, the
+separator is unchanged, and `file(1)` reports UTF-8 text.

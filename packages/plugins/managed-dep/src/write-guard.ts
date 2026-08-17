@@ -3,6 +3,7 @@ import type { DeclaredDependency, DependencyEcosystem } from "@scp/dependency-ma
 import {
   parseDockerfile,
   parseGoMod,
+  parseKubernetesImages,
   parsePackageJson,
   parsePomXml,
   parsePyprojectToml,
@@ -419,7 +420,11 @@ export type ManifestParser = (content: string) => DeclaredDependency[];
  * Two ecosystems need a per-basename decision rather than a per-ecosystem one, which is why this is
  * keyed on the pair: `python` is `pyproject.toml` OR a `requirements*.txt` and those are different
  * parsers with different contracts (`parseRequirementsTxt` is the one export in the package that
- * never throws), and `oci` legitimately spells a Dockerfile four ways.
+ * never throws), and `oci` is spelled FIVE ways by TWO parsers — four Dockerfile spellings read by
+ * `parseDockerfile`, and a chart's `values.yaml` read by `parseKubernetesImages`. That second one is
+ * the reason the table is keyed on (ecosystem, basename) rather than on ecosystem alone: an image
+ * pinned in Helm values and an image pinned in a `FROM` are the same `dependency_lines` row, and
+ * only the file they were read out of differs.
  *
  * Being an ALLOWLIST is the charter clause "never edits a file that declares no dependency" made
  * structural. It is checked in addition to the component's own declared-manifest set, not instead of
@@ -468,6 +473,20 @@ const MANIFEST_MATCHERS: ReadonlyArray<{
       b.endsWith(".Dockerfile"),
     parser: parseDockerfile,
     spelling: "Dockerfile / Containerfile"
+  },
+  {
+    ecosystem: "oci",
+    // M21.7 SPLIT-SHAPE ROUND. A chart's `values.yaml` was inventoried but deliberately NOT
+    // writable, because `verifyManifestBump`'s clause 3 required the changed line to name the
+    // coordinate and in `image: {repository, tag}` it names it on the line above. That clause now
+    // has an anchored alternative ({@link locateVersionLine}, `bump-edit.ts`'s anchored branch), so
+    // the allowlist opens — and it opens on EXACTLY the basename the ingestion side registers
+    // (`inventory-ingestion.ts`'s manifest-candidate map: `["values.yaml", parseKubernetesImages]`).
+    // Not `values.yml`, not `*-values.yaml`: a path this allowlist admits and the inventory never
+    // reads is a file SCP would write into without ever having declared a dependency in it.
+    matches: (b) => b === "values.yaml",
+    parser: parseKubernetesImages,
+    spelling: "values.yaml"
   }
 ];
 
@@ -500,6 +519,107 @@ export function manifestParserFor(ecosystem: DependencyEcosystem, path: string):
     );
   }
   return matcher.parser;
+}
+
+// -------------------------------------------------------------------------------------------
+// WHICH LINE CARRIES THE DECLARED VERSION — the anchor, derived from the same bytes
+// -------------------------------------------------------------------------------------------
+
+/**
+ * The line a bump must edit, when the coordinate is not written on it.
+ *
+ * DERIVED, NEVER TRANSPORTED. Nothing puts this on the wire, in `intent.parameters`, or in a
+ * database column: it is computed by {@link locateVersionLine} from the manifest bytes the
+ * orchestrator has just read at the base branch, and spent immediately against those same bytes.
+ * A line number captured at INGESTION and spent at ACTUATION would be a number derived from a read
+ * at one ref and applied to a read at another — a confidently wrong edit, which is the failure this
+ * module exists to prevent (`split-shape-image-bumps.md` §2.2).
+ *
+ * `text` is what makes it safe to carry a number at all: it is COMPARED, never emitted. The edited
+ * line is always rebuilt from the file's own bytes, so a wrong or stale descriptor can only cause a
+ * REFUSAL, never a smuggled byte.
+ */
+export interface ManifestVersionAnchor {
+  /** 1-based line number of the declaration's version text, as the registered parser reports it. */
+  readonly line: number;
+  /** The file's own bytes on that line, at derivation time. Compared byte-for-byte before any edit. */
+  readonly text: string;
+}
+
+/**
+ * WHERE IS THIS DECLARATION'S VERSION WRITTEN? — or `undefined`, which is never an error.
+ *
+ * ============================================================================================
+ * WHY THIS IS HERE AND NOT IN `bump-edit.ts`
+ * ============================================================================================
+ * `bump-edit.ts` is a refusal, and its header's central warning is that a per-ecosystem rewriter
+ * "that knew what a valid edit looked like would be a second implementation of the editor". A
+ * LOCATOR is exactly that: it chooses the edit target, and a bug in it makes a wrong edit ACCEPTED
+ * rather than a right one refused. So the structural knowledge stays in this file, which already
+ * owns {@link MANIFEST_MATCHERS} and already parses both sides of every edit — one parser table, one
+ * place, nothing to drift. What crosses into `bump-edit.ts` is DATA (a line number and its text) and
+ * one branch, not a format.
+ *
+ * ============================================================================================
+ * THE FIVE STEPS, AND WHY STEP 4 IS THE ONE THAT MAKES IT HONEST
+ * ============================================================================================
+ *  1. The parser for this (ecosystem, path) — the SAME allowlist entry the verifier will use, so an
+ *     unlisted basename or a lockfile never reaches step 2. Its refusal is swallowed here (this
+ *     function never throws) because `verifyManifestOnlyEdit` re-asks and refuses properly; a
+ *     derivation that threw would turn a missing anchor into a failure mode of its own.
+ *  2. The declarations whose coordinate AND declared version are exactly what the descriptor names.
+ *  3. Exactly one, or NO anchor. Zero means the manifest disagrees with the inventory; more than one
+ *     means the target is ambiguous, and choosing would be a guess about which the subscriber meant.
+ *  4. It reports a line, and THE FILE'S OWN BYTES ON THAT LINE CONTAIN the declared version — else
+ *     no anchor. This is what makes the derivation self-selecting rather than a per-format
+ *     allowlist: `pom-xml.ts` records the line of the `<dependency>` OPEN TAG while the version sits
+ *     several lines below it (the same fact this file's gate-5 comment already turns on), so a Maven
+ *     declaration yields NO anchor and Maven's path cannot change. The anchor exists exactly where
+ *     it is honest, by construction rather than by intention.
+ *  5. It is not a MERGED multi-site entry (`DeclaredDependency.occurrences > 1`). One values file
+ *     can pin `acme/api:1.2.3` in a Deployment and in a CronJob; the parser merges them because the
+ *     inventory row merges, and editing one line would leave the other behind. Refused here rather
+ *     than downstream because it costs no container run and yields a legible reason — gate 5 would
+ *     catch it anyway (one declaration before becomes two after → `dependency_set_changed`), which
+ *     is fail-closed but illegible.
+ *
+ * ABSENCE IS NOT AN ERROR. A caller that gets `undefined` proceeds with the coordinate rule
+ * unchanged; that is why every ecosystem that works today keeps working without a special case.
+ */
+export function locateVersionLine(
+  before: string,
+  spec: {
+    readonly ecosystem: DependencyEcosystem;
+    readonly manifestPath: string;
+    readonly coordinate: string;
+    readonly fromVersion: string;
+  }
+): ManifestVersionAnchor | undefined {
+  let parser: ManifestParser;
+  try {
+    parser = manifestParserFor(spec.ecosystem, spec.manifestPath);
+  } catch {
+    return undefined;
+  }
+  let declarations: DeclaredDependency[];
+  try {
+    declarations = parser(before);
+  } catch {
+    return undefined;
+  }
+  const candidates = declarations.filter(
+    (dep) => dep.coordinate === spec.coordinate && dep.declared === spec.fromVersion
+  );
+  const only = candidates.length === 1 ? candidates[0] : undefined;
+  if (only === undefined) return undefined;
+  // (step 5) A merged multi-site declaration has no single edit site, so it has no anchor.
+  if ((only.occurrences ?? 1) !== 1) return undefined;
+  const line = only.line;
+  if (line === undefined || !Number.isInteger(line) || line < 1) return undefined;
+  const text = before.split("\n")[line - 1];
+  // (step 4) The parser's line must actually carry the version text the edit replaces.
+  if (text === undefined || !text.includes(spec.fromVersion)) return undefined;
+  return { line, text };
 }
 
 /**

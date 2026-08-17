@@ -1471,6 +1471,92 @@ identical on each:
 component whose repository already delegates to Renovate/Dependabot is refused 409 with the probe's
 `decision_id` (§8b). Neither is a `domainId` problem, and neither message should be read as one.
 
+### 8h. A SPLIT-SHAPE IMAGE IS BUMPED BY AN ANCHOR, AND THE COORDINATE RULE KEEPS A VETO (2026-08-17, M21.7)
+
+§4b made an image pinned in a chart's `values.yaml` *visible*. It was still not *writable*, and the
+reason was one clause of one module: `bump-edit.ts`'s decidability rule required the single changed
+line to NAME the coordinate, and Helm's commonest spelling puts `repository: acme/api` on one line
+and `tag: 1.2.3` on the next. For `{registry, repository, tag}` it is worse — the coordinate is a
+CONSTRUCTION and appears nowhere in the file contiguously, so even the file-level
+`before.includes(coordinate)` guard is false. **This was never a charter limit.** The
+`scp-managed-dep` amendment permits "editing the declared version of an already-declared dependency
+in a manifest the component already contains", and `tag: 1.2.3 -> 1.2.4` is exactly that. It was a
+decidability rule, and it is a decidability rule that changed. Full derivation:
+`docs/proposals/split-shape-image-bumps.md`.
+
+1. **THE RULE.** An optional ANCHOR — a 1-based line number and that line's own bytes — may
+   accompany a bump. The target is then the anchor line, refused unless **(a)** the file's line at
+   that index equals the anchor text byte-for-byte, **(b)** that line carries `fromVersion`, and
+   **(c)** the set of lines naming BOTH the coordinate and `fromVersion` is EMPTY, or is exactly the
+   anchor line. With no anchor, the previous rule runs unchanged.
+
+   **(c) is what makes this a widening and not a loosening.** Wherever the textual rule speaks, the
+   anchor must agree with it; a disagreement or an ambiguity refuses exactly as it did before. So
+   every refusal that fired before still fires, and the anchored mode reaches only the shapes the
+   old rule was silent about. **(a) makes the anchor COMPARED, NEVER EMITTED** — the edited line is
+   always rebuilt from the file's own bytes, so a wrong descriptor can only produce a refusal.
+
+2. **THE ANCHOR IS DERIVED AND SPENT IN ONE PLACE — no column, no wire schema, no migration.**
+   `locateVersionLine` (in `write-guard.ts`, beside the parser table that already reads both sides of
+   every edit) runs the registered parser over the bytes the orchestrator has just read at the base
+   branch, and admits an anchor only when exactly one parsed declaration matches
+   `(coordinate, declaredVersion)`, its reported line actually CONTAINS that version, and the entry
+   is not a merged multi-site one. A line number captured at INGESTION and spent at ACTUATION was
+   rejected outright: it would be a number derived from a read at one ref and applied to a read at
+   another, which is a confidently wrong edit rather than a refused one.
+
+   The "its line must contain the version" clause is what keeps the four working ecosystems untouched
+   **by construction rather than by intention**: `pom-xml.ts` records the `<dependency>` open-tag
+   line and the version sits several lines below it, so Maven yields no anchor and Maven's path
+   cannot change. A dotted key path (`controller.image.tag`) was rejected as the anchor SHAPE for the
+   same reason twice over — resolving one would put YAML structure inside the refusal module, and it
+   would need a YAML reader inside the runner, which is `FROM scratch` plus seven BusyBox applets and
+   has no language runtime to host one.
+
+3. **THE VERIFIER STAYS ECOSYSTEM-AGNOSTIC.** `bump-edit.ts` gains an optional field, three refusal
+   reasons (`anchor_text_mismatch`, `anchor_line_not_changed`, `coordinate_rule_disagrees`) and ONE
+   branch — *is an anchor present*. It learns no YAML, no key paths and no `oci` special case; it
+   still cannot LOCATE a declaration, only check the one it was told about. The transferable rule the
+   npm `verifyJsonDeclarationSets` branch establishes is that **a per-format branch is acceptable
+   when it can only refuse more**; a branch that widens, or that locates, would be the second
+   implementation of the editor that module's header exists to forbid.
+
+4. **THE RUNNER NEEDS NO NEW CAPABILITY, AND SKEW IS FAIL-CLOSED BOTH WAYS.** The anchor arrives as
+   two more argv operands (`$6`, `$7`), read and blanked in `BEGIN` exactly as the existing three are
+   — operands rather than `-v` because `-v` processes escape sequences and these are verbatim tenant
+   text. The rule needs an integer comparison, a string equality and `index()`/`substr()`: all POSIX
+   awk, all already used. No eighth applet. An OLD image given seven operands ignores the last two,
+   produces identical bytes for contiguous shapes, and refuses split ones; a NEW image given five
+   sees no anchor and runs the old rule. The pair is appended only when an anchor exists, so the
+   common command line is byte-identical to the one every shipped image already understands.
+
+5. **WHAT IS GIVEN UP, NAMED AND ACCEPTED.** For a declaration where no line names the coordinate at
+   all — exactly the shapes refused outright before — the line→coordinate binding is no longer
+   parser-independent: it rests on `parseKubernetesImages` associating a `tag` scalar with its
+   sibling `repository`. A wrong SELECTION is still caught, because `verifyManifestOnlyEdit` gate 6
+   re-parses the RETURNED bytes and refuses unless the declaration whose version moved IS the
+   subscribed coordinate — a different question, of different bytes, before the HMAC proof is minted.
+   A wrong ASSOCIATION is common-mode with that same parser and is NOT caught. The comparison is
+   "refused" versus "bumped under a parser-associativity assumption", never "strong guarantee" versus
+   "weak one". Three controls: differential tests where every block has a distinct repository AND a
+   distinct tag; **split-shape bumps are delivered as a pull request this round regardless of a
+   subscription's `auto_merge`** (D2), so a human reads the diff; and the Decision already carries
+   `declaredIn` (`api.image.tag`), so "which key was read" is answerable from the record.
+
+6. **THE ALLOWLIST OPENS ON THE BASENAME, AND A NEW REFUSAL TAKES OVER THE RESIDUE** (D4).
+   `values.yaml` joins `MANIFEST_MATCHERS` and `manifestIsEditableInThisBuild` — the one exact
+   basename §4b clause 2 registers on the ingestion side, so the set SCP writes into can never exceed
+   the set it reads from. The server holds no file content, so it cannot ask whether an anchor is
+   derivable; `manifest_not_editable_in_this_build` therefore stops being the reason for values files
+   and the plugin's `anchor_not_derivable` takes it over — refused before a container is started, so
+   a stale inventory row or an image declared identically twice reads as its own cause rather than as
+   a broken runner.
+
+7. **`DeclaredDependency.occurrences`** carries the merge count as a NUMBER. §4b's trap 9 merges
+   byte-identical declarations into one entry because the inventory row merges, and until now that
+   fact existed only inside a human-readable note — a gate cannot be built on prose. Editing one of
+   `n` merged sites would leave the other `n-1` behind, so `n > 1` yields no anchor.
+
 ### 9. The executor interface does not change
 
 No fifth verb is added: the four-verb set **is** the structural enforcement of charter principle 1, so a

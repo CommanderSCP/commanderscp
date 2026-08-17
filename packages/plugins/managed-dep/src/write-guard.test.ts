@@ -29,6 +29,7 @@ import {
   basenameOf,
   isLockfileName,
   isRepoWriteRefusal,
+  locateVersionLine,
   manifestParserFor,
   verifyManifestOnlyEdit,
   type ManifestEditProof,
@@ -729,5 +730,214 @@ describe("write-path URL safety inherits the read path's asserts", () => {
     for (const branch of ["scp/bump-semver-3.2.4", "scp-dep/go/semver", "main"]) {
       expect(() => assertWriteBranch("p", branch), branch).not.toThrow();
     }
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// M21.7 — `locateVersionLine`, the anchor derivation, and the gate that catches a wrong SELECTION
+// -------------------------------------------------------------------------------------------
+
+/** The adversarial values file of `split-shape-image-bumps.md` §7, byte-identical to the one
+ *  `bump-edit.test.ts` uses — the derivation and the refusal must agree about which line is line 7. */
+const VALUES = [
+  "# charts/api/values.yaml",
+  "global:",
+  "  imageTag: 1.2.3",
+  "api:",
+  "  image:",
+  "    repository: acme/api",
+  "    tag: 1.2.3",
+  "worker:",
+  "  image:",
+  "    repository: acme/worker",
+  "    tag: 1.2.3",
+  "appVersion: 1.2.3",
+  "podLabels:",
+  '  version: "1.2.3"',
+  ""
+].join("\n");
+
+const VALUES_SPEC = {
+  ecosystem: "oci" as const,
+  manifestPath: "chart/values.yaml",
+  coordinate: "acme/api",
+  fromVersion: "1.2.3"
+};
+
+describe("locateVersionLine — the anchor exists exactly where it is honest", () => {
+  it("finds the VERSION line of a split-shape image, not the repository line beside it", () => {
+    // The whole point. `acme/api` is on line 6 and the version it declares is on line 7, and the
+    // edit target is the second of those.
+    expect(locateVersionLine(VALUES, VALUES_SPEC)).toEqual({ line: 7, text: "    tag: 1.2.3" });
+  });
+
+  it("distinguishes two images whose tags are identical", () => {
+    // `worker.image.tag` (line 11) is byte-identical to line 7 and carries the same version. If the
+    // filter were on the version alone, or on the line text, this would be ambiguous.
+    expect(locateVersionLine(VALUES, { ...VALUES_SPEC, coordinate: "acme/worker" })).toEqual({
+      line: 11,
+      text: "    tag: 1.2.3"
+    });
+  });
+
+  it("SHAPE C: anchors a coordinate that appears nowhere contiguously in the file", () => {
+    const content = "image:\n  registry: ghcr.io\n  repository: acme/api\n  tag: 1.2.3\n";
+    expect(content.includes("ghcr.io/acme/api")).toBe(false);
+    expect(locateVersionLine(content, { ...VALUES_SPEC, coordinate: "ghcr.io/acme/api" })).toEqual({
+      line: 4,
+      text: "  tag: 1.2.3"
+    });
+  });
+
+  it("MAVEN YIELDS NO ANCHOR — the four working ecosystems are untouched BY CONSTRUCTION", () => {
+    // This is the mutation-sensitive proof that step 4 is doing the work. `pom-xml.ts` records the
+    // line of the `<dependency>` OPEN TAG, and that line does not carry the version — so the "the
+    // parser's line must contain fromVersion" clause declines, and Maven's path cannot change. Delete
+    // that clause and this test goes red while every other test in the suite stays green.
+    const pom = [
+      "<project>",
+      "  <dependencies>",
+      "    <dependency>",
+      "      <groupId>com.acme</groupId>",
+      "      <artifactId>lib</artifactId>",
+      "      <version>1.2.3</version>",
+      "    </dependency>",
+      "  </dependencies>",
+      "</project>",
+      ""
+    ].join("\n");
+    // The declaration IS parsed, and it IS the one the descriptor names — so this is not "the parser
+    // found nothing", it is step 4 refusing an anchor the parse would otherwise have supplied.
+    expect(
+      manifestParserFor(
+        "maven",
+        "pom.xml"
+      )(pom).map((d) => ({
+        coordinate: d.coordinate,
+        declared: d.declared,
+        line: d.line
+      }))
+    ).toContainEqual({ coordinate: "com.acme:lib", declared: "1.2.3", line: 3 });
+    expect(
+      locateVersionLine(pom, {
+        ecosystem: "maven",
+        manifestPath: "pom.xml",
+        coordinate: "com.acme:lib",
+        fromVersion: "1.2.3"
+      })
+    ).toBeUndefined();
+  });
+
+  it("DOES anchor the ecosystems that already worked, so the veto is exercised and not dead code", () => {
+    // D5: derive the anchor wherever step 4 admits one. For a Dockerfile the coordinate and the
+    // version ARE on one line, so the coordinate rule speaks and the anchor must agree with it —
+    // which is only a real cross-check if an anchor is produced here at all.
+    expect(
+      locateVersionLine("FROM alpine:3.18\nRUN true\n", {
+        ecosystem: "oci",
+        manifestPath: "Dockerfile",
+        coordinate: "alpine",
+        fromVersion: "3.18"
+      })
+    ).toEqual({ line: 1, text: "FROM alpine:3.18" });
+  });
+
+  it("declines when the inventory's declared version is not what the file says (a stale row)", () => {
+    expect(locateVersionLine(VALUES, { ...VALUES_SPEC, fromVersion: "9.9.9" })).toBeUndefined();
+  });
+
+  it("declines when the file declares the same image at two versions — ambiguous by coordinate", () => {
+    const two = "a:\n  image: acme/api:1.2.3\nb:\n  image: acme/api:1.2.3\n";
+    // The parser MERGES these into one entry (one inventory row), so there is no single edit site:
+    // editing one line would leave the other behind. Refused at derivation, which costs no container.
+    expect(locateVersionLine(two, VALUES_SPEC)).toBeUndefined();
+  });
+
+  it("MUTATION GUARD on the merge case: the fixture really does merge into ONE entry", () => {
+    // Without this the assertion above is satisfied by a parse that returned TWO entries and tripped
+    // the "exactly one candidate" clause instead — a green test for the wrong reason, and step 5
+    // could then be deleted unnoticed.
+    const two = "a:\n  image: acme/api:1.2.3\nb:\n  image: acme/api:1.2.3\n";
+    const parsed = manifestParserFor("oci", "chart/values.yaml")(two);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.occurrences).toBe(2);
+  });
+
+  it("NEVER THROWS: a lockfile path, an unlisted basename and unparseable bytes all yield undefined", () => {
+    // The derivation runs BEFORE the gate that refuses these properly. If it threw, a missing anchor
+    // would become a failure mode of its own and `verifyManifestOnlyEdit` would never get to say why.
+    expect(
+      locateVersionLine("x", { ...VALUES_SPEC, manifestPath: "pnpm-lock.yaml" })
+    ).toBeUndefined();
+    expect(
+      locateVersionLine("x", { ...VALUES_SPEC, manifestPath: "chart/notes.txt" })
+    ).toBeUndefined();
+    expect(locateVersionLine("\t- [", VALUES_SPEC)).toBeUndefined();
+    // ...and the gate still refuses the lockfile, loudly, so nothing was softened.
+    expectRefusal(() => manifestParserFor("oci", "pnpm-lock.yaml"), "lockfile");
+  });
+});
+
+describe("verifyManifestOnlyEdit catches a WRONG SELECTION in a split-shape values file", () => {
+  const paths = ["chart/values.yaml"];
+
+  it("mints a proof for the correctly-anchored split-shape bump", () => {
+    const edited = VALUES.replace("    tag: 1.2.3\nworker:", "    tag: 1.2.4\nworker:");
+    const proof = verifyManifestOnlyEdit({
+      repo: "acme/widget",
+      headBranch: "scp/dep-bump/c1",
+      path: "chart/values.yaml",
+      declaredManifestPaths: paths,
+      ecosystem: "oci",
+      baseContent: VALUES,
+      newContent: edited,
+      coordinate: "acme/api"
+    });
+    expect(proof).toMatchObject({
+      coordinate: "acme/api",
+      fromDeclared: "1.2.3",
+      toDeclared: "1.2.4"
+    });
+  });
+
+  it("REFUSES when the OTHER image's tag moved — gate 6 is independent of the anchor derivation", () => {
+    // This is the guarantee `split-shape-image-bumps.md` §4 rests on. Suppose the anchor picked the
+    // wrong declaration's line: the runner edits it, and this verifier — asking a DIFFERENT question
+    // (which parsed declaration's version moved?) of DIFFERENT bytes (the AFTER file) — refuses
+    // before the HMAC proof is minted, and there is no way to write without that proof.
+    const edited = VALUES.replace("    tag: 1.2.3\nappVersion", "    tag: 1.2.4\nappVersion");
+    expect(edited).not.toBe(VALUES);
+    expectRefusal(
+      () =>
+        verifyManifestOnlyEdit({
+          repo: "acme/widget",
+          headBranch: "scp/dep-bump/c1",
+          path: "chart/values.yaml",
+          declaredManifestPaths: paths,
+          ecosystem: "oci",
+          baseContent: VALUES,
+          newContent: edited,
+          coordinate: "acme/api"
+        }),
+      "coordinate_not_expected"
+    );
+  });
+
+  it("REFUSES a values.yaml edit that changes something no declaration owns", () => {
+    const edited = VALUES.replace("appVersion: 1.2.3", "appVersion: 9.9.9");
+    expectRefusal(
+      () =>
+        verifyManifestOnlyEdit({
+          repo: "acme/widget",
+          headBranch: "scp/dep-bump/c1",
+          path: "chart/values.yaml",
+          declaredManifestPaths: paths,
+          ecosystem: "oci",
+          baseContent: VALUES,
+          newContent: edited,
+          coordinate: "acme/api"
+        }),
+      "no_version_changed"
+    );
   });
 });

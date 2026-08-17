@@ -841,7 +841,12 @@ function toDeclarations(occurrences: readonly Occurrence[]): DeclaredDependency[
   const groups = new Map<string, Occurrence[]>();
   for (const occurrence of occurrences) {
     const key = occurrence.resolved
-      ? `r ${occurrence.coordinate} ${occurrence.declared ?? ""} ${occurrence.digest ?? ""} ${occurrence.pinned}`
+      ? // THE SEPARATOR IS WRITTEN AS AN ESCAPE, NOT AS A LITERAL NUL, and that is not cosmetic:
+        // three raw NUL bytes made `file(1)` report this source as `data` and made grep SKIP THE
+        // WHOLE FILE SILENTLY — so a filterless census (CLAUDE.md) could not see this parser at
+        // all. The separator itself is right and unchanged: it cannot occur in a coordinate, a tag
+        // or a digest, so no two distinct occurrences can collide onto one group key.
+        `r ${occurrence.coordinate}\u0000${occurrence.declared ?? ""}\u0000${occurrence.digest ?? ""}\u0000${occurrence.pinned}`
       : `u ${occurrence.keyPath}`;
     const existing = groups.get(key);
     if (existing === undefined) groups.set(key, [occurrence]);
