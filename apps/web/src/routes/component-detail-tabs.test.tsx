@@ -30,12 +30,23 @@ vi.mock("../lib/use-route-params", () => ({
   useIdOrUrnParam: () => "019f0000-0000-7000-8000-00000000c0de"
 }));
 
+// The install-time role, per case. Owner rule 2026-08-17: dependency automation is COMMANDER-ONLY
+// (it pulls public registries to bump the GLOBAL repos; outposts receive the result down the
+// promotion pipeline), so the Dependencies tab is offered on the commander site only.
+const authState: { instanceRole: "commander" | "outpost" | "retrans" | undefined } = {
+  instanceRole: "commander"
+};
+vi.mock("../lib/auth-context", () => ({
+  useAuth: () => ({ user: { instanceRole: authState.instanceRole } })
+}));
+
 const { ComponentDetailLayout } = await import("./component-detail");
 
 describe("the component tab bar", () => {
+  authState.instanceRole = "commander";
   const html = renderToStaticMarkup(<ComponentDetailLayout />);
 
-  it("offers Infrastructure · Delivery · Dependencies · Settings, each by its testid", () => {
+  it("offers Infrastructure · Delivery · Dependencies · Settings on the COMMANDER, each by its testid", () => {
     for (const [testId, label, to] of [
       ["component-tab-infrastructure", "Infrastructure", "/components/$idOrUrn/infrastructure"],
       ["component-tab-software", "Delivery", "/components/$idOrUrn"],
@@ -49,4 +60,23 @@ describe("the component tab bar", () => {
     }
     expect(html.match(/data-testid="component-tab-/g)).toHaveLength(4);
   });
+
+  it.each(["outpost", "retrans", undefined] as const)(
+    "instanceRole %s → the Dependencies tab is NOT offered (three tabs), the other three unchanged",
+    (role) => {
+      authState.instanceRole = role;
+      const h = renderToStaticMarkup(<ComponentDetailLayout />);
+      expect(h).not.toContain('data-testid="component-tab-dependencies"');
+      expect(h).not.toContain(">Dependencies<");
+      for (const testId of [
+        "component-tab-infrastructure",
+        "component-tab-software",
+        "component-tab-settings"
+      ]) {
+        expect(h, testId).toContain(`data-testid="${testId}"`);
+      }
+      expect(h.match(/data-testid="component-tab-/g)).toHaveLength(3);
+      authState.instanceRole = "commander";
+    }
+  );
 });

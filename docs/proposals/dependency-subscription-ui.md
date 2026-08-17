@@ -56,6 +56,9 @@ Teams subscribe to a **major line**; updates within it arrive as automatic code 
 
 ## 4. The UI
 
+### 4.0 Commander-only (owner rule, 2026-08-17)
+The owner ruled that **dependency automation happens only at the commander**: its purpose is to pull from *public* registries to bump the global repos (Python libraries, CDK, base images…), and outposts receive the resulting change down the promotion pipeline the commander manages — an outpost never originates a bump and holds no inventory. Server consequence (M21.7's, confirmed with the owner by that session): inventory ingestion and internal-release detection gain the same commander-only fail-closed guard the poll and bump dispatch already have; the backfill route refuses on a non-commander; ADR-0032 §7c clause 3 is amended (outpost-only IaC/CaC repos are out of scope for subscriptions by design). UI consequence (this proposal): the **Dependencies tab is offered on the commander site only** (read from the install-time `instanceRole`, like Campaigns/Graph in the nav); a direct `/components/{id}/dependencies` URL on any other role renders a stated pointer — "Dependency subscriptions are managed at the commander" — and issues no reads; the read routes stay registered on every role (read-only). §4.1's "present on both sites" and §4.4's outpost sentence are superseded.
+
 ### 4.1 Where: a **Dependencies** tab on the component page
 `Infrastructure · Delivery · Dependencies · Settings` (fourth `createRoute` under `componentDetailRoute`, testid `component-tab-dependencies`; the e2e pin on `component-tab-settings` stays). Not on the service board this round. Present on **both** sites; on an outpost the bumps section states "bumps are dispatched by the commander" (read from `instanceRole`), never an empty table that looks up to date.
 

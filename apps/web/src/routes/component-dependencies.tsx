@@ -882,6 +882,29 @@ function bumpProgress(bump: ComponentDependencyBump): React.JSX.Element {
  *  up to date. On the commander the read's STATE decides: pending → a skeleton row; failed → an
  *  amber `unknown` line (the page's error notice carries the diagnosis); only a SUCCESSFUL read
  *  with zero rows says "No bumps yet." */
+/** What an OUTPOST (or any non-commander) site renders at `/components/$idOrUrn/dependencies` when
+ *  the URL is reached directly — the tab itself is hidden there (component-detail.tsx). Owner rule
+ *  2026-08-17: dependency automation happens ONLY at the commander — it pulls from public registries
+ *  to bump the GLOBAL repos, and outposts receive the result down the promotion pipeline — so an
+ *  outpost holds no dependency inventory and dispatches no bumps. A stated pointer, not an empty
+ *  page that would read as "no dependencies". Provider-free; role is a PARAMETER. */
+export function ManagedAtCommanderNotice(): React.JSX.Element {
+  return (
+    <Card data-testid="dependencies-managed-at-commander">
+      <CardHeader>
+        <CardTitle>Dependencies</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-slate-600">
+          Dependency subscriptions are managed at the commander. Version bumps are authored there
+          and reach this outpost through the promotion pipeline; this site holds no dependency
+          inventory of its own.
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export function BumpsSection({
   bumps,
   instanceRole
@@ -1259,17 +1282,18 @@ export function ComponentDependenciesPage(): React.JSX.Element {
 
   const unlockQuery = useQuery({
     queryKey: dependencySubscriptionUnlockKey(),
-    queryFn: () => client.dependencySubscriptions.unlock()
+    queryFn: () => client.dependencySubscriptions.unlock(),
+    enabled: instanceRole === "commander"
   });
   const inventoryQuery = useQuery({
     queryKey: componentDependencyInventoryKey(idOrUrn ?? ""),
     queryFn: () => client.dependencySubscriptions.inventory(idOrUrn!, { limit: 200 }),
-    enabled: Boolean(idOrUrn)
+    enabled: Boolean(idOrUrn) && instanceRole === "commander"
   });
   const bumpsQuery = useQuery({
     queryKey: componentDependencyBumpsKey(idOrUrn ?? ""),
     queryFn: () => client.dependencySubscriptions.bumps(idOrUrn!, { limit: 100 }),
-    enabled: Boolean(idOrUrn)
+    enabled: Boolean(idOrUrn) && instanceRole === "commander"
   });
 
   const write = useMutation({
@@ -1286,6 +1310,9 @@ export function ComponentDependenciesPage(): React.JSX.Element {
   });
 
   if (!idOrUrn) return <p className="text-sm text-red-600">Not found.</p>;
+  // Commander-only feature (owner rule 2026-08-17): any other install-time role gets the pointer,
+  // whatever the reads would have said. Read from `instanceRole`, never inferred from data.
+  if (instanceRole !== "commander") return <ManagedAtCommanderNotice />;
   if (inventoryQuery.isLoading) return <Skeleton className="h-24 w-full" />;
   if (inventoryQuery.error) {
     return (

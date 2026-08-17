@@ -51,9 +51,15 @@ vi.mock("../lib/use-route-params", () => ({
   useIdOrUrnParam: () => COMPONENT.id
 }));
 
+// The install-time role, mutable per case: the page is a COMMANDER-site page (owner rule
+// 2026-08-17 — dependency automation happens only at the commander); any other role gets the
+// stated pointer and issues NO reads.
+const authState: { instanceRole: "commander" | "outpost" | "retrans" | undefined } = {
+  instanceRole: "commander"
+};
 vi.mock("../lib/auth-context", () => ({
   useAuth: () => ({
-    user: { instanceRole: "commander" },
+    user: { instanceRole: authState.instanceRole },
     isLoading: false,
     refresh: async () => {}
   })
@@ -133,6 +139,36 @@ async function renderPage() {
   await waitUntil(() => inDocument("enable-open") !== null, "the page to render off the reads");
   return view;
 }
+
+describe("the wired-up Dependencies tab is a COMMANDER-site page", () => {
+  it.each(["outpost", "retrans", undefined] as const)(
+    "instanceRole %s → the 'managed at the commander' pointer renders and NO read is issued",
+    async (role) => {
+      authState.instanceRole = role;
+      createCalls.length = 0;
+      readCalls.length = 0;
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
+      });
+      const view = render(
+        <QueryClientProvider client={queryClient}>
+          <ComponentDependenciesPage />
+        </QueryClientProvider>
+      );
+      await waitUntil(
+        () => inDocument("dependencies-managed-at-commander") !== null,
+        "the pointer to render"
+      );
+      expect(document.body.textContent).toContain(
+        "Dependency subscriptions are managed at the commander"
+      );
+      expect(inDocument("enable-open")).toBeNull();
+      expect(readCalls).toEqual([]);
+      view.unmount();
+      authState.instanceRole = "commander";
+    }
+  );
+});
 
 describe("the wired-up Dependencies tab writes ordinary policies through client.policies.create", () => {
   it("reads through the three SDK wrappers (unlock, inventory, bumps) for the route's component", async () => {
