@@ -34,6 +34,26 @@ import {
  * Both are pinned on the HTTP door AND on the IaC apply door, because apply is a second, independent
  * copy of the same decision (`iac/plans-repo.ts` calls itself "the apply-path twin of
  * `graph/containment-parent-authz.ts`") and a twin is where the next instance hides.
+ *
+ * ------------------------------------------------------------------------------------------------
+ * RE-RUNNING THIS, AND THE THREE SUITES A CHANGE HERE MUST NOT BREAK
+ * ------------------------------------------------------------------------------------------------
+ * With FULL PATHS, because the commit that added this file (`16e836c`) named those suites by bare
+ * filename — and a bare filename is a NO-OP here. vitest given a path it cannot resolve runs nothing
+ * and EXITS 0; `apps/server`'s `test:integration` script passes `--passWithNoTests`, so that empty
+ * run reports success. "Green" then means "never executed". The DEFAULT vitest config additionally
+ * EXCLUDES `*.integration.test.ts`, so `--config` is not optional either. From `apps/server`
+ * (the `DOCKER_HOST` line is for a local colima socket; CI provides its own Docker):
+ *
+ *   DOCKER_HOST=unix://$HOME/.colima/default/docker.sock TESTCONTAINERS_RYUK_DISABLED=true \
+ *     npx vitest run --config vitest.integration.config.ts \
+ *       src/routes/containment-move-cycle-and-source-authz.integration.test.ts \
+ *       src/routes/containment-move-authz.integration.test.ts \
+ *       src/governance/governance-managed-write-doors.integration.test.ts \
+ *       src/dependencies/subscription-authoring-guard.integration.test.ts
+ *
+ * Then READ THE FILE LIST vitest echoes back and confirm all four are in it before believing the
+ * result — that check is the only thing separating a pass from a silent no-op.
  */
 describe("a containment move may not build a cycle, and is authorized at both ends", () => {
   let server: TestServer;

@@ -93,6 +93,10 @@ import { GOVERNANCE_MANAGED_OBJECT_TYPE_IDS } from "./governance-managed-types.j
  *    appears, and a census never re-run is the property behind every finding here. That describe
  *    also states what it still CANNOT see, because a completeness test that over-claims is worse
  *    than none — it stops the next person looking.
+ *  - THE SCAN ITSELF, by a fourth case running the layer-3 walker over synthetic sources. That
+ *    exists because round 1's statement of what the scan could not see was PROSE, and the prose was
+ *    wrong: it claimed an unreadable call "fails safe by construction", and a one-line call proved
+ *    otherwise the next day. What a scan can and cannot see is now a test, not a paragraph.
  */
 
 /** An UNSCOPED, `required` policy: org-wide blast radius with an unmeetable approval quorum. */
@@ -642,7 +646,11 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
  *  LAYER 3 — THE DOORS. Every call to the choke point's write surface whose `typeId` argument is
  *    NOT a string literal — i.e. every site where the type is chosen at runtime — must equal a
  *    REVIEWED table. A new such call site anywhere fails with the file and the expression, which
- *    forces the governance question to be asked for it.
+ *    forces the governance question to be asked for it. The table is per SITE, not per expression:
+ *    every entry carries `×<how many call sites in that file spell it that way>`, so a SECOND door
+ *    in a file the census already lists is a diff even when it is spelled exactly like the first.
+ *    That count is a round-2 repair; `scanRuntimeTypeIdWriteSites`'s own doc comment records what
+ *    the `Set<string>` it replaced was measured hiding.
  *
  * A string literal is exempt because the type is then fixed at the call site: `createObject({typeId:
  * "component"})` can never produce a `policy` no matter what the request says. Everything else is in
@@ -666,9 +674,29 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
  *  - WHETHER AN EXPRESSION IS CALLER-SUPPLIED. The scan reports the `typeId` EXPRESSION; only a
  *    human can say whether `OUTPOST_OBJECT_TYPE_ID` is a constant and `input.typeId` is a request
  *    field. That is the reviewing this test forces, not the reviewing it performs.
- *  - A CALL SPELLED SO THE WALKER MISSES ITS `typeId` (past 30 lines, or after the argument object
- *    closes) reads as the empty expression — which is not in any reviewed set, so it FAILS rather
- *    than passing. That one fails safe by construction; it is listed so the failure is recognisable.
+ *  - A CALL WHOSE `typeId` THE WALKER CANNOT RESOLVE. This bullet used to claim such a call "reads
+ *    as the empty expression … so it FAILS rather than passing … fails safe by construction". THAT
+ *    WAS FALSE, and false in the direction that matters. Measured on the real tree (2026-08-17, not
+ *    argued — the walker was run against a mutated `graph/placements-repo.ts`): the old walker took
+ *    the first `typeId:` LINE within 30 lines below the call, which need not have belonged to that
+ *    call at all. A one-line `await deleteObject(tx, { ...base, typeId: input.typeId, idOrUrn })`
+ *    inserted above the existing literal-typed delete resolved to `"placement"` — a literal,
+ *    therefore skipped — and this describe stayed GREEN with a new caller-supplied door in the tree.
+ *    The empty expression only occurred when no `typeId:` line at all appeared before the walk
+ *    stopped; the same mutation moved 20 lines up, where nothing followed it, did go red.
+ *    THE WALKER WAS FIXED RATHER THAN THE SENTENCE SOFTENED (`resolveTypeIdArgument`): it reads the
+ *    call's OWN argument object, starting at the call itself so a single-line call is seen, with
+ *    bracket-depth tracking so a nested object's `typeId` cannot be mistaken for the argument's. A
+ *    matched call therefore has exactly two outcomes — its own `typeId` expression, or the literal
+ *    `<no typeId found>`, which no reviewed table contains and which fails loudly. None of that is
+ *    asserted in prose here: `LAYER 3 (self-test)` runs the walker over synthetic sources holding
+ *    each spelling, so weakening it turns a NAMED case red.
+ *  - A CALL THE WALKER NEVER MATCHES, which is the blind spot that remains. The write surface is
+ *    found by NAME, so an aliased import (`import { createObject as mintObject }`) or a dynamic
+ *    dispatch (`writers[kind](…)`) is invisible to all of layer 3 — not reported as unresolved,
+ *    simply not seen. The self-test pins that as a known limit with a fixture, so it is a measured
+ *    hole rather than a remembered one. LAYER 1 is the partial backstop: a new write surface AT the
+ *    choke point still fails there by name, whatever its call sites are spelled like.
  *  - RELATIONSHIP writes, and every non-`objects` table. Out of scope: a `policy` is an object row.
  */
 describe("policy:write door census: the CENSUS is complete (source scan, no DB)", () => {
@@ -714,45 +742,57 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     "load-test/graph-scale.ts": "raw bulk INSERT in the load generator, type_id literal 'service'"
   };
 
-  /** LAYER 3's reviewed table: file → the `typeId` expressions it passes to a write, with why. */
+  /**
+   * LAYER 3's reviewed table: file → the `typeId` expressions it passes to a write, with why.
+   *
+   * `×N` is the number of CALL SITES in that file spelling it that way, and it is part of the
+   * assertion: a second site is a diff even when it reuses the first one's expression. Bump a count
+   * only after asking the governance question of the NEW site — the reason it is written down.
+   */
   const REVIEWED_RUNTIME_TYPEID_WRITE_SITES: Record<string, string[]> = {
     // ---- THE FIVE DOORS: `typeId` comes from the request body or path. -----------------------
     // DOOR 1 — `policy:write` at the org root (M21.7).
-    "federation/overlay-repo.ts": ["input.overlayTypeId"],
+    "federation/overlay-repo.ts": ["input.overlayTypeId ×1"],
     // DOOR 2 — governance types refused outright (M21.7).
-    "routes/executors.ts": ["proposedObject.typeId"],
+    "routes/executors.ts": ["proposedObject.typeId ×1"],
     // DOOR 3 — governance types refused outright (`assertNotGovernanceManagedObjectType`), on every
-    // verb including DELETE.
-    "routes/objects-generic.ts": ["type"],
+    // verb including DELETE — which is what the four sites are: create, update, upsert-by-URN,
+    // delete, all spelled `type`, and all four of them one entry until this table went per-site.
+    "routes/objects-generic.ts": ["type ×4"],
     // DOOR 4 — `writePermissionFor` demands `policy:write` for every non-`noop` action, plus the
-    // declared-scope binding on create/update. `entry.typeId` is the apply-DELETE branch.
-    "iac/plans-repo.ts": ["entry.typeId", "target.typeId"],
+    // declared-scope binding on create/update. `entry.typeId` is the apply-DELETE branch;
+    // `target.typeId` is the create and the update.
+    "iac/plans-repo.ts": ["entry.typeId ×1", "target.typeId ×2"],
     // DOOR 5 — `policy:write` at the org root (M21.7).
-    "federation/handfill-repo.ts": ["input.typeId"],
+    "federation/handfill-repo.ts": ["input.typeId ×1"],
 
     // ---- NOT DOORS: the type is runtime-valued but no CALLER chooses it. ---------------------
     // A fixed `typeId` per registry, closed over from `TypedRegistryConfig`; never a route param.
     // The governance registries ARE the legitimate door — they carry `writePermission:
-    // 'policy:write'` and, for `policy`, `assertPolicyScopeWithinAuthority`.
-    "routes/typed-registries.ts": ["typeId"],
-    // The `OUTPOST_OBJECT_TYPE_ID` constant — a literal behind a name.
-    "federation/outposts-repo.ts": ["OUTPOST_OBJECT_TYPE_ID"],
+    // 'policy:write'` and, for `policy`, `assertPolicyScopeWithinAuthority`. Four sites, one per
+    // verb, the same shape as DOOR 3.
+    "routes/typed-registries.ts": ["typeId ×4"],
+    // The `OUTPOST_OBJECT_TYPE_ID` constant — a literal behind a name — at the create, the delete
+    // and both updates.
+    "federation/outposts-repo.ts": ["OUTPOST_OBJECT_TYPE_ID ×4"],
     // Journal replay. `typeId` comes from a signature- and chain-verified bundle, not a caller, and
     // `existing.typeId` is re-read from the row being updated. Deliberately exempt from local write
     // guards: `object_upsert` has no try/catch, so one refusal aborts a whole signed bundle
     // (ADR-0032 §6a). A hostile peer is a PAIRING problem, not a permission one.
-    "federation/import-repo.ts": ["typeId", "existing.typeId"],
-    // The choke point's own internal delegation (`upsertObjectByUrn` → `createObject`/`updateObject`
-    // with the input it was handed). NARROWED from the wholesale file exemption this used to be:
-    // only these already-reviewed expressions are accepted, and layer 1 is what fires when a NEW
-    // write surface appears in this file rather than a new expression inside an existing one.
-    "graph/objects-repo.ts": ["input.typeId"]
+    "federation/import-repo.ts": ["existing.typeId ×1", "typeId ×2"],
+    // The choke point's own internal delegation: `upsertObjectByUrn` hands the input it was given to
+    // `createObject` on the insert path and to `updateObject` on the replace path — hence ×2, both
+    // inside that one function. NARROWED from the wholesale file exemption this used to be: only
+    // these already-reviewed expressions are accepted, and layer 1 is what fires when a NEW write
+    // surface appears in this file rather than a new expression inside an existing one.
+    "graph/objects-repo.ts": ["input.typeId ×2"]
   };
 
   /** `graph/objects-repo.ts` relative to the scan root — the anchor all three layers share. */
   const CHOKE_POINT = "graph/objects-repo.ts";
 
-  let sources: Array<{ rel: string; lines: string[] }>;
+  /** The real tree, as `scanRuntimeTypeIdWriteSites` also takes it from the self-test's fixtures. */
+  let sources: ScannedSource[];
 
   beforeAll(async () => {
     const { readdir, readFile } = await import("node:fs/promises");
@@ -788,6 +828,151 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     const t = line.trimStart();
     return t.startsWith("*") || t.startsWith("//") || t.startsWith("/*");
   };
+
+  /** One source file as a scan sees it: path relative to the scan root, and its lines. */
+  type ScannedSource = { rel: string; lines: string[] };
+
+  /** What LAYER 3 reports for a matched call whose `typeId` argument it could not resolve. */
+  const NO_TYPEID = "<no typeId found>";
+
+  /** How far past a call's first line the walker will look for the end of its argument list. */
+  const CALL_WALK_LIMIT = 40;
+
+  /**
+   * Resolves the `typeId` ARGUMENT of the write call beginning at `lines[i]`, column `from`.
+   *
+   * It walks the call character by character, tracking bracket depth, and accepts a `typeId` key
+   * only at the depth of the call's own argument object — `write(tx, { HERE })`. Two consequences,
+   * both of them the point:
+   *
+   *  - it starts AT the call, so `write(tx, { orgId, typeId: input.typeId })` on one line is read;
+   *  - a `typeId` in a NESTED object, or in a later unrelated statement, is not mistaken for it.
+   *
+   * The line-based walker this replaces did neither, and it did not fail when it missed — it took
+   * the first `typeId:` line within 30 lines below the call, whoever's it was. Measured 2026-08-17:
+   * a one-line `deleteObject(tx, { ...base, typeId: input.typeId, idOrUrn })` added to
+   * `graph/placements-repo.ts` resolved to the `"placement"` literal of the NEXT call and was
+   * dropped as a literal — a new caller-supplied door, and LAYER 3 green.
+   *
+   * When the argument object closes without a `typeId` (built elsewhere, spread in), the answer is
+   * `NO_TYPEID`, which is in no reviewed table and so fails loudly. The one thing that gets past is
+   * a call this never matches at all — see the self-test's `aliased-import.ts`.
+   */
+  function resolveTypeIdArgument(lines: string[], i: number, from: number): string {
+    let depth = 0;
+    let opened = false;
+    /** Non-null once the `typeId:` key is found: the value being accumulated. */
+    let value: string | null = null;
+    let valueDepth = 0;
+    for (let j = i; j < Math.min(i + CALL_WALK_LIMIT, lines.length); j += 1) {
+      const line = lines[j]!;
+      if (value !== null && j > i) value += " ";
+      let k = j === i ? from : 0;
+      while (k < line.length) {
+        const ch = line[k]!;
+        if (ch === "/" && line[k + 1] === "/") break; // the rest of the line is a comment
+        if (ch === '"' || ch === "'" || ch === "`") {
+          // A quoted string is opaque: brackets and `//` inside it are text, not structure.
+          const start = k;
+          k += 1;
+          while (k < line.length && line[k] !== ch) k += line[k] === "\\" ? 2 : 1;
+          k += 1;
+          if (value !== null) value += line.slice(start, k);
+          continue;
+        }
+        const opens = ch === "(" || ch === "{" || ch === "[";
+        const closes = ch === ")" || ch === "}" || ch === "]";
+        if (value !== null) {
+          // Reading the value: it ends at the `,` or `}` that is at ITS OWN depth, so
+          // `typeId: pickType(a, b),` is one expression rather than two.
+          if (opens) valueDepth += 1;
+          else if (closes) {
+            if (valueDepth === 0) return value.trim();
+            valueDepth -= 1;
+          } else if (ch === "," && valueDepth === 0) return value.trim();
+          value += ch;
+          k += 1;
+          continue;
+        }
+        if (opens) {
+          depth += 1;
+          opened = true;
+          k += 1;
+          continue;
+        }
+        if (closes) {
+          depth -= 1;
+          k += 1;
+          if (opened && depth <= 0) return NO_TYPEID; // the call closed and never named a type
+          continue;
+        }
+        if (
+          depth === 2 &&
+          line.startsWith("typeId", k) &&
+          !/[A-Za-z0-9_$]/.test(line[k - 1] ?? " ")
+        ) {
+          const after = line.slice(k + "typeId".length);
+          const key = /^\s*:/.exec(after);
+          if (key) {
+            value = "";
+            valueDepth = 0;
+            k += "typeId".length + key[0].length;
+            continue;
+          }
+          // `{ …, typeId, … }` — the shorthand, including as the last property of a line.
+          if (/^\s*[,}]/.test(after) || after.trim() === "") return "typeId";
+        }
+        k += 1;
+      }
+    }
+    return NO_TYPEID;
+  }
+
+  /**
+   * LAYER 3's measurement, extracted from the test that uses it so the SELF-TEST can run it over
+   * synthetic sources. Returns file → `<typeId expression> ×<call sites spelling it that way>`,
+   * with string-literal types dropped (a literal cannot be chosen by a caller).
+   *
+   * PER SITE, NOT PER EXPRESSION. This collected into a `Set<string>` keyed on `(file, expression)`
+   * until 2026-08-17, so a second unguarded write in an already-listed file, spelled like the first,
+   * was invisible — measured by adding a whole extra `createObject(tx, { … typeId: input.typeId … })`
+   * to `federation/handfill-repo.ts`, the very file whose door this census had just closed, and
+   * watching LAYER 3 stay green. Thirteen of the tree's twenty-three write sites were hidden behind
+   * ten deduped entries at the time.
+   */
+  function scanRuntimeTypeIdWriteSites(
+    scanned: ScannedSource[],
+    writeNames: string[]
+  ): Record<string, string[]> {
+    const writeCall = new RegExp(String.raw`\b(?:${writeNames.join("|")})\s*\(`);
+    // A function's own DECLARATION is not a call site; without this the walker reads the parameter
+    // list and reports noise like `string;` as a `typeId` expression.
+    const writeDeclaration = new RegExp(
+      String.raw`^\s*(?:export\s+)?(?:async\s+)?function\s+(?:${writeNames.join("|")})\s*\(`
+    );
+    const perFile = new Map<string, Map<string, number>>();
+    for (const { rel, lines } of scanned) {
+      for (let i = 0; i < lines.length; i += 1) {
+        if (isComment(lines[i]!)) continue;
+        if (writeDeclaration.test(lines[i]!)) continue;
+        const call = writeCall.exec(lines[i]!);
+        if (!call) continue;
+        const expr = resolveTypeIdArgument(lines, i, call.index);
+        if (/^"[a-z0-9-]+"$/.test(expr)) continue; // a literal type cannot be chosen by a caller
+        const counts = perFile.get(rel) ?? new Map<string, number>();
+        counts.set(expr, (counts.get(expr) ?? 0) + 1);
+        perFile.set(rel, counts);
+      }
+    }
+    return Object.fromEntries(
+      [...perFile.entries()]
+        .map(([rel, counts]) => [
+          rel,
+          [...counts.entries()].map(([expr, n]) => `${expr} ×${n}`).sort()
+        ])
+        .sort(([a], [b]) => (a as string).localeCompare(b as string))
+    );
+  }
 
   /**
    * LAYER 1's measurement, shared with layer 3: the choke point's exported callables, and which of
@@ -888,47 +1073,115 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
       writeNames,
       "the derived write surface is empty — this scan would match nothing"
     ).not.toEqual([]);
-    const writeCall = new RegExp(String.raw`\b(?:${writeNames.join("|")})\s*\(`);
-    // A function's own DECLARATION is not a call site; without this the walker reads the parameter
-    // list and reports noise like `string;` as a `typeId` expression.
-    const writeDeclaration = new RegExp(
-      String.raw`^\s*(?:export\s+)?(?:async\s+)?function\s+(?:${writeNames.join("|")})\s*\(`
-    );
-
-    const found: Record<string, Set<string>> = {};
-    for (const { rel, lines } of sources) {
-      for (let i = 0; i < lines.length; i += 1) {
-        if (isComment(lines[i]!)) continue;
-        if (writeDeclaration.test(lines[i]!)) continue;
-        if (!writeCall.test(lines[i]!)) continue;
-        // Walk the argument object for its `typeId` — shorthand or `typeId: <expr>`.
-        let expr = "";
-        for (let j = i + 1; j < Math.min(i + 30, lines.length); j += 1) {
-          if (/^\s*typeId,\s*$/.test(lines[j]!)) {
-            expr = "typeId";
-            break;
-          }
-          const m = /^\s*typeId:\s*(.+?),?\s*$/.exec(lines[j]!);
-          if (m) {
-            expr = m[1]!;
-            break;
-          }
-          if (/^\s*\}\)/.test(lines[j]!)) break;
-        }
-        if (/^"[a-z0-9-]+"$/.test(expr)) continue; // a literal type cannot be chosen by a caller
-        (found[rel] ??= new Set()).add(expr);
-      }
-    }
-
-    const normalize = (table: Record<string, string[] | Set<string>>) =>
+    const normalize = (table: Record<string, string[]>) =>
       Object.fromEntries(
         Object.entries(table)
           .map(([f, s]) => [f, sortedNames(s)] as const)
           .sort(([a], [b]) => a.localeCompare(b))
       );
-    // A NEW entry here means a new write door whose type a caller may choose. Do not append it to
-    // the table — run the governance question against it first (`isGovernanceManagedObjectType`:
-    // refuse the type, or demand `policy:write`), then record the answer above.
-    expect(normalize(found)).toEqual(normalize(REVIEWED_RUNTIME_TYPEID_WRITE_SITES));
+    // A NEW entry — a new file, a new expression, or a HIGHER `×N` on one already listed — means a
+    // new write door whose type a caller may choose. Do not append it to the table: run the
+    // governance question against it first (`isGovernanceManagedObjectType`: refuse the type, or
+    // demand `policy:write`), then record the answer above.
+    expect(normalize(scanRuntimeTypeIdWriteSites(sources, writeNames))).toEqual(
+      normalize(REVIEWED_RUNTIME_TYPEID_WRITE_SITES)
+    );
+  });
+
+  it("LAYER 3 (self-test): the walker sees each spelling of a write, and says so when it cannot", () => {
+    // ============================================================================================
+    // THE LAYER THAT WATCHES LAYER 3. Every claim this file makes about what the scan can and cannot
+    // see is asserted HERE, against synthetic sources, because the alternative is a comment — and a
+    // comment claiming this walker "fails safe by construction" is exactly what shipped in M21.7
+    // round 1 and was measured false the next day. Weaken the walker and a NAMED case goes red.
+    //
+    // The KNOWN LIMIT at the bottom asserts the walker's actual, unhappy behaviour. It is a change
+    // detector on purpose: improve the walker and it goes red, which is the prompt to move the limit
+    // out of the header. What it must never become is silence.
+    // ============================================================================================
+    const src = (rel: string, lines: string[]): ScannedSource => ({ rel, lines });
+    const fixtures: ScannedSource[] = [
+      // The ordinary spelling, and the one every real door in the tree uses today.
+      src("multi-line.ts", [
+        "  const created = await createObject(tx, {",
+        "    orgId: input.orgId,",
+        "    typeId: input.typeId,",
+        "    name: input.name",
+        "  });"
+      ]),
+      // THE MUTATION THAT PROVED THE OLD CLAIM FALSE: the whole call on the call line. The old
+      // walker started at the NEXT line and never looked here.
+      src("same-line.ts", [
+        "  await deleteObject(tx, { ...base, typeId: input.typeId, idOrUrn });"
+      ]),
+      src("same-line-shorthand.ts", ["  await createObject(tx, { orgId, typeId, name });"]),
+      // A nested object's `typeId` is not the call's. The old walker took whichever came first.
+      src("nested-literal-first.ts", [
+        "  await createObject(tx, {",
+        '    properties: mapProperties({ typeId: "service" }),',
+        "    typeId: input.typeId,",
+        "    name",
+        "  });"
+      ]),
+      // The value is an expression containing a comma — one expression, not two.
+      src("call-expression-value.ts", [
+        "  await createObject(tx, {",
+        "    typeId: pickType(input.a, input.b),",
+        "    name",
+        "  });"
+      ]),
+      // TWO sites, one expression: the `Set<string>` this replaced reported a single entry.
+      src("two-sites.ts", [
+        "  await createObject(tx, { orgId, typeId: input.typeId, name });",
+        "  await createObject(tx, {",
+        "    orgId,",
+        "    typeId: input.typeId,",
+        "    name",
+        "  });"
+      ]),
+      // Not doors: a literal type, and a call that is only prose.
+      src("literal.ts", [
+        "  await createObject(tx, {",
+        '    typeId: "component",',
+        "    name",
+        "  });"
+      ]),
+      src("commented-out.ts", ["  // await createObject(tx, { typeId: input.typeId });"]),
+      // UNRESOLVED, both flavours: the argument object is built elsewhere, or spread in. Neither is
+      // silently dropped — both report `NO_TYPEID`, which is in no reviewed table.
+      src("built-elsewhere.ts", ["  await createObject(tx, buildInput(request));"]),
+      src("spread-only.ts", ["  await createObject(tx, { ...buildInput(request) });"]),
+      // KNOWN LIMIT: the write surface is matched BY NAME, so a rename at the import hides the call
+      // from the scan entirely. LAYER 1 is the partial backstop — a new write surface at the choke
+      // point fails there whatever its call sites look like — but a rename of an EXISTING one does
+      // not, and this is where that hole is written down.
+      src("aliased-import.ts", [
+        "  import { createObject as mintObject } from '../graph/objects-repo.js';",
+        "  await mintObject(tx, { orgId, typeId: input.typeId });"
+      ])
+    ];
+
+    expect(scanRuntimeTypeIdWriteSites(fixtures, ["createObject", "deleteObject"])).toEqual({
+      "multi-line.ts": ["input.typeId ×1"],
+      "same-line.ts": ["input.typeId ×1"],
+      "same-line-shorthand.ts": ["typeId ×1"],
+      "nested-literal-first.ts": ["input.typeId ×1"],
+      "call-expression-value.ts": ["pickType(input.a, input.b) ×1"],
+      "two-sites.ts": ["input.typeId ×2"],
+      "built-elsewhere.ts": [`${NO_TYPEID} ×1`],
+      "spread-only.ts": [`${NO_TYPEID} ×1`]
+      // `literal.ts`, `commented-out.ts` — correctly absent, no caller chooses those types.
+      // `aliased-import.ts` — absent, and that one is the KNOWN LIMIT above, not a pass.
+    });
+
+    // AND THE OTHER HALF OF "fails loudly": reporting `NO_TYPEID` only fails LAYER 3 for as long as
+    // no reviewed table has learned to accept it. The day someone silences an unresolvable site by
+    // pasting it into the table instead of spelling the call so it can be read, this says so.
+    expect(
+      Object.entries(REVIEWED_RUNTIME_TYPEID_WRITE_SITES)
+        .flatMap(([file, entries]) => entries.map((entry) => `${file}: ${entry}`))
+        .filter((entry) => entry.includes(NO_TYPEID)),
+      "an unresolvable write site was reviewed as acceptable — unresolvable no longer fails LAYER 3"
+    ).toEqual([]);
   });
 });
