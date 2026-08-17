@@ -65,7 +65,7 @@ Exclusion-before-counting leaves `mergeScanThresholds` untouched, keeps "0 highs
 
 `assembly` is a shipped builtin (drizzle/0055; `CONTAINER_TYPES = ["service","assembly"]`; legal chain `service → assembly → component`) added *after* ADR-0016. `tierForObjectType` falls it through to `component`, so an assembly-anchored ceiling enforces correctly and **misreports its tier** — breaking ADR-0016 §5's promise and repeating, at a rung added later, the provenance-label defect §2a already paid to fix once. `ScanRequirementTierSchema` and `tierForObjectType` gain `assembly`; so does `APPROVAL_SCOPE_KEYWORDS`, where its absence makes `requireApprovals: {scope: "assembly"}` a permanently unsatisfiable required approval.
 
-**Widening the tier enum is an oasdiff response-enum change.** Predict it by diffing `tools/openapi/openapi.v1.json` in python — the binary is linux-only.
+**Measured 2026-08-17 during M22.0: widening it is NOT a contract change.** `ScanRequirementTierSchema` does not reach the wire — the only tier enum in `openapi.v1.json` is the **two-value** `platform | trust_domain` of the instance floor route, and a contribution's six-tier label travels inside `control_runs.evidence`, which is stored as free-form JSON. `pnpm gen` produces a zero-byte diff and there is no oasdiff gate to predict. (An earlier draft of this document asserted the opposite; it was never checked against the generated spec.)
 
 ### 6. Component-declared facts (D2) — the declaration is bounded, not trusted
 

@@ -111,13 +111,23 @@ export function usesTrivyDb(method: ScanMethod): boolean {
 // `domain`.
 // ===========================================================================================
 
-/** The six tiers a scan-requirement floor can be authored at, top-down. */
+/** The tiers a scan-requirement floor can be authored at, top-down.
+ *
+ *  `assembly` was ADDED 2026-08-17 (M22.0, ADR-0033 §5). It is the OPTIONAL rung between a service
+ *  and its components (migration 0055, `CONTAINER_TYPES`), and it shipped AFTER ADR-0016 wrote this
+ *  enum — so an assembly-anchored ceiling has always ENFORCED correctly (the merge is an
+ *  order-independent per-severity MIN that never reads a tier label) while REPORTING itself as
+ *  `component`, breaking ADR-0016 §5's promise that a block can name the tier that bound it. This is
+ *  a LABEL fix, not an enforcement change: no threshold moves.
+ *
+ *  This is a WIRE enum. Adding a member changes the generated SDK and the OpenAPI response schema. */
 export const ScanRequirementTierSchema = z.enum([
   "platform",
   "trust_domain",
   "org",
   "containment_domain",
   "service",
+  "assembly",
   "component"
 ]);
 export type ScanRequirementTier = z.infer<typeof ScanRequirementTierSchema>;

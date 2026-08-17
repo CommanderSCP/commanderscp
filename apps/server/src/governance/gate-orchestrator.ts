@@ -231,15 +231,37 @@ async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string
 }
 
 /** Scope-KIND keyword → the `object_types.id` an ancestor of that kind carries. `organization`
- *  is special-cased to the org root object below (whose id === orgId). */
-const APPROVAL_SCOPE_KEYWORDS: Record<string, "organization" | "domain" | "service" | "component"> =
-  {
-    organization: "organization",
-    org: "organization",
-    domain: "domain",
-    service: "service",
-    component: "component"
-  };
+ *  is special-cased to the org root object below (whose id === orgId).
+ *
+ *  `assembly` ADDED 2026-08-17 (M22.0, ADR-0033 §5). It is a real container rung (migration 0055,
+ *  `CONTAINER_TYPES = ["service","assembly"]`, legal chain `service -> assembly -> component`) that
+ *  shipped AFTER this map was written. `containmentChain` walks it for free — it matches on the
+ *  `contains` EDGE, never on the parent's type — but `nearestAncestorOfKind` below can only find a
+ *  kind this map names, so `requireApprovals: {scope: "assembly"}` resolved to `null` and became a
+ *  PERMANENTLY UNSATISFIABLE required approval: fail-closed, but silently inexpressible, and
+ *  prewarm never materialized the request so no human could vote it through either.
+ *
+ *  THIS ENTRY IS A LOOSENING FOR EXISTING DATA, and is the one line in M22.0 that is not
+ *  behaviour-neutral. Any `requireApprovals: {scope: "assembly"}` authored before today blocks
+ *  unconditionally; afterwards it becomes satisfiable by the authored quorum. That is the author's
+ *  declared intent finally taking effect rather than a regression — but an operator whose change has
+ *  been parked behind an inexpressible approval will see it become approvable, so it is called out
+ *  here and in the PR rather than shipped quietly.
+ *
+ *  WALKING a rung is edge-generic and free; NAMING one is not. This map and
+ *  `governance/scan-requirements.ts`'s `tierForObjectType` are the two hardcoded rung lists that
+ *  migration 0055 silently missed. A third container level must revisit both. */
+const APPROVAL_SCOPE_KEYWORDS: Record<
+  string,
+  "organization" | "domain" | "service" | "assembly" | "component"
+> = {
+  organization: "organization",
+  org: "organization",
+  domain: "domain",
+  service: "service",
+  assembly: "assembly",
+  component: "component"
+};
 
 /**
  * Resolves a `requireApprovals.scope` value (MAJOR #5). DESIGN §10.1's own example writes a scope
@@ -374,6 +396,46 @@ function buildControlContext(input: {
     ...(input.commitSha ? { commitSha: input.commitSha } : {}),
     ...(input.scanThreshold ? { scanThreshold: input.scanThreshold } : {})
   };
+}
+
+/**
+ * M22.0 (ADR-0033 §11; charter principle 6) — the resolved scan ceiling, shaped for the gate's
+ * DECISION `inputContext`.
+ *
+ * WHY THIS EXISTS. Until now the effective threshold and its contributing tiers went ONLY into
+ * `control_runs.evidence`. ADR-0016 §5 promised that "a blocked promotion can show which tier set
+ * the binding severity floor", and that promise was honoured in evidence and BROKEN in the Decision
+ * an operator actually resolves by `decision_id`. ADR-0033 adds a way to EXCLUDE findings from that
+ * comparison, so the rule has to be in the Decision BEFORE any exception can hide inside it —
+ * otherwise a verdict explains neither the rule nor the exception to it.
+ *
+ * DETERMINISM IS LOAD-BEARING, NOT TIDINESS. `decisions-repo.ts`'s `restatesDecision` canonicalises
+ * object KEY order but deliberately PRESERVES array order, and `matchPoliciesForTargets` returns
+ * contributors in unordered-scan insertion order — which can differ between two evaluations that
+ * resolved identically. An unsorted array here would therefore defeat `insertDecisionIfChanged` and
+ * re-open the measured 1.44 GB/day Decision write amplification (ADR-0024 §D0) on the busiest path
+ * in the system. So: every entry is built with a FIXED key order and the array is sorted by its own
+ * serialization, giving a total order that depends only on content.
+ *
+ * FOR THE SAME REASON, NOTHING HERE MAY CARRY A TIMESTAMP, a duration, a row id, or any other value
+ * that varies between two evaluations of the same inputs. If you add a field, ask first whether two
+ * identical gate evaluations would produce it identically.
+ */
+function scanThresholdForDecision(
+  resolved: EffectiveScanThreshold | undefined
+): { scanThreshold: Record<string, unknown> } | undefined {
+  if (!resolved) return undefined;
+  const contributors = resolved.contributors
+    .map((c) => ({
+      tier: c.tier,
+      source: c.source,
+      ...(c.objectTypeId ? { objectTypeId: c.objectTypeId } : {}),
+      threshold: c.threshold
+    }))
+    .map((entry) => ({ entry, key: JSON.stringify(entry) }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map(({ entry }) => entry);
+  return { scanThreshold: { effective: resolved.threshold, contributors } };
 }
 
 /**
@@ -628,6 +690,24 @@ export async function evaluateGovernanceGate(
   const allControlIds = [
     ...new Set(fired.filter((fp) => fp.fired).flatMap((fp) => fp.requireControls))
   ];
+  // M17.5 — the six-tier most-restrictive-wins scan ceiling, resolved from the SAME `matches` this
+  // gate already computed (ADR-0016 §4 design A), and from the FIRED set only: a contributor whose
+  // condition evaluated false contributes no ceiling, exactly as it contributes no requireControls.
+  //
+  // M22.0 — HOISTED so it can be used TWICE: threaded to the scan control exactly as before, AND
+  // recorded in this gate's Decision below. It stays inside the `host` condition, so this resolves
+  // on precisely the ticks it already resolved on — no new per-tick work on the reconcile path that
+  // produced the 1.44 GB/day incident.
+  const effectiveScanThreshold = host
+    ? await resolveEffectiveScanThreshold(tx, {
+        orgId: ctx.orgId,
+        targetObjectIds: ctx.targetObjectIds,
+        actorObjectId: ctx.actorObjectId,
+        matches,
+        firedPolicies: fired
+      })
+    : undefined;
+
   const controlOutcomes = host
     ? await ensureControlRuns(tx, host, {
         orgId: ctx.orgId,
@@ -643,17 +723,7 @@ export async function evaluateGovernanceGate(
           // M10.4 — the change's real source commit, for `github-check` (same threading discipline
           // as `artifactDigest`).
           commitSha: await resolveChangeCommitSha(tx, ctx.orgId, ctx.changeObjectId),
-          // M17.5 — the six-tier most-restrictive-wins scan ceiling, resolved from the SAME
-          // `matches` this gate already computed (ADR-0016 §4 design A).
-          scanThreshold: await resolveEffectiveScanThreshold(tx, {
-            orgId: ctx.orgId,
-            targetObjectIds: ctx.targetObjectIds,
-            actorObjectId: ctx.actorObjectId,
-            matches,
-            // ...and from the FIRED set only — a contributor whose condition evaluated false
-            // contributes no ceiling, exactly as it contributes no requireControls.
-            firedPolicies: fired
-          })
+          scanThreshold: effectiveScanThreshold
         })
       })
     : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds);
@@ -698,7 +768,8 @@ export async function evaluateGovernanceGate(
       effectivePolicyCount: effectivePolicies.length,
       firedPolicyCount: fired.filter((fp) => fp.fired).length,
       ...(emergencyNote ? { emergency: emergencyNote } : {}),
-      ...(freezeOverrides.length > 0 ? { freezeOverrides } : {})
+      ...(freezeOverrides.length > 0 ? { freezeOverrides } : {}),
+      ...(scanThresholdForDecision(effectiveScanThreshold) ?? {})
     },
     reasonTree: { ...result.reasonTree, ...(emergencyNote ? { emergencyNote } : {}) },
     freezeOverrides: freezeOverrides.length > 0 ? freezeOverrides : undefined

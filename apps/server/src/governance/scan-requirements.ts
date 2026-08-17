@@ -136,6 +136,19 @@ function tierForObjectType(objectTypeId: string): ScanRequirementTier {
       return "containment_domain";
     case "service":
       return "service";
+    case "assembly":
+      // M22.0 (ADR-0033 §5). The OPTIONAL rung between a service and its components (migration
+      // 0055). It shipped AFTER this function was written and fell through to `component` below,
+      // so an assembly-anchored ceiling enforced correctly and reported the WRONG tier — the same
+      // class of defect §2a fixed for group scope, at a rung added later. Nothing about the MERGE
+      // changes: `mergeScanThresholds` never reads a tier.
+      //
+      // WALKING a rung is edge-generic and free (`containmentChain` matches on the `contains` edge,
+      // never on the parent's type, which is why 0055 shipped no resolver edit). NAMING one is not.
+      // If a third container level is ever added, every hardcoded rung list must be revisited —
+      // this switch and `APPROVAL_SCOPE_KEYWORDS` in gate-orchestrator.ts are the two that 0055
+      // silently missed.
+      return "assembly";
     default:
       return "component";
   }
