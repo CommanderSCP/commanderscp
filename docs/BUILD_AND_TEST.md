@@ -244,12 +244,44 @@ The first fix was good work with a good comment, and it still left three instanc
 **How to do it.**
 
 1. **State the property as a sentence about code shape**, not about the bug. "A batch-limited candidate loop that can re-serve a row without writing its sort column" — not "changes got stuck".
-2. **Census with no filters.** `grep -rn` the whole tree and read every hit. A `grep -v` is where the next instance hides; if the list is long, that is information.
+2. **Census with no filters.** `grep -rna` the whole tree and read every hit. A `grep -v` is where the next instance hides; if the list is long, that is information. The `-a` is not optional and not cosmetic — without it grep applies a filter of its own and does not tell you (§4.4b).
 3. **Check the latent instances too.** `advanceValidatingChanges` and the campaign loop had no symptom at all. Sorting by "what looks broken" would never have reached them.
 4. **Use the mechanism the codebase already has.** All four are fixed by the same `updated_at` bump. Two mechanisms for one property is how the next partial fix happens.
 5. **Leave a guard, not just a fix.** `apps/server/src/coordination/candidate-loop-registry.test.ts` fails CI when a new batch-limited candidate loop appears unclassified. It cannot prove a loop is correct — it makes adding one a deliberate act.
 
 **Sibling failure modes**, same discipline: an incomplete **call-site** census (fixing some callers of a changed concept) and an incomplete **state-space** census (reasoning about the happy path and the null path, but not `set-stale` / `set-but-failed` / `throws` / what survives a restart).
+
+### 4.4b The tool applies its own filter: NUL bytes and the silent skip
+
+§4.4a says census with **no filters**, because a filter is where the next instance hides. The hazard here is that **the search tool applies a filter itself and suppresses the notice.**
+
+**The bytes are deliberate.** Several tracked source files contain literal NUL bytes, used as a composite-key delimiter precisely because NUL cannot occur in the components being joined:
+
+```ts
+`${t.typeId}\x00${t.fromUrn}\x00${t.toUrn}`
+```
+
+This is correct. **Do not "fix" it** by substituting a printable delimiter — that reintroduces the delimiter-collision bug NUL was chosen to prevent. The problem is not the bytes; it is that every search tool silently refuses to read the files containing them.
+
+**What each tool actually does.** Measured 2026-08-17 on this repo, searching for a string that lies *after* the file's first NUL:
+
+| invocation | result |
+|---|---|
+| `grep -rn` (Claude Code's Bash tool; ugrep wrapper injects `-I`) | **no output, exit 1** — indistinguishable from "no such code exists" |
+| `rg` / the built-in Grep tool | **no output, exit 1** — whole file omitted, regardless of where the match falls |
+| `/usr/bin/grep -rn` (BSD, i.e. scripts and CI) | prints `Binary file X matches` — no line, no line number; breaks `cut -d:`, `-c`, and every sort/uniq pipeline |
+| `git grep` | reads 3 of the 4 — see the 8 KB note below |
+| `grep -rna`, `rg --text`, `git grep -a` | **correct** — real line and line number |
+
+Two things follow. First, the placeholder is not a reliable warning: in a Bash tool call there is no placeholder *at all*, and in a script the placeholder carries no line number, so anything post-processing grep output drops or mangles it. Second, **exit 1 is the dangerous case** — a census that finds nothing looks exactly like a census that found nothing to fix.
+
+**`git grep` is right by accident.** Git sniffs only the **first 8000 bytes** for NUL. Three of the four files have their first NUL past that (offsets 10002, 10077, 12581) so git calls them text and searches them; `packages/sdk/src/response-validation.ts` has its first NUL at 4882 and is skipped. A tool that is correct only because of where a byte happens to sit will change its verdict as the file grows. Do not rely on it; `git grep -a` is unconditional.
+
+**Why this is not a footnote.** `apps/server/src/iac/plan-diff.ts` holds the sole label test that makes an object a *delete* candidate. A census of IaC deletion behaviour run the documented way — `grep -rn` over the tree — returns nothing from that file and reports the tree clean. That happened repeatedly before it was caught.
+
+**The remedy.** Use `-a` for any census that has to be complete, or do not use grep. `pnpm nul-census` (`scripts/nul-census.mjs`, wired into `pnpm check` and CI job 2) reads bytes rather than trusting a heuristic, prints the current set with `--list`, and fails when the set changes — so "which files need `-a`?" always has a committed answer rather than a remembered one.
+
+**The general rule, which is the transferable part: when a claim is about a tool, that tool cannot be the instrument for verifying it.** The claim "grep hides these files" was tested with `grep -rlP '\x00'`, which returned a confident **zero** across 1107 files. That zero was reported as a disproof, used to dismiss the issue, and used to dispatch an agent to strip the true warning out of a PR. The zero was the bug demonstrating itself: `-I` made grep skip the very files whose bytes were being searched for. `grep -ralP '\x00'` lists all four immediately, and so does any byte-level read. Two further traps in the same family — `grep -qP '\x00'` exits **1** ("no match") on a file with two NUL bytes and prints no error, and `$'\x00'` in bash/zsh collapses to the **empty** pattern, which matches every text file it reads (928 under `apps/` and `packages/`) while still skipping the NUL-carrying ones. Both look like answers. Neither is one. Before calling a tool-behaviour claim false, step outside the tool: read bytes, run a known-positive control through the same command, or use a second implementation.
 
 ### 4.5 What runs where / target runtimes
 
