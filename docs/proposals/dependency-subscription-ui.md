@@ -1,6 +1,6 @@
 # Proposal: M21.6 — the dependency-subscription UI (and the read surface it needs first)
 
-**Status:** v0.1 Draft — **proposed, pending owner decisions (§8).** Written 2026-08-16 on the `claude/ui-review-worktree-efc42b` branch, which already contains the whole M21 server side (main through #240). Nothing built.
+**Status:** v0.2 — **owner decisions taken 2026-08-16 (§8); building.** Written 2026-08-16 on the `claude/ui-review-worktree-efc42b` branch, which already contains the whole M21 server side (main through #240). Nothing built.
 **Role:** BUILD_AND_TEST.md M21 says only "M21.6 UI — deferred to the end and handed to the UI agent … once API → SDK → CLI are real (principle 3)". This proposal grounds what *is* real, names the read surface that is missing, and lays out the UI as options with recommendations. Every claim below was measured or read by six agents (three grounders + three refuters); citations are file:line at branch tip.
 **Relates to:** [ADR-0032](../adr/0032-dependency-subscriptions.md) (§3a policy effect, §6 enablement chain, §6a group refusal, §7b `latest_*` semantics, §8a–§8f actuator), [ADR-0016 §2a](../adr/0016-scoped-scan-requirement-policies.md) (owning-half group matching — see §7), [ADR-0033](../adr/0033-loud-depth-bound.md), [docs/proposals/dependency-subscriptions.md](dependency-subscriptions.md), GLOSSARY *dependency subscription* / *major line* / *dependency manifest*, charter API-first + principle 6, docs/design-system.md honesty rules, M16.3 offer-the-write rule.
 
@@ -79,7 +79,17 @@ Producer declaration (internal lines — `declareDependencyLineProducer` has no 
 ## 7. Doc/code drift found in passing (handed to the M21 session, not edited here)
 BUILD_AND_TEST.md:719/:729 still state the one-direction group rule (code refuses both); GLOSSARY says "M21, not yet built"; ADR-0032 §3a says attachment is by `governed_by` (resolution reads `properties.scope`); CLI help + a unit-test pin name `scp policy create` (the verb is `register`); ADR-0016 §2a's consumer table omits `subscription-resolution.ts` (owning-half group matching can now *activate* a group+objectRef enable for jobs — the guard's "permanently inert" comment is stale). Also a hazard the builder must measure: `POST /policies` authorizes `policy:write` at `resolveDomainId(body.domainId) ?? org` **before** the scope-authority check, so a `policy:write` binding held *below* the org may 403 on a body without `domainId` — if real, that blocks the designed actor and is a small server fix in `typed-registries.ts`, not a UI workaround.
 
-## 8. Owner decisions needed
+## 8. Owner decisions (2026-08-16 — every recommendation taken)
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Inventory route name | **`/components/{id}/dependency-inventory`** (+ `/dependency-bumps`) |
+| 2 | Instance unlock in the tenant UI | **Read-only + CLI pointer** — no operator secret in the browser |
+| 3 | Enable / opt-out writes | **Offered, refusal rendered** (policy authoring through the SDK; 403 names the permission, 409 carries the decision) |
+| 4 | Bump history | **New component-scoped route** over authorships + merge Decision; `pullRequestUrl: null` until M21.7 persists it |
+| 5 | Scope | **Everything in §3–§4** this round; the fake git provider for a populated mockup is a follow-up |
+
+The original questions, for the record:
 1. **Inventory route name** — `/components/{id}/dependency-inventory` (recommended: matches `backfill`'s noun; keeps daylight from `/depends-on`, the graph edge) or `/components/{id}/dependencies`.
 2. **Instance unlock in the tenant UI** — read-only + CLI pointer (recommended; the write is a deployment secret) · an operator-token entry in the browser · not shown at all.
 3. **Enable / opt-out writes in the UI this round** — offer them as policy authoring with refusals rendered (recommended; `policy:write` is admin-only today so most team members will see the named refusal) · read-only UI this round (writes via CLI/IaC only).
