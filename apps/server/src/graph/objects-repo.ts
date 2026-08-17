@@ -301,7 +301,37 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // repo).
   //
   // `domainId === null` is the org root's OWN create (bootstrap) — it has no parent whose chain
-  // could be broken. Every other create pays one bounded recursive-CTE round trip; unlike the update
+  // could be broken.
+  //
+  // `domainId === input.orgId` — the ORG ROOT as the parent — is skipped because the call is a
+  // PROVABLE no-op there, not because it is cheap enough to be worth risking. All three refusals are
+  // decided before the query returns:
+  //
+  //   - refusals 1 and 2 (cycle, and the truncation that backs it) do not run at all on a create:
+  //     `childIsNew` is true, which is the whole point of that flag (see `containment.ts`).
+  //   - refusal 3 asks `ids.has(orgId)` over `containmentChain(orgId, orgId)`, and that walk seeds
+  //     itself with the target row at depth 0. The org root IS the target, so it is in the set no
+  //     matter what the recursive term finds — the answer cannot be anything but "rooted", however
+  //     the graph above it is shaped.
+  //
+  // That is why the guard is `!== orgId` and not a broader "shallow parents are fine": for any OTHER
+  // parent the walk is load-bearing (it is what caught the soft-deleted-ancestor create measured
+  // below), and the moment the org root is not seeded at depth 0 this reasoning stops holding.
+  //
+  // It is not a micro-optimisation on a cold path either. `createObject` defaults an unnamed
+  // `domainId` to the org root, so this is the MAJORITY create shape, and the M1 DoD drives 5,000
+  // sequential creates against a 180s budget. MEASURED on this machine (500 iterations, warmed,
+  // inside one transaction against the Testcontainers PostgreSQL):
+  //
+  //   isolated `assertRootedContainmentParent(parent = org root)`   0.93-1.04 ms/call
+  //   end-to-end default `createObject`, before                          11.35 ms/create
+  //   end-to-end default `createObject`, after (3 runs)          8.04 / 9.10 / 9.30 ms/create
+  //
+  // — a ~1 ms round trip removed from an ~11 ms create, for an answer that was fixed in advance.
+  // The isolated figure is the honest one: it is the query that stops being issued. The end-to-end
+  // spread is wider than 1 ms in both directions, so read it as corroboration, not as the measurement.
+  //
+  // Every other create still pays one bounded recursive-CTE round trip; unlike the update
   // half there is no "unchanged re-apply" to guard against, because a create always writes a parent.
   //
   // `federationImport` is exempt, exactly as it is on the update half and for the same reason: an
@@ -310,7 +340,7 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // try/catch — one refusal here would abort a whole signed bundle and wedge that channel over a row
   // this domain does not own. The receiving domain also has no standing to referee the containment
   // its authoring domain chose.
-  if (!input.federationImport && domainId !== null) {
+  if (!input.federationImport && domainId !== null && domainId !== input.orgId) {
     await assertRootedContainmentParent(tx, {
       orgId: input.orgId,
       childId: id,
