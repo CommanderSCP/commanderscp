@@ -239,9 +239,10 @@ export const objects = pgTable(
     //
     // DOES NOT FEDERATE, deliberately: it is absent from the journal payload, so a replica arrives
     // owned by nobody. That is the truth — the importing domain's IaC does not manage a row another
-    // domain authored — and it is a fix in its own right, because `labels` DO federate, so a peer's
-    // `scp:stack=X` used to land here and join a local stack X's prune pool, where `deleteObject`
-    // refuses a replica with a 409 and wedges the whole apply.
+    // domain authored — and it is a bonus over the label scheme, under which a peer's `scp:stack=X`
+    // did land here (labels ARE in the payload) and would join a local stack X's prune pool. That
+    // consequence is READ FROM THE CODE, not reproduced against two live domains; see
+    // `iac/stack-ownership.ts` for the chain and the caveat.
     managedByStack: text("managed_by_stack"),
     // lifecycle
     version: bigint("version", { mode: "number" }).notNull().default(1),

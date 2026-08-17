@@ -30,11 +30,13 @@
 -- "this is not tenant data" — the same statement `origin_domain_id`, `provenance`, `revision` and
 -- `domain_local` already make by being columns rather than map entries.
 --
--- WHAT THE COLUMN ALSO FIXES, which no label rule could. `labels` FEDERATE: a peer's objects
--- carrying `scp:stack=X` land in this domain as replicas still carrying them, so they joined a
--- local stack named X's prune pool, and `deleteObject` refuses a replica with a 409 — one peer
--- could wedge another domain's applies. `managed_by_stack` is not in the journal payload, so a
--- replica arrives owned by nobody, which is the truth: the local domain's IaC does not manage it.
+-- WHAT THE COLUMN ALSO GETS, which no label rule could. `labels` FEDERATE and `managed_by_stack`
+-- does not: it is absent from the journal payload, so a replica arrives owned by nobody, which is
+-- the truth — the local domain's IaC does not manage a row another domain authored. Read from the
+-- code and NOT reproduced end-to-end (unlike the two directions above, which were): `labels` go
+-- into the journal payload verbatim, `fetchManagedObjects` had no origin filter, and `deleteObject`
+-- refuses a foreign-origin row with a 409 that aborts the whole apply. A reason to prefer the
+-- column, not a second reported defect.
 --
 -- THE BACKFILL IS A ONE-TIME SNAPSHOT OF WHAT THE OLD CODE ALREADY TRUSTED, deliberately — not an
 -- endorsement of it. Deriving the column from the labels preserves every estate's current prune

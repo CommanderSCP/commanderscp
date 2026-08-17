@@ -62,11 +62,19 @@ anyone type it directly. The honest encoding of "not tenant data" in this schema
 `origin_domain_id`, `provenance`, `revision` and `domain_local` all already say exactly that by
 being columns rather than map entries.
 
-A namespace would also have cost what the column gets for free. **`labels` federate.** A peer's
-object carrying `scp:stack=X` arrived here as a replica still carrying it and joined a local stack
-named X's prune pool — where `deleteObject` refuses a replica with a 409 and aborts the whole apply.
-One domain could wedge another's IaC. `managed_by_stack` is absent from the journal payload, so a
-replica arrives owned by nobody, which is the truth.
+A namespace would also have cost what the column gets for free. **`labels` federate and
+`managed_by_stack` does not** — it is absent from the journal payload, so a replica arrives owned by
+nobody, which is the truth: the importing domain's IaC does not manage a row another domain
+authored.
+
+*Flagged honestly, because everything else in §1 was measured and this was not.* The further claim —
+that under the label scheme a peer's `scp:stack=X` joined a local stack X's prune pool, where
+`deleteObject` refuses a foreign-origin row with a 409 that aborts the entire apply, so one domain
+could wedge another's IaC — is **read from the code, not reproduced against two live domains.** Each
+link was read directly (`createObject`/`updateObject` put `labels` in the journal payload verbatim;
+`import-repo.ts` writes them back; `fetchManagedObjects` had no origin filter; `deleteObject`
+throws `conflict` for `origin_domain_id !== self`), but the chain was never executed. Treat it as a
+reason to prefer the column, not as a second reported defect.
 
 **Rejected: reserving `scp:managed-by`/`scp:stack` as server-managed label keys.** No migration, and
 it does put the value out of tenant reach — but every full-replacement `PUT`/`PATCH` on an

@@ -36,10 +36,17 @@ import type { TenantTx } from "../db/tenant-tx.js";
  * encoding of "not tenant data" in this schema is a column, which is what `origin_domain_id`,
  * `provenance`, `revision` and `domain_local` already are.
  *
- * A namespace would also have cost what a column gets for free: `labels` FEDERATE. A peer's object
- * carrying `scp:stack=X` arrived here as a replica still carrying it and joined a local stack named
- * X's prune pool — where `deleteObject` refuses a replica with a 409 and wedges the entire apply.
- * `managed_by_stack` is absent from the journal payload, so a replica arrives owned by nobody.
+ * A namespace would also have cost what a column gets for free: `labels` FEDERATE, and
+ * `managed_by_stack` does not — it is absent from the journal payload, so a replica arrives owned by
+ * nobody, which is the truth (the importing domain's IaC does not manage a row another domain
+ * authored).
+ *
+ * DERIVED BY READING THE CODE, NOT REPRODUCED END-TO-END, and flagged as such because everything
+ * else in this module's header was measured: `createObject`/`updateObject` put `labels` in the
+ * journal payload verbatim and `import-repo.ts` writes them back, `fetchManagedObjects` had no
+ * origin filter, and `deleteObject` refuses a foreign-origin row with a 409 that aborts the whole
+ * apply. Each link is read directly; the chain was not executed against two live domains. Treat it
+ * as a strong reason to prefer the column, not as a reported second defect.
  *
  * ## The one rule
  *
