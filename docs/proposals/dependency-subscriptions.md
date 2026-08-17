@@ -278,6 +278,13 @@ second case. Discovery may **propose** the link; an operator accepts it.
 
 There is no material to infer it from anyway — SCP has no artifact name (§2).
 
+> **"An operator accepts it" through WHAT? — see [§12](#12-the-producer-declaration-has-no-authoring-surface--design-2026-08-17)
+> (added 2026-08-17).** This clause promised an acceptance surface and never named one, and as built
+> there is none: `declareDependencyLineProducer` has no non-test caller, so in production the link is
+> never set and the internal ingress cannot fire. §12 designs the surface — and finds that the grain
+> this clause assumes (per line) is the wrong one: the fact is per *coordinate*, and per-line grain
+> silently re-arms dependency confusion at every new major.
+
 ---
 
 ## 5. Piece 2 — subscription and the enablement chain
@@ -764,3 +771,343 @@ a statement about the *code*, not about the *installation*.
 **If the live installation has been granted `contents:write`, that authority exists today**, unused and
 ungoverned, regardless of whether this feature ships. That should be checked against the real
 installation and, if present and unneeded, revoked — separately from M21.
+
+---
+
+## 12. The producer declaration has no authoring surface — design (2026-08-17)
+
+**Status: proposed, pending owner review. Design only; nothing here is built.** This section completes
+[§4.4](#44-internal-vs-third-party-is-a-property-of-the-package-and-it-is-declared), which said "an
+operator accepts it" and never said through what.
+
+### 12.0 The defect, measured
+
+`dependency_lines.produced_by_object_id` is what `isInternalDependencyLine`
+(`packages/schemas/src/dependencies.ts:144`) reads to decide a line is internal. It is written by
+exactly one function, `declareDependencyLineProducer`
+(`apps/server/src/dependencies/dependency-inventory-repo.ts:207`), and a filterless census of that
+symbol finds **no non-test caller**: no route, no CLI verb, no job, no IaC construct.
+
+So in production the column is never set, `isInternalDependencyLine` is always false, and **the
+internal half of the feature cannot fire at all** — half of what was asked for ("internal
+dependencies update the database once released to production"). Third-party polling works; internal
+release detection derives lines for the empty set of declared producers. This is the same
+built-never-installed shape §8a's own header records for M21.5, one layer down.
+
+**What must NOT be the fix.** `internal-release-detection.ts:747-752` and `schema.ts:1809-1824` state
+the property: the producer link is **declared, never inferred**, and the capability is **absent from
+the ingestion verb** rather than guarded on it — `UpsertDependencyLineInputSchema` has no producer
+field and `upsertDependencyLine`'s `ON CONFLICT` set list cannot reach the column. Wiring the link
+into ingestion would delete the property and call it a completion. **The missing piece is an
+authoring surface for a deliberately manual declaration.**
+
+### 12.1 The grain — per COORDINATE, in a new table, not per line
+
+**The fact and the row disagree.** A `dependency_lines` row is identified by
+`(org_id, ecosystem, coordinate, major)` (`schema.ts`, `dependency_lines_identity`), so a declaration
+written onto it is **per major line**. But "component X publishes `@acme/lib`" is a fact about the
+coordinate, true across every major X has ever cut.
+
+**How lines come into existence is what settles it.** `upsertDependencyLine` has exactly one
+non-test caller — `placeDeclarationOnLine` (`inventory-ingestion.ts:1333`) — and it mints a line
+from a **consumer's** `DeclaredDependency`. Nothing mints a line from the package a component
+*publishes*: SCP has no artifact name at all (§2), and ingestion reads a manifest's dependencies, not
+its own `name` field. Two consequences, and the second is the crux:
+
+1. **A producer with no consumers has nothing to attach to.** Declaring "X produces `@acme/lib`"
+   before any component in the org depends on it has no row to write, so a per-line declaration is
+   *unrepresentable* until the first consumer's manifest is ingested. The declaration would have to
+   be ordered after an event the declarer does not control.
+
+2. **Every new major silently re-arms dependency confusion.** X releases `3.0.0`; the first consumer
+   moves to `^3`; ingestion mints a **new row** with `produced_by_object_id = NULL`. That row is now
+   third-party *by honest default*, and once any component subscribes to it,
+   `buildLineWorkList` (`version-poll.ts:215`) will hand `@acme/lib` to a **public index plugin**.
+   That is precisely the failure §7b clause 1 names — "a stranger's package sharing the coordinate
+   answers `9.9.9`… every subscriber is bumped onto it… delivered by a background job on a daily
+   timer, with no error anywhere."
+
+   The two structural barriers built against that failure do not help here, and understanding why is
+   the whole argument. `listThirdPartyDependencyLinesByIds`
+   (`dependency-inventory-repo.ts:566`) narrows in SQL on `produced_by_object_id IS NULL`, and
+   `asThirdPartyLine` (`line-head.ts:108`) re-reads the same column to mint the brand. **Both
+   barriers protect the column's meaning. Neither can protect a column nobody filled in** — and on a
+   fresh major nobody has. Per-line grain converts "declare once" into "re-declare at every major
+   bump", an obligation that fails silently in the dangerous direction.
+
+**Therefore: per coordinate, and it needs a new table.** There is no existing row keyed by
+`(org_id, ecosystem, coordinate)`, and the declaration must be able to exist with **zero** lines, so
+it cannot live on a row that ingestion owns.
+
+```
+dependency_line_producers
+  org_id                  uuid    not null
+  ecosystem               text    not null
+  coordinate              text    not null   -- verbatim, case-preserved, never slugified (§3)
+  producer_object_id      uuid    not null   references objects(id)
+  declared_at             timestamptz not null
+  declared_by_object_id   uuid    not null   references objects(id)
+  unique (org_id, ecosystem, coordinate)
+  index  (org_id, producer_object_id)
+```
+
+Every column is `NOT NULL`, which **retires** `dependency_lines_internal_is_declared`: that CHECK
+exists only because three columns hang off a row that exists for another reason. Here the row's
+existence *is* the declaration, so a half-written declaration is not representable rather than
+refused.
+
+**What happens to `dependency_lines.produced_by_object_id`.** Drop it, with its two companions, the
+`dependency_lines_org_producer` partial index and the CHECK — expand/contract, backfilling the new
+table from any non-null rows first (provably none in production, by §12.0; not none in dev and test
+fixtures). Readers move as follows, and the important part is that **both barriers keep reading one
+thing**:
+
+| reader | today | after |
+|---|---|---|
+| `listThirdPartyDependencyLinesByIds` | `isNull(produced_by_object_id)` | **anti-join** on `dependency_line_producers` by `(org_id, ecosystem, coordinate)` |
+| `asThirdPartyLine` | re-reads the column | constructor takes the joined "no declaration for this coordinate" fact |
+| `listProducedLines` (`internal-release-detection.ts:760`) | partial index on the column | X's coordinates from `(org_id, producer_object_id)`, then lines by `(org_id, ecosystem, coordinate)` — a **prefix of the existing `dependency_lines_identity` index**, so no new index is needed |
+
+The rejected alternative deserves naming, because it is the tempting one: **keep the column as a
+materialized projection and have `upsertDependencyLine` stamp it at mint time from the declaration
+table.** It closes the new-major hole with no human step, and the value it copies is a prior human
+declaration rather than anything read out of the manifest. Reject it anyway: it puts a
+`produced_by_*` write back inside the ingestion verb, which deletes the "the capability is absent
+from ingestion" property and makes `schema.ts:1819`'s comment false. The join makes the projection
+unnecessary instead of making it safe — a new major of a declared coordinate is internal **from the
+instant it is minted**, because there is no per-major field to populate.
+
+**Per-coordinate is also the safer grain, not merely the tidier one.** Under per-major grain an org
+could model "we produce `@acme/lib@2`, upstream produces `@acme/lib@1`" — and that shape means the
+same public index legitimately answers for a coordinate the org also publishes, which is
+dependency confusion with a data model behind it. Coordinate grain refuses to represent it: once the
+org declares it produces a coordinate, **no major of it is ever asked of a public index.**
+
+**The cost of that, stated honestly.** An org that consumes upstream `requests` from PyPI *and*
+publishes a private package also called `requests` gets one answer for both, and declaring the
+producer stops the upstream one being polled — losing its security-update path, silently. Per-major
+grain would not fix this; it would split the wrong answer across majors. The ambiguity is in the line
+identity, which carries no registry host, and the real fix is registry-scoped coordinates — a
+separate and much larger change. **Accepted limitation, recorded rather than designed around.**
+
+### 12.2 The authority — `policy:write` at the org root, and **this is an owner decision**
+
+**I agree it is an owner decision, and recommend it be taken before the build starts.** Grounds:
+it is the same class of question as §6a (who may author an effect with org-wide reach), the owner has
+taken every comparable call in this feature directly (§7d, Q1–Q5), and the third option below cannot
+be retrofitted cheaply once the second ships and estates are provisioned.
+
+**The blast radius is what forces the question.** Declaring "X produces `@acme/lib`" changes
+behaviour for **every other component in the org that depends on that coordinate**, in two directions
+at once: their bumps start being triggered by X's production releases, *and* the coordinate stops
+being polled against its public index. The declarer is affecting objects they may not own.
+
+- **(a) The producing component's owner** — `object:write` at X, or an `owns` edge to X.
+  **Insufficient, on this repo's own precedent.** `policy-scope-authz.ts:12-58` is the authority:
+  custody of a row is not jurisdiction over what it reaches, and an actor holding authority at a
+  single component "must still be refused an org-wide scope: custody was never evidence of
+  jurisdiction". The mechanics agree — `scopeExpandCte` (`authz/resolve.ts:94-126`) expands strictly
+  **upward**, so a component-bound principal reaches nothing sideways, and the consumers of
+  `@acme/lib` are siblings, not descendants.
+
+- **(b) `policy:write` at the ORG ROOT — recommended.** `policy-scope-authz.ts:107-116` already
+  requires exactly this for "anything broader — … which can match objects org-wide … has org-wide
+  blast radius". The producer declaration has org-wide blast radius in exactly that sense, so the
+  established rule lands on the established answer. It adds no `Permission` union member
+  (`authz/resolve.ts:26-43`), no seed change and no new binding to provision, and it is the same
+  authority that can already author an org-wide `dependencySubscription` effect.
+
+- **(c) A dedicated `dependency_producer:write`.** Buys real least-privilege: a platform or registry
+  team could hold it without holding org-wide `policy:write`. Costs a new permission in the union, in
+  the RLS/RBAC seed and in every estate's role bindings — and until those bindings are provisioned
+  the surface is open only to principals who already hold (b). Named as the upgrade path; not
+  recommended for the first cut.
+
+- **(d) A two-party shape, worth putting in front of the owner as a real option.** The component
+  team **proposes** ("X produces `@acme/lib`") and an org-root `policy:write` holder **accepts**.
+  This is literally what §4.4 promised — "Discovery may propose the link; an operator accepts it" —
+  and it gives the producing team the surface they will naturally reach for without giving them the
+  reach. It costs a second state on the declaration row and a second verb.
+
+**One check that is required under every option above.** The FK is `objects(id)` and is
+**org-unbound** — stated at `dependency-inventory.integration.test.ts:1101` — so today a write can
+name a deployment-target, a user, or another tenant's object. The verb must assert the producer is a
+live, non-deleted object in the caller's org whose `type_id` is `component` or `service`.
+
+**And a live half-working state to resolve while doing it.** `listProducedLines`
+(`internal-release-detection.ts:754-758`) says "the producer link may name a component OR a service"
+and then matches only against component ids taken from placements. **A `service`-valued producer
+declaration therefore derives no head at all**, while still (correctly) removing the coordinate from
+the third-party poll — the worst of both. Either the verb refuses `service`, or §7 says what a
+service declaration derives. Recommend **refusing `service` in the first cut** and recording why.
+
+### 12.3 The shape — a verb, on one of M20.4's three grounds, and honest about the other two
+
+[ADR-0031 §6](../adr/0031-domain-local-objects-never-federate.md) chose
+`POST /v1/objects/{type}/{id}/publish` as "a **verb, not a property write** … because it performs the
+re-journal and the edge sweep, and an operator must be able to see that publication is an action with
+an effect rather than a field edit. It is **one-way**, and the response reports exactly which edges
+were published." Three grounds. Tested one at a time:
+
+1. **Work beyond the field write — TRANSFERS, and more strongly than for publish.** The declaration
+   removes every major of the coordinate from the poll's work-list and *moves the head-derivation
+   ingress* for those lines from a public index to the org's own production releases. It also has to
+   clear observation state (§12.3.2). None of that is visible in a field edit.
+2. **One-way — DOES NOT TRANSFER.** Retraction is explicitly part of the concept
+   (`DeclareLineProducerInputSchema`'s `null`). M20.4's strongest ground is absent here, and the verb
+   should not borrow its rhetoric.
+3. **A legible report — TRANSFERS, and is where the verb earns its keep.** The response should
+   enumerate the lines the declaration now covers, each line's current head, and the count of
+   subscribed components per line. **That list is the blast radius, and it is unguessable from the
+   request** — the declarer names one coordinate and affects a set of repositories they cannot see.
+
+So: **a verb, on grounds 1 and 3.**
+
+#### 12.3.1 Surface
+
+```
+POST   /api/v1/dependencies/producers          { ecosystem, coordinate, producerObjectId, dryRun? }
+POST   /api/v1/dependencies/producers/retract  { ecosystem, coordinate }
+GET    /api/v1/dependencies/producers          ?ecosystem&coordinate  (list / point read)
+```
+
+The coordinate travels in the **body or the query, never a path segment** — the same choice
+`GET /components/:idOrUrn/dependency-subscription` already makes (`dependency-subscriptions.ts:292-303`:
+"the line arrives as a QUERY … a coordinate travels VERBATIM here"). Coordinates contain `/`, `@` and
+`:` (`github.com/acme/lib`, `@acme/lib`, `docker.io/library/alpine`); path-segmenting one is a trap.
+
+`dryRun` returns the same blast-radius report and writes nothing. It is not a nicety: it is the only
+way the declarer can see whose repositories they are about to affect **before** they do.
+
+The write is **commander-only on the federation axis only**, via `commanderOnlyFederationVerdict`
+(`dependency-subscriptions.ts:447-451`) → `409`, for the reasons that route's header already gives —
+"right request, wrong place", and a route must not carry the process axis. The **read** stays
+tenant-facing.
+
+A Decision (`insertDecisionIfChanged`) and an audit event accompany both verbs, per charter
+principle 6: "which principal asserted this coordinate is ours, and what did that change" must be
+answerable from the record, not from the row.
+
+#### 12.3.2 Undeclaring — and the defect that makes it more than a delete
+
+**A head, once written, has no reset path.** `recordDependencyLineHead`
+(`dependency-inventory-repo.ts:277`) is the sole writer of the `latest_*` trio and refuses backward
+movement (`evaluateHeadMovement`, `line-head.ts:293-350`). §7b clause 3's bounded exception rescues
+only a stored value that is **not on the line as defined now**; a same-major, parseable, same-variant
+version passes `lineAcceptsVersion` and therefore stands. No API resets the column.
+
+Two consequences, in both directions, and neither is optional:
+
+- **Retraction must clear the head.** The line returns to third-party polling carrying a head that
+  the org's own releases put there. If the internal head was ahead of the public one — the ordinary
+  case, `2.7.0` internal against `2.3.1` upstream — the coordinate is **wedged**: the poll refuses
+  every real public version until upstream passes `2.7.0`, and refuses it as `behind_head`, which
+  reads as normal operation.
+- **Declaration must clear the head too, symmetrically.** A poisoned public head (the stranger's
+  `9.9.9`) would otherwise survive the fix, and internal detection could never move the head down to
+  the org's real `2.1.0`. Clearing is what makes the declaration actually undo the confusion it
+  exists to prevent.
+
+Clearing needs a writer of a trio that deliberately has exactly one. **Do not add a second writer.**
+Add a `resetLineHead` branch *inside* `dependency-inventory-repo.ts` beside
+`recordDependencyLineHead` — same `FOR UPDATE`, same Decision — reachable only from these two verbs,
+named in the module header as the one exception, and pinned by a test that deletes the call and
+watches a named test die. `NULL` after a reset is honest: §7's schema note already defines it as "not
+observed", which is exactly the state.
+
+**In-flight bumps are not recallable, and the design must say so rather than imply otherwise.** A
+dispatched bump has left SCP: it is a pull request in another team's repository, or — under
+`auto_merge` — a commit on their branch. `dependency_bump_authorships` rows with `merged_at IS NULL`
+(`bump-authorship-repo.ts:162`) are the open ones. Retraction **stops future triggers only**; it must
+not close or rewrite those rows, because doing so would assert SCP closed a PR it did not close. The
+retraction's Decision should **name the open bump authorships that were in flight at retraction**, so
+an operator has the list to go and close.
+
+### 12.4 Federation — it must NOT federate, and the choice of storage is how that is decided
+
+**Read both clauses, as asked.** §7c is about *how the ingresses run*, not about the table. The
+federation statement is §3's "the inventory is a projection table" — and **§7d point 4 keeps exactly
+that half while retiring the rest**: "*The inventory is still a projection table that **does not
+federate**, and that half is what justifies the principle-2 bend; what changes is that it now exists
+in exactly one place.*" So the two readings agree, and what holds now is: **does not federate, and
+exists only at the commander.**
+
+**Measured, not inferred:** a filterless census for `dependency_lines` / `dependencyLines` under
+`apps/server/src/federation/` returns **nothing**. There is no export path. The non-federation is
+structural, not a policy someone could forget to apply.
+
+**Is the question moot? Yes — on two independent legs, and it is worth having both.** (i) Every
+consumer of the declaration — internal detection, the version poll, the bump dispatcher — is
+commander-only under §7d. (ii) The rows it qualifies exist only at the commander. Either leg alone
+makes a field outpost's copy inert.
+
+**But the moot-ness is conditional on a design choice that has to be made deliberately.** If the
+declaration were modelled as a graph object — a `produces` relationship, or a `producedBy` policy
+effect — it **would** federate, because `policy` does (§7d, "what does not change"). A field outpost
+would then hold a declaration with no inventory behind it: a visible assertion nothing can act on,
+which is the "true elsewhere, inert here" shape `dependencyManagement` exists to close. **So
+`dependency_line_producers` is a projection table for a federation reason, not a storage-convenience
+one**, and that sentence belongs in the ADR clause.
+
+Residual, stated: the retrans / air-gap bundle path carries no dependency data, so an air-gapped
+org's producer declarations are authored at its own commander. There is nothing to relay and no
+bundle change.
+
+### 12.5 What breaks if the declaration is wrong
+
+Two wrong shapes, failing in opposite directions.
+
+**(A) FALSE POSITIVE — declaring a coordinate the org does not produce** (a typo, the wrong
+ecosystem, or claiming an upstream package).
+
+1. **The coordinate leaves the third-party poll, permanently and silently.** Every subscriber stops
+   receiving upstream version movement, *including security releases*. `latest_version` freezes and
+   `NULL` reads as "not observed". This is the worse half precisely because the failure is an
+   **absence** — there is no error, no unavailable verdict, nothing to alert on.
+2. **The named component's releases start authoring other teams' commits.** X releases `4.2.0` of
+   something else entirely; `resolveReleasedVersion` derives `4.2.0`;
+   `recordDependencyLineHead` advances the `4` line of `@acme/lib`;
+   `DEPENDENCY_LINE_HEAD_ADVANCED_EVENT` fires; `bump-dispatch` authors a bump in **every subscribing
+   component's repository**, pinning a version that may exist in no registry at all. Under
+   `delivery: auto_merge` that lands without human review.
+
+**(B) FALSE NEGATIVE — failing to declare.** This is today's state for every org, and under per-line
+grain it is also the state of every new major (§12.1). The coordinate is polled against a public
+index while the org publishes it: §7b clause 1's named catastrophe, on a daily timer.
+
+**What already bounds (A), and must be preserved:**
+
+- **The three-level monotone AND.** `bump-dispatch` fans out through
+  `listSubscribedComponentLines` (`bump-dispatch.ts:501`), so a wrong declaration reaches only
+  components whose own team enabled the subscription, on a deployment an operator unlocked. It is not
+  org-wide in *effect*; it is org-wide in *reach*.
+- **`assertComponentNotDelegated`** — a component running Renovate or Dependabot is refused.
+- **The blast-radius report and `dryRun`** (§12.3), which make the reach visible before the write.
+
+**Recoverability, in three unequal tiers — this is the plain statement asked for:**
+
+| what | recoverable? |
+|---|---|
+| the trigger | **Immediately.** Retract, and no further bump is dispatched. |
+| the stored head | **Only if retraction clears it** (§12.3.2). Without that clearing there is no path at all, and the coordinate stays wedged for as long as the wrong head is the greatest version anyone has seen. |
+| bumps already authored | **Not by SCP, ever.** An open PR is another team's to close; a merged auto-merge bump is a bad commit on their main branch. SCP coordinates, it does not revert. |
+
+The middle row is the one this design changes. The bottom row is why the authority question (§12.2)
+is an owner decision and not a build detail.
+
+### 12.6 What this proposes, in one list
+
+1. New projection table `dependency_line_producers`, unique on `(org_id, ecosystem, coordinate)`,
+   all columns `NOT NULL`; **not** a graph object (§12.4).
+2. Expand/contract removal of `dependency_lines.produced_by_object_id` and its two companions, the
+   partial index and the CHECK; readers move to a join and an anti-join (§12.1).
+3. Declare / retract / read verbs under `/api/v1/dependencies/producers`, coordinate in body or
+   query, commander-only on the federation axis, with a blast-radius report and `dryRun` (§12.3.1).
+4. Authority: **owner decision** — recommended `policy:write` at the org root, with the two-party
+   propose/accept shape as the live alternative (§12.2).
+5. A `resetLineHead` branch in the module that already owns the `latest_*` trio, called on **both**
+   declare and retract (§12.3.2).
+6. Producer must be a live in-org `component`; `service` refused in the first cut, with §7 amended to
+   say why (§12.2).
+7. An ADR clause amending ADR-0032 §7 to record the grain, the authority and the federation choice —
+   §7 currently describes a link with no way to create one.
