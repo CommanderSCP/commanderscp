@@ -827,24 +827,41 @@ describe("T1 — a BLOCK SCALAR is not an edit target", () => {
 });
 
 describe("T17 — duplicate keys, and the composer scan that was quadratic", () => {
-  it("a flat mapping with 32 000 siblings parses in well under a second of budget", () => {
-    // NOT A MICRO-BENCHMARK — a property of a call that sits in the ingestion path behind a 1 MiB
-    // read cap. `yaml`'s duplicate-key check rescans every sibling already composed for each new
-    // pair, so this input took 7.1 s with it on and 0.17 s with it off; at the cap it is the
-    // difference between a minute of CPU per manifest and a fifth of a second. The header used to
-    // claim the work was "linear in the bytes the read cap already bounds", and it was not.
-    const lines = ["image: acme/api:1.2.3"];
-    for (let i = 0; i < 32_000; i++) lines.push(`key${i}: value${i}`);
-    const content = `${lines.join("\n")}\n`;
+  it("scales LINEARLY in siblings — the composer's quadratic rescan is off", () => {
+    // NOT A MICRO-BENCHMARK, and deliberately NOT an absolute millisecond budget. `yaml`'s
+    // duplicate-key check rescans every sibling already composed for each new pair, so this input
+    // took 7.1 s with it on and 0.17 s with it off; at the 1 MiB read cap that is the difference
+    // between a minute of CPU per manifest and a fifth of a second. The header used to claim the
+    // work was "linear in the bytes the read cap already bounds", and it was not.
+    //
+    // An absolute budget measured the RUNNER, not the parser: it passed locally at 0.18 s and
+    // failed CI at 2.6 s, where the suite runs under `--coverage` on a shared runner. The property
+    // is a SHAPE — doubling the siblings must roughly double the time, not quadruple it — so it is
+    // measured as a ratio against itself, which no machine speed or instrumentation changes.
+    const build = (n: number): string => {
+      const lines = ["image: acme/api:1.2.3"];
+      for (let i = 0; i < n; i++) lines.push(`key${i}: value${i}`);
+      return `${lines.join("\n")}\n`;
+    };
+    const timed = (content: string): number => {
+      const started = performance.now();
+      const declarations = parseKubernetesImages(content);
+      // The file is still READ correctly — a fast parser that returned nothing would pass a
+      // timing assertion on its own.
+      expect(declarations.map((d) => d.coordinate)).toEqual(["acme/api"]);
+      return performance.now() - started;
+    };
 
-    const started = performance.now();
-    const declarations = parseKubernetesImages(content);
-    const elapsed = performance.now() - started;
+    const small = build(8_000);
+    const large = build(32_000);
+    timed(small); // warm, so JIT compilation is not charged to the first measurement
+    const tSmall = Math.max(timed(small), 1);
+    const tLarge = timed(large);
 
-    // The file is still READ correctly — a fast parser that returned nothing would pass a timing
-    // assertion on its own.
-    expect(declarations.map((d) => d.coordinate)).toEqual(["acme/api"]);
-    expect(elapsed).toBeLessThan(2_000);
+    // 4x the siblings. Linear predicts ~4x; the quadratic rescan predicted ~16x and measured worse.
+    // The bound is generous because the RATIO is the claim and CI timing is noisy — a regression to
+    // the quadratic scan lands an order of magnitude above it, not just outside it.
+    expect(tLarge / tSmall).toBeLessThan(8);
   }, 30_000);
 
   it("a duplicated NON-image key no longer fails the whole file forever", () => {
