@@ -14,6 +14,7 @@ import {
   createTestOrg,
   createTestUser,
   listenTestServer,
+  reconcileTicks,
   waitForChangeParked,
   waitUntil,
   type ListeningTestServer,
@@ -2058,7 +2059,15 @@ describe("governance integration: automatic rollback on wave failure", () => {
         const explained = await admin.changes.explain(change.id);
         return explained.decisions.find((d) => d.kind === "rollback_trigger");
       },
-      { describe: `change ${change.id}'s wave failure auto-triggers a rollback`, timeoutMs: 30_000 }
+      {
+        describe: `change ${change.id}'s wave failure auto-triggers a rollback`,
+        // SIX TICKS, not 30 arbitrary seconds: propose -> executing, dispatch the wave target,
+        // observe the forced failure, mark the wave failed, and one more tick for the `failed`
+        // branch to trigger the rollback. See `reconcileTicks` for why a deadline in seconds
+        // against the advertised 1s tick is the same arithmetic error as the sleeps this commit
+        // removed — the real tick measured 2025ms median with ONE org.
+        timeoutMs: reconcileTicks(6)
+      }
     );
     expect(trigger.verdict).toBe("rollback");
     expect(trigger.inputContext["trigger"]).toBe("automatic");
@@ -2079,7 +2088,12 @@ describe("governance integration: automatic rollback on wave failure", () => {
       },
       {
         describe: `rollback change ${rollbackChangeObjectId}'s own wave is observed failing`,
-        timeoutMs: 15_000
+        // THE DEADLINE THIS COMMIT WAS MEASURED FAILING ON: a legacy copy of this file, run in a
+        // parallel fork beside the fixed one under deliberate CPU load, timed out here after
+        // 15_000ms. The rollback change is a SECOND full lifecycle (propose -> executing, dispatch,
+        // observe the forced failure, mark the wave failed), so it needs five ticks of its own and
+        // 15s bought fewer than two.
+        timeoutMs: reconcileTicks(5)
       }
     );
     // The negative below is asserted from a POSITIVE signal, not from a fixed sleep: the failed-wave
@@ -2092,7 +2106,10 @@ describe("governance integration: automatic rollback on wave failure", () => {
     expect(rollbackExplained.decisions.filter((d) => d.kind === "rollback_trigger")).toHaveLength(
       0
     );
-  });
+    // TWO full change lifecycles end to end (the original's wave fails, then the rollback change's
+    // own does), so this test's own budget has to cover the sum of the tick budgets above rather
+    // than the config's 60s default, which was itself sized against the 1s-tick fiction.
+  }, 180_000);
 
   it("a failed wave with NO autoRollbackOnFailure policy stays parked for manual rollback (M3 behavior unchanged)", async () => {
     const org = await createTestOrg(server, "manual-park");
@@ -2106,7 +2123,8 @@ describe("governance integration: automatic rollback on wave failure", () => {
         const explained = await admin.changes.explain(change.id);
         return explained.plan?.waves.some((w) => w.status === "failed") ? true : undefined;
       },
-      { describe: `change ${change.id}'s wave fails`, timeoutMs: 20_000 }
+      // Same five-tick chain as the sibling test above, sized the same way.
+      { describe: `change ${change.id}'s wave fails`, timeoutMs: reconcileTicks(5) }
     );
 
     // Same positive signal as the sibling test above: wait until the engine has PARKED this change
@@ -2118,5 +2136,5 @@ describe("governance integration: automatic rollback on wave failure", () => {
 
     const explained = await admin.changes.explain(change.id);
     expect(explained.decisions.some((d) => d.kind === "rollback_trigger")).toBe(false);
-  });
+  }, 120_000);
 });

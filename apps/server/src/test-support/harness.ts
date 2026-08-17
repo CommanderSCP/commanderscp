@@ -523,6 +523,53 @@ export async function waitUntil<T>(
 }
 
 /**
+ * How long ONE reconcile tick is allowed to take, for the purpose of sizing a test's deadline.
+ *
+ * ## `RECONCILE_TICK_INTERVAL_SECONDS` is 1, and every deadline written against that number is wrong
+ *
+ * The tick does not run every second. It re-schedules ITSELF with `boss.send(RECONCILE_QUEUE, {},
+ * { startAfter: 1 })` after each sweep completes, and pg-boss's `pollingInterval` defaults to
+ * 2000 ms and is not overridden anywhere in this repo — so the floor is `sweep + 1s + U(0, 2s)`
+ * before the sweep does any work at all. The sweep then walks EVERY org in the database
+ * (`runReconcileSweep`, correctly: production is one instance serving many orgs), and a test FILE
+ * accumulates one org per test, so the same deadline buys fewer ticks the later in the file it is
+ * evaluated.
+ *
+ * MEASURED, not assumed (2026-08-17, 8-core dev box, ambient load ~25), by watching
+ * `reconcile_cursor_at` on a gate-blocked change for 30 s and timing `propose -> executing`:
+ *
+ *   | orgs in the database | arrival (`propose -> executing`) | tick gap (median) | tick gap (max) |
+ *   |----------------------|----------------------------------|-------------------|----------------|
+ *   | 1                    | 1391 ms                          | 2025 ms           | 2154 ms        |
+ *   | 21                   | **10903 ms**                     | 2821 ms           | 5972 ms        |
+ *
+ * The right-hand columns are why "several ticks" was never several ticks. The ARRIVAL column is why
+ * the sleep-based `assertStaysExecuting` failed: it asserted `state === "executing"` 4000 ms after
+ * `propose()`, in a file whose 25th test runs with ~25 orgs in the sweep, where arrival takes about
+ * eleven seconds. That is not a race the test lost occasionally — it is a deadline the test had
+ * already missed by 7 s, hidden by the fact that most call sites had waited for something else first.
+ *
+ * ## This is a BUDGET, not a measurement
+ *
+ * A deadline set to the idle-case upper bound is a deadline that fails the first time the box is
+ * busy. That is exactly how the rollback test's `waitUntil(..., 15_000)` — fifteen ticks at the
+ * fictitious 1 s rate, seven at the real one, and about four once its own file's orgs are in the
+ * sweep — timed out under parallel load while passing alone. Say what a chain needs in TICKS, which
+ * is the unit the engine actually works in, and let {@link reconcileTicks} convert with headroom.
+ *
+ * Deadlines elsewhere in this suite are still written in raw milliseconds against the 1 s fiction.
+ * They are a known instance of the same property and should migrate to `reconcileTicks` as they are
+ * touched — see `test-support/integration-sleep-census.test.ts` for the sibling guard on the sleep
+ * half of it.
+ */
+export const RECONCILE_TICK_BUDGET_MS = 6_000;
+
+/** A deadline, in ms, for a wait whose chain needs `ticks` reconcile ticks to complete. */
+export function reconcileTicks(ticks: number): number {
+  return ticks * RECONCILE_TICK_BUDGET_MS;
+}
+
+/**
  * Reads the engine-private reconcile bookkeeping for one change. `reconcile_cursor_at` and
  * `reconcile_blocked_at` are deliberately NOT on the public `Change` schema — they are scheduler
  * queue position and park flag, not anything an API caller should see — so the progress helpers
@@ -578,13 +625,11 @@ const STATES_BEFORE: Record<"executing" | "waiting", ReadonlySet<string>> = {
  *
  * ## "Several ticks" was not several ticks
  *
- * The graces were sized against `RECONCILE_TICK_INTERVAL_SECONDS` (1s). The real period is not 1s:
- * the tick re-schedules ITSELF with `startAfter: 1` onto pg-boss, whose `pollingInterval` defaults
- * to 2000ms and is not overridden anywhere in this repo, and each tick then walks EVERY org in the
- * database (`runReconcileSweep`, correctly — production is one instance serving many orgs). So the
- * floor is ~1-3s on an idle box with one org, and it grows with the number of orgs a test FILE has
- * accumulated by the time a given test runs. A 3s grace is at most one tick, and often zero: the
- * assertion was near-vacuous when it passed and spurious when it failed.
+ * The graces were sized against `RECONCILE_TICK_INTERVAL_SECONDS` (1s) — see
+ * {@link RECONCILE_TICK_BUDGET_MS} for the arithmetic and the measurements. The headline number:
+ * with 21 orgs in the database, `propose -> executing` took **10903 ms**, against a grace of 4000 ms.
+ * A 3s grace is at most one tick and often zero, so the assertion was near-vacuous when it passed
+ * and spurious when it failed.
  *
  * ## The positive signal
  *
