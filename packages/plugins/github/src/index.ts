@@ -14,11 +14,21 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import {
+  assertNoRedirect,
+  assertSafeRef,
+  assertSafeRepo,
+  assertSafeRepoPath,
   createExecutorPluginFromAdapter,
+  decodeBoundedBase64,
+  encodePathSegments,
   normalizeCorrelation,
+  resolveMaxBytes,
   resolveProviderBaseUrl,
+  wrapProviderRequestError,
   type GitProviderAdapter,
-  type GitProviderEventHint
+  type GitProviderEventHint,
+  type ReadFileAtRefRequest,
+  type ReadFileAtRefResult
 } from "@scp/git-provider-core";
 
 /**
@@ -202,7 +212,7 @@ async function api(
   method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH",
   path: string,
   body?: unknown
-): Promise<{ status: number; body: unknown }> {
+): Promise<{ status: number; body: unknown; headers: Record<string, string> }> {
   const headers = await githubApiHeaders(ctx, config);
   const response = await ctx.http.request({
     method,
@@ -210,7 +220,10 @@ async function api(
     headers,
     body
   });
-  return { status: response.status, body: response.body };
+  // Response headers are carried through (additively — every pre-M21.2 call site destructures only
+  // `{ status, body }` and is unaffected) so the read path can name a redirect's `Location` in its
+  // error. See `readGet`'s `assertNoRedirect` call.
+  return { status: response.status, body: response.body, headers: response.headers ?? {} };
 }
 
 // -------------------------------------------------------------------------------------------
@@ -306,10 +319,22 @@ export function mapGithubWebhookEventToHint(
       };
     }
     case "pull_request": {
-      const pr = p.pull_request as { head?: { sha?: string }; number?: number } | undefined;
+      const pr = p.pull_request as
+        { head?: { sha?: string; ref?: string }; number?: number } | undefined;
       return {
         repo,
         commitSha: pr?.head?.sha,
+        // THE SOURCE BRANCH, under its own name — NOT `ref`. GitHub spells a pull request's head
+        // branch unqualified (`scp/dep-bump/<id>`), so it is qualified here to the one spelling
+        // every consumer of a ref in this tree uses. It is deliberately not `ref`: a `refPattern`
+        // source mapping matches `ref`, and populating it here would start routing pull-request
+        // events by their head branch in every existing deployment. See
+        // `GitProviderEventHint.headRef` for the one consumer and the duplicate change its absence
+        // produced.
+        headRef:
+          typeof pr?.head?.ref === "string" && pr.head.ref.length > 0
+            ? `refs/heads/${pr.head.ref}`
+            : undefined,
         correlationKey: pr?.number !== undefined ? `pr-${pr.number}` : undefined
       };
     }
@@ -586,7 +611,7 @@ async function getStatus(ctx: PluginContext, ref: ExternalRunRef): Promise<Execu
     ctx,
     config,
     "GET",
-    `/repos/${config.owner}/${config.repo}/actions/runs/${runId}`
+    `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}`
   );
   if (httpStatus < 200 || httpStatus >= 300) {
     throw new Error(`github status: server returned HTTP ${httpStatus}`);
@@ -612,7 +637,7 @@ async function abortRun(ctx: PluginContext, ref: ExternalRunRef): Promise<AbortR
     ctx,
     config,
     "POST",
-    `/repos/${config.owner}/${config.repo}/actions/runs/${runId}/cancel`
+    `/repos/${config.owner}/${config.repo}/actions/runs/${encodeURIComponent(runId)}/cancel`
   );
   return httpStatus >= 200 && httpStatus < 300
     ? { aborted: true }
@@ -628,12 +653,188 @@ function githubCapabilities(): ExecutorCapabilities {
   };
 }
 
+// -------------------------------------------------------------------------------------------
+// readFileAtRef (M21.2, ADR-0032 §4 / proposal §4.3(a)) — the FIRST time this package reads a file
+// BODY out of a repo. `discover()` below calls the same contents endpoint but reads only
+// `entry.name`/`entry.type` off a DIRECTORY LISTING (see line ~758 and the marker-file test); it
+// never fetches or decodes a blob. This is that missing capability, and nothing more: it reads.
+//
+// GITHUB WIRE FACTS THIS DEPENDS ON (all from GitHub's published REST docs; like every other shape
+// in this file they are proven here only against `nock` fixtures — the nightly live-sandbox job is
+// what proves wire fidelity end to end):
+//   - `GET /repos/{owner}/{repo}/commits/{ref}` accepts a branch, tag or sha as `{ref}` and returns
+//     the commit object whose `sha` is what that ref RESOLVES TO.
+//   - `GET /repos/{owner}/{repo}/contents/{path}?ref={ref}` returns, for a blob, an object with
+//     `type: "file"`, `encoding: "base64"`, `size`, `content` (base64 WRAPPED AT 60 CHARS WITH
+//     EMBEDDED NEWLINES — `base64DecodedByteLength` strips whitespace for exactly this reason) and
+//     `sha` (the BLOB sha, NOT a commit sha — hence the separate resolve call above). For a
+//     DIRECTORY the same route returns a JSON ARRAY, which is how `not_a_file` is detected.
+//   - For a blob between 1 MB and 100 MB the same object comes back with `content: ""` and
+//     `encoding: "none"`; `decodeBoundedBase64` maps that to a `too_large` refusal because that is
+//     what GitHub means by it.
+// -------------------------------------------------------------------------------------------
+
+/** One entry of a GitHub contents response for a FILE path. `sha` here is the blob sha. */
+interface GithubContentFile {
+  type?: string;
+  encoding?: string;
+  size?: number;
+  content?: string;
+  sha?: string;
+  path?: string;
+}
+
+/**
+ * A single authenticated GET on the read path, with the two failure modes the plugin HTTP client
+ * makes non-obvious folded in:
+ *
+ *  - a 3xx that arrives as a STATUS is refused by `assertNoRedirect` with an explanation, rather
+ *    than falling through as an anonymous "HTTP 302";
+ *  - anything thrown by `ctx.http.request` — including a refused redirect under the production
+ *    client (`redirect: "error"`, subprocess-entry.ts:285,295) and an egress-guard denial
+ *    (`egressBlocked`, egress-guard.ts:83) — is re-thrown by `wrapProviderRequestError` naming which
+ *    of those it was. Neither weakens any control; both make the failure legible.
+ */
+async function readGet(
+  ctx: PluginContext,
+  config: GithubConfig,
+  path: string
+): Promise<{ status: number; body: unknown }> {
+  const url = `${config.apiBaseUrl}${path}`;
+  try {
+    const response = await api(ctx, config, "GET", path);
+    assertNoRedirect("github", url, response.status, response.headers.location);
+    return response;
+  } catch (err) {
+    throw wrapProviderRequestError("github", url, err);
+  }
+}
+
+/** Adapter `readFileAtRef` hook — see `GitProviderAdapter.readFileAtRef` for the contract. */
+async function readFileAtRef(
+  ctx: PluginContext,
+  request: ReadFileAtRefRequest
+): Promise<ReadFileAtRefResult> {
+  const config = asConfig(ctx.config);
+  const repo = request.repo ?? `${config.owner}/${config.repo}`;
+  const maxBytes = resolveMaxBytes(request.maxBytes);
+  // All THREE caller-supplied strings that reach a route are asserted before any HTTP happens.
+  // `repo` and `ref` are not decoration: `encodeURIComponent("..")` is `".."`, so encoding alone
+  // let a ref of `../../../../user` reach `GET https://api.github.com/user` with this binding's
+  // installation token, and a raw `repo` of `acme/widgets?x=` terminated the route at the query
+  // string. See `assertSafeRef`/`assertSafeRepo` in `@scp/git-provider-core` for the full case.
+  assertSafeRepo("github", repo, 2);
+  assertSafeRepoPath("github", request.path);
+  assertSafeRef("github", request.ref);
+  // `repo` reaches the routes below UNENCODED, deliberately. It used to be wrapped in
+  // `encodePathSegments`, which `assertSafeRepo`'s charset makes a provable IDENTITY
+  // (`REPO_SEGMENT` is `[A-Za-z0-9._-]`, every character URL-unreserved) — a call that READ as the
+  // control while the assert above was the entire control, and that no test could tell apart from
+  // its own deletion. The coupling it claimed to defend (a later relaxation of `REPO_SEGMENT`
+  // letting an un-encoded repo reach a URL) is now pinned where that charset actually lives:
+  // git-provider-core's read-file.test.ts "every character assertSafeRepo accepts is URL-identity"
+  // test FAILS the moment the charset admits anything needing an escape. `path` and `ref` below
+  // still encode for real — their charsets legitimately contain characters that must be escaped
+  // (a space in a path, for instance).
+  const repoPath = repo;
+
+  // STEP 1 — resolve the ref to a commit sha, and STEP 2 reads at that SHA rather than at the ref.
+  // The two-call shape is forced (GitHub's contents response carries a blob sha, never a commit
+  // sha), but reading at the resolved sha is a deliberate choice on top of it: a branch can move
+  // between the two calls, and an inventory row that says "read at commit X" must be true of the
+  // bytes actually parsed. Reading at the ref again would make that a claim rather than a fact.
+  const resolved = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/commits/${encodePathSegments(request.ref)}`
+  );
+  if (resolved.status === 404) {
+    // GitHub 404s an unknown ref AND an inaccessible repo identically (it hides private repos
+    // behind 404 by design), so this cannot distinguish "no such branch" from "no access" — the
+    // detail says so rather than asserting the more flattering one.
+    return {
+      outcome: "not_found",
+      missing: "ref",
+      path: request.path,
+      requestedRef: request.ref,
+      detail: `github: no commit for ref '${request.ref}' in ${repo} (GitHub also returns 404 for a repo the installation cannot see)`
+    };
+  }
+  if (resolved.status < 200 || resolved.status >= 300) {
+    throw new Error(`github readFileAtRef: resolving ref returned HTTP ${resolved.status}`);
+  }
+  const commitSha = (resolved.body as { sha?: unknown } | undefined)?.sha;
+  if (typeof commitSha !== "string" || commitSha.length === 0) {
+    throw new Error(
+      `github readFileAtRef: commit response for ref '${request.ref}' carried no sha — refusing to report a resolved commit this call did not actually resolve`
+    );
+  }
+
+  // STEP 2 — the blob, pinned to the sha from step 1.
+  const contents = await readGet(
+    ctx,
+    config,
+    `/repos/${repoPath}/contents/${encodePathSegments(request.path)}?ref=${encodeURIComponent(commitSha)}`
+  );
+  if (contents.status === 404) {
+    return {
+      outcome: "not_found",
+      missing: "path",
+      path: request.path,
+      requestedRef: request.ref,
+      detail: `github: no file at '${request.path}' in ${repo}@${commitSha}`
+    };
+  }
+  if (contents.status < 200 || contents.status >= 300) {
+    throw new Error(`github readFileAtRef: contents returned HTTP ${contents.status}`);
+  }
+
+  // A directory comes back as an ARRAY from the very same route — the one shape difference that
+  // separates "read a file" from the marker-file walk `discover()` does.
+  if (Array.isArray(contents.body)) {
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `github: '${request.path}' is a directory (contents returned a listing of ${contents.body.length} entries), not a file`,
+      path: request.path,
+      requestedRef: request.ref
+    };
+  }
+
+  const entry = (contents.body ?? {}) as GithubContentFile;
+  if (entry.type !== "file") {
+    // `symlink` and `submodule` are the other two documented `type` values; neither carries bytes
+    // this can honestly hand back as the file's content.
+    return {
+      outcome: "refused",
+      reason: "not_a_file",
+      detail: `github: '${request.path}' has content type '${entry.type ?? "unknown"}', not 'file'`,
+      path: request.path,
+      requestedRef: request.ref,
+      sizeBytes: entry.size
+    };
+  }
+
+  return decodeBoundedBase64({
+    provider: "github",
+    path: request.path,
+    requestedRef: request.ref,
+    commitSha,
+    base64: entry.content ?? "",
+    encoding: entry.encoding,
+    declaredSizeBytes: entry.size,
+    maxBytes,
+    blobSha: entry.sha
+  });
+}
+
 /**
  * The GitHub `GitProviderAdapter` — every GitHub-wire-specific hook the provider-neutral
  * `@scp/git-provider-core` needs. The executor factory consumes `resolveStatePath`/`triggerCI`/
  * `pollCommits`/`pollRuns`/`getStatus`/`abortRun`/`capabilities`; `authorize`/`baseUrl` back this
- * adapter's own REST calls (`api()`), `verifyWebhook`/`mapEvent` back the server webhook path, and
- * `mapStatusToPhase` backs `getStatus`.
+ * adapter's own REST calls (`api()`), `verifyWebhook`/`mapEvent` back the server webhook path,
+ * `mapStatusToPhase` backs `getStatus`, and `readFileAtRef` backs ADR-0032's manifest ingestion
+ * (adapter-only — the factory never turns it into a fifth executor verb).
  */
 export const githubAdapter: GitProviderAdapter = {
   sourceKind: "github",
@@ -648,7 +849,8 @@ export const githubAdapter: GitProviderAdapter = {
   capabilities: githubCapabilities,
   verifyWebhook: verifyGithubWebhookSignature,
   mapEvent: mapGithubWebhookEventToHint,
-  mapStatusToPhase: mapConclusionToPhase
+  mapStatusToPhase: mapConclusionToPhase,
+  readFileAtRef
 };
 
 export const githubExecutorPlugin: ExecutorPlugin = createExecutorPluginFromAdapter(githubAdapter);
@@ -685,7 +887,11 @@ export async function postCommitStatus(
     ctx,
     config,
     "POST",
-    `/repos/${config.owner}/${config.repo}/statuses/${input.sha}`,
+    // `input.sha` is CALLER-supplied and spliced into a route, so it is encoded for the same reason
+    // `readFileAtRef`'s `repo`/`ref` are (M21.2 review, BLOCKERS 1-2). Encoding is sufficient HERE
+    // and a validator is not, because this is a single segment with no literal `/` left after
+    // encoding: `encodeURIComponent("../..")` is `..%2F..`, which a URL does not normalize away.
+    `/repos/${config.owner}/${config.repo}/statuses/${encodeURIComponent(input.sha)}`,
     {
       state: input.state,
       context: input.context ?? "commanderscp/coordination",

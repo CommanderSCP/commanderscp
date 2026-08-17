@@ -15206,6 +15206,303 @@ export type LoadScanDbResponses = {
 
 export type LoadScanDbResponse = LoadScanDbResponses[keyof LoadScanDbResponses];
 
+export type GetDependencySubscriptionUnlockData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/dependency-subscription-unlock';
+};
+
+export type GetDependencySubscriptionUnlockErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetDependencySubscriptionUnlockError = GetDependencySubscriptionUnlockErrors[keyof GetDependencySubscriptionUnlockErrors];
+
+export type GetDependencySubscriptionUnlockResponses = {
+    /**
+     * Success
+     */
+    200: {
+        unlocked: boolean;
+        note: string | null;
+        updatedAt: string | null;
+        source: string;
+    };
+};
+
+export type GetDependencySubscriptionUnlockResponse = GetDependencySubscriptionUnlockResponses[keyof GetDependencySubscriptionUnlockResponses];
+
+export type PutDependencySubscriptionUnlockData = {
+    body: {
+        unlocked: boolean;
+        note?: string | null;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/dependency-subscription-unlock';
+};
+
+export type PutDependencySubscriptionUnlockErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutDependencySubscriptionUnlockError = PutDependencySubscriptionUnlockErrors[keyof PutDependencySubscriptionUnlockErrors];
+
+export type PutDependencySubscriptionUnlockResponses = {
+    /**
+     * Success
+     */
+    200: {
+        unlocked: boolean;
+        note: string | null;
+        updatedAt: string | null;
+        source: string;
+    };
+};
+
+export type PutDependencySubscriptionUnlockResponse = PutDependencySubscriptionUnlockResponses[keyof PutDependencySubscriptionUnlockResponses];
+
+export type GetComponentDependencySubscriptionData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        major: string;
+    };
+    url: '/components/{idOrUrn}/dependency-subscription';
+};
+
+export type GetComponentDependencySubscriptionErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetComponentDependencySubscriptionError = GetComponentDependencySubscriptionErrors[keyof GetComponentDependencySubscriptionErrors];
+
+export type GetComponentDependencySubscriptionResponses = {
+    /**
+     * Success
+     */
+    200: {
+        componentObjectId: string;
+        line: {
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            major: string;
+        };
+        resolution: {
+            enabled: boolean;
+            reason: 'enabled' | 'instance_locked' | 'disabled' | 'not_enabled';
+            granularity: 'patch' | 'minor_and_patch';
+            delivery: 'pull_request' | 'auto_merge';
+            contributions: Array<{
+                tier: 'instance' | 'org' | 'containment_domain' | 'service' | 'component';
+                source: string;
+                objectTypeId?: string;
+                contributed: 'unlock' | 'lock' | 'enable' | 'disable' | 'ignored';
+                ignoredReason?: 'malformed' | 'condition_unevaluable';
+                selector?: {
+                    ecosystem?: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate?: string;
+                    major?: string;
+                };
+                granularity?: 'patch' | 'minor_and_patch';
+                delivery?: 'pull_request' | 'auto_merge';
+            }>;
+        };
+    };
+};
+
+export type GetComponentDependencySubscriptionResponse = GetComponentDependencySubscriptionResponses[keyof GetComponentDependencySubscriptionResponses];
+
+export type BackfillDependencyInventoryData = {
+    body: {
+        componentIdsOrUrns?: Array<string>;
+        ref?: string;
+        fetchBudget?: number;
+    };
+    path?: never;
+    query?: never;
+    url: '/dependencies/inventory/backfill';
+};
+
+export type BackfillDependencyInventoryErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type BackfillDependencyInventoryError = BackfillDependencyInventoryErrors[keyof BackfillDependencyInventoryErrors];
+
+export type BackfillDependencyInventoryResponses = {
+    /**
+     * Success
+     */
+    200: {
+        ref: string;
+        components: Array<{
+            componentObjectId: string;
+            name: string;
+            verdict: 'not_enabled' | 'not_addressable' | 'superseded' | 'ingested' | 'not_attempted';
+            detail: string;
+            manifestsIngested: number;
+            declarationsRecorded: number;
+            declarationsPruned: number;
+            manifestsRemoved: number;
+            manifestsSkipped: number;
+            reads: number;
+        }>;
+        ingested: number;
+        notEnabled: number;
+        notAddressable: number;
+        superseded: number;
+        notAttempted: number;
+        declarationsPruned: number;
+    };
+};
+
+export type BackfillDependencyInventoryResponse = BackfillDependencyInventoryResponses[keyof BackfillDependencyInventoryResponses];
+
 export type ListCampaignsData = {
     body?: never;
     path?: never;

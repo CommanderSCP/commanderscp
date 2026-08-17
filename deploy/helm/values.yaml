@@ -234,6 +234,26 @@ managedIac:
   workspaceRoot: /var/lib/scp/managed-iac
 
 # -------------------------------------------------------------------------------------------
+# Managed-dep (M21.5 — ADR-0032 §8, charter `scp-managed-dep` amendment 2026-08-13/2026-08-15).
+# OFF BY DEFAULT, AND THE DEFAULT IS THE CONTROL: with `runnerImage` empty this block renders
+# nothing, `SCP_MANAGED_DEP_RUNNER_IMAGE` is unset, and a dependency-bump dispatch fails closed
+# before a container could be launched or a repository-write credential minted (ADR-0006 — managed
+# execution is never a default; this is the one managed class that WRITES to a user's repository).
+#
+# `runnerImage` is the SEPARATE, signed `scp-runner-dep` image — pin it by digest or by the
+# `sha-<commit>` tag `publish-images.yml` produces, never `:latest`. The scpd image carries no
+# manifest editor of its own.
+#
+# There is deliberately NO networkMode knob, unlike `managedIac` above. This class's charter egress
+# clause is UNQUALIFIED ("Runner network egress is `--network none`"), where managed-scan's is
+# qualified for registry pulls — so the value is a literal in the plugin and an operator-settable
+# default would be an operator-facing way to contradict the charter (ADR-0032 §8d).
+# -------------------------------------------------------------------------------------------
+managedDep:
+  runnerImage: ""
+  workspaceRoot: /var/lib/scp/managed-dep
+
+# -------------------------------------------------------------------------------------------
 # Managed-scan vulnerability-DB cache (M13.3b-ii — ADR-0020, proposal §13.3b). OPTIONAL, OFF BY
 # DEFAULT: with it off the promotion scan step's runner uses the DB baked into the scp-runner-scan
 # image (the fail-closed fallback, as stale as the image), so single-container/dev stays zero-config.

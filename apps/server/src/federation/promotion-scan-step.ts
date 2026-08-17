@@ -32,7 +32,10 @@ import {
 import { resolveScannersForType } from "../governance/scanner-registry.js";
 import { resolveEffectiveScanThreshold } from "../governance/scan-requirements.js";
 import { readScanDbStatus } from "../governance/scan-db.js";
-import { managedScanServerSettings } from "../coordination/executor-bindings-repo.js";
+import {
+  managedRunnerSettings,
+  managedScanServerSettings
+} from "../coordination/executor-bindings-repo.js";
 import {
   bindOciRefToAuthorizedDigest,
   normalizeSha256Digest,
@@ -452,6 +455,10 @@ export async function runPromotionScanStep(
         status: d.status,
         evidence: d.evidence,
         detail: d.detail
+        // NO `pluginModule` (0063), deliberately: these rows are deposited under a SYNTHETIC control
+        // id with no `control_bindings` row, so there is no module that produced them. NULL is the
+        // honest answer and is what keeps a caller asking "what kind of evidence is this?" able to
+        // tell a commander scan deposit apart from a bound plugin's verdict.
       });
     }
   });
@@ -661,7 +668,11 @@ function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
         throw new Error("managed-scan: the runner never calls ctx.http");
       }
     },
-    config: { runnerImage, networkMode }
+    // `dockerBinary` from the SAME operator knob the binding path injects. This context is built
+    // server-side with no tenant input, so it is not a trust boundary — but a docker-vs-podman
+    // setting that applied to bound managed-scan runs and not to the commander's own promotion
+    // scans would be a knob that works half the time.
+    config: { runnerImage, networkMode, ...managedRunnerSettings() }
   };
 }
 

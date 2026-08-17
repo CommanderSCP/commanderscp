@@ -26,5 +26,18 @@ scan_hash=$(
 # scp-runner-iac: its build context alone determines the image.
 iac_hash=$(find apps/runner-iac -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)
 
+# scp-runner-dep (M21.5): the Dockerfile/run.sh build context PLUS the pinned BusyBox base — same
+# reasoning as scp-runner-scan's pin inclusion. The base is a LITERAL digest in the Dockerfile (it is
+# deliberately not a build arg — see apps/runner-dep/Dockerfile), so a pin bump already changes
+# apps/runner-dep/**; tools/busybox/pin.env is hashed anyway so that updating the pin's provenance
+# record and the Dockerfile in the same commit can never yield a stale cached image.
+dep_hash=$(
+  {
+    find apps/runner-dep -type f -exec sha256sum {} +
+    sha256sum tools/busybox/pin.env
+  } | sort | sha256sum | cut -c1-16
+)
+
 echo "SCP_RUNNER_SCAN_IMAGE_REF=${registry}/scp-runner-scan:${scan_hash}"
 echo "SCP_RUNNER_IAC_IMAGE_REF=${registry}/scp-runner-iac:${iac_hash}"
+echo "SCP_RUNNER_DEP_IMAGE_REF=${registry}/scp-runner-dep:${dep_hash}"

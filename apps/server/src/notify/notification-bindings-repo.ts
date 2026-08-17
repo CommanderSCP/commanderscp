@@ -4,6 +4,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { notificationBindings } from "../db/schema.js";
 import type { PluginModule } from "../plugin-host/contract.js";
 import { assertNotReservedInstanceId } from "../coordination/executor-bindings-repo.js";
+import { assertEveryModuleHasManifest } from "../plugin-host/plugin-manifests.js";
 
 /**
  * `notification_bindings` (DESIGN §11 `NotificationPlugin`, BUILD_AND_TEST.md §8 M7 item 4) — an
@@ -143,6 +144,16 @@ export async function deleteNotificationBinding(
 /** Same allowlist discipline as `executor-bindings-repo.ts`'s `KNOWN_EXECUTOR_MODULES` — a free-form
  *  DB column must never reach `host.start()` unchecked. */
 export const KNOWN_NOTIFICATION_MODULES: PluginModule[] = ["webhook-notify", "smtp-notify"];
+
+/**
+ * CENSUSED, NOT ASSUMED. `PUT /notifications/{instanceId}` calls the same `validatePluginConfig`
+ * the executor door does, so it carried the identical fail-open: an allowlisted module with no
+ * manifest would have had its tenant config stored unread. Measured on shipped main, both modules
+ * here DO have manifests, so this allowlist happened to be clean — but "happened to be" is the
+ * whole defect being fixed, and the executor allowlist was clean once too. The assertion is what
+ * makes it stay true, so a third notification channel cannot land without a config schema.
+ */
+assertEveryModuleHasManifest(KNOWN_NOTIFICATION_MODULES, "KNOWN_NOTIFICATION_MODULES");
 
 export function isKnownNotificationModule(value: string): value is PluginModule {
   return (KNOWN_NOTIFICATION_MODULES as string[]).includes(value);

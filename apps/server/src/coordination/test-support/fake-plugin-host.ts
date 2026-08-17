@@ -2,9 +2,11 @@ import type { PluginContext } from "@scp/plugin-api";
 import { createFakeExecutorPlugin } from "@scp/plugin-fake-executor";
 import type {
   ControlPluginClient,
+  DependencyIndexPluginClient,
   DiscoveryPluginClient,
   ExecutorPluginClient,
   FederationTransportPluginClient,
+  GitFileReadPluginClient,
   NotificationPluginClient,
   PluginHost
 } from "../../plugin-host/contract.js";
@@ -46,6 +48,9 @@ export function createInMemoryFakeHost(config?: unknown): PluginHost {
     async stop() {
       // Nothing to tear down.
     },
+    async stopInstances() {
+      // Nothing to tear down — there is no child process behind this fixture's "instances".
+    },
     executor(_instanceId: string): ExecutorPluginClient {
       return client;
     },
@@ -67,6 +72,16 @@ export function createInMemoryFakeHost(config?: unknown): PluginHost {
     federationTransport(_instanceId: string): FederationTransportPluginClient {
       throw new Error(
         "createInMemoryFakeHost: no FederationTransportPlugin fixture wired — this test only drives ExecutorPlugin"
+      );
+    },
+    dependencyIndex(_instanceId: string): DependencyIndexPluginClient {
+      throw new Error(
+        "createInMemoryFakeHost: no DependencyIndexPlugin fixture wired — this test only drives ExecutorPlugin"
+      );
+    },
+    gitFileRead(_instanceId: string): GitFileReadPluginClient {
+      throw new Error(
+        "createInMemoryFakeHost: no git-provider readFileAtRef fixture wired — this test only drives ExecutorPlugin"
       );
     }
   };
@@ -116,10 +131,13 @@ export function withRefusingTrigger(
   const host: PluginHost = {
     start: (configs) => inner.start(configs),
     stop: () => inner.stop(),
+    stopInstances: (ids) => inner.stopInstances(ids),
     control: (instanceId) => inner.control(instanceId),
     discovery: (instanceId) => inner.discovery(instanceId),
     notification: (instanceId) => inner.notification(instanceId),
     federationTransport: (instanceId) => inner.federationTransport(instanceId),
+    dependencyIndex: (instanceId) => inner.dependencyIndex(instanceId),
+    gitFileRead: (instanceId) => inner.gitFileRead(instanceId),
     executor(instanceId) {
       const real = inner.executor(instanceId);
       return {
@@ -169,10 +187,13 @@ export function withFailOnceAfterRealTrigger(
   const host: PluginHost = {
     start: (configs) => inner.start(configs),
     stop: () => inner.stop(),
+    stopInstances: (ids) => inner.stopInstances(ids),
     control: (instanceId) => inner.control(instanceId),
     discovery: (instanceId) => inner.discovery(instanceId),
     notification: (instanceId) => inner.notification(instanceId),
     federationTransport: (instanceId) => inner.federationTransport(instanceId),
+    dependencyIndex: (instanceId) => inner.dependencyIndex(instanceId),
+    gitFileRead: (instanceId) => inner.gitFileRead(instanceId),
     executor(instanceId) {
       const real = inner.executor(instanceId);
       return {

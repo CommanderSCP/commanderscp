@@ -61,8 +61,9 @@ describe("wave target type: a release triggers the matching-Type pipeline", () =
     await server?.close();
   });
 
-  // `fake-executor`: in KNOWN_EXECUTOR_MODULES but manifest-less, so validatePluginConfig skips it —
-  // this suite is about Type routing, not any real plugin's config shape (same choice as P3's suite).
+  // `fake-executor`: an empty config satisfies its manifest schema, so this suite stays about Type
+  // routing rather than any plugin's config shape (same choice as P3's suite). It was manifest-less
+  // when this comment was written; `validatePluginConfig` no longer skips anything.
   const bind = (targetId: string, type: ExecutorType, instance: string) =>
     admin.executors.putBinding(targetId, {
       pluginModule: "fake-executor",

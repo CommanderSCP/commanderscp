@@ -53,7 +53,12 @@ import {
  *    `object:write`, and a `policy` create/update additionally runs
  *    `assertPolicyScopeWithinAuthority` — the exact same governance gates the typed `/policies`/
  *    `/controls` routes enforce (security fast-follow after PR #9: `iac/plans-repo.ts`'s
- *    `prepareApplyChecks` doc comment has the full story).
+ *    `prepareApplyChecks` doc comment has the full story). "The exact same gates" is a claim this
+ *    file cannot keep on its own, and M21.3 briefly made it FALSE: ADR-0032 §6a's refusal was added
+ *    to the typed route's `validateWrite` and to nothing else, so a manifest declaring a group-scoped
+ *    dependency-subscription opt-out applied cleanly through here and the object read back. That
+ *    refusal now lives at `graph/objects-repo.ts`'s `createObject`/`updateObject` — which apply calls
+ *    directly — so parity holds by construction rather than by two lists happening to agree.
  */
 export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
   const typed = app.withTypeProvider<ZodTypeProvider>();

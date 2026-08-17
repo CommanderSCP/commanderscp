@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   ChangeRequirementSchema,
@@ -14,7 +14,14 @@ import { changeSourceEvents } from "../db/schema.js";
 import { badRequest, ProblemError } from "../errors.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { insertDecision } from "./decisions-repo.js";
-import { linkToCoordinatedChange, matchComponentForSource } from "./correlation.js";
+import {
+  BUMP_OBSERVED_EVENT,
+  linkToCoordinatedChange,
+  matchAuthoredBumpChange,
+  matchComponentForSource
+} from "./correlation.js";
+import { writeOutboxEvent } from "../events/outbox-repo.js";
+import { recordBumpHeadCommit } from "../dependencies/bump-authorship-repo.js";
 import { proposeChange } from "./changes-repo.js";
 import { deriveUrn } from "../graph/urn.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
@@ -60,6 +67,41 @@ export interface ExtractedHint {
    *  `refPattern` source mapping matches against (ADR-0030 §1). Undefined for any source that has
    *  no ref (a registry/package push), which simply never matches a ref-scoped mapping. */
   ref?: string;
+  /**
+   * The SOURCE branch of a pull/merge request, fully qualified — read ONLY by the M21.5 bump
+   * correlation, never by source-mapping routing (see `GitProviderEventHint.headRef` for why it is
+   * not folded into `ref`).
+   *
+   * A `pull_request` action=opened delivery for a bump SCP authored can be processed BEFORE the
+   * authored push — the ordering is the provider's — and at that moment the bump has no recorded
+   * head commit, so neither correlation route could see it. It matched the component's ordinary
+   * source mapping and minted the second, unrelated change ADR-0032 §9 exists to prevent. The head
+   * ref is the join that was already available on the payload and was being dropped.
+   */
+  headRef?: string;
+  /**
+   * The COMMIT this event is about — `head_commit.id`/`after` for a push, the head sha for a PR or
+   * a workflow run. Every git-provider adapter's `mapEvent` has always returned one; until M21.2
+   * nothing on this side read it, so it was dropped at this boundary and `changes.source_ref` carried
+   * no commit AT ALL (measured filterlessly: no non-test module in the tree ever wrote
+   * `source_ref.commit`).
+   *
+   * That was not a cosmetic gap. A ref is a moving label and a commit is an identity, so every
+   * consumer that must read a repo AT THE RELEASED POINT was blocked on it: M21.4's language
+   * ecosystems refused every release with `no_released_commit`, and M21.2's inventory ingestion
+   * would otherwise read a branch head that has since moved past the release it is recording.
+   *
+   * M21.5 (the auto-merge link) is the other reader, and it is why the ADAPTER's reading has to
+   * reach this field rather than only the flat one: GitHub's `workflow_run` (the event that says a
+   * component's checks CONCLUDED) carries its commit at `workflow_run.head_sha`, which no flat key
+   * reaches, so a CI conclusion arrived at ingress with its commit unreadable. Surfacing it here is
+   * what lets `matchAuthoredBumpChange` attach a CI event to the bump change whose own head commit
+   * it names.
+   *
+   * Undefined for any event with no commit (a registry/package push, a release), which correlates
+   * exactly as it always has.
+   */
+  commitSha?: string;
   /** OCI/image artifact digest (`sha256:…`) for a registry/package push (harbor's `PUSH_ARTIFACT`,
    *  gitea's `package`) — threaded into the proposed Change's `sourceRef.artifact_digest`, the
    *  connective tissue the M17.1 scan gate binds to (ADR-0013). Additive (M15.3c): forwarded here
@@ -147,6 +189,21 @@ function genericHint(payload: unknown): ExtractedHint {
     // declared there a CI step sending one got a validation REFUSAL, not a route — reading it here
     // would have been necessary and not sufficient.
     ref: typeof p.ref === "string" && p.ref.length > 0 ? p.ref : undefined,
+    // The SAME reader that records the commit onto an authored bump change, so the flat shape's
+    // notion of "which commit" has exactly one definition (`commitShaFromPayload`, including its
+    // all-zero branch-delete rejection) — that function already covers `commitSha`, the spelling
+    // `observe()` writes into the flat payload it correlates from (`coordination/observe.ts`).
+    //
+    // `commit` is read here and NOT added to that function's key set, deliberately: those keys are
+    // pinned to what `governance/gate-orchestrator.ts`'s `resolveChangeCommitSha` reads back out of
+    // `source_ref`, and `commit` is not one of them. But a hand-crafted `/webhook` body and the
+    // canonical `source_ref` both spell it `commit` (it is the key `canonicalizeSourceRef` mints
+    // below), and accepting one spelling and not the other would make the poll-vs-push equivalence
+    // DESIGN §12 claims false for this field. Last, so a payload carrying both keeps the pinned set
+    // authoritative.
+    commitSha:
+      commitShaFromPayload(payload) ??
+      (typeof p.commit === "string" && p.commit.length > 0 ? p.commit : undefined),
     correlationKey: typeof p.correlationKey === "string" ? p.correlationKey : undefined,
     artifactDigest:
       typeof p.artifactDigest === "string" && p.artifactDigest.length > 0
@@ -215,6 +272,15 @@ export function extractHint(sourceKind: string, headers: unknown, payload: unkno
     // (a package push) sets no ref, so this correctly falls through to the generic shape and then
     // to undefined — and an event with no ref matches no ref-scoped mapping, fail-closed.
     ref: providerHint.ref ?? generic.ref,
+    // Adapter-only: no flat-payload shape carries a pull request's head branch, and nothing in the
+    // generic hint should start inventing one.
+    headRef: providerHint.headRef,
+    // Same adapter-wins precedence as every field above. Carried through EXPLICITLY because this
+    // branch reconstructs field-by-field rather than spreading `generic` — the omission of this one
+    // line is what dropped every provider's commit sha at this boundary until M21.2. It is also the
+    // field that carries a CI conclusion's commit: only the adapter can read `workflow_run.head_sha`
+    // / `object_attributes.sha`, and the flat shape never reaches them — see `ExtractedHint.commitSha`.
+    commitSha: providerHint.commitSha ?? generic.commitSha,
     correlationKey: providerHint.correlationKey ?? generic.correlationKey,
     // Additive forwarding (M15.3c): git-provider hints that don't set a digest leave this undefined,
     // so nothing about their behavior changes; harbor/gitea package pushes carry it through to
@@ -263,6 +329,23 @@ export function canonicalizeSourceRef(
   // (`change_source_events.payload`) still holds the body byte-for-byte for forensics; the
   // untrusted `POST /changes` door refuses the same keys with a 400 (`routes/changes.ts`).
   const sourceRef: Record<string, unknown> = withoutServerOwnedSourceRefKeys({ ...raw });
+  // M21.2 — THE TWO KEYS THAT NAME *WHERE* AND *WHICH POINT*, lifted for the first time.
+  //
+  // `internal-release-detection.ts` and `inventory-ingestion-loop.ts` both read `source_ref` as
+  // flat `{repo, ref, commit}`, and until now that read found almost nothing: a GitHub push nests
+  // its repo at `repository.full_name` and its commit at `head_commit.id`, so `repo` was absent for
+  // every provider webhook and `commit` was absent for EVERY driver in the tree, `observe()`
+  // included (it writes `commitSha`). The measured downstream cost was two hard refusals —
+  // `manifest-reader.ts` throws when `repo` is empty and `internal-release-version.ts` refuses with
+  // `no_released_commit` when `commit` is — so three of the five ecosystems could not resolve a
+  // released version on ANY real delivery, and nothing could read a manifest at the released point.
+  //
+  // Lifted here rather than defended in each reader for the reason `artifact_digest` is: this is the
+  // one place canonical `source_ref` keys are minted, and a reader that dug into a provider's own
+  // payload shape would be a per-provider parser in a module that must stay provider-neutral.
+  if (hint.repo) sourceRef.repo = hint.repo;
+  if (hint.ref) sourceRef.ref = hint.ref;
+  if (hint.commitSha) sourceRef.commit = hint.commitSha;
   if (hint.artifactDigest) sourceRef.artifact_digest = hint.artifactDigest;
   if (hint.sbom) {
     // Normalize the SBOM DOCUMENT's digest to `sha256:<lowercase-hex>` so what is persisted always
@@ -281,6 +364,33 @@ export function canonicalizeSourceRef(
     sourceRef.sbom_invalid = raw.sbom;
   }
   return sourceRef;
+}
+
+/**
+ * The commit a push payload is at, or `undefined`.
+ *
+ * THE KEY SET IS NOT CHOSEN HERE — it is exactly the set `governance/gate-orchestrator.ts`'s
+ * `resolveChangeCommitSha` reads back out of `source_ref` (`commit_sha`, `commitSha`, `sha`,
+ * `after`, `checkout_sha`, then `head_commit.id`). That is the whole point: this function writes the
+ * value that function reads, so a key one of them knows and the other does not is a control asked
+ * about nothing. `bump-provenance.integration.test.ts` drives a real push payload through the
+ * webhook ingress and asserts the recorded `commit_sha`, which is where a divergence would bite.
+ *
+ * Exported for that test. Not exported to give callers a second way to read a commit: everything
+ * downstream reads `source_ref`, never a payload.
+ */
+export function commitShaFromPayload(payload: unknown): string | undefined {
+  if (payload === null || typeof payload !== "object") return undefined;
+  const p = payload as Record<string, unknown>;
+  for (const key of ["commit_sha", "commitSha", "sha", "after", "checkout_sha"]) {
+    const value = p[key];
+    // A push that DELETES a branch carries an all-zero `after`, which is not a commit. Treated as
+    // absent rather than recorded, or the change would claim a head nothing can be checked against.
+    if (typeof value === "string" && value !== "" && !/^0+$/.test(value)) return value;
+  }
+  const head = p.head_commit as { id?: unknown } | null | undefined;
+  if (head && typeof head.id === "string" && head.id !== "") return head.id;
+  return undefined;
 }
 
 /**
@@ -309,6 +419,107 @@ export async function processChangeSourceEvents(tx: TenantTx, orgId: string): Pr
 
   for (const row of rows) {
     const hint = extractHint(row.sourceKind, row.headers, row.payload);
+
+    // M21.5 THE PROVENANCE LOOP (ADR-0032 §9) — BEFORE source-mapping correlation, because a bump SCP
+    // authored WOULD match the component's ordinary mapping and would then be proposed as a second,
+    // unrelated change for a release that already has one. Attaching here is what makes the returning
+    // event the originating change's own rather than a duplicate of it.
+    //
+    // Deliberately NOT a filter on `sourceKind` or on the mapping: the push arrives through the
+    // component's own git provider, so it is indistinguishable from any other push except by the ref
+    // SCP chose and the change that claims it. See `correlation.ts`'s `matchAuthoredBumpChange` for
+    // why BOTH halves of that claim are required.
+    const authoredChangeId = await matchAuthoredBumpChange(tx, orgId, {
+      repo: hint.repo,
+      // THE PULL REQUEST'S OWN SOURCE BRANCH counts as "the ref this event is about" for the
+      // provenance join, and only for it: a `pull_request` opened delivery that beats the authored
+      // push has no recorded commit to join on, and would otherwise mint a second change for a
+      // release that already has one. `hint.ref` still wins where a provider set one (a push), so
+      // no existing event changes route.
+      ref: hint.ref ?? hint.headRef,
+      // M21.5 auto-merge link: a CI-conclusion event (GitHub's `workflow_run`) names no ref, only the
+      // commit it ran on. `matchAuthoredBumpChange`'s second route joins that to the bump change that
+      // RECORDED that commit as its own branch head — see it for why that is still a fact SCP
+      // asserted rather than one the payload claimed.
+      commitSha: hint.commitSha
+    });
+    if (authoredChangeId) {
+      // WHICH COMMIT THE AUTHORED BRANCH IS NOW AT — recorded onto the change, not merely observed.
+      //
+      // This is what makes the charter's auto-merge clause enforceable. `dependencies/bump-actuator.ts`
+      // grants `auto_merge` only on a control run that evidences the component's own checks passed FOR
+      // THIS BUMP'S OWN COMMIT, and until this event there is no such commit anywhere: the change is
+      // recorded before the branch exists, so `@scp/plugin-github-check` would fall back to its
+      // operator-pinned `expectedRef` and could report CI green for the BASE branch — green on `main`
+      // used as proof that the edit to `main` is safe.
+      //
+      // WHERE IT IS WRITTEN, and why it is written twice:
+      //
+      //   1. `dependency_bump_authorships.head_commit` — THE AUTHORITY. Server-owned storage
+      //      (migration 0063) that no tenant-facing write path can reach. Everything that leads to a
+      //      merge reads it: the delivery grant's "which commit", the merge precondition sent to the
+      //      provider, and the correlation route that attaches a ref-less CI event to this bump.
+      //   2. `changes.source_ref.commit_sha` — THE READABLE LIFT, because that is what
+      //      `governance/gate-orchestrator.ts`'s `resolveChangeCommitSha` reads to tell a control
+      //      WHICH commit this change is about, and it is the same key every other change uses. Note
+      //      what that does and does not buy: forging it changes which commit a control is ASKED
+      //      about, and the grant then refuses because the control's evidence names a commit that is
+      //      not the recorded head. The authority is (1); this is the question, not the answer.
+      //      `scp_authored.headCommit` rides along beside it as the human-readable statement.
+      //
+      // A LATER PUSH TO THE SAME BRANCH OVERWRITES BOTH, deliberately: the bump's head IS the newest
+      // commit on its branch, and leaving the first one standing would let evidence about a superseded
+      // commit authorise merging a different tree. Idempotent under redelivery — the same push writes
+      // the same value.
+      const observedCommit = commitShaFromPayload(row.payload);
+      if (observedCommit) {
+        await recordBumpHeadCommit(tx, orgId, authoredChangeId, observedCommit);
+        await tx.execute(sql`
+          UPDATE changes
+             SET source_ref = jsonb_set(
+                   jsonb_set(coalesce(source_ref, '{}'::jsonb), '{commit_sha}', to_jsonb(${observedCommit}::text), true),
+                   '{scp_authored,headCommit}', to_jsonb(${observedCommit}::text), true
+                 ),
+                 updated_at = now()
+           WHERE org_id = ${orgId} AND object_id = ${authoredChangeId}
+        `);
+      }
+      // ============================================================================================
+      // AND THIS IS WHERE AUTO-MERGE BECOMES REACHABLE (M21.5, ADR-0032 §8c)
+      // ============================================================================================
+      // Something observable happened to a bump SCP authored. That is the ONLY trigger under which
+      // the delivery question is worth asking a second time, and until this line nothing asked it:
+      // §8c recorded `auto_merge` as resolved, recorded and downgraded forever precisely because no
+      // producer of a re-evaluation existed.
+      //
+      // EMITTED AT THE CHOKE POINT, NOT PER EVENT KIND, for the same reason the head-advance event is
+      // emitted at the one head write door (ADR-0032 §8a clause 1): the two events that reach here
+      // today are the authored push and the CI conclusion that names its commit, and a third that
+      // correlates to a bump re-evaluates it by construction rather than by somebody remembering to
+      // add a case.
+      //
+      // IT IS NOT A VERDICT AND CARRIES NONE. The consumer (`dependencies/bump-gate.ts`) re-reads the
+      // change, runs the EXISTING governance gate for it, and re-asks
+      // `resolveEffectiveDelivery` — so a redelivery, an out-of-order arrival, or an event about a
+      // commit that has since been superseded all reach the same answer as a first delivery. The
+      // subject is the CHANGE; nothing downstream trusts this payload for anything but a lookup key.
+      //
+      // Rides the ordinary outbox in the ingress transaction (DESIGN §8), so an event that attached
+      // cannot fail to notify and a notification cannot name an attachment that rolled back.
+      await writeOutboxEvent(tx, {
+        orgId,
+        type: BUMP_OBSERVED_EVENT,
+        source: "/dependencies/bumps",
+        subject: authoredChangeId,
+        data: { changeObjectId: authoredChangeId, sourceKind: row.sourceKind }
+      });
+      await tx
+        .update(changeSourceEvents)
+        .set({ processedAt: new Date(), resultingChangeObjectId: authoredChangeId })
+        .where(eq(changeSourceEvents.id, row.id));
+      continue;
+    }
+
     const match = await matchComponentForSource(tx, orgId, {
       sourceKind: row.sourceKind,
       repo: hint.repo,

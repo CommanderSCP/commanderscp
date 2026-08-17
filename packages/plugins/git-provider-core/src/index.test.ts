@@ -101,7 +101,18 @@ function buildFakeAdapter(opts: { statePath?: string } = {}): {
     }),
     verifyWebhook: (_rawBody, header) => header === "valid",
     mapEvent: (name) => (name === "push" ? { repo: "acme/widgets", commitSha: "abc" } : null),
-    mapStatusToPhase: (status) => (status === "completed" ? "succeeded" : "running")
+    mapStatusToPhase: (status) => (status === "completed" ? "succeeded" : "running"),
+    // Required by the interface since M21.2. The fake's implementation is deliberately trivial —
+    // the real decode/refusal behavior is covered in `read-file.test.ts` and each provider's own
+    // nock suite; what this call site proves is only that the hook is part of the contract.
+    readFileAtRef: async (_ctx, request) => ({
+      outcome: "found",
+      path: request.path,
+      requestedRef: request.ref,
+      commitSha: "fake-commit-sha",
+      content: "{}",
+      sizeBytes: 2
+    })
   };
   return { adapter, calls };
 }
@@ -299,5 +310,72 @@ describe("verb delegation to the adapter", () => {
       supportsAbort: false,
       triggerKinds: ["workflow_dispatch"]
     });
+  });
+
+  /**
+   * NEGATIVE CONTROL, and the point of the whole assertion: `readFileAtRef` must NOT appear on the
+   * assembled `ExecutorPlugin`. ADR-0032 §9 and charter principle 1 hold that the four verbs ARE the
+   * structural enforcement of "coordination, not execution"; a fifth key here becomes a fifth verb
+   * in every consumer of an `ExecutorPlugin`. The positive half (the hook exists and is reachable on
+   * the ADAPTER) is asserted alongside so this cannot pass by the hook simply not existing.
+   */
+  it("does NOT surface readFileAtRef as an ExecutorPlugin verb — the four-verb set is unchanged (ADR-0032 §9)", async () => {
+    const { adapter } = buildFakeAdapter();
+    const plugin = createExecutorPluginFromAdapter(adapter);
+
+    expect(Object.keys(plugin).sort()).toEqual([
+      "abort",
+      "describeCapabilities",
+      "observe",
+      "status",
+      "trigger"
+    ]);
+    expect("readFileAtRef" in plugin).toBe(false);
+
+    // ...and it IS reachable on the adapter, so the absence above is a boundary, not a gap.
+    const result = await adapter.readFileAtRef(fakeCtx(), { path: "go.mod", ref: "main" });
+    expect(result.outcome).toBe("found");
+  });
+
+  /**
+   * ================================================================================================
+   * `GitProviderAdapter` IS READ-ONLY, AND A WRITE HOOK MAY NOT REAPPEAR ON IT (owner decision
+   * 2026-08-15; ADR-0032 §9)
+   * ================================================================================================
+   * §9 justifies this adapter's existence as an escape hatch on TWO things: the `ExecutorPlugin`
+   * object is unchanged, AND — in its own words — "It also only READS." M21.5 briefly grew
+   * `createBranch`/`putFileOnBranch`/`openPullRequest` here, which contradicts the second half of
+   * that argument: extending the same mechanism to writes leaves the verb set intact while moving
+   * repository-write authority into a package every git-provider plugin loads and that is not one of
+   * the charter's enumerated managed classes. The write authority therefore lives inside
+   * `scp-managed-dep` (`packages/plugins/managed-dep`), where the charter's containment
+   * preconditions actually bind, and this interface reads.
+   *
+   * The absence is pinned TWO ways, because they fail at different times and catch different edits:
+   *
+   *  - the TYPE-LEVEL pin fails `tsc` the moment a write hook is DECLARED on the interface, which is
+   *    the edit that would reopen this. A runtime `in` check cannot see an interface at all;
+   *  - the key-set assertion in the test above already fails if such a hook were also surfaced as a
+   *    fifth verb.
+   *
+   * The read hook is asserted PRESENT in the same breath, so this cannot go green by the whole
+   * capability quietly disappearing — the vacuous-pass shape this repository has been bitten by.
+   */
+  it("declares NO repository-write hook — §9's escape hatch is justified by 'It also only READS'", () => {
+    // Type-level: this alias is `never` unless the interface is free of all three, so the assignment
+    // below is what makes a reintroduced hook a COMPILE error rather than a comment nobody reads.
+    type WriteHookName = "createBranch" | "putFileOnBranch" | "openPullRequest";
+    type AdapterIsReadOnly =
+      Extract<keyof GitProviderAdapter, WriteHookName> extends never ? true : never;
+    const readOnly: AdapterIsReadOnly = true;
+    expect(readOnly).toBe(true);
+
+    // Runtime, over the fake that satisfies the interface: it neither has nor needs them, while the
+    // read hook it DOES need is present.
+    const { adapter } = buildFakeAdapter();
+    for (const hook of ["createBranch", "putFileOnBranch", "openPullRequest"]) {
+      expect(hook in adapter, `${hook} must not be on a GitProviderAdapter`).toBe(false);
+    }
+    expect(typeof adapter.readFileAtRef).toBe("function");
   });
 });

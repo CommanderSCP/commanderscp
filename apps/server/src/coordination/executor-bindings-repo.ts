@@ -10,6 +10,7 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
+import { assertEveryModuleHasManifest } from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
  *  the same execution system shares this id, so they share one observe() poll + cursor. */
@@ -423,8 +424,31 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
   "terraform",
   "pipeline-generic",
   "managed-iac",
-  "managed-scan"
+  "managed-scan",
+  // M21.5 — the third managed executor (charter `scp-managed-dep` amendment 2026-08-13). It joins
+  // this list for the same reason `managed-scan` did: the allowlist is checked at BOTH write time
+  // (`routes/executors.ts`) and dispatch time (`resolveExecutorPluginInstance`, below), and missing
+  // either end fails closed as a confusing "unknown method" RPC error rather than a legible refusal.
+  // Its ORDINARY dispatch is server-side and binding-free — see `managedDepServerSettings` for why
+  // it needs no executor `type`.
+  "managed-dep"
 ];
+
+/**
+ * BEING ON THE ALLOWLIST ABOVE AND HAVING A CONFIG SCHEMA ARE TWO DIFFERENT PROPERTIES, and only
+ * the first was ever checked. The allowlist decides WHICH MODULE may be provisioned; the manifest
+ * decides WHAT CONFIG that module may be provisioned with. `fake-executor`, `pipeline-generic` and
+ * `managed-scan` passed the first and failed the second, and `validatePluginConfig` skipped a
+ * module it had no manifest for — so their binding configs were stored entirely unvalidated. The
+ * sharpest consequence: `@scp/plugin-managed-scan` runs `execFile(config.dockerBinary ?? "docker")`,
+ * and `dockerBinary` is not among the keys `resolveExecutorPluginInstance` injects, so a tenant
+ * binding could name any host executable.
+ *
+ * Asserted HERE, at module load, because this file is where the allowlist lives — the invariant
+ * belongs beside the list it constrains, not in a test that a future edit can be made without
+ * running. Adding a module below without a manifest now fails at BOOT, naming the module.
+ */
+assertEveryModuleHasManifest(KNOWN_EXECUTOR_MODULES, "KNOWN_EXECUTOR_MODULES");
 
 /**
  * Exported (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): until
@@ -549,6 +573,94 @@ export function managedScanServerSettings(): {
     workspaceRoot:
       process.env.SCP_MANAGED_SCAN_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-scan"),
     dbCacheDir: dbCacheDir && dbCacheDir.trim().length > 0 ? dbCacheDir.trim() : undefined
+  };
+}
+
+/**
+ * DEFENCE IN DEPTH for the managed executors' `dockerBinary` — the config key that decides WHICH
+ * EXECUTABLE `@scp/plugin-managed-iac` and `@scp/plugin-managed-scan` `execFile`.
+ *
+ * DECISION (and it is a deliberate one, not a reflex): yes, inject it, for every managed executor,
+ * regardless of schema. Both plugins already did `config.dockerBinary ?? "docker"`, and the ONLY
+ * thing that stopped a tenant choosing that value was `validatePluginConfig` refusing the key at the
+ * write door. That is a single point of failure of exactly the kind that just failed: `managed-scan`
+ * carried a doc comment claiming the schema protected it while the schema was never consulted at all
+ * (no entry in `MANIFEST_BY_MODULE`). Injecting here — LAST in the spread, so it wins — means a
+ * future regression in the write-door gate downgrades from remote code execution to an accepted-but-
+ * inert config key. The two defences now fail independently.
+ *
+ * SCP_MANAGED_RUNNER_DOCKER_BINARY — operator/server-governed, same trust tier as
+ * SCP_MANAGED_IAC_RUNNER_IMAGE. Default `"docker"`, i.e. byte-identical behaviour to before for
+ * every deployment that does not set it; an operator running podman-as-docker sets it once.
+ */
+function managedRunnerDockerBinary(): string {
+  const value = process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY?.trim();
+  return value && value.length > 0 ? value : "docker";
+}
+
+/** Exported so the commander's promotion scan step, which constructs a `managed-scan` plugin context
+ *  directly rather than through a binding, resolves the SAME operator-governed binary. Two code
+ *  paths reading one knob; the alternative is a setting that silently applies to half the runs. */
+export function managedRunnerSettings(): { dockerBinary: string } {
+  return { dockerBinary: managedRunnerDockerBinary() };
+}
+
+/**
+ * SERVER/OPERATOR-GOVERNED `scp-managed-dep` runner settings (M21.5, charter amendment 2026-08-13) —
+ * the exact same never-tenant-suppliable trust tier as `managedIacServerSettings` and
+ * `managedScanServerSettings` above, and read here for the same reason: the plugin subprocess never
+ * sees `process.env` (host.ts's `minimalChildEnv` strips it), so the config this function injects is
+ * the ONLY channel these values have.
+ *
+ *  - SCP_MANAGED_DEP_RUNNER_IMAGE — the vetted, pinned `scp-runner-dep` image. UNSET IS THE DEFAULT
+ *    AND IT MEANS OFF: with no image, a managed-dep dispatch fails closed here before a container
+ *    could be launched or a credential minted. That is the deployment-level expression of "managed
+ *    execution is never a default" (ADR-0006) for the one class that writes to a user's repository.
+ *  - SCP_MANAGED_DEP_WORKSPACE_ROOT — operator root under which per-run scratch dirs are made.
+ *
+ * THERE IS DELIBERATELY NO NETWORK-MODE SETTING, and its absence IS the charter rather than an
+ * omission. `managedIacServerSettings` and `managedScanServerSettings` each carry one because their
+ * classes' network clauses are QUALIFIED — managed-scan's by the 2026-07-23 amendment, "excepting
+ * operator-allowlisted registry pulls for the subject artifact's bytes". The `scp-managed-dep` clause
+ * is not: "Runner network egress is `--network none`; the runner holds no credential, contains no
+ * package manager, and edits only the bytes handed to it" (2026-08-15, unqualified). A knob with a
+ * `none` default is an operator-facing way to contradict that, so the value is a LITERAL in the
+ * plugin (`@scp/plugin-managed-dep`'s `RUNNER_NETWORK_MODE`) and there is nothing here to inject.
+ * `SCP_MANAGED_DEP_NETWORK_MODE` is read by nothing; setting it does nothing.
+ *
+ * THE RUNNER REACHES NO HOSTS: it receives the manifest bytes by `docker cp`, edits them offline,
+ * and returns them the same way. The ORCHESTRATOR (the plugin) is what holds the per-run
+ * repository-write credential and reaches the git host — the same split `scp-managed-scan` already
+ * ships, where the SERVER pulls the subject's bytes and the runner has no network. See
+ * `packages/plugins/managed-dep/src/repo-write.ts` for the charter clauses this reconciles.
+ *
+ * WHY THERE IS NO NEW EXECUTOR `type` FOR THIS CLASS (schemas/executors.ts's closed enum
+ * image|rpm|deb|npm|infrastructure|configuration, "extensible only by deliberate owner decision").
+ *
+ * A dependency bump fits NONE of the six honestly. It is not a build (it turns no source into an
+ * artifact), not `infrastructure`, and not `configuration` (it applies no desired state to a running
+ * system). The `npm` member is a near-miss worth naming explicitly so nobody reaches for it later:
+ * it means "an executor that BUILDS an npm artifact", not "an executor that touches npm packages",
+ * and binding a bump actuator there would silently contend for the `UNIQUE(org, target, type)` slot
+ * a component's real npm build pipeline occupies.
+ *
+ * The right answer is that the class needs no Type at all, and the precedent is `scp-managed-scan`:
+ * it is in this same allowlist yet is never routed through `executor_bindings` in practice —
+ * `federation/promotion-scan-step.ts` constructs the plugin and a `PluginContext` directly, because
+ * it is a first-class step of the commander's own process rather than a tenant-bound pipeline. The
+ * bump actuator is the same shape: its work-list comes from the subscription resolution, not from a
+ * wave target, so nothing ever asks "which binding drives this target's <Type> pipeline?".
+ *
+ * The settings are still injected below for a managed-dep binding an operator creates by hand, so
+ * that path cannot become the one that runs an unvetted image on an unrestricted network.
+ */
+export function managedDepServerSettings(): {
+  runnerImage: string | undefined;
+  workspaceRoot: string;
+} {
+  return {
+    runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
+    workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep")
   };
 }
 
@@ -684,6 +796,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
+    serverInjected.dockerBinary = managedRunnerDockerBinary();
   }
 
   if (pluginModule === "managed-scan") {
@@ -695,6 +808,19 @@ export async function resolveExecutorPluginInstance(
     }
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
+    serverInjected.workspaceRoot = settings.workspaceRoot;
+    serverInjected.dockerBinary = managedRunnerDockerBinary();
+  }
+
+  if (pluginModule === "managed-dep") {
+    const settings = managedDepServerSettings();
+    if (!settings.runnerImage) {
+      throw new Error(
+        "managed-dep binding used but dependency-bump authoring is not enabled (SCP_MANAGED_DEP_RUNNER_IMAGE is unset)"
+      );
+    }
+    serverInjected.runnerImage = settings.runnerImage;
+    // No `networkMode` — see `managedDepServerSettings`. The plugin uses a literal.
     serverInjected.workspaceRoot = settings.workspaceRoot;
   }
 

@@ -47,6 +47,13 @@ import type {
   ScanDbStatus,
   RefreshScanDbResponse,
   LoadScanDbResponse,
+  // M21.3 (ADR-0032 §3a/§6) — the dependency-subscription enablement chain.
+  DependencyEcosystem,
+  // M21.2 (ADR-0032 §4) — the inventory backfill.
+  DependencyInventoryBackfillComponent,
+  DependencySubscriptionContribution,
+  DependencySubscriptionResolutionResponse,
+  DependencySubscriptionUnlock,
   // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
   OutpostConfig,
   OutpostConfigReconcileResult,
@@ -534,6 +541,109 @@ export function scanDbOutcomeRow(
   row.ageHours = isAbsent(status?.ageHours) ? "(unknown)" : String(status.ageHours);
   row.detail = outcome.detail ?? "";
   return row;
+}
+
+/**
+ * The instance dependency-subscription unlock as a table row (`scp dependency-subscriptions unlock`)
+ * — exported, and written outside the action closure, for the reason given on `instanceScanFloorRow`.
+ *
+ * `updatedAt` distinguishes NEVER SET (no row — the locked default) from DELIBERATELY RE-LOCKED
+ * (a timestamp beside `unlocked: false`), which is exactly the distinction an operator needs and
+ * exactly the one a bare boolean loses. `"(never set)"`, not blank and not "now".
+ */
+export function dependencySubscriptionUnlockRow(
+  unlock: DependencySubscriptionUnlock
+): Record<string, string> {
+  return {
+    unlocked: String(unlock.unlocked),
+    updatedAt: isAbsent(unlock.updatedAt) ? "(never set)" : unlock.updatedAt,
+    source: unlock.source ?? "",
+    note: unlock.note ?? ""
+  };
+}
+
+/**
+ * The verdict line of `scp dependency-subscriptions resolve`. The `contributions` are printed as
+ * their own table beside it (below) — they are the answer to "WHICH level turned this off", and
+ * folding them into one cell would make the explainability surface unreadable at the exact moment
+ * it is being consulted.
+ *
+ * `granularity`/`delivery` are guarded even though the server always sends them: a key an older or
+ * newer server omits arrives as `undefined` whatever the type says, and printing the literal
+ * `undefined` in a DELIVERY column — where the two values are "open a PR" and "merge it
+ * automatically" — is a fabrication with teeth.
+ */
+export function dependencySubscriptionResolutionRow(
+  response: DependencySubscriptionResolutionResponse
+): Record<string, string> {
+  const r = response.resolution;
+  return {
+    component: response.componentObjectId,
+    ecosystem: response.line.ecosystem,
+    coordinate: response.line.coordinate,
+    major: response.line.major,
+    enabled: String(r.enabled),
+    reason: r.reason,
+    granularity: isAbsent(r.granularity) ? "-" : r.granularity,
+    delivery: isAbsent(r.delivery) ? "-" : r.delivery
+  };
+}
+
+/** ONE contribution to the enablement AND. `contributed` is the load-bearing column: `lock`/`disable`
+ *  name the level that turned it off, `ignored` (with its reason) names a contribution that was found
+ *  and admitted to NEITHER side — a malformed opt-out fails OPEN, so it must be visible here. */
+export function dependencySubscriptionContributionRow(
+  c: DependencySubscriptionContribution
+): Record<string, string> {
+  const selector = c.selector
+    ? [
+        c.selector.ecosystem ? `ecosystem=${c.selector.ecosystem}` : "",
+        c.selector.coordinate ? `coordinate=${c.selector.coordinate}` : "",
+        c.selector.major ? `major=${c.selector.major}` : ""
+      ]
+        .filter(Boolean)
+        .join(" ")
+    : "";
+  return {
+    tier: c.tier,
+    contributed: c.contributed,
+    // "*" is the wildcard an ABSENT selector actually is — blank would read as "matched nothing".
+    selector: selector === "" ? "*" : selector,
+    ignoredReason: c.ignoredReason ?? "",
+    granularity: c.granularity ?? "",
+    delivery: c.delivery ?? "",
+    objectTypeId: c.objectTypeId ?? "",
+    source: c.source
+  };
+}
+
+/**
+ * One component's row from `scp dependency-subscriptions backfill-inventory` (M21.2, ADR-0032 §4).
+ *
+ * `skipped` is a first-class column, not a footnote: a dependency manifest that could not be READ is
+ * deliberately left alone rather than treated as declaring nothing (unreadable is not empty), so a
+ * nonzero count means part of this component's inventory is STALE rather than wrong — and that is
+ * invisible unless it is printed.
+ */
+export function dependencyInventoryBackfillRow(
+  c: DependencyInventoryBackfillComponent
+): Record<string, string> {
+  return {
+    component: c.name,
+    verdict: c.verdict,
+    manifests: String(c.manifestsIngested),
+    declarations: String(c.declarationsRecorded),
+    // THE DESTRUCTIVE HALF, PRINTED. A backfill DELETES declarations a manifest no longer makes,
+    // and a receipt showing only what was added makes a run that emptied a component's inventory
+    // (the wrong ref, a repo mid-migration) look identical to a clean one. A clean re-run prints 0.
+    pruned: String(c.declarationsPruned),
+    removed: String(c.manifestsRemoved),
+    skipped: String(c.manifestsSkipped),
+    // Zero for `not_enabled`, always: the enablement gate runs before any provider call, so this
+    // column is the operator-visible receipt for "a disabled component is never fetched".
+    reads: String(c.reads),
+    detail: c.detail
+  };
 }
 
 /**
@@ -3359,6 +3469,191 @@ export function buildProgram(): Command {
           operatorToken
         );
         printResult(result, opts.output, (raw) => scanDbOutcomeRow(raw as typeof result));
+      }
+    );
+
+  // -------------------------------------------------------------------------------------
+  // dependency-subscriptions (M21.3 — ADR-0032 §3a, §6). Enablement is a monotone AND:
+  //
+  //     effective_enabled(component, line) =
+  //         instance_unlocked  AND  component_enabled  AND  NOT line_opted_out
+  //
+  // `unlock` is an ordinary read (a team whose subscription is inert because the DEPLOYMENT never
+  // opened the feature must be able to see that — charter principle 6); `set-unlock` binds every org
+  // and is an OPERATOR action gated by SCP_OPERATOR_TOKEN, never a tenant role. `resolve` is the
+  // explainability surface: it prints the verdict AND the per-tier contributions that produced it.
+  //
+  // THERE IS NO `subscribe` VERB, AND ONE MUST NOT BE ADDED. A dependency subscription IS a
+  // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored
+  // with `scp policy create` — the same command, versioning and federation path every other policy
+  // uses. `scp dependency-subscriptions --help` says so out loud, because the first thing someone
+  // will look for here is the verb that does not exist.
+  // -------------------------------------------------------------------------------------
+  const depSubsCmd = program
+    .command("dependency-subscriptions")
+    .description(
+      "Dependency subscriptions (ADR-0032 §6) — the instance unlock and the (component, line) enablement resolution. Subscriptions THEMSELVES are policy effects: author them with `scp policy create` carrying effects: [{ dependencySubscription: { enabled: true } }]"
+    );
+
+  depSubsCmd
+    .command("unlock")
+    .description(
+      "Show the instance-scoped unlock — the first conjunct. It UNLOCKS and never activates: with no enabling policy, unlocked subscribes zero components"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const unlock = await client.dependencySubscriptions.unlock();
+      printResult(unlock, opts.output, (raw) =>
+        dependencySubscriptionUnlockRow(raw as DependencySubscriptionUnlock)
+      );
+    });
+
+  depSubsCmd
+    .command("set-unlock")
+    .description(
+      "Set the instance-scoped unlock (OPERATOR ONLY — SCP_OPERATOR_TOKEN; it binds every org on the deployment, and unlocking activates nothing on its own)"
+    )
+    // Two explicit, mutually exclusive flags rather than one `--unlocked <bool>`: absent never means
+    // enabled (ADR-0032 §6), and a defaulted boolean flag is exactly how an omission becomes a value.
+    .option("--unlocked", "permit dependency subscriptions on this deployment")
+    .option("--locked", "refuse dependency subscriptions on this deployment")
+    .option("--note <text>", "free-text note recorded with the unlock")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { unlocked?: boolean; locked?: boolean; note?: string }) => {
+      const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+      if (!operatorToken) {
+        throw new Error(
+          "SCP_OPERATOR_TOKEN is not set — the dependency-subscription unlock binds every org on the deployment, so setting it requires the deployment operator token, not your tenant login."
+        );
+      }
+      if (opts.unlocked === opts.locked) {
+        throw new Error("pass exactly one of --unlocked or --locked");
+      }
+      const client = await clientFromStoredCredentials(opts);
+      const unlock = await client.dependencySubscriptions.setUnlock(
+        {
+          unlocked: opts.unlocked === true,
+          ...(opts.note !== undefined ? { note: opts.note } : {})
+        },
+        operatorToken
+      );
+      printResult(unlock, opts.output, (raw) =>
+        dependencySubscriptionUnlockRow(raw as DependencySubscriptionUnlock)
+      );
+    });
+
+  depSubsCmd
+    .command("resolve")
+    .description(
+      "Resolve whether a component is subscribed to one dependency line, and print WHICH level decided it (ADR-0032 §6)"
+    )
+    .requiredOption("--component <idOrUrn>", "component id or URN")
+    .requiredOption("--ecosystem <ecosystem>", "npm|go|maven|python|oci")
+    .requiredOption(
+      "--coordinate <coordinate>",
+      "the ecosystem-native coordinate, VERBATIM (`@acme/lib`, `github.com/acme/lib`, `com.acme:lib`, `docker.io/library/alpine`) — never slugified, so case and punctuation matter"
+    )
+    .requiredOption(
+      "--major <line>",
+      "the major line as the ecosystem spells it (`1`, `v2`, `3.18`)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          component: string;
+          ecosystem: string;
+          coordinate: string;
+          major: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencySubscriptions.resolve(opts.component, {
+          // Validated server-side by the shared `DependencyLineKeySchema` (a bad ecosystem is a 400
+          // naming the enum); cast rather than duplicate the list, so a sixth ecosystem is not a
+          // third place to edit.
+          ecosystem: opts.ecosystem as DependencyEcosystem,
+          coordinate: opts.coordinate,
+          major: opts.major
+        });
+        if (opts.output === "json") {
+          console.log(JSON.stringify(response, null, 2));
+          return;
+        }
+        printResult(response, "table", (raw) =>
+          dependencySubscriptionResolutionRow(raw as DependencySubscriptionResolutionResponse)
+        );
+        // THE CONTRIBUTIONS ARE THE POINT (charter principle 6). Printed as their own table rather
+        // than squeezed into a cell — "which level turned this off" is the question this command
+        // exists to answer, and the verdict alone does not answer it.
+        console.log("");
+        console.log("CONTRIBUTIONS (top-down; a disable always wins, at any tier):");
+        printResult(response.resolution.contributions, "table", (raw) =>
+          dependencySubscriptionContributionRow(raw as DependencySubscriptionContribution)
+        );
+      }
+    );
+
+  // M21.2 (ADR-0032 §4) — the inventory backfill.
+  //
+  // Ingestion is event-driven: an accepted, correlated change re-reads its component's dependency
+  // manifests. That covers components that RELEASE and nothing else, so an existing estate — and any
+  // component that has not pushed since it was enabled — needs this once. Idempotent, so running it
+  // twice is a no-op, and it reports every skip rather than a bare count.
+  depSubsCmd
+    .command("backfill-inventory")
+    .description(
+      "Read enabled components' dependency manifests and (re)build their inventory (ADR-0032 §4). Idempotent. A component with no enabling subscription is REFUSED BEFORE ITS REPO IS READ — this command cannot bypass the enablement chain"
+    )
+    // Repeatable rather than comma-separated: a component URN legitimately contains punctuation, and
+    // the existing repeatable flags on `scp change create` set the precedent.
+    .option(
+      "--component <idOrUrn>",
+      "limit to this component (repeatable); omit for every component in the org",
+      (value: string, previous: string[] = []) => [...previous, value]
+    )
+    .option(
+      "--ref <ref>",
+      "ref to read the manifests at (default: HEAD, i.e. the repo's own default branch)"
+    )
+    // The run holds LIVE provider I/O for every component it fetches for, inline in one request, so
+    // it is bounded by default. A whole-org backfill is therefore several invocations rather than
+    // one that times out; `notAttempted` in the receipt says how much is left.
+    .option(
+      "--fetch-budget <n>",
+      "how many components this run may FETCH for before reporting the rest as not attempted (default: 25)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (opts: BaseCliOpts & { component?: string[]; ref?: string; fetchBudget?: string }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencySubscriptions.backfillInventory({
+          ...(opts.component !== undefined ? { componentIdsOrUrns: opts.component } : {}),
+          ...(opts.ref !== undefined ? { ref: opts.ref } : {}),
+          ...(opts.fetchBudget !== undefined ? { fetchBudget: Number(opts.fetchBudget) } : {})
+        });
+        if (opts.output === "json") {
+          console.log(JSON.stringify(response, null, 2));
+          return;
+        }
+        console.log(
+          `ref ${response.ref}: ${response.ingested} ingested, ${response.notEnabled} not enabled, ` +
+            `${response.notAddressable} not addressable, ${response.superseded} superseded, ` +
+            `${response.notAttempted} not attempted (budget), ` +
+            `${response.declarationsPruned} declaration(s) pruned`
+        );
+        // EVERY COMPONENT IS PRINTED, refusals included. "Nothing happened for 400 of your
+        // components, and here is why" is the answer an operator running a backfill needs; a
+        // summary that showed only successes would make an unsubscribed estate look like a broken
+        // command.
+        printResult(response.components, "table", (raw) =>
+          dependencyInventoryBackfillRow(raw as DependencyInventoryBackfillComponent)
+        );
       }
     );
 

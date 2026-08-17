@@ -290,6 +290,18 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_MANAGED_IAC_WORKSPACE_ROOT
   value: {{ .Values.managedIac.workspaceRoot | quote }}
 {{- end }}
+{{- if .Values.managedDep.runnerImage }}
+{{- /* M21.5 (ADR-0032 §8) — the dependency-bump actuator. Same host-level, never-tenant-suppliable
+       trust tier as SCP_MANAGED_IAC_*. Gated on the IMAGE rather than on a separate `enabled` flag,
+       deliberately: the image IS the enablement (unset means off, and the server refuses before a
+       container or a credential exists), so a chart with `enabled: true` and no image would render
+       a deployment that looks on and fails closed at dispatch. No network-mode var — this class's
+       egress clause is unqualified, so the plugin passes a literal (ADR-0032 §8d). */}}
+- name: SCP_MANAGED_DEP_RUNNER_IMAGE
+  value: {{ .Values.managedDep.runnerImage | quote }}
+- name: SCP_MANAGED_DEP_WORKSPACE_ROOT
+  value: {{ .Values.managedDep.workspaceRoot | quote }}
+{{- end }}
 {{- if .Values.scanDbCache.enabled }}
 {{- /* M13.3b-ii (ADR-0020, proposal §13.3b) — the commander's server-maintained Trivy-DB cache.
        OPTIONAL and OFF by default, so single-container/dev stays zero-config on the image-baked DB

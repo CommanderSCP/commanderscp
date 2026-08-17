@@ -1,0 +1,217 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, describe, expect, it } from "vitest";
+import { applyManifestBump, type ManifestBumpSpec } from "./bump-edit.js";
+
+/**
+ * M21.5 — THE RUNNER SHIM AND THE REFERENCE EDIT PRODUCE THE SAME BYTES.
+ *
+ * ================================================================================================
+ * WHY THIS IS NOT OPTIONAL
+ * ================================================================================================
+ * `bump-edit.ts`'s `applyManifestBump` is the REFERENCE edit, and it is what every other test in
+ * this package uses as a stand-in runner. That makes the whole orchestrator suite conditional on a
+ * claim nothing checked: that `apps/runner-dep/run.sh` — the thing that actually runs in production
+ * — agrees with it. If it does not, every bump is REFUSED by `verifyManifestBump` at run time while
+ * the suite stays green, which is the "vacuous test" shape this repository has shipped before.
+ *
+ * So this runs the real shim, over the real fixtures, and requires BYTE-IDENTICAL output. It uses
+ * `/bin/sh` and the host's `awk`; the production image is BusyBox and the script is POSIX
+ * throughout, with no GNU-only constructs (no `sub()`/regex matching, no `-v`, no `sed -i`).
+ *
+ * The trailing-newline case is the one worth naming: awk always terminates its last record with a
+ * newline, so a manifest that had none would come back one line longer and be refused by
+ * `verifyManifestBump` with `line_count_changed` — a refusal an operator could do nothing about. The
+ * shim restores the input's own byte shape, and the fixture below is what proves it.
+ */
+
+const here = dirname(fileURLToPath(import.meta.url));
+const runSh = join(here, "..", "..", "..", "..", "apps", "runner-dep", "run.sh");
+const scratch = mkdtempSync(join(tmpdir(), "scp-runner-dep-test-"));
+
+afterAll(() => {
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+/** Run the shim exactly as `runEditorContainer` does: five argv strings, the file at /work/in. */
+function runShim(
+  content: string,
+  spec: ManifestBumpSpec
+): { ok: true; output: string } | { ok: false; stderr: string } {
+  const work = mkdtempSync(join(scratch, "run-"));
+  mkdirSync(join(work, "in"), { recursive: true });
+  mkdirSync(join(work, "out"), { recursive: true });
+  writeFileSync(join(work, "in", "manifest"), content, "utf8");
+  try {
+    execFileSync(
+      "/bin/sh",
+      [runSh, spec.ecosystem, spec.manifestPath, spec.coordinate, spec.fromVersion, spec.toVersion],
+      {
+        // The shim resolves `in/manifest` and `out/manifest` against the WORKING DIRECTORY, which
+        // the image fixes as `WORKDIR /work`. Running it from a scratch dir is therefore the same
+        // code path, not an adapted one. `env: {}` mirrors the container: no environment is passed,
+        // and the shim reads none.
+        env: {},
+        cwd: work,
+        stdio: "pipe",
+        encoding: "utf8"
+      }
+    );
+  } catch (err) {
+    const e = err as { stderr?: string; message: string };
+    return { ok: false, stderr: e.stderr ?? e.message };
+  }
+  return { ok: true, output: readFileSync(join(work, "out", "manifest"), "utf8") };
+}
+
+describe.skipIf(process.platform === "win32")(
+  "apps/runner-dep/run.sh agrees with the reference edit, byte for byte",
+  () => {
+    const cases: { name: string; content: string; spec: ManifestBumpSpec }[] = [
+      {
+        name: "npm — a scoped coordinate with a range operator",
+        content: [
+          "{",
+          '  "name": "acme-web",',
+          '  "dependencies": {',
+          '    "@acme/lib": "^1.2.3",',
+          '    "@acme/other": "^1.2.3"',
+          "  }",
+          "}",
+          ""
+        ].join("\n"),
+        spec: {
+          ecosystem: "npm",
+          coordinate: "@acme/lib",
+          manifestPath: "package.json",
+          fromVersion: "^1.2.3",
+          toVersion: "^1.4.0"
+        }
+      },
+      {
+        name: "go — a module path and a v-prefixed tag",
+        content: ["module acme/web", "", "require (", "\tgithub.com/acme/lib v1.2.3", ")", ""].join(
+          "\n"
+        ),
+        spec: {
+          ecosystem: "go",
+          coordinate: "github.com/acme/lib",
+          manifestPath: "go.mod",
+          fromVersion: "v1.2.3",
+          toVersion: "v1.9.0"
+        }
+      },
+      {
+        name: "oci — a base image with a variant suffix",
+        content: ["FROM alpine:3.18-alpine AS build", "RUN true", ""].join("\n"),
+        spec: {
+          ecosystem: "oci",
+          coordinate: "alpine",
+          manifestPath: "Dockerfile",
+          fromVersion: "3.18-alpine",
+          toVersion: "3.19-alpine"
+        }
+      },
+      {
+        name: "python — a pinned requirement",
+        content: ["acme-lib==1.4.0", "other-lib==2.0.0", ""].join("\n"),
+        spec: {
+          ecosystem: "python",
+          coordinate: "acme-lib",
+          manifestPath: "requirements.txt",
+          fromVersion: "1.4.0",
+          toVersion: "1.5.1"
+        }
+      },
+      {
+        name: "maven — a groupId:artifactId across two lines",
+        content: [
+          "<project>",
+          "  <dependencies>",
+          "    <dependency>",
+          "      <groupId>com.acme</groupId>",
+          "      <artifactId>lib</artifactId>",
+          "      <version>1.2.3</version>",
+          "    </dependency>",
+          "  </dependencies>",
+          "</project>",
+          ""
+        ].join("\n"),
+        spec: {
+          ecosystem: "maven",
+          // The coordinate as `dependency_lines` stores it does not appear on the `<version>` line,
+          // so this case is a REFUSAL for both implementations — which is the agreement that
+          // matters here (a shim that "helpfully" edited it would diverge from the verifier).
+          coordinate: "com.acme:lib",
+          manifestPath: "pom.xml",
+          fromVersion: "1.2.3",
+          toVersion: "1.3.0"
+        }
+      },
+      {
+        name: "a manifest with NO trailing newline keeps its byte shape",
+        content: ['{"dependencies":{"@acme/lib":"1.2.3"}}'].join("\n"),
+        spec: {
+          ecosystem: "npm",
+          coordinate: "@acme/lib",
+          manifestPath: "package.json",
+          fromVersion: "1.2.3",
+          toVersion: "1.4.0"
+        }
+      }
+    ];
+
+    it.each(cases)("$name", ({ content, spec }) => {
+      const reference = applyManifestBump(content, spec);
+      const shim = runShim(content, spec);
+      if (reference === undefined) {
+        // The reference refuses (zero or several candidate lines). The shim must refuse too — a
+        // shim that produced SOMETHING here would be editing a declaration nobody identified.
+        expect(shim.ok, "the shim must refuse where the reference refuses").toBe(false);
+        return;
+      }
+      expect(shim.ok).toBe(true);
+      expect(shim.ok && shim.output).toBe(reference);
+    });
+
+    it("refuses when NO line carries both the coordinate and the declared version", () => {
+      const result = runShim('{"dependencies":{"@acme/other":"1.0.0"}}\n', {
+        ecosystem: "npm",
+        coordinate: "@acme/lib",
+        manifestPath: "package.json",
+        fromVersion: "1.2.3",
+        toVersion: "1.4.0"
+      });
+      expect(result.ok).toBe(false);
+    });
+
+    it("refuses when SEVERAL lines do — choosing would be a guess about which declaration was meant", () => {
+      const content = ['"@acme/lib": "1.2.3",', '"@acme/lib": "1.2.3"', ""].join("\n");
+      const spec: ManifestBumpSpec = {
+        ecosystem: "npm",
+        coordinate: "@acme/lib",
+        manifestPath: "package.json",
+        fromVersion: "1.2.3",
+        toVersion: "1.4.0"
+      };
+      expect(applyManifestBump(content, spec)).toBeUndefined();
+      expect(runShim(content, spec).ok).toBe(false);
+    });
+
+    it("refuses an unknown ecosystem loudly rather than ignoring the argument it does not branch on", () => {
+      const result = runShim('"@acme/lib": "1.2.3"\n', {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the point is an invalid value
+        ecosystem: "rubygems" as any,
+        coordinate: "@acme/lib",
+        manifestPath: "Gemfile",
+        fromVersion: "1.2.3",
+        toVersion: "1.4.0"
+      });
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.stderr).toMatch(/unknown ecosystem/);
+    });
+  }
+);

@@ -6,6 +6,10 @@ import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
 import { ensureFederationSelf } from "./self-repo.js";
+import {
+  assertEnforceableDependencySubscriptionScope,
+  assertNoDelegatedDependencyUpdates
+} from "../dependencies/subscription-authoring-guard.js";
 
 /**
  * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
@@ -75,8 +79,48 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
   }
 }
 
+/**
+ * ADR-0032 §6a — THE SECOND CHECK THIS DOOR HAS TO RUN FOR ITSELF, AND IT IS THE SAME REASON AS THE
+ * FIRST.
+ *
+ * `graph/objects-repo.ts`'s `createObject`/`updateObject` refuse a group-scoped
+ * `dependencySubscription` opt-out at the one choke point every local write door funnels through —
+ * and, like the peer-binding guard above it, they SKIP that refusal when `federationImport` is set.
+ * That skip buys one specific thing: `federation/import-repo.ts`'s `object_upsert` branch has no
+ * try/catch, so a throw on the replay path aborts a whole signed bundle rather than one entry
+ * (proposal §10 Q6). It is a statement about a CHANNEL that cannot absorb a refusal, not about the
+ * data being trustworthy.
+ *
+ * Hand-fill stamps `federationImport` and therefore inherits that skip, and here it is unearned for
+ * exactly the reason `assertHandFillableType` documents one function up: this is a LOCAL OPERATOR
+ * ACTION, not an arriving bundle. `POST /v1/federation/hand-fill` takes a free-form `typeId` and
+ * free-form `properties` from any `federation:write` holder, there is no chain to wedge and no
+ * transport to interrupt, and the operator is right there to read the 400. Left exempt, this route
+ * would be a one-request bypass of the whole clause — the same shape as the H1 hole, one guard later.
+ *
+ * CENSUS (kept filterless on purpose, and RE-RUN for this change, not inherited): `federationImport`
+ * is supplied in exactly two modules — `federation/import-repo.ts` and this one. There is no third.
+ * The same census is recorded at `graph/objects-repo.ts`'s two call sites; both places state it
+ * because a census written down in only one of the two modules it constrains is a census that goes
+ * stale in the other.
+ *
+ * Runs BEFORE the peer lookup, so a refused document costs nothing and cannot depend on which peer
+ * was named.
+ */
 export async function handFillObject(tx: TenantTx, input: HandFillInput): Promise<GraphObject> {
   await assertHandFillableType(tx, input);
+  assertEnforceableDependencySubscriptionScope({
+    typeId: input.typeId,
+    properties: input.properties
+  });
+  // M21.5 — the same door, the same closing. `handFillObject` wears the `federationImport` flag that
+  // exempts the choke point, so both dependency-subscription authoring refusals must be called here
+  // explicitly or a `federation:write` holder has the bypass they exist to close.
+  await assertNoDelegatedDependencyUpdates(tx, {
+    orgId: input.orgId,
+    typeId: input.typeId,
+    properties: input.properties
+  });
   const peer = await getPeerByIdOrName(tx, input.orgId, input.peerIdOrName);
   const { object } = await upsertObjectByUrn(tx, {
     orgId: input.orgId,

@@ -214,7 +214,7 @@ A change compiles against a release topology into `plan → waves → wave_targe
 
 **In the code.** Object type `deployment-target`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`. The two relationship types that point at it are seeded alongside in the same file: `hosted_on` (from `service`/`component`) and `deploys_to` (from `service`/`component`/`change`/`campaign`). Per-region deploy-target bindings are what [ADR-0017](adr/0017-ownership-refinement.md) §3's multi-region Argo CD setting builds on.
 
-**Its properties — six well-known keys, all optional strings, all read verbatim (never derived from `name`).** `environment` and `region` are the two load-bearing ones: together they derive the stage name (`<domain>-[<region>-]<environment>`, [ADR-0026](adr/0026-placements-and-derived-stage-names.md) D1), and a target with BOTH non-empty is a *declared region target* whose deploys the M15.6 regional gate refuses without a region binding. Beside them sits the **substrate facet** ([pipeline-substrate-registry-scan.md](proposals/pipeline-substrate-registry-scan.md) §9.1, migration `0065_target_facet_and_publishes_to.sql`), which says what the target physically *is*: `substrate` (well-known values `aws` · `gcp` · `azure` · `kubernetes` · `vm` · `bare-metal` · `other` — vocabulary, rendered as-is, **never enforced** on the wire, because a closed enum on a journaled type is a fail-closed version-skew hazard for every older peer), `account` (the provider account / project / subscription id), `region` (the same key as above — one key, both roles) and `cluster` (the cluster name inside that account/region). The registered property schema types `substrate`/`account`/`region`/`cluster` as optional strings and stays open (`environment` is deliberately undeclared: it is a gate input). The component pipeline projects the facet on every stage's `deploymentTarget` — placed and unplaced alike — with `null` meaning *not declared*, an absence rather than an unknown, so a client renders nothing for it.
+**Its properties — six well-known keys, all optional strings, all read verbatim (never derived from `name`).** `environment` and `region` are the two load-bearing ones: together they derive the stage name (`<domain>-[<region>-]<environment>`, [ADR-0026](adr/0026-placements-and-derived-stage-names.md) D1), and a target with BOTH non-empty is a *declared region target* whose deploys the M15.6 regional gate refuses without a region binding. Beside them sits the **substrate facet** ([pipeline-substrate-registry-scan.md](proposals/pipeline-substrate-registry-scan.md) §9.1, migration `0069_target_facet_and_publishes_to.sql`), which says what the target physically *is*: `substrate` (well-known values `aws` · `gcp` · `azure` · `kubernetes` · `vm` · `bare-metal` · `other` — vocabulary, rendered as-is, **never enforced** on the wire, because a closed enum on a journaled type is a fail-closed version-skew hazard for every older peer), `account` (the provider account / project / subscription id), `region` (the same key as above — one key, both roles) and `cluster` (the cluster name inside that account/region). The registered property schema types `substrate`/`account`/`region`/`cluster` as optional strings and stays open (`environment` is deliberately undeclared: it is a gate input). The component pipeline projects the facet on every stage's `deploymentTarget` — placed and unplaced alike — with `null` meaning *not declared*, an absence rather than an unknown, so a client renders nothing for it.
 
 ---
 
@@ -675,7 +675,7 @@ Each executor binding carries a **Type** ([ADR-0007](adr/0007-executor-binding-t
 
 **In the code.** Object type `execution-system`, seeded in `apps/server/drizzle/0019_execution_system.sql`; its `serverUrl` is the deep-link base the UI uses (`apps/web/src/components/pipeline/PipelineWaveCard.tsx`).
 
-**A registry is an execution system too — reached by an edge, not a binding.** The image registry a component's built artifact lands in (Gitea by default, [ADR-0012](adr/0012-registry-consolidation.md); `harbor`/`ecr` equally) is an `execution-system` object of that `kind`, and the component names it with the built-in relationship type **`publishes_to`** (`component` → `execution-system`, `many_to_many`, edge property `repository` = the path inside the registry, e.g. `acme/checkout-api`; migration `0065_target_facet_and_publishes_to.sql`, [pipeline-substrate-registry-scan.md](proposals/pipeline-substrate-registry-scan.md) §9.2). It is deliberately **not** the `image` executor binding: a binding's Type is *which pipeline it drives* ([ADR-0007](adr/0007-executor-binding-type-taxonomy.md)), so the image binding names what *builds* the artifact, never where it is pushed — and a registry-kind system cannot be bound at all. A registry is created `domainLocal: true` at each site; an edge with a domain-local endpoint never journals (M20.3), so each site's pipeline shows only its own registry — *one registry per domain by construction*, with `>1` edges projected honestly as `ambiguous` rather than picked.
+**A registry is an execution system too — reached by an edge, not a binding.** The image registry a component's built artifact lands in (Gitea by default, [ADR-0012](adr/0012-registry-consolidation.md); `harbor`/`ecr` equally) is an `execution-system` object of that `kind`, and the component names it with the built-in relationship type **`publishes_to`** (`component` → `execution-system`, `many_to_many`, edge property `repository` = the path inside the registry, e.g. `acme/checkout-api`; migration `0069_target_facet_and_publishes_to.sql`, [pipeline-substrate-registry-scan.md](proposals/pipeline-substrate-registry-scan.md) §9.2). It is deliberately **not** the `image` executor binding: a binding's Type is *which pipeline it drives* ([ADR-0007](adr/0007-executor-binding-type-taxonomy.md)), so the image binding names what *builds* the artifact, never where it is pushed — and a registry-kind system cannot be bound at all. A registry is created `domainLocal: true` at each site; an edge with a domain-local endpoint never journals (M20.3), so each site's pipeline shows only its own registry — *one registry per domain by construction*, with `>1` edges projected honestly as `ambiguous` rather than picked.
 
 ---
 
@@ -718,7 +718,7 @@ Pass-criteria are **scoped, most-restrictive-wins** over six tiers — platform 
 
 The commander cosign-signs **only** this manifest. The executor cosign-signs the artifacts and the SBOM, at build ([ADR-0015](adr/0015-cosign-cross-boundary-signing.md) §5).
 
-**Not to be confused with:** an **OCI image manifest** (the registry's own descriptor document — a real collision, since SCP handles both), a Kubernetes manifest (a YAML resource file), or an **SBOM** (a component inventory, not an authorization).
+**Not to be confused with:** an **OCI image manifest** (the registry's own descriptor document — a real collision, since SCP handles both), a Kubernetes manifest (a YAML resource file), an **SBOM** (a component inventory, not an authorization), or a **dependency manifest** (`package.json`, `go.mod`, a `FROM` line — a declaration of what a component depends on, which authorizes nothing; see that entry).
 
 **In the code.** `PromotionManifestSchema` in `packages/schemas/src/federation.ts`.
 
@@ -770,6 +770,32 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 ---
 
+### dependency subscription — always qualify
+
+**Definition.** A component team's standing declaration that it follows a **major line** of one dependency, and accepts each new release on that line as an automatic code change. Carries a **granularity** (minor-and-patch, or patch-only) and a delivery mode (pull request, or auto-merge behind a governed control).
+
+**Always spelled in full.** Bare **"subscription"** belongs to `notification_bindings` — who gets told when something happens. A dependency subscription is not a notification; it is a standing authorization to change code ([ADR-0032](adr/0032-dependency-subscriptions.md) §2).
+
+**The enablement chain is three levels and monotone**: the instance level **unlocks and never activates**, the component team flips its own switch, and an individual dependency may be **opted out** — so the deepest level can only ever subtract. Absent never means enabled.
+
+**Not to be confused with:** a **dependency** itself (the thing depended on), the **dependency inventory** (what a component declares, derived per-domain into a projection table), or `depends_on` (a **component-topology** edge feeding the wave toposort — package dependencies deliberately mint none).
+
+**In the code.** *(M21, not yet built)* — `dependency_lines` + `component_dependencies` projection tables; the subscription itself is a graph object so it federates ([ADR-0022](adr/0022-outpost-config-authority-split.md) clause 2).
+
+---
+
+### dependency manifest — always qualify
+
+**Definition.** The file in a component's **own source** that declares what it depends on: `package.json`, `go.mod`, `pom.xml`, `requirements.txt`/`pyproject.toml`, or a container build file's `FROM` line.
+
+**Always qualify.** Bare **"manifest"** in this codebase means the **promotion manifest** — a commander-signed authorization enumerating exactly which artifacts may cross a boundary. The two have nothing to do with each other, and a dependency manifest authorizes nothing.
+
+**Not to be confused with:** the **promotion manifest** (see `manifest`), an **OCI image manifest**, a **Kubernetes manifest**, or an **SBOM** (a full component inventory including the transitive closure — a dependency manifest declares only **direct** dependencies, which is precisely why SCP can store one and deliberately does not store the other, [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md)).
+
+**In the code.** *(M21, not yet built)* — read through the `readFileAtRef` `GitProviderAdapter` hook.
+
+---
+
 ## Deprecated / avoid
 
 | Don't say | Say instead | Why |
@@ -781,6 +807,8 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 | **"stage"** meaning a pipeline **phase** | **"phase"** or **"step"** | "Stage" is reserved for a named deployment place spelled `<domain>[-<location>]-<env>` (D6). Code comments currently misuse it, including the `M<n> stage N` milestone-substep comments and their prefix-less variants; the full roster and the cleanup are tracked in [ADR-0021](adr/0021-terminology.md) Consequences iii-a. |
 | **"stage"** meaning a **wave** | **"wave"** | Same reservation — and a wave *contains* stages, so the two are not interchangeable in either direction. The misuse formerly reached the shipped `/v1` contract; **both halves have now landed** — the cheap UI/comment half (iii-a) and the breaking, oasdiff-gated `/v1` half (iii-b), which renamed `ServiceBoardStageSchema`/`currentStage`/`stages[]` to their wave-named forms. Done. |
 | **"bundle"** unqualified | **"promotion bundle"** / **"air-gap federation bundle"** / **"relay tarball"** | Three different things, only one of which carries artifact bytes. |
+| bare **"subscription"** for the dependency sense | **"dependency subscription"** | Bare *subscription* is already `notification_bindings` — who gets told when something happens. A dependency subscription is a standing authorization to **change code**; conflating an alert with a write is the kind of collision that reads as harmless until someone grants the wrong one ([ADR-0032](adr/0032-dependency-subscriptions.md) §2). |
+| bare **"manifest"** for `package.json` / `go.mod` / a `FROM` line | **"dependency manifest"** | Bare *manifest* is the **promotion manifest**, a commander-signed authorization for a boundary crossing. A dependency manifest authorizes nothing. Two of the four other live senses (OCI image manifest, Kubernetes manifest) already share the word, so this one must be qualified on sight. |
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
 **Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry describes each sense, and [ADR-0021](adr/0021-terminology.md) Consequences (iii) carries the complete site roster. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.

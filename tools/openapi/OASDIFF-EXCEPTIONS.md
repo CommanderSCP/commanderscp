@@ -95,7 +95,7 @@ are committed in this PR.
 ### ADR-0034 — remove the `initiative` object type (2026-08-10, on the `claude/ui-review-worktree-efc42b` branch)
 
 **Spec:** [docs/adr/0034-remove-initiative.md](../../docs/adr/0034-remove-initiative.md). Migration:
-`apps/server/drizzle/0061_remove_initiative.sql` (renumbered from 0056 with a `when` bump when the
+`apps/server/drizzle/0065_remove_initiative.sql` (renumbered from 0056 with a `when` bump when the
 branch merged main).
 
 **What breaks (deliberate, one-time):** the portfolio rung above campaigns is removed entirely —

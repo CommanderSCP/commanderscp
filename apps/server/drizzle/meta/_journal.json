@@ -432,44 +432,72 @@
     {
       "idx": 61,
       "version": "7",
-      "when": 1788049137000,
-      "breakpoints": true,
-      "tag": "0061_remove_initiative"
+      "when": 1788059137000,
+      "tag": "0061_dependency_inventory",
+      "breakpoints": true
     },
     {
       "idx": 62,
       "version": "7",
-      "when": 1788073431967,
-      "breakpoints": true,
-      "tag": "0062_source_mapping_mirror_of_shared"
+      "when": 1788069137000,
+      "tag": "0062_dependency_subscription_enablement",
+      "breakpoints": true
     },
     {
       "idx": 63,
       "version": "7",
-      "when": 1788081086288,
-      "breakpoints": true,
-      "tag": "0063_source_mapping_enabled"
+      "when": 1788079137000,
+      "tag": "0063_component_dependency_observed_repo",
+      "breakpoints": true
     },
     {
       "idx": 64,
       "version": "7",
-      "when": 1788087629499,
-      "breakpoints": true,
-      "tag": "0064_source_mapping_disabled_until"
+      "when": 1788089137000,
+      "tag": "0064_bump_authorship",
+      "breakpoints": true
     },
     {
       "idx": 65,
       "version": "7",
-      "when": 1788093770502,
-      "breakpoints": true,
-      "tag": "0065_target_facet_and_publishes_to"
+      "when": 1788090217409,
+      "tag": "0065_remove_initiative",
+      "breakpoints": true
     },
     {
       "idx": 66,
       "version": "7",
+      "when": 1788091388731,
+      "tag": "0066_source_mapping_mirror_of_shared",
+      "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1788092459053,
+      "tag": "0067_source_mapping_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1788093199877,
+      "tag": "0068_source_mapping_disabled_until",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1788093770502,
+      "tag": "0069_target_facet_and_publishes_to",
+      "breakpoints": true
+    },
+    {
+      "idx": 70,
+      "version": "7",
       "when": 1788099911505,
-      "breakpoints": true,
-      "tag": "0066_source_mapping_scope"
+      "tag": "0070_source_mapping_scope",
+      "breakpoints": true
     }
   ]
 }

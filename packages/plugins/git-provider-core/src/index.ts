@@ -14,6 +14,12 @@ import type {
   PluginContext,
   TriggerIntent
 } from "@scp/plugin-api";
+import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "./read-file.js";
+
+/** The read-a-file-at-a-ref capability (M21.2, ADR-0032 §4) — its vocabulary, decode bound and
+ *  failure classifiers live in `read-file.ts` and are re-exported here so `@scp/git-provider-core`
+ *  keeps a single entry point (`package.json` main = `dist/index.js`). */
+export * from "./read-file.js";
 
 /**
  * `@scp/git-provider-core` — the **provider-neutral** machinery shared by every git-provider
@@ -66,6 +72,27 @@ export interface GitProviderEventHint {
    * sets this; one that doesn't leaves it undefined and no ref-scoped mapping can match its events.
    */
   ref?: string;
+  /**
+   * The SOURCE branch of a pull/merge request, fully qualified (`refs/heads/scp/dep-bump/<id>`) —
+   * deliberately SEPARATE from {@link ref} and deliberately not used for source-mapping routing.
+   *
+   * A pull request is an event about a PROPOSAL to move code between two branches; the ref the
+   * routing question is about is its BASE, and the field a `refPattern` mapping matches is
+   * {@link ref}, which a pull-request event correctly leaves unset. But "which branch is this pull
+   * request FROM?" is a real fact the payload carries, and one consumer needs it: M21.5's
+   * provenance loop, which recognises a bump CommanderSCP authored by the branch it is on and then
+   * requires SCP's own record to name that same branch and repository (ADR-0032 §9).
+   *
+   * Without it, a `pull_request` action=opened delivery processed BEFORE the authored push (the
+   * ordering is the provider's, not ours) named no branch and no yet-recorded commit, matched the
+   * component's ordinary source mapping, and minted the second unrelated change §9 exists to
+   * prevent.
+   *
+   * Adding it to {@link ref} instead would have been the smaller diff and the wrong one: every
+   * ref-scoped source mapping in every existing deployment would have started matching pull-request
+   * events by their head branch, silently re-routing releases.
+   */
+  headRef?: string;
   correlationKey?: string;
 }
 
@@ -175,11 +202,12 @@ export function dedupCacheKey(intent: TriggerIntent): string {
 //
 // Which hooks the executor factory itself calls: `resolveStatePath`, `triggerCI`, `pollCommits`,
 // `pollRuns`, `getStatus`, `abortRun`, `capabilities`. The remaining hooks (`sourceKind`,
-// `authorize`, `baseUrl`, `verifyWebhook`, `mapEvent`, `mapStatusToPhase`) are the rest of the
-// provider contract: `authorize`/`baseUrl` back the adapter's own REST calls; `verifyWebhook`/
-// `mapEvent` back the server-side webhook ingest path; `mapStatusToPhase` backs `getStatus`;
-// `sourceKind` is the provider identity used in discovery/source-mapping. They live on one cohesive
-// adapter object so a new provider (Gitea) is a single, self-contained implementation.
+// `authorize`, `baseUrl`, `verifyWebhook`, `mapEvent`, `mapStatusToPhase`, `readFileAtRef`) are the
+// rest of the provider contract: `authorize`/`baseUrl` back the adapter's own REST calls;
+// `verifyWebhook`/`mapEvent` back the server-side webhook ingest path; `mapStatusToPhase` backs
+// `getStatus`; `sourceKind` is the provider identity used in discovery/source-mapping;
+// `readFileAtRef` backs ADR-0032's manifest ingestion. They live on one cohesive adapter object so a
+// new provider (Gitea) is a single, self-contained implementation.
 // -------------------------------------------------------------------------------------------
 
 export interface GitProviderAdapter {
@@ -225,6 +253,32 @@ export interface GitProviderAdapter {
 
   /** Map the provider's native run status/conclusion to a normalized `ExecutionPhase`. */
   mapStatusToPhase(status: string, conclusion: string | null): ExecutionPhase;
+
+  /**
+   * Read ONE file's decoded text at a git ref, plus the commit sha that ref resolved to (M21.2,
+   * ADR-0032 §4 / proposal §4.3(a) — the declared-manifest ingress the dependency inventory is built
+   * from). Returns a `not_found` result for a missing file/ref (routine — most components declare
+   * only one or two of the five ecosystems' manifests) and a `refused` result for a file that exists
+   * but will not be decoded (too large, not a blob, not text). Genuine failures — auth, 5xx, a
+   * refused redirect, an egress-guard denial — THROW, already classified by `read-file.ts`'s
+   * `wrapProviderRequestError`/`assertNoRedirect`.
+   *
+   * An adversarial `repo`/`path`/`ref` also THROWS, before any HTTP happens: every implementer MUST
+   * call `assertSafeRepo`/`assertSafeRepoPath`/`assertSafeRef` first. That is a hard requirement,
+   * not a suggestion — all three are spliced into a REST route, and percent-encoding does not close
+   * a `..` segment (`encodeURIComponent("..") === ".."`), so without the asserts a caller re-targets
+   * the request at a different endpoint using the binding's own credentials (M21.2 review). A THROW
+   * rather than a `refused` result is deliberate: that is a caller bug, not a fact about the repo.
+   *
+   * REQUIRED, not optional, on purpose: every implementer lives in this monorepo (github, gitea,
+   * gitlab, plus the core's own test fake), so a required hook makes a fourth provider's omission a
+   * compile error instead of a silently empty dependency inventory for that provider's components.
+   *
+   * NOT AN EXECUTOR VERB (ADR-0032 §9, charter principle 1). `createExecutorPluginFromAdapter` does
+   * not surface it: `ExecutorPlugin` stays exactly observe/trigger/status/abort, which is what
+   * structurally enforces "coordination, not execution". This hook reads; it can never write.
+   */
+  readFileAtRef(ctx: PluginContext, request: ReadFileAtRefRequest): Promise<ReadFileAtRefResult>;
 }
 
 // -------------------------------------------------------------------------------------------
@@ -295,6 +349,15 @@ async function trigger(
   return ref;
 }
 
+/**
+ * Assembles the four-verb `ExecutorPlugin` around an adapter.
+ *
+ * `adapter.readFileAtRef` is deliberately NOT surfaced here (ADR-0032 §9): the four verbs are the
+ * structural enforcement of charter principle 1, and a fifth entry on this object would be a fifth
+ * verb in everything downstream that consumes an `ExecutorPlugin`. Callers that need to read a
+ * manifest hold the ADAPTER — the same way `apps/server/src/coordination/webhook-adapters.ts`
+ * already holds `githubAdapter`/`giteaAdapter`/`gitlabAdapter` for `verifyWebhook`/`mapEvent`.
+ */
 export function createExecutorPluginFromAdapter(adapter: GitProviderAdapter): ExecutorPlugin {
   return {
     observe: (ctx, since) => observe(adapter, ctx, since),

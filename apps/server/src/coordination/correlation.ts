@@ -10,6 +10,10 @@ import { objects, sourceMappings } from "../db/schema.js";
 import { globMatch } from "./glob-match.js";
 import { createObject } from "../graph/objects-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
+import {
+  findBumpAuthorshipByHeadCommit,
+  readBumpAuthorship
+} from "../dependencies/bump-authorship-repo.js";
 
 /**
  * Correlation (DESIGN.md §9.2): "Executor events carry correlation hints — repo + path patterns,
@@ -305,3 +309,165 @@ export async function linkToCoordinatedChange(
 
   return groupId;
 }
+
+/**
+ * ================================================================================================
+ * M21.5 — A COMMIT COMMANDERSCP AUTHORED, COMING BACK IN (ADR-0032 §9, charter amendment 2026-08-13)
+ * ================================================================================================
+ * "A commit SCP authors is observed back in via the normal webhook path, so the bump change must be
+ * recorded such that the returning event CORRELATES TO IT rather than minting a second, unrelated
+ * change."
+ *
+ * WHAT WOULD HAPPEN WITHOUT THIS. `scp-managed-dep` pushes a branch to a component's repository. That
+ * push is an entirely ordinary provider event: `matchComponentForSource` above finds the component's
+ * ordinary source mapping, `processChangeSourceEvents` calls `proposeChange`, and the bump exists
+ * TWICE — once as the change SCP recorded when it decided to author, once as the change the webhook
+ * minted when the commit arrived. Two changes for one release, gating independently, neither aware of
+ * the other. Nothing errors; it simply reads as two releases.
+ *
+ * THE JOIN IS THE BRANCH, AND BOTH SIDES MUST DECLARE IT. `dependencies/bump-actuator.ts` records the
+ * change first and authors on `refs/heads/scp/dep-bump/<changeObjectId>`, and it records that same
+ * repo+ref in `dependency_bump_authorships` (migration 0063). This function requires BOTH halves: the
+ * incoming ref must NAME a change, and SCP's OWN RECORD for that change must name this repo and this
+ * ref.
+ *
+ * REQUIRING BOTH IS LOAD-BEARING, NOT DEFENSIVE. A branch name is attacker-typable — anyone able to
+ * push to any repository this instance observes could create `scp/dep-bump/<some-uuid>` and, on a
+ * one-sided check, attach their push to another team's change and inherit whatever that change had
+ * already been granted. Reading SCP's OWN RECORD makes the correlation a fact SCP asserted, never a
+ * claim the payload made. Same rule, same reason, as ADR-0030 §2's "declared, never inferred".
+ *
+ * AND IT IS SCP'S RECORD, NOT THE CHANGE'S `source_ref`. That key is writable verbatim by any
+ * authenticated principal through `POST /api/v1/changes`, so a one-sided check against it would let a
+ * tenant declare somebody else's repository and have their own pushes attach to a change SCP is about
+ * to merge with SCP's credential.
+ *
+ * WHY THE BRANCH RATHER THAN THE COMMIT SHA. The sha is known only after the push, so a webhook that
+ * beat the actuator's recording of it would find nothing — and the losing side of that race is
+ * precisely the duplicate change this exists to prevent. The branch is chosen before anything is
+ * written at all.
+ *
+ * THIS ONLY EVER ATTACHES; IT NEVER PROPOSES. When it returns a change id, the caller marks the event
+ * processed against that EXISTING change. When it returns `null`, ingress proceeds exactly as it
+ * always has — so every non-bump event in the system is untouched by this function's existence.
+ */
+
+/** Restated from `dependencies/bump-actuator.ts` rather than imported, to keep this module free of a
+ *  dependency on the dependencies subsystem; `bump-provenance.integration.test.ts` pins the two
+ *  against each other, which is where a drift would actually bite. */
+export const BUMP_AUTHORED_REF_PREFIX = "refs/heads/scp/dep-bump/";
+
+/**
+ * Does this event's ref name a change THIS instance authored a bump on, which claims this very repo
+ * and ref? Returns that change's object id, or `null`.
+ *
+ * Every early return below is the fail-closed direction: an event with no ref, a ref outside the
+ * authored namespace, an id that resolves to no change, a change whose declaration is absent or
+ * disagrees — all of them mean "not ours", and the caller mints a change exactly as before.
+ */
+export async function matchAuthoredBumpChange(
+  tx: TenantTx,
+  orgId: string,
+  hint: { repo?: string; ref?: string; commitSha?: string }
+): Promise<string | null> {
+  const ref = hint.ref;
+  if (!ref || !ref.startsWith(BUMP_AUTHORED_REF_PREFIX)) {
+    return matchAuthoredBumpChangeByHeadCommit(tx, orgId, hint);
+  }
+  const changeObjectId = ref.slice(BUMP_AUTHORED_REF_PREFIX.length);
+  // The remainder must be an object id and nothing more. A ref like
+  // `refs/heads/scp/dep-bump/<uuid>/extra` is NOT that change's branch and must not resolve to it.
+  if (!/^[0-9a-fA-F-]{36}$/.test(changeObjectId)) return null;
+
+  // SCP's OWN RECORD of what it authored — one primary-key lookup, and a row no tenant-facing write
+  // path can create. Absent means SCP did not author a bump for that id, whatever a `source_ref`
+  // somewhere claims.
+  const authorship = await readBumpAuthorship(tx, orgId, changeObjectId);
+  if (!authorship) return null;
+  // SCP must have recorded THIS ref. Compared byte-for-byte: a ref is an identifier, and a normalised
+  // comparison here would be the place a `refs/heads/x` and a `refs/heads/X` quietly became the same
+  // branch on a case-sensitive provider.
+  if (authorship.authoredRef !== ref) return null;
+  // …and THIS repo. Case-insensitive, because all three providers address repository paths that way
+  // — the same rule and the same sentence as `dependencies/manifest-reader.ts`'s
+  // `normalizeRepoIdentity`. An event carrying no repo can never satisfy this, which is correct: a
+  // record naming a repository is not matched by an event that names none.
+  if (!hint.repo) return null;
+  if (hint.repo.trim().toLowerCase() !== authorship.repo.trim().toLowerCase()) {
+    return null;
+  }
+  return authorship.changeObjectId;
+}
+
+/**
+ * ================================================================================================
+ * THE SECOND ROUTE — A CI EVENT THAT NAMES NO BRANCH, ONLY THE COMMIT (M21.5 auto-merge link)
+ * ================================================================================================
+ * The branch route above answers "is this event ON a branch we authored?", and for a PUSH that is
+ * the whole question. It is not the whole question for the event that actually matters to
+ * auto-merge: a component's checks CONCLUDING.
+ *
+ * WHAT THE PROVIDERS ACTUALLY MAP, measured rather than assumed. `@scp/plugin-github`'s `mapEvent`
+ * recognises `push`, `pull_request`, `workflow_run`, `deployment` and `release`; `check_suite` and
+ * `check_run` are not mapped at all. Gitea maps `push`/`pull_request`/`release`/`package` and NO
+ * workflow event; GitLab maps its `Pipeline Hook`. Only GitHub matters for this path — a bump can
+ * only be authored through a GitHub App (`repo-write.ts`'s `resolveRepoWriter` refuses the other two
+ * by name, because only that flow mints a per-run, single-repository, short-lived credential) — and
+ * GitHub's `workflow_run` hint carries `commitSha: workflow_run.head_sha` and NO ref. So the CI
+ * conclusion arrives with the commit and nothing else to join on.
+ *
+ * THE JOIN IS STILL A FACT SCP ASSERTED, WHICH IS THE ONLY REASON THIS IS SAFE. It matches the
+ * event's commit against `dependency_bump_authorships.head_commit` — a value SCP wrote into its own
+ * server-owned record, from a push that had already satisfied the two-sided branch check above. It is
+ * not a name the payload chose, and no tenant-facing write path can put a value there. The repo must
+ * ALSO agree, by the same case-insensitive rule, so an event from a repository SCP never recorded can
+ * never attach however its commit was obtained.
+ *
+ * WHY IT MATTERS THAT THIS ATTACHES RATHER THAN FALLING THROUGH: without it, a `workflow_run` for
+ * the bump's own commit matches the component's ordinary source mapping and mints a SECOND,
+ * unrelated change for a release that already has one — the exact duplication ADR-0032 §9 exists to
+ * prevent, arriving through a different event than the one §9 anticipated.
+ *
+ * Fail-closed at every step, exactly like the branch route: no commit on the event, no repo, no bump
+ * change claiming that commit ⇒ `null`, and ingress proceeds as it always has.
+ */
+async function matchAuthoredBumpChangeByHeadCommit(
+  tx: TenantTx,
+  orgId: string,
+  hint: { repo?: string; commitSha?: string }
+): Promise<string | null> {
+  const commit = hint.commitSha?.trim();
+  const repo = hint.repo?.trim();
+  if (!commit || !repo) return null;
+
+  // ONE INDEXED LOOKUP, and it has to be: this route runs INSIDE the ingress transaction on
+  // essentially every webhook this instance receives. It used to load EVERY dependency-bump change in
+  // the org — unbounded, unindexed, jsonb compared row by row in TypeScript — which grows with the
+  // number of bumps an org has ever authored and is paid for by every unrelated push.
+  // `dependency_bump_authorships` stores the same facts in typed columns behind
+  // `dependency_bump_authorships_org_head_commit`, so the comparison is a predicate rather than a
+  // scan (`bump-authorship-repo.ts` keeps the case rules).
+  const authorship = await findBumpAuthorshipByHeadCommit(tx, orgId, { repo, commit });
+  return authorship?.changeObjectId ?? null;
+}
+
+/** Restated from `dependencies/bump-actuator.ts`'s `BUMP_SOURCE_KIND` for the same reason
+ *  {@link BUMP_AUTHORED_REF_PREFIX} is, and pinned against it by the same test.
+ *
+ *  NOTE WHAT IT IS NO LONGER USED FOR. It used to narrow an unbounded scan of `changes` in the
+ *  head-commit route; that route now reads `dependency_bump_authorships` by index. `source_kind` is
+ *  a tenant-supplied field on a tenant-writable row, so narrowing on it never made the scan safe —
+ *  only smaller. Kept as the shared spelling of the kind, pinned so the two halves cannot drift. */
+export const BUMP_CHANGE_SOURCE_KIND = "dependency-bump";
+
+/**
+ * The domain event emitted when an observed provider event correlates to a bump CommanderSCP
+ * authored — and the one producer of the auto-merge re-evaluation (ADR-0032 §8c).
+ *
+ * It is emitted at the ingress choke point rather than by each kind of event, which is the same
+ * argument §8a clause 1 makes for emitting the head-advance at the ONE head write door: a rule
+ * applied per caller has one place per caller to regress, and this one already has two callers-in-
+ * effect (the authored push, and the CI conclusion that names its commit). A third observed event
+ * that attaches to a bump re-evaluates it by construction.
+ */
+export const BUMP_OBSERVED_EVENT = "scp.dependency.bump_observed";

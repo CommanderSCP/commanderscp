@@ -5,6 +5,11 @@ import type {
   ControlRequest,
   Cursor,
   DeliveryResult,
+  DependencyIndexCapabilities,
+  DependencyIndexDigestResult,
+  DependencyIndexEcosystem,
+  DependencyIndexQuery,
+  DependencyIndexResult,
   DiscoveryProposal,
   DomainCursor,
   ExecutionStatus,
@@ -17,6 +22,7 @@ import type {
   NotificationMessage,
   TriggerIntent
 } from "@scp/plugin-api";
+import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
 
 /**
  * The coordination engine's view of the subprocess plugin host (DESIGN.md §11,
@@ -71,6 +77,60 @@ export interface FederationTransportPluginClient {
 }
 
 /**
+ * M21.4 counterpart for a `DependencyIndexPlugin` instance (ADR-0032 §7) — the per-ecosystem
+ * third-party version index the daily poll asks. Subprocess-hosted for the reason that makes it a
+ * plugin at all: the registry URL is operator-CONFIGURABLE (a mirror, an in-cluster Athens/Nexus),
+ * and this host is the one seam that applies `egress-guard.ts` and the per-instance `allowedHosts`
+ * allowlist to such a URL.
+ */
+export interface DependencyIndexPluginClient {
+  listVersions(query: DependencyIndexQuery): Promise<DependencyIndexResult>;
+  resolveDigest(ref: {
+    ecosystem: DependencyIndexEcosystem;
+    coordinate: string;
+    version: string;
+  }): Promise<DependencyIndexDigestResult>;
+  describeIndex(): Promise<DependencyIndexCapabilities>;
+}
+
+/**
+ * M21.4 (ADR-0032 §7a) — READING ONE FILE OUT OF A USER REPO AT A REF, from the server.
+ *
+ * ===========================================================================================
+ * THIS IS THE MISSING HALF OF M21.2, AND WITHOUT IT THAT MILESTONE WAS DEAD CODE
+ * ===========================================================================================
+ * M21.2 built `readFileAtRef` on `GitProviderAdapter` and three adapters implement it — but nothing
+ * under `apps/server` could reach it, because NO client shape in this file carried a file-read
+ * method and the subprocess dispatched no such RPC. ADR-0032 §7a's language strategies (npm, python,
+ * maven) read the producing component's own manifest at the released commit, so with no route they
+ * every one recorded nothing under `manifest_reader_unavailable`: the entire "formulated from the
+ * users' code" ingress did not exist. This is that route.
+ *
+ * ===========================================================================================
+ * IT IS A SEPARATE CLIENT BECAUSE IT IS A SEPARATE CAPABILITY (ADR-0032 §9)
+ * ===========================================================================================
+ * It is deliberately NOT a fifth method on {@link ExecutorPluginClient}. The four-verb executor set
+ * IS the structural enforcement of charter principle 1 ("coordination, not execution"), and
+ * `createExecutorPluginFromAdapter` still refuses to surface this hook — a permanent test in
+ * `@scp/git-provider-core` pins that. So the hook is dispatched from the loaded ADAPTER that sits
+ * beside the executor plugin in the subprocess (`subprocess-entry.ts`'s `ReadFileHook`), and a
+ * caller asks for it through its own accessor. The same instance id addresses both: one git binding
+ * is one subprocess, and this read runs under exactly the timeouts, restart-with-backoff, egress
+ * allowlist and SSRF guard every other call on that instance does.
+ *
+ * READ ONLY. There is no write counterpart and ADR-0032 §9 says there will not be one through this
+ * seam: the bump actuator (§8) is a managed executor class contingent on a charter amendment, not a
+ * verb added here.
+ *
+ * An instance whose module carries no adapter hook (every non-git-provider executor) REJECTS the
+ * call with a message naming that fact — it never answers `not_found`, which would be a claim about
+ * the repo rather than about the binding.
+ */
+export interface GitFileReadPluginClient {
+  readFileAtRef(request: ReadFileAtRefRequest): Promise<ReadFileAtRefResult>;
+}
+
+/**
  * Every in-repo plugin module a subprocess can load (subprocess-entry.ts's `loadPlugin` switch is
  * the single source of truth this union must stay in sync with). M7 widens this from M3/M4's
  * closed `"fake-executor" | "webhook-control"` pair: `github`/`argocd`/`terraform`/`managed-iac`
@@ -113,9 +173,21 @@ export type PluginModule =
   | "pipeline-generic"
   | "managed-iac"
   | "managed-scan"
+  // M21.5 — the third managed executor (charter `scp-managed-dep` amendment 2026-08-13).
+  | "managed-dep"
   | "webhook-notify"
   | "smtp-notify"
-  | "federation-https";
+  | "federation-https"
+  // M21.4 (ADR-0032 §7) adds the five `dependency-index` modules — one per ecosystem, because ONE
+  // subprocess-hosted instance loads exactly one plugin. Four of them live in a single package
+  // (`@scp/plugin-dependency-index-registries`) under distinct module names, exactly as
+  // `github`/`github-discovery` do; `dependency-index-oci` is its own package because it reaches a
+  // registry through the vendored-skopeo channel rather than over `ctx.http`.
+  | "dependency-index-go"
+  | "dependency-index-npm"
+  | "dependency-index-pypi"
+  | "dependency-index-maven"
+  | "dependency-index-oci";
 
 export interface PluginHostInstanceConfig {
   /** Stable id referenced by `change_wave_targets.executor_plugin_id` / `executor_bindings.plugin_instance_id`
@@ -162,9 +234,29 @@ export interface PluginHostInstanceConfig {
 export interface PluginHost {
   start(instances: PluginHostInstanceConfig[]): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Stop and forget JUST these instances, leaving every other one running (M21.4).
+   *
+   * WHY A PARTIAL STOP EXISTS AT ALL. Every pre-M21.4 caller starts a bounded, long-lived set: the
+   * reconcile/observe/watchdog loops start an instance per executor BINDING, which is operator
+   * configuration that persists, so leaving them up between ticks is the correct behaviour and a
+   * partial stop would just re-spawn a child per tick. The dependency version poll is the first
+   * caller whose instances are DERIVED FROM ITS OWN WORK-LIST rather than from configuration: it
+   * starts a per-(ecosystem, org) index subprocess on demand, and on a multi-tenant commander that
+   * accumulated up to five idle children PER ORG for the lifetime of the worker — for a job that
+   * runs once a DAY. Nothing was leaked per tick (`start()` skips an id it already holds), so the
+   * symptom is a standing process count that grows with tenancy and never falls, which is exactly
+   * the kind of cost nobody attributes to a daily poll.
+   *
+   * Unknown ids are ignored rather than refused: a sweep that failed before starting an instance
+   * must still be able to hand its whole intended set to this in a `finally`.
+   */
+  stopInstances(instanceIds: readonly string[]): Promise<void>;
   executor(instanceId: string): ExecutorPluginClient;
   control(instanceId: string): ControlPluginClient;
   discovery(instanceId: string): DiscoveryPluginClient;
   notification(instanceId: string): NotificationPluginClient;
   federationTransport(instanceId: string): FederationTransportPluginClient;
+  dependencyIndex(instanceId: string): DependencyIndexPluginClient;
+  gitFileRead(instanceId: string): GitFileReadPluginClient;
 }

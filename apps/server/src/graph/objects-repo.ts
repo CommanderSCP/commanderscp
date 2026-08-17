@@ -23,6 +23,10 @@ import { eventBus } from "../events/event-bus.js";
 import { ensureFederationSelf } from "../federation/self-repo.js";
 import { assertOutpostPeerBinding, isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { appendJournalEntry } from "../federation/journal-repo.js";
+import {
+  assertEnforceableDependencySubscriptionScope,
+  assertNoDelegatedDependencyUpdates
+} from "../dependencies/subscription-authoring-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 
@@ -263,6 +267,58 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   if (!input.federationImport && isPeerBoundObjectType(input.typeId)) {
     await assertOutpostPeerBinding(tx, { orgId: input.orgId, objectId: id, properties });
   }
+
+  // ADR-0032 §6a (M21.3, review round) — A GROUP-SCOPED DEPENDENCY-SUBSCRIPTION OPT-OUT IS REFUSED,
+  // installed HERE for exactly the reason the block above is: this is the one choke point every local
+  // write door funnels through.
+  //
+  // It shipped in one place — the typed `/policies` routes' composed `validateWrite` — next to
+  // `assertPolicyScopeWithinAuthority`, which was itself installed in THREE (that config plus
+  // `iac/plans-repo.ts`'s create and update branches). Censusing the SIBLING is what exposed the hole:
+  // `POST /plans` + `/plans/{id}/apply`, `POST /federation/hand-fill` and `POST /federation/overlays`
+  // all reach `createObject` with a free-form `typeId` and free-form `properties`, and all three
+  // planted the exact document the typed route answers 400 to. Adding three more calls would have
+  // rebuilt the same rake for the next door; one call here covers every door that exists and every
+  // door that will.
+  //
+  // ------------------------------------------------------------------------------------------------
+  // THE EXEMPTION, AND WHY IT IS EXACTLY THIS WIDE
+  // ------------------------------------------------------------------------------------------------
+  // `federationImport` is skipped, and the reason is NOT "imported data is trusted" — it is that a
+  // throw here is not survivable on that path. `federation/import-repo.ts`'s `object_upsert` branch
+  // has NO try/catch, so one refusal aborts the WHOLE signed bundle and wedges that channel until an
+  // operator intervenes (proposal §10 Q6; the same fail-closed version-skew class the `additionalProperties`
+  // relaxation fixed for `outpost`). A receiving domain also has no standing to referee a document its
+  // AUTHORING instance already accepted or refused: the guard is an authoring-time refusal by
+  // construction, and the authoring instance is where it runs.
+  //
+  // BUT `federationImport` DOES NOT MEAN "ARRIVED OVER THE JOURNAL". CENSUS (filterless, re-run for
+  // this change — `grep -rn federationImport apps packages tools`): it is SUPPLIED in exactly two
+  // modules, `federation/import-repo.ts` (signature/chain-verified bundle replay) and
+  // `federation/handfill-repo.ts`. Every other hit is a comment or a type declaration. That census
+  // matches the one `federation/outpost-binding.ts` and `handfill-repo.ts` already assert, and it is
+  // still true.
+  //
+  // Hand-fill is a LOCAL OPERATOR ACTION wearing the import flag: a `federation:write` holder typing a
+  // free-form `typeId` + `properties` into `POST /api/v1/federation/hand-fill`. Nothing about it is a
+  // channel that can wedge — there is no bundle, no chain, and the operator is standing right there to
+  // read a 400. Exempting it would hand every operator the bypass this guard exists to close. So the
+  // skip is kept for the verified journal path ONLY and CLOSED AT THE OTHER CALLER: `handfill-repo.ts`
+  // calls the guard itself, before its upsert. That is the identical shape M16.2 clause (4) uses two
+  // blocks above, for the identical reason, against the identical two-module census.
+  if (!input.federationImport) {
+    assertEnforceableDependencySubscriptionScope({ typeId: input.typeId, properties });
+    // M21.5 — the SECOND dependency-subscription authoring refusal, installed at this same choke
+    // point for the same reasons and under the same `federationImport` exemption (see above and
+    // `subscription-authoring-guard.ts`'s M21.5 section). It is `await`ed because it reads a stored
+    // probe verdict; it performs no provider I/O and holds nothing open across a network call.
+    await assertNoDelegatedDependencyUpdates(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      properties
+    });
+  }
+
   const urn = input.urn ?? deriveUrn(input.orgId, input.typeId, input.name);
   const version = 1;
   const contentHash = computeObjectContentHash({
@@ -660,6 +716,32 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       // See the clash scan in `outpost-binding.ts`: an unverified hand-filled shadow must not be able
       // to veto an edit to the row that actually holds authority (that veto was the H1 wedge).
       ignoreUnverifiedClash: true
+    });
+  }
+
+  // ADR-0032 §6a — the UPDATE half of the same choke point (see `createObject` above for the full
+  // reasoning and for the `federationImport` census). Not optional: `updateObject` replaces
+  // `properties` wholesale, so an ordinary PATCH/PUT that rewrites `scope`/`effects` can turn an
+  // enforceable policy into an unenforceable one without ever passing through a create.
+  //
+  // `nextProperties` — the value about to be STORED — is what is checked, deliberately, rather than
+  // `input.properties`. That makes the invariant a property of the ROW rather than of the request, so
+  // a PATCH touching only `name` cannot leave a refused document in place. The cost is that a
+  // grandfathered row (one planted through a door before this guard reached the choke point) becomes
+  // un-editable until its scope is fixed — which is the remedy the error already names, and is the
+  // fail-closed direction.
+  if (!input.federationImport) {
+    assertEnforceableDependencySubscriptionScope({
+      typeId: input.typeId,
+      properties: nextProperties
+    });
+    // M21.5 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the line above is: an ordinary PATCH that rewrites `scope`/`effects` can
+    // turn an inert policy into an enabling one without ever passing through a create.
+    await assertNoDelegatedDependencyUpdates(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      properties: nextProperties
     });
   }
 
