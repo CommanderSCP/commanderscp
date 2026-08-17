@@ -7,19 +7,57 @@ import type { ServerConfig } from "../config.js";
  * ============================================================================================
  * THE RULE, AND THE REASON IT IS THE RULE
  * ============================================================================================
- * ALL dependency automation is COMMANDER-ONLY (owner decision, 2026-08-17). Outposts run no
- * dependency job and hold no dependency inventory. The reasoning is what belongs here, because it
+ * ALL dependency automation is COMMANDER-ONLY (owner decision, 2026-08-17). No FIELD outpost runs a
+ * dependency job or holds a dependency inventory. The reasoning is what belongs here, because it
  * is what tells the next reader whether a NEW job falls on this side of the line:
  *
  *   the point of dependency automation is to PULL FROM PUBLIC REPOSITORIES — python library
- *   versions, CDK versions, base-image versions. That is not needed from an outpost standpoint,
- *   because the resulting change GETS PUSHED DOWN THE GLOBAL PIPELINE THE COMMANDER MANAGES.
+ *   versions, CDK versions, base-image versions. That is not needed from a FIELD outpost's
+ *   standpoint, because the resulting change GETS PUSHED DOWN THE GLOBAL PIPELINE THE COMMANDER
+ *   MANAGES.
  *
- * So an outpost never ORIGINATES a bump; it RECEIVES the resulting change through the ordinary
+ * So a field outpost never ORIGINATES a bump; it RECEIVES the resulting change through the ordinary
  * promotion path. The accepted cost — dependencies declared in DOMAIN-SPECIFIC repositories the
  * commander never sees are OUT OF SCOPE — and the two clauses this reverses (§4a clause 7, §7c
  * clause 3) are in ADR-0032 §7d, preserved verbatim beside what overturned them. Each caller's
  * module doc restates it locally; this file is the machinery.
+ *
+ * ============================================================================================
+ * "FIELD" IS LOAD-BEARING, AND WHY THIS PREDICATE CANNOT SEE THE OTHER KIND
+ * ============================================================================================
+ * This block said "Outposts run no dependency job and hold no dependency inventory" until M21.7's
+ * follow-up round, and that is TOO WIDE in the one direction that misleads. An **HQ outpost** is the
+ * outpost in the COMMANDER'S OWN trust domain, so its dependency inventory simply IS the
+ * commander's — the same rows, in the same database, written by the commander's own jobs. Only a
+ * **field outpost**, one in ANOTHER trust domain, runs no dependency job and holds no inventory.
+ * (Both terms: ADR-0032 §7d's vocabulary note, and see its dependency caveat there — the GLOSSARY
+ * entries are being authored on a separate branch and have not landed yet.)
+ *
+ * READ OUT OF THE CODE, not from the names, because the naming is exactly what lets the wrong
+ * reading survive a review. Two facts settle it:
+ *
+ *   1. `SCP_FEDERATION_ROLE` IS ONE VALUE PER DEPLOYMENT — `config.federationRole` is
+ *      `"commander" | "outpost" | "retrans"` (`config.ts`), a single scalar set once at install.
+ *      No process is "a commander, and also an outpost".
+ *   2. AN `outpost` GRAPH OBJECT CAN NEVER NAME THE COMMANDER'S OWN TRUST DOMAIN.
+ *      `assertOutpostPeerBinding` (`federation/outpost-binding.ts`) requires
+ *      `properties.peerDomainId` to resolve to an already-PAIRED `federation_peers` row holding
+ *      role `outpost`, and an instance is never its own peer: `initFederationSelf` writes
+ *      `federation_self`, not a peer row (`federation/self-repo.ts`; restated at
+ *      `federation/peers-repo.ts:436-439` and `outpost-binding.ts:98-100`).
+ *
+ * So the HQ outpost is NEITHER A SEPARATE DEPLOYMENT NOR A SEPARATE RECORD — it is the commander
+ * instance itself filling the outpost role for its own trust domain, which is the model statement
+ * ADR-0011 already makes ("a non-federated single-instance install is its own commander+outpost").
+ * There is no second process here to refuse and no second store to exempt. A FIELD outpost is the
+ * only outpost that is a running process with tables of its own, which is why it is the only one
+ * the rule above is about.
+ *
+ * ONE CONSEQUENCE FOR THE REFUSAL STRINGS BELOW, so the next sweep does not "correct" them: every
+ * refusal here is returned to a deployment that DECLARED `SCP_FEDERATION_ROLE=outpost`, and by (1)
+ * and (2) that deployment IS a field outpost. Saying "outpost" to it is exact, not loose. The word
+ * needs the qualifier only where a sentence quantifies over outposts as a CLASS — which is what the
+ * sentence at the top of this block used to do, and the whole class of error this note closes.
  *
  * ============================================================================================
  * WHY ONE FUNCTION AND NOT A THREE-BRANCH `if` PER CALLER

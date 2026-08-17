@@ -8,6 +8,7 @@ import type {
 import {
   buildProgram,
   dependencyInventoryBackfillRow,
+  dependencyManagementNote,
   dependencySubscriptionContributionRow,
   dependencySubscriptionResolutionRow,
   dependencySubscriptionUnlockRow
@@ -245,6 +246,46 @@ describe("the M21.3 CLI formatters", () => {
     const onCommander = dependencySubscriptionResolutionRow(enabledResponse);
     expect(onCommander.managedHere).toBe("true");
     expect(onCommander.managedReason).toBe("commander");
+  });
+
+  /**
+   * THE OPERATOR-FACING CAVEAT, HELD IN BOTH DIRECTIONS (ADR-0032 §7d, M21.7 follow-up).
+   *
+   * This note used to be written INLINE inside the resolve command's Commander `.action()` closure,
+   * where nothing could call it: inverting its condition — so the note printed on a healthy
+   * commander and went SILENT on the deployment it exists to warn, the exact inversion that matters
+   * — left the whole suite green. A conditional caveat is only held when BOTH arms are pinned, so
+   * both are below. The wording is deliberately NOT pinned beyond the two facts an operator acts on
+   * (the posture, and where to go instead), so a rewrite passes and a wrong condition fails.
+   */
+  describe("the `resolve` caveat printed beside the table", () => {
+    it("APPEARS when nothing here will act on the verdict, and names the posture and the remedy", () => {
+      const note = dependencyManagementNote({ managedHere: false, reason: "outpost" });
+      expect(note).toBeDefined();
+      // The posture, so the operator knows WHICH refusal this is — `outpost` and `role_undeclared`
+      // have different remedies (call the commander vs set one env var).
+      expect(note).toContain("outpost");
+      // …and where the work actually happens, because a caveat an operator cannot act on is silence.
+      expect(note).toMatch(/COMMANDER/);
+
+      // `role_undeclared` is the branch whose config VALUE reads `commander`; it must reach the
+      // note as itself or the sentence names the opposite of the truth.
+      expect(dependencyManagementNote({ managedHere: false, reason: "role_undeclared" })).toContain(
+        "role_undeclared"
+      );
+    });
+
+    it("is SILENT on a declared commander — the direction whose inversion was fully green", () => {
+      // THE HALF THAT WAS UNHELD. A caveat on every invocation is one nobody reads, so its absence
+      // here is as load-bearing as its presence above.
+      expect(dependencyManagementNote({ managedHere: true, reason: "commander" })).toBeUndefined();
+    });
+
+    it("is SILENT when the server omitted the envelope — absent is not a refusal", () => {
+      // A server that predates the field claims no posture, and asserting one it never claimed is
+      // the same fabrication the `-` column exists to avoid. `=== false`, never falsy.
+      expect(dependencyManagementNote(undefined)).toBeUndefined();
+    });
   });
 
   it("never FABRICATES `managedHere` when the server omitted the envelope — `-`, never `true`", () => {

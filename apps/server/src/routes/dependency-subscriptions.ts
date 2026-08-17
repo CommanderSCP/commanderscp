@@ -48,6 +48,32 @@ import {
  *    stated reason for preferring this shape). It leaks nothing across tenants because the row holds
  *    NO per-tenant data at all.
  *
+ *    **IT DELIBERATELY DOES NOT CARRY `dependencyManagement`, AND THAT IS A DECISION** (M21.7
+ *    follow-up census, ADR-0032 §7d). It is the sibling tenant-facing read of the route below, which
+ *    does carry the envelope, so the asymmetry has to be argued rather than left to look like an
+ *    oversight. Two reasons, and they are about SHAPE, not about cost:
+ *
+ *      1. THE ENVELOPE QUALIFIES A DERIVED VERDICT; THIS IS NOT ONE. `dependencyManagement` exists
+ *         because the resolve route computes a real, arithmetically correct verdict out of policies
+ *         that FEDERATED DOWN, and reports it on a deployment where nothing will act on it — an
+ *         answer authored elsewhere and inert here. The unlock is the opposite shape:
+ *         `dependency_subscription_unlock` is a LOCAL singleton table (drizzle/0062) that does not
+ *         federate at all, so this route hands back exactly what an operator set on THIS deployment.
+ *         There is no "true elsewhere, inert here" gap for an envelope to close.
+ *      2. THE ONLY CONSUMER THAT TURNS IT INTO A CLAIM ABOUT A SUBSCRIPTION ALREADY CARRIES IT. The
+ *         unlock UNLOCKS and never activates; it becomes an answer about a component only through
+ *         `resolveDependencySubscription`, whose sole API surface is the route below. Qualifying the
+ *         same posture twice on one request path is how two copies of one fact drift.
+ *
+ *    **THE RESIDUAL, STATED RATHER THAN PAPERED OVER.** Because the unlock does not federate, a
+ *    non-commander deployment's row is INDEPENDENT of the commander's — so a resolve verdict of
+ *    `enabled: false, reason: instance_locked` on a field outpost is a statement about that
+ *    deployment's row, not about what the commander would decide. The envelope already tells the
+ *    reader not to act on the verdict (`managedHere: false`); putting the same envelope on THIS read
+ *    would not close that gap either, because the missing fact is the COMMANDER'S unlock, which this
+ *    deployment does not have and must not invent. Asking the commander is the answer, and that is
+ *    what `managedHere: false` sends a caller to do.
+ *
  *  - **The instance unlock's WRITE is operator-only, and deliberately NOT an RBAC permission.** The
  *    row binds EVERY org on the deployment, so no tenant role — however privileged inside its own
  *    org — may grant it: the write requires the deployment-level `SCP_OPERATOR_TOKEN`

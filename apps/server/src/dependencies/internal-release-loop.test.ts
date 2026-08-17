@@ -100,14 +100,19 @@ describe("acceptedChangeRouter", () => {
  * This block used to assert "runs on EVERY federation role, including an outpost and a retrans
  * node", and it was green, because the guard really did allow them. The owner's decision changed
  * the question, not the mechanics: dependency automation exists to pull from PUBLIC repositories,
- * which an outpost has no need to do, because the resulting change is pushed down the global
- * pipeline the commander manages. An outpost RECEIVES a dependency bump through the ordinary
- * promotion path and never originates one — so it detects no internal releases either.
+ * which a FIELD outpost has no need to do, because the resulting change is pushed down the global
+ * pipeline the commander manages. A field outpost RECEIVES a dependency bump through the ordinary
+ * promotion path and never originates one — so it detects no internal releases either. ("Field" is
+ * the qualifier that makes the sentence true: an HQ outpost is the outpost in the COMMANDER'S OWN
+ * trust domain and is this process, so its releases ARE detected here. Every deployment this guard
+ * refuses has DECLARED `SCP_FEDERATION_ROLE=outpost` — `commander-only.ts` reads that out of the
+ * code.)
  *
  * The measurement the old block rested on survives and is now a STATED COST rather than a
  * counter-argument (ADR-0032 §7d clause 2): the wave-target evidence really does exist only where
- * the change executed, so an internal line released to prod only at an outpost keeps a NULL head —
- * an honest "not observed", never a wrong version.
+ * the change executed, so an internal line released to prod only at a FIELD outpost keeps a NULL
+ * head — an honest "not observed", never a wrong version. A component that releases to prod in the
+ * HQ domain is unaffected: that evidence is written locally, and the derivation runs here.
  *
  * Shape matched to `bump-dispatch.test.ts`'s role-guard block, because these are now one guard.
  */

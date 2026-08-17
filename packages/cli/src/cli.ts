@@ -606,6 +606,36 @@ export function dependencySubscriptionResolutionRow(
   };
 }
 
+/**
+ * …AND THE SAME THING IN WORDS, when nothing on this deployment will act on the verdict (ADR-0032
+ * §7d). `undefined` means print nothing.
+ *
+ * A `false` in a column is easy to read past, and the whole point of the envelope is that an
+ * operator reading `enabled: true` on a field outpost is being told something true and misleading at
+ * once. Printed ONLY for the refusals: a declared commander needs no caveat, and a caveat on every
+ * invocation is one nobody reads.
+ *
+ * EXPORTED, AND OUTSIDE THE `.action()` CLOSURE, FOR THE REASON THE FORMATTERS ABOVE RECORD. This
+ * lived inline in the resolve command's Commander closure, where no test can reach it: inverting the
+ * condition — so the note prints on a healthy commander and is SILENT on the deployment it exists to
+ * warn, the one inversion that matters — left the entire suite green. `dependency-subscription-cli.
+ * test.ts` now pins BOTH directions, which is the only shape in which a conditional caveat is held.
+ *
+ * ABSENT IS NOT A REFUSAL. A server that omits the envelope gets no note (`=== false`, never
+ * falsy): the row already renders `-` there rather than fabricating a posture, and asserting a
+ * refusal the server never claimed would be the same fabrication with a louder voice.
+ */
+export function dependencyManagementNote(
+  managed: DependencySubscriptionResolutionResponse["dependencyManagement"] | undefined
+): string | undefined {
+  if (managed?.managedHere !== false) return undefined;
+  return (
+    `NOTE: dependency management does NOT run on this deployment (${managed.reason}), ` +
+    `so nothing here will act on the verdict above — the subscription is resolved from policies ` +
+    `that federated down, and any bump is authored on the COMMANDER (ADR-0032 §7d).`
+  );
+}
+
 /** ONE contribution to the enablement AND. `contributed` is the load-bearing column: `lock`/`disable`
  *  name the level that turned it off, `ignored` (with its reason) names a contribution that was found
  *  and admitted to NEITHER side — a malformed opt-out fails OPEN, so it must be visible here. */
@@ -3654,18 +3684,13 @@ export function buildProgram(): Command {
         printResult(response, "table", (raw) =>
           dependencySubscriptionResolutionRow(raw as DependencySubscriptionResolutionResponse)
         );
-        // AND SAY IT IN WORDS WHEN NOTHING HERE WILL ACT ON THE VERDICT (ADR-0032 §7d). A `false`
-        // in a column is easy to read past; the whole point of the envelope is that an operator
-        // reading `enabled: true` on an outpost is being told something true and misleading at once.
-        // Printed only for the refusals — a declared commander needs no caveat, and a caveat on
-        // every invocation is one nobody reads.
-        if (response.dependencyManagement?.managedHere === false) {
+        // AND SAY IT IN WORDS WHEN NOTHING HERE WILL ACT ON THE VERDICT (ADR-0032 §7d). Both the
+        // condition and the sentence live in `dependencyManagementNote`, outside this closure, so
+        // they are reachable by a test — inline here, inverting the condition was fully green.
+        const note = dependencyManagementNote(response.dependencyManagement);
+        if (note !== undefined) {
           console.log("");
-          console.log(
-            `NOTE: dependency management does NOT run on this deployment (${response.dependencyManagement.reason}), ` +
-              `so nothing here will act on the verdict above — the subscription is resolved from policies ` +
-              `that federated down, and any bump is authored on the COMMANDER (ADR-0032 §7d).`
-          );
+          console.log(note);
         }
         // THE CONTRIBUTIONS ARE THE POINT (charter principle 6). Printed as their own table rather
         // than squeezed into a cell — "which level turned this off" is the question this command

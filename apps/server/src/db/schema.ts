@@ -1761,9 +1761,14 @@ export const scanRequirementFloors = pgTable(
  *
  * IT IS WRITTEN ON THE COMMANDER ONLY (ADR-0032 §7d, owner decision 2026-08-17). This comment used
  * to say "per-domain … each domain derives its own", quoting §3; that half is reversed. All
- * dependency automation is commander-only — an outpost never ORIGINATES a bump, it receives the
+ * dependency automation is commander-only — a FIELD outpost never ORIGINATES a bump, it receives the
  * resulting change down the global pipeline the commander manages — so these rows exist in exactly
- * one place, and an EMPTY `dependency_lines` on an outpost is correct rather than a sync failure.
+ * one place, and an EMPTY `dependency_lines` on a field outpost is correct rather than a sync
+ * failure. "Field" is the qualifier that makes that sentence true: an HQ outpost is the outpost in
+ * the COMMANDER'S OWN trust domain, so its rows ARE these rows (ADR-0032 §7d's vocabulary note,
+ * read out of the code in `dependencies/commander-only.ts`). Any deployment whose
+ * `SCP_FEDERATION_ROLE` reads `outpost` is a field outpost, which is why the table is empty
+ * exactly there and nowhere else.
  * `drizzle/0061`'s `COMMENT ON` carried the old wording, which is what an operator actually meets
  * in `\d+ dependency_lines`; 0061 is merged and not editable in place, so `drizzle/0066` restates
  * it there. The two are meant to be read as one statement — keep them saying the same thing.

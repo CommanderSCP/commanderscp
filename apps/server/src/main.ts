@@ -250,11 +250,14 @@ async function main(): Promise<void> {
     // M21.4 internal release detection (ADR-0032 §7) — the other half of the router registered with
     // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event.
     // COMMANDER-ONLY, like every dependency job (ADR-0032 §7d, owner decision 2026-08-17): this
-    // comment used to say it ran on EVERY federation role. An outpost never ORIGINATES a dependency
-    // bump — it receives the resulting change down the global pipeline the commander manages — so it
-    // derives no inventory and detects no releases for this feature. The loop's module doc carries
-    // the full reasoning and the accepted cost (an internal line released only at an outpost keeps a
-    // NULL head, which §7 defines as "not observed", never "nothing newer exists").
+    // comment used to say it ran on EVERY federation role. A FIELD outpost never ORIGINATES a
+    // dependency bump — it receives the resulting change down the global pipeline the commander
+    // manages — so it derives no inventory and detects no releases for this feature. ("Field" is
+    // load-bearing: an HQ outpost is the outpost in the commander's OWN trust domain, which is this
+    // process — see `dependencies/commander-only.ts`, which reads that out of the code.) The loop's
+    // module doc carries the full reasoning and the accepted cost (an internal line released only at
+    // a FIELD outpost keeps a NULL head, which §7 defines as "not observed", never "nothing newer
+    // exists"; a release in the HQ domain is detected here as normal).
     const internalReleaseLoop = await startInternalReleaseLoop(boss, {
       db,
       host: pluginHost,
@@ -265,10 +268,12 @@ async function main(): Promise<void> {
     // empty on every deployment and the enablement chain, the version poll and internal detection
     // all resolve over nothing. Same role answer as internal detection and the poll — COMMANDER-ONLY
     // (ADR-0032 §7d, owner decision 2026-08-17), where this comment previously pointed at an
-    // ingestion-specific derivation that concluded the opposite. An outpost holds no dependency
+    // ingestion-specific derivation that concluded the opposite. A FIELD outpost holds no dependency
     // inventory: the only consumer of one is a bump, and the dispatcher below has been
-    // commander-only since M21.5. Accepted consequence, in the loop's module doc: dependencies
-    // declared in outpost-only repositories are out of scope for dependency subscriptions.
+    // commander-only since M21.5. (An HQ outpost is the commander's own trust domain and is this
+    // process, so its inventory is the one written here — `dependencies/commander-only.ts`.)
+    // Accepted consequence, in the loop's module doc: dependencies declared in FIELD-outpost-only
+    // repositories are out of scope for dependency subscriptions.
     const inventoryIngestionLoop = await startInventoryIngestionLoop(boss, {
       db,
       host: pluginHost,

@@ -610,17 +610,26 @@ export type DependencyManagementReason = z.infer<typeof DependencyManagementReas
  * ============================================================================================
  * WHEN `managedHere` IS FALSE, THE REST OF THE ENVELOPE IS NOT TO BE INTERPRETED
  * ============================================================================================
- * All dependency automation is COMMANDER-ONLY (ADR-0032 §7d): an outpost runs no dependency job and
- * holds no dependency inventory, because the point of the feature is to pull from PUBLIC
+ * All dependency automation is COMMANDER-ONLY (ADR-0032 §7d): a FIELD outpost runs no dependency job
+ * and holds no dependency inventory, because the point of the feature is to pull from PUBLIC
  * repositories and the resulting change is pushed down the global pipeline the commander manages.
+ * ("Field" is load-bearing, not decoration: an HQ outpost is the outpost in the COMMANDER'S OWN
+ * trust domain, so its inventory simply IS the commander's. Nothing on this wire can be one, which
+ * is why the values below need no fourth member — a `reason` of `outpost` means the answering
+ * deployment DECLARED `SCP_FEDERATION_ROLE=outpost`, and that is a field outpost by construction.
+ * `apps/server/src/dependencies/commander-only.ts` reads the distinction out of the code.)
  * So on any deployment where `managedHere` is false:
  *
  *   - inventory-shaped answers are STRUCTURALLY EMPTY — not "this component declares nothing", but
  *     "nothing here ever ingested a dependency manifest, and nothing ever will";
- *   - a RESOLVE verdict is still computed, and it is still arithmetically correct: the policies it
- *     merges federated down from the commander. But NOTHING ON THIS DEPLOYMENT WILL ACT ON IT. An
- *     `enabled: true` here does not mean a bump will be authored here; it means a bump would be
- *     authored on the commander, for a subscription that also resolves there.
+ *   - a RESOLVE verdict is still computed, and it is still arithmetically correct FOR THIS
+ *     DEPLOYMENT: the policy tiers it merges federated down from the commander. But NOTHING ON THIS
+ *     DEPLOYMENT WILL ACT ON IT. An `enabled: true` here does not mean a bump will be authored here;
+ *     it means a bump would be authored on the commander, for a subscription that also resolves
+ *     there. Nor is it a prediction of the commander's answer: the INSTANCE UNLOCK conjunct is a
+ *     local singleton row that does NOT federate, so `enabled: false, reason: instance_locked` here
+ *     says this deployment is locked and says nothing about whether the commander is. Ask the
+ *     commander — which is what a `managedHere: false` is telling a caller to do.
  *
  * That gap is the reason this envelope is REQUIRED rather than advisory. Answering `enabled` where
  * nothing acts on it is charter principle 6 FAILING — an answer whose reason is unavailable — and

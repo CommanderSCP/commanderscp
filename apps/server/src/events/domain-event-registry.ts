@@ -71,8 +71,10 @@ export interface RouterRegistration {
 export const DOMAIN_EVENT_ROUTERS: readonly RouterRegistration[] = [
   // M21.4 (ADR-0032 §7) internal release detection — the FIRST consumer of the domain-event stream.
   // COMMANDER-ONLY (ADR-0032 §7d, owner decision 2026-08-17); this comment previously said it ran on
-  // every federation role, deliberately. An outpost never ORIGINATES a dependency bump — it receives
-  // the resulting change down the global pipeline the commander manages — so it derives nothing here.
+  // every federation role, deliberately. A FIELD outpost never ORIGINATES a dependency bump — it
+  // receives the resulting change down the global pipeline the commander manages — so it derives
+  // nothing here. ("Field" is load-bearing: an HQ outpost is the commander's own trust domain and is
+  // this process; `dependencies/commander-only.ts` reads that distinction out of the code.)
   { factory: acceptedChangeRouter, guard: internalReleaseDetectionRoleGuard },
   // M21.2 (ADR-0032 §4/§6) dependency-inventory ingestion — the SECOND router on the same event.
   // Routers do not compete: the domain-events worker calls every router for every event and each

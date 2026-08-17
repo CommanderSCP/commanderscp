@@ -116,9 +116,12 @@ import {
  * Since ADR-0032 §7d (owner decision, 2026-08-17) EVERY dependency job is commander-only, so this
  * verdict is no longer the strict one in a split field — it is the shared rule, and the shared
  * reason lives in `commander-only.ts`: dependency automation exists to pull from PUBLIC
- * repositories, which an outpost has no need to do, because the resulting change is pushed down the
- * global pipeline the commander manages. (This paragraph used to open by contrasting M21.4's two
- * jobs, which "reached OPPOSITE verdicts on the federation axis"; they no longer do, and internal
+ * repositories, which a FIELD outpost has no need to do, because the resulting change is pushed down
+ * the global pipeline the commander manages. ("Field" is load-bearing — an HQ outpost is the outpost
+ * in the commander's own trust domain and is this very process; see `commander-only.ts`, which reads
+ * that out of the code. Every deployment this guard actually refuses is a field outpost, so the
+ * refusal strings below say "outpost" exactly.) (This paragraph used to open by contrasting M21.4's
+ * two jobs, which "reached OPPOSITE verdicts on the federation axis"; they no longer do, and internal
  * detection no longer "runs everywhere" — §7d marks that clause reversed.)
  *
  * THIS JOB'S OWN REASON SURVIVES THE CONVERGENCE AND IS STILL WORTH STATING, because it is what

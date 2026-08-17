@@ -1,10 +1,16 @@
-import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type PgBoss from "pg-boss";
 import { describe, expect, it } from "vitest";
-import type { DependencyManagementReason } from "@scp/schemas";
-import { exportedDeclarations, productionSourceFiles } from "../test-support/source-census.js";
+// A VALUE import, deliberately: `DependencyManagementReasonSchema.options` is the oracle the
+// reachability test below derives its expected member list from, and a `import type` would force
+// that list to be hand-copied — which is exactly what could not detect a member being added.
+import { DependencyManagementReasonSchema, type DependencyManagementReason } from "@scp/schemas";
+import {
+  exportedDeclarations,
+  productionSourceFiles,
+  readStripped
+} from "../test-support/source-census.js";
 import {
   commanderOnlyFederationVerdict,
   commanderOnlyJobVerdict,
@@ -28,10 +34,13 @@ import {
  * ================================================================================================
  * ADR-0032 §7d — ALL DEPENDENCY AUTOMATION IS COMMANDER-ONLY, AND ALL OF IT AGREES
  * ================================================================================================
- * The owner's decision (2026-08-17) is a statement about the WHOLE feature, not about one job: an
- * outpost never ORIGINATES a dependency bump, it RECEIVES the resulting change down the global
- * pipeline the commander manages. A rule that holds for a feature and is implemented once per job
- * is the property CLAUDE.md's census rule names — it regresses per job, and the branch that
+ * The owner's decision (2026-08-17) is a statement about the WHOLE feature, not about one job: a
+ * FIELD outpost never ORIGINATES a dependency bump, it RECEIVES the resulting change down the global
+ * pipeline the commander manages. ("Field" is load-bearing — an HQ outpost is the outpost in the
+ * COMMANDER'S OWN trust domain and is not a second deployment, so every config below that declares
+ * `federationRole: "outpost"` is a field outpost; `commander-only.ts` reads that out of the code.)
+ * A rule that holds for a feature and is implemented once per job is the property CLAUDE.md's
+ * census rule names — it regresses per job, and the branch that
  * regresses first is the fail-closed one, which is false on every developer machine, on every
  * declared commander, and in every test that does not deliberately construct it.
  *
@@ -196,8 +205,18 @@ interface DiscoveredLoop {
   file: string;
 }
 
+/**
+ * `readStripped`, NOT a bare `readFileSync` — the shared module exports it for exactly this, and
+ * this census was the one consumer still reading raw text.
+ *
+ * A `export function startSomethingLoop(` inside a `/* … *\/` block — a loop commented out during a
+ * revert, or one quoted in a module doc explaining the shape — was DISCOVERED, then `import`ed,
+ * then found to export no such name, and landed in `unclassified` as "add it to DEPENDENCY_JOBS".
+ * A false RED, and a confusing one: the failure names a loop that does not exist and cannot be
+ * fixed by adding a table entry. Stripping comments is what makes the census a census of the CODE.
+ */
 const discoveredLoops: DiscoveredLoop[] = productionSourceFiles(SRC_DIR).flatMap((file) =>
-  exportedDeclarations(readFileSync(file, "utf8"))
+  exportedDeclarations(readStripped(file))
     .filter(
       (declaration) =>
         RETURNS_LOOP_HANDLE.test(declaration.tail) || LOOP_STARTER_NAME.test(declaration.name)
@@ -640,14 +659,18 @@ describe("dependencyManagementOf — the answer-shaped verdict (ADR-0032 §7d)",
 
   it("reaches every reason value the schema declares — none is unreachable", () => {
     // A value nobody can produce is a lie in the contract: a consuming client would branch on it
-    // forever and never see it. The oracle is the schema's own member list, written out here so
-    // adding a sixth member without a way to produce it fails.
-    const declared: DependencyManagementReason[] = [
-      "commander",
-      "outpost",
-      "retrans",
-      "role_undeclared"
-    ];
+    // forever and never see it.
+    //
+    // THE ORACLE IS DERIVED FROM THE SCHEMA, NOT COPIED FROM IT. This list used to be hand-typed
+    // here, which cannot detect the one thing the test claims to detect: a FIFTH member added to
+    // `DependencyManagementReasonSchema` with no config that produces it would be absent from both
+    // sides and the comparison would still pass. `.options` is the enum's own member list, so the
+    // schema is imported as a VALUE (not `import type`) precisely so this cannot drift.
+    const declared: readonly DependencyManagementReason[] =
+      DependencyManagementReasonSchema.options;
+    // Anti-vacuity: an oracle that resolved to `[]` would make the assertion below a claim about
+    // nothing, and every `produced` value would have to vanish for it to fail.
+    expect(declared.length).toBeGreaterThan(1);
     const produced = new Set(CONFIG_MATRIX.map((config) => dependencyManagementOf(config).reason));
     expect([...produced].sort()).toEqual([...declared].sort());
   });

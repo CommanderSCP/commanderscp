@@ -738,8 +738,28 @@ are preserved above and marked rather than rewritten, because they argue the opp
 length and persuasively — which is precisely the hazard: a reader who found only the new rule would
 have every reason to revert the guard.
 
-**WHICH OUTPOST THIS CLAUSE IS ABOUT (vocabulary note added 2026-08-17).** *HQ outpost* and *field
-outpost* are defined in [GLOSSARY.md](../GLOSSARY.md) and are not redefined here. What matters for
+**WHICH OUTPOST THIS CLAUSE IS ABOUT (vocabulary note added 2026-08-17).**
+
+> **PROVISIONAL, AND HONEST ABOUT WHY.** This note originally said *HQ outpost* and *field outpost*
+> "are defined in GLOSSARY.md and are not redefined here". **There are no such GLOSSARY entries as
+> this branch ships** — they are being authored on a separate branch that has not landed, so the
+> clause pointed at vocabulary the repository does not contain. GLOSSARY.md remains **authoritative**
+> for both terms (CLAUDE.md), and its `dependency subscription` entry now carries the same
+> distinction, **also marked provisional**. When the dedicated entries land they supersede both, and
+> this block should be cut back to the cross-reference it was pretending to be. Until then the
+> minimum needed to read §7d is stated here rather than dangling:
+>
+> - **field outpost** — an outpost deployment in a trust domain **other than the commander's**: a
+>   second running process, with its own database, paired to the commander as a `federation_peers`
+>   row. The only outpost that is a separate deployment.
+> - **HQ outpost** — the outpost role for the **commander's own** trust domain. Not a second
+>   deployment and not a second record: it is the commander instance itself, which is the model
+>   statement [ADR-0011](0011-universal-outpost-validation.md) already makes.
+>
+> Both definitions are *derived from the code below*, not asserted — which is why they can be
+> written down safely here without pre-empting the GLOSSARY's wording.
+
+What matters for
 this clause is what the code makes of the distinction, read out of the code rather than from the
 names: **a `SCP_FEDERATION_ROLE` is one value per deployment** (`config.ts:56`, `:267-275`) — a
 process is `commander` **or** `outpost` **or** `retrans`, never two — and **an `outpost` graph object

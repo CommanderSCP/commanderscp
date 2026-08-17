@@ -434,9 +434,12 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
       // AN OUTPOST NO LONGER GETS IT (ADR-0032 §7d, owner decision 2026-08-17). This assertion was
       // the exact inverse until then — "every federation role, deliberately (§3: each domain
       // derives its OWN inventory)" — and it was green, because that is precisely what the guard
-      // did. The decision reversed the QUESTION, not the mechanics: an outpost never ORIGINATES a
-      // dependency bump, it RECEIVES the resulting change down the global pipeline the commander
-      // manages, so the inventory it used to derive fed nothing that could ever act on it.
+      // did. The decision reversed the QUESTION, not the mechanics: a FIELD outpost never
+      // ORIGINATES a dependency bump, it RECEIVES the resulting change down the global pipeline the
+      // commander manages, so the inventory it used to derive fed nothing that could ever act on
+      // it. A deployment that declares `SCP_FEDERATION_ROLE=outpost` — the config below — IS a
+      // field outpost; an HQ outpost is the commander itself and is the accepted case above
+      // (ADR-0032 §7d's vocabulary note, read out of the code in `commander-only.ts`).
       expect(
         queuesFor({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
       ).not.toContain(INVENTORY_INGESTION_QUEUE);

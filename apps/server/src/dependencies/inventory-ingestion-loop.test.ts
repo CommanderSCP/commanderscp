@@ -82,8 +82,12 @@ describe("inventoryIngestionRouter", () => {
  * This block used to assert the OPPOSITE — "RUNS ON EVERY FEDERATION ROLE" and "is not fail-closed
  * on an UNDECLARED deployment" — and it passed, because the guard really did allow both. Nothing
  * about ingestion's own mechanics changed; the owner's decision changed which question the guard
- * answers. An outpost never ORIGINATES a dependency bump — it RECEIVES the resulting change down
- * the global pipeline the commander manages — so an outpost derives no inventory at all.
+ * answers. A FIELD outpost never ORIGINATES a dependency bump — it RECEIVES the resulting change
+ * down the global pipeline the commander manages — so a field outpost derives no inventory at all.
+ * ("Field" is the qualifier that makes that true: an HQ outpost is the outpost in the COMMANDER'S
+ * OWN trust domain, so its inventory IS the commander's. Every deployment this guard refuses has
+ * DECLARED `SCP_FEDERATION_ROLE=outpost` and is therefore a field outpost — `commander-only.ts`
+ * reads that out of the code.)
  *
  * Kept in the same shape `bump-dispatch.test.ts` uses for its role guard, because these two are now
  * the same guard: all three refusals and the accepted case, one `it` each.

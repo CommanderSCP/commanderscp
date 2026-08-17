@@ -62,6 +62,25 @@
 --   4. This is derived, per-domain, HIGH-CHURN OBSERVATION data — the same category
 --      `change_source_events` and `object_health` already occupy, both of which are tables.
 --
+--      >> MARKED 2026-08-17 (ADR-0032 §7d, owner decision). "PER-DOMAIN" IS REVERSED; the clause is
+--      >> preserved above rather than rewritten (ADR-0026 D4), because it is what §3 argued and a
+--      >> reader who remembers it must be able to find out what happened to it. ALL dependency
+--      >> automation is COMMANDER-ONLY: no FIELD outpost runs a dependency job or holds a dependency
+--      >> inventory, so no domain but the commander derives anything here and these rows exist in
+--      >> exactly ONE place. ("Field" is load-bearing — an HQ outpost is the outpost in the
+--      >> COMMANDER'S OWN trust domain, so its inventory simply IS the commander's; §7d's vocabulary
+--      >> note reads that out of the code, as does `dependencies/commander-only.ts`.) THE REST OF
+--      >> REASON 4 SURVIVES AND IS STILL LOAD-BEARING: "derived, high-churn observation data, the
+--      >> category `change_source_events` and `object_health` occupy" is what justifies the
+--      >> principle-2 bend, and only the locality adjective was overturned.
+--      >>
+--      >> WHY THIS ONE COULD BE MARKED IN PLACE WHEN THE `COMMENT ON` BELOW COULD NOT. This is a
+--      >> `--` line: it reaches no database, so editing it cannot diverge from what any deployment
+--      >> applied. The `COMMENT ON TABLE dependency_lines` at the foot of this file carried the same
+--      >> retired clause and IS applied state — a database that ran 0061 will never run it again —
+--      >> so that one is restated by `drizzle/0066` instead, and 0061's own statement is left
+--      >> untouched. Same marking, two mechanisms, for that reason and no other.
+--
 -- THE BOUNDARY THAT JUSTIFIES ALL OF THAT (ADR-0032 §3, load-bearing): nothing in the dependency
 -- path may expose a TRANSITIVE TRAVERSAL. The moment it does, the graph representation becomes
 -- necessary again and reason 2's measurement applies. Both queries this feature needs are

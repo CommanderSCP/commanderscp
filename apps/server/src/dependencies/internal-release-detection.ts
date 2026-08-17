@@ -73,11 +73,18 @@ import {
  * that travelled nowhere — "domain-visible only", the consequence ADR-0032 §7 records.
  *
  * SINCE ADR-0032 §7d (owner decision, 2026-08-17) THIS MODULE RUNS ON THE COMMANDER ONLY, so the
- * statement is now stronger: a domain-local release at an outpost reaches no detection at all, and
- * its head is recorded NOWHERE. That is the same class as §7d clause 1's outpost-only repositories
- * and is accepted on the same terms — an outpost never ORIGINATES a bump, it receives the resulting
- * change down the global pipeline the commander manages. Nothing here tries to route around it: a
- * feature that federated what locality withheld would defeat the locality decision, not extend it.
+ * statement is now stronger: a domain-local release at a FIELD outpost reaches no detection at all,
+ * and its head is recorded NOWHERE. That is the same class as §7d clause 1's field-outpost-only
+ * repositories and is accepted on the same terms — a field outpost never ORIGINATES a bump, it
+ * receives the resulting change down the global pipeline the commander manages. Nothing here tries
+ * to route around it: a feature that federated what locality withheld would defeat the locality
+ * decision, not extend it.
+ *
+ * "FIELD" IS THE QUALIFIER THAT MAKES THIS TRUE (ADR-0032 §7d's vocabulary note). A domain-local
+ * change in the COMMANDER'S OWN trust domain — the HQ outpost, which is not a second deployment but
+ * this process (`dependencies/commander-only.ts` reads that out of the code) — never journals
+ * either, but it does not need to: this module runs here, over those rows, so its head IS recorded.
+ * The loss is confined to domains the commander is not.
  *
  * ============================================================================================
  * WHAT KEEPS THIS FROM WRITING 1.44 GB/DAY
