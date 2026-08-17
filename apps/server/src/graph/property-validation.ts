@@ -24,10 +24,12 @@ import { badRequest } from "../errors.js";
  *
  *   - `main.ts` applies migrations at boot, before `app.listen` — this process's cache is empty
  *     at that moment, so there is nothing to invalidate and never was.
- *   - `migrate-bin.ts` is the real path (the Helm chart's `pre-upgrade` Job, and the Ansible
- *     rollout). It is a SEPARATE, SHORT-LIVED process that applies the `UPDATE`, exits, and by
- *     design leaves the already-running api/worker pods serving (`deploy/helm/templates/
- *     migrations-job.yaml`: "old-version pods keep serving ... for the whole rollout window").
+ *   - `migrate-bin.ts` is the real path — the Helm chart's `pre-upgrade` Job, which the Ansible
+ *     fleet rollout also reaches, since that role delegates to `helm upgrade --install` rather
+ *     than migrating itself. It is a SEPARATE, SHORT-LIVED process that applies the `UPDATE`,
+ *     exits, and by design leaves the already-running api/worker pods serving
+ *     (`deploy/helm/templates/migrations-job.yaml`: "old-version pods keep serving ... for the
+ *     whole rollout window").
  *     Those pods are where the stale validator lives, and a function call in the Job's heap
  *     cannot reach them. The chart defaults to 2 api + 2 worker replicas.
  *
