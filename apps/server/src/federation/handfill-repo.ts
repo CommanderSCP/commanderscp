@@ -12,6 +12,10 @@ import {
   assertEnforceableDependencySubscriptionScope,
   assertNoDelegatedDependencyUpdates
 } from "../dependencies/subscription-authoring-guard.js";
+import {
+  assertMayWriteGovernanceLabels,
+  assertSelectorKeysAreGovernanceLabels
+} from "../governance/governance-labels.js";
 
 /**
  * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
@@ -44,6 +48,18 @@ export interface HandFillInput {
   name: string;
   properties?: Record<string, unknown>;
   labels?: Record<string, unknown>;
+  /**
+   * The REQUESTING operator — NOT the `FEDERATION_IMPORT_ACTOR_ID` this door hands to
+   * `upsertObjectByUrn` to make the row look like a replica.
+   *
+   * Threaded because the governance-label refusal below is an AUTHORIZATION check, and the
+   * synthetic import actor is a subject with no `objects` row and therefore no role bindings.
+   * Resolving it would answer "no permission" for everyone, which reads as fail-closed and is
+   * really an authorization check that has stopped depending on who is asking — the exact shape
+   * `federation/domain-local.ts` warns about ("inventing a synthetic subject for those callers,
+   * which is how an authorization check quietly becomes a no-op", in the opposite direction).
+   */
+  actorObjectId: string;
 }
 
 /**
@@ -184,6 +200,36 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
     orgId: input.orgId,
     typeId: input.typeId,
     properties: input.properties
+  });
+  // THE GOVERNANCE-LABEL NAMESPACE — the third and fourth refusals this door has to run for itself,
+  // and it is the same reason as the first two. Hand-fill wears the `federationImport` flag that
+  // exempts `graph/objects-repo.ts`'s choke point, and here that exemption is unearned: this is a
+  // free-form-`typeId`, free-form-`labels` LOCAL operator action reachable by any `federation:write`
+  // holder, with no chain to wedge and no transport to interrupt. Left exempt, one request would
+  // both plant a selector-scoped policy keyed on an ordinary label AND stamp reserved governance
+  // labels without `policy:write` — the whole guard, bypassed at the same door that already had to
+  // close two others.
+  //
+  // The permission check runs against the REQUESTING operator, never the synthetic
+  // `FEDERATION_IMPORT_ACTOR_ID` this function passes to `upsertObjectByUrn` — see `actorObjectId`.
+  assertSelectorKeysAreGovernanceLabels({
+    typeId: input.typeId,
+    properties: input.properties
+  });
+  await assertMayWriteGovernanceLabels(tx, {
+    orgId: input.orgId,
+    actorObjectId: input.actorObjectId,
+    // A hand-fill is an upsert, so an EXISTING row's governance labels are also reachable here; the
+    // stored value is the honest `before`, and `{}` would silently permit a removal on the update
+    // branch while refusing an identical no-op create.
+    before: (
+      await tx.query.objects.findFirst({
+        where: (t, { eq: eqOp, and: andOp }) =>
+          andOp(eqOp(t.orgId, input.orgId), eqOp(t.urn, input.urn))
+      })
+    )?.labels as Record<string, unknown> | undefined ?? {},
+    after: input.labels ?? {},
+    subject: `hand-filled ${input.typeId} '${input.urn}'`
   });
   const peer = await getPeerByIdOrName(tx, input.orgId, input.peerIdOrName);
   const { object } = await upsertObjectByUrn(tx, {

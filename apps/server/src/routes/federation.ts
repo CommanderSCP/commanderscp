@@ -1128,7 +1128,11 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           urn: request.body.urn,
           name: request.body.name,
           properties: request.body.properties,
-          labels: request.body.labels
+          labels: request.body.labels,
+          // The REQUESTING operator. `handFillObject` deliberately does NOT reuse this for the
+          // upsert's `actorObjectId` (that stays the synthetic import actor, which is what makes the
+          // row a shadow copy) — it is the subject the governance-label refusal resolves.
+          actorObjectId: auth.subjectObjectId
         });
       });
       reply.status(201).send(object);
