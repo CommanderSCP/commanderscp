@@ -15,13 +15,17 @@ import { matchPoliciesForTargets } from "./policy-resolve.js";
  * `governance/policy-resolve.ts` matches every scope kind — `objectRef`, `selector`, `group`,
  * `ownerGroup`, unscoped — over the target's CONTAINMENT CHAIN (`graph/containment.ts`), and
  * `authz/resolve.ts`'s `scopeExpandCte` expands authority upward over the same edges. Containment is
- * therefore the reach of all governance. It is also ordinary tenant-writable graph data, by two
+ * therefore the reach of all governance. It is also ordinary tenant-writable graph data, by THREE
  * routes:
  *
  *   1. `objects.domain_id` — written by every typed `PUT`/`PATCH` under `object:write` (or
- *      `policy:write` for the governance-owned types), and
+ *      `policy:write` for the governance-owned types);
  *   2. the `contains` edge — created and deleted through the generic `/relationships` endpoints and
- *      through IaC apply under `relationship:write`.
+ *      through IaC apply under `relationship:write`; and
+ *   3. TOMBSTONING A CONTAINER, which writes no containment field at all and yet detaches everything
+ *      beneath it, because every route above skips a DELETED ancestor. See
+ *      `countContainmentDependents` for why this one is neither of the other two and could not be
+ *      left to the edge cascade it appears to share.
  *
  * `policy:write` is held by `Administrator` and `Owner` alone (`drizzle/0010_governance.sql:174`).
  * `relationship:write` and `object:write` are held by `Operator` and up
@@ -80,10 +84,15 @@ import { matchPoliciesForTargets } from "./policy-resolve.js";
  * repo would abort the federation importer and IaC apply, whose actors hold no bindings. A recording
  * has the opposite requirement: it must happen on EVERY write regardless of who is acting, precisely
  * so that a reach change arriving through an import or an apply is as visible as one arriving through
- * `DELETE /relationships/{id}`. Installing it at `updateObject`/`createRelationship`/
- * `deleteRelationship` covers every door — the typed routes, the generic routes, IaC apply,
- * federation hand-fill and overlays — without enumerating any of them, which is the census failure
- * this repo keeps paying for (`docs/BUILD_AND_TEST.md` §4.4).
+ * `DELETE /relationships/{id}`.
+ *
+ * FIVE sites, and the count is the point — `updateObject`, `upsertObjectByUrn`'s hand-fill
+ * reconciliation branch (which deliberately does NOT delegate to `updateObject`), `createRelationship`,
+ * `deleteRelationship`, and `deleteObject`. Between them they cover every door — the typed routes, the
+ * generic routes, IaC apply, `POST /discovery/accept`, federation import, hand-fill and overlays —
+ * without enumerating any of them, which is the census failure this repo keeps paying for
+ * (`docs/BUILD_AND_TEST.md` §4.4). Each was proved installed by deleting it alone and watching one
+ * named case fail; the log is in `governance-reach.integration.test.ts` and the PR body.
  *
  * ## Scope of the recorded delta: the moved object, and why that is the honest boundary
  *
@@ -382,10 +391,14 @@ function summarize(p: ReachedPolicy): Record<string, unknown> {
 function describe(verdict: string, lost: ReachedPolicy[], gained: ReachedPolicy[]): string {
   const parts: string[] = [];
   if (lost.length > 0) {
-    parts.push(`no longer governed by ${lost.map((p) => `'${p.name}' (${p.enforcement})`).join(", ")}`);
+    parts.push(
+      `no longer governed by ${lost.map((p) => `'${p.name}' (${p.enforcement})`).join(", ")}`
+    );
   }
   if (gained.length > 0) {
-    parts.push(`newly governed by ${gained.map((p) => `'${p.name}' (${p.enforcement})`).join(", ")}`);
+    parts.push(
+      `newly governed by ${gained.map((p) => `'${p.name}' (${p.enforcement})`).join(", ")}`
+    );
   }
   return `containment change altered policy reach (${verdict}): ${parts.join("; ")}`;
 }

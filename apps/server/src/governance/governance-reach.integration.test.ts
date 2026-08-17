@@ -107,7 +107,13 @@ describe("a containment write that changes which policies reach an object", () =
   async function reachDecisionsFor(
     org: TestOrg,
     subjectId: string
-  ): Promise<{ verdict: string; inputContext: Record<string, unknown>; reasonTree: Record<string, unknown> }[]> {
+  ): Promise<
+    {
+      verdict: string;
+      inputContext: Record<string, unknown>;
+      reasonTree: Record<string, unknown>;
+    }[]
+  > {
     const rows = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select()
