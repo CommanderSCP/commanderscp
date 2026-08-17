@@ -425,7 +425,7 @@ dependency" rather than "SCP cannot read where you declared it".
    — which admits a chart's own image block (ingress-nginx spells the repository there, beside
    `registry:`, `tag:` and `digest:`) *and* a Kubernetes **Container object**, where `image` is a
    complete reference and `tag` is not a field of the schema at all. Reading a container's sibling
-   `tag:` was a wrong row while the file was read-only; since §8g it is the line an anchor would
+   `tag:` was a wrong row while the file was read-only; since §8h it is the line an anchor would
    point a BUMP at, so SCP would author a pull request that moves a key nothing consumes. So the
    split keys are read only where rule (b) ALSO holds — the mapping is the value of an `image:` key
    and is therefore an image block, never a container. The discriminator is the marker the parser
@@ -1586,13 +1586,13 @@ decidability rule, and it is a decidability rule that changed. Full derivation:
    fact existed only inside a human-readable note — a gate cannot be built on prose. Editing one of
    `n` merged sites would leave the other `n-1` behind, so `n > 1` yields no anchor.
 
-### 8h. A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG IS REFUSED, NOT BUMPED TAG-ONLY (2026-08-17, M21.7 follow-up)
+### 8i. A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG IS REFUSED, NOT BUMPED TAG-ONLY (2026-08-17, M21.7 follow-up)
 
 **Status: DECIDED AND BUILT.** Design and the deferred widening:
 [docs/proposals/split-shape-image-bumps.md §11](../proposals/split-shape-image-bumps.md).
 
 An `oci` declaration can name the release **and** the bytes:
-`FROM alpine:3.19@sha256:aaaa…`, or `{repository, tag, digest}` in a chart's values. §8g made the
+`FROM alpine:3.19@sha256:aaaa…`, or `{repository, tag, digest}` in a chart's values. §8h made the
 second of those writable, and the result was a bump that **passed every gate and changed nothing that
 runs**: the runner moved the tag, the digest stayed, and Docker and containerd resolve by the digest
 whenever one is present. Gate 7 did not catch it — `versionTextOf` joins `declared` and `digest`, so
