@@ -772,16 +772,31 @@ export async function prepareApplyChecks(
       // subtree the applier holds nothing at — the mirror image of the escalation the destination
       // entry stops. The same second end `graph/containment-parent-authz.ts` now checks, and the
       // one `graph/components-repo.ts`'s `setComponentService` has always checked ("the OLD service
-      // too on a move (it loses a child)"). `found.domainId` is null only for the org root, which
-      // has no source container to authorize at.
+      // too on a move (it loses a child)").
+      //
+      // TWO SOURCES ARE EXEMPT. `found.domainId` is null only for the org root ITSELF, which has no
+      // source container to authorize at — and `found.domainId === orgId`, the org ROOT OBJECT, is
+      // exempt too, because the org root cannot lose custody of anything that stays inside the org:
+      // `updateObject`'s `assertRootedContainmentParent` proves on this same write that the
+      // destination reaches the root, so the root is on the row's chain after the move exactly as it
+      // was before, and the premise of this check ("its holders lose custody") is false for it.
+      //
+      // That second half was missing HERE as well as in the helper — the identical over-broad
+      // refusal, in the identical words, in the twin. It is not an edge case: `createObject` defaults
+      // an unnamed `domainId` to the org root, so MOST rows sit there, and apply refused every
+      // manifest that re-parented one of them unless the applier held ORG-ROOT authority. See
+      // `graph/containment-parent-authz.ts` for the full argument — the two copies must agree, and
+      // `routes/containment-root-source-and-create-rooting.integration.test.ts` pins both doors.
       //
       // The CYCLE half of the same fix is deliberately NOT duplicated here: it is a subject-free
       // invariant and lives in `graph/objects-repo.ts`'s `updateObject`, which this path writes
-      // through — see the comment there for why the repo, not the doors, owns it.
+      // through — see the comment there for why the repo, not the doors, owns it. The ROOT-
+      // REACHABILITY half of the CREATE branch above is subject-free for the same reason and lives
+      // in `createObject`, which `executePlanDiff` calls directly.
       const destination = entry.target?.domainId;
       if (entry.action === "update" && destination && destination !== found.domainId) {
         checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: destination });
-        if (found.domainId) {
+        if (found.domainId && found.domainId !== orgId) {
           checks.push({
             permission: writePermissionFor(entry.typeId),
             scopeObjectId: found.domainId

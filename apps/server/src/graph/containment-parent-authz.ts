@@ -63,11 +63,20 @@ import { resolveContainmentParent } from "./objects-repo.js";
  * ## What this function does NOT own
  *
  * The ROOT-REACHABILITY invariant — no cycle, and the destination itself reaches the org root — is
- * subject-free and therefore lives at the repo, in `updateObject`, via
- * `graph/containment.ts`'s `assertRootedContainmentParent`. It is called from here too, so a door
- * gets the diagnostic 400 before spending an authorization round trip, but the repo call is the one
- * that covers `iac/plans-repo.ts`, which writes a containment parent without ever coming through
- * here. `routes/containment-move-cycle-and-source-authz.integration.test.ts` pins both.
+ * subject-free and therefore lives at the repo, in `createObject` AND `updateObject`, via
+ * `graph/containment.ts`'s `assertRootedContainmentParent`. It is called from here too on the MOVE
+ * branch, so a door gets the diagnostic 400 before spending an authorization round trip, but the
+ * repo calls are the ones that cover `iac/plans-repo.ts`, which both creates and re-parents objects
+ * without ever coming through here.
+ *
+ * The CREATE branch of this function deliberately does NOT call it — `createObject` does, and that
+ * is the only placement that covers apply. It went in late: the invariant shipped on the move path
+ * alone, on the reasoning that "a fresh id cannot already be an ancestor". That covers the CYCLE
+ * refusal and the truncation refusal that backs it, and nothing else; root-reachability is a
+ * property of the PARENT's chain, so a create under an unrooted parent produced the same unreachable
+ * row through a different verb.
+ * `routes/containment-move-cycle-and-source-authz.integration.test.ts` pins the move half,
+ * `routes/containment-root-source-and-create-rooting.integration.test.ts` the create half.
  */
 export interface DeclaredContainmentParent {
   orgId: string;
@@ -171,9 +180,38 @@ export async function resolveDeclaredContainmentParent(
   // move (it loses a child)"), which this module's doc already cites as its precedent. Held to the
   // SAME permission bar as the object and the destination, never a weaker one.
   //
-  // `current.domainId === null` means there IS no source container — the org root itself. Nothing
-  // to authorize at; the destination check above is the whole of it.
-  if (current.domainId !== null) {
+  // TWO SOURCES ARE EXEMPT, AND THE SECOND ONE IS NOT AN EXCEPTION — IT IS THE RULE APPLIED.
+  //
+  //  - `current.domainId === null` means there IS no source container: the row IS the org root.
+  //    Nothing to authorize at; the destination check above is the whole of it.
+  //
+  //  - `current.domainId === orgId` — the org ROOT OBJECT — is exempt because the org root cannot
+  //    lose custody of anything that stays inside the org. This half was missing, and it did not
+  //    refuse an edge case: `createObject` defaults an unnamed `domainId` to the org root, so MOST
+  //    objects sit there, and requiring authority at the source made every ordinary reorganisation
+  //    out of the root demand ORG-ROOT authority — an actor who owns the destination outright, and
+  //    the object outright, was refused. Over-broad in exactly the direction a suite of refusals
+  //    cannot see, which is why `routes/containment-root-source-and-create-rooting.integration.test.ts`
+  //    leads with the SUCCESS case.
+  //
+  //    It is provable, not a judgement call, and the proof is two statements above:
+  //    `assertRootedContainmentParent` has just established that the DESTINATION reaches the org
+  //    root. So the org root is on the moved row's chain after the move exactly as it was before —
+  //    the premise of this whole check ("the source container loses a child, and its holders lose
+  //    custody") is FALSE for the org root and for no other container. `resolveContainmentParent`
+  //    additionally refuses any `domainId` outside this org, so there is no destination for which
+  //    that reasoning could fail.
+  //
+  //    Same shape as the precedent this module cites: `components-repo.ts`'s `setComponentService`
+  //    adds the old parent to its scope set only `if (currentEdge)` — a component with no service is
+  //    an ASSIGN, not a move out of anything. The org root is this model's equivalent of "not in a
+  //    container yet", and it is written as an id rather than as `null` only because ADR-0021 D4
+  //    makes the root an ordinary object.
+  //
+  // `input.orgId` IS the org root object's id (`auth/local-auth.ts`'s `ensureOrgRootObject` creates
+  // it with `id: orgId`) — the same identity every door already relies on writing `scopeObjectId ??
+  // orgId`, and the one `assertRootedContainmentParent` looks for on the chain.
+  if (current.domainId !== null && current.domainId !== input.orgId) {
     const allowedAtSource = await hasPermission(tx, {
       orgId: input.orgId,
       subjectObjectId: input.subjectObjectId,

@@ -275,6 +275,50 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
 
   const id = input.id ?? uuidv7();
 
+  // THE ROOT-REACHABILITY INVARIANT, on the CREATE half of the same choke point `updateObject`
+  // carries it on (see the long comment there, and `graph/containment.ts` for the three refusals).
+  //
+  // It was installed on the MOVE path only, and the reasoning that left creates out was "a fresh id
+  // cannot already be an ancestor of the parent". That is true, and it covers exactly the refusals
+  // that ASK about the child's id — the CYCLE, and the truncation refusal that exists only to make
+  // the cycle answer sound. It says nothing about the third, which is a property of the PARENT's
+  // chain: the parent does not itself reach the org root, because an ancestor was soft-deleted.
+  // Hence `childIsNew` — refusal 3 alone, and see `containment.ts` for why running the other two on
+  // a create would be a new refusal rather than an invariant (it lowers a documented nesting limit).
+  //
+  // MEASURED on the real doors before this call existed, not reasoned about: soft-delete a domain,
+  // then `POST /services {domainId: <a service still inside it>}` answered **201**, and the ORG-ROOT
+  // ADMIN's own GET, PATCH and DELETE of the new row all answered **403 — permanently**, while the
+  // principal bound inside the stranded subtree could see it and had nowhere to move it to. That is
+  // byte-for-byte the unreachable row the move path refuses, produced through a different verb.
+  //
+  // AT THE REPO, for the same reason the update half is: `iac/plans-repo.ts`'s `executePlanDiff`
+  // calls `createObject` DIRECTLY through its own drained check list and never touches
+  // `graph/containment-parent-authz.ts`, so a fix at the door helper alone ships INERT for IaC apply
+  // — which is a second, independent create door and was measured writing the unreachable row
+  // happily. It needs no subject, and gives every caller the same answer, which is this codebase's
+  // test for an invariant (`federation/domain-local.ts`: authorization at the door, invariant at the
+  // repo).
+  //
+  // `domainId === null` is the org root's OWN create (bootstrap) — it has no parent whose chain
+  // could be broken. Every other create pays one bounded recursive-CTE round trip; unlike the update
+  // half there is no "unchanged re-apply" to guard against, because a create always writes a parent.
+  //
+  // `federationImport` is exempt, exactly as it is on the update half and for the same reason: an
+  // imported row's parent comes from `resolveImportDomainId`, which already filters tombstones and
+  // falls back to the org root, and `federation/import-repo.ts`'s `object_upsert` branch has no
+  // try/catch — one refusal here would abort a whole signed bundle and wedge that channel over a row
+  // this domain does not own. The receiving domain also has no standing to referee the containment
+  // its authoring domain chose.
+  if (!input.federationImport && domainId !== null) {
+    await assertRootedContainmentParent(tx, {
+      orgId: input.orgId,
+      childId: id,
+      parentId: domainId,
+      childIsNew: true
+    });
+  }
+
   // M16.2 phase A (E1) — clause (4) of the authority-split rule, at the ONE choke point every LOCAL
   // write door funnels through (see `federation/outpost-binding.ts` for the rule and for why it is
   // here and not per-route). Skipped for `federationImport`, and that skip is NARROWER than it looks:

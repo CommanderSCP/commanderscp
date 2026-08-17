@@ -393,6 +393,26 @@ export async function containmentScopeIds(
  *     through a tombstone, exactly as `scopeExpandCte` does, so a live parent under a dead one has
  *     no route to the root and cannot lend one.
  *
+ * ## `childIsNew` — which of the three a CREATE gets, and why it is not all of them
+ *
+ * Refusals 1 and 2 are ONE question ("could this close a loop?") asked twice: 2 exists solely because
+ * a truncated walk leaves 1's answer unproven, which is what its own wording says. On a CREATE that
+ * question is not merely unlikely, it is unaskable — the child is not in the graph yet, so it is on
+ * no chain, and the id cannot secretly belong to an existing row either (the insert's primary key
+ * would conflict). Refusal 3 is the one that survives: it is a property of the PARENT's chain and
+ * has nothing to do with the child's id, which is exactly why the create path needed this function
+ * at all.
+ *
+ * So `childIsNew` runs 3 alone. Running 1 and 2 anyway is not free caution — it is a NEW refusal
+ * wearing an invariant's clothes. Measured: it moved the model's documented nesting ceiling from ten
+ * levels to nine, because creating a child of a parent whose own chain is exactly at the bound would
+ * now fail even though `authz/resolve.ts` still reaches that parent. That ceiling is pinned, on
+ * purpose, by `routes/containment-move-cycle-and-source-authz.integration.test.ts`'s truncation case,
+ * which builds ten levels and reasons about why ten is the honest maximum. A guard that quietly
+ * lowers a documented limit is a behaviour change, not a bug fix.
+ *
+ * It DEFAULTS to false, so a caller that says nothing gets the strict, move-path behaviour.
+ *
  * `orgId` IS the org root object's id — `auth/local-auth.ts`'s `ensureOrgRootObject` creates it with
  * `id: orgId` ("stable, predictable id for the org root object"), which is the same identity every
  * door already relies on when it writes `scopeObjectId ?? orgId`.
@@ -405,7 +425,14 @@ export async function containmentScopeIds(
  */
 export async function assertRootedContainmentParent(
   tx: TenantTx,
-  input: { orgId: string; childId: string; parentId: string }
+  input: {
+    orgId: string;
+    childId: string;
+    parentId: string;
+    /** True when `childId` names a row that does not exist yet (a CREATE): refusals 1 and 2 are
+     *  skipped as unaskable, refusal 3 still runs. See the `childIsNew` section above. */
+    childIsNew?: boolean;
+  }
 ): Promise<void> {
   const chain = await containmentChain(tx, input.orgId, input.parentId);
   const ids = new Set(chain.map((entry) => entry.id));
@@ -414,7 +441,7 @@ export async function assertRootedContainmentParent(
   // therefore exactly how many hops the walk took — the number this needs to compare to the bound.
   const hops = Math.max(0, ...chain.map((entry) => entry.depth));
 
-  if (ids.has(input.childId)) {
+  if (!input.childIsNew && ids.has(input.childId)) {
     throw badRequest(
       `object '${input.childId}' cannot be contained by '${input.parentId}': '${input.childId}' ` +
         `already contains '${input.parentId}', so this would close a containment cycle. A cycle has ` +
@@ -423,7 +450,7 @@ export async function assertRootedContainmentParent(
         `every principal, the org Owner included.`
     );
   }
-  if (hops >= CONTAINMENT_WALK_MAX_DEPTH) {
+  if (!input.childIsNew && hops >= CONTAINMENT_WALK_MAX_DEPTH) {
     throw badRequest(
       `object '${input.childId}' cannot be contained by '${input.parentId}': that container's own ` +
         `containment chain is deeper than the ${CONTAINMENT_WALK_MAX_DEPTH}-hop walk bound, so it ` +
