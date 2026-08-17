@@ -197,12 +197,26 @@ END {
     # (a) THE ANCHOR ADDRESSES THE BYTES IT WAS DERIVED FROM. A line number alone would be a
     # confidently wrong edit the moment the file moved under it; the text equality is what makes a
     # stale anchor a refusal instead.
-    if (anchor_nr < 1 || anchor_nr > NR) {
-      printf("scp-runner-dep: the anchor names line %d and the manifest has %d lines\n", anchor_nr, NR) > "/dev/stderr";
-      exit 3;
-    }
+    #
+    # THIS ONE COMPARISON IS ALSO THE RANGE CHECK, and that is worth stating because a separate
+    # `anchor_nr > NR` guard stood here and was DEAD CODE — no mutation killed it, on either awk.
+    # An out-of-range subscript reads as the empty string, and anchor_text is guaranteed non-empty
+    # by the all-or-nothing check in the shell above, so `lines[999] != anchor_text` is already
+    # false for the right reason. Measured rather than reasoned about: with the guard removed, both
+    # a 4 on a 3-line file and a 20-digit line number refuse identically under the host awk AND
+    # under the BusyBox awk this image actually runs (which clamps `%d` at 2147483647 where the host
+    # clamps at 2^63-1 — neither WRAPS, so neither can land on a line the file has). run.sh is small
+    # enough to audit by reading, and a guard that reads as protection while protecting nothing is
+    # worse here than none. runner-shim.test.ts pins both cases against the reference edit: a
+    # shim that folded an out-of-range anchor back into the file with a modulo reddens the line-99
+    # case, and the 20-digit case keeps the clamp measurement rather than leaving it in a comment.
+    #
+    # NOTE FOR ANY FUTURE EDIT OF THIS BLOCK: the awk program is a single-quoted shell string, so an
+    # apostrophe anywhere in these comments ends it. That is why they read a little stiffly.
     if (lines[anchor_nr] != anchor_text) {
-      printf("scp-runner-dep: line %d of the manifest is not the anchor text the descriptor carries\n", anchor_nr) > "/dev/stderr";
+      # NR is named here so an out-of-range anchor still reads as one: "line 999 of a 12-line
+      # manifest" is the diagnosis the deleted range guard used to print, kept without the branch.
+      printf("scp-runner-dep: line %d of the manifest (%d lines) is not the anchor text the descriptor carries\n", anchor_nr, NR) > "/dev/stderr";
       exit 3;
     }
     # (b) ...and it carries the version this bump replaces.

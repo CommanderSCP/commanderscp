@@ -145,7 +145,25 @@ export interface ManifestBumpSpec {
    * be a number derived from a read at one ref and applied to a read at another.
    *
    * Its ABSENCE is not an error and never becomes one — with no anchor, the coordinate rule runs
-   * exactly as it always has. That is what keeps the four working ecosystems untouched.
+   * exactly as it always has.
+   *
+   * WHICH ECOSYSTEMS ACTUALLY GET ONE, because the answer is not "only the new shape" and a comment
+   * that said so would be a claim the code does not have. `locateVersionLine` derives an anchor
+   * from whatever the registered parser reports, so THREE of the ecosystems that already worked are
+   * anchored in practice: `go` (go.mod), `python`'s `requirements*.txt`, and `oci`'s Dockerfile.
+   * The other three yield none — `npm` and `python`'s `pyproject.toml` because their parsers report
+   * no `line` at all, `maven` because `pom-xml.ts` reports the `<dependency>` OPEN TAG line and
+   * step 4 refuses a line that does not carry the version.
+   *
+   * WHAT THE ANCHORED BRANCH MEANS FOR THOSE THREE, stated as the property rather than as a hope:
+   * their parsers take the coordinate VERBATIM off the same line as the version, so the anchor line
+   * always names both — which makes it a candidate of the coordinate rule itself. Clause (c) then
+   * admits it only when it is the SOLE candidate, which is exactly the unanchored rule's own
+   * condition, and refuses when there are several, which is exactly the unanchored rule's own
+   * refusal. So the anchored and unanchored paths select the same line and emit the same bytes
+   * there (`runner-shim.test.ts` runs both and requires byte equality), and the anchor can never
+   * move the edit somewhere else: for a line that names the coordinate, the coordinate rule is
+   * never silent, and silence is the only gap an anchor fills.
    *
    * `text` is COMPARED, NEVER EMITTED. Nothing here is ever written into a file; it is an equality
    * test against the file's own bytes, so a stale or wrong descriptor can only cause a refusal.

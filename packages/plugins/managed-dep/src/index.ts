@@ -845,10 +845,18 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
       //     ingestion and spent at actuation would be a line number taken from a read at one ref and
       //     applied to a read at another, which is a confidently wrong edit rather than a refused
       //     one. `locateVersionLine` never throws and returns `undefined` freely — its ABSENCE is
-      //     not an error, it just means the coordinate rule runs exactly as it always has, which is
-      //     what keeps every ecosystem that works today untouched (Maven yields no anchor BY
-      //     CONSTRUCTION, because `pom-xml.ts` records the `<dependency>` open-tag line and that
-      //     line does not carry the version).
+      //     not an error, it just means the coordinate rule runs exactly as it always has.
+      //
+      //     AN ANCHOR IS DERIVED HERE FOR MORE THAN THE NEW SHAPE, and saying otherwise would be a
+      //     comment asserting a property this code does not have: `go`, `python`'s
+      //     `requirements*.txt` and `oci`'s Dockerfile all anchor, because their parsers report the
+      //     line that carries the version. What keeps them unchanged is not the absence of an
+      //     anchor but clause (c) of `verifyManifestBump` — those parsers read the coordinate off
+      //     that same line, so the anchor is itself a coordinate-rule candidate and the veto admits
+      //     it only where the unanchored rule would have chosen it anyway. The ecosystems that
+      //     genuinely yield NO anchor are `npm` and `pyproject.toml` (their parsers report no line
+      //     at all) and `maven` (`pom-xml.ts` reports the `<dependency>` open-tag line, which does
+      //     not carry the version, so step 4 refuses it).
       const anchor = locateVersionLine(original.content, descriptor.spec);
       const spec: ManifestBumpSpec = anchor ? { ...descriptor.spec, anchor } : descriptor.spec;
 

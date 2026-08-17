@@ -148,6 +148,11 @@ export type RepoWriteRefusalReason =
   | "constraint_kind_changed"
   /** The dependency carries no bumpable version (`unpinned`/`unresolved`). */
   | "unbumpable_constraint"
+  /** The declaration is pinned by a DIGEST as well as a tag, and only the tag moved. A container
+   *  runtime resolves by digest whenever one is present, so the deployed bytes would not change —
+   *  the pull request reads as an upgrade and delivers nothing, and the manifest is left
+   *  self-contradictory (a tag naming one release beside a digest naming another's bytes). */
+  | "digest_pin_not_moved"
   /** The dependency that changed is not the one this subscription is for. */
   | "coordinate_not_expected"
   /** The subscribed coordinate is not declared by this manifest at all. */
@@ -576,6 +581,19 @@ export interface ManifestVersionAnchor {
  *     several lines below it (the same fact this file's gate-5 comment already turns on), so a Maven
  *     declaration yields NO anchor and Maven's path cannot change. The anchor exists exactly where
  *     it is honest, by construction rather than by intention.
+ *
+ *     WHERE THAT LEAVES EACH ECOSYSTEM, enumerated because the useful claim is a map and not a
+ *     slogan — "the working ecosystems are untouched BY CONSTRUCTION" was written here once and was
+ *     false of four of them. AN ANCHOR IS DERIVED for `go` (go.mod), `python`'s `requirements*.txt`
+ *     and `oci`'s Dockerfile: their parsers report the line the version is written on. NO ANCHOR is
+ *     derived for `npm` and `python`'s `pyproject.toml` (steps 3–4: those parsers report no `line`
+ *     at all) or for `maven` (step 4, above). What keeps the first three unchanged is therefore
+ *     clause (c) of `verifyManifestBump` rather than the absence of an anchor: those parsers take
+ *     the coordinate VERBATIM off the same line, so the anchor line names the coordinate too and is
+ *     a candidate of the coordinate rule itself — the veto then admits it only when it is the sole
+ *     candidate, which is the unanchored rule's own condition. The anchor cannot move the edit for
+ *     them, because a line naming the coordinate is never a line the coordinate rule is silent
+ *     about, and silence is the only gap an anchor fills.
  *  5. It is not a MERGED multi-site entry (`DeclaredDependency.occurrences > 1`). One values file
  *     can pin `acme/api:1.2.3` in a Deployment and in a CronJob; the parser merges them because the
  *     inventory row merges, and editing one line would leave the other behind. Refused here rather
@@ -857,10 +875,14 @@ export interface ManifestOnlyEditInput {
  *     scope, declaredIn and line. This is the charter's "never adds or removes a dependency", and
  *     comparing positionally also refuses a REORDER, which is not a version edit either.
  *  6. **Exactly one version differs, and it is the subscribed one**: with an unchanged constraint
- *     KIND, and from a constraint that has a version to change. Refusing a constraint-kind change is
- *     not fussiness: `>=2.0` → `==2.31.0` rewrites a range as a pin, which `types.ts` names as the
+ *     KIND, from a constraint that has a version to change, and — where the declaration is pinned
+ *     TWICE — with its digest moved alongside its tag. Refusing a constraint-kind change is not
+ *     fussiness: `>=2.0` → `==2.31.0` rewrites a range as a pin, which `types.ts` names as the
  *     thing an actuator must not do, and `unpinned` → `pinned` would be ADDING a version the author
- *     never wrote.
+ *     never wrote. The digest clause is the one refusal here that catches an edit which is
+ *     structurally perfect and OPERATIONALLY A NO-OP: `alpine:3.19@sha256:…` and a chart's
+ *     `{tag, digest}` are both resolved BY DIGEST, so moving the tag alone changes the file and not
+ *     the running image (`digest_pin_not_moved`).
  *  7. **The change is confined to the version text**: the one differing region, measured as the span
  *     between the common prefix and the common suffix, must lie inside the dependency's own declared
  *     version text on each side. Gate 3 already refuses two changes on two lines; this refuses two
@@ -1019,6 +1041,35 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
     refuse(
       "unbumpable_constraint",
       `scp-managed-dep: '${coordinate}' in '${path}' carries no declared version text on ${fromDeclared === undefined ? "the base" : "the edited"} side`
+    );
+  }
+  // A TAG MOVED WHILE ITS DIGEST STAYED — the bump that silently changes nothing (ADR-0032 §8h).
+  //
+  // Both `oci` spellings can pin twice: `FROM alpine:3.19@sha256:…` in a Dockerfile, and
+  // `{repository, tag, digest}` in a chart's values. Where both are present the digest WINS —
+  // containerd and Docker resolve by digest and the tag becomes a label — so moving the tag alone
+  // leaves the deployed bytes exactly where they were, while the pull request reads as an upgrade
+  // and the manifest now says two different things about which release it wants.
+  //
+  // Refused rather than half-applied, and refused rather than guessed at: the digest for the new
+  // version IS available upstream (`dependency_lines.latest_digest`, resolved by the same poll that
+  // moved `latest_version`), but moving both is a TWO-LINE edit in the split shape, and clause 2 of
+  // `verifyManifestBump` — "exactly ONE line differs" — is a charter-enforcing refusal that does
+  // not get widened to a pair as a side effect of this one. So the tag-only edit is refused with
+  // its own name, which is the "skipped rather than guessed" rule (ADR-0032 §7) applied to an
+  // actuation instead of to a reading. `split-shape-image-bumps.md` §11 carries the follow-up.
+  //
+  // The condition is deliberately "the digest did not move", not "a digest exists": an edit that
+  // moves the tag AND its digest together is a correct bump and is accepted (a named test drives
+  // exactly that literal), and so is a digest-only move.
+  if (
+    before.digest !== undefined &&
+    before.digest === after.digest &&
+    fromDeclared !== toDeclared
+  ) {
+    refuse(
+      "digest_pin_not_moved",
+      `scp-managed-dep: '${coordinate}' in '${path}' is pinned by a digest as well as a tag, and only the tag moved ('${fromDeclared}' -> '${toDeclared}', digest still '${before.digest}'). A container runtime resolves by digest whenever one is present, so this edit would change the manifest and NOT the image that runs — a pull request that reads as an upgrade and delivers nothing. Re-pin the digest for '${toDeclared}' and the tag together, or drop the digest`
     );
   }
 

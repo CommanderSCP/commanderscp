@@ -166,6 +166,14 @@
  *     a scan takes the first, so a duplicated image key is REPORTED rather than picked between.
  *     (The check's other effect, throwing on any duplicate key anywhere in the file, was the wrong
  *     stamp anyway: `unreadable` says "may succeed next pass" about a file that will fail forever.)
+ * 18. **A `tag:` BESIDE A POD-SPEC `image:` IS A KEY KUBERNETES NEVER READS.** `containers[].tag`
+ *     is not in the Container schema; `image` there is a complete reference. Trap 13's rule (a)
+ *     admits container objects and chart image blocks alike, so the sibling split keys are read
+ *     only where rule (b) ALSO holds — i.e. where the mapping is the value of an `image:` key and
+ *     is therefore an image block, not a container. Since M21.7 made `values.yaml` WRITABLE this
+ *     stopped being a reporting question: the sibling's line is the line a bump would EDIT, so
+ *     reading it would have SCP author a pull request that moves a key nothing consumes. See
+ *     {@link unreadSiblingNote} for what is given up and how it is reported.
  *
  * ============================================================================================
  * WHAT IS NOT READ, DELIBERATELY
@@ -524,6 +532,22 @@ function joinNotes(...parts: ReadonlyArray<string | undefined>): string | undefi
 }
 
 /**
+ * (trap 18) The sentence a rule-(a)-only mapping's un-read `tag:`/`digest:` gets. Naming them is
+ * the whole difference between this and the phantom-minting round 5 removed: the key is in the
+ * file, SCP saw it, and SCP is saying why it did not treat it as this image's version.
+ */
+function unreadSiblingNote(names: readonly string[]): string | undefined {
+  if (names.length === 0) return undefined;
+  return (
+    `a sibling ${names.map((name) => `'${name}:'`).join(" and ")} was NOT read as this image's version: ` +
+    "this mapping is an image only because it carries an `image:` SCALAR, which is a COMPLETE " +
+    "reference, and that is the shape of a Kubernetes Container object — where `tag` and `digest` " +
+    "are not fields at all and nothing reads them. Put the version in the `image:` reference " +
+    "itself, or declare the image as an `image:` block with `repository:` and `tag:` under it"
+  );
+}
+
+/**
  * THE WHOLE OF THE SHAPE LOGIC, applied to every mapping IN IMAGE CONTEXT — which is what makes one
  * parser cover both a chart's `image:` block and a pod spec's `containers[].image` with no
  * per-convention branch, and what makes raw Kubernetes manifests a registration decision rather
@@ -566,11 +590,54 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext, underImageKey
   }
   if (!underImageKey && image.kind !== "text") return; // not about an image at all — say nothing
 
+  /**
+   * (trap 18) A `tag:` BESIDE A POD-SPEC `image:` IS A KEY KUBERNETES NEVER READS.
+   *
+   * Rule (a) — a mapping carrying an exact `image:` SCALAR — admits two populations that look
+   * identical to a walker and are not the same thing:
+   *
+   *   * a chart's own image BLOCK, which happens to spell the repository under `image:` beside a
+   *     `registry:` and a `tag:` (ingress-nginx does exactly this). That mapping is ALSO the value
+   *     of an `image:` key, so rule (b) holds for it too, and its `tag:` is the image's version —
+   *     Helm renders `{{ .registry }}/{{ .image }}:{{ .tag }}` out of it.
+   *   * a Kubernetes CONTAINER OBJECT — `containers[]`, `initContainers[]`, or a `sidecars:`/
+   *     `extraContainers:` fragment a chart splices into a pod spec with `toYaml`. `image` there is
+   *     a COMPLETE reference and `tag` is not a field of the Container schema at all: the API
+   *     server ignores it, or with a strict decoder rejects it. Such a mapping is in context by
+   *     rule (a) ALONE — it is never the value of an `image:` key.
+   *
+   * Reading the sibling in the second population is trap 13's phantom one level in, and since
+   * M21.7 made values files WRITABLE it is no longer only a wrong row: the sibling's line is the
+   * line `locateVersionLine` would anchor a bump to, so SCP would author a pull request that moves
+   * a key nothing consumes and changes nothing that runs. `underImageKey` is the discriminator
+   * because it is the marker the rest of this parser already uses, not a new heuristic — and a rule
+   * keyed on the literal name `containers` would miss `sidecars:` and `extraContainers:`, which
+   * become container objects just the same.
+   *
+   * WHAT IS GIVEN UP, NAMED. A flat `myapp: {image: acme/api, tag: 1.2.3}` — in context by rule (a)
+   * alone, but whose `tag:` the chart's own template really does read — is recorded `unpinned` with
+   * the un-read key named, instead of pinned to 1.2.3. This file cannot tell that from a container,
+   * and a version SCP records is a version SCP will try to bump, so the ambiguity resolves to the
+   * side that authors nothing.
+   *
+   * Declared HERE, above the duplicate report, because that report is a call site of the same rule.
+   */
+  const siblingKeysAreThisImage = !(image.kind === "text" && !underImageKey);
+  const absentKey: KeyRead = { kind: "absent" };
+
   // (trap 17) A DUPLICATED IMAGE KEY IS NOT PICKED BETWEEN. `uniqueKeys` is off for the composer's
   // quadratic scan, so both pairs arrive; Helm's Go YAML takes the LAST and `collectKeys` kept the
   // FIRST. Reporting is the only honest option, and it is scoped to image context like everything
   // else here — a chart repeating some unrelated key is not this parser's business.
-  const duplicates = IMAGE_KEYS.filter((name) => keys.duplicated.has(name));
+  //
+  // AND IT IS SCOPED BY TRAP 18 TOO, which is the same rule applied to the same call site rather
+  // than a second one: in a mapping that is in image context by rule (a) ALONE the split keys are
+  // not read at all (see `siblingKeysAreThisImage` below), so a duplicated `tag:` there is a
+  // duplicate of a key nothing consumes. Reporting it would be the "warning that fires on things
+  // that are not image references" failure trap 16 names, reintroduced through the duplicate door.
+  const duplicates = (siblingKeysAreThisImage ? IMAGE_KEYS : [IMAGE_KEY]).filter((name) =>
+    keys.duplicated.has(name)
+  );
   if (duplicates.length > 0) {
     for (const name of duplicates) {
       const pair = keys.pairs.get(name);
@@ -608,8 +675,12 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext, underImageKey
 
   const registry = readKey(keys.pairs.get(REGISTRY_KEY), joinPath(path, REGISTRY_KEY));
   const repository = readKey(keys.pairs.get(REPOSITORY_KEY), joinPath(path, REPOSITORY_KEY));
-  const tag = readKey(keys.pairs.get(TAG_KEY), joinPath(path, TAG_KEY));
-  const digest = readKey(keys.pairs.get(DIGEST_KEY), joinPath(path, DIGEST_KEY));
+  const tag = siblingKeysAreThisImage
+    ? readKey(keys.pairs.get(TAG_KEY), joinPath(path, TAG_KEY))
+    : absentKey;
+  const digest = siblingKeysAreThisImage
+    ? readKey(keys.pairs.get(DIGEST_KEY), joinPath(path, DIGEST_KEY))
+    : absentKey;
 
   /**
    * (trap 15) `registry: ""` IS "THE DEFAULT REGISTRY", which is what bitnami-style charts spell
@@ -678,12 +749,20 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext, underImageKey
     coordinatePath = image.path;
     refTag = split.tag;
     refDigest = split.digest;
-    // STATED RESIDUE (trap 13). ingress-nginx and friends put the repository under `image:` beside
-    // a `registry:`; a pod spec's `image:` is a COMPLETE reference and joining would double a
-    // registry it already spells. So the sibling is not joined — and not silently dropped either.
-    if (registryText !== undefined) {
-      splitNote = `a sibling 'registry: ${registryText}' is NOT joined onto this coordinate — an 'image:' scalar is a complete reference and joining would double a registry it may already name; if this chart means them to be joined, the coordinate SCP records is the repository half alone`;
-    }
+    // STATED RESIDUE (traps 13, 18). ingress-nginx and friends put the repository under `image:`
+    // beside a `registry:`; a pod spec's `image:` is a COMPLETE reference and joining would double
+    // a registry it already spells. So the sibling is not joined — and not silently dropped
+    // either. The same sentence governs `tag:`/`digest:` beside a rule-(a)-ONLY `image:` (trap 18),
+    // except that those are not read AT ALL: an un-joined registry still leaves a usable
+    // coordinate, while a tag read off a Container object is a version nothing consumes.
+    splitNote = joinNotes(
+      registryText === undefined
+        ? undefined
+        : `a sibling 'registry: ${registryText}' is NOT joined onto this coordinate — an 'image:' scalar is a complete reference and joining would double a registry it may already name; if this chart means them to be joined, the coordinate SCP records is the repository half alone`,
+      siblingKeysAreThisImage
+        ? undefined
+        : unreadSiblingNote([TAG_KEY, DIGEST_KEY].filter((name) => keys.pairs.has(name)))
+    );
   } else if (repository.kind === "unresolved") {
     pushUnresolved(repository);
     return;

@@ -250,6 +250,10 @@ describe.skipIf(process.platform === "win32")(
         }
       },
       {
+        // THIS IS THE CASE THAT KILLS THE WRAP MUTATION, and it is why `run.sh` needs no explicit
+        // range guard: make the shim fold an out-of-range anchor back into the file
+        // (`anchor_nr = ((anchor_nr - 1) % NR) + 1`) and line 99 lands on the tag line and EDITS,
+        // so this goes red. The anchor-text comparison is the whole control.
         name: "REFUSAL: the anchor points past the end of the file",
         content: "image:\n  repository: acme/api\n  tag: 1.2.3\n",
         spec: {
@@ -259,6 +263,35 @@ describe.skipIf(process.platform === "win32")(
           fromVersion: "1.2.3",
           toVersion: "1.2.4",
           anchor: { line: 99, text: "  tag: 1.2.3" }
+        }
+      },
+      {
+        // A LINE NUMBER PAST EVERY AWK'S INTEGER RANGE — the ONE input where the three
+        // implementations do not compute the same number. The shell validator accepts it (digits
+        // only, no leading zero), so it reaches awk, where `anchor_line + 0` is a float that `%d`
+        // clamps: at 2^63-1 under the host's awk, at 2147483647 under the BusyBox awk the image
+        // actually runs (both measured), while the reference simply indexes `beforeLines[1e20 - 1]`
+        // and gets `undefined`. All three must refuse.
+        //
+        // WHAT THIS PINS, STATED HONESTLY: a PLATFORM property, not a code branch. No mutation of
+        // ours kills it — the case above is the one that kills the wrap mutation — and it is here
+        // because `run.sh` carried an explicit `anchor_nr > NR` guard that no mutation killed
+        // either, and it was deleted as dead code. Deleting a guard obliges someone to have checked
+        // the value range it nominally covered on every awk in play; this case is that check, kept
+        // permanently rather than done once and written into a comment.
+        name: "REFUSAL: an anchor line past every awk's integer range refuses on both sides",
+        content: "image:\n  repository: acme/api\n  tag: 1.2.3\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          // `1e20`, not the 21 digits spelled out: a literal that long is a lint error for losing
+          // precision, and losing precision is beside the point here. `String(1e20)` is
+          // "100000000000000000000", which is what actually reaches argv — digits only, no leading
+          // zero, so the shell validator accepts it and awk is the thing that has to cope.
+          anchor: { line: 1e20, text: "  tag: 1.2.3" }
         }
       },
       {

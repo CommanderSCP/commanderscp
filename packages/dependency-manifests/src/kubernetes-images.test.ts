@@ -543,6 +543,134 @@ describe("T13 — the `image` key is what makes a mapping an image, and nothing 
   });
 });
 
+describe("T18 — a `tag:` beside a pod-spec `image:` is a key Kubernetes never reads", () => {
+  /**
+   * WHY THIS IS A WRITE-SIDE BUG AND NOT A REPORTING PREFERENCE. Until M21.7 a values file was
+   * read-only, so reading `containers[].tag` as a version was merely a wrong row. Now the version's
+   * LINE is the line a bump edits (`locateVersionLine` anchors on it), so the same reading has SCP
+   * open a pull request that moves a key the API server does not look at — a diff that reviews as
+   * an upgrade and changes nothing that runs. Trap 13's rule (a) cannot tell a Container object
+   * from a chart image block; rule (b) can, and that is the discriminator.
+   */
+  it("a Container object's sibling `tag:` is NOT the image's version — and the key is NAMED", () => {
+    const [entry, ...rest] = parseKubernetesImages(
+      [
+        "spec:",
+        "  template:",
+        "    spec:",
+        "      containers:",
+        "        - name: api",
+        "          image: acme/api",
+        "          tag: 1.2.3",
+        ""
+      ].join("\n")
+    );
+    expect(rest).toEqual([]);
+    // The IMAGE is still declared — excluding the sibling must not lose the dependency.
+    expect(entry?.coordinate).toBe("acme/api");
+    // …with no version, and specifically not `1.2.3`: `tag` is not a field of the Container schema.
+    expect(entry?.declared).toBeUndefined();
+    expect(entry?.constraint).toBe("unpinned");
+    expect(entry?.version).toBeUndefined();
+    // The key path is the `image:` line, not the `tag:` line — which is what the anchor would use.
+    expect(entry?.declaredIn).toBe("spec.template.spec.containers[0].image");
+    expect(entry?.line).toBe(6);
+    expect(entry?.note).toContain("was NOT read as this image's version");
+  });
+
+  it("the same exclusion covers a chart's spliced `extraContainers:`/`sidecars:` fragment", () => {
+    // Charts pass these straight into a pod spec with `toYaml`, so the key is just as dead there —
+    // and a rule keyed on the literal name `containers` would have missed both of these.
+    for (const key of ["extraContainers", "sidecars"]) {
+      const [entry] = parseKubernetesImages(
+        [`${key}:`, "  - name: side", "    image: acme/side", "    tag: 4.5.6", ""].join("\n")
+      );
+      expect(entry?.coordinate, key).toBe("acme/side");
+      expect(entry?.declared, key).toBeUndefined();
+      expect(entry?.declaredIn, key).toBe(`${key}[0].image`);
+    }
+  });
+
+  it("a `digest:` beside a pod-spec `image:` is excluded by the same rule", () => {
+    const [entry] = parseKubernetesImages(
+      ["containers:", "  - name: api", "    image: acme/api", `    digest: ${DIGEST}`, ""].join(
+        "\n"
+      )
+    );
+    expect(entry?.coordinate).toBe("acme/api");
+    expect(entry?.digest).toBeUndefined();
+    expect(entry?.note).toContain("was NOT read as this image's version");
+  });
+
+  /**
+   * THE NEGATIVE CONTROL, AND IT IS THE WHOLE REASON THE RULE IS `underImageKey` RATHER THAN A LIST
+   * OF POD-SPEC KEY NAMES. ingress-nginx spells the repository under `image:` beside `registry:`,
+   * `tag:` and `digest:` — a mapping in context by rule (a) AND rule (b) — and Helm renders all of
+   * them. An exclusion that fired here would silently un-pin one of the most widely deployed charts
+   * there is, so a rule that refuses everything would pass the three cases above and fail this one.
+   */
+  it("NEGATIVE CONTROL: an image BLOCK's sibling tag and digest are still read (ingress-nginx)", () => {
+    const entry = at(
+      parseKubernetesImages(
+        [
+          "controller:",
+          "  image:",
+          "    registry: registry.k8s.io",
+          "    image: ingress-nginx/controller",
+          "    tag: v1.11.2",
+          `    digest: ${DIGEST}`,
+          ""
+        ].join("\n")
+      ),
+      "ingress-nginx/controller"
+    );
+    expect(entry?.declared).toBe("v1.11.2");
+    expect(entry?.digest).toBe(DIGEST);
+    expect(entry?.declaredIn).toBe("controller.image.tag");
+    expect(entry?.note ?? "").not.toContain("was NOT read as this image's version");
+  });
+
+  it("the duplicate report is scoped by the same rule — a repeated dead `tag:` is not an image problem", () => {
+    // THE SECOND CALL SITE OF THE SAME RULE. T17 reports a duplicated image key because Helm takes
+    // the last and a reader takes the first. In a Container object `tag:` is read by nobody, so
+    // reporting a duplicate of it is trap 16's "a warning that fires on things that are not image
+    // references", let back in through the duplicate door. Fixing the read and not this would be
+    // the incomplete-census shape.
+    const declarations = parseKubernetesImages(
+      [
+        "containers:",
+        "  - name: api",
+        "    image: acme/api:1.2.3",
+        "    tag: 4.5.6",
+        "    tag: 7.8.9",
+        ""
+      ].join("\n")
+    );
+    expect(declarations.map((d) => d.declaredIn)).toEqual(["containers[0].image"]);
+    expect(declarations[0]?.constraint).toBe("pinned");
+  });
+
+  it("NEGATIVE CONTROL: a duplicated `tag:` in a real image BLOCK is still reported", () => {
+    // Without this, the case above is satisfied by deleting the duplicate report altogether.
+    const declarations = parseKubernetesImages(
+      ["image:", "  repository: acme/api", "  tag: 1.2.3", "  tag: 4.5.6", ""].join("\n")
+    );
+    expect(at(declarations, "image.tag")?.constraint).toBe("unresolved");
+  });
+
+  it("NEGATIVE CONTROL: an ordinary container whose `image:` carries its own tag is untouched", () => {
+    // No sibling to exclude, so this shape must be bit-for-bit what it was before T18 existed —
+    // otherwise the exclusion is not scoped to the ambiguous mapping, it is scoped to pod specs.
+    const [entry] = parseKubernetesImages(
+      ["containers:", "  - name: api", "    image: acme/api:1.2.3", ""].join("\n")
+    );
+    expect(entry?.declared).toBe("1.2.3");
+    expect(entry?.constraint).toBe("pinned");
+    expect(entry?.declaredIn).toBe("containers[0].image");
+    expect(entry?.note).toBeUndefined();
+  });
+});
+
 describe("T14 — an EMPTY coordinate is a SHARED line, not one bad row", () => {
   it('`repository: ""` is refused outright and reported at its own key path', () => {
     // `dependency_lines` is keyed `(org, ecosystem, coordinate, major)` ORG-WIDE, so an empty

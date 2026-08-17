@@ -313,6 +313,16 @@ PARENT of the image block, and reading its sibling `tag:` (a chart version, typi
 tag is the same defect. Outside image context nothing is read and **nothing is reported** — this is
 not an image reference SCP failed to resolve, it is not an image reference.
 
+> **AMENDED 2026-08-17 (trap 18; ADR-0032 §4b clause 7).** Rule (a) admits two populations that are
+> not the same thing: a chart's image block that happens to spell the repository under `image:`
+> (ingress-nginx does), and a Kubernetes **Container object**, where `image` is a complete reference
+> and `tag` is not a field of the schema at all. Once [split-shape bumps](split-shape-image-bumps.md)
+> made `values.yaml` WRITABLE, a container's sibling `tag:` stopped being merely a wrong row and
+> became the line a bump would EDIT — a key nothing consumes, authored into by SCP. So the sibling
+> `tag:`/`digest:` are read only where rule (b) ALSO holds: an image block is the value of an
+> `image:` key, a container never is. Scoping it by pod-spec key NAMES was rejected — charts splice
+> `sidecars:` and `extraContainers:` into pod specs, and a name list misses both.
+
 Three refusals follow from the same "skipped rather than guessed" rule (ADR-0032 §7), each reported
 so it is visible rather than dropped:
 

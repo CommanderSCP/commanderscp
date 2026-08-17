@@ -19,6 +19,7 @@
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { coordinateRuleCandidates } from "./bump-edit.js";
 import {
   RepoWriteRefusal,
   assertManifestEditProof,
@@ -494,6 +495,73 @@ describe("the change must be confined to the version text", () => {
   });
 });
 
+/**
+ * ADR-0032 §8h — THE EDIT THAT IS STRUCTURALLY PERFECT AND OPERATIONALLY A NO-OP.
+ *
+ * Every other refusal in this file is about an edit that would change TOO MUCH. This one is about
+ * an edit that changes nothing that runs: where a declaration is pinned by a tag AND a digest, the
+ * runtime resolves by the digest, so moving the tag alone leaves the deployed bytes exactly where
+ * they were. Nothing errors, every gate above agrees, the pull request merges, and the image never
+ * moves — which is worse than a refusal, because a refusal is legible.
+ *
+ * The condition is "the digest did not move", never "a digest exists": the accept case directly
+ * above moves both and must stay green, and it is what keeps this from being a rule that refuses
+ * every digest-bearing manifest.
+ */
+describe("a tag that moves while its digest stays", () => {
+  const DIGEST_A = `sha256:${"a".repeat(64)}`;
+
+  it("REFUSES a Dockerfile bump that moves the tag and leaves the digest pinning the old bytes", () => {
+    expectRefusal(
+      () =>
+        verifyEdit({
+          path: "Dockerfile",
+          declaredManifestPaths: ["Dockerfile"],
+          ecosystem: "oci",
+          baseContent: `FROM ghcr.io/acme/base:1.2.3@${DIGEST_A}\n`,
+          newContent: `FROM ghcr.io/acme/base:1.2.4@${DIGEST_A}\n`,
+          coordinate: "ghcr.io/acme/base"
+        }),
+      "digest_pin_not_moved"
+    );
+  });
+
+  it("REFUSES the SPLIT shape too — the values file where the digest is a line of its own", () => {
+    // This is the shape M21.7 made writable, and the one that made the defect reachable through the
+    // anchored branch: the runner edits the `tag:` line, the `digest:` line below it is untouched,
+    // and both verifiers see one clean single-line version change.
+    const base = ["image:", "  repository: acme/api", "  tag: 1.2.3", `  digest: ${DIGEST_A}`, ""];
+    expectRefusal(
+      () =>
+        verifyEdit({
+          path: "values.yaml",
+          declaredManifestPaths: ["values.yaml"],
+          ecosystem: "oci",
+          baseContent: base.join("\n"),
+          newContent: base.join("\n").replace("tag: 1.2.3", "tag: 1.2.4"),
+          coordinate: "acme/api"
+        }),
+      "digest_pin_not_moved"
+    );
+  });
+
+  it("NEGATIVE CONTROL: the identical split shape with NO digest line is ACCEPTED", () => {
+    // Without this, the two refusals above are satisfied by a gate that refuses every values bump —
+    // which is the whole capability the split-shape round added.
+    const base = ["image:", "  repository: acme/api", "  tag: 1.2.3", ""].join("\n");
+    const proof = verifyEdit({
+      path: "values.yaml",
+      declaredManifestPaths: ["values.yaml"],
+      ecosystem: "oci",
+      baseContent: base,
+      newContent: base.replace("tag: 1.2.3", "tag: 1.2.4"),
+      coordinate: "acme/api"
+    });
+    expect(proof.fromDeclared).toBe("1.2.3");
+    expect(proof.toDeclared).toBe("1.2.4");
+  });
+});
+
 // -------------------------------------------------------------------------------------------
 // The proof is a control, not a label
 // -------------------------------------------------------------------------------------------
@@ -840,6 +908,85 @@ describe("locateVersionLine — the anchor exists exactly where it is honest", (
         fromVersion: "3.18"
       })
     ).toEqual({ line: 1, text: "FROM alpine:3.18" });
+  });
+
+  /**
+   * THE PER-ECOSYSTEM MAP, AS A FACT RATHER THAN AS PROSE.
+   *
+   * `bump-edit.ts` and `index.ts` both carried "…which keeps the four working ecosystems untouched
+   * BY CONSTRUCTION", and it was false of three of them: `go`, `requirements*.txt` and Dockerfile
+   * all take the anchored branch. The claim was in a comment, so nothing could contradict it — and
+   * this milestone has already paid twice for a comment asserting a property the code lacks.
+   *
+   * Enumerated here so the map is CHECKED. It goes red if a parser starts or stops reporting the
+   * line its version is written on, which is exactly the change that would silently move an
+   * ecosystem from one column to the other.
+   */
+  it.each([
+    [
+      "go — anchors: the require line carries the version",
+      "go" as const,
+      "go.mod",
+      "module acme/web\n\nrequire (\n\tgithub.com/acme/lib v1.2.3\n)\n",
+      "github.com/acme/lib",
+      "v1.2.3",
+      4
+    ],
+    [
+      "python/requirements.txt — anchors",
+      "python" as const,
+      "requirements.txt",
+      "other==2.0.0\nacme-lib==1.4.0\n",
+      "acme-lib",
+      "==1.4.0",
+      2
+    ],
+    [
+      "oci/Dockerfile — anchors",
+      "oci" as const,
+      "Dockerfile",
+      "FROM alpine:3.18\n",
+      "alpine",
+      "3.18",
+      1
+    ],
+    [
+      "npm — NO anchor: parsePackageJson reports no line at all",
+      "npm" as const,
+      "package.json",
+      '{\n  "dependencies": {\n    "@acme/lib": "^1.2.3"\n  }\n}\n',
+      "@acme/lib",
+      "^1.2.3",
+      undefined
+    ],
+    [
+      "python/pyproject.toml — NO anchor: same reason as npm",
+      "python" as const,
+      "pyproject.toml",
+      '[project]\nname = "app"\ndependencies = ["requests==2.31.0"]\n',
+      "requests",
+      "==2.31.0",
+      undefined
+    ]
+    // `maven` is the sixth row and has its own case above, because its reason is step 4 (a line IS
+    // reported, and it is the wrong one) rather than steps 3–4 finding no line.
+  ])("%s", (_name, ecosystem, manifestPath, content, coordinate, fromVersion, expectedLine) => {
+    const anchor = locateVersionLine(content, {
+      ecosystem,
+      manifestPath,
+      coordinate,
+      fromVersion
+    });
+    expect(anchor?.line).toBe(expectedLine);
+    if (expectedLine === undefined) return;
+    // AND THE PROPERTY THAT MAKES ANCHORING THEM HARMLESS: the anchor line names the coordinate
+    // too, so it is a candidate of the coordinate rule and clause (c) can only agree with the
+    // selection the unanchored rule would have made. An ecosystem where this failed would be one
+    // the anchor could silently redirect.
+    expect(anchor?.text).toContain(coordinate);
+    expect(coordinateRuleCandidates(content.split("\n"), { coordinate, fromVersion })).toEqual([
+      expectedLine - 1
+    ]);
   });
 
   it("declines when the inventory's declared version is not what the file says (a stale row)", () => {

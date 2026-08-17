@@ -420,6 +420,21 @@ dependency" rather than "SCP cannot read where you declared it".
      as identity-pinned and can never match anything. Fixing it only in the YAML reader would have
      been the same incomplete-census failure clause 4's second half exists to avoid.
 
+   **AMENDED 2026-08-17 (M21.7 follow-up): rule (a) alone is not enough once values files are
+   WRITABLE.** A mapping is in image context by rule (a) whenever it carries an exact `image:` SCALAR
+   — which admits a chart's own image block (ingress-nginx spells the repository there, beside
+   `registry:`, `tag:` and `digest:`) *and* a Kubernetes **Container object**, where `image` is a
+   complete reference and `tag` is not a field of the schema at all. Reading a container's sibling
+   `tag:` was a wrong row while the file was read-only; since §8g it is the line an anchor would
+   point a BUMP at, so SCP would author a pull request that moves a key nothing consumes. So the
+   split keys are read only where rule (b) ALSO holds — the mapping is the value of an `image:` key
+   and is therefore an image block, never a container. The discriminator is the marker the parser
+   already uses rather than a new heuristic, and it is not a list of pod-spec key names: charts
+   splice `sidecars:` and `extraContainers:` into pod specs too, and a name list would miss both.
+   STATED RESIDUE: a flat `myapp: {image: acme/api, tag: 1.2.3}` whose chart really does read that
+   tag is recorded `unpinned` with the un-read key NAMED, rather than pinned — the file cannot tell
+   it from a container, and a version SCP records is a version SCP will try to bump.
+
    Two measured corrections ride with it. `yaml`'s duplicate-key check rescans every sibling already
    composed for each new pair — **quadratic in siblings-per-mapping**, and this call sits in the
    ingestion path behind a 1 MiB read cap (a flat 32 000-key mapping composes in 7.1 s with the
@@ -1505,10 +1520,24 @@ decidability rule, and it is a decidability rule that changed. Full derivation:
    rejected outright: it would be a number derived from a read at one ref and applied to a read at
    another, which is a confidently wrong edit rather than a refused one.
 
-   The "its line must contain the version" clause is what keeps the four working ecosystems untouched
-   **by construction rather than by intention**: `pom-xml.ts` records the `<dependency>` open-tag
-   line and the version sits several lines below it, so Maven yields no anchor and Maven's path
-   cannot change. A dotted key path (`controller.image.tag`) was rejected as the anchor SHAPE for the
+   The "its line must contain the version" clause is what keeps **Maven** untouched by construction:
+   `pom-xml.ts` records the `<dependency>` open-tag line and the version sits several lines below it,
+   so Maven yields no anchor and Maven's path cannot change.
+
+   **CORRECTED 2026-08-17.** This clause originally read "keeps the four working ecosystems untouched
+   by construction", and that was false of three of them. An anchor IS derived for `go` (go.mod),
+   `python`'s `requirements*.txt` and `oci`'s Dockerfile, because those parsers report the line the
+   version is written on; only `npm` and `pyproject.toml` (no `line` reported at all) and `maven`
+   (the wrong line reported) yield none. What keeps the anchored three unchanged is **clause (c)**,
+   not the absence of an anchor: their parsers take the coordinate verbatim off that same line, so
+   the anchor line names the coordinate too and is therefore a candidate of the coordinate rule
+   itself — the veto admits it only when it is the sole candidate, which is the unanchored rule's own
+   condition, and refuses when there are several, which is the unanchored rule's own refusal. The
+   anchor cannot redirect an edit there, because a line that names the coordinate is never a line the
+   coordinate rule is silent about, and silence is the only gap an anchor fills. The per-ecosystem
+   map is now an enumerated test in `write-guard.test.ts` rather than a sentence in a comment.
+
+   A dotted key path (`controller.image.tag`) was rejected as the anchor SHAPE for the
    same reason twice over — resolving one would put YAML structure inside the refusal module, and it
    would need a YAML reader inside the runner, which is `FROM scratch` plus seven BusyBox applets and
    has no language runtime to host one.
@@ -1556,6 +1585,48 @@ decidability rule, and it is a decidability rule that changed. Full derivation:
    byte-identical declarations into one entry because the inventory row merges, and until now that
    fact existed only inside a human-readable note — a gate cannot be built on prose. Editing one of
    `n` merged sites would leave the other `n-1` behind, so `n > 1` yields no anchor.
+
+### 8h. A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG IS REFUSED, NOT BUMPED TAG-ONLY (2026-08-17, M21.7 follow-up)
+
+**Status: DECIDED AND BUILT.** Design and the deferred widening:
+[docs/proposals/split-shape-image-bumps.md §11](../proposals/split-shape-image-bumps.md).
+
+An `oci` declaration can name the release **and** the bytes:
+`FROM alpine:3.19@sha256:aaaa…`, or `{repository, tag, digest}` in a chart's values. §8g made the
+second of those writable, and the result was a bump that **passed every gate and changed nothing that
+runs**: the runner moved the tag, the digest stayed, and Docker and containerd resolve by the digest
+whenever one is present. Gate 7 did not catch it — `versionTextOf` joins `declared` and `digest`, so
+the moved span lies inside the joined text — and neither did the textual verifier, because one line
+changed and the reconstruction matched exactly. The pull request read as an upgrade, delivered none,
+and left the manifest asserting one release in its tag and another's bytes in its digest. Reproduced
+end to end on both shapes before the fix.
+
+1. **REFUSED PRE-DISPATCH** — `planBump` gains `declaration_pinned_by_digest`
+   (`component_dependencies.resolved_digest` is non-null), refused before a credential is minted, with
+   a Decision that names the digest and says the bump WAS due. It is asked BEFORE the editability
+   question — and the honest reason is narrow: either order refuses the same set (a digest-pinned
+   `Dockerfile` is a writable kind and reaches the check on either side of the allowlist question).
+   What the order decides is which reason the Decision CARRIES when both apply, and a fact about the
+   team's own manifest is more actionable than a fact about SCP's build.
+
+2. **REFUSED STRUCTURALLY** — `verifyManifestOnlyEdit` gate 6 gains `digest_pin_not_moved`, on the
+   bytes the runner returned and before the HMAC proof is minted, so the guarantee holds for any
+   caller and any authoring strategy rather than only for what the dispatcher chose to send.
+
+3. **THE CONDITION IS "THE DIGEST DID NOT MOVE", NEVER "A DIGEST EXISTS".** An edit that moves the tag
+   and its digest together is a correct bump and stays accepted — there is a named test on that exact
+   literal — and so is a digest-only move. A rule that refused every digest-bearing manifest would
+   have looked identical on the failing cases and would have closed the door on clause 4.
+
+4. **WHY NOT BUMP BOTH, WHICH IS WHAT THE USER ACTUALLY WANTS.** Not for want of data:
+   `dependency_lines.latest_digest` sits on the same row as `latest_version`, is written by the same
+   poll, and §7b already guarantees it belongs to that version and is never inherited across a version
+   change. It is the SHAPE — in the split form this is a **two-line edit**, and clause 2 of
+   `verifyManifestBump` is *exactly one line differs*. Widening a charter-enforcing refusal from one
+   line to an anchored pair has to be argued once and implemented three times (the verifier, the
+   reference edit, `run.sh`), which is its own round. Refusing meanwhile is the "skipped rather than
+   guessed" rule of §7 applied to an ACTUATION instead of to a reading — and a bump that silently
+   changes nothing is worse than a refusal a human can read.
 
 ### 9. The executor interface does not change
 

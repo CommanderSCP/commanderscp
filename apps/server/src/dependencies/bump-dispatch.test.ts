@@ -261,6 +261,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
       declaration: {
         declaredVersion: "^1.2.3",
         resolvedVersion: "1.2.3",
+        resolvedDigest: null,
         manifestPath: "package.json"
       },
       granularity: "minor_and_patch"
@@ -275,6 +276,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "v1.2.3",
           resolvedVersion: "1.2.3",
+          resolvedDigest: null,
           manifestPath: "go.mod"
         },
         granularity: "minor_and_patch"
@@ -291,6 +293,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "3.18.0-alpine",
           resolvedVersion: "3.18.0-alpine",
+          resolvedDigest: null,
           manifestPath: "Dockerfile"
         },
         granularity: "minor_and_patch"
@@ -304,6 +307,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
       declaration: {
         declaredVersion: "1.2.3",
         resolvedVersion: "1.2.3",
+        resolvedDigest: null,
         manifestPath: "package.json"
       },
       granularity: "patch"
@@ -318,6 +322,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "1.2.3",
           resolvedVersion: "1.2.3",
+          resolvedDigest: null,
           manifestPath: "package.json"
         },
         granularity: "patch"
@@ -332,6 +337,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "^1",
           resolvedVersion: null,
+          resolvedDigest: null,
           manifestPath: "package.json"
         },
         granularity: "minor_and_patch"
@@ -346,6 +352,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "^1.2.3",
           resolvedVersion: "1.2.3",
+          resolvedDigest: null,
           manifestPath: "package.json"
         },
         granularity: "minor_and_patch"
@@ -360,6 +367,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "^1.4.0",
           resolvedVersion: "1.4.0",
+          resolvedDigest: null,
           manifestPath: "package.json"
         },
         granularity: "minor_and_patch"
@@ -371,6 +379,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "^1.5.0",
           resolvedVersion: "1.5.0",
+          resolvedDigest: null,
           manifestPath: "package.json"
         },
         granularity: "minor_and_patch"
@@ -392,6 +401,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "3.18.0-alpine",
           resolvedVersion: "3.18.0-alpine",
+          resolvedDigest: null,
           manifestPath: "Dockerfile"
         },
         granularity: "minor_and_patch"
@@ -408,6 +418,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: ">=1.2 <2",
           resolvedVersion: "1.2.3",
+          resolvedDigest: null,
           manifestPath: "package.json"
         },
         granularity: "minor_and_patch"
@@ -422,6 +433,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "latest",
           resolvedVersion: "latest",
+          resolvedDigest: null,
           manifestPath: "package.json"
         },
         granularity: "minor_and_patch"
@@ -440,6 +452,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
       declaration: {
         declaredVersion: "3.18.0",
         resolvedVersion: "3.18.0",
+        resolvedDigest: null,
         manifestPath: "chart/kustomization.yaml"
       },
       granularity: "minor_and_patch"
@@ -461,6 +474,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "3.18.0",
           resolvedVersion: "3.18.0",
+          resolvedDigest: null,
           manifestPath: "chart/Dockerfile"
         },
         granularity: "minor_and_patch"
@@ -480,6 +494,69 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "3.18.0",
           resolvedVersion: "3.18.0",
+          resolvedDigest: null,
+          manifestPath: "chart/values.yaml"
+        },
+        granularity: "minor_and_patch"
+      })
+    ).toEqual({ due: true, fromVersion: "3.18.0", toVersion: "3.19.1" });
+  });
+
+  /**
+   * ADR-0032 §8h — A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG.
+   *
+   * The defect this pins was silent and complete: the whole pipeline ACCEPTED a tag-only edit of
+   * `{repository, tag, digest}` (and of `FROM alpine:3.19@sha256:…`), every verifier agreed, and the
+   * pull request merged — while containerd went on resolving by the untouched digest, so the
+   * running image never moved. Nothing errored. The only observable was a manifest that named 1.2.4
+   * in its tag and 1.2.3's bytes in its digest.
+   */
+  it("refuses a DUE bump for a declaration pinned by a DIGEST as well as a version", () => {
+    const plan = planBump({
+      line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
+      declaration: {
+        declaredVersion: "3.18.0",
+        resolvedVersion: "3.18.0",
+        resolvedDigest: `sha256:${"a".repeat(64)}`,
+        manifestPath: "chart/values.yaml"
+      },
+      granularity: "minor_and_patch"
+    });
+    expect(plan).toMatchObject({ due: false, reason: "declaration_pinned_by_digest" });
+    // The detail must say the bump WAS due, exactly as the editability refusal does: "nothing to
+    // do" and "something to do that would do nothing" are different operator stories.
+    expect(plan).toMatchObject({ detail: expect.stringContaining("3.19.1") });
+  });
+
+  it("…and in a Dockerfile too — the refusal is about the DECLARATION, not about the file kind", () => {
+    // A digest-pinned `FROM` is in a perfectly writable file, so a rule ordered after the
+    // editability question would leave this case with no refusal at all. `alpine:3.19@sha256:…` is
+    // the commonest way an org pins a base image and it has been bumpable-but-inert since M21.5.
+    expect(
+      planBump({
+        line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
+        declaration: {
+          declaredVersion: "3.18.0",
+          resolvedVersion: "3.18.0",
+          resolvedDigest: `sha256:${"b".repeat(64)}`,
+          manifestPath: "Dockerfile"
+        },
+        granularity: "minor_and_patch"
+      })
+    ).toMatchObject({ due: false, reason: "declaration_pinned_by_digest" });
+  });
+
+  it("NEGATIVE CONTROL: the identical declaration with NO digest is due", () => {
+    // Without this the two assertions above are satisfied by a `planBump` that refuses every oci
+    // bump — and the digest column is null for every language ecosystem, so a rule that read it
+    // wrongly would silently stop all bumping everywhere.
+    expect(
+      planBump({
+        line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
+        declaration: {
+          declaredVersion: "3.18.0",
+          resolvedVersion: "3.18.0",
+          resolvedDigest: null,
           manifestPath: "chart/values.yaml"
         },
         granularity: "minor_and_patch"
@@ -496,6 +573,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
         declaration: {
           declaredVersion: "3.18.0",
           resolvedVersion: "3.18.0",
+          resolvedDigest: null,
           manifestPath: "chart/kustomization.yaml"
         },
         granularity: "minor_and_patch"

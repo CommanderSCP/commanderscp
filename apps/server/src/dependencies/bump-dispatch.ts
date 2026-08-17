@@ -270,6 +270,14 @@ export type BumpRefusalReason =
    *  text cannot be composed by replacing it — `resolved_version` and `declared_version` disagree
    *  about what the file says, and rewriting on a guess is how a range operator gets lost. */
   | "declaration_not_composable"
+  /** A bump IS due, and the declaration is pinned by a DIGEST as well as by a version. Only the
+   *  version text would be edited — the digest for the new release is known (`latest_digest`, moved
+   *  by the same poll) but writing both is a TWO-LINE edit and the plugin's `verifyManifestBump`
+   *  admits exactly one — and a container runtime resolves by digest whenever one is present. So
+   *  the edit would change the manifest and NOT the image that runs: a pull request that reads as
+   *  an upgrade, delivers nothing, and leaves the file saying two different things about which
+   *  release it wants. Refused HERE, before a credential is minted (ADR-0032 §8h). */
+  | "declaration_pinned_by_digest"
   /** A bump IS due, and this build's runner cannot author into a file of this KIND. Refused HERE so
    *  the reason is legible on the Decision, instead of after a container round trip that ends in the
    *  plugin's own `not_a_known_manifest` — which reads as a broken runner.
@@ -307,7 +315,14 @@ export type BumpPlan =
  */
 export function planBump(input: {
   line: Pick<DependencyLine, "ecosystem" | "major" | "tagPattern" | "latestVersion">;
-  declaration: Pick<ComponentDependency, "declaredVersion" | "resolvedVersion" | "manifestPath">;
+  declaration: Pick<
+    ComponentDependency,
+    // `resolvedDigest` is REQUIRED rather than optional, and every caller states it — including
+    // each test fixture, which is the point. An optional field would let a caller that never heard
+    // of the digest rule opt out of it silently, and "absence is never permission" is the same rule
+    // `declaredManifestPaths` is required by in the plugin.
+    "declaredVersion" | "resolvedVersion" | "resolvedDigest" | "manifestPath"
+  >;
   granularity: DependencySubscriptionGranularity;
 }): BumpPlan {
   const head = input.line.latestVersion;
@@ -373,6 +388,39 @@ export function planBump(input: {
       due: false,
       reason: "already_at_or_ahead_of_head",
       detail: `substituting '${head}' for '${resolved}' in '${declared}' changes nothing`
+    };
+  }
+  // A DECLARATION PINNED TWICE (ADR-0032 §8h). `alpine:3.19@sha256:…` in a Dockerfile and
+  // `{repository, tag, digest}` in a chart's values both name the release AND the bytes, and every
+  // container runtime resolves by the DIGEST when one is present — the tag is then a label. So an
+  // edit that moves the version text alone changes the manifest and not the image that runs: the
+  // pull request reads as an upgrade, delivers nothing, and leaves the file asserting one release
+  // in its tag and another's bytes in its digest.
+  //
+  // NOT GUESSED AT, EITHER WAY. The digest for `head` is known — `dependency_lines.latest_digest`,
+  // written by the same poll that moved `latest_version` and never inherited across a version
+  // change (`line-head.ts`) — so the data for a correct two-token edit exists. What does not exist
+  // is a one-line edit that carries it in the SPLIT shape, and `verifyManifestBump`'s "exactly ONE
+  // line differs" is a charter-enforcing refusal that is not widened to a pair as a side effect of
+  // this. Refused with its own name, and the follow-up is `split-shape-image-bumps.md` §11.
+  //
+  // ASKED BEFORE EDITABILITY, and the honest reason is narrower than it looks: EITHER order refuses
+  // the same set — a digest-pinned Dockerfile is a writable kind, so it reaches this check whichever
+  // side of it the allowlist question sits on. What the order decides is which reason the Decision
+  // CARRIES when both apply, and "your declaration pins bytes as well as a version" is a fact about
+  // the manifest the team owns, while "this build does not write that file kind" is a fact about
+  // SCP. The first is the one they can act on.
+  if (input.declaration.resolvedDigest !== null && input.declaration.resolvedDigest !== "") {
+    return {
+      due: false,
+      reason: "declaration_pinned_by_digest",
+      detail:
+        `a bump from '${declared}' to '${toVersion}' is due, and this declaration is ALSO pinned by ` +
+        `digest '${input.declaration.resolvedDigest}'. A container runtime resolves by digest whenever ` +
+        `one is present, so moving the version alone would change '${input.declaration.manifestPath}' ` +
+        `and not the image that runs — a pull request that reads as an upgrade and delivers nothing. ` +
+        `Re-pin the digest together with the tag, or drop the digest from the declaration; the line is ` +
+        `still inventoried and still polled, so '${head}' remains observed`
     };
   }
   // LAST, AND DELIBERATELY LAST. A bump that is not due needs no editability question answered, and

@@ -212,11 +212,26 @@ because that file already owns the per-format table and already parses both side
 5. The candidate is not a merged multi-site declaration (§7, and the `occurrences` field in §9 D3),
    else **no anchor**.
 
-Step 4 is what makes the derivation self-selecting and format-agnostic, and it is the clause that keeps
-the four working ecosystems untouched *by construction*: `pom-xml.ts` records the line of the
-`<dependency>` OPEN TAG while the version sits several lines below it (`write-guard.ts:749–755` says so
+Step 4 is what makes the derivation self-selecting and format-agnostic: `pom-xml.ts` records the line
+of the `<dependency>` OPEN TAG while the version sits several lines below it (`write-guard.ts` says so
 and is the reason gate 5's line check is scoped the way it is), so a Maven declaration never yields an
 anchor and Maven's path never changes. **The anchor exists exactly where it is honest.**
+
+> **CORRECTED 2026-08-17.** This paragraph said step 4 "keeps the four working ecosystems untouched *by
+> construction*", and that was false of three of them — the claim generalised Maven's behaviour to
+> everything that was not the new shape. Measured: an anchor **is** derived for `go` (go.mod),
+> `python`'s `requirements*.txt` and `oci`'s Dockerfile, whose parsers report the line the version is
+> written on. Only `npm` and `pyproject.toml` (which report no `line` at all) and `maven` (which
+> reports the wrong one) yield none.
+>
+> What keeps the anchored three unchanged is **§3.2's clause (c)**, not the absence of an anchor. Those
+> parsers take the coordinate verbatim off the same line as the version, so the anchor line names the
+> coordinate too — it is therefore a candidate of the coordinate rule itself, and the veto admits it
+> only when it is the sole candidate (the unanchored rule's own condition) and refuses when there are
+> several (the unanchored rule's own refusal). Both paths select the same line and emit the same bytes,
+> which `runner-shim.test.ts` proves by running both. The anchor can never redirect an edit for them,
+> because a line naming the coordinate is never a line the coordinate rule is silent about, and silence
+> is the only gap an anchor fills. The per-ecosystem map is now an enumerated test rather than prose.
 
 ### 3.2 The rule the runner and the verifier both apply
 
@@ -454,8 +469,10 @@ cause (ADR-0032 §7b clause 6).*
 rule finds nothing?** §3.2's veto makes the question almost moot — the anchor must agree with the
 coordinate rule wherever that rule speaks — but it decides whether those ecosystems' runner invocation
 changes shape at all. *Recommended: derive the anchor whenever step 4 admits one (so the veto is a real,
-exercised cross-check on the four working ecosystems, not dead code), and never make its absence an
-error.*
+exercised cross-check on the ecosystems that already worked, not dead code), and never make its absence
+an error.* **DECIDED AS RECOMMENDED, and the measured consequence is in §3.1's correction note: `go`,
+`requirements*.txt` and Dockerfile do take the anchored branch; `npm`, `pyproject.toml` and `maven` do
+not.**
 
 ---
 
@@ -482,8 +499,9 @@ each killed a NAMED test, not just "something".
    the prose note as well, since the note is what an operator reads.
 3. `packages/plugins/managed-dep/src/write-guard.ts` — the `values.yaml` → `parseKubernetesImages`
    entry in `MANIFEST_MATCHERS`, and `locateVersionLine` (§3.1) beside `manifestParserFor`. Test: a
-   `pom.xml` yields NO anchor (step 4 refuses it), which is the mutation-sensitive proof that the four
-   working ecosystems are untouched by construction rather than by intention.
+   `pom.xml` yields NO anchor (step 4 refuses it), plus the enumerated per-ecosystem map added by the
+   2026-08-17 follow-up round — which is what actually pins which ecosystems anchor, after the
+   "untouched by construction" claim turned out to be true only of Maven.
 4. `packages/plugins/managed-dep/src/bump-edit.ts` — the optional `anchor` on `ManifestBumpSpec`, the
    anchored branch of `verifyManifestBump`, the three new refusal reasons, and the same anchored branch
    in `applyManifestBump` so the reference edit still matches the shim. Header updated: clause 3 is now
@@ -516,3 +534,83 @@ They are deliberate and correct as a separator choice, but they make `file(1)` r
 at all, which is precisely the hazard CLAUDE.md's census rule is about. This round touched the parser
 (D3's occurrence count), so the one-line change was taken: they are now `\u0000` escapes, the
 separator is unchanged, and `file(1)` reports UTF-8 text.
+
+---
+
+## 11. Follow-up: a declaration pinned TWICE is refused, and moving both tokens is the next round
+
+**Found and closed 2026-08-17, in the follow-up round to §10.** Written up here rather than fixed
+whole, because the fix that would make these bumps *work* is materially larger than the one that
+makes them *safe*.
+
+### 11.1 The defect, as it actually behaved
+
+A values file — or a Dockerfile — can pin an image twice:
+
+```yaml
+image:
+  repository: acme/api
+  tag: 1.2.3
+  digest: sha256:aaaa…          # the SAME image, named a second time
+```
+
+```dockerfile
+FROM alpine:3.19@sha256:aaaa…
+```
+
+The anchor lands on the `tag:` line (or on the `FROM` line), the runner replaces `1.2.3` with
+`1.2.4`, and **every gate agrees**: one line changed, the reconstruction matches, the declaration set
+is identical, exactly one declared version moved, and gate 7's confinement passes because
+`versionTextOf` joins `declared` and `digest` into `1.2.3@sha256:aaaa…`, which contains the span that
+moved. The pull request opens, and merges under `auto_merge` for the contiguous Dockerfile shape.
+
+And **nothing changes**. Docker and containerd resolve by the digest whenever one is present; the tag
+is a label. So SCP authors a change that reads as an upgrade, delivers none, and leaves the manifest
+self-contradictory — a tag naming 1.2.4 beside a digest naming 1.2.3's bytes. That is worse than the
+refusal it replaced: a refusal is legible and a silent no-op is not, and the next reader has to
+reconcile two statements the file makes about itself.
+
+Reproduced end to end before the fix, on both shapes, through `locateVersionLine` →
+`applyManifestBump` → `verifyManifestBump` → `verifyManifestOnlyEdit`: proof minted, `1.2.3 -> 1.2.4`.
+
+### 11.2 What was decided, and against what
+
+The two candidates were **refuse** and **bump both tokens**. Bumping both is not blocked by missing
+data — `dependency_lines.latest_digest` sits on the same row as `latest_version` and is written by
+the same poll, so the new digest IS available — it is blocked by shape: in the split form it is a
+**two-line edit**, and clause 2 of `verifyManifestBump` is *exactly one line differs*. Widening a
+charter-enforcing refusal from "one line" to "an anchored pair" is a bigger change to the narrowest
+control in this class than a follow-up round should make in passing, and it would have to be made in
+three implementations at once (the verifier, the reference edit, and `run.sh`).
+
+So: **refused, in two places, for two different audiences.**
+
+1. **`planBump` → `declaration_pinned_by_digest`** (`bump-dispatch.ts`). Pre-dispatch, before a
+   credential is minted or a container starts, with a Decision that names the digest and says the
+   bump *was* due — the same shape as `manifest_not_editable_in_this_build`. Asked BEFORE the
+   editability question, deliberately: a digest-pinned `Dockerfile` is in a perfectly writable file,
+   so a rule ordered after it would leave the commonest case with no refusal at all.
+2. **`verifyManifestOnlyEdit` gate 6 → `digest_pin_not_moved`** (`write-guard.ts`). The structural
+   half, on the bytes the runner returned, before the proof is minted — so the refusal holds for any
+   caller and any authoring strategy, not only for what the dispatcher chose to send.
+
+The condition is **"the digest did not move"**, never "a digest exists". An edit that moves the tag
+and its digest together is a correct bump and stays accepted (there is a named test on that exact
+literal), as does a digest-only move. This keeps the door open for §11.3 without a second decision.
+
+### 11.3 The next round — moving both tokens
+
+What it needs, and why each part is not free:
+
+- **A two-token anchor.** The descriptor would carry a second (line, text, from, to) — or, for the
+  contiguous `name:tag@digest` literal, one line and two substitutions.
+- **Clause 2 becomes "exactly one line, OR exactly the two lines the anchor names."** This is the
+  load-bearing change and the reason it is deferred: the widening has to preserve the property that
+  every refusal firing today still fires, and it has to be argued once and implemented three times
+  (`verifyManifestBump`, `applyManifestBump`, `run.sh`).
+- **`latest_digest` has to be threaded to the actuator.** It is on the line row, not on
+  `component_dependencies`, and `planBump` does not read it today.
+- **The pairing must be verified, not assumed.** `line-head.ts` already guarantees the stored digest
+  belongs to the stored version and is never inherited across a version change, which is exactly the
+  guarantee a two-token edit rests on — so the work is to *use* it, and to refuse when
+  `latest_digest` is NULL rather than move the tag alone and re-open this defect from the other side.
