@@ -802,16 +802,54 @@ export interface ListSubscribedComponentLinesInput {
   componentObjectIds?: string[];
 }
 
+/** One DECLARED (component, line) pair with its FULL resolution — enabled or not. What
+ *  {@link resolveDeclaredComponentLines} returns; {@link listSubscribedComponentLines} is the
+ *  enabled-only projection of it. */
+export interface DeclaredComponentLineResolution {
+  componentObjectId: string;
+  lineId: string;
+  /** The line's natural key — what an ecosystem index plugin is actually asked about. */
+  line: DependencyLineKey;
+  resolution: DependencySubscriptionResolution;
+}
+
+export interface ResolveDeclaredComponentLinesInput extends ListSubscribedComponentLinesInput {
+  /**
+   * `false` (the default): ONLY pairs whose effective enablement is TRUE — the work-list, and the
+   * only shape a job may consume. `true`: EVERY declared pair with its verdict, disabled and
+   * not-enabled included — the M21.6 read surface, which exists to EXPLAIN, and must show the
+   * opted-out line beside the subscribed one.
+   *
+   * ONE PARAMETER ON ONE FUNCTION, deliberately, rather than a second loop "minus the filter"
+   * somewhere else: two gather-and-merge loops would be two places to thread `actorObjectId`, two
+   * places to forget `conditional`, two places for the work-list and a UI verdict to drift apart.
+   * The filter lives HERE, on the merge's own result — never at a call site.
+   */
+  includeDisabled?: boolean;
+}
+
+export interface DeclaredComponentLinesResolved {
+  pairs: DeclaredComponentLineResolution[];
+  /** The instance unlock this resolution read — ONE read for the whole call. */
+  instance: { unlocked: boolean; source: string };
+  /**
+   * The candidates gathered per component — ONE gather per component. Populated for every
+   * component that had a declared pair, and ALSO for every component NAMED in
+   * `componentObjectIds` even when it declares nothing, so a caller can ask
+   * {@link mergeComponentIngestionGate} about a named component from the SAME inputs the pairs
+   * were merged from (the M21.6 read surface's `componentGate`) without a second gather.
+   */
+  candidatesByComponent: Map<string, DependencySubscriptionCandidate[]>;
+}
+
 /**
- * THE INGESTION WORK-LIST — every (component, line) pair whose effective enablement is TRUE.
+ * THE ONE RESOLUTION CORE over DECLARED pairs — `component_dependencies` ⋈ `dependency_lines`,
+ * gathered once per component, merged once per (component, line), filtered on the merge's own
+ * `.enabled` unless `includeDisabled`.
  *
- * THIS IS WHAT MAKES "INGESTION ONLY FOR ENABLED COMPONENTS" TRUE BY CONSTRUCTION (ADR-0032 §6,
- * BUILD_AND_TEST.md M21.3). It is derived from `mergeDependencySubscription` — the same merge a UI
- * or a Decision reads — rather than from a re-implementation of the AND or a filter at the call
- * site, so a disabled component cannot be fetched and an opted-out line cannot be polled by a caller
- * that simply forgot. A future caller that wants "everything, enabled or not" must call
- * `resolveDependencySubscription` per pair and decide for itself; it cannot get it by passing a flag
- * here.
+ * Both the ingestion work-list ({@link listSubscribedComponentLines}) and the M21.6 read surface
+ * (`dependency-read-surface.ts`) call THIS; neither has a loop of its own. See
+ * `ResolveDeclaredComponentLinesInput.includeDisabled` for why that is a rule and not a tidiness.
  *
  * NO SHORT-CIRCUIT ON THE UNLOCK. It is tempting to return `[]` early when the deployment is locked,
  * and it would even be correct today — but it would be the AND's first conjunct written a SECOND
@@ -827,21 +865,41 @@ export interface ListSubscribedComponentLinesInput {
  * `dependency_lines` on `(org_id, id)` — one join, no recursion, no reachability walk. The moment a
  * traversal appears here, the reason the inventory is a table at all stops holding (ADR-0032 §3).
  */
-export async function listSubscribedComponentLines(
+export async function resolveDeclaredComponentLines(
   tx: TenantTx,
   orgId: string,
-  input: ListSubscribedComponentLinesInput
-): Promise<SubscribedComponentLine[]> {
+  input: ResolveDeclaredComponentLinesInput
+): Promise<DeclaredComponentLinesResolved> {
+  const instance = await readInstanceSubscriptionUnlock(tx);
+  const candidatesByComponent = new Map<string, DependencySubscriptionCandidate[]>();
+  const gatherFor = async (componentObjectId: string) => {
+    let candidates = candidatesByComponent.get(componentObjectId);
+    if (candidates === undefined) {
+      candidates = await gatherSubscriptionCandidates(tx, {
+        orgId,
+        componentObjectId,
+        actorObjectId: input.actorObjectId
+      });
+      candidatesByComponent.set(componentObjectId, candidates);
+    }
+    return candidates;
+  };
+
   const scope = [eq(componentDependencies.orgId, orgId)];
   if (input.componentObjectIds !== undefined) {
-    if (input.componentObjectIds.length === 0) return [];
+    if (input.componentObjectIds.length === 0) {
+      return { pairs: [], instance, candidatesByComponent };
+    }
     scope.push(inArray(componentDependencies.componentObjectId, input.componentObjectIds));
+    // Named components are gathered even when they declare nothing — see
+    // `DeclaredComponentLinesResolved.candidatesByComponent`.
+    for (const componentObjectId of input.componentObjectIds) await gatherFor(componentObjectId);
   }
 
   // DISTINCT because `manifest_path` is part of `component_dependencies`' key: one component
   // declaring the same line from two dependency manifests is ONE work item, not two polls of the
   // same registry. Ordered so the work-list itself is deterministic.
-  const pairs = await tx
+  const rows = await tx
     .selectDistinct({
       componentObjectId: componentDependencies.componentObjectId,
       lineId: dependencyLines.id,
@@ -860,20 +918,9 @@ export async function listSubscribedComponentLines(
     .where(and(...scope))
     .orderBy(componentDependencies.componentObjectId, dependencyLines.id);
 
-  const instance = await readInstanceSubscriptionUnlock(tx);
-  const candidatesByComponent = new Map<string, DependencySubscriptionCandidate[]>();
-  const subscribed: SubscribedComponentLine[] = [];
-
-  for (const pair of pairs) {
-    let candidates = candidatesByComponent.get(pair.componentObjectId);
-    if (candidates === undefined) {
-      candidates = await gatherSubscriptionCandidates(tx, {
-        orgId,
-        componentObjectId: pair.componentObjectId,
-        actorObjectId: input.actorObjectId
-      });
-      candidatesByComponent.set(pair.componentObjectId, candidates);
-    }
+  const pairs: DeclaredComponentLineResolution[] = [];
+  for (const pair of rows) {
+    const candidates = await gatherFor(pair.componentObjectId);
     const line: DependencyLineKey = {
       // The column is plain `text` with no CHECK (0061's header: packages/schemas is the only
       // enforcement point). Cast rather than re-validate — selector comparison is string equality,
@@ -883,15 +930,48 @@ export async function listSubscribedComponentLines(
       major: pair.major
     };
     const resolution = mergeDependencySubscription({ line, instance, candidates });
-    if (!resolution.enabled) continue;
-    subscribed.push({
+    // THE filter — on the merge's own verdict, in the one place it is written.
+    if (!resolution.enabled && !input.includeDisabled) continue;
+    pairs.push({
       componentObjectId: pair.componentObjectId,
       lineId: pair.lineId,
       line,
-      granularity: resolution.granularity,
-      delivery: resolution.delivery,
-      contributions: resolution.contributions
+      resolution
     });
   }
-  return subscribed;
+  return { pairs, instance, candidatesByComponent };
+}
+
+/**
+ * THE INGESTION WORK-LIST — every (component, line) pair whose effective enablement is TRUE.
+ *
+ * THIS IS WHAT MAKES "INGESTION ONLY FOR ENABLED COMPONENTS" TRUE BY CONSTRUCTION (ADR-0032 §6,
+ * BUILD_AND_TEST.md M21.3). It is derived from `mergeDependencySubscription` — the same merge a UI
+ * or a Decision reads — rather than from a re-implementation of the AND or a filter at the call
+ * site, so a disabled component cannot be fetched and an opted-out line cannot be polled by a caller
+ * that simply forgot. A caller that wants "everything, enabled or not" calls
+ * {@link resolveDeclaredComponentLines} with `includeDisabled: true` and gets each pair's full
+ * verdict; it cannot get it by passing a flag HERE, and it must not build a loop of its own.
+ *
+ * This is the enabled-only PROJECTION of {@link resolveDeclaredComponentLines} — same gather, same
+ * merge, same filter — kept as the job-facing signature so a job cannot accidentally receive a
+ * disabled pair.
+ */
+export async function listSubscribedComponentLines(
+  tx: TenantTx,
+  orgId: string,
+  input: ListSubscribedComponentLinesInput
+): Promise<SubscribedComponentLine[]> {
+  const { pairs } = await resolveDeclaredComponentLines(tx, orgId, {
+    ...input,
+    includeDisabled: false
+  });
+  return pairs.map((p) => ({
+    componentObjectId: p.componentObjectId,
+    lineId: p.lineId,
+    line: p.line,
+    granularity: p.resolution.granularity,
+    delivery: p.resolution.delivery,
+    contributions: p.resolution.contributions
+  }));
 }

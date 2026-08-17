@@ -4,7 +4,6 @@ import type {
   ComponentDependencyIngestionGate,
   ComponentDependencyInventoryRow,
   ComponentDependencyLastIngestionDecision,
-  DependencyLineKey,
   DependencySubscriptionDelivery
 } from "@scp/schemas";
 import { DependencySubscriptionDeliverySchema } from "@scp/schemas";
@@ -18,10 +17,8 @@ import { DEPENDENCY_BUMP_MERGE_DECISION_KIND } from "./bump-gate.js";
 import { listDependencyLinesByIds } from "./dependency-inventory-repo.js";
 import { DEPENDENCY_INVENTORY_DECISION_KIND } from "./inventory-ingestion.js";
 import {
-  gatherSubscriptionCandidates,
   mergeComponentIngestionGate,
-  mergeDependencySubscription,
-  readInstanceSubscriptionUnlock
+  resolveDeclaredComponentLines
 } from "./subscription-resolution.js";
 
 /**
@@ -32,15 +29,17 @@ import {
  * route handlers in `routes/dependency-subscriptions.ts` stay thin and so that the joins are
  * testable through the same functions the routes call.
  *
- * THE ONE RULE THIS MODULE MUST NOT BREAK: IT WRITES THE AND ZERO TIMES. Every per-row
- * `subscription` comes from `mergeDependencySubscription` — the same merge the resolution GET, the
- * ingestion work-list and the version poll use — fed by ONE `gatherSubscriptionCandidates` and ONE
- * `readInstanceSubscriptionUnlock` per request; the component gate comes from
- * `mergeComponentIngestionGate` over the SAME two inputs. Nothing here tests `enabled`, filters on
- * it, or infers a tier. That is what makes `rows[].subscription` byte-equal to the resolution GET
- * for the same actor and line (pinned in `dependency-inventory-routes.integration.test.ts`), and
- * what would silently stop being true the day someone "optimised" the per-row merge into a local
- * predicate.
+ * THE ONE RULE THIS MODULE MUST NOT BREAK: IT WRITES THE AND ZERO TIMES, AND IT HAS NO
+ * GATHER-AND-MERGE LOOP OF ITS OWN. Every per-row `subscription` comes from
+ * `resolveDeclaredComponentLines(..., { includeDisabled: true })` — THE SAME function the ingestion
+ * work-list is the enabled-only projection of, one gather + one unlock read per request — and the
+ * component gate comes from `mergeComponentIngestionGate` over the candidates and instance THAT call
+ * returned. Nothing here tests `enabled`, filters on it, or infers a tier. That is what makes
+ * `rows[].subscription` byte-equal to the resolution GET for the same actor and line (pinned in
+ * `dependency-inventory-routes.integration.test.ts`), and what would silently stop being true the
+ * day someone "optimised" the per-row merge into a local predicate — or copied the work-list's loop
+ * "minus its filter" into this file (the M21.7 review note on the proposal, §3.4, names exactly that
+ * fork as the thing a fix round would have to undo).
  *
  * THE ACTOR IS THE CALLER. Both assemblers take `actorObjectId` and thread it exactly as the
  * resolution GET does (`auth.subjectObjectId`), so a human reading their component's page sees the
@@ -179,17 +178,19 @@ export async function readComponentDependencyInventory(
   const hasMore = declarationRows.length > input.limit;
   const page = hasMore ? declarationRows.slice(0, input.limit) : declarationRows;
 
-  // ONE unlock read + ONE candidate gather for the whole request — the gate and every row's
-  // subscription are merged from these same two inputs.
-  const [instance, candidates] = await Promise.all([
-    readInstanceSubscriptionUnlock(tx),
-    gatherSubscriptionCandidates(tx, {
-      orgId: input.orgId,
-      componentObjectId: input.componentObjectId,
-      actorObjectId: input.actorObjectId
-    })
-  ]);
-  const gate = mergeComponentIngestionGate({ instance, candidates });
+  // THE ONE RESOLUTION CORE, asked for EVERY declared line of this component (disabled included):
+  // one unlock read + one candidate gather, the same function the work-list projects from. The
+  // gate is merged from the instance and candidates that very call returned — no second gather.
+  const resolved = await resolveDeclaredComponentLines(tx, input.orgId, {
+    actorObjectId: input.actorObjectId,
+    componentObjectIds: [input.componentObjectId],
+    includeDisabled: true
+  });
+  const resolutionByLineId = new Map(resolved.pairs.map((p) => [p.lineId, p.resolution]));
+  const gate = mergeComponentIngestionGate({
+    instance: resolved.instance,
+    candidates: resolved.candidatesByComponent.get(input.componentObjectId) ?? []
+  });
 
   const lineIds = [...new Set(page.map((r) => r.lineId))];
   const lines = await listDependencyLinesByIds(tx, input.orgId, lineIds);
@@ -215,14 +216,11 @@ export async function readComponentDependencyInventory(
   const rows: ComponentDependencyInventoryRow[] = [];
   for (const declaration of page) {
     const line = lineById.get(declaration.lineId);
-    // A declaration whose line is gone cannot exist (composite FK) — but a projection that threw
-    // on the impossible would make an unrelated row un-listable. Skip and move on.
-    if (!line) continue;
-    const key: DependencyLineKey = {
-      ecosystem: line.ecosystem,
-      coordinate: line.coordinate,
-      major: line.major
-    };
+    const subscription = resolutionByLineId.get(declaration.lineId);
+    // A declaration whose line is gone cannot exist (composite FK), and every declared line was
+    // resolved above (same table, same transaction) — but a projection that threw on the impossible
+    // would make an unrelated row un-listable. Skip and move on.
+    if (!line || !subscription) continue;
     const producerName =
       line.producedByObjectId !== null ? producerNameById.get(line.producedByObjectId) : undefined;
     rows.push({
@@ -249,8 +247,8 @@ export async function readComponentDependencyInventory(
         line.producedByObjectId !== null
           ? { objectId: line.producedByObjectId, name: producerName ?? "" }
           : null,
-      // THE merge, per row, over the once-gathered inputs. Not a predicate written here.
-      subscription: mergeDependencySubscription({ line: key, instance, candidates })
+      // The core's verdict for this line. Not a predicate written here.
+      subscription
     });
   }
 
