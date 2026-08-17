@@ -553,8 +553,9 @@ export async function waitUntil<T>(
  *
  * A deadline set to the idle-case upper bound is a deadline that fails the first time the box is
  * busy. That is exactly how the rollback test's `waitUntil(..., 15_000)` — fifteen ticks at the
- * fictitious 1 s rate, seven at the real one, and about four once its own file's orgs are in the
- * sweep — timed out under parallel load while passing alone. Say what a chain needs in TICKS, which
+ * fictitious 1 s rate, seven at the measured one-org rate, five once its own file's orgs are in the
+ * sweep, and fewer still under a parallel fork — timed out while passing alone. Say what a chain
+ * needs in TICKS, which
  * is the unit the engine actually works in, and let {@link reconcileTicks} convert with headroom.
  *
  * Deadlines elsewhere in this suite are still written in raw milliseconds against the 1 s fiction.
