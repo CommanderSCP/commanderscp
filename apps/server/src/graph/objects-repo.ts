@@ -31,6 +31,12 @@ import {
 } from "../dependencies/subscription-authoring-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
+import {
+  countContainmentDependents,
+  policyReachFor,
+  recordContainerDeletionReachChange,
+  recordGovernanceReachChange
+} from "../governance/governance-reach.js";
 
 /**
  * M6 single-writer authority (DESIGN.md §13 — SECURITY-SENSITIVE, M6 PR body flag): "every object
@@ -866,6 +872,24 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     });
   }
 
+  // CONTAINMENT ROUTE 1 — a `domain_id` MOVE changes which policies reach this object, under
+  // `object:write`, which is weaker and differently held than the `policy:write` that authored them.
+  // See `governance/governance-reach.ts` for the property and why the recording lives at this choke
+  // point rather than at the ~18 route handlers that admit `domainId`.
+  //
+  // The `!==` guard is what keeps this off the ordinary write path: a PATCH that never mentions
+  // `domainId`, and a full-replacement PUT restating the parent the row already has, both resolve to
+  // `nextDomainId === existing.domainId` and cost NOTHING — no query, no walk. Only a genuine move
+  // pays. Creates are not instrumented at all: a new object has no prior reach to have changed.
+  const containmentMove =
+    nextDomainId !== existing.domainId
+      ? {
+          from: existing.domainId,
+          to: nextDomainId,
+          before: await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)
+        }
+      : null;
+
   const nextVersion = existing.version + 1;
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   const nextProvenance = input.federationImport
@@ -919,6 +943,22 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     // on an update body, so `row` is the only truth.
     subjectDomainLocal: row.domainLocal
   });
+
+  // AFTER the row is written and after its own `${typeId}.update` event, so the reach is computed
+  // against the moved row (this transaction sees its own uncommitted write) and the audit chain
+  // reads in causal order: the field changed, then this is what the change cost.
+  if (containmentMove) {
+    await recordGovernanceReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      subjectObjectId: existing.id,
+      route: "domain_id",
+      detail: { fromDomainId: containmentMove.from, toDomainId: containmentMove.to },
+      before: containmentMove.before,
+      subjectDomainLocal: row.domainLocal
+    });
+  }
   // See the identical note in `createObject` — never re-journal an imported row's own history, and
   // never allocate a journal sequence to a domain-local object (M20.2, ADR-0031 §2 as corrected).
   if (!input.federationImport && !row.domainLocal) {
@@ -1108,6 +1148,19 @@ export async function upsertObjectByUrn(
     const nextProperties = input.properties ?? {};
     const nextLabels = input.labels ?? {};
     const nextVersion = existing.version + 1;
+    // CONTAINMENT ROUTE 1, SECOND WRITE SITE. This branch deliberately does NOT delegate to
+    // `updateObject` (see the `subjectDomainLocal` note below), so it needs its own capture for
+    // exactly the reason it needs its own audit stamp — and a recorder installed at one of two
+    // write sites for one concept is this repo's most-repeated defect (CLAUDE.md's census rule).
+    //
+    // Reached only by signed-journal replay reconciling a hand-filled shadow onto its authoritative
+    // id, so the actor is the federation import subject rather than a tenant — which is precisely
+    // why it is worth recording: a peer's reconciliation can re-parent a local row, and that must be
+    // as visible as a local operator doing it.
+    const reachBefore =
+      nextDomainId !== existing.domainId
+        ? await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)
+        : null;
     const afterHash = computeObjectContentHash({
       id: input.id,
       orgId: input.orgId,
@@ -1152,6 +1205,25 @@ export async function upsertObjectByUrn(
       // objects-table census exists to catch.
       subjectDomainLocal: row.domainLocal
     });
+    if (reachBefore) {
+      // `row.id` — the AUTHORITATIVE id this branch just moved the row onto, not the placeholder the
+      // reach was captured under. The record must name the id every later reference will use.
+      await recordGovernanceReachChange(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.actorObjectId,
+        requestId: input.requestId,
+        subjectObjectId: row.id,
+        route: "domain_id",
+        detail: {
+          fromDomainId: existing.domainId,
+          toDomainId: nextDomainId,
+          handFillReconciliation: true,
+          previousObjectId: existing.id
+        },
+        before: reachBefore,
+        subjectDomainLocal: row.domainLocal
+      });
+    }
     return { object: toGraphObject(row), created: false };
   }
 
@@ -1236,6 +1308,20 @@ export async function deleteObject(
     }
   }
 
+  // CONTAINMENT ROUTE 3 — TOMBSTONING A CONTAINER, which writes no containment field and yet
+  // detaches everything beneath it (every route in `graph/containment.ts` skips a deleted ANCESTOR).
+  //
+  // Captured BEFORE the tombstone, and that ordering is the whole of it. The edge cascade further
+  // down re-uses `deleteRelationship`, whose own route-2 recorder runs AFTER this row is already
+  // tombstoned — so its before-reach has lost this container too and its diff is empty. The cascade
+  // therefore records NOTHING on this path, which is why the container case is instrumented here
+  // rather than assumed covered by the edges it deletes.
+  const dependentCount = await countContainmentDependents(tx, input.orgId, existing.id);
+  const containerReach =
+    dependentCount > 0
+      ? await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)
+      : null;
+
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
     .update(objects)
@@ -1316,6 +1402,18 @@ export async function deleteObject(
     // M20.2 (ADR-0031 §2) — the delete's audit segment, paired with the tombstone stamp below.
     subjectDomainLocal: existing.domainLocal
   });
+  if (containerReach) {
+    await recordContainerDeletionReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      containerObjectId: existing.id,
+      containerTypeId: input.typeId,
+      dependentCount,
+      reach: containerReach,
+      subjectDomainLocal: existing.domainLocal
+    });
+  }
   // `!existing.domainLocal` — M20.2 (ADR-0031 §2 as corrected): the tombstone is allocated no
   // sequence either, so a domain-local object's DELETION is as invisible as its existence. This is
   // the easiest of the three to overlook, because a tombstone "carries no data" — but its payload
