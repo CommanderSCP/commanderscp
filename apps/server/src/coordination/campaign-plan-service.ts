@@ -60,7 +60,11 @@ export async function compileAndPersistCampaignPlan(
     // `campaign-reconcile.ts`'s compile catch, so it is explainable rather than a bare throw.
     const topology = await tx.query.objects.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-        andOp(eqOp(t.id, input.topologyObjectId!), eqOp(t.orgId, input.orgId), isNullOp(t.deletedAt))
+        andOp(
+          eqOp(t.id, input.topologyObjectId!),
+          eqOp(t.orgId, input.orgId),
+          isNullOp(t.deletedAt)
+        )
     });
     if (!topology) throw notFound(`release-topology '${input.topologyObjectId}' not found`);
     topologyDocument = topology.properties as Record<string, unknown>;

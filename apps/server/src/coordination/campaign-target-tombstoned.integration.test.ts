@@ -107,10 +107,7 @@ describe("a tombstoned campaign target is refused with a record, not an infinite
 
     const targetRows = () =>
       withTenantTx(server.deps.db, org.orgId, (tx) =>
-        tx
-          .select()
-          .from(campaignWaveTargets)
-          .where(eq(campaignWaveTargets.orgId, org.orgId))
+        tx.select().from(campaignWaveTargets).where(eq(campaignWaveTargets.orgId, org.orgId))
       );
     const mine = async () =>
       (await targetRows()).filter((t) => t.targetObjectId === (component.id as string));
@@ -123,11 +120,12 @@ describe("a tombstoned campaign target is refused with a record, not an infinite
 
     // A `block` Decision with a resolvable id, naming the object and how the target reached it.
     const campaignDecisions = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(decisions).where(eq(decisions.subjectId, campaign.id as string))
+      tx
+        .select()
+        .from(decisions)
+        .where(eq(decisions.subjectId, campaign.id as string))
     );
-    const block = campaignDecisions.find(
-      (d) => d.kind === "wave_target" && d.verdict === "block"
-    );
+    const block = campaignDecisions.find((d) => d.kind === "wave_target" && d.verdict === "block");
     expect(block).toBeDefined();
     expect(block!.inputContext).toMatchObject({
       targetObjectId: component.id,
@@ -140,7 +138,10 @@ describe("a tombstoned campaign target is refused with a record, not an infinite
 
     // ...and the hash-chained audit event that carries it.
     const events = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(auditEvents).where(eq(auditEvents.subjectId, campaign.id as string))
+      tx
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.subjectId, campaign.id as string))
     );
     const refusal = events.find((e) => e.action === WAVE_TARGET_TOMBSTONED_AUDIT_ACTION);
     expect(refusal).toBeDefined();
@@ -156,11 +157,17 @@ describe("a tombstoned campaign target is refused with a record, not an infinite
     await tick();
 
     const after = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(decisions).where(eq(decisions.subjectId, campaign.id as string))
+      tx
+        .select()
+        .from(decisions)
+        .where(eq(decisions.subjectId, campaign.id as string))
     );
     expect(after.filter((d) => d.kind === "wave_target" && d.verdict === "block")).toHaveLength(1);
     const afterEvents = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(auditEvents).where(eq(auditEvents.subjectId, campaign.id as string))
+      tx
+        .select()
+        .from(auditEvents)
+        .where(eq(auditEvents.subjectId, campaign.id as string))
     );
     expect(
       afterEvents.filter((e) => e.action === WAVE_TARGET_TOMBSTONED_AUDIT_ACTION)
@@ -207,10 +214,13 @@ describe("a tombstoned campaign target is refused with a record, not an infinite
     expect(rows[0]!.memberChangeObjectId).not.toBeNull();
 
     const campaignDecisions = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx.select().from(decisions).where(eq(decisions.subjectId, campaign.id as string))
+      tx
+        .select()
+        .from(decisions)
+        .where(eq(decisions.subjectId, campaign.id as string))
     );
-    expect(
-      campaignDecisions.some((d) => d.kind === "wave_target" && d.verdict === "block")
-    ).toBe(false);
+    expect(campaignDecisions.some((d) => d.kind === "wave_target" && d.verdict === "block")).toBe(
+      false
+    );
   }, 180_000);
 });

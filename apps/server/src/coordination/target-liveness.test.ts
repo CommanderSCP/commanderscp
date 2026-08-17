@@ -64,9 +64,7 @@ describe("readTargetLiveness fail direction", () => {
     let reads = 0;
     const tx = fakeTx(() => {
       reads += 1;
-      return Promise.resolve([
-        { id: "c1", typeId: "component", deletedAt: null, properties: {} }
-      ]);
+      return Promise.resolve([{ id: "c1", typeId: "component", deletedAt: null, properties: {} }]);
     });
 
     expect(await readTargetLiveness(tx, "org", "c1")).toEqual({ live: true });
@@ -78,9 +76,7 @@ describe("readTargetLiveness fail direction", () => {
 
   it("a TOMBSTONED target is refused as `deleted`, naming its type", async () => {
     const tx = fakeTx(() =>
-      Promise.resolve([
-        { id: "c1", typeId: "component", deletedAt: new Date(), properties: {} }
-      ])
+      Promise.resolve([{ id: "c1", typeId: "component", deletedAt: new Date(), properties: {} }])
     );
 
     expect(await readTargetLiveness(tx, "org", "c1")).toMatchObject({

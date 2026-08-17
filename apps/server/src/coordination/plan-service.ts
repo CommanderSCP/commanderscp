@@ -172,7 +172,11 @@ export async function compileAndPersistPlan(
     // transition rather than mid-flight.
     const topology = await tx.query.objects.findFirst({
       where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-        andOp(eqOp(t.id, input.topologyObjectId!), eqOp(t.orgId, input.orgId), isNullOp(t.deletedAt))
+        andOp(
+          eqOp(t.id, input.topologyObjectId!),
+          eqOp(t.orgId, input.orgId),
+          isNullOp(t.deletedAt)
+        )
     });
     if (!topology) throw notFound(`release-topology '${input.topologyObjectId}' not found`);
     topologyDocument = topology.properties as Record<string, unknown>;

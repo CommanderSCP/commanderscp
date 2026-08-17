@@ -207,8 +207,7 @@ describe("a tombstoned wave target is never driven", () => {
   // handed a deploy for an object the platform had already tombstoned.
   // ===============================================================================================
   it("REPRODUCTION: an authorized mid-flight DELETE of the target stops the dispatch instead of riding through it", async () => {
-    const { changeObjectId, targetObjectId, waveTargetId } =
-      await changeReadyToTrigger("mid-flight");
+    const { targetObjectId, waveTargetId } = await changeReadyToTrigger("mid-flight");
     const { host, calls } = withRefusingTrigger(inner, () => false);
     const mine = () => calls.filter((c) => c.targetRef === targetObjectId);
 

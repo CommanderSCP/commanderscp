@@ -132,7 +132,13 @@ export async function readTargetLiveness(
 ): Promise<TargetLiveness> {
   const row = await readObjectRow(tx, orgId, targetObjectId);
   if (!row) {
-    return { live: false, reason: "missing", objectId: targetObjectId, typeId: null, via: "target" };
+    return {
+      live: false,
+      reason: "missing",
+      objectId: targetObjectId,
+      typeId: null,
+      via: "target"
+    };
   }
   if (row.deletedAt !== null) {
     return {
@@ -180,7 +186,8 @@ export function describeDeadTarget(
   targetObjectId: string,
   liveness: Extract<TargetLiveness, { live: false }>
 ): string {
-  const what = liveness.reason === "deleted" ? "soft-deleted (tombstoned)" : "absent from the graph";
+  const what =
+    liveness.reason === "deleted" ? "soft-deleted (tombstoned)" : "absent from the graph";
   const noun = liveness.typeId ? `${liveness.typeId} ${liveness.objectId}` : liveness.objectId;
   const reached =
     liveness.via === "target"
