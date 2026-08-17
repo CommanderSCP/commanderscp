@@ -13,6 +13,7 @@
       "passThroughEnv": [
         "SCP_RUNNER_SCAN_IMAGE_REF",
         "SCP_RUNNER_IAC_IMAGE_REF",
+        "SCP_RUNNER_DEP_IMAGE_REF",
         "SCP_TEST_MAX_FORKS",
         "DOCKER_HOST",
         "DOCKER_TLS_VERIFY",

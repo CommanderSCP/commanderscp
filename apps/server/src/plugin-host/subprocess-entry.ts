@@ -174,6 +174,10 @@ async function loadPlugin(moduleName: string): Promise<LoadedPlugin> {
       const mod = await import("@scp/plugin-managed-scan");
       return { kind: "executor", plugin: mod.createManagedScanExecutorPlugin() };
     }
+    case "managed-dep": {
+      const mod = await import("@scp/plugin-managed-dep");
+      return { kind: "executor", plugin: mod.createManagedDepExecutorPlugin() };
+    }
     case "webhook-notify": {
       const mod = await import("@scp/plugin-webhook-notify");
       return { kind: "notification", plugin: mod.createWebhookNotifyPlugin() };

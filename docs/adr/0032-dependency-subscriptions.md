@@ -1,6 +1,6 @@
 # ADR-0032: Dependency subscriptions — a declared inventory, a three-level enablement chain, and a managed bump actuator
 
-**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13; **the §8 actuator clause is contingent on the charter amendment it requires**, and is DECIDED, NOT YET BUILT. **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.**
+**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13. **The §8 actuator is now BUILT (M21.5, 2026-08-16) on the charter amendment it was contingent on (approved 2026-08-13, qualified 2026-08-15); §8a–§8f are that build's own normative clauses, every one of them a defect an adversarial review found in a component that was correct and had no caller.** **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.**
 **Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (the four-arm ownership test and six-gate boundary test this feature must pass); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (SCP stores no SBOM bytes); [ADR-0016](0016-scoped-scan-requirement-policies.md) (the multi-tier resolution shape reused here); [ADR-0022](0022-outpost-config-authority-split.md) (commander-declared config must be a graph object to reach an outpost); [ADR-0028](0028-stage-scoped-component-coupling.md) (`provides`/`requires` — prior art for the wait predicate); [ADR-0030](0030-dev-branch-pipelines.md) §2 (declared, never inferred); [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local work does not journal)
 
@@ -598,7 +598,7 @@ because "there is a function that does this" is not the same claim as "this happ
    that runs once a day. The sweep stops what it started, from a receipt reported by the code that
    started it rather than from a second derivation of which instances "should" be running.
 
-### 8. The actuator is a managed class — DECIDED, NOT YET BUILT
+### 8. The actuator is a managed class — BUILT (M21.5, 2026-08-16; §8a–§8f are the build's own clauses)
 
 Run against ADR-0002 §3, **gate 1 fails wherever Renovate or Dependabot exists** — that is the execution
 system for this class — so the router's default verdict is COORDINATE. **The owner selected Mode C
@@ -623,6 +623,304 @@ CI-green condition is expressed as a governed control so the existing gate machi
 `scp-managed-dep` follows the two shipped managed executors exactly: the standard executor interface,
 server-injected never-tenant runner settings, single-shot ephemeral runners from a separate pinned image,
 scoped vaulted credentials.
+
+### 8a. WHAT DISPATCHES A BUMP, AND WHERE THE TRIGGER IS EMITTED (2026-08-16, M21.5)
+
+§8 says the actuator exists and says nothing about what *calls* it, and built without that it was not
+called: `recordBumpChange`, `resolveEffectiveDelivery` and `buildBumpIntentParameters` had no
+non-test caller and nothing in the tree constructed a `managed-dep` `TriggerIntent`. That is the same
+defect §7c records for M21.4's detection, and it is the **fourth** time in M21 a component was built
+and never installed — so the wiring is now normative rather than implied.
+
+1. **THE TRIGGER IS A LINE'S HEAD *ADVANCING*, AND IT IS EMITTED AT THE ONE WRITE DOOR.**
+   `recordDependencyLineHead` writes an `scp.dependency.line_head_advanced` outbox row **in the head
+   write's own transaction**. Emitting it from each ingress instead would put the rule in one place
+   per caller, which is precisely the arrangement §7b's closing line rejects for the head rules
+   themselves — and those two callers have already demonstrated that they disagree. A third ingress
+   (an air-gap feed import, an operator-set head) therefore dispatches a bump by construction.
+   **Only `advanced`, never `restated`:** the daily poll re-observes an unchanged head for every
+   third-party line every day, and a job per restatement is a job per dependency per day for work
+   already done.
+
+2. **A ROUTER, NOT A SECOND WORKER** — `boss.work()` is a competing consumer, so the same shape
+   §7c clause 2 established applies unchanged: route on `domain-events`, work on the capability's own
+   `dependency-bump` queue.
+
+3. **THE WORK-LIST IS §6's RESOLUTION, WITH NO SECOND FILTER.** `listSubscribedComponentLines`
+   decides who is eligible. The dispatcher narrows the *scan* to the components that declare the line
+   (the reverse index) and never the *answer*.
+
+4. **IDEMPOTENT AT BOTH HOPS, AND KEYED ON EVERY FIELD OF THE SUBJECT.** An existing bump change for
+   the same **(component, manifest, coordinate, target version)** is REUSED rather than re-proposed —
+   its branch is the provenance join (§9), so a second change would mean two branches, two pull
+   requests and two releases for one bump — and the dispatch carries
+   `idempotencyKey = <changeObjectId>`, which is both what the plugin's outcome cache keys on and what
+   the authored branch carries.
+
+   **The first two fields of that key are normative, and the reason is a blocker this ADR's own §9
+   inverted.** Built keyed on (coordinate, target version) alone, the lookup matched org-wide — so
+   the SECOND subscribed component on a line reused the FIRST one's change and received no change, no
+   branch, no dispatch and no bump, silently and forever; and its returning push then correlated to a
+   change that was not about it, minting exactly the second unrelated change §9 exists to prevent. A
+   dependency line **exists** to be declared by many components (that is what §3's reverse index is
+   for), and `component_dependencies` is unique on `(org, component, line, manifest_path)`, so one
+   component legitimately declares one line from two manifests — each of which is its own edit to its
+   own file and therefore its own change. The change is what carries the subject: it records
+   `source_ref.scp_authored.componentObjectId` beside the repo and ref it already claims, because a
+   `targets` join is not a key and a name is not an identity.
+
+5. **THE ROLE GUARD IS DERIVED, NOT INHERITED.** §7c clause 3's two jobs reached opposite verdicts, so
+   neither verdict transfers; the QUESTION does. This job does not merely read from the internet, it
+   **writes to a source repository with a credential**, which an air-gapped or high-side outpost must
+   never do — and internal detection runs on every role, so heads DO advance there. It is therefore
+   commander-only AND **fail-closed on an undeclared `SCP_FEDERATION_ROLE`**, and it logs when it
+   allows as well as when it refuses.
+
+6. **REFUSALS NEVER GUESS, AND EACH NAMES ITS OWN CAUSE** (§7b clause 6). An open range is refused
+   rather than resolved (resolving is CI, §8); a declaration whose recorded resolved version is not a
+   substring of it is refused rather than reformatted, because re-rendering from a parsed triple drops
+   whatever the parser did not model *in a file this system then commits*; a base branch is taken from
+   `component_dependencies.observed_ref` and never invented.
+
+### 8b. THE DELEGATION REFUSAL NEEDED A WRITER (2026-08-16, M21.5)
+
+§8's "conflict detection is load-bearing" was built as two readers — the authoring choke point and
+the actuator seam — and **no producer**, so the charter clause was enforced by nothing end to end.
+The probe now runs in the dispatch job, which is the only production path that already holds the
+repository, the ref and the component's declared manifests, and which must not hold a transaction
+across a provider round trip (§7c clause 2's rule, restated for a write). The verdict is persisted
+with `insertDecisionIfChanged` and both readers see it.
+
+**AN UNREADABLE REPOSITORY IS NOT AN EMPTY ONE — the probe fails CLOSED.** Built, every read failure
+(a bad credential, a provider 5xx, an egress refusal, a refused blob) was collected into an
+`unreadable` list and the probe returned `delegated: false` — a result **byte-identical** to a clean
+repository, so an outage produced an `allow` Decision and an authored commit, and the dispatcher's
+`delegation_probe_failed` branch was unreachable. "We could not check whether another dependency-update
+system owns these manifests" must never resolve to "go ahead and write to them": this is the one
+refusal standing between CommanderSCP and two actuators editing one file, and the two mistakes do not
+cost the same. A probe is now **inconclusive** unless every candidate path was answered, an
+inconclusive probe records **no verdict at all** (a weaker `allow` would be read as a standing fact
+long after the outage that produced it), and the candidate is skipped with a named cause and
+re-derived on the next advance. The refusal lives at the **writer**, not in the one caller, so a
+second producer of this verdict inherits it. A probe that DID find a collision stays conclusive
+whatever else failed to read — unread config can only add collisions, never remove one.
+
+**The residual, stated rather than discovered:** a component that has never been a bump candidate has
+no verdict, so its *first* enable is not refused at authoring time. That is exactly what "no probe on
+record means NO DELEGATION HAS BEEN OBSERVED" already declares, and it is why the actuator half
+exists — nothing is written to a delegating repository either way.
+
+### 8c. AUTO-MERGE EVIDENCE IS SPECIFIC IN TWO INDEPENDENT WAYS — AND IS NOW REACHABLE (2026-08-16, M21.5)
+
+"A governed control evidences that the component's **own** checks passed" was built as an unfiltered
+read of the change's `control_runs`, so **any** passing control granted auto-merge — a scan verdict,
+a webhook control pointed at an operator's own URL, a commander promotion-scan row. Each is a
+governed control and none of them is CI on this bump. Two narrowings, and the second is the sharper:
+
+1. **WHICH CONTROL.** `control_bindings.plugin_module` is the only place the KIND of question a
+   control asked is recorded, so the grant is restricted to modules that answer "did THIS CHANGE'S
+   OWN commit pass the component's OWN CI?" — today exactly `github-check`.
+
+2. **WHICH COMMIT.** `github-check` falls back to its operator-pinned `expectedRef` when the change
+   tracks no commit, and a bump change tracks none until its push returns — so a control could report
+   CI green **for the base branch** and the bump would merge into it on that evidence. The grant
+   additionally requires the run's evidence to name the commit the bump's own branch is at, which the
+   webhook records onto the change when the authored push comes back.
+
+Objection stays WIDER than the grant: any `fail`/`timed_out` from ANY control downgrades. A passing
+scan is not evidence the component's checks passed; a failing one is a perfectly good reason not to
+merge unattended.
+
+**BOTH NARROWINGS ARE SATISFIABLE ONLY AFTER THE BUMP'S OWN COMMIT EXISTS AND CI HAS CONCLUDED ON IT
+— WHICH IS WHY THE GRANT NEEDED A SECOND ASKING, AND WHY THE SECOND ASKING WAS THREE MISSING THINGS
+RATHER THAN ONE.** This clause previously recorded auto-merge as **not reachable**, and it was right
+to: at the first dispatch the branch does not exist, no push has returned, no head commit is recorded
+and no CI has run, so the grant is refused and delivery is a pull request whatever the subscription
+asked for — and nothing in the tree produced a second look. The only trigger was a line's head
+*advancing* (§8a clause 1); an advance to a different version is a different `toVersion` and
+therefore a different change, and a restatement deliberately emits nothing. **That link is now
+BUILT** (2026-08-16). It is three parts, and none of them is a second gate:
+
+1. **A GOVERNED GATE NOW RUNS *FOR* A BUMP CHANGE, AND IT IS THE EXISTING GATE.** The first missing
+   thing was not a trigger but the EVIDENCE ITSELF. `control_runs` rows are deposited by the gate
+   machinery on a lifecycle edge or a wave boundary, `coordination/reconcile.ts` prewarms governance
+   only for changes sitting in `validating`, and a bump change sits at `proposed` from the moment
+   `proposeChange` writes it — so **no control had ever run on a bump, and the evidence the grant
+   requires could not exist.** `dependencies/bump-gate.ts` calls
+   `governance/gate-orchestrator.ts`'s `prewarmGovernanceForChange` — unchanged, the same function
+   `reconcile.ts` calls — which honours §8's "the existing gate machinery decides, not new code".
+
+   **The change is never ADVANCED.** Driving a bump down the deploy lifecycle to make gates fire
+   would coordinate a release nobody asked for; a bump is a proposed edit to a manifest, not a
+   deployment. Prewarm is the right seam precisely because it runs controls and materialises
+   approvals while transitioning nothing.
+
+   The consequence, stated rather than discovered: **an org whose policies name no required control
+   for the component has evidenced nothing, so its bumps stay pull requests.** That is the charter
+   clause working. Absence is never permission.
+
+2. **THE TRIGGER IS AN OBSERVED EVENT ABOUT THE BUMP, EMITTED AT THE INGRESS CHOKE POINT.**
+   `coordination/webhook-processor.ts` writes an `scp.dependency.bump_observed` outbox row **in the
+   ingress transaction** whenever an observed provider event correlates to a bump SCP authored; a
+   ROUTER on `domain-events` enqueues onto the capability's own `dependency-bump-gate` queue (§8a
+   clause 2's rule, restated — `boss.work()` is a competing consumer). Emitted at the choke point
+   rather than per event kind for the same reason §8a clause 1 emits the head advance at the one head
+   write door: a third observed event that attaches to a bump re-evaluates it by construction.
+
+   **THE CI-CONCLUSION EVENT HAD TO BE MAPPED, AND THIS IS THAT STATEMENT RATHER THAN A SILENT POLL.**
+   Measured: `@scp/plugin-github`'s `mapEvent` maps `push`, `pull_request`, `workflow_run`,
+   `deployment` and `release` — `check_suite`/`check_run` are not mapped at all — and `workflow_run`
+   carries `commitSha: workflow_run.head_sha` with **no ref**. Gitea maps no workflow event and
+   GitLab maps `Pipeline Hook`; neither matters here, because only a GitHub App can mint the
+   credential this class requires (§8; `repo-write.ts`'s `resolveRepoWriter` refuses the other two by
+   name). Two additive changes followed: ingress's `ExtractedHint` now carries `commitSha` (every
+   adapter had always produced one and ingress dropped it on the floor), and
+   `matchAuthoredBumpChange` gained a **head-commit route** so a ref-less CI event attaches to the
+   bump whose own recorded `scp_authored.headCommit` it names. That is still a fact SCP asserted
+   rather than one the payload claimed — and it also stops such an event minting the second unrelated
+   change §9 exists to prevent, arriving through a different event than §9 anticipated.
+
+3. **MERGING IS NEW REPOSITORY-WRITE AUTHORITY AND IS GUARDED AS SUCH.** Until now the worst SCP
+   could do was open a pull request a human reviews, so this is a genuine widening and is treated as
+   one. It lives in the SAME place as the other write authority — inside the managed executor,
+   orchestrator side (`repo-write.ts`); `GitProviderAdapter` stays READ-ONLY (§9) and gains no hook.
+   It is `@scp/plugin-managed-dep`'s `action: "merge"`, and every condition on it is structural:
+
+   * it inherits the traversal census verbatim (`assertWriteRepo`/`assertWriteBranch`/
+     `assertWriteBaseBranch`/`assertBranchIsNotBase`, delegating to `assertSafeRepo`/`assertSafeRef`)
+     — a property this feature has already got wrong twice;
+   * **the branch is DERIVED, never supplied.** The intent has no branch field: the plugin composes
+     `scp/dep-bump/<changeObjectId>` with the same function the authoring run used, and the server
+     takes that id and the repository from SCP's own server-owned record of what it authored (§8f). A
+     caller-supplied branch is how "merge the bump we authored" would quietly become "merge what you
+     are told to";
+   * **the pull request is ADDRESSED, and its base is COMPARED.** The merge names the pull request
+     SCP itself opened, by the number the server recorded when the authoring run reported it — never
+     the first entry of a listing filtered on the head branch, which lets provider ordering (or a
+     second pull request somebody with write access opened from SCP's branch to a protected base)
+     decide what merges. The provider's description of that pull request must then still agree with
+     every fact the grant was about: it is open, its head is the branch this change authored, and its
+     **base is the base the grant named** — a comparison that did not previously exist at all, so a
+     retargeted pull request merged into a branch nobody evidenced;
+   * **the evidenced commit is a PRECONDITION, not a label.** It is sent as the provider's merge
+     `sha` parameter, which refuses the merge unless the pull request's head is exactly that commit —
+     so "the tree that merged IS the tree the control passed" is enforced by the provider rather than
+     by this process's belief about what the branch is at. A push that landed between the evidence
+     and the call therefore refuses and leaves the pull request open. The same precondition is now
+     REQUIRED of an authoring run's own auto-merge tail, because a publish that re-pushes the
+     manifest can move the branch off the commit the grant was about;
+   * it **never authors**: a closed pull request is a human's decision about that bump, and this
+     action has no authoring fallback that could re-open one.
+
+   And it **FAILS CLOSED** in every direction the charter names: no gate result; a result for a
+   different commit; a subscription that no longer resolves, or resolves to `pull_request` (re-derived
+   LIVE from the current resolution, so narrowing a subscription after the bump was authored stops the
+   merge — the change's own recorded `delivery` is the downgraded answer and is deliberately not read
+   for this); a claim whose ref is not the one this change's own bump would author; no observed head
+   commit; and — **stricter than the authoring seam, deliberately** — no *conclusive* delegation
+   verdict on record. §8b's inconclusive probe records no verdict at all, so "no verdict" is
+   byte-identical to "we could not read the repository"; letting the authoring seam proceed on that
+   absence is the stated residual there, and merging is a bigger thing to do on it.
+
+The consequence for an operator: **`delivery: auto_merge` is accepted, resolved, recorded, and
+actuated on the bump's SECOND look — never on its first.** The first dispatch is always a pull
+request, and the recorded `deliveryReason` says why.
+
+*(A redelivery of the same head-advance event also re-dispatches the same change and would take the
+grant if CI had concluded in between. That remains an accident of at-least-once delivery rather than
+a mechanism — but it is no longer the only way the grant can be reached, and the `sha` precondition
+means such a re-dispatch cannot merge a tree its own publish just moved.)*
+
+### 8d. `--network none` IS UNQUALIFIED FOR THIS CLASS (2026-08-16, M21.5)
+
+The 2026-08-15 amendment states the runner's egress without qualification. `scp-managed-scan`'s
+otherwise-identical clause IS qualified (2026-07-23, "excepting operator-allowlisted registry
+pulls"), which is why that class reads an operator setting — and why this one must not. An
+operator-settable `SCP_MANAGED_DEP_NETWORK_MODE` with a `none` default was an operator-facing way to
+contradict the charter, so the value is a literal in the plugin and the setting is read by nothing.
+The four containment clauses ("never runs a package manager", "never resolves or regenerates a
+lockfile", "never builds, compiles, or tests", "the runner contains no package manager") are
+properties of the `scp-runner-dep` image, and §8e is what makes them enforceable rather than
+asserted.
+
+### 8e. THE RUNNER IMAGE IS BUILT, PUBLISHED, PINNED BY DIGEST, AND CHECKED AS AN ARTIFACT (2026-08-16, M21.5)
+
+An image nothing builds enforces nothing, and three separate things had to be true before the four
+clauses above were more than prose:
+
+1. **IT IS BUILT AND PUBLISHED ON THE SAME TERMS AS ITS TWO SIBLINGS.** `apps/runner-dep` existed as
+   source that no CI job built, nothing bundled and nothing pinned — so the class could not be enabled
+   on any shipped deployment, and `SCP_MANAGED_DEP_RUNNER_IMAGE` had no value an operator could
+   name. It now rides `ci.yml`'s `runner-images` job (a content-hash tag from
+   `scripts/runner-image-tags.sh`, pulled by the integration job) and `publish-images.yml`'s
+   deliberate `sha-<commit>`/`latest` release tags, exactly as `scp-runner-scan` and `scp-runner-iac`
+   do.
+
+2. **THE BASE IS A LITERAL DIGEST, NOT A TAG BEHIND A BUILD ARG.** Built as
+   `ARG RUNNER_DEP_BASE_IMAGE=busybox:1.36.1-musl`,
+   `docker build --build-arg RUNNER_DEP_BASE_IMAGE=node:22 apps/runner-dep` produced an image tagged
+   as the vetted runner carrying a full Node toolchain — every clause false — while the test that
+   claimed to pin the base read the Dockerfile's TEXT and stayed green. A clause that cannot be traded
+   away is not expressible as a parameter, so the base is a literal digest (`tools/busybox/pin.env`
+   is the single source of truth, mirroring `tools/trivy` and `tools/openscap`, with the same
+   drift test).
+
+3. **THE CLAUSES ARE ASKED OF THE BUILT ARTIFACT.** They are statements about what the image
+   CONTAINS, and a source-text test can only say what the build ADDS. Asking the artifact found the
+   obvious build to be wrong on its first run: a stock BusyBox ships **`dpkg` and `rpm` applets**, so
+   `FROM busybox` + a shim made "the runner contains no package manager" false. The runtime image is
+   therefore **assembled rather than inherited** — an `assemble` stage copies out the one static
+   multi-call binary and creates symlinks for exactly the seven applets the shim invokes, and the
+   final stage is `FROM scratch`. **The residual:** BusyBox is a multi-call binary, so the code behind
+   those applets is still inside `/bin/busybox`; removing it needs a custom-compiled BusyBox, i.e. a C
+   toolchain in the build of the one image whose argument is that it has none. What the clauses are
+   about is unaffected — `--network none` is unconditional (nothing to fetch), the only bytes present
+   are the one manifest copied in (nothing to unpack), and neither dpkg nor rpm is one of the five
+   ecosystems this class authors (nothing to resolve) — and the residual is pinned by a test rather
+   than left in a comment.
+
+### 8f. THE AUTHORSHIP OF A BUMP IS SERVER-OWNED STORAGE, NEVER `changes.source_ref` (2026-08-16, M21.5)
+
+Every input that decided **whose credential merged what** — the repository, the authored ref, the base
+branch, the component, the line, the branch's head commit — was read out of
+`changes.source_ref.scp_authored`. `source_ref` is the raw delivery payload plus a few lifted keys and
+is writable **verbatim by any authenticated principal** through `POST /api/v1/changes`; the event that
+starts the merge gate is likewise producible through `POST /change-sources/{kind}/report`. A tenant
+could therefore fabricate a "bump" naming **any** repository and have SCP merge into it with SCP's own
+installation credential. That is a confused deputy, not a validation gap: validating an
+attacker-writable field yields a well-formed attacker-supplied answer.
+
+The rule that follows, and that §8c's clauses are each an instance of: **a merge is the one
+irreversible thing this feature does, so it acts only on facts SCP itself recorded — never on a field a
+tenant can write, and never on state read back from the provider.**
+
+So migration 0063 adds `dependency_bump_authorships`: one row per bump change, written by the actuator
+when SCP decides to author, by the ingress that observes SCP's own branch coming back, and by the gate
+when the provider confirms a merge. No route, no IaC object type and no federation importer reaches
+it. **A change with no authorship row is not a bump change and never reaches the merge path**, whatever
+its `source_ref` claims. `source_ref.scp_authored` keeps being written as the human-readable
+explanation (principle 6) and is read by nothing that decides a write.
+
+Three further consequences fall out of the same table rather than needing their own mechanisms:
+
+* the CI-conclusion correlation route (§8c clause 2) becomes **one indexed lookup**. It had been an
+  unbounded, unindexed scan of every dependency-bump change in the org, comparing jsonb in TypeScript,
+  **inside the ingress transaction, on essentially every webhook**;
+* `merged_at` stops the audit trail lying. A merge produces its own provider events, which correlate
+  back to the bump and re-run the gate; that second run found no open pull request and recorded
+  `withheld / merge_refused`, so **the latest Decision for a bump that DID merge said it did not** —
+  principle 6 inverted on the one irreversible action. The gate now returns before dispatching;
+* the auto-merge grant binds evidence to the **component's own repository** as well as to its own
+  commit. A module name is a string: a `github-check` control configured against an unrelated
+  repository that happens to contain the same commit object (a fork, a mirror, a vendored copy — commit
+  ids are content hashes and travel freely) satisfied the commit narrowing exactly as the component's
+  own CI would. The run's evidence must now also name the repository the authorship row records.
+
+And the module a control run was produced by is stamped **on the run** (`control_runs.plugin_module`,
+same migration) rather than read from the current `control_bindings` row by join: a binding is mutable,
+so re-pointing one control at `github-check` retroactively relabelled every historical pass of it as an
+own-check pass, and the grant reads historical runs. Evidence about the past must not be re-narrated by
+a present-tense edit (ADR-0030 §2).
 
 ### 9. The executor interface does not change
 

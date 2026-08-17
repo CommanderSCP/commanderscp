@@ -90,6 +90,17 @@ export interface InsertControlRunInput {
   evidence: Record<string, unknown>;
   detail?: string | undefined;
   decisionId?: string | undefined;
+  /**
+   * WHICH KIND OF CONTROL PRODUCED THIS RUN — the `control_bindings.plugin_module` of the binding
+   * that actually ran, stamped ON the run at insert (migration 0063).
+   *
+   * `undefined` is the honest answer for a row no bound ControlPlugin produced:
+   * `federation/promotion-scan-step.ts` deposits rows under a synthetic control id with no binding,
+   * and `ensureControlRun` deposits a `fail` row when a binding is MISSING. A caller asking "what
+   * kind of evidence is this?" must be able to tell those apart from a real module, so the column is
+   * nullable rather than defaulted.
+   */
+  pluginModule?: string | undefined;
 }
 
 export interface ControlRunRow {
@@ -100,6 +111,22 @@ export interface ControlRunRow {
   evidence: Record<string, unknown>;
   detail: string | null;
   decisionId: string | null;
+  /**
+   * The plugin module that produced this run, as recorded WHEN IT RAN — see
+   * {@link InsertControlRunInput.pluginModule}.
+   *
+   * IT IS NOT READ FROM THE BINDING AT QUERY TIME, and that is the whole reason the column exists. A
+   * binding is mutable: re-pointing one control from `webhook-control` to `github-check` would
+   * retroactively relabel every historical run of that control as "the component's own checks
+   * passed" — and `dependencies/bump-actuator.ts` grants an unattended merge on exactly that label,
+   * reading historical runs. Evidence about the past must not be re-narrated by a present-tense
+   * edit (ADR-0030 §2's "declared, never inferred"; this repo's own provenance-label lesson).
+   *
+   * `null` on rows written before 0063, and on rows no bound plugin produced. Treated as NOT an
+   * own-check by the one caller that weighs it — the fail-closed direction, which costs a pull
+   * request rather than an unattended merge.
+   */
+  pluginModule: string | null;
   createdAt: Date;
 }
 
@@ -119,7 +146,8 @@ export async function insertControlRun(
       status: input.status,
       evidence: input.evidence,
       detail: input.detail ?? null,
-      decisionId: input.decisionId ?? null
+      decisionId: input.decisionId ?? null,
+      pluginModule: input.pluginModule ?? null
     })
     .returning();
   return row as unknown as ControlRunRow;

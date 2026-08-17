@@ -1053,3 +1053,28 @@ describe("readFileAtRef()", () => {
     expect((result as { blobSha?: string }).blobSha).toBeUndefined();
   });
 });
+
+/**
+ * ============================================================================================
+ * THIS ADAPTER WRITES NOTHING (owner decision 2026-08-15; ADR-0032 §9)
+ * ============================================================================================
+ * ADR-0032 §9 admits `GitProviderAdapter` as an escape hatch on two grounds — the `ExecutorPlugin`
+ * object is unchanged, and "It also only READS." M21.5 briefly grew branch/commit/pull-request
+ * hooks on all three providers, which contradicts the second ground. The repository-write authority
+ * now lives inside the enumerated `scp-managed-dep` class (`packages/plugins/managed-dep`), where
+ * the charter's containment preconditions bind.
+ *
+ * `@scp/git-provider-core`'s own suite pins the INTERFACE at the type level. This pins the OBJECT,
+ * here, because the interface is structural: an adapter carrying extra write methods still
+ * satisfies it, so the type-level pin alone would not notice a hook re-added to this file. Asserted
+ * per provider rather than once, because the hooks existed on all three — the census is the point
+ * (CLAUDE.md: fix the property, then find every place with it).
+ */
+describe("gitlab adapter surface — read-only", () => {
+  it("carries no repository-write hook, and still carries the read hook", () => {
+    for (const hook of ["createBranch", "putFileOnBranch", "openPullRequest"]) {
+      expect(hook in gitlabAdapter, `${hook} must not be on the gitlab adapter`).toBe(false);
+    }
+    expect(typeof gitlabAdapter.readFileAtRef).toBe("function");
+  });
+});

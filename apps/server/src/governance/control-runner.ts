@@ -121,6 +121,8 @@ export async function ensureControlRun(
       status: "fail",
       evidence: {},
       detail: `control '${input.controlObjectId}' has no ControlPlugin binding configured`
+      // NO `pluginModule` — there is no binding, so there is no module. Recording one here would
+      // be inventing the answer to "what kind of evidence is this?" for a row that is not evidence.
     });
     return "fail";
   }
@@ -166,7 +168,13 @@ export async function ensureControlRun(
     gateRef: input.gateRef,
     status,
     evidence,
-    detail
+    detail,
+    // WHAT ACTUALLY RAN, stamped on the run (0063). Taken from the binding THIS call resolved, not
+    // looked up later: a binding re-pointed afterwards must not be able to re-narrate what this row
+    // evidenced. Recorded even on the catch path above — a `fail` from `github-check` is still a
+    // `github-check` verdict, and dropping the module there would turn an own-check objection into
+    // an unattributable one.
+    pluginModule: binding.pluginModule
   });
   return status;
 }

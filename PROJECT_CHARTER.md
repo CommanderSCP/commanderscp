@@ -1370,6 +1370,18 @@ Repository-write credentials are issued per run, scoped to the single repository
 
 `scp-managed-dep` implements the standard executor interface, runs in isolated single-shot ephemeral runners from a separate `scp-runner-dep` image, and reaches no hosts.
 
+Amendment approved 2026-08-15.
+
+The preceding clause is qualified for `scp-managed-dep` exactly as the 2026-07-23 amendment qualifies it for `scp-managed-scan`, because as written it could not be satisfied together with the repository-write credential clause above it: a repository-write credential is only meaningful against a host.
+
+The credential and the host reach belong to the orchestrator, never to the runner.
+
+Runner network egress is `--network none`; the runner holds no credential, contains no package manager, and edits only the bytes handed to it.
+
+The orchestrator holds the per-run, repository-scoped, short-lived credential and reaches the git provider on the runner's behalf, mirroring the split already shipped for managed scanning, where the commander pulls the subject artifact's bytes and the runner has no network.
+
+This qualifies the network posture of an already-enumerated class; it extends no allowlist and grants no credential the clauses above did not already grant.
+
 The executor verb set is unchanged; no write or execute verb is added.
 
 Enabling dependency subscriptions for a component declares CommanderSCP the execution system for this class in that domain, which is the gate-1 flip for this class.

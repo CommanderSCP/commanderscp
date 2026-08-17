@@ -72,6 +72,27 @@ export interface GitProviderEventHint {
    * sets this; one that doesn't leaves it undefined and no ref-scoped mapping can match its events.
    */
   ref?: string;
+  /**
+   * The SOURCE branch of a pull/merge request, fully qualified (`refs/heads/scp/dep-bump/<id>`) —
+   * deliberately SEPARATE from {@link ref} and deliberately not used for source-mapping routing.
+   *
+   * A pull request is an event about a PROPOSAL to move code between two branches; the ref the
+   * routing question is about is its BASE, and the field a `refPattern` mapping matches is
+   * {@link ref}, which a pull-request event correctly leaves unset. But "which branch is this pull
+   * request FROM?" is a real fact the payload carries, and one consumer needs it: M21.5's
+   * provenance loop, which recognises a bump CommanderSCP authored by the branch it is on and then
+   * requires SCP's own record to name that same branch and repository (ADR-0032 §9).
+   *
+   * Without it, a `pull_request` action=opened delivery processed BEFORE the authored push (the
+   * ordering is the provider's, not ours) named no branch and no yet-recorded commit, matched the
+   * component's ordinary source mapping, and minted the second unrelated change §9 exists to
+   * prevent.
+   *
+   * Adding it to {@link ref} instead would have been the smaller diff and the wrong one: every
+   * ref-scoped source mapping in every existing deployment would have started matching pull-request
+   * events by their head branch, silently re-routing releases.
+   */
+  headRef?: string;
   correlationKey?: string;
 }
 

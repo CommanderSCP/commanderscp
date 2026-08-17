@@ -19,6 +19,7 @@ import { manifest as pipelineGenericManifest } from "@scp/plugin-pipeline-generi
 import { manifest as managedIacManifest } from "@scp/plugin-managed-iac";
 import { manifest as managedScanManifest } from "@scp/plugin-managed-scan";
 import { manifest as fakeExecutorManifest } from "@scp/plugin-fake-executor";
+import { manifest as managedDepManifest } from "@scp/plugin-managed-dep";
 import { manifest as webhookNotifyManifest } from "@scp/plugin-webhook-notify";
 import { manifest as smtpNotifyManifest } from "@scp/plugin-smtp-notify";
 import {
@@ -88,6 +89,22 @@ export const BUNDLED_PLUGIN_MANIFESTS: ApiPluginManifest[] = [
 ].map(asApiManifest);
 
 /**
+ * `managed-dep` (M21.5) and `managed-scan` are DELIBERATELY absent from the list above and present
+ * in the module map below — the same split, for the same reason, as the dependency-index manifests
+ * noted further down. That list is a CONFIG-FORM CATALOG for what a tenant binds through
+ * `POST /executors`; neither of those classes is dispatched that way in practice. `managed-scan` is
+ * constructed directly by `federation/promotion-scan-step.ts`, and `managed-dep`'s instance is
+ * assembled by `dependencies/bump-dispatch.ts` from the component's own git-provider binding —
+ * its work-list is the subscription resolution, never a wave target, so nothing ever asks "which
+ * binding drives this target's pipeline?". Offering a form for a class whose enablement is an
+ * operator env var (`SCP_MANAGED_DEP_RUNNER_IMAGE`, unset ⇒ off) would advertise a control that
+ * does nothing on most deployments.
+ *
+ * `managed-iac` IS in the list because a tenant genuinely binds it to a target (DESIGN §12 Mode 2).
+ * The distinction is "does a tenant bind this?", not "is it a managed class".
+ */
+
+/**
  * M21.4's five `dependency-index` manifests (ADR-0032 §7) are DELIBERATELY ABSENT from the list
  * above and present in the module map below. Two reasons, and the second is the load-bearing one:
  *
@@ -142,6 +159,28 @@ export const MANIFEST_BY_MODULE: Record<string, { configSchema: unknown }> = {
   "pipeline-generic": pipelineGenericManifest,
   "managed-iac": managedIacManifest,
   "managed-scan": managedScanManifest,
+  /**
+   * M21.5 — AND THIS ENTRY IS THE WHOLE POINT OF HAVING AUTHORED A SCHEMA.
+   *
+   * `managed-dep`'s manifest declares `additionalProperties: false` over the TENANT surface only
+   * (`provider`/`appId`/`installationId`/`privateKeySecretKey`/`apiBaseUrl`/`timeoutMs`) and omits
+   * every server-governed field. That refusal is worth exactly nothing until the module appears in
+   * THIS map, because `validatePluginConfig` looks the module up here and RETURNS SILENTLY when it
+   * finds nothing — an unregistered module is an unvalidated one.
+   *
+   * That is not a hypothetical: shipped `managed-scan` authored the same schema and was never
+   * registered, which left `dockerBinary` — the executable `managed-scan` spawns — settable from a
+   * tenant binding config. PR #238 closes the class by asserting at BOOT that every module in
+   * `executor-bindings-repo.ts`'s allowlist has a manifest here, which is why this entry is a
+   * prerequisite for M21.5 starting at all once that lands, not merely good hygiene.
+   *
+   * The keys this entry refuses, named because they are the ones that matter: `dockerBinary` (what
+   * binary is executed), `runnerImage` (what image runs), `workspaceRoot` (what directory is
+   * written), and `networkMode` — which is refused here even though nothing reads it any more, so
+   * that a binding cannot look as though it configured an egress posture the plugin fixes as a
+   * literal.
+   */
+  "managed-dep": managedDepManifest,
   "webhook-notify": webhookNotifyManifest,
   "smtp-notify": smtpNotifyManifest,
   "dependency-index-go": goIndexManifest,
