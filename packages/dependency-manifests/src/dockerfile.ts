@@ -28,9 +28,14 @@
  * Also deliberate:
  * - **`FROM scratch` yields nothing.** `scratch` is a reserved empty base with no registry entry and
  *   no versions; there is nothing to subscribe to or bump.
- * - **Only build inputs.** Per proposal §6.3 the scope is the component's own `Dockerfile` `FROM`,
- *   not deployment manifests: a Helm values image tag is a *placement* concern owned by the
- *   promotion path that already exists.
+ * - **This file reads build inputs; it is no longer the only image source.** Proposal §6.3 used to
+ *   say the scope was the component's own `Dockerfile` `FROM` and NOT its deployment manifests,
+ *   because "a Helm values image tag is a *placement* concern owned by the promotion path that
+ *   already exists". That clause is **superseded** (docs/proposals/kubernetes-image-references.md
+ *   §0): it reasoned about who owns the CHANGE and concluded SCP should not record the
+ *   DECLARATION, which does not follow — a `tag: 1.2.3` in a values file this repository owns is a
+ *   declaration in exactly the sense `FROM alpine:1.2.3` is. `kubernetes-images.ts` reads those,
+ *   into this same `oci` ecosystem and onto the same lines.
  * - **Scope is `build`.** A base image is consumed to produce the artifact. That the layers persist
  *   into the runtime image does not make it a runtime *declaration*; it is declared in the build
  *   recipe, and this package reports the declaration, not the consequence.
@@ -92,13 +97,18 @@ function toLogicalLines(content: string): LogicalLine[] {
 /**
  * Split an image reference into registry+name / tag / digest, brace-aware.
  *
+ * EXPORTED FOR ONE OTHER READER, and deliberately not copied: `kubernetes-images.ts` splits the
+ * same one-scalar reference (`image: "localhost:5000/foo:1.2"`) out of a YAML document. A second
+ * splitter is how the port-vs-tag and the digest-colon rules below come to disagree between two
+ * parsers that must place the same image on the same `dependency_lines` row.
+ *
  * Brace awareness is load-bearing for exactly one construct: `${BASE:-alpine}` (Docker supports
  * shell-style defaults in `ARG` expansion). A plain "last colon wins" split would cut that in half
  * and report a package named `${BASE` — the classic mis-split. Depth-0 tracking also handles the
  * ordinary registry-port case `localhost:5000/foo:1.2`, where the last depth-0 colon after the last
  * depth-0 slash is the tag separator and the earlier one is a port.
  */
-function splitImageRef(ref: string): { name: string; tag?: string; digest?: string } {
+export function splitImageRef(ref: string): { name: string; tag?: string; digest?: string } {
   let depth = 0;
   let lastSlash = -1;
   let lastColon = -1;

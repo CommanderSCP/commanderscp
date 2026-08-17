@@ -31,6 +31,7 @@ import { listSubscribedComponentLines } from "./subscription-resolution.js";
 import {
   assertComponentNotDelegated,
   buildBumpIntentParameters,
+  manifestIsEditableInThisBuild,
   recordBumpChange,
   resolveEffectiveDelivery,
   type DeliveryResolution
@@ -268,7 +269,13 @@ export type BumpRefusalReason =
   /** The verbatim declaration does not contain the resolved version as a substring, so the edited
    *  text cannot be composed by replacing it — `resolved_version` and `declared_version` disagree
    *  about what the file says, and rewriting on a guess is how a range operator gets lost. */
-  | "declaration_not_composable";
+  | "declaration_not_composable"
+  /** A bump IS due, and this build's runner cannot author into a file of this kind. M21.7's
+   *  `values.yaml` is the case that exists: it is inventoried, subscribable and polled, and the
+   *  write allowlist stays deliberately closed on it. Refused HERE so the reason is legible on the
+   *  Decision, instead of after a container round trip that ends in the plugin's own
+   *  `not_a_known_manifest` — which reads as a broken runner. */
+  | "manifest_not_editable_in_this_build";
 
 export type BumpPlan =
   | {
@@ -296,7 +303,7 @@ export type BumpPlan =
  */
 export function planBump(input: {
   line: Pick<DependencyLine, "ecosystem" | "major" | "tagPattern" | "latestVersion">;
-  declaration: Pick<ComponentDependency, "declaredVersion" | "resolvedVersion">;
+  declaration: Pick<ComponentDependency, "declaredVersion" | "resolvedVersion" | "manifestPath">;
   granularity: DependencySubscriptionGranularity;
 }): BumpPlan {
   const head = input.line.latestVersion;
@@ -362,6 +369,21 @@ export function planBump(input: {
       due: false,
       reason: "already_at_or_ahead_of_head",
       detail: `substituting '${head}' for '${resolved}' in '${declared}' changes nothing`
+    };
+  }
+  // LAST, AND DELIBERATELY LAST. A bump that is not due needs no editability question answered, and
+  // asking it earlier would replace an accurate "already at head" with a refusal about a file
+  // nothing wanted to write. Asked HERE, the refusal appears exactly when it is the operative fact:
+  // SCP can see the newer version, and this build cannot author the edit that would take it.
+  if (!manifestIsEditableInThisBuild(input.line.ecosystem, input.declaration.manifestPath)) {
+    return {
+      due: false,
+      reason: "manifest_not_editable_in_this_build",
+      detail:
+        `a bump from '${declared}' to '${toVersion}' is due, and '${input.declaration.manifestPath}' is not a ` +
+        `${input.line.ecosystem} manifest this build's editor may write: the write allowlist is ` +
+        `fail-closed and no bump is authored into a file kind it does not name. The declaration is ` +
+        `still inventoried and still polled, so this line's head is observed — only the edit is refused`
     };
   }
   return { due: true, fromVersion: declared, toVersion };

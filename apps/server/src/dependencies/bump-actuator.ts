@@ -42,6 +42,52 @@ export function bumpRefFor(changeObjectId: string): string {
 export const BUMP_SOURCE_KIND = "dependency-bump";
 
 /**
+ * CAN THIS BUILD'S RUNNER EDIT A MANIFEST AT THIS PATH FOR THIS ECOSYSTEM?
+ *
+ * `@scp/plugin-managed-dep`'s `MANIFEST_MATCHERS` is the charter-enforcement allowlist — "SCP never
+ * edits a file that declares no dependency", made structural and fail-closed inside the plugin. This
+ * is a RESTATEMENT of the same closed set on the dispatch side, following the convention
+ * {@link BUMP_BRANCH_PREFIX} already sets: the server does not take a build-time dependency on a
+ * plugin package, and `bump-dispatch.test.ts`'s "the write allowlist, pinned across the two modules
+ * that restate it" block proves the two agree — including on what each one REFUSES, which is the
+ * half a subset check would miss.
+ *
+ * WHY THE SERVER ASKS AT ALL, when the plugin refuses anyway (M21.7). `values.yaml` is now
+ * INVENTORIED, so an image pinned in a chart is subscribable and polled and an operator learns a
+ * newer `alpine` exists. It is NOT writable: the runner's verifier requires the single changed line
+ * to name the coordinate, and in `image: {repository, tag}` the coordinate is on the other line —
+ * in `{registry, repository, tag}` it appears nowhere contiguously at all. Without this check the
+ * dispatcher would start a container, hand it a file the allowlist refuses, and surface
+ * `not_a_known_manifest`, which reads to an operator as "the runner is broken" rather than as "this
+ * build cannot author into that file". The allowlist stays CLOSED and fail-closed; this only decides
+ * WHERE the refusal is said, and it says it before a container exists.
+ */
+export function manifestIsEditableInThisBuild(ecosystem: string, manifestPath: string): boolean {
+  const cut = manifestPath.lastIndexOf("/");
+  const basename = cut === -1 ? manifestPath : manifestPath.slice(cut + 1);
+  switch (ecosystem) {
+    case "npm":
+      return basename === "package.json";
+    case "go":
+      return basename === "go.mod";
+    case "maven":
+      return basename === "pom.xml";
+    case "python":
+      return basename === "pyproject.toml" || /^requirements[A-Za-z0-9._-]*\.txt$/.test(basename);
+    case "oci":
+      // The four Dockerfile spellings in ordinary use. `values.yaml` is deliberately NOT here.
+      return (
+        basename === "Dockerfile" ||
+        basename === "Containerfile" ||
+        basename.startsWith("Dockerfile.") ||
+        basename.endsWith(".Dockerfile")
+      );
+    default:
+      return false;
+  }
+}
+
+/**
  * ============================================================================================
  * THE DELEGATION RE-CHECK — the half the authoring-time refusal structurally cannot cover
  * ============================================================================================

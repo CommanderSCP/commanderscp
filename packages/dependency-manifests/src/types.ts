@@ -12,9 +12,35 @@
  *
  * The types below deliberately have no Zod counterpart in this package. Per CLAUDE.md, Zod schemas
  * live in `packages/schemas`; when these declarations become API-visible they get a schema there
- * that mirrors this file. Keeping the parsers dependency-free also keeps them trivially usable from
- * a runner image (charter principle 5 — everything must work offline, so this package pulls in no
- * third-party TOML or XML library and hand-rolls the small subsets it needs).
+ * that mirrors this file.
+ *
+ * ============================================================================================
+ * THE ZERO-DEPENDENCY PROPERTY WAS SPENT IN M21.7, ONCE, ON `yaml` — RECORDED, NOT QUIETLY TAKEN
+ * ============================================================================================
+ * This package used to have NO `dependencies` block at all, and hand-rolled the TOML and XML
+ * subsets it needed rather than take a library (charter principle 5 — everything must work
+ * offline). `kubernetes-images.ts` takes `yaml@^2.9.0`, and the trade is stated rather than
+ * implied:
+ *
+ *  - WHAT IT DOES NOT COST. `yaml@2.9.0` was already in the lockfile (`tools/helm-verify` and
+ *    `deploy/airgap` both declare it) and resolves with NO transitive dependencies, so the offline
+ *    install set does not grow by a single package and nothing new is fetched at build or run time.
+ *  - WHY A HAND-ROLLED SUBSET WAS REFUSED. `toml-lite.ts`'s own argument runs the other way here:
+ *    YAML's surface is significant indentation, block and flow collections, five scalar styles,
+ *    anchors/aliases/merge keys and multi-document streams, and INDENTATION is precisely where a
+ *    partial implementation returns a confidently wrong tree instead of an error. One values file
+ *    can be the sole declaration site for a dozen images, and a wrong tree there prunes all of
+ *    them. There is also a capability argument that settles it independently of size: reading a
+ *    version through a node's JS value corrupts it (`tag: 1.20` parses to 1.2), so the parser needs
+ *    the scalar's own SOURCE TEXT plus document and alias structure, which `yaml` exposes and a
+ *    JSON-shaped reader does not.
+ *  - WHAT WAS MEASURED ABOUT THE RUNNER, correcting the claim this comment used to make. The
+ *    parsers were said to be "trivially usable from a runner image". `apps/runner-dep/Dockerfile`
+ *    is `FROM scratch` plus a BusyBox multi-call binary and seven applets — it contains NO Node
+ *    runtime and no JS at all, so no version of this package has ever been inside it. What the
+ *    property actually buys is a small, auditable supply chain for the ORCHESTRATOR
+ *    (`packages/plugins/managed-dep`, which imports these parsers and runs in a plugin subprocess)
+ *    and for the air-gap bundle. That is still worth keeping, which is why this is the one.
  */
 
 /**

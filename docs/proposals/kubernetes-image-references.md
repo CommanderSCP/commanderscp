@@ -1,7 +1,20 @@
 # Kubernetes image references — reading a pinned image out of Helm values, not only out of a `FROM` line
 
-**Status:** Proposed (2026-08-17). Design only — no parser is written and no code is changed by this
-document.
+**Status:** Proposed (2026-08-17). **BUILT (2026-08-17, M21.7) on the recommendations in §6 — Q1
+yes, Q2 visibility-this-round, Q3 deferred, Q5 yes; Q4 is still open and is a behaviour question, not
+a blocker.** The normative record of what shipped is [ADR-0032 §4b](../adr/0032-dependency-subscriptions.md);
+this document is the derivation behind it. §7's work items are done except item 7's wording — the
+pre-dispatch refusal landed in `planBump` as `manifest_not_editable_in_this_build` rather than in
+`dispatchForComponent`, so it is reported through the refusal table every other "not due" reason
+already goes through.
+
+**One correction the build measured**, recorded here because §5 rests on it: `packages/plugins/managed-dep`
+does NOT ship into the `scp-runner-dep` image. `apps/runner-dep/Dockerfile` is `FROM scratch` plus a
+BusyBox multi-call binary and seven applets, with no Node runtime at all — so no version of
+`@scp/dependency-manifests` has ever been inside it, and adding `yaml` puts nothing new into that
+image. The decision to take `yaml` is unchanged and the property is still recorded as spent; what the
+property actually buys is a small auditable supply chain for the plugin subprocess and the air-gap
+bundle, not runner-image portability.
 **Owner ask:** M21.7. "Most Kubernetes users pin image versions in Helm values, not in a `FROM` line.
 Today such an image does not appear in the inventory at all, so it reads as *no dependency* rather
 than *unsupported*."

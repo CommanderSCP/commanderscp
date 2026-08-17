@@ -28,13 +28,14 @@ import {
   ManifestParseError,
   parseDockerfile,
   parseGoMod,
+  parseKubernetesImages,
   parsePackageJson,
   parsePomXml,
   parsePyprojectToml,
   parseRequirementsTxt
 } from "./index.js";
 
-/** The five that refuse unreadable content, with an input that is not their format. */
+/** The six that refuse unreadable content, with an input that is not their format. */
 const THROWING: ReadonlyArray<readonly [string, (content: string) => unknown, string]> = [
   ["parsePackageJson", parsePackageJson, "<!doctype html><title>404</title>"],
   ["parseGoMod", parseGoMod, "<!doctype html><title>404</title>"],
@@ -44,7 +45,13 @@ const THROWING: ReadonlyArray<readonly [string, (content: string) => unknown, st
     "version https://git-lfs.github.com/spec/v1\noid sha256:ab\n"
   ],
   ["parsePyprojectToml", parsePyprojectToml, "<!doctype html><title>404</title>"],
-  ["parsePomXml", parsePomXml, "<!doctype html><title>404</title>"]
+  ["parsePomXml", parsePomXml, "<!doctype html><title>404</title>"],
+  // M21.7 — AND THIS IS THE INTERESTING MEMBER OF THE TABLE. The others throw on the 404 body
+  // because it is not their grammar. It IS valid YAML — a plain scalar — so `parseKubernetesImages`
+  // throws only because it was written to require a mapping at some document root. Without that
+  // rule it would report "zero images" for an error page, and one values file can be the sole
+  // declaration site for a dozen images, all of which the next pass would prune.
+  ["parseKubernetesImages", parseKubernetesImages, "<!doctype html><title>404</title>"]
 ];
 
 describe("manifest parser throw contract (as reached through the entry point)", () => {
@@ -65,6 +72,14 @@ describe("manifest parser throw contract (as reached through the entry point)", 
     }
   );
 
+  it("NEGATIVE CONTROL: a values file that is only comments does NOT throw", () => {
+    // The second exception to the throw rule, and it is a SHAPE rather than a parser: YAML's honest
+    // empty is a file with no documents at all. Without this, "requires a mapping root" would
+    // report every chart whose values are commented out as `unreadable` — forever, since re-reading
+    // changes nothing, which is the wrong operator action.
+    expect(parseKubernetesImages("# every value is commented out\n")).toEqual([]);
+  });
+
   it("NEGATIVE CONTROL: parseRequirementsTxt does not throw, on empty or on junk", () => {
     // A requirements.txt has no required construct, so there is nothing whose absence proves the
     // file is not one — it is the documented exception in `index.ts`, not an oversight. If this
@@ -78,6 +93,7 @@ describe("manifest parser throw contract (as reached through the entry point)", 
     expect(parsePackageJson('{"dependencies":{"left-pad":"1.3.0"}}')).toHaveLength(1);
     expect(parseGoMod("module m\n\nrequire example.com/x v1.2.3\n")).toHaveLength(1);
     expect(parseDockerfile("FROM alpine:3.20\n")).toHaveLength(1);
+    expect(parseKubernetesImages("image: acme/api:1.2.3\n")).toHaveLength(1);
     expect(parsePyprojectToml('[project]\ndependencies = ["requests>=2.31"]\n')).toHaveLength(1);
     expect(
       parsePomXml(

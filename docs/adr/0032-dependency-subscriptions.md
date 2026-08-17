@@ -1,7 +1,7 @@
 # ADR-0032: Dependency subscriptions — a declared inventory, a three-level enablement chain, and a managed bump actuator
 
 **Status:** **Accepted (2026-08-17)** — five decision points settled with the owner on 2026-08-13; the feature is built and merged (M21.1–M21.7), which is what moves this off *Proposed*. **The §8 actuator is now BUILT (M21.5, 2026-08-16) on the charter amendment it was contingent on (approved 2026-08-13, qualified 2026-08-15); §8a–§8f are that build's own normative clauses, every one of them a defect an adversarial review found in a component that was correct and had no caller.** **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.** **Amended 2026-08-16 (§3a-i): §3a's own attachment clause was wrong — a subscription is attached by the policy's `properties.scope`, not by the `governed_by` edge §3a named; the ADR now agrees with the code comment that caught it.** **Amended 2026-08-17 (§7d), owner decision: ALL DEPENDENCY AUTOMATION IS COMMANDER-ONLY. The federation-axis verdict §3, §4a clause 7 and §7c clause 3 reached is REVERSED — no FIELD outpost runs a dependency job or holds a dependency inventory (the HQ outpost is the commander, so its inventory is the commander's; §7d's vocabulary note reads that distinction out of the code), and dependencies declared in field-outpost-only repositories are out of scope. Those clauses are preserved verbatim and marked; §7d holds the reasoning.** **Amended 2026-08-17 (§6a-ii): §6a's ground (b) — "a group-scoped enable is permanently inert because the acting job is `member_of` nothing" — is FALSE as of ADR-0016 §2a, which shipped group scope's OWNING half the same day §6a was widened. The refusal stands in both directions; ground (a), the opt-out's fail-open, is now the sole ground, and #237 sharpened it into a mutable-reach trapdoor. Preserved and marked; §6a-ii holds the reasoning.**
-**Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md)
+**Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md) — §6.3's manifest-scope sentence is superseded by §4b; see [docs/proposals/kubernetes-image-references.md](../proposals/kubernetes-image-references.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (the four-arm ownership test and six-gate boundary test this feature must pass); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (SCP stores no SBOM bytes); [ADR-0016](0016-scoped-scan-requirement-policies.md) (the multi-tier resolution shape reused here); [ADR-0022](0022-outpost-config-authority-split.md) (commander-declared config must be a graph object to reach an outpost); [ADR-0028](0028-stage-scoped-component-coupling.md) (`provides`/`requires` — prior art for the wait predicate); [ADR-0030](0030-dev-branch-pipelines.md) §2 (declared, never inferred); [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local work does not journal)
 
 ## Context
@@ -310,6 +310,88 @@ this" is not the same claim as "this happens".
    while ingestion initiates no timed egress and reads through the git binding this domain's
    executors already coordinate over. §3 says each domain derives its own inventory, so a
    commander-only guard would leave every outpost's `component_dependencies` permanently empty.
+
+### 4b. THE INVENTORY READS IMAGE REFERENCES OUT OF HELM VALUES, NOT ONLY OUT OF A `FROM` (2026-08-17, M21.7)
+
+**This clause reverses a sentence of `docs/proposals/dependency-subscriptions.md` §6.3**, which said
+the manifest scope was the component's own build input "not its deployment manifests — a Helm values
+image tag is a *placement* concern". The reversal is recorded rather than absorbed, because an
+Accepted document that contradicts the code is the failure this milestone has spent rounds
+repairing. Full derivation: `docs/proposals/kubernetes-image-references.md`.
+
+**Why the original clause was wrong**, stated rather than just overturned: it reasoned about *who
+owns the change* (promotion owns placement — true) and concluded *therefore SCP must not record the
+declaration* — which does not follow. §4 says the inventory is what a component's own manifests
+DECLARE, and a `tag: 1.2.3` in a values file the component's repository owns is a declaration in
+exactly the sense `FROM alpine:1.2.3` is. The owner's ask is the ordinary case, not an edge: most
+Kubernetes users pin the image their component runs in chart values, and until this round such an
+image did not appear in the inventory **at all** — which a reader renders as "declares no
+dependency" rather than "SCP cannot read where you declared it".
+
+1. **THE ECOSYSTEM STAYS `oci`.** No sixth member of the enum, no new line identity, no new index
+   plugin, no new comparator. An image pinned in `values.yaml` is the SAME `dependency_lines` row as
+   the same image pinned in a `FROM`; only `manifest_path` differs, and it already distinguishes
+   them. `ecosystem-vocabulary.test.ts` pins the second parser to the same vocabulary as the first.
+
+2. **ONE EXACT BASENAME — `values.yaml` — AND THE ALTERNATIVE IS NOT AVAILABLE, NOT MERELY
+   EXPENSIVE.** "Every `.yaml` in the repository" is a set SCP cannot enumerate: §9 keeps the git
+   seam at one file verb (`readFileAtRef`), with no list, no tree and no directory walk behind it.
+   Two further costs make even a bounded convention list wrong: each filename is a MULTIPLIER on
+   every probe prefix against `MAX_MANIFEST_READS` (re-derived this round from 40 to 42 — six
+   prefixes' worth of the seven-filename cross product), and a probed path is a DURABLE IDENTITY KEY
+   whose `not_found` is the branch that PRUNES (§4a). Guessing paths in a system whose prune rule is
+   "a `not_found` on the path is evidence the file is gone" is unsafe, not wasteful. `values.yml` is
+   excluded (Helm only ever reads `values.yaml`, so guessing otherwise is a filename-shaped
+   inference); `Chart.yaml` is excluded because `dependencies[].version` names subcharts from a Helm
+   repository — a sixth ecosystem, deferred with the question recorded. A chart at a path no
+   mapping's literal head reaches is addressed by a `source_mappings` row that NAMES the file, which
+   `repoManifestScope` already handles — and which is not free, because a mapping is also a
+   correlation rule.
+
+3. **RAW KUBERNETES MANIFESTS ARE OUT OF SCOPE THIS ROUND — for addressability, not for shape.**
+   `spec.template.spec.containers[].image` is the *easiest* shape in the design. `deployment.yaml`,
+   `api.yaml` and `k8s/web-deploy.yaml` are arbitrary names, so clause 2's argument applies with
+   full force. The parser is nevertheless written PATH-AGNOSTIC AND SHAPE-COMPLETE — it reads pod
+   specs, init and ephemeral containers and CronJob templates today — so enabling them later is one
+   line in the parser table plus an addressability answer, never parser work.
+
+4. **A DECLARATION SCP CANNOT RESOLVE FROM THE FILE IS REPORTED, NEVER OMITTED — and a manifest
+   whose EVERY declaration is unresolved is stamped `unsupported`, not `ok / 0 rows`.** This is the
+   clause the round exists for, and its second half is **a class fix to a defect that predates YAML
+   by four milestones**: a `Dockerfile` that is entirely `FROM ${BASE}`, and a `pom.xml` of
+   `${revision}`, both stamped `ok / 0 rows` — the stamp's own words for "read fine, genuinely
+   declares nothing" — on files that declared dependencies SCP could not read. Fixing only the YAML
+   instance would have been the incomplete-census failure. `IngestionStampManifest.outcome` already
+   carried `unsupported`, so this needed no schema and no migration. `SkippedDeclaration.reason`
+   gains a second member, `unresolved_declaration`, selected STRUCTURALLY from the parser's own
+   `constraint` and never by matching a note's prose — the two reasons carry different operator
+   actions ("pin a parseable version" vs "declare the repository beside the tag").
+
+5. **THE SPLIT SHAPES ARE READ AND ARE NOT BUMPABLE IN THIS BUILD, AND THAT IS SAID BEFORE A
+   CONTAINER STARTS.** §8's verifier requires the single changed line to name the coordinate; in
+   `image: {repository, tag}` the coordinate is on the other line, and in
+   `{registry, repository, tag}` it appears nowhere contiguously in the file. The plugin's write
+   allowlist therefore stays CLOSED on `values.yaml` (fail-closed, unchanged), and `planBump` gains
+   a `manifest_not_editable_in_this_build` refusal so the Decision carries a legible reason instead
+   of a runner round trip that ends in `not_a_known_manifest` — which reads as a broken runner.
+   Consequence, stated plainly: a values-file line is **inventoried, subscribable and polled** (the
+   operator learns a newer version exists) and its bump is **refused with its cause**. That is
+   strictly better than the previous silence and it is not the whole feature. Widening the verifier
+   from "the changed line names the coordinate" to "the changed line is the `tag` node of the image
+   block this row came from" touches a charter-enforcement surface whose design is deliberately
+   textual and ecosystem-agnostic, so it is its own round with its own gate.
+
+6. **`@scp/dependency-manifests` SPENDS ITS ZERO-DEPENDENCY PROPERTY, ONCE, ON `yaml`.** Recorded as
+   spent rather than quietly taken. It costs nothing offline (`yaml@2.9.0` was already in the
+   lockfile via `tools/helm-verify` and `deploy/airgap`, and resolves with no transitive
+   dependencies of its own), and a hand-rolled subset was refused on the OPPOSITE reasoning to
+   `toml-lite.ts`'s: YAML's indentation is precisely where a partial implementation returns a
+   confidently wrong tree instead of an error, and one values file can be the sole declaration site
+   for a dozen images. A capability argument settles it independently — a version must be read from
+   the scalar's own SOURCE TEXT, because `tag: 1.20` parses to the number 1.2 and
+   `declared_version` is an edit target. **A claim in that package's own comments was measured and
+   corrected in passing:** the parsers were said to be "trivially usable from a runner image", but
+   `apps/runner-dep` is `FROM scratch` plus BusyBox and has never contained a Node runtime.
 
 ### 5. Package dependencies never use `depends_on`
 

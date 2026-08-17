@@ -20,6 +20,7 @@ import {
   DEPENDENCY_BUMP_QUEUE
 } from "./bump-dispatch.js";
 import { DEPENDENCY_LINE_HEAD_ADVANCED_EVENT } from "./dependency-inventory-repo.js";
+import { manifestIsEditableInThisBuild } from "./bump-actuator.js";
 
 /**
  * M21.5 — the three pure decisions the bump dispatcher makes, pinned without a database.
@@ -257,7 +258,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
   it("composes by SUBSTITUTION, so the declaration's range operator survives", () => {
     const plan = planBump({
       line: npmLine({ latestVersion: "1.4.0" }),
-      declaration: { declaredVersion: "^1.2.3", resolvedVersion: "1.2.3" },
+      declaration: {
+        declaredVersion: "^1.2.3",
+        resolvedVersion: "1.2.3",
+        manifestPath: "package.json"
+      },
       granularity: "minor_and_patch"
     });
     expect(plan).toEqual({ due: true, fromVersion: "^1.2.3", toVersion: "^1.4.0" });
@@ -267,7 +272,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     expect(
       planBump({
         line: npmLine({ ecosystem: "go", latestVersion: "1.9.0" }),
-        declaration: { declaredVersion: "v1.2.3", resolvedVersion: "1.2.3" },
+        declaration: {
+          declaredVersion: "v1.2.3",
+          resolvedVersion: "1.2.3",
+          manifestPath: "go.mod"
+        },
         granularity: "minor_and_patch"
       })
     ).toEqual({ due: true, fromVersion: "v1.2.3", toVersion: "v1.9.0" });
@@ -279,7 +288,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
           tagPattern: "-alpine",
           latestVersion: "3.19.1-alpine"
         }),
-        declaration: { declaredVersion: "3.18.0-alpine", resolvedVersion: "3.18.0-alpine" },
+        declaration: {
+          declaredVersion: "3.18.0-alpine",
+          resolvedVersion: "3.18.0-alpine",
+          manifestPath: "Dockerfile"
+        },
         granularity: "minor_and_patch"
       })
     ).toEqual({ due: true, fromVersion: "3.18.0-alpine", toVersion: "3.19.1-alpine" });
@@ -288,7 +301,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
   it("refuses a MINOR move under `patch` granularity — the most restrictive wins", () => {
     const plan = planBump({
       line: npmLine({ latestVersion: "1.4.0" }),
-      declaration: { declaredVersion: "1.2.3", resolvedVersion: "1.2.3" },
+      declaration: {
+        declaredVersion: "1.2.3",
+        resolvedVersion: "1.2.3",
+        manifestPath: "package.json"
+      },
       granularity: "patch"
     });
     expect(plan).toMatchObject({ due: false, reason: "beyond_granularity" });
@@ -298,7 +315,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     expect(
       planBump({
         line: npmLine({ latestVersion: "1.2.9" }),
-        declaration: { declaredVersion: "1.2.3", resolvedVersion: "1.2.3" },
+        declaration: {
+          declaredVersion: "1.2.3",
+          resolvedVersion: "1.2.3",
+          manifestPath: "package.json"
+        },
         granularity: "patch"
       })
     ).toEqual({ due: true, fromVersion: "1.2.3", toVersion: "1.2.9" });
@@ -308,7 +329,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     expect(
       planBump({
         line: npmLine({}),
-        declaration: { declaredVersion: "^1", resolvedVersion: null },
+        declaration: {
+          declaredVersion: "^1",
+          resolvedVersion: null,
+          manifestPath: "package.json"
+        },
         granularity: "minor_and_patch"
       })
     ).toMatchObject({ due: false, reason: "declaration_pins_no_version" });
@@ -318,7 +343,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     expect(
       planBump({
         line: npmLine({ latestVersion: null }),
-        declaration: { declaredVersion: "^1.2.3", resolvedVersion: "1.2.3" },
+        declaration: {
+          declaredVersion: "^1.2.3",
+          resolvedVersion: "1.2.3",
+          manifestPath: "package.json"
+        },
         granularity: "minor_and_patch"
       })
     ).toMatchObject({ due: false, reason: "no_head_observed" });
@@ -328,14 +357,22 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     expect(
       planBump({
         line: npmLine({ latestVersion: "1.4.0" }),
-        declaration: { declaredVersion: "^1.4.0", resolvedVersion: "1.4.0" },
+        declaration: {
+          declaredVersion: "^1.4.0",
+          resolvedVersion: "1.4.0",
+          manifestPath: "package.json"
+        },
         granularity: "minor_and_patch"
       })
     ).toMatchObject({ due: false, reason: "already_at_or_ahead_of_head" });
     expect(
       planBump({
         line: npmLine({ latestVersion: "1.4.0" }),
-        declaration: { declaredVersion: "^1.5.0", resolvedVersion: "1.5.0" },
+        declaration: {
+          declaredVersion: "^1.5.0",
+          resolvedVersion: "1.5.0",
+          manifestPath: "package.json"
+        },
         granularity: "minor_and_patch"
       })
     ).toMatchObject({ due: false, reason: "already_at_or_ahead_of_head" });
@@ -352,7 +389,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
           tagPattern: "-alpine",
           latestVersion: "3.19.1"
         }),
-        declaration: { declaredVersion: "3.18.0-alpine", resolvedVersion: "3.18.0-alpine" },
+        declaration: {
+          declaredVersion: "3.18.0-alpine",
+          resolvedVersion: "3.18.0-alpine",
+          manifestPath: "Dockerfile"
+        },
         granularity: "minor_and_patch"
       })
     ).toMatchObject({ due: false, reason: "head_not_on_line" });
@@ -364,7 +405,11 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     expect(
       planBump({
         line: npmLine({ latestVersion: "1.4.0" }),
-        declaration: { declaredVersion: ">=1.2 <2", resolvedVersion: "1.2.3" },
+        declaration: {
+          declaredVersion: ">=1.2 <2",
+          resolvedVersion: "1.2.3",
+          manifestPath: "package.json"
+        },
         granularity: "minor_and_patch"
       })
     ).toMatchObject({ due: false, reason: "declaration_not_composable" });
@@ -374,9 +419,131 @@ describe("planBump — what the bump would SAY, and every refusal that names its
     expect(
       planBump({
         line: npmLine({ latestVersion: "1.4.0" }),
-        declaration: { declaredVersion: "latest", resolvedVersion: "latest" },
+        declaration: {
+          declaredVersion: "latest",
+          resolvedVersion: "latest",
+          manifestPath: "package.json"
+        },
         granularity: "minor_and_patch"
       })
     ).toMatchObject({ due: false, reason: "declared_version_not_comparable" });
+  });
+
+  it("refuses a DUE bump into a file this build's editor may not write, BEFORE any container", () => {
+    // M21.7. A `values.yaml` image is inventoried, subscribable and polled — the head IS observed —
+    // and the write allowlist stays closed on it, because the runner's verifier requires the single
+    // changed line to name the coordinate and in `image: {repository, tag}` it does not. Refused
+    // here so the Decision carries a reason an operator can act on; dispatched, it would come back
+    // as the plugin's own `not_a_known_manifest`, which reads as a broken runner.
+    const plan = planBump({
+      line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
+      declaration: {
+        declaredVersion: "3.18.0",
+        resolvedVersion: "3.18.0",
+        manifestPath: "chart/values.yaml"
+      },
+      granularity: "minor_and_patch"
+    });
+    expect(plan).toMatchObject({ due: false, reason: "manifest_not_editable_in_this_build" });
+    // The detail must say the bump WAS due: "there is nothing to do" and "there is something to do
+    // that this build cannot do" are different operator stories behind the same absent pull request.
+    expect(plan).toMatchObject({ detail: expect.stringContaining("3.19.1") });
+    expect(plan).toMatchObject({
+      detail: expect.stringContaining("still inventoried and still polled")
+    });
+  });
+
+  it("NEGATIVE CONTROL: the same line and versions in a Dockerfile ARE due", () => {
+    // Without this, the assertion above is satisfied by a `planBump` that refuses every oci bump.
+    expect(
+      planBump({
+        line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.19.1" }),
+        declaration: {
+          declaredVersion: "3.18.0",
+          resolvedVersion: "3.18.0",
+          manifestPath: "chart/Dockerfile"
+        },
+        granularity: "minor_and_patch"
+      })
+    ).toEqual({ due: true, fromVersion: "3.18.0", toVersion: "3.19.1" });
+  });
+
+  it("the editability question is asked LAST — a bump that is not due reports why it is not due", () => {
+    // Asking it earlier would replace an accurate "already at head" with a refusal about a file
+    // nobody wanted to write, on every poll, forever.
+    expect(
+      planBump({
+        line: npmLine({ ecosystem: "oci", major: "3", latestVersion: "3.18.0" }),
+        declaration: {
+          declaredVersion: "3.18.0",
+          resolvedVersion: "3.18.0",
+          manifestPath: "chart/values.yaml"
+        },
+        granularity: "minor_and_patch"
+      })
+    ).toMatchObject({ due: false, reason: "already_at_or_ahead_of_head" });
+  });
+});
+
+/**
+ * THE WRITE ALLOWLIST, PINNED ACROSS THE TWO MODULES THAT RESTATE IT.
+ *
+ * `manifestIsEditableInThisBuild` (server) and `manifestParserFor` (`@scp/plugin-managed-dep`'s
+ * `MANIFEST_MATCHERS`) are the same closed set written twice — the convention `BUMP_BRANCH_PREFIX`
+ * already follows, because the server may not take a build-time dependency on a plugin package.
+ * Two copies of an allowlist is precisely the incomplete-census shape, so this is where they are
+ * proven equal, IN BOTH DIRECTIONS: a path the server would let through and the plugin refuses is a
+ * wasted container and a misleading verdict; a path the server refuses and the plugin would accept
+ * is a bump this build silently stops authoring.
+ */
+describe("the write allowlist, pinned across the two modules that restate it", () => {
+  const CASES: ReadonlyArray<readonly [string, string]> = [
+    ["npm", "package.json"],
+    ["npm", "src/package.json"],
+    ["npm", "package-lock.json"],
+    ["npm", "values.yaml"],
+    ["go", "go.mod"],
+    ["go", "go.sum"],
+    ["go", "Dockerfile"],
+    ["maven", "pom.xml"],
+    ["maven", "build.gradle"],
+    ["python", "pyproject.toml"],
+    ["python", "requirements.txt"],
+    ["python", "requirements-dev.txt"],
+    ["python", "poetry.lock"],
+    ["oci", "Dockerfile"],
+    ["oci", "Containerfile"],
+    ["oci", "Dockerfile.prod"],
+    ["oci", "api.Dockerfile"],
+    ["oci", "chart/values.yaml"],
+    ["oci", "values.yaml"],
+    ["oci", "deployment.yaml"],
+    ["oci", "kustomization.yaml"]
+  ];
+
+  it("the server's answer matches the plugin's, accept AND refuse, for every spelling", async () => {
+    const { manifestParserFor } = await import("@scp/plugin-managed-dep");
+    for (const [ecosystem, path] of CASES) {
+      let pluginAccepts = true;
+      try {
+        manifestParserFor(ecosystem as Parameters<typeof manifestParserFor>[0], path);
+      } catch {
+        pluginAccepts = false;
+      }
+      expect(
+        manifestIsEditableInThisBuild(ecosystem, path),
+        `${ecosystem} ${path}: the server and the plugin disagree about whether this file may be written`
+      ).toBe(pluginAccepts);
+    }
+  });
+
+  it("NEGATIVE CONTROL: the two lists are not both 'yes' — `values.yaml` is refused by both", async () => {
+    // Otherwise the pinning above is satisfied by two functions that accept everything, and the
+    // fail-closed property this whole seam exists for would be untested.
+    const { manifestParserFor } = await import("@scp/plugin-managed-dep");
+    expect(manifestIsEditableInThisBuild("oci", "chart/values.yaml")).toBe(false);
+    expect(() => manifestParserFor("oci", "chart/values.yaml")).toThrow();
+    // And it is not refusing everything either.
+    expect(manifestIsEditableInThisBuild("oci", "Dockerfile")).toBe(true);
   });
 });
