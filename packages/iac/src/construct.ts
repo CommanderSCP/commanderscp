@@ -421,6 +421,26 @@ function defineResourceConstruct(
 export const Service = defineResourceConstruct("service");
 export const Domain = defineResourceConstruct("domain");
 export const Team = defineResourceConstruct("team");
+/**
+ * A policy (server-side object type `"policy"`) — first-class in a stack since M21.6 so that a
+ * DEPENDENCY SUBSCRIPTION, which IS a `dependencySubscription` effect on an ordinary policy
+ * (ADR-0032 §3a) and has no bespoke construct or verb anywhere, can be declared in IaC:
+ *
+ *   new Policy(stack, "checkout-deps", {
+ *     name: "checkout-deps",
+ *     properties: {
+ *       enforcement: "advisory",
+ *       scope: { objectRef: "urn:scp:…:component:checkout-api" },
+ *       effects: [{ dependencySubscription: { enabled: true, granularity: "minor_and_patch" } }]
+ *     }
+ *   });
+ *
+ * The properties travel VERBATIM into the manifest (the policy document is validated server-side by
+ * the type's JSON Schema at plan/apply, exactly as through `POST /policies`); a sole `group` scope
+ * on a dependencySubscription policy is refused there in both directions (ADR-0032 §6a). Uniform —
+ * no custom constructor logic — so it belongs in the factory list, not beside `Component`.
+ */
+export const Policy = defineResourceConstruct("policy");
 
 export interface ComponentProps extends ResourceProps {
   /**

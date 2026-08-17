@@ -54,6 +54,11 @@ import type {
   DependencySubscriptionContribution,
   DependencySubscriptionResolutionResponse,
   DependencySubscriptionUnlock,
+  // M21.6 — the component-scoped dependency READ surface (inventory + bumps).
+  ComponentDependencyBump,
+  ComponentDependencyBumpsResponse,
+  ComponentDependencyInventoryResponse,
+  ComponentDependencyInventoryRow,
   // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
   OutpostConfig,
   OutpostConfigReconcileResult,
@@ -643,6 +648,128 @@ export function dependencyInventoryBackfillRow(
     // column is the operator-visible receipt for "a disabled component is never fetched".
     reads: String(c.reads),
     detail: c.detail
+  };
+}
+
+/**
+ * The header lines of `scp dependency-subscriptions inventory` (M21.6) — the envelope BEFORE the
+ * rows: which component, whether an ingestion attempt is on record, and the component-level
+ * ingestion gate. Exported and pure for the reason `cli-absent-formatters.test.ts` records.
+ *
+ * `null` IS "NOT RECORDED", NEVER "NOTHING". A null `ingestion` stamp is "no ingestion attempt is
+ * on record" — the wire cannot yet distinguish that from "never attempted" (the stamp's read path
+ * is the M21.7 session's), so this prints `not recorded` and never `never ingested`; a null
+ * `lastIngestionDecision` is "no ingestion Decision exists" (never ingested, OR refused as
+ * not-enabled / not-addressable / superseded, none of which write one). Neither is "no
+ * dependencies", and an empty `rows` beside them is UNKNOWN — the row printer's caller says so.
+ *
+ * `componentGate.reason` is a THIRD vocabulary (`enabled | instance_locked |
+ * no_enabling_contribution`), distinct from a row's `subscription.reason`; it is printed under its
+ * own label so the two are never read as one.
+ */
+export function dependencyInventoryHeaderLines(
+  response: ComponentDependencyInventoryResponse
+): string[] {
+  const lines: string[] = [];
+  lines.push(`component: ${response.component.name} (${response.component.id})`);
+  const stamp = response.ingestion;
+  if (isAbsent(stamp)) {
+    lines.push("ingestion: not recorded");
+  } else {
+    lines.push(
+      `ingestion: ${stamp.outcome} at ${stamp.lastAttemptAt} (${stamp.source}), ` +
+        `${stamp.rowsWritten} row(s) written` +
+        (stamp.manifests.length > 0
+          ? "; manifests: " +
+            stamp.manifests
+              .map((m) => `${m.path}=${m.outcome}${m.detail ? ` (${m.detail})` : ""}`)
+              .join(", ")
+          : "")
+    );
+  }
+  const decision = response.lastIngestionDecision;
+  if (isAbsent(decision)) {
+    lines.push("last ingestion decision: none on record");
+  } else {
+    lines.push(
+      `last ingestion decision: ${decision.decisionId} first observed ${decision.firstObservedAt}; ` +
+        `read [${decision.manifestPathsRead.join(", ")}] absent [${decision.manifestPathsAbsent.join(", ")}] ` +
+        `skipped ${decision.skipped.length}` +
+        (decision.skipped.length > 0
+          ? ` (${decision.skipped.map((s) => `${s.path}: ${s.reason}`).join(", ")})`
+          : "")
+    );
+  }
+  const gate = response.componentGate;
+  lines.push(
+    `component gate: ${gate.reason} (enabled=${String(gate.enabled)}, ${gate.contributions.length} contribution(s))`
+  );
+  return lines;
+}
+
+/**
+ * ONE ROW of `scp dependency-subscriptions inventory` (M21.6): one (major line × dependency
+ * manifest) declaration with the line's observed head and its resolved dependency subscription.
+ *
+ * The coordinate is printed VERBATIM (`@acme/lib` is not `acme-lib`; case and punctuation decide
+ * which package an opt-out named). `resolvedVersion: null` is "the manifest pins none" and
+ * `head.latestVersion: null` is "not observed" — never "nothing newer" — both print `-`, the CLI's
+ * absent-value convention. `granularity`/`delivery` are meaningful ONLY when the subscription is
+ * enabled, so they are shown only then; an `ignored` contribution (a malformed or unevaluable
+ * opt-out that admitted to NEITHER side — it fails OPEN) is surfaced in the REASON column rather
+ * than dropped, because hiding it hides exactly the opt-out that silently did not apply.
+ */
+export function dependencyInventoryRow(
+  row: ComponentDependencyInventoryRow
+): Record<string, string> {
+  const s = row.subscription;
+  const ignored = (s.contributions ?? []).filter((c) => c.contributed === "ignored");
+  const ignoredNote =
+    ignored.length > 0
+      ? ` (+${ignored.length} ignored: ${ignored.map((c) => c.ignoredReason ?? "?").join(", ")})`
+      : "";
+  // `head` is required on the wire, but a printer that reads through an omitted key crashes on the
+  // exact row it was asked to show — read it once, guarded, like every other absent-value site.
+  const latest = row.head?.latestVersion;
+  return {
+    ecosystem: row.line.ecosystem,
+    coordinate: row.line.coordinate,
+    major: row.line.major,
+    manifest: row.manifestPath,
+    declared: row.declaredVersion,
+    resolved: isAbsent(row.resolvedVersion) ? "-" : row.resolvedVersion,
+    latest: isAbsent(latest) ? "-" : latest,
+    subscription: s.enabled
+      ? `enabled (${isAbsent(s.granularity) ? "?" : s.granularity}, ${isAbsent(s.delivery) ? "?" : s.delivery})`
+      : "not enabled",
+    reason: `${s.reason}${ignoredNote}`
+  };
+}
+
+/**
+ * ONE ROW of `scp dependency-subscriptions bumps` (M21.6): a bump SCP authored for the component.
+ *
+ * Progress is `pullRequestNumber` (opened), `mergedAt` (the provider confirmed the merge) and the
+ * merge Decision's verdict — never the change's `state`, which sits at `proposed` for a bump's
+ * whole life. `pullRequestUrl` is printed ONLY when the server sent one; it is NEVER composed from
+ * `repo` + number (the provider is not known here, and a guessed link is a fabricated record).
+ * `mergedAt: null` prints `-`, not "open": the provider has not confirmed a merge, which is all
+ * that is known. `delivery` is what the dispatch RESOLVED TO — the first look is always
+ * `pull_request` — and `-` when no dispatch Decision is on record.
+ */
+export function dependencyBumpRow(bump: ComponentDependencyBump): Record<string, string> {
+  const pr = isAbsent(bump.pullRequestNumber)
+    ? "-"
+    : `#${bump.pullRequestNumber}${isAbsent(bump.pullRequestUrl) ? "" : ` ${bump.pullRequestUrl}`}`;
+  return {
+    coordinate: bump.line.coordinate,
+    "from -> to": `${bump.fromVersion} -> ${bump.toVersion}`,
+    manifest: bump.manifestPath,
+    pr,
+    dispatched: bump.dispatchedAt,
+    merged: isAbsent(bump.mergedAt) ? "-" : bump.mergedAt,
+    verdict: isAbsent(bump.merge) ? "-" : bump.merge.verdict,
+    delivery: isAbsent(bump.delivery) ? "-" : bump.delivery
   };
 }
 
@@ -3656,6 +3783,103 @@ export function buildProgram(): Command {
         );
       }
     );
+
+  // M21.6 — the component-scoped dependency READ surface: what a component DECLARES (its inventory
+  // rows, each with the line's observed head and its resolved dependency subscription), and the
+  // bumps SCP authored for it. Two READ verbs; neither authors anything, so the closed list in
+  // dependency-subscription-cli.test.ts grows by exactly these two and still has no `subscribe`.
+  depSubsCmd
+    .command("inventory")
+    .description(
+      "Show a component's dependency inventory — one row per (major line × dependency manifest) with the line's observed head and the resolved dependency subscription for THIS caller. A null ingestion stamp means NOT RECORDED, never 'no dependencies'"
+    )
+    .requiredOption("--component <idOrUrn>", "component id or URN")
+    .option(
+      "--ecosystem <ecosystem>",
+      "show only this ecosystem's rows (npm|go|maven|python|oci); a display filter over the fetched page"
+    )
+    .option("--limit <n>", "rows per page (default 100, max 200)")
+    .option("--cursor <cursor>", "continue from a previous page's nextCursor")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          component: string;
+          ecosystem?: string;
+          limit?: string;
+          cursor?: string;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencySubscriptions.inventory(opts.component, {
+          ...(opts.limit !== undefined ? { limit: Number(opts.limit) } : {}),
+          ...(opts.cursor !== undefined ? { cursor: opts.cursor } : {})
+        });
+        // A DISPLAY filter, applied after the read: the route pages by line id and has no
+        // ecosystem query, so filtering here narrows what is shown, not what was fetched.
+        const rows =
+          opts.ecosystem === undefined
+            ? response.rows
+            : response.rows.filter((r) => r.line.ecosystem === opts.ecosystem);
+        if (opts.output === "json") {
+          console.log(JSON.stringify({ ...response, rows }, null, 2));
+          return;
+        }
+        for (const line of dependencyInventoryHeaderLines(response)) console.log(line);
+        console.log("");
+        if (rows.length === 0) {
+          // AN EMPTY PAGE IS NOT "NO DEPENDENCIES". Beside a null stamp and no Decision it is
+          // UNKNOWN; beside a recorded pass that read N manifests it is "declared nothing".
+          console.log(
+            "(no rows on record — read the ingestion lines above before reading this as 'no dependencies')"
+          );
+        } else {
+          printResult(rows, "table", (raw) =>
+            dependencyInventoryRow(raw as ComponentDependencyInventoryRow)
+          );
+        }
+        if (!isAbsent(response.nextCursor)) {
+          console.log("");
+          console.log(`more rows: --cursor ${response.nextCursor}`);
+        }
+      }
+    );
+
+  depSubsCmd
+    .command("bumps")
+    .description(
+      "Show the bumps SCP authored for a component, newest dispatch first — PR number, merge time and the merge gate's verdict. A PR link is printed only when the server stored one; it is never composed from repo + number"
+    )
+    .requiredOption("--component <idOrUrn>", "component id or URN")
+    .option("--limit <n>", "rows per page (default 100, max 200)")
+    .option("--cursor <cursor>", "continue from a previous page's nextCursor")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { component: string; limit?: string; cursor?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response: ComponentDependencyBumpsResponse = await client.dependencySubscriptions.bumps(
+        opts.component,
+        {
+          ...(opts.limit !== undefined ? { limit: Number(opts.limit) } : {}),
+          ...(opts.cursor !== undefined ? { cursor: opts.cursor } : {})
+        }
+      );
+      if (opts.output === "json") {
+        console.log(JSON.stringify(response, null, 2));
+        return;
+      }
+      console.log(`component: ${response.component.name} (${response.component.id})`);
+      // "(no results)" here is honest only about THIS commander's records: bumps are dispatched
+      // by a declared commander, so an outpost (or an undeclared role) has none by construction.
+      printResult(response.rows, "table", (raw) =>
+        dependencyBumpRow(raw as ComponentDependencyBump)
+      );
+      if (!isAbsent(response.nextCursor)) {
+        console.log("");
+        console.log(`more rows: --cursor ${response.nextCursor}`);
+      }
+    });
 
   // federation (M6 Federation Basics — DESIGN.md §13, BUILD_AND_TEST.md §8 M6). `export`/`import`
   // work on `.scpbundle` files on disk (the built-in file transport — "the air gap is the design

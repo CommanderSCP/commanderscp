@@ -13,6 +13,7 @@ export {
   Component,
   Domain,
   Team,
+  Policy,
   DeploymentTarget,
   Group,
   User,

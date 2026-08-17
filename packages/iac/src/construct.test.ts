@@ -9,6 +9,7 @@ import {
   Component,
   DeploymentTarget,
   Placement,
+  Policy,
   ReleaseTopology,
   Service,
   Stack,
@@ -565,5 +566,82 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
       manifest.objects.some((o) => o.typeId === "placement"),
       "declaring it as an object would hit the pair-bound refusal (#207) and write no derived edges"
     ).toBe(false);
+  });
+});
+
+/**
+ * M21.6 (proposal §3.3) — a dependency subscription is a `dependencySubscription` EFFECT on an
+ * ordinary `policy` object (ADR-0032 §3a); there is deliberately no bespoke construct or verb for
+ * it anywhere. So the IaC door is a first-class `Policy` construct whose `properties` travel
+ * VERBATIM into the manifest as a `typeId: "policy"` object — no schema change, because the
+ * manifest already accepts any typeId. This is also the DELETE-THE-WIRING gate for the export: drop
+ * `Policy` from index.ts and the import below is `undefined`, so `new Policy(...)` throws.
+ */
+describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a policy effect)", () => {
+  it("synthesizes a policy carrying a dependencySubscription effect as a `policy` object with the properties verbatim", () => {
+    const app = new App();
+    const stack = new Stack(app, "checkout-stack");
+    const svc = new Service(stack, "checkout", { name: "checkout" });
+    const api = new Component(stack, "checkout-api", { name: "checkout-api", service: svc });
+
+    const properties = {
+      enforcement: "advisory",
+      scope: { objectRef: api.urn },
+      effects: [
+        {
+          dependencySubscription: {
+            enabled: true,
+            granularity: "minor_and_patch",
+            delivery: "pull_request"
+          }
+        },
+        // An opt-out of ONE line, by the effect-level selector — the coordinate verbatim.
+        { dependencySubscription: { enabled: false, ecosystem: "npm", coordinate: "@acme/lib" } }
+      ]
+    };
+    new Policy(stack, "checkout-deps", { name: "checkout-deps", properties });
+
+    const manifest = stack.synth();
+    const policy = manifest.objects.find((o) => o.typeId === "policy");
+    expect(policy).toEqual({
+      urn: "urn:scp:checkout-stack:policy:checkout-deps",
+      typeId: "policy",
+      name: "checkout-deps",
+      properties,
+      labels: {}
+    });
+    // VERBATIM: the coordinate inside the effect is untouched (never slugified like the URN is).
+    const effects = (policy!.properties as typeof properties).effects;
+    expect(effects[1]!.dependencySubscription.coordinate).toBe("@acme/lib");
+    // Exactly one policy object; the component/service are still there beside it.
+    expect(manifest.objects.filter((o) => o.typeId === "policy")).toHaveLength(1);
+    expect(manifest.objects.map((o) => o.typeId).sort()).toEqual([
+      "component",
+      "policy",
+      "service"
+    ]);
+    // The manifest is valid input for `POST /plans` with no schema change.
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("is uniform: an explicit urn/domainId/labels pass through like every other resource construct", () => {
+    const app = new App();
+    const stack = new Stack(app, "s");
+    new Policy(stack, "p", {
+      name: "p",
+      urn: "urn:scp:acme:policy:hand-named",
+      domainId: "00000000-0000-4000-8000-000000000001",
+      labels: { owner: "platform" },
+      properties: { enforcement: "required", effects: [] }
+    });
+    const [obj] = stack.synth().objects;
+    expect(obj).toEqual({
+      urn: "urn:scp:acme:policy:hand-named",
+      typeId: "policy",
+      name: "p",
+      domainId: "00000000-0000-4000-8000-000000000001",
+      properties: { enforcement: "required", effects: [] },
+      labels: { owner: "platform" }
+    });
   });
 });
