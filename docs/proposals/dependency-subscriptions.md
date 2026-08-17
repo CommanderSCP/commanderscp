@@ -104,6 +104,17 @@ survive; several of them contradict the obvious design.
   `object_type_upsert` journal kind.
 - The charter requires a disconnected domain to keep operating, so a **commander-only dependency
   database is a charter conflict**, not merely an availability concern.
+  > **OVERTAKEN 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner
+  > decision.** ALL dependency automation is commander-only and outposts hold no dependency
+  > inventory. This bullet is preserved because it is the strongest form of the argument that was
+  > overturned, and because the clause it produced (ADR-0032 §3's "each domain derives its own") is
+  > cited by both loop module docs and by §4a clause 7. What it misreads: a disconnected domain
+  > keeps **operating** — it deploys, gates, coordinates and receives promotions exactly as before —
+  > it merely never ORIGINATES a dependency bump, which is a capability it does not need, because
+  > the resulting change is pushed down the global pipeline the commander manages. Dependency
+  > automation exists to pull from **public** repositories, which a disconnected domain cannot reach
+  > in any case. The real cost is narrower and §7d states it: dependencies declared in
+  > **domain-specific repositories the commander never sees** are out of scope.
 
 **Bulk graph writes are measured to be expensive.**
 
@@ -301,6 +312,15 @@ So the split is:
 - **subscription + enablement** (declared config, low-churn, must reach outposts) → **graph object**,
   federates.
 
+> **Amended 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner decision.**
+> The **second** bullet is unchanged: the subscription is a graph object, it federates, and an
+> outpost still receives it. The **first** is half-retired — the inventory is still a projection
+> table that does not federate, but it is **not** per-domain and no domain but the commander derives
+> one. All dependency automation is commander-only, because the feature pulls from **public**
+> repositories and an outpost never originates a bump — it receives the resulting change down the
+> commander's global pipeline. Accepted cost: dependencies declared in outpost-only repositories are
+> out of scope.
+
 This split is what lets a disconnected domain keep operating (§2's charter conflict) while keeping the
 commander the source of truth for the policy.
 
@@ -335,6 +355,15 @@ Three properties of that path matter:
   domain-local work**, by ADR-0031's design. Domain-local internal dependencies are therefore
   domain-visible only. That is correct, and it must be stated rather than discovered later.
 
+> **Amended 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner decision.**
+> Internal detection is **commander-only**, so "domain-visible only" is now the weaker statement:
+> a domain-local release's head is recorded **nowhere**, and domain-local internal dependencies are
+> out of scope. The same reversal costs the ingress its reach into outposts generally — a commander
+> receives `change_status` journal entries and **not** `change_wave_targets`/`observed_state.images`,
+> so an internal line whose component releases to prod only at an outpost keeps a **NULL**
+> `latest_version`, which is an honest "not observed" rather than a wrong version. Both are stated
+> costs of the decision, not oversights in it.
+
 ### 6.2 Third-party — the daily check, and the air-gap shape
 
 The requirement says once per day. The charter says no runtime network calls to the outside world, and
@@ -354,6 +383,15 @@ the chart ships default-deny egress. Both can hold, because they are different d
 — `config.federationRole` is install-time and `self_domain.role` is per-org and advisory — so a job
 dropped into `main.ts`'s background block **runs on air-gapped outposts too**. The job needs an
 explicit guard, and the guard needs a test.
+
+> **Widened 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner decision.**
+> This is no longer only about "the daily job". **NO dependency job runs anywhere but the
+> commander** — inventory ingestion, internal release detection, the poll, the bump dispatcher and
+> the auto-merge gate — and every one of them is fail-closed on an undeclared `SCP_FEDERATION_ROLE`.
+> The reason above (an unguarded timer dialing the public internet from an air-gapped site) is still
+> true of the poll, but it is not the reason for the others: dependency automation exists to pull
+> from **public** repositories, which an outpost has no need to do, because the resulting change is
+> pushed down the global pipeline the commander manages.
 
 Cadence follows the shipped idiom: a self-rescheduling pg-boss tick with `startAfter` + `singletonKey`
 (there is no `boss.schedule` usage to copy), and it must run under `SCP_ROLE=all|worker`.
@@ -546,8 +584,9 @@ Each item names the test file, is mutation-proven, and carries a negative contro
   recursive CTE is reachable from the dependency path (the measured 5s/408 hazard).
 - **`depends_on` is untouched** — a test asserting package dependencies mint **no** `depends_on` edge,
   so the plan compiler's toposort and cycle check cannot see them.
-- **Daily job does not run on outposts** — an explicit role-guard test; negative control that it **does**
-  run on a commander.
+- **NO dependency job runs on an outpost** ([ADR-0032](../adr/0032-dependency-subscriptions.md) §7d,
+  owner decision 2026-08-17; this read "daily job" and covered only the poll) — an explicit
+  role-guard test per job, with the negative control that each **does** run on a declared commander.
 - **No Decision write amplification** — a two-tick test asserting the second identical poll writes **zero**
   new Decision rows (`insertDecisionIfChanged`).
 - **Air-gap** — a test that with no index plugin and no operator-loaded feed, third-party detection

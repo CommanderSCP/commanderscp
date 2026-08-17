@@ -1,6 +1,6 @@
 # ADR-0032: Dependency subscriptions — a declared inventory, a three-level enablement chain, and a managed bump actuator
 
-**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13. **The §8 actuator is now BUILT (M21.5, 2026-08-16) on the charter amendment it was contingent on (approved 2026-08-13, qualified 2026-08-15); §8a–§8f are that build's own normative clauses, every one of them a defect an adversarial review found in a component that was correct and had no caller.** **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.** **Amended 2026-08-16 (§3a-i): §3a's own attachment clause was wrong — a subscription is attached by the policy's `properties.scope`, not by the `governed_by` edge §3a named; the ADR now agrees with the code comment that caught it.**
+**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13. **The §8 actuator is now BUILT (M21.5, 2026-08-16) on the charter amendment it was contingent on (approved 2026-08-13, qualified 2026-08-15); §8a–§8f are that build's own normative clauses, every one of them a defect an adversarial review found in a component that was correct and had no caller.** **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.** **Amended 2026-08-16 (§3a-i): §3a's own attachment clause was wrong — a subscription is attached by the policy's `properties.scope`, not by the `governed_by` edge §3a named; the ADR now agrees with the code comment that caught it.** **Amended 2026-08-17 (§7d), owner decision: ALL DEPENDENCY AUTOMATION IS COMMANDER-ONLY. The federation-axis verdict §3, §4a clause 7 and §7c clause 3 reached is REVERSED — outposts run no dependency job and hold no dependency inventory, and dependencies declared in outpost-only repositories are out of scope. Those clauses are preserved verbatim and marked; §7d holds the reasoning.**
 **Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (the four-arm ownership test and six-gate boundary test this feature must pass); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (SCP stores no SBOM bytes); [ADR-0016](0016-scoped-scan-requirement-policies.md) (the multi-tier resolution shape reused here); [ADR-0022](0022-outpost-config-authority-split.md) (commander-declared config must be a graph object to reach an outpost); [ADR-0028](0028-stage-scoped-component-coupling.md) (`provides`/`requires` — prior art for the wait predicate); [ADR-0030](0030-dev-branch-pipelines.md) §2 (declared, never inferred); [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local work does not journal)
 
@@ -56,6 +56,11 @@ DESIGN §5's closure-table escape hatch.
 - **Inventory** (`dependency_lines`, `component_dependencies`) is derived, per-domain, high-churn
   observation data — the category `change_source_events` and `object_health` already occupy. It is a
   projection table, it does not federate, and each domain derives its own.
+  > **Amended 2026-08-17 — see §7d.** "It is a projection table, it does not federate" is unchanged
+  > and is still what justifies the principle-2 bend. **"Each domain derives its own" is no longer
+  > true**: the inventory is derived on the **commander only**, and an outpost holds none. The
+  > original wording is kept because §4a clause 7 and §7c clause 3 both reason *from* it, and §7d is
+  > only legible beside what it reverses.
 - **Dependency subscription and its enablement** are declared config that must reach outposts, so they
   are a **graph object** riding `object_upsert` (ADR-0022 clause 2).
 
@@ -289,7 +294,14 @@ this" is not the same claim as "this happens".
    change forever. A selector naming no ecosystem now expands to one witness per real ecosystem, and
    the existential stays exact in both directions.
 
-7. **THE ROLE GUARD MATCHES INTERNAL DETECTION, DERIVED FROM INGESTION'S OWN FACTS.** The process
+7. **THE ROLE GUARD MATCHES INTERNAL DETECTION, DERIVED FROM INGESTION'S OWN FACTS.**
+   > **REVERSED 2026-08-17 by §7d (owner decision). Ingestion is COMMANDER-ONLY.** The clause is
+   > preserved verbatim below, not rewritten, because it argues the opposite conclusion in detail
+   > and a reader has to be able to see exactly which step §7d rejects (it is the last sentence: a
+   > per-domain inventory was treated as the goal rather than as a substrate for a bump only the
+   > commander can author).
+
+   *The original clause, preserved:* The process
    axis applies (background work belongs to `all`/`worker`). The federation axis does not: §7c
    clause 3 makes the poll commander-only because it **dials public package registries on a timer**,
    while ingestion initiates no timed egress and reads through the git binding this domain's
@@ -420,7 +432,10 @@ objects that do not exist yet.
   change's wave targets → `deployment-target.properties.environment === 'prod'` → the component placed
   there → the lines it **declares** it publishes. Rollback changes auto-accept and are **not** releases.
   Domain-local changes do not journal (ADR-0031), so domain-local internal dependencies are
-  domain-visible only — stated, not discovered later.
+  domain-visible only — stated, not discovered later. **Amended 2026-08-17 (§7d): this is now
+  stronger than "domain-visible only". Detection runs on the commander only, so a domain-local
+  release's head is recorded NOWHERE, and domain-local internal dependencies are out of scope
+  on the same terms as outpost-only repositories.**
 - **Third-party** — a daily self-rescheduling tick (there is no `boss.schedule` usage to copy) resolving
   versions through per-ecosystem **index plugins**, so the existing egress guard and host allowlist
   apply. The job is **explicitly role-guarded**: there is no trustworthy runtime commander/outpost
@@ -608,7 +623,14 @@ because "there is a function that does this" is not the same claim as "this happ
      population most likely to be air-gapped: an outpost predating the setting, or a chart that omits
      it. The poll therefore requires the role to be **explicitly declared**, and it logs when it
      ALLOWS as well as when it refuses: a posture that sends traffic must not be the invisible one.
-   - **Internal detection runs on EVERY federation role.** It initiates no timed egress, and the
+   - **Internal detection runs on EVERY federation role.**
+     > **REVERSED 2026-08-17 by §7d (owner decision). Internal detection is COMMANDER-ONLY, like
+     > every other job in this feature.** Preserved verbatim below because it is the most persuasive
+     > statement of the position §7d rejects, and because its *measurement* survives the reversal
+     > and becomes §7d's stated cost: the wave-target evidence really does exist only where the
+     > change executed, so a commander genuinely cannot see it.
+
+     *The original clause, preserved:* It initiates no timed egress, and the
      evidence it derives from — `change_wave_targets.status` / `observed_state.images` — exists only
      where the change EXECUTED, while a commander receives only `change_status` journal entries.
      Restricting it to a commander would make every outpost domain derive nothing forever, silently,
@@ -620,6 +642,74 @@ because "there is a function that does this" is not the same claim as "this happ
    symptom was a standing subprocess count that grows with TENANCY and never falls, held by a job
    that runs once a day. The sweep stops what it started, from a receipt reported by the code that
    started it rather than from a second derivation of which instances "should" be running.
+
+### 7d. AMENDMENT (2026-08-17) — ALL DEPENDENCY AUTOMATION IS COMMANDER-ONLY
+
+**Owner decision, taken directly, 2026-08-17.** It reverses the federation-axis verdict of §3's
+"each domain derives its own", §4a clause 7 and §7c clause 3's second bullet. Those three clauses
+are preserved above and marked rather than rewritten, because they argue the opposite position at
+length and persuasively — which is precisely the hazard: a reader who found only the new rule would
+have every reason to revert the guard.
+
+**The rule.** Inventory ingestion (§4a), internal release detection (§7), the third-party version
+poll (§7), the bump dispatcher (§8a) and the auto-merge gate (§8c) run on a **commander only**, and
+fail closed on an undeclared `SCP_FEDERATION_ROLE` (§7c clause 3's first bullet — that half is
+unchanged and now applies to all five). **An outpost runs no dependency job and holds no dependency
+inventory.** §8a clause 5 already reached this answer for the dispatcher; it stops being the
+exception and becomes the rule.
+
+**THE OWNER'S RATIONALE, which is the part that has to survive.** The point of dependency automation
+is to **pull from PUBLIC repositories** — to update things like Python library versions, CDK
+versions and base-image versions. **That is not needed from an outpost standpoint, because the
+resulting change gets pushed down the global pipeline the commander manages.** An outpost therefore
+never ORIGINATES a dependency bump; it RECEIVES the resulting change through the ordinary promotion
+path, exactly as it receives every other change. So the federation axis **does** apply to these
+jobs — which is the thing §7c clause 3 and both loop module docs denied in detail.
+
+**WHERE THE OLD REASONING WENT WRONG — the question, not the measurements.** §7c clause 3's facts
+hold and are not disputed: internal detection initiates no timed egress, and the evidence it derives
+from (`change_wave_targets.status` / `observed_state.images`) exists only where the change executed,
+while a commander receives only `change_status` journal entries. What it inferred from them —
+"restricting it to a commander would make every outpost domain derive nothing forever, silently" —
+treated a per-domain inventory as **the goal**. It is not the goal, it is a substrate. The only
+consumer of an inventory is a bump, and a bump is authored at the commander and nowhere else (§8a
+clause 5, decided before this and unchanged, because writing to a source repository with a
+credential is a thing an air-gapped or high-side outpost must never do). An outpost's
+`component_dependencies` therefore fed nothing that could ever act on it. This amendment removes a
+derivation, not an outcome anyone was receiving.
+
+**WHAT IS TRADED AWAY.** Stated plainly, so a reader who disagrees can weigh the actual cost:
+
+1. **Dependencies declared in DOMAIN-SPECIFIC repositories are OUT OF SCOPE for dependency
+   subscriptions** — outpost-only IaC/CaC that the commander never sees. **The owner accepted this
+   explicitly.** A component whose manifests live only in a repository the commander has no
+   `source_mappings` for gets no inventory, no subscription resolution and no bump. There is no
+   workaround here and none should be invented: the shape that would provide one is an outpost-side
+   job, which is the thing this decision removes.
+
+2. **An internal line whose evidence exists only at an outpost loses its head derivation.** §7b
+   clause 1 makes an internal line's head derivable *only* from the org's own accepted production
+   releases and forbids polling it, and §7c clause 3's own measurement says that evidence does not
+   reach a commander. Where a component releases to prod only at an outpost, its internal line's
+   `latest_version` stays NULL — which §7's schema note already defines as "not observed" and
+   explicitly **not** "nothing newer exists", so a subscriber sees an honest absence rather than a
+   wrong version (§7a rule 1's ordering of those two costs). This is a genuine reduction in what the
+   internal ingress can see, and it is a cost of the decision rather than an oversight in it.
+
+3. **Domain-local internal dependencies are out of scope**, on the same terms as (1) and for a
+   stronger reason than §7 originally recorded — see the amendment note there.
+
+4. **§3's "each domain derives its own" is retired.** The inventory is still a projection table that
+   **does not federate**, and that half is what justifies the principle-2 bend; what changes is that
+   it now exists in exactly one place and is derived from what that one place can see.
+
+**WHAT DOES NOT CHANGE, so this is not read wider than it is.** The subscription itself is a
+`dependencySubscription` effect on an ordinary `policy` object (§3a) and **still federates**, because
+`policy` does; an outpost still receives the declared config and journaling is untouched. The
+distinction this amendment draws is between the **declaration** (a graph object, federates,
+unchanged) and the **jobs and the projection tables they write** (commander-only, this clause).
+§6's enablement algebra, §7b's head rules, §8's actuator design and §8a–§8f's wiring clauses are all
+unaffected — none of them was ever a statement about which role runs them.
 
 ### 8. The actuator is a managed class — BUILT (M21.5, 2026-08-16; §8a–§8f are the build's own clauses)
 
@@ -698,6 +788,13 @@ and never installed — so the wiring is now normative rather than implied.
    never do — and internal detection runs on every role, so heads DO advance there. It is therefore
    commander-only AND **fail-closed on an undeclared `SCP_FEDERATION_ROLE`**, and it logs when it
    allows as well as when it refuses.
+   > **Amended 2026-08-17 — §7d.** The VERDICT stands unchanged and is now the rule rather than the
+   > strict end of a split field: every dependency job is commander-only and fail-closed on an
+   > undeclared role. Two premises above are stale. §7c clause 3's two jobs no longer "reach
+   > opposite verdicts", and "internal detection runs on every role, so heads DO advance there" is
+   > false — detection is commander-only, so heads advance only at the commander. The reason this
+   > clause gives is still this job's OWN, and is the one that would keep the guard here even if the
+   > shared rule were ever relaxed.
 
 6. **REFUSALS NEVER GUESS, AND EACH NAMES ITS OWN CAUSE** (§7b clause 6). An open range is refused
    rather than resolved (resolving is CI, §8); a declaration whose recorded resolved version is not a
@@ -1022,6 +1119,17 @@ heaviest parser.
   org's CI's problem.
 - **Principle 2 is bent**, and the boundary that justifies it (no transitive traversal) is a discipline
   that must be enforced by test, not by intention.
-- **Domain-local internal dependencies are invisible across domains** by ADR-0031's design.
+- **Domain-local internal dependencies are invisible across domains** by ADR-0031's design —
+  **and, since §7d (2026-08-17), are out of scope entirely**, because the detection that would
+  record their heads runs only on a commander.
+- **Outpost-only repositories are out of scope** (§7d clause 1, owner-accepted). Dependencies
+  declared in domain-specific IaC/CaC that the commander never sees receive no inventory, no
+  resolution and no bump. The whole feature is a commander concern: public indexes are pulled at the
+  commander, and the resulting change reaches an outpost down the ordinary promotion path rather
+  than being originated there.
+- **An internal line released to prod only at an outpost keeps a NULL head** (§7d clause 2). The
+  evidence a head is derived from exists only where the change executed, and a commander does not
+  receive it. That is an honest "not observed", never a wrong version — but it is a real loss of
+  reach relative to what M21.4 shipped.
 - The importer-tolerance question (proposal §10 Q6) remains open and may be a **prerequisite**: the
   subscription object type is new, and a not-yet-migrated outpost's channel is what is at risk.
