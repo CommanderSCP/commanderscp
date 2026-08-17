@@ -1043,7 +1043,7 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
       `scp-managed-dep: '${coordinate}' in '${path}' carries no declared version text on ${fromDeclared === undefined ? "the base" : "the edited"} side`
     );
   }
-  // A TAG MOVED WHILE ITS DIGEST STAYED — the bump that silently changes nothing (ADR-0032 §8h).
+  // A TAG MOVED WHILE ITS DIGEST STAYED — the bump that silently changes nothing (ADR-0032 §8i).
   //
   // Both `oci` spellings can pin twice: `FROM alpine:3.19@sha256:…` in a Dockerfile, and
   // `{repository, tag, digest}` in a chart's values. Where both are present the digest WINS —

@@ -496,7 +496,7 @@ describe("the change must be confined to the version text", () => {
 });
 
 /**
- * ADR-0032 §8h — THE EDIT THAT IS STRUCTURALLY PERFECT AND OPERATIONALLY A NO-OP.
+ * ADR-0032 §8i — THE EDIT THAT IS STRUCTURALLY PERFECT AND OPERATIONALLY A NO-OP.
  *
  * Every other refusal in this file is about an edit that would change TOO MUCH. This one is about
  * an edit that changes nothing that runs: where a declaration is pinned by a tag AND a digest, the

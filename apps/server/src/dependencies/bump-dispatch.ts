@@ -276,7 +276,7 @@ export type BumpRefusalReason =
    *  admits exactly one — and a container runtime resolves by digest whenever one is present. So
    *  the edit would change the manifest and NOT the image that runs: a pull request that reads as
    *  an upgrade, delivers nothing, and leaves the file saying two different things about which
-   *  release it wants. Refused HERE, before a credential is minted (ADR-0032 §8h). */
+   *  release it wants. Refused HERE, before a credential is minted (ADR-0032 §8i). */
   | "declaration_pinned_by_digest"
   /** A bump IS due, and this build's runner cannot author into a file of this KIND. Refused HERE so
    *  the reason is legible on the Decision, instead of after a container round trip that ends in the
@@ -390,7 +390,7 @@ export function planBump(input: {
       detail: `substituting '${head}' for '${resolved}' in '${declared}' changes nothing`
     };
   }
-  // A DECLARATION PINNED TWICE (ADR-0032 §8h). `alpine:3.19@sha256:…` in a Dockerfile and
+  // A DECLARATION PINNED TWICE (ADR-0032 §8i). `alpine:3.19@sha256:…` in a Dockerfile and
   // `{repository, tag, digest}` in a chart's values both name the release AND the bytes, and every
   // container runtime resolves by the DIGEST when one is present — the tag is then a label. So an
   // edit that moves the version text alone changes the manifest and not the image that runs: the

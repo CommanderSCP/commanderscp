@@ -503,7 +503,7 @@ describe("planBump — what the bump would SAY, and every refusal that names its
   });
 
   /**
-   * ADR-0032 §8h — A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG.
+   * ADR-0032 §8i — A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG.
    *
    * The defect this pins was silent and complete: the whole pipeline ACCEPTED a tag-only edit of
    * `{repository, tag, digest}` (and of `FROM alpine:3.19@sha256:…`), every verifier agreed, and the
