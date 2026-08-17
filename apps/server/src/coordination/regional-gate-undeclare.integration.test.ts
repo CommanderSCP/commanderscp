@@ -29,17 +29,22 @@ import { changes, changeWaveTargets, decisions } from "../db/schema.js";
  *   V2: PATCH `properties: {}`                          -> `triggered` on `fake-executor`, 0 blocks
  *   V3: DELETE the target after the change is proposed  -> `triggered` on `fake-executor`, 0 blocks
  *
- * MUTATION LOG — each applied ALONE against a green suite, then reverted:
+ * MUTATION LOG — each applied ALONE against a green suite, the run recorded, then reverted:
  *
- *   | mutation                                                     | cases that died          |
- *   |--------------------------------------------------------------|--------------------------|
- *   | delete `assertMayUndeclareRegionMembership` from `updateObject` | V1, V2, TYPED-PUT      |
- *   | delete it from `deleteObject`                                  | V3                     |
- *   | `declaresRegionMembership` reads `after` instead of `before`    | DECLARE-IS-FREE (control) |
+ *   | # | mutation                                                        | cases that died                 |
+ *   |---|-----------------------------------------------------------------|---------------------------------|
+ *   | 1 | delete `assertMayUndeclareRegionMembership` from `updateObject`  | V1, V2, TYPED-PUT               |
+ *   | 2 | delete it from `deleteObject`                                    | V3                              |
+ *   | 3 | swap `before`/`after` at the `updateObject` call site            | V1, V2, TYPED-PUT, DECLARE-IS-FREE |
+ *   | 4 | delete the `typeId !== "deployment-target"` early return         | SCOPE-GUARD (non-target)        |
  *
- * The `before`/`after` mutation is the point rather than bookkeeping: it is the direction the guard
- * depends on. Reading `after` would make ADDING a region declaration the privileged act and leave
- * REMOVING one free — the defect, inverted, with every other case still green.
+ * Two of these are the point rather than bookkeeping. **#1 does not kill V3 and #2 does** — the
+ * measured proof that `deleteObject` runs the refusal for itself rather than inheriting a choke
+ * point it never passes through; removing the ROW withdraws the target just as surely as blanking
+ * the property, and it is a different function. **#3 kills DECLARE-IS-FREE**, which is the control
+ * that the asymmetry is real: a delta read backwards makes ADDING a region declaration the
+ * privileged act and leaves REMOVING one free — the defect, inverted, and V3 stays green throughout
+ * so the suite would still look 10/11 healthy.
  */
 describe("M15.6: un-declaring a region is an authority act, not a field edit", () => {
   let server: ListeningTestServer;
