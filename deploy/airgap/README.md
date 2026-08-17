@@ -8,14 +8,26 @@ artifact.
 
 ## Bundle contents
 
+The **canonical list of images is [`src/bundle-images.ts`](src/bundle-images.ts)**, and everything
+else derives from it: the CLI's `--*-ref`/`--*-source` flags, the images actually copied, and the
+contents tree in the bundled `docs/OFFLINE_INSTALL.md`. For the live list run
+`pnpm --filter @scp/airgap bundle --list-images` (that command needs no version and no
+skopeo/cosign). Deliberately not restated below — a restated list is exactly what let
+`scp-runner-scan` and `scp-runner-dep` go two releases without ever being bundled (M21.7 item 1),
+leaving the managed-scan and managed-dep executors with no image to run on a disconnected install.
+`src/bundle-images.test.ts` now holds the list against `apps/runner-*`.
+
 ```
 scp-bundle-<version>/
   images/
-    scpd/                       OCI layout (skopeo-copyable) of the scpd image
-    scpd.digest                 its pinned manifest digest, sha256:<hex>
-    scpd.digest.sig             cosign signature over scpd.digest
-    scp-runner-iac/  + .digest / .digest.sig
-    postgres-eval/   + .digest / .digest.sig     (unmodified postgres:16, eval/compose use only)
+    <name>/                     OCI layout (skopeo-copyable) of each bundled image
+    <name>.digest               its pinned manifest digest, sha256:<hex>
+    <name>.digest.sig           cosign signature over <name>.digest
+                                <name> ∈ scpd; the three managed-execution runners
+                                (scp-runner-iac, scp-runner-scan, scp-runner-dep);
+                                postgres-eval; and the Mode B bundled backends
+                                (argocd, valkey, argo-workflows-cli,
+                                 argo-workflows-controller, argo-events, gitea)
   helm/                         The full Helm chart (copy of deploy/helm)
   compose/
     docker-compose.yml            original dev/eval file (builds from source — reference only)
@@ -36,22 +48,30 @@ Alongside the tarball (not inside it): `scp-bundle-<version>.tar.gz.sig` and a c
 ## Building a bundle
 
 ```bash
+# What must be present locally before you build (name, source transport, source ref):
+pnpm --filter @scp/airgap bundle --list-images
+
 pnpm --filter @scp/airgap bundle --version 1.0.0-rc \
   [--scpd-ref scp:dev] [--scpd-source docker-daemon] \
   [--runner-iac-ref scp-runner-iac:dev] [--runner-iac-source docker-daemon] \
+  [--runner-scan-ref scp-runner-scan:dev] [--runner-scan-source docker-daemon] \
+  [--runner-dep-ref scp-runner-dep:dev] [--runner-dep-source docker-daemon] \
   [--postgres-ref postgres:16] [--postgres-source docker-daemon] \
   [--out-dir dist-bundle]
 ```
+
+Every image gets a `--<stem>-ref`/`--<stem>-source` pair, generated from the canonical list — see
+`--help` for the Mode B backends' flags too.
 
 (No extra `--` before the flags — this pnpm version forwards `pnpm --filter <pkg> <script> <args>`
 straight through to the script's own argv. Adding an extra `--` gets forwarded LITERALLY as an
 argv token, which commander then treats as its own "end of options" marker and silently stops
 parsing flags — confirmed by testing both forms directly.)
 
-Requires `skopeo` (1.16+), `cosign` (2.x), and `tar` on `PATH` (BUILD_AND_TEST.md §1) plus the
-three source images already present in — or pullable by — the local Docker daemon. `--*-source
-docker` pulls from a registry instead of reading the local daemon (an explicit, operator-chosen
-network action, never automatic).
+Requires `skopeo` (1.16+), `cosign` (2.x), and `tar` on `PATH` (BUILD_AND_TEST.md §1) plus every
+source image `--list-images` names, already present in — or pullable by — the local Docker daemon.
+`--*-source docker` pulls from a registry instead of reading the local daemon (an explicit,
+operator-chosen network action, never automatic).
 
 Output: `<out-dir>/scp-bundle-<version>.tar.gz` (+ `.sig` + `cosign.pub` alongside it).
 

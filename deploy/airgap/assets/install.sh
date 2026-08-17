@@ -378,6 +378,39 @@ if [[ "$MODE" == "helm" ]]; then
   echo "   tag). This bundle still ships the eval postgres image (${POSTGRES_EVAL_RETARGETED_REF:-n/a})"
   echo "   in case you wire that up yourself; install.sh does not do it for you."
 
+  # ---- The other two managed-execution runners: PUSHED and PINNED above, but NOT switched on ----
+  #
+  # scp-runner-scan and scp-runner-dep ride every bundle (deploy/airgap/src/bundle-images.ts
+  # explains why unconditionally), and the generic BUNDLE_IMAGE_NAMES loops above have already
+  # verified, pushed and digest-re-confirmed them like every other image. What this script
+  # deliberately does NOT do is `--set` their images, the way it does managedIac.runnerImage.
+  #
+  # THE REASON IS THAT FOR BOTH OF THEM THE IMAGE SETTING *IS* THE ON/OFF CONTROL, not a detail of
+  # an already-enabled feature. managedIac has a separate `enabled` flag, so naming its image
+  # changes nothing on its own. managedDep has no such flag — `_helpers.tpl` gates the whole block
+  # on `managedDep.runnerImage` being non-empty (ADR-0032 §8e; "the default IS the control"), and
+  # this is the one managed class that WRITES to a user's repository. Setting it here would mean an
+  # air-gapped install silently switched on a repository-write actuator that a connected install of
+  # the same chart leaves off. Same for managed-scan's SCP_MANAGED_SCAN_RUNNER_IMAGE.
+  #
+  # So we print the exact digest-pinned refs and let the operator opt in. This is the difference
+  # between "the operator cannot enable it" (the M21.7 bug: no image existed offline at all) and
+  # "the operator has not enabled it" (a choice, which is what these defaults are for).
+  if [[ -n "${SCP_RUNNER_SCAN_DIGEST:-}" || -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
+    echo
+    echo "   MANAGED-EXECUTION RUNNERS pushed to your registry but NOT enabled (each one's image"
+    echo "   setting is that class's on/off control — see docs/OFFLINE_INSTALL.md). To enable,"
+    echo "   re-run with SCP_EXTRA_HELM_SET, or set the env var, using these exact pinned refs:"
+    if [[ -n "${SCP_RUNNER_SCAN_DIGEST:-}" ]]; then
+      echo "     scp-runner-scan  SCP_MANAGED_SCAN_RUNNER_IMAGE=${SCP_RUNNER_SCAN_RETARGETED_REF:-${REGISTRY}/scp-runner-scan:${BUNDLE_VERSION}@${SCP_RUNNER_SCAN_DIGEST}}"
+    fi
+    if [[ -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
+      echo "     scp-runner-dep   managedDep.runnerImage=${SCP_RUNNER_DEP_RETARGETED_REF:-${REGISTRY}/scp-runner-dep:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_DIGEST}}"
+      echo "                      (this class WRITES to your repositories — ADR-0032 §8)"
+    fi
+    echo
+  fi
+
   echo "   helm ${HELM_ARGS[*]}"
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "   [dry-run] not running helm upgrade --install (bundled backends this bundle would enable: ${#BUNDLED_APPLY[@]})"

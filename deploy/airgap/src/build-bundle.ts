@@ -6,10 +6,16 @@
  *
  * Run: `pnpm --filter @scp/airgap bundle -- --version 1.0.0-rc` (extra args after `--` are
  * commander's; see `--help` for the full flag list). Requires `skopeo`/`cosign`/`tar` on PATH —
- * see BUILD_AND_TEST.md §1. Reads the three source images from wherever they already are (local
- * Docker daemon by default — see `--*-source`); never pulls anything from the network unless
- * explicitly told to via `--*-source docker` (a deliberate, documented, operator-chosen pull —
- * not a phone-home).
+ * see BUILD_AND_TEST.md §1. Reads each source image from wherever it already is (local Docker
+ * daemon by default — see `--*-source`); never pulls anything from the network unless explicitly
+ * told to via `--*-source docker` (a deliberate, documented, operator-chosen pull — not a
+ * phone-home).
+ *
+ * WHAT THE BUNDLE CARRIES IS NOT DECIDED HERE. `bundle-images.ts` holds the canonical list, and
+ * this file derives BOTH its `--*-ref`/`--*-source` flags AND the images it copies from that one
+ * array — so a bundle cannot carry an image the CLI can't point at, and the CLI cannot advertise a
+ * flag for an image the bundle won't carry. `--list-images` prints the resolved list without
+ * touching skopeo, which is also how `bundle-images.test.ts` proves this wiring is live.
  */
 import { Command } from "commander";
 import { cp, mkdir, rm, writeFile, chmod, copyFile, readFile } from "node:fs/promises";
@@ -31,126 +37,86 @@ import {
   DESIGN_DOC,
   HELM_CHART_DIR
 } from "./repo-paths.js";
+import { BUNDLE_IMAGE_SPECS, optionKey, type ImageSourceType } from "./bundle-images.js";
 import type { BundleImage } from "./types.js";
 
 interface ImageSourceArg {
   name: string;
   ref: string;
-  sourceType: "docker-daemon" | "docker";
+  sourceType: ImageSourceType;
 }
 
-interface Opts {
-  version: string;
-  outDir: string;
-  scpdRef: string;
-  scpdSource: "docker-daemon" | "docker";
-  runnerIacRef: string;
-  runnerIacSource: "docker-daemon" | "docker";
-  postgresRef: string;
-  postgresSource: "docker-daemon" | "docker";
-  argocdRef: string;
-  argocdSource: "docker-daemon" | "docker";
-  valkeyRef: string;
-  valkeySource: "docker-daemon" | "docker";
-  argoWorkflowsCliRef: string;
-  argoWorkflowsCliSource: "docker-daemon" | "docker";
-  argoWorkflowsControllerRef: string;
-  argoWorkflowsControllerSource: "docker-daemon" | "docker";
-  argoEventsRef: string;
-  argoEventsSource: "docker-daemon" | "docker";
-  giteaRef: string;
-  giteaSource: "docker-daemon" | "docker";
-}
-
-function sourceTypeOption(value: string): "docker-daemon" | "docker" {
+function sourceTypeOption(value: string): ImageSourceType {
   if (value !== "docker-daemon" && value !== "docker") {
     throw new Error(`invalid source type '${value}' — expected "docker-daemon" or "docker"`);
   }
   return value;
 }
 
+/**
+ * Register one `--<stem>-ref` / `--<stem>-source` pair per canonical image — so the CLI can never
+ * advertise a flag for an image the bundle won't carry, nor omit one for an image it will.
+ */
+function registerImageOptions(program: Command): Command {
+  for (const spec of BUNDLE_IMAGE_SPECS) {
+    program
+      .option(`--${spec.optionStem}-ref <ref>`, spec.flagDescription, spec.defaultRef)
+      .option(`--${spec.optionStem}-source <type>`, "docker-daemon|docker", spec.defaultSource);
+  }
+  return program;
+}
+
+/** Resolve parsed commander options into the exact list of images the bundle will copy. */
+function resolveImageSources(raw: Record<string, string>): ImageSourceArg[] {
+  return BUNDLE_IMAGE_SPECS.map((spec) => ({
+    name: spec.name,
+    ref: raw[optionKey(spec.optionStem, "ref")]!,
+    sourceType: sourceTypeOption(raw[optionKey(spec.optionStem, "source")]!)
+  }));
+}
+
 async function main(): Promise<void> {
+  // `--list-images` answers "which images must be present locally before I can build?", a question
+  // that comes BEFORE picking a release version — so it must not trip --version's requiredOption
+  // check, which commander enforces inside parse() before any of this file's code runs.
+  const listImagesOnly = process.argv.includes("--list-images");
+
   const program = new Command();
   program
     .name("build-bundle")
-    .description("Build the CommanderSCP air-gap bundle (scp-bundle-<version>.tar.gz)")
-    .requiredOption("--version <version>", "bundle/release version, e.g. 1.0.0-rc")
+    .description("Build the CommanderSCP air-gap bundle (scp-bundle-<version>.tar.gz)");
+  const versionFlagDoc = "bundle/release version, e.g. 1.0.0-rc";
+  if (listImagesOnly) {
+    program.option("--version <version>", versionFlagDoc, "(not needed for --list-images)");
+  } else {
+    program.requiredOption("--version <version>", versionFlagDoc);
+  }
+  program
     .option(
       "--out-dir <dir>",
       "scratch/output directory",
       path.resolve(process.cwd(), "dist-bundle")
     )
-    .option("--scpd-ref <ref>", "scpd image reference to bundle", "scp:dev")
-    .option("--scpd-source <type>", "docker-daemon|docker", "docker-daemon")
     .option(
-      "--runner-iac-ref <ref>",
-      "scp-runner-iac image reference to bundle",
-      "scp-runner-iac:dev"
-    )
-    .option("--runner-iac-source <type>", "docker-daemon|docker", "docker-daemon")
-    .option("--postgres-ref <ref>", "eval postgres image reference to bundle", "postgres:16")
-    .option("--postgres-source <type>", "docker-daemon|docker", "docker-daemon")
-    .option(
-      "--argocd-ref <ref>",
-      "bundled Argo CD image (Mode B) to bundle",
-      "quay.io/argoproj/argocd:v3.4.5"
-    )
-    .option("--argocd-source <type>", "docker-daemon|docker", "docker")
-    .option(
-      "--valkey-ref <ref>",
-      "bundled Argo CD's Valkey cache image to bundle",
-      "valkey/valkey:8-alpine"
-    )
-    .option("--valkey-source <type>", "docker-daemon|docker", "docker")
-    .option(
-      "--argo-workflows-cli-ref <ref>",
-      "bundled Argo Workflows argocli image",
-      "quay.io/argoproj/argocli:v4.0.7"
-    )
-    .option("--argo-workflows-cli-source <type>", "docker-daemon|docker", "docker")
-    .option(
-      "--argo-workflows-controller-ref <ref>",
-      "bundled Argo Workflows controller image",
-      "quay.io/argoproj/workflow-controller:v4.0.7"
-    )
-    .option("--argo-workflows-controller-source <type>", "docker-daemon|docker", "docker")
-    .option(
-      "--argo-events-ref <ref>",
-      "bundled Argo Events image",
-      "quay.io/argoproj/argo-events:v1.9.10"
-    )
-    .option("--argo-events-source <type>", "docker-daemon|docker", "docker")
-    .option(
-      "--gitea-ref <ref>",
-      "bundled Gitea image (Mode B — the default unified registry)",
-      "docker.gitea.com/gitea:1.26.1-rootless"
-    )
-    .option("--gitea-source <type>", "docker-daemon|docker", "docker")
-    .parse(process.argv);
+      "--list-images",
+      "print the images this bundle would carry (name, source transport, source ref) and exit — " +
+        "no skopeo/cosign needed. Use it to work out which images must be present locally before a build."
+    );
+  registerImageOptions(program).parse(process.argv);
 
   const raw = program.opts<Record<string, string>>();
-  const opts: Opts = {
-    version: raw.version!,
-    outDir: raw.outDir!,
-    scpdRef: raw.scpdRef!,
-    scpdSource: sourceTypeOption(raw.scpdSource!),
-    runnerIacRef: raw.runnerIacRef!,
-    runnerIacSource: sourceTypeOption(raw.runnerIacSource!),
-    postgresRef: raw.postgresRef!,
-    postgresSource: sourceTypeOption(raw.postgresSource!),
-    argocdRef: raw.argocdRef!,
-    argocdSource: sourceTypeOption(raw.argocdSource!),
-    valkeyRef: raw.valkeyRef!,
-    valkeySource: sourceTypeOption(raw.valkeySource!),
-    argoWorkflowsCliRef: raw.argoWorkflowsCliRef!,
-    argoWorkflowsCliSource: sourceTypeOption(raw.argoWorkflowsCliSource!),
-    argoWorkflowsControllerRef: raw.argoWorkflowsControllerRef!,
-    argoWorkflowsControllerSource: sourceTypeOption(raw.argoWorkflowsControllerSource!),
-    argoEventsRef: raw.argoEventsRef!,
-    argoEventsSource: sourceTypeOption(raw.argoEventsSource!),
-    giteaRef: raw.giteaRef!,
-    giteaSource: sourceTypeOption(raw.giteaSource!)
-  };
+  const opts = { version: raw.version!, outDir: raw.outDir! };
+
+  // Resolved BEFORE the tool checks, so `--list-images` answers "what must I have locally?" on a
+  // machine that has neither skopeo nor cosign yet.
+  const images = resolveImageSources(raw);
+
+  if (raw.listImages) {
+    for (const image of images) {
+      process.stdout.write(`${image.name}\t${image.sourceType}:${image.ref}\n`);
+    }
+    return;
+  }
 
   if (!skopeo.skopeoAvailable()) {
     throw new Error("skopeo not found on PATH — see BUILD_AND_TEST.md §1 (skopeo 1.16+)");
@@ -158,34 +124,6 @@ async function main(): Promise<void> {
   if (!cosign.cosignAvailable()) {
     throw new Error("cosign not found on PATH — see BUILD_AND_TEST.md §1 (cosign 2.x)");
   }
-
-  const images: ImageSourceArg[] = [
-    { name: "scpd", ref: opts.scpdRef, sourceType: opts.scpdSource },
-    { name: "scp-runner-iac", ref: opts.runnerIacRef, sourceType: opts.runnerIacSource },
-    { name: "postgres-eval", ref: opts.postgresRef, sourceType: opts.postgresSource },
-    // Bundled executor backends (Mode B) — Argo CD + its Valkey cache. Ride the signed bundle like
-    // scp-runner-iac; pulled only by domains that enable bundledExecutor.argocd. install.sh
-    // retargets them onto bundledExecutor.argocd.image/.valkeyImage.
-    { name: "argocd", ref: opts.argocdRef, sourceType: opts.argocdSource },
-    { name: "valkey", ref: opts.valkeyRef, sourceType: opts.valkeySource },
-    {
-      name: "argo-workflows-cli",
-      ref: opts.argoWorkflowsCliRef,
-      sourceType: opts.argoWorkflowsCliSource
-    },
-    {
-      name: "argo-workflows-controller",
-      ref: opts.argoWorkflowsControllerRef,
-      sourceType: opts.argoWorkflowsControllerSource
-    },
-    { name: "argo-events", ref: opts.argoEventsRef, sourceType: opts.argoEventsSource },
-    // Bundled Gitea (Mode B — the DEFAULT unified registry, ADR-0012). Single image: Gitea runs
-    // self-contained on SQLite (chart v12.6.0 minimal profile — the only upstream busybox ref was
-    // the helm-test Pod, which is stripped from the vendored manifest). install.sh retargets it onto
-    // bundledExecutor.gitea.image. Harbor is REMOVED from the bundled stack; an existing Harbor is
-    // served via the import path (coordinated as an execution system), not bundled.
-    { name: "gitea", ref: opts.giteaRef, sourceType: opts.giteaSource }
-  ];
 
   const bundleDirName = `scp-bundle-${opts.version}`;
   const bundleRoot = path.join(opts.outDir, bundleDirName);

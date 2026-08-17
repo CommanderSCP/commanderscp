@@ -7,7 +7,23 @@
  * detail an air-gapped OPERATOR installing a pre-built bundle neither has nor needs. This file is
  * the thing an operator actually reads: what's in the tarball, how to verify it, how to run
  * install.sh, what "the same bundle is the upgrade package" means in practice.
+ *
+ * The `images/` listing is GENERATED from `bundle-images.ts` rather than written out here. It used
+ * to be prose, and prose drifted: it still named three images long after the bundle had grown to
+ * nine, and it never named `scp-runner-scan`/`scp-runner-dep` because the bundle never carried
+ * them (M21.7 item 1). An operator's inventory of what crossed the air gap is exactly the wrong
+ * thing to maintain by hand in a second place.
  */
+import { BUNDLE_IMAGE_SPECS } from "./bundle-images.js";
+
+/** The `images/` subtree of the contents listing, one entry per canonically-bundled image. */
+function renderImagesTree(): string {
+  const width = Math.max(...BUNDLE_IMAGE_SPECS.map((s) => s.name.length)) + 1;
+  return BUNDLE_IMAGE_SPECS.map(
+    (spec) => `    ${(spec.name + "/").padEnd(width + 1)}  ${spec.doc}`
+  ).join("\n");
+}
+
 export function renderOfflineInstallDoc(bundleVersion: string): string {
   return `# CommanderSCP air-gap bundle — offline install & upgrade
 
@@ -21,14 +37,10 @@ background on the project; neither is required reading to complete an install.
 
 \`\`\`
 scp-bundle-${bundleVersion}/
-  images/                   Every image this release needs, as OCI layout (skopeo-copyable)
-    scpd/                     api + worker + Web UI (the ghcr.io/commanderscp/scpd image)
-    scpd.digest               its pinned manifest digest (sha256:...)
-    scpd.digest.sig           cosign signature over scpd.digest
-    scp-runner-iac/            the isolated managed-IaC executor image (Mode 2 only)
-    scp-runner-iac.digest / .digest.sig
-    postgres-eval/             the unmodified postgres:16 image (evaluation/compose use only)
-    postgres-eval.digest / .digest.sig
+  images/                   Every image this release needs, as OCI layout (skopeo-copyable).
+                            Each <name>/ is accompanied by <name>.digest (its pinned manifest
+                            digest, sha256:...) and <name>.digest.sig (cosign signature over it).
+${renderImagesTree()}
   helm/                      The full Helm chart (deploy/helm) — production Kubernetes installs
   compose/
     docker-compose.yml          the original dev/eval file, for reference (builds from source — do NOT run this one offline)
@@ -95,6 +107,30 @@ Add \`--dry-run\` to perform every step above except the final \`helm upgrade\`/
 See \`install.sh --help\` for the full flag list, and its own header comment for the security
 rationale behind each step (it is deliberately not a script you should treat as trustworthy without
 reading — read it once before running it against a production system).
+
+## The managed-execution runner images (and why install.sh does not switch them on)
+
+The bundle carries all three ephemeral runner images — \`scp-runner-iac\`, \`scp-runner-scan\`,
+\`scp-runner-dep\` — unconditionally, so every managed-execution class is **installable** offline.
+It does not follow that any of them is **enabled**: each class is off until an operator names its
+image, and for two of the three THAT SETTING IS THE ONLY CONTROL, so \`install.sh\` deliberately
+does not set it for you. It pushes and digest-pins all three into your registry and then prints the
+exact refs, which you supply yourself:
+
+| Runner | What it does | How to enable |
+| --- | --- | --- |
+| \`scp-runner-iac\` | managed-IaC releases for orgs without a pipeline | \`managedIac.enabled=true\` — \`install.sh\` already sets \`managedIac.runnerImage\` for you |
+| \`scp-runner-scan\` | the commander's promotion-scan toolchain (trivy + oscap) | \`SCP_MANAGED_SCAN_RUNNER_IMAGE\` (no chart value yet — see \`helm/README.md\`) |
+| \`scp-runner-dep\` | the isolated manifest editor for dependency bumps | \`managedDep.runnerImage=<printed ref>\` — this class WRITES to your repositories |
+
+Pass the printed refs through \`install.sh\`'s \`SCP_EXTRA_HELM_SET\`, e.g.:
+
+\`\`\`bash
+SCP_EXTRA_HELM_SET="managedDep.runnerImage=<the ref install.sh printed>" ./install.sh ...
+\`\`\`
+
+Use the printed **digest-pinned** ref rather than a tag you compose yourself: the digest is the
+thing this bundle's signatures actually attest to, and a bare tag in your registry is mutable.
 
 ## What "the bundle is the upgrade package" means
 
