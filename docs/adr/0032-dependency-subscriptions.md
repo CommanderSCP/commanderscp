@@ -510,6 +510,49 @@ acting half at `:298`, the owning half at `:313` calling `ownedByGroupOrItsMembe
 Eleven sites carried the false claim and are corrected with this amendment; the 400 message a user
 reads (`dependencies/subscription-authoring-guard.ts`) is one of them.
 
+#### 6a-iii. Amended 2026-08-17 (M24) — the same census re-run for the `policy:write` guard, and completed
+
+§6a-i's census asked one question of the free-form-`typeId` doors: *does the group-scoped
+`dependencySubscription` refusal reach here?* It never asked the older question standing beside it —
+*does `isGovernanceManagedObjectType` reach here?* — which is exactly the failure mode §6a-i names one
+paragraph earlier ("that is the shape that produced the bug"). Re-run filterlessly over every call to
+`createObject`/`updateObject`/`upsertObjectByUrn`, **five** doors take a caller-chosen `typeId`, and
+**three** of them admitted a governance document without `policy:write`:
+
+| # | Door | `typeId` from | Before | After (M21.7) |
+|---|---|---|---|---|
+| 1 | `POST /federation/overlays` | `body.typeId` | `object:write` only — **live** | `policy:write` at org root |
+| 2 | `POST /discovery/accept` | `proposal.objects[]` | `object:write` only — **live** | type refused outright |
+| 3 | `{POST,PATCH,PUT,DELETE} /objects/{type}` | path param | type refused | unchanged (measured closed) |
+| 4 | `POST /plans` + `/plans/{id}/apply` | `manifest.objects[]` | `policy:write` + scope binding | unchanged (measured closed) |
+| 5 | `POST /federation/hand-fill` | `body.typeId` | `federation:write` only — latent | `policy:write` at org root |
+
+Doors 1 and 2 were reproduced end to end, not reasoned about: an Operator holding plain `object:write`
+at the org root and `policy:write` nowhere received **201** and a live, unscoped, `required` policy
+demanding a 99-of-Owner quorum — org-wide, since `listPolicyCandidates` selects every live `policy`
+row and an unscoped policy matches every target. Door 5 was not reachable through today's API, because
+`federation:write` and `policy:write` are granted to the same two built-in roles; that is a coincidence
+between two grant lists in two unrelated migrations which one org-defined role undoes, so it is closed
+too and its test builds that role rather than trusting the accident.
+
+Two remedy shapes, chosen per door by whether the type must stay serviceable there. **Overlay and
+hand-fill keep serving `policy`** and take the permission instead — DESIGN §13 makes both canonical
+(annotating a commander-distributed policy; hand-keying commander-origin config into an air-gapped
+outpost), and refusing the type would leave `assertPolicyOverlayOnlyAddsStrictness` dead. **Discovery
+refuses the type** for every caller including one holding `policy:write`: no plugin proposes governance
+documents, and a proposal carries no scope for `assertPolicyScopeWithinAuthority` to bind.
+
+Unlike §6a's refusal, this one is **not** pushed down to the `createObject`/`updateObject` choke point,
+and the distinction is the one `routes/typed-registries.ts` already draws: §6a's is an INVARIANT (reads
+only the document, needs no subject, same answer for every caller), while this is AUTHORIZATION, and
+authorization at the choke point would run for the federation importer's synthetic
+`FEDERATION_IMPORT_ACTOR_ID` and refuse every arriving bundle. It therefore sits per-door — which is
+why the census cannot be a one-off. `governance/governance-managed-write-doors.integration.test.ts`
+carries the completion condition: it asserts the property across the whole door table and over
+`GOVERNANCE_MANAGED_OBJECT_TYPE_IDS` rather than today's two type names, **and** machine-checks the
+census itself by scanning the server source for every write call whose `typeId` is not a string literal
+and requiring the result to equal a reviewed table. A sixth door fails that test by name.
+
 ### 7. Detection has two ingresses and an air-gap shape
 
 - **Internal** — derived, because no event carries it, and driven by a ROUTER on the domain-event

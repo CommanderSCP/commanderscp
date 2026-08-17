@@ -638,6 +638,10 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
     const handFilled = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       handFillObject(tx, {
         orgId: domainB.orgId,
+        // M21.7 — authorization-only subject. `service` is not governance-managed, so the
+        // `policy:write` check `handFillObject` gained does not fire and any id will do; the
+        // governance case is asserted in `governance-managed-write-doors.integration.test.ts`.
+        actorObjectId: domainB.orgId,
         peerIdOrName: domainA.orgName,
         typeId: "service",
         urn,

@@ -10,7 +10,8 @@ import {
   type TestUser
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { objects } from "../db/schema.js";
+import { objects, roleBindings, roles } from "../db/schema.js";
+import { GOVERNANCE_MANAGED_OBJECT_TYPE_IDS } from "./governance-managed-types.js";
 
 /**
  * THE `policy:write` DOOR CENSUS — every write door that takes a CALLER-SUPPLIED `typeId`.
@@ -36,37 +37,58 @@ import { objects } from "../db/schema.js";
  * write handed to whoever holds plain `object:write`.
  *
  * ================================================================================================
- * WHAT THE CENSUS FOUND (M21.7; measured, not read)
+ * THE FULL CENSUS (M21.7 — filterless, measured not read; recorded in ADR-0032 §6a)
  * ================================================================================================
- * Two doors were open, and both were open for the same reason: their type-refusal blocks were
- * written by censusing a DIFFERENT sibling guard (peer-bound config, pair-bound identity,
- * service membership), so the guard those censuses were modelled on — the governance one — is the
- * one neither census went looking for.
+ * FIVE doors take a `typeId` the caller chose. Three were wrong, and all three for the same reason:
+ * their guard sets were assembled by censusing a DIFFERENT sibling (peer-bound config, pair-bound
+ * identity, service membership), so the governance guard those censuses were modelled on is the one
+ * none of them went looking for.
  *
- *   OVERLAY  `POST /api/v1/federation/overlays` — `object:write` at the org root, free-form
- *            `typeId`, free-form `properties`. Returned 201 for `{typeId:"policy", properties:
- *            {enforcement:"required", ...}}` posted by an Operator. Note that
- *            `assertPolicyOverlayOnlyAddsStrictness` never even ran: it is gated on base AND
- *            overlay both being `policy`, and the base here is a service.
- *   DISCOVERY `POST /api/v1/discovery/accept` — `object:write` at the org root, `typeId` taken
- *            from `request.body.proposal.objects[]`. Same 201, same Operator.
+ *  # DOOR                                    typeId from         BEFORE             AFTER (M21.7)
+ *  1 POST /federation/overlays               body.typeId         object:write ONLY  + policy:write @org root
+ *  2 POST /discovery/accept                  proposal.objects[]  object:write ONLY  + type refused outright
+ *  3 {POST,PATCH,PUT,DELETE} /objects/{type} path param          type refused       unchanged (measured)
+ *  4 POST /plans + /plans/{id}/apply         manifest.objects[]  policy:write+scope unchanged (measured)
+ *  5 POST /federation/hand-fill              body.typeId         federation:write   + policy:write @org root
  *
- * Two remedies, because the two doors differ in whether the type must stay serviceable:
- *   - OVERLAY keeps serving `policy`: DESIGN §13's canonical overlay case IS "locally annotating a
- *     commander-distributed global policy", and `assertPolicyOverlayOnlyAddsStrictness` exists for
- *     exactly that. So overlay gets the PAIR of checks (1)+(2), which is what `routes/
- *     typed-registries.ts` and `iac/plans-repo.ts` both already run — not a type refusal.
- *   - DISCOVERY refuses the type outright, alongside its two existing sibling refusals: no
- *     discovery plugin proposes governance documents, a proposal carries no scope binding, and a
- *     refusal costs nothing that works today.
+ * DOORS 1 AND 2 WERE LIVE. An Operator — plain `object:write` at the org root, `policy:write`
+ * nowhere — POSTed `{typeId:"policy", properties:{enforcement:"required", effects:[{requireApprovals:
+ * {count:99, fromRole:"Owner", scope:"organization"}}]}}` and got 201 from each: twice over, a live
+ * org-wide policy demanding an unmeetable quorum. On the overlay door
+ * `assertPolicyOverlayOnlyAddsStrictness` never even ran — it is gated on base AND overlay both being
+ * `policy`, and the base was a service.
+ *
+ * DOOR 5 WAS NOT LIVE, and closing it anyway is the point. `federation:write`
+ * (`0012_federation.sql:218-219`) and `policy:write` (`0010_governance.sql:174-175`) both land on
+ * Administrator and Owner, so nothing reachable through today's API holds one without the other —
+ * safety by coincidence between two grant lists in two unrelated migrations, undone by a single
+ * org-defined role. Its case below builds that role rather than trusting the accident.
+ *
+ * THREE REMEDIES, TWO SHAPES, chosen by whether the type must stay serviceable at that door:
+ *   - OVERLAY and HAND-FILL keep serving `policy` and take the PERMISSION. DESIGN §13 makes both
+ *     canonical: an overlay locally annotating a commander-distributed global policy, and an
+ *     air-gapped outpost keying a commander-origin object in by hand. Refusing the type would delete
+ *     the feature and leave `assertPolicyOverlayOnlyAddsStrictness` dead.
+ *   - DISCOVERY refuses the TYPE, for every caller including one holding `policy:write`: no plugin
+ *     proposes governance documents, and a proposal carries no scope for the binding to bind.
+ *
+ * Journal replay (`federation/import-repo.ts`) is deliberately NOT a door: `typeId` arrives from a
+ * signature- and chain-verified bundle, and its `object_upsert` branch has no try/catch, so one
+ * refusal aborts a whole signed bundle (ADR-0032 §6a). A hostile peer is a PAIRING problem.
  *
  * ================================================================================================
  * WHAT THIS FILE ASSERTS
  * ================================================================================================
- * Every door in the census, INCLUDING the ones already closed — "listed as closed" is not
- * "measured closed", and the doors that were open here had been listed. Each refusal case asserts
- * the SPECIFIC violation (status + the reason in the detail) and that NOTHING was written; each
- * door also has a control proving the fix did not simply close the door.
+ *  - EVERY door, including the ones already closed — "listed as closed" is not "measured closed",
+ *    and the doors found open here had been listed. Each refusal case asserts the SPECIFIC violation
+ *    (status + the named permission or type in the detail) and that NOTHING was written; each door
+ *    with a permission remedy also has a control proving the fix did not simply close the door.
+ *  - THE PROPERTY over the whole door table at once, and over `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`
+ *    rather than over today's two type names — because per-door cases are precisely how this
+ *    survived: DOOR 2's block was censused for the peer-bound guard and never re-asked for this one,
+ *    and DOOR 5 was "listed" by a case that only proved an Operator could not reach it.
+ *  - THE CENSUS ITSELF, by source scan (second `describe`). Nothing above goes red when a SIXTH door
+ *    appears, and a census never re-run is the property behind every finding here.
  */
 
 /** An UNSCOPED, `required` policy: org-wide blast radius with an unmeetable approval quorum. */
@@ -91,8 +113,8 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     await server?.close();
   });
 
-  /** Live `policy` rows in this org with this name — the "nothing was written" assertion. */
-  async function policyRowsByName(name: string) {
+  /** Live rows of a governance type in this org with this name — "nothing was written". */
+  async function governanceRowsByName(typeId: string, name: string) {
     return withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
         .select({ id: objects.id, properties: objects.properties })
@@ -100,13 +122,15 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
         .where(
           and(
             eq(objects.orgId, org.orgId),
-            eq(objects.typeId, "policy"),
+            eq(objects.typeId, typeId),
             eq(objects.name, name),
             isNull(objects.deletedAt)
           )
         )
     );
   }
+
+  const policyRowsByName = (name: string) => governanceRowsByName("policy", name);
 
   async function post(url: string, token: string, payload: unknown) {
     return server.app.inject({
@@ -115,6 +139,37 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
       headers: { authorization: `Bearer ${token}` },
       payload: payload as Record<string, unknown>
     });
+  }
+
+  /**
+   * A subject holding `federation:write` at the org root and NOT `policy:write` — the actor no
+   * BUILT-IN role can express (both permissions land on Administrator and Owner and nowhere else),
+   * built here through the org-defined-role mechanism `roles.org_id` exists for. This is the shape
+   * that turns DOOR 5's coincidence into the overlay hole, so the guard is tested against it rather
+   * than against the role table's current accident.
+   */
+  async function createFederationOnlyUser(): Promise<TestUser> {
+    // Viewer, purely so the harness mints the auth row and a live token; `object:read` is not any
+    // part of what is under test and grants no write anywhere.
+    const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const roleId = randomUUID();
+      await tx.insert(roles).values({
+        id: roleId,
+        orgId: org.orgId,
+        name: `federation-only-${randomUUID().slice(0, 8)}`,
+        permissions: ["federation:write"]
+      });
+      await tx.insert(roleBindings).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        subjectId: user.objectId,
+        roleId,
+        scopeObjectId: org.orgId,
+        effect: "allow"
+      });
+    });
+    return user;
   }
 
   /** A plain, non-governance base object for an overlay to annotate. */
@@ -279,21 +334,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     expect(res.statusCode, res.body).toBe(403);
     expect(res.body).toMatch(/'control' objects/);
     // Nothing was written for the OTHER governance type either.
-    expect(
-      await withTenantTx(server.deps.db, org.orgId, (tx) =>
-        tx
-          .select({ id: objects.id })
-          .from(objects)
-          .where(
-            and(
-              eq(objects.orgId, org.orgId),
-              eq(objects.typeId, "control"),
-              eq(objects.name, name),
-              isNull(objects.deletedAt)
-            )
-          )
-      )
-    ).toHaveLength(0);
+    expect(await governanceRowsByName("control", name)).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------------------------
@@ -370,5 +411,278 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     });
     expect(res.statusCode, res.body).toBe(403);
     expect(res.body).toMatch(/federation:write/);
+  });
+
+  it("DOOR 5: federation:write is not governance authority — a policy hand-fill still needs policy:write", async () => {
+    // ============================================================================================
+    // THE DOOR THE CENSUS FOUND OPEN WITHOUT AN ATTACKER TO WALK THROUGH IT (M21.7).
+    //
+    // The case above only shows an Operator cannot reach hand-fill at all. It says nothing about
+    // the actor who CAN, and hand-fill takes a free-form `typeId` and free-form `properties` —
+    // the overlay shape exactly. Before the fix it wrote a `policy` for anyone with
+    // `federation:write`.
+    //
+    // No BUILT-IN role can demonstrate that, and the reason is the point: `federation:write` is
+    // granted to Administrator and Owner (`0012_federation.sql:218-219`) and `policy:write` to
+    // Administrator and Owner (`0010_governance.sql:174-175`) — the same two roles, so every actor
+    // reachable through today's API who holds one holds the other. The door was safe by COINCIDENCE
+    // between two grant lists in two unrelated migrations, with nothing holding them together;
+    // `roles.org_id` exists for org-defined roles, and one of those with `federation:write` and no
+    // `policy:write` is all it takes. This case builds exactly that role, so the guard is proven to
+    // FIRE rather than merely to be present.
+    // ============================================================================================
+    const federationOnly = await createFederationOnlyUser();
+    for (const typeId of GOVERNANCE_MANAGED_OBJECT_TYPE_IDS) {
+      const name = `handfill-${typeId}-${randomUUID().slice(0, 8)}`;
+      const res = await post("/api/v1/federation/hand-fill", federationOnly.token, {
+        peer: randomUUID(),
+        typeId,
+        urn: `urn:scp:${org.orgId}:${typeId}:${name}`,
+        name,
+        properties: ORG_WIDE_POLICY_PROPERTIES
+      });
+      expect(res.statusCode, `${typeId}: ${res.body}`).toBe(403);
+      expect(res.body).toMatch(/policy:write/);
+      expect(await governanceRowsByName(typeId, name)).toHaveLength(0);
+    }
+  });
+
+  it("DOOR 5 (control): an Administrator's policy hand-fill gets PAST the governance check", async () => {
+    // Without this, DOOR 5 above is satisfied by refusing `policy` at hand-fill outright — which
+    // would delete the feature's reason for existing (DESIGN §13: an air-gapped outpost with no
+    // bundle transport keys in a commander-origin object by hand, and a commander-distributed
+    // global policy is squarely that). The peer named here does not exist, so an authorized caller
+    // must fail on the PEER, after the governance check, never with a 403 about `policy:write`.
+    const name = `handfill-authorized-${randomUUID().slice(0, 8)}`;
+    const res = await post("/api/v1/federation/hand-fill", org.adminToken, {
+      peer: randomUUID(),
+      typeId: "policy",
+      urn: `urn:scp:${org.orgId}:policy:${name}`,
+      name,
+      properties: ORG_WIDE_POLICY_PROPERTIES
+    });
+    expect(res.statusCode, res.body).not.toBe(403);
+    expect(res.body).not.toMatch(/policy:write/);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // THE PROPERTY, ASSERTED ACROSS EVERY DOOR AT ONCE — not door by door.
+  //
+  // The cases above are per-door and each names its own reason, which is what makes a failure
+  // readable. But per-door cases are exactly how this hole survived: DOOR 2 was censused for the
+  // PEER-BOUND guard and never re-asked for the governance one, and DOOR 5 was listed with a case
+  // that only proved an Operator could not reach it. So the property gets its own statement, over
+  // the door table and over `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS` rather than over the two type
+  // names we happen to have today — add a third governance type and this widens by itself.
+  // -------------------------------------------------------------------------------------------
+
+  it("PROPERTY: no door with a caller-supplied typeId writes a governance object without policy:write", async () => {
+    const federationOnly = await createFederationOnlyUser();
+
+    /** Every door whose `typeId` comes from the request, with the WEAKEST actor that reaches it. */
+    const doors: Array<{
+      door: string;
+      run: (typeId: string, name: string) => Promise<{ statusCode: number; body: string }>;
+    }> = [
+      {
+        door: "POST /api/v1/federation/overlays",
+        run: async (typeId, name) =>
+          post("/api/v1/federation/overlays", operator.token, {
+            base: await createBaseService(),
+            typeId,
+            name,
+            properties: ORG_WIDE_POLICY_PROPERTIES
+          })
+      },
+      {
+        door: "POST /api/v1/discovery/accept",
+        run: (typeId, name) =>
+          post("/api/v1/discovery/accept", operator.token, {
+            proposal: {
+              objects: [{ typeId, name, properties: ORG_WIDE_POLICY_PROPERTIES }],
+              relationships: []
+            }
+          })
+      },
+      {
+        door: "POST /api/v1/objects/{type}",
+        run: (typeId, name) =>
+          post(`/api/v1/objects/${typeId}`, operator.token, {
+            name,
+            properties: ORG_WIDE_POLICY_PROPERTIES
+          })
+      },
+      {
+        door: "POST /api/v1/plans + /apply",
+        run: async (typeId, name) => {
+          const stackName = `gov-prop-${randomUUID().slice(0, 8)}`;
+          const plan = await post("/api/v1/plans", operator.token, {
+            manifest: {
+              stackName,
+              objects: [
+                {
+                  urn: `urn:scp:${stackName}:${typeId}:smuggled`,
+                  typeId,
+                  name,
+                  properties: ORG_WIDE_POLICY_PROPERTIES
+                }
+              ],
+              relationships: []
+            }
+          });
+          expect(plan.statusCode, plan.body).toBe(201);
+          return post(
+            `/api/v1/plans/${(plan.json() as { id: string }).id}/apply`,
+            operator.token,
+            {}
+          );
+        }
+      },
+      {
+        door: "POST /api/v1/federation/hand-fill",
+        run: (typeId, name) =>
+          post("/api/v1/federation/hand-fill", federationOnly.token, {
+            peer: randomUUID(),
+            typeId,
+            urn: `urn:scp:${org.orgId}:${typeId}:${name}`,
+            name,
+            properties: ORG_WIDE_POLICY_PROPERTIES
+          })
+      }
+    ];
+
+    for (const { door, run } of doors) {
+      for (const typeId of GOVERNANCE_MANAGED_OBJECT_TYPE_IDS) {
+        const name = `prop-${randomUUID().slice(0, 8)}`;
+        const res = await run(typeId, name);
+        expect(res.statusCode, `${door} accepted a '${typeId}': ${res.body}`).toBe(403);
+        expect(
+          await governanceRowsByName(typeId, name),
+          `${door} refused a '${typeId}' and stored it anyway`
+        ).toHaveLength(0);
+      }
+    }
+  });
+});
+
+/**
+ * THE COMPLETENESS HALF OF THE CENSUS — the part that was missing, and the reason the two holes
+ * existed at all.
+ *
+ * Every behavioural case above tests a door someone thought to list. Nothing above goes red when a
+ * SIXTH door appears, and "a census written for a sibling guard, never re-run for this one" is
+ * precisely how DOOR 1 and DOOR 2 shipped open. So the census itself is machine-checked: scan the
+ * server source for every call to `createObject`/`updateObject`/`upsertObjectByUrn` whose `typeId`
+ * argument is NOT a string literal — i.e. every site where the type is chosen at runtime — and
+ * require the result to equal a REVIEWED table. A new such call site anywhere fails this test with
+ * the file and the expression, which forces the governance question to be asked for it.
+ *
+ * A string literal is exempt because the type is then fixed at the call site: `createObject({typeId:
+ * "component"})` can never produce a `policy` no matter what the request says. Everything else is in
+ * the table, including the internal and import-channel sites, each with the reason it is safe —
+ * "not listed" and "listed as safe" have to be different states or the table is just a filter.
+ *
+ * Deliberately NOT filtered to `routes/`: three of the five doors (`overlay-repo`, `handfill-repo`,
+ * `plans-repo`) live under `federation/` and `iac/`, and a filter is where the next instance hides.
+ */
+describe("policy:write door census: the CENSUS is complete (source scan, no DB)", () => {
+  /** file → the `typeId` expressions it passes to a write, with why that site is accounted for. */
+  const REVIEWED_RUNTIME_TYPEID_WRITE_SITES: Record<string, string[]> = {
+    // ---- THE FIVE DOORS: `typeId` comes from the request body or path. -----------------------
+    // DOOR 1 — `policy:write` at the org root (M21.7).
+    "federation/overlay-repo.ts": ["input.overlayTypeId"],
+    // DOOR 2 — governance types refused outright (M21.7).
+    "routes/executors.ts": ["proposedObject.typeId"],
+    // DOOR 3 — governance types refused outright (`assertNotGovernanceManagedObjectType`).
+    "routes/objects-generic.ts": ["type"],
+    // DOOR 4 — `writePermissionFor` demands `policy:write`, plus the declared-scope binding.
+    "iac/plans-repo.ts": ["target.typeId"],
+    // DOOR 5 — `policy:write` at the org root (M21.7).
+    "federation/handfill-repo.ts": ["input.typeId"],
+
+    // ---- NOT DOORS: the type is runtime-valued but no CALLER chooses it. ---------------------
+    // A fixed `typeId` per registry, closed over from `TypedRegistryConfig`; never a route param.
+    // The governance registries ARE the legitimate door — they carry `writePermission:
+    // 'policy:write'` and, for `policy`, `assertPolicyScopeWithinAuthority`.
+    "routes/typed-registries.ts": ["typeId"],
+    // The `OUTPOST_OBJECT_TYPE_ID` constant — a literal behind a name.
+    "federation/outposts-repo.ts": ["OUTPOST_OBJECT_TYPE_ID"],
+    // Journal replay. `typeId` comes from a signature- and chain-verified bundle, not a caller, and
+    // `existing.typeId` is re-read from the row being updated. Deliberately exempt from local write
+    // guards: `object_upsert` has no try/catch, so one refusal aborts a whole signed bundle
+    // (ADR-0032 §6a). A hostile peer is a PAIRING problem, not a permission one.
+    "federation/import-repo.ts": ["typeId", "existing.typeId"],
+    // The choke point itself plus its internal delegations — this is what the doors call.
+    "graph/objects-repo.ts": ["", "input.typeId"]
+  };
+
+  it("every runtime-valued typeId write site is one the census accounted for", async () => {
+    const { readdir, readFile } = await import("node:fs/promises");
+    const { fileURLToPath } = await import("node:url");
+    const nodePath = await import("node:path");
+    const srcRoot = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), "..");
+
+    const files: string[] = [];
+    async function walk(dir: string): Promise<void> {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = nodePath.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === "dist") continue;
+          // `test-support` mints fixtures, not doors; `.test.ts` is not shipped code.
+          if (entry.name === "test-support") continue;
+          await walk(full);
+        } else if (entry.name.endsWith(".ts") && !entry.name.includes(".test.")) {
+          files.push(full);
+        }
+      }
+    }
+    await walk(srcRoot);
+    expect(
+      files.length,
+      "the scan found no source files — it is not scanning anything"
+    ).toBeGreaterThan(100);
+
+    const writeCall = /\b(?:createObject|updateObject|upsertObjectByUrn)\s*\(/;
+    const found: Record<string, Set<string>> = {};
+    for (const file of files) {
+      const lines = (await readFile(file, "utf8")).split("\n");
+      for (let i = 0; i < lines.length; i += 1) {
+        const trimmed = lines[i]!.trimStart();
+        if (trimmed.startsWith("*") || trimmed.startsWith("//")) continue;
+        if (!writeCall.test(lines[i]!)) continue;
+        // Walk the argument object for its `typeId` — shorthand or `typeId: <expr>`.
+        let expr = "";
+        for (let j = i + 1; j < Math.min(i + 30, lines.length); j += 1) {
+          if (/^\s*typeId,\s*$/.test(lines[j]!)) {
+            expr = "typeId";
+            break;
+          }
+          const m = /^\s*typeId:\s*(.+?),?\s*$/.exec(lines[j]!);
+          if (m) {
+            expr = m[1]!;
+            break;
+          }
+          if (/^\s*\}\)/.test(lines[j]!)) break;
+        }
+        if (/^"[a-z0-9-]+"$/.test(expr)) continue; // a literal type cannot be chosen by a caller
+        const rel = nodePath.relative(srcRoot, file);
+        (found[rel] ??= new Set()).add(expr);
+      }
+    }
+
+    const actual = Object.fromEntries(
+      Object.entries(found)
+        .map(([f, s]) => [f, [...s].sort()] as const)
+        .sort(([a], [b]) => a.localeCompare(b))
+    );
+    const expected = Object.fromEntries(
+      Object.entries(REVIEWED_RUNTIME_TYPEID_WRITE_SITES)
+        .map(([f, s]) => [f, [...s].sort()] as const)
+        .sort(([a], [b]) => a.localeCompare(b))
+    );
+    // A NEW entry here means a new write door whose type a caller may choose. Do not append it to
+    // the table — run the governance question against it first (`isGovernanceManagedObjectType`:
+    // refuse the type, or demand `policy:write`), then record the answer above.
+    expect(actual).toEqual(expected);
   });
 });
