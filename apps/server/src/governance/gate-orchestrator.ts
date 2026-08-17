@@ -695,18 +695,28 @@ export async function evaluateGovernanceGate(
   // condition evaluated false contributes no ceiling, exactly as it contributes no requireControls.
   //
   // M22.0 — HOISTED so it can be used TWICE: threaded to the scan control exactly as before, AND
-  // recorded in this gate's Decision below. It stays inside the `host` condition, so this resolves
-  // on precisely the ticks it already resolved on — no new per-tick work on the reconcile path that
-  // produced the 1.44 GB/day incident.
-  const effectiveScanThreshold = host
-    ? await resolveEffectiveScanThreshold(tx, {
-        orgId: ctx.orgId,
-        targetObjectIds: ctx.targetObjectIds,
-        actorObjectId: ctx.actorObjectId,
-        matches,
-        firedPolicies: fired
-      })
-    : undefined;
+  // recorded in this gate's Decision below.
+  //
+  // RESOLVED UNCONDITIONALLY, not just when a plugin host is present. The first cut of this kept it
+  // inside the `host` ternary, reasoning that this added no work to the per-tick reconcile path.
+  // The reasoning was right and the placement was wrong, and a mutation-tested suite caught it: the
+  // `validating -> accepted` edge runs with `host: null` (routes/changes.ts), so a change BLOCKED AT
+  // THE ACCEPT EDGE by a failed scan control got a Decision carrying no ceiling at all — which is
+  // precisely the operator-facing surface ADR-0016 §5's promise is about. Half-kept, on the half
+  // that matters most.
+  //
+  // The cost objection does not survive contact with where the two paths actually run. The host-ful
+  // path (the wave-boundary gate) is the per-tick one and resolved this already, so it is unchanged.
+  // The host-less paths are the accept edge and `POST /policy-evaluate` — both driven by an API
+  // call, neither on a reconcile tick. So this buys back the promise for one resolution per accept
+  // attempt, and adds nothing to the path that produced the 1.44 GB/day incident.
+  const effectiveScanThreshold = await resolveEffectiveScanThreshold(tx, {
+    orgId: ctx.orgId,
+    targetObjectIds: ctx.targetObjectIds,
+    actorObjectId: ctx.actorObjectId,
+    matches,
+    firedPolicies: fired
+  });
 
   const controlOutcomes = host
     ? await ensureControlRuns(tx, host, {
@@ -726,7 +736,12 @@ export async function evaluateGovernanceGate(
           scanThreshold: effectiveScanThreshold
         })
       })
-    : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds);
+    : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds, {
+        // M22.0a — read the run made for THIS crossing. Without the gate, the host-less accept edge
+        // would happily read a wave-boundary run (or vice versa) and treat it as authorization.
+        gateKind: ctx.gateKind,
+        gateRef: ctx.gateRef
+      });
 
   const approvals: PolicyEvaluationContext["approvals"] = {};
   for (const fp of fired) {

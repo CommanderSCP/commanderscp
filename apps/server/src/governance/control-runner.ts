@@ -1,7 +1,12 @@
 import type { ControlOutcomeStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost, PluginHostInstanceConfig } from "../plugin-host/contract.js";
-import { getControlBinding, insertControlRun, latestControlRun } from "./controls-repo.js";
+import {
+  getControlBinding,
+  insertControlRun,
+  latestControlRun,
+  latestControlRunForGate
+} from "./controls-repo.js";
 import { getObjectByIdOrUrnAnyType, isUuid } from "../graph/objects-repo.js";
 
 // `control_bindings.plugin_module` is a free-form string at the schema layer
@@ -96,11 +101,17 @@ export async function ensureControlRun(
   }
 
   if (!input.force) {
-    const existing = await latestControlRun(
+    // M22.0a — scoped to THIS gate crossing, not to the change. See
+    // `latestControlRunForGate`'s doc: keying without gate identity let the run made during
+    // `validating` authorize every later wave boundary, which makes an expiring exclusion grant
+    // (ADR-0033) unenforceable the moment a change is accepted.
+    const existing = await latestControlRunForGate(
       tx,
       input.orgId,
       input.changeObjectId,
-      input.controlObjectId
+      input.controlObjectId,
+      input.gateKind,
+      input.gateRef
     );
     if (existing) {
       const stillFresh =
@@ -192,11 +203,21 @@ export async function ensureControlRuns(
     gateKind: "lifecycle_edge" | "wave_boundary";
     gateRef: Record<string, unknown>;
     context: Record<string, unknown>;
+    /** M22.0a — re-run every named control even if a run already exists for THIS gate.
+     *
+     *  This parameter did not exist before: `ensureControlRun` (singular) had always declared
+     *  `force`, but the plural entry point every production call site actually uses could not
+     *  express it, so nothing in the tree could ever request a re-evaluation. That is what made the
+     *  re-evaluation story a signal with no lever — ADR-0033 §10's actuator has to pass this when
+     *  the resolved exclusion set no longer matches the hash recorded in the cached run's evidence,
+     *  or a revoked/expired grant is never noticed. */
+    force?: boolean;
   }
 ): Promise<Record<string, ControlOutcomeStatus>> {
   const outcomes: Record<string, ControlOutcomeStatus> = {};
   for (const controlObjectId of input.controlObjectIds) {
     outcomes[controlObjectId] = await ensureControlRun(tx, host, {
+      ...(input.force !== undefined ? { force: input.force } : {}),
       orgId: input.orgId,
       changeObjectId: input.changeObjectId,
       controlObjectId,
@@ -216,7 +237,16 @@ export async function readExistingControlOutcomes(
   tx: TenantTx,
   orgId: string,
   changeObjectId: string,
-  controlObjectIds: string[]
+  controlObjectIds: string[],
+  /** M22.0a — the gate crossing being decided. Host-less callers (the read-only
+   *  `POST /policy-evaluate` preview and the accept edge, which has no plugin host of its own) must
+   *  read the run made FOR THIS CROSSING, for the same reason `ensureControlRun` now does: a run
+   *  made during `validating` is not evidence that a production wave boundary was authorized.
+   *
+   *  Optional, and gate-agnostic when omitted, so a caller that genuinely wants "the newest outcome
+   *  for this control on this change, wherever it came from" still has that — but every
+   *  authorization path passes it. */
+  gate?: { gateKind: "lifecycle_edge" | "wave_boundary"; gateRef: Record<string, unknown> }
 ): Promise<Record<string, ControlOutcomeStatus>> {
   const outcomes: Record<string, ControlOutcomeStatus> = {};
   for (const controlObjectId of controlObjectIds) {
@@ -224,7 +254,16 @@ export async function readExistingControlOutcomes(
     // malformed reference just never has an entry in the returned map, which evaluate.ts already
     // treats as unsatisfied (this function's own doc comment above).
     if (!isUuid(controlObjectId)) continue;
-    const run = await latestControlRun(tx, orgId, changeObjectId, controlObjectId);
+    const run = gate
+      ? await latestControlRunForGate(
+          tx,
+          orgId,
+          changeObjectId,
+          controlObjectId,
+          gate.gateKind,
+          gate.gateRef
+        )
+      : await latestControlRun(tx, orgId, changeObjectId, controlObjectId);
     if (run) outcomes[controlObjectId] = run.status;
   }
   return outcomes;

@@ -87,6 +87,26 @@ async function startTrivySource(): Promise<TrivySource> {
   };
 }
 
+/**
+ * M22.0a — DISAMBIGUATED. This used to be `.find(r => r.controlObjectId === controlId)`, which was
+ * unambiguous only while a control could produce at most ONE run per change. Since the control-run
+ * cache is keyed on gate identity (`latestControlRunForGate`), a single change can now hold a
+ * `lifecycle_edge` run AND a `wave_boundary` run for the same control — and `.find()` silently
+ * returned whichever row the listing happened to put first.
+ *
+ * Every assertion in this file still passed under the old form, because both runs resolve the same
+ * ceiling from the same policies and their evidence agrees. That is exactly why it was worth fixing
+ * BEFORE it mattered: the first test whose two runs legitimately DIFFER would have gone green or red
+ * on listing order. Now the caller gets the NEWEST matching run rather than an arbitrary one.
+ *
+ * IT CANNOT YET NAME THE GATE IT MEANS, and that is a gap M22.0a introduces rather than one it
+ * inherits: `controlRuns.listForChange` does not expose `gate_kind`/`gate_ref` at all. While one
+ * control produced at most one run per change that omission was invisible. Now that a change
+ * routinely holds a lifecycle-edge run AND a wave-boundary run per control, an operator reading the
+ * API literally cannot tell which crossing a given run authorized — a principle-6 problem, not just
+ * a test-ergonomics one. Surfacing it is additive (a new optional response field) and belongs with
+ * the M22.8 read surface; tracked there rather than smuggled in here.
+ */
 async function waitForControlRun(
   admin: ScpClient,
   changeId: string,
@@ -95,9 +115,11 @@ async function waitForControlRun(
 ) {
   return waitUntil(
     async () => {
-      const runs = await admin.controlRuns.listForChange(changeId);
-      const run = runs.items.find((r) => r.controlObjectId === controlId);
-      return run?.status === status ? run : undefined;
+      const matching = (await admin.controlRuns.listForChange(changeId)).items
+        .filter((r) => r.controlObjectId === controlId && r.status === status)
+        // Newest first — deterministic, rather than "whatever the listing returned first".
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      return matching[0];
     },
     {
       describe: `control ${controlId} on change ${changeId} reports '${status}'`,
