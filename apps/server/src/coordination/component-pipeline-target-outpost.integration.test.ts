@@ -18,7 +18,7 @@ import {
  * pipeline-substrate-registry-scan.md §10.2 — WHICH OUTPOST EACH TARGET IS PART OF, by the owner's
  * TRUST-DOMAIN RULE: the `outpost` object whose `properties.peerDomainId` equals the target's own
  * `origin_domain_id` — and §10.5, EVERY TARGET IS WITHIN AN OUTPOST: resolution is OBJECT-FIRST, so
- * an object naming self (the co-located outpost, or an outpost site's replica of its own config)
+ * an object naming self (the HQ outpost, or an outpost site's replica of its own config)
  * wins over `self`, which is now the stated ABSENCE of one. Through the real HTTP route against
  * real Postgres.
  *
@@ -47,7 +47,7 @@ import {
  *     site's replica of its own config) turns a locally-authored target into `outpost <its name>`
  *     — the inverse of the §10.2 self-first expectation this test used to pin; the replica is
  *     soft-deleted at the end so the next case starts from "no self object".
- *   - the CO-LOCATED outpost (§10.5): `createOutpost({peerDomainId: self})` through the API is
+ *   - the HQ outpost (§10.5): `createOutpost({peerDomainId: self})` through the API is
  *     201, and every self-origin target — placed AND unplaced — reads `outpost <its name> · <tier>`
  *     with `peerRole` = self's own role and `peerDomainId` = self; a second is 409.
  *
@@ -516,7 +516,7 @@ describe("component pipeline: which outpost each target is part of (§10.2 trust
     expect((await pipelineOf(component.id)).stages[0]!.outpost.state).toBe("self");
   });
 
-  it("THE CO-LOCATED OUTPOST (§10.5) — `createOutpost({peerDomainId: self})` is accepted, and every self-origin target reads `outpost <its name> · <tier>` on the placed AND the unplaced stage; a second is 409", async () => {
+  it("THE HQ OUTPOST (§10.5) — `createOutpost({peerDomainId: self})` is accepted, and every self-origin target reads `outpost <its name> · <tier>` on the placed AND the unplaced stage; a second is 409", async () => {
     const config = await admin.federation.createOutpost({
       peerDomainId: selfDomainId,
       name: "hq-outpost",

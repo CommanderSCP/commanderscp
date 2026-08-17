@@ -83,7 +83,7 @@ export function toOutpostConfig(object: GraphObject, selfDomainId: string): Outp
   const trustTier = readTrustTier(properties);
   const peerDomainId = typeof properties.peerDomainId === "string" ? properties.peerDomainId : "";
   const originIsSelf = object.originDomainId === selfDomainId;
-  // §10.5 — the co-located outpost: this record is ABOUT this instance's own domain. Independent of
+  // §10.5 — the HQ outpost: this record is ABOUT this instance's own domain. Independent of
   // `originIsSelf` (on an outpost site its own replica is commander-authored AND about self).
   const peerIsSelf = peerDomainId === selfDomainId;
   const unknownFields: string[] = [];
@@ -122,7 +122,7 @@ export interface CreateOutpostConfigInput {
 
 /**
  * Declares the config object for an already-paired outpost peer — or, with `peerDomainId` = this
- * instance's own trust domain, the CO-LOCATED outpost (§10.5; accepted only when this instance's
+ * instance's own trust domain, the HQ outpost (§10.5; accepted only when this instance's
  * `federation_self.role` is `commander` — on an outpost that record is the commander's replica). The
  * peer-binding guard (`assertOutpostPeerBinding`, reached through `createObject`) refuses an unbound
  * `peerDomainId` (400), a peer whose role is not `outpost` (400), the self shape on a non-commander
@@ -145,7 +145,7 @@ export async function createOutpostConfig(
     actorObjectId: input.actorObjectId,
     requestId: input.requestId,
     urn: outpostConfigUrn(input.orgId, input.peerDomainId),
-    // Falls back to this instance's own federation name for the co-located outpost (§10.5 — there
+    // Falls back to this instance's own federation name for the HQ outpost (§10.5 — there
     // is no peer row to take one from), and to the raw id when the peer does not exist — a name the
     // guard is about to make irrelevant by refusing the write. `createObject` requires a name, so
     // this keeps the ORDER of refusals in the guard's hands instead of the name default's.

@@ -213,7 +213,7 @@ export async function getFederationStatus(
     })
   );
 
-  // §10.5 — THE CO-LOCATED OUTPOST RECORD. Bound to self's own domain, so it has no peer row and
+  // §10.5 — THE HQ OUTPOST RECORD. Bound to self's own domain, so it has no peer row and
   // can never be a `peers[]` entry; resolved here by the SAME authority rule the outposts API's
   // single GET applies (`findOutpostConfigByPeer`), so this and `GET /federation/outposts/{self}`
   // agree by construction. `null` is a stated absence — no record registered.

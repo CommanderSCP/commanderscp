@@ -552,7 +552,7 @@ export async function getComponentPipeline(
     // object naming the target's origin domain wins WHETHER OR NOT that domain is self: an outpost
     // site's replica of its own config is exactly "an `outpost` object whose `peerDomainId` names
     // self", so that site's own targets read `outpost <its own name> · <tier>`; a commander that has
-    // registered the CO-LOCATED outpost (`peerDomainId` = its own domain — outpost-binding.ts) reads
+    // registered the HQ outpost (`peerDomainId` = its own domain — outpost-binding.ts) reads
     // it for every target it authored. `peerRole` is the peer row's role, or self's own role for the
     // co-located record (there is no peer row for self).
     if (outpost && originDomainId) {
@@ -568,7 +568,7 @@ export async function getComponentPipeline(
     if (isSelf) {
       // Authored by THIS instance and NO outpost object names this instance's domain — a STATED
       // ABSENCE ("this instance's domain — no outpost registered"), not a sixth state: the fix is
-      // to declare the co-located outpost under Federation › Outposts.
+      // to declare the HQ outpost under Federation › Outposts.
       return {
         state: "self",
         id: null,

@@ -72,7 +72,7 @@ import { ensureFederationSelf } from "./self-repo.js";
  *  (4) THE PEER ROW IS THE ANCHOR; THE BINDING IS 1:1 AND OBJECT→PEER ONLY. An `outpost` object must
  *      name an already-paired peer that holds role `outpost` (an unbound `peerDomainId` is a 400) —
  *      OR, since pipeline-substrate-registry-scan.md §10.5 (owner, 2026-08-16), THIS INSTANCE'S OWN
- *      TRUST DOMAIN (`federation_self.domainId`): THE CO-LOCATED OUTPOST, the "commander and outpost
+ *      TRUST DOMAIN (`federation_self.domainId`): THE HQ OUTPOST (formerly "the HQ outpost"; GLOSSARY, ADR-0021 D7), the "commander and outpost
  *      are one and the same" case, in which every target this instance authors is within an outpost
  *      too — accepted ONLY when `federation_self.role` is `commander` (an outpost's own record is
  *      commander-declared and arrives replicated; a locally authored one would outrank the replica in
@@ -135,7 +135,7 @@ export function isPeerBoundObjectType(typeId: string): boolean {
  *  peer no outpost UI will ever render. */
 const REQUIRED_PEER_ROLE = "outpost";
 
-/** The federation role THIS instance must hold (`federation_self.role`) to author the CO-LOCATED
+/** The federation role THIS instance must hold (`federation_self.role`) to author the HQ
  *  outpost record (§10.5) — the record about its own trust domain. Only a commander declares outpost
  *  config (clause (2)); on an outpost that record is the commander's replica, and a local one authored
  *  ahead of it would outrank the replica in every `byAuthority` read (see the check below). */
@@ -163,12 +163,12 @@ export async function assertOutpostPeerBinding(
   const raw = input.properties.peerDomainId;
   if (typeof raw !== "string" || raw.length === 0) {
     throw badRequest(
-      "an 'outpost' object must carry properties.peerDomainId — the trust-domain id of the already-paired peer it describes, or this instance's own domain id for the co-located outpost"
+      "an 'outpost' object must carry properties.peerDomainId — the trust-domain id of the already-paired peer it describes, or this instance's own domain id for the HQ outpost (the outpost in this instance's own trust domain)"
     );
   }
   const peerDomainId = raw;
 
-  // §10.5 — THE CO-LOCATED OUTPOST: `peerDomainId` naming THIS instance's own trust domain is the
+  // §10.5 — THE HQ OUTPOST: `peerDomainId` naming THIS instance's own trust domain is the
   // second accepted shape. There is no peer row to check a role against (an instance is not its own
   // peer — `outpost-binding.ts` module doc, IMPORT PATHS), so the role checked is THIS instance's own
   // (`federation_self.role`), and it must be `commander` — clause (2): an outpost's record is
@@ -222,14 +222,14 @@ export async function assertOutpostPeerBinding(
       `peerDomainId '${peerDomainId}' is neither a paired federation peer nor this instance's own ` +
         `trust domain ('${self.domainId}') — an 'outpost' config object may name a paired peer of role ` +
         `'${REQUIRED_PEER_ROLE}' (pair it first: 'scp federation pair') or this instance's own domain id ` +
-        `(GET /federation/self) for the co-located outpost`
+        `(GET /federation/self) for the HQ outpost`
     );
   }
   if (peer && peer.role !== REQUIRED_PEER_ROLE) {
     throw badRequest(
       `peer '${peerDomainId}' has federation role '${peer.role}', not '${REQUIRED_PEER_ROLE}' — ` +
         `an 'outpost' config object may only describe a peer this instance holds as an outpost, or ` +
-        `this instance's own trust domain ('${self.domainId}') as the co-located outpost`
+        `this instance's own trust domain ('${self.domainId}') as the HQ outpost`
     );
   }
 

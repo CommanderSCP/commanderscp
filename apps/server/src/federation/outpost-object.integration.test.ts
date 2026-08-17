@@ -218,7 +218,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
   });
 
   // ==========================================================================================
-  // pipeline-substrate-registry-scan.md §10.5 — THE CO-LOCATED OUTPOST (owner, 2026-08-16). The
+  // pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST (owner, 2026-08-16). The
   // second accepted binding shape: `peerDomainId` = THIS instance's own trust domain. Everything
   // else stays fail-closed (the two 400s above still hold — measured in this same file), the 1:1
   // rule applies to self exactly as to a peer (409), and every read surface states "this instance"
@@ -232,7 +232,7 @@ describe("M16.2 E1: the `outpost` builtin object type + the authority split (Tes
   // | `peerIsSelf: originIsSelf` in toOutpostConfig | passes here (both true on the commander) — pinned as DIFFERENT by outpost-config-sync's replica, where origin is foreign and peer is self |
   // | omit `selfOutpost` from status-repo | the status case FAILS (undefined) |
   // ==========================================================================================
-  it("§10.5: `peerDomainId` = THIS instance's own domain is ACCEPTED (201) — the co-located outpost — named after self by default, `peerIsSelf: true`, resolvable by GET, listed, and on `federation.status().selfOutpost`", async () => {
+  it("§10.5: `peerDomainId` = THIS instance's own domain is ACCEPTED (201) — the HQ outpost — named after self by default, `peerIsSelf: true`, resolvable by GET, listed, and on `federation.status().selfOutpost`", async () => {
     const self = await admin.federation.self();
     const before = await outpostObjectRows();
 
