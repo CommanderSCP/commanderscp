@@ -256,12 +256,13 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
     // A hand-fill is an upsert, so an EXISTING row's governance labels are also reachable here; the
     // stored value is the honest `before`, and `{}` would silently permit a removal on the update
     // branch while refusing an identical no-op create.
-    before: (
-      await tx.query.objects.findFirst({
-        where: (t, { eq: eqOp, and: andOp }) =>
-          andOp(eqOp(t.orgId, input.orgId), eqOp(t.urn, input.urn))
-      })
-    )?.labels as Record<string, unknown> | undefined ?? {},
+    before:
+      ((
+        await tx.query.objects.findFirst({
+          where: (t, { eq: eqOp, and: andOp }) =>
+            andOp(eqOp(t.orgId, input.orgId), eqOp(t.urn, input.urn))
+        })
+      )?.labels as Record<string, unknown> | undefined) ?? {},
     after: input.labels ?? {},
     subject: `hand-filled ${input.typeId} '${input.urn}'`
   });

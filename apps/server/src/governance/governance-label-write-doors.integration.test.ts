@@ -43,20 +43,35 @@ import { GOVERNANCE_LABEL_PREFIX } from "./governance-labels.js";
  * cannot tell the two apart. So every case below drives a REAL DOOR — an HTTP request, an IaC
  * apply, a repo function a route calls — and the guard is reached only if it is actually wired in.
  *
- * MUTATION LOG. Each of these was applied ALONE against a green suite and the named cases watched
- * to fail, then reverted:
- *   1. delete the `assertMayWriteGovernanceLabels` call from `createObject`  → CASE B1, B3, B5 fail.
- *   2. delete it from `updateObject`                                        → CASE A4, B2 fail.
- *   3. delete it from `createRelationship`                                  → CASE B6 fails.
- *   4. delete it from `handFillObject`                                      → CASE B7 fails.
- *   5. delete `assertSelectorKeysAreGovernanceLabels` from `createObject`   → CASE C1, C3, C4, C5 fail.
- *   6. delete it from `updateObject`                                        → CASE C2 fails.
- *   7. delete `assertSyncScopeSelectorKeys…` from `pairPeer`                → CASE D1 fails.
- *   8. delete it from `updatePeerTransport`                                 → CASE D2 fails.
- *   9. delete `assertPolicyScopeWithinAuthority` from `createOverlay`       → CASE F1 fails.
- *  10. delete it from `handFillObject`                                      → CASE F2 fails.
- *  11. compute the delta over `after`'s keys only (drop the removal case)   → CASE A4, B2 fail.
- *  12. return `true` from `isGovernanceLabelKey` for every key              → CASE B4 (the control) fails.
+ * MUTATION LOG — MEASURED, not predicted. Each was applied ALONE against a green suite, the run
+ * recorded, then reverted. Every entry below is the actual failure set.
+ *
+ *   1. delete `assertMayWriteGovernanceLabels` from `createObject`  → B1, B2, B3, B5, B8
+ *   2. delete it from `updateObject`                                → A3, A4, A5
+ *   3. delete it from `createRelationship`                          → B6
+ *   4. delete it from `handFillObject`                              → B7
+ *   5. delete `assertSelectorKeysAreGovernanceLabels` from `createObject` → C1, C3, C5
+ *   6. delete it from `updateObject`                                → C2
+ *   7. delete `assertSyncScopeSelectorKeys…` from `pairPeer`        → D1
+ *   8. delete it from `updatePeerTransport`                         → D2
+ *   9. delete `assertPolicyScopeWithinAuthority` from `createOverlay` → F1
+ *  10. delete it from `handFillObject`                              → F2
+ *  11. compute the delta over `after`'s keys only (lose REMOVAL)    → A4, A5
+ *  12. `isGovernanceLabelKey` returns `true` for every key          → A2, B0, B4, C1, C2, C3, C4, C5, D1, D2
+ *  13. delete `assertSelectorKeysAreGovernanceLabels` from `handFillObject` → C4
+ *
+ * THREE OF THESE ARE THE POINT, not bookkeeping:
+ *   - #5 does NOT kill C4 and #13 does — which is the measured proof that hand-fill runs the
+ *     selector refusal FOR ITSELF rather than inheriting the choke point it is exempt from. The
+ *     same separation holds for #1 vs #4.
+ *   - #11 kills A4 and A5 and nothing else: the removal case is the whole defect, and a delta
+ *     written the obvious way (over `after`'s keys) leaves it wide open with 26 of 28 still green.
+ *   - #12 kills the CONTROLS (A2, B0, B4). An over-broad namespace refuses ordinary estate
+ *     description, which is the failure mode option (b) in the proposal was rejected for.
+ *
+ * A5's failure under #2 and #11 is a genuine cascade, not a flake: A4's refusal is what leaves the
+ * governance label on the row for A5 to still be governed by. That coupling is deliberate — A5
+ * asserts REACH, not a status code.
  *
  * ## The actor
  *
@@ -200,19 +215,27 @@ describe("governance labels: the namespace is enforced at every local write door
   it("CASE A2: the operator CAN still describe their own estate — ordinary labels are untouched", async () => {
     // The control that stops this file from passing because labels became read-only for everyone,
     // which would "fix" the evasion by breaking the product.
-    const res = await asOperator("PUT", `/api/v1/objects/service/${encodeURIComponent(serviceUrn)}`, {
-      name: (await admin.object("service").get(serviceId)).name,
-      labels: { [GOV_TIER]: "pci", team: "payments", env: "prod" }
-    });
+    const res = await asOperator(
+      "PUT",
+      `/api/v1/objects/service/${encodeURIComponent(serviceUrn)}`,
+      {
+        name: (await admin.object("service").get(serviceId)).name,
+        labels: { [GOV_TIER]: "pci", team: "payments", env: "prod" }
+      }
+    );
     expect(res.statusCode, res.body).toBe(200);
     expect(await labelsOf(serviceId)).toMatchObject({ team: "payments", env: "prod" });
   });
 
   it("CASE A3: the operator cannot CHANGE the governance label's value", async () => {
-    const res = await asOperator("PUT", `/api/v1/objects/service/${encodeURIComponent(serviceUrn)}`, {
-      name: (await admin.object("service").get(serviceId)).name,
-      labels: { [GOV_TIER]: "public", team: "payments" }
-    });
+    const res = await asOperator(
+      "PUT",
+      `/api/v1/objects/service/${encodeURIComponent(serviceUrn)}`,
+      {
+        name: (await admin.object("service").get(serviceId)).name,
+        labels: { [GOV_TIER]: "public", team: "payments" }
+      }
+    );
     expect(res.statusCode).toBe(403);
     expect(res.body).toContain(GOV_TIER);
     expect(await labelsOf(serviceId)).toMatchObject({ [GOV_TIER]: "pci" });
@@ -222,10 +245,14 @@ describe("governance labels: the namespace is enforced at every local write door
     // This is the report, exactly: a full-replacement write that simply does not mention the key.
     // No API called `deleteLabel`; the attack is an omission, which is why the guard compares
     // against the STORED row rather than inspecting the request.
-    const res = await asOperator("PUT", `/api/v1/objects/service/${encodeURIComponent(serviceUrn)}`, {
-      name: (await admin.object("service").get(serviceId)).name,
-      labels: { team: "payments" }
-    });
+    const res = await asOperator(
+      "PUT",
+      `/api/v1/objects/service/${encodeURIComponent(serviceUrn)}`,
+      {
+        name: (await admin.object("service").get(serviceId)).name,
+        labels: { team: "payments" }
+      }
+    );
     expect(res.statusCode).toBe(403);
 
     // A refusal that still wrote the row is not a refusal — and the only assertion that matters is
@@ -251,7 +278,9 @@ describe("governance labels: the namespace is enforced at every local write door
   });
 
   it("CASE A6: an org-root policy:write holder CAN set and clear governance labels — the bar is authority, not immutability", async () => {
-    const svc = await admin.object("service").create({ name: `svc-adm-${randomUUID().slice(0, 8)}` });
+    const svc = await admin
+      .object("service")
+      .create({ name: `svc-adm-${randomUUID().slice(0, 8)}` });
     await admin.object("service").update(svc.id, { labels: { [GOV_TIER]: "pci" } });
     expect(await labelsOf(svc.id)).toMatchObject({ [GOV_TIER]: "pci" });
     // ...and REMOVE it. Without this, the guard could be "governance labels are write-once" and
