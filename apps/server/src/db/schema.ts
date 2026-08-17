@@ -227,6 +227,22 @@ export const objects = pgTable(
     // create, which for historical provenance is the more honest label.
     domainLocalInheritedFrom: uuid("domain_local_inherited_from"),
     domainLocalInheritedFromUrn: text("domain_local_inherited_from_urn"),
+    // drizzle/0068 — the `@scp/iac` stack whose apply owns this row, or NULL. This is what scopes
+    // PRUNING: an apply deletes exactly the live rows carrying its own stack name that its manifest
+    // no longer declares (`iac/plan-diff.ts`'s `isStackManaged`).
+    //
+    // SERVER-WRITTEN ONLY, and that is the whole point of it being a column. It lived in `labels`
+    // until 0068, where the prune TARGET could rewrite it under plain `object:write` — enrolling an
+    // arbitrary object into a stack's delete pool, or walking its own object out of one. The sole
+    // writer is `iac/stack-ownership.ts`, called from the IaC apply path; no request body can reach
+    // it and no route passes it, exactly as for `origin_domain_id`, `provenance` and `domain_local`.
+    //
+    // DOES NOT FEDERATE, deliberately: it is absent from the journal payload, so a replica arrives
+    // owned by nobody. That is the truth — the importing domain's IaC does not manage a row another
+    // domain authored — and it is a fix in its own right, because `labels` DO federate, so a peer's
+    // `scp:stack=X` used to land here and join a local stack X's prune pool, where `deleteObject`
+    // refuses a replica with a 409 and wedges the whole apply.
+    managedByStack: text("managed_by_stack"),
     // lifecycle
     version: bigint("version", { mode: "number" }).notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -239,7 +255,12 @@ export const objects = pgTable(
     index("obj_domain").on(table.orgId, table.domainId),
     index("obj_created_cursor").on(table.orgId, table.createdAt, table.id),
     index("obj_props").using("gin", sql`${table.properties} jsonb_path_ops`),
-    index("obj_labels").using("gin", sql`${table.labels} jsonb_path_ops`)
+    index("obj_labels").using("gin", sql`${table.labels} jsonb_path_ops`),
+    // drizzle/0068 — the prune-pool lookup. Partial: almost nothing on an estate is IaC-managed,
+    // and the query never asks for the rows that are not.
+    index("obj_managed_stack")
+      .on(table.orgId, table.managedByStack)
+      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`)
   ]
 );
 
@@ -259,13 +280,18 @@ export const relationships = pgTable(
       .references(() => objects.id),
     properties: jsonb("properties").notNull().default({}),
     // M2 step 3 addition (BUILD_AND_TEST.md §8 M2 item 4, drizzle/0005_plans.sql) — mirrors
-    // `objects.labels` so the `scp:managed-by`/`scp:stack` IaC pruning convention
-    // (apps/server/src/iac/plan-diff.ts) applies uniformly to relationships, not just objects.
+    // `objects.labels`. An IaC apply writes `scp:managed-by`/`scp:stack` here, but SINCE
+    // drizzle/0068 THOSE ARE A DESCRIPTIVE MIRROR THAT SCOPES NOTHING: pruning reads
+    // `managed_by_stack` below. This map is writable by the endpoints' owners, which is exactly
+    // what made the previous "pruning convention" a delete decision its own subject could rewrite.
     labels: jsonb("labels").notNull().default({}),
     // TRUST sense (ADR-0021 D4) — the security domain that authored this row.
     originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
+    // drizzle/0068 — mirrors `objects.managed_by_stack`; see that column for the full reasoning.
+    // Same single writer (`iac/stack-ownership.ts`), same non-federating behaviour, same reason.
+    managedByStack: text("managed_by_stack"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true })
   },
@@ -279,7 +305,11 @@ export const relationships = pgTable(
     index("rel_fwd").on(table.orgId, table.fromId, table.typeId),
     index("rel_rev").on(table.orgId, table.toId, table.typeId),
     index("rel_created_cursor").on(table.orgId, table.createdAt, table.id),
-    index("rel_labels").using("gin", sql`${table.labels} jsonb_path_ops`)
+    index("rel_labels").using("gin", sql`${table.labels} jsonb_path_ops`),
+    // drizzle/0068 — see `obj_managed_stack`.
+    index("rel_managed_stack")
+      .on(table.orgId, table.managedByStack)
+      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`)
   ]
 );
 

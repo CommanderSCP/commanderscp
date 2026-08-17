@@ -176,7 +176,9 @@ export const ManifestPlacementSchema = z.object({
 export type ManifestPlacement = z.infer<typeof ManifestPlacementSchema>;
 
 export const DesiredStateManifestSchema = z.object({
-  /** Deployable-unit label — becomes the `scp:stack` managed-by marker (plan-diff.ts) that scopes pruning. */
+  /** Deployable-unit label — becomes the row's server-written `managed_by_stack` (drizzle/0068),
+   *  which is what scopes pruning. It is ALSO mirrored into `labels` as `scp:stack` for humans; that
+   *  mirror is descriptive and decides nothing (see `plan-diff.ts`'s `managedLabels`). */
   stackName: z.string().min(1),
   objects: z.array(ManifestObjectSchema),
   relationships: z.array(ManifestRelationshipSchema),
@@ -206,7 +208,11 @@ export type DesiredStateManifest = z.infer<typeof DesiredStateManifestSchema>;
 export const PlanActionSchema = z.enum(["create", "update", "delete", "noop"]);
 export type PlanAction = z.infer<typeof PlanActionSchema>;
 
-/** The full desired-state row a `create`/`update` entry will write — labels already include the merged `scp:managed-by`/`scp:stack` markers (plan-diff.ts). */
+/** The full desired-state row a `create`/`update` entry will write — `labels` already include the
+ *  merged `scp:managed-by`/`scp:stack` markers (plan-diff.ts). Those are a HUMAN-READABLE MIRROR
+ *  since drizzle/0068 and are not what an apply prunes on; ownership is the server-written
+ *  `managed_by_stack` column, which no request can set and which is therefore absent from this
+ *  (request-reachable) shape. */
 export const PlanObjectTargetSchema = z.object({
   urn: UrnSchema,
   typeId: z.string(),

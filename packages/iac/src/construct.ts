@@ -114,10 +114,10 @@ export interface ExecutorBindingSpec {
 }
 
 /**
- * A named deployable unit (`new Stack(app, 'billing-platform')`) — this name becomes the
- * `scp:stack` managed-by marker (`apps/server/src/iac/plan-diff.ts`) that scopes pruning, and the
- * "org" segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has
- * no real org id to key off).
+ * A named deployable unit (`new Stack(app, 'billing-platform')`) — this name becomes the row's
+ * server-written `managed_by_stack` (drizzle/0068), which is what scopes pruning, and the "org"
+ * segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has no real
+ * org id to key off). It is also mirrored into `labels` as `scp:stack`, for humans only.
  */
 export class Stack extends Construct {
   readonly stackName: string;
@@ -151,7 +151,8 @@ export class Stack extends Construct {
    * endpoints already have.
    *
    * The component must be one this stack owns: declared here, or already carrying this stack's
-   * `scp:managed-by=iac`/`scp:stack` labels. `POST /plans` rejects anything else with a 400 —
+   * name in its server-written `managed_by_stack` (drizzle/0068). `POST /plans` rejects anything
+   * else with a 400 —
    * ownership of a mapping is inherited from its component, so a stack cannot configure a component
    * it does not manage.
    */

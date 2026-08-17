@@ -389,10 +389,15 @@ export const RelationshipSchema = z.object({
   fromId: z.string().uuid(),
   toId: z.string().uuid(),
   properties: JsonRecordSchema,
-  // M2 step 3 addition (BUILD_AND_TEST.md §8 M2 item 4): mirrors `objects.labels` so IaC's
-  // `scp:managed-by`/`scp:stack` pruning convention applies uniformly to relationships too
-  // (apps/server/src/iac/plan-diff.ts) — additive, backward-compatible (DESIGN.md "additive-only
-  // within v1"), defaults to `{}` for every relationship created before this milestone.
+  // M2 step 3 addition (BUILD_AND_TEST.md §8 M2 item 4): mirrors `objects.labels` — additive,
+  // backward-compatible (DESIGN.md "additive-only within v1"), defaults to `{}` for every
+  // relationship created before this milestone.
+  //
+  // An IaC apply writes `scp:managed-by`/`scp:stack` here, but SINCE drizzle/0068 THOSE ARE A
+  // DESCRIPTIVE MIRROR AND SCOPE NOTHING. Pruning is scoped by the server-written
+  // `relationships.managed_by_stack` column, precisely because this map is writable by the edge's
+  // own endpoints' owners and the previous wording ("the pruning convention") is what made a
+  // tenant-writable key into a delete decision.
   labels: JsonRecordSchema,
   originDomainId: z.string().uuid(),
   revision: z.number().int(),

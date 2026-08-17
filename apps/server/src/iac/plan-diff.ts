@@ -30,18 +30,38 @@ export const MANAGED_BY_LABEL = "scp:managed-by";
 export const STACK_LABEL = "scp:stack";
 export const MANAGED_BY_IAC_VALUE = "iac";
 
-/** The labels every IaC-managed object/relationship carries, merged in at PLAN time (goal statement — "this happens at PLAN time... not an apply-time surprise"). */
+/**
+ * The HUMAN-READABLE MIRROR of stack ownership, merged into every managed row's labels at PLAN time
+ * (goal statement — "this happens at PLAN time... not an apply-time surprise").
+ *
+ * DESCRIPTIVE ONLY SINCE drizzle/0068 — READ BY NOTHING THAT DECIDES ANYTHING. It used to BE the
+ * ownership record, which meant the prune target wrote its own match key under plain `object:write`:
+ * two label keys enrolled an arbitrary object into a stack's delete pool, or walked an object out of
+ * one so its own decommission silently did nothing. Ownership now lives in the server-written
+ * `managed_by_stack` column (`iac/stack-ownership.ts`); these keys survive only so operators,
+ * dashboards and `scp` output keep the marker they already grep for.
+ *
+ * They are self-healing rather than protected: a tenant edit makes the object's labels differ from
+ * what the manifest merges, so the next plan diffs it as an `update` and the apply rewrites them.
+ * Between those two moments the label can lie to a human reader; it can no longer lie to the diff.
+ *
+ * IF YOU ARE ABOUT TO KEY A DECISION ON THESE, DON'T — read `managed_by_stack` instead. That is the
+ * one sentence this whole change exists to make true.
+ */
 export function managedLabels(stackName: string): Record<string, unknown> {
   return { [MANAGED_BY_LABEL]: MANAGED_BY_IAC_VALUE, [STACK_LABEL]: stackName };
 }
 
-/** True if `labels` carries THIS stack's managed-by marker — the sole scoping test for pruning (goal statement: "pruning is scoped"). */
-export function isStackManaged(
-  labels: Record<string, unknown> | null | undefined,
-  stackName: string
-): boolean {
-  if (!labels) return false;
-  return labels[MANAGED_BY_LABEL] === MANAGED_BY_IAC_VALUE && labels[STACK_LABEL] === stackName;
+/**
+ * True if this row is owned by THIS stack — the sole scoping test for pruning (goal statement:
+ * "pruning is scoped").
+ *
+ * TAKES THE COLUMN, NOT THE LABELS, and the signature changed to `string | null` for exactly that
+ * reason: a predicate that still ACCEPTED a labels map would let a caller re-introduce the evasion
+ * by passing the wrong argument, and it would type-check. There is one input and it is server-written.
+ */
+export function isStackManaged(managedByStack: string | null | undefined, stackName: string): boolean {
+  return managedByStack === stackName;
 }
 
 /**
@@ -137,6 +157,9 @@ export interface ExistingObjectSnapshot {
   domainId: string | null;
   properties: Record<string, unknown>;
   labels: Record<string, unknown>;
+  /** drizzle/0068 — the server-written owning stack, or `null`. THE prune-scoping input; `labels`
+   *  above is compared for drift and read for nothing else. */
+  managedByStack: string | null;
 }
 
 export interface ExistingRelationshipTriple {
@@ -150,16 +173,16 @@ export interface PlanDiffSnapshot {
    * Live objects the diff needs to reason about, keyed implicitly by `urn` (one entry per live
    * URN). Must cover: every URN referenced by `manifest.objects` that currently exists, every URN
    * referenced as a relationship endpoint (`fromUrn`/`toUrn`, including "external" URNs outside
-   * this stack) that currently exists, AND every object currently labeled
-   * `scp:managed-by=iac`/`scp:stack=<this stack>` regardless of whether it's still in the
-   * manifest (prune detection). A superset is harmless — `plans-repo.ts` errs toward fetching
-   * more rather than risking a missed prune/create signal.
+   * this stack) that currently exists, AND every object whose `managed_by_stack` is this stack
+   * (drizzle/0068) regardless of whether it's still in the manifest (prune detection). A superset
+   * is harmless — `plans-repo.ts` errs toward fetching more rather than risking a missed
+   * prune/create signal.
    */
   existingObjects: ExistingObjectSnapshot[];
   /**
-   * Live relationship `(typeId, fromUrn, toUrn)` triples currently labeled
-   * `scp:managed-by=iac`/`scp:stack=<this stack>` — the exhaustive prune-candidate pool. Anything
-   * in here NOT present in `manifest.relationships` becomes a `delete` entry.
+   * Live relationship `(typeId, fromUrn, toUrn)` triples whose `managed_by_stack` is this stack
+   * (drizzle/0068) — the exhaustive prune-candidate pool. Anything in here NOT present in
+   * `manifest.relationships` becomes a `delete` entry.
    */
   managedRelationships: ExistingRelationshipTriple[];
   /**
@@ -385,12 +408,13 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
   }
 
   // Prune: objects this stack managed last time that are no longer in the manifest. Strictly
-  // scoped by `isStackManaged` — an object outside this stack's managed-by/stack labels is never
-  // a delete candidate here, even if its URN happens to collide with something (security
-  // self-check item 2, goal statement).
+  // scoped by `isStackManaged` — an object whose server-written `managed_by_stack` is not this
+  // stack is never a delete candidate here, even if its URN happens to collide with something
+  // (security self-check item 2, goal statement) and even if its LABELS say otherwise. That last
+  // clause is drizzle/0068: the labels are a mirror the subject can edit, the column is not.
   for (const existing of snapshot.existingObjects) {
     if (manifestUrns.has(existing.urn)) continue;
-    if (!isStackManaged(existing.labels, manifest.stackName)) continue;
+    if (!isStackManaged(existing.managedByStack, manifest.stackName)) continue;
     objectEntries.push({
       kind: "object",
       action: "delete",
@@ -689,21 +713,21 @@ export function duplicateProjectionDeclarations(manifest: ResolvedManifest): str
  * whose owning object the stack does not own (C1) — the enforcement half of the ownership-scoping
  * decision documented in `@scp/schemas`'s `iac.ts`.
  *
- * WHY IT MUST EXIST. Neither projection table carries labels, so ownership is inherited from the
- * graph object the row hangs off. Inheritance only scopes pruning if the converse also holds: a
- * stack may only WRITE a row onto an object it owns. Without this, stack A could create or update a
- * binding on stack B's component — a row A can never see again (it is outside A's prune pool,
- * because the object is labelled `scp:stack=B`), so A can never remove it and B's next apply prunes
- * a row it never declared. Refusing the write is what keeps ownership single-valued in both
- * directions, and it is what makes "a stack never touches another stack's rows" true rather than
- * merely true-for-deletes.
+ * WHY IT MUST EXIST. Neither projection table carries an owner of its own, so ownership is
+ * inherited from the graph object the row hangs off. Inheritance only scopes pruning if the converse
+ * also holds: a stack may only WRITE a row onto an object it owns. Without this, stack A could
+ * create or update a binding on stack B's component — a row A can never see again (it is outside A's
+ * prune pool, because the object's `managed_by_stack` is B), so A can never remove it and B's next
+ * apply prunes a row it never declared. Refusing the write is what keeps ownership single-valued in
+ * both directions, and it is what makes "a stack never touches another stack's rows" true rather
+ * than merely true-for-deletes.
  *
  * DERIVED PURELY FROM THE DIFF, exactly like `uncontainedComponentCreates`, so `plans-repo.ts` can
  * re-run it at APPLY time against the STORED diff without re-reading the graph — defence in depth
  * against a plan computed by an older build. An object entry with any action other than `delete` is
  * an object this stack will own once the plan applies (the diff carries an entry for every manifest
- * object, and apply stamps `scp:managed-by=iac`/`scp:stack=<stack>` on each). A `delete` mapping or
- * binding entry is exempt: it can only have come from the prune pool, which is already
+ * object, and apply stamps `managed_by_stack = <stack>` on each — drizzle/0068). A `delete` mapping
+ * or binding entry is exempt: it can only have come from the prune pool, which is already
  * ownership-scoped, and its owning object may legitimately be being deleted by this same plan.
  */
 export function unownedProjectionDeclarations(diff: PlanDiff): string[] {
