@@ -818,8 +818,7 @@ async function dispatchOneBump(
   try {
     const status = await executor.status(ref);
     const outcome = status.stateRef as
-      | { pullRequestNumber?: unknown; pullRequestUrl?: unknown }
-      | undefined;
+      { pullRequestNumber?: unknown; pullRequestUrl?: unknown } | undefined;
     const opened = outcome?.pullRequestNumber;
     if (typeof opened === "number" && Number.isInteger(opened) && opened > 0) {
       await withTenantTx(deps.db, orgId, (tx) =>

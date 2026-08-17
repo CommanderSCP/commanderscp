@@ -678,7 +678,10 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     );
 
     const opened = openedPullRequests.get(change.objectId);
-    expect(opened, "the fixture provider must have opened a pull request for this change").toBeDefined();
+    expect(
+      opened,
+      "the fixture provider must have opened a pull request for this change"
+    ).toBeDefined();
     expect(authorship.pullRequestNumber).toBe(opened!.number);
 
     // ANCHORED ON A LITERAL, NOT ON `opened.url`. Reading the expectation out of the same fixture

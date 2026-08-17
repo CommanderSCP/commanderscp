@@ -67,26 +67,26 @@ describe("atLineStart — a `#` prefix cannot satisfy a presence assertion", () 
 
 describe("stripHashComments — for the text that cannot be anchored", () => {
   const RUN_BLOCK = [
-    "# VERSION ASSERTION: `oscap --version | grep -qF ...` FAILS THE BUILD on drift.",
-    "RUN dnf install -y openscap-scanner \\",
-    "  && oscap --version | grep -qF version \\",
+    "# VERSION ASSERTION: `widgetctl --version | grep -qF ...` FAILS THE BUILD on drift.",
+    "RUN dnf install -y widgetctl \\",
+    "  && widgetctl --version | grep -qF version \\",
     "  && dnf clean all"
   ].join("\n");
 
   it("keeps a CONTINUATION line, which no line-start anchor could match", () => {
-    // `  && oscap …` does not start with `oscap`, so anchoring is the wrong tool here; removing the
+    // `  && widgetctl …` does not start with `widgetctl`, so anchoring is the wrong tool here; removing the
     // prose line above it is what makes the unanchored match mean something.
-    expect(stripHashComments(RUN_BLOCK)).toMatch(/oscap\s+--version\s*\|\s*grep\s+-qF/);
+    expect(stripHashComments(RUN_BLOCK)).toMatch(/widgetctl\s+--version\s*\|\s*grep\s+-qF/);
   });
 
   it("REFUSES when only the prose comment describes the check", () => {
     // The measured defect in `@scp/plugin-managed-scan`'s pin.test.ts: two comments describing the
-    // oscap version assertion satisfied it, so the assertion itself could be deleted outright.
+    // version assertion satisfied it, so the assertion itself could be deleted outright.
     const proseOnly = RUN_BLOCK.split("\n")
-      .filter((l) => !l.startsWith("  && oscap"))
+      .filter((l) => !l.startsWith("  && widgetctl"))
       .join("\n");
-    expect(proseOnly).toMatch(/oscap\s+--version\s*\|\s*grep\s+-qF/);
-    expect(stripHashComments(proseOnly)).not.toMatch(/oscap\s+--version\s*\|\s*grep\s+-qF/);
+    expect(proseOnly).toMatch(/widgetctl\s+--version\s*\|\s*grep\s+-qF/);
+    expect(stripHashComments(proseOnly)).not.toMatch(/widgetctl\s+--version\s*\|\s*grep\s+-qF/);
   });
 
   it("preserves line numbering, so a failure still points at a plausible place", () => {
