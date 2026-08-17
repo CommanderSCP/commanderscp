@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { describe, expect, it } from "vitest";
+import { readStripped } from "@scp/source-census";
 import {
   BUNDLE_IMAGE_SPECS,
   RUNNER_IMAGE_NAMES,
@@ -298,12 +299,25 @@ const definedChartValues = new Set([
   ...chartValuePaths("deploy/helm-bundled")
 ]);
 
-/** The env vars the server actually reads — the one module all three managed classes read from. */
+/**
+ * The env vars the server actually reads — the one module all three managed classes read from.
+ *
+ * READ WITH COMMENTS STRIPPED, and that is the whole point of the check. MEASURED 2026-08-17: with
+ * `runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE` commented out of that module, this file
+ * stayed green at 87/87 — because the module also DOCUMENTS the variable in a doc comment eight
+ * lines above the read ("SCP_MANAGED_DEP_RUNNER_IMAGE — the vetted, pinned `scp-runner-dep`
+ * image…"). So "verify the lever, not just the signal" was verifying a third thing: the PROSE about
+ * the lever. `@scp/source-census` exists so this package and `apps/server` share one reader rather
+ * than each carrying a copy of the stripper.
+ *
+ * THE LIMIT, stated where the assertion is: stripping proves the module still MENTIONS the variable
+ * in code. It cannot prove the value is used, reaches a runner, or is read on the path an operator's
+ * compose install takes — `process.env.X` assigned to a field nobody consumes would satisfy every
+ * assertion below. What proves the rest is `runner-image.integration.test.ts`, which launches the
+ * runner for real.
+ */
 const executorBindingsSource = (): string =>
-  readFileSync(
-    path.join(REPO_ROOT, "apps/server/src/coordination/executor-bindings-repo.ts"),
-    "utf8"
-  );
+  readStripped(path.join(REPO_ROOT, "apps/server/src/coordination/executor-bindings-repo.ts"));
 
 describe("every knob install.sh prescribes is a lever in the mode it prints it in", () => {
   /**

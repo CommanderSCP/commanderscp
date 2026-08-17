@@ -6,11 +6,7 @@ import { describe, expect, it } from "vitest";
 // reachability test below derives its expected member list from, and a `import type` would force
 // that list to be hand-copied — which is exactly what could not detect a member being added.
 import { DependencyManagementReasonSchema, type DependencyManagementReason } from "@scp/schemas";
-import {
-  exportedDeclarations,
-  productionSourceFiles,
-  readStripped
-} from "../test-support/source-census.js";
+import { exportedDeclarations, productionSourceFiles, readStripped } from "@scp/source-census";
 import {
   commanderOnlyFederationVerdict,
   commanderOnlyJobVerdict,
@@ -232,7 +228,7 @@ interface DiscoveredLoop {
  *     This paragraph is not evidence either. Re-derive it.
  *
  * And stripping is only the first of the things a text census cannot do — the rest are enumerated
- * on `readStripped` in `test-support/source-census.ts`. Read them before trusting one.
+ * on `readStripped` in `@scp/source-census`. Read them before trusting one.
  */
 const discoveredLoops: DiscoveredLoop[] = productionSourceFiles(SRC_DIR).flatMap((file) =>
   exportedDeclarations(readStripped(file))

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  // WHY THIS FILE EXISTS — the same defect `deploy/airgap/turbo.json` documents, found in this
+  // package while hardening the pin gate against commented-out pins (M21.7). A census whose SUBJECT
+  // lives outside its own package is invisible to turbo's default (package-scoped) input hashing,
+  // so the gate is replayed from cache instead of run.
+  //
+  // MEASURED 2026-08-17, before this file existed: `pin.test.ts` is the drift gate that decides
+  // WHICH SCANNER BINARY the runner image is built FROM. Editing `apps/runner-scan/Dockerfile`'s
+  // `ARG TRIVY_IMAGE=` to an all-zeros digest — an unvetted image, the exact thing the gate exists
+  // to refuse — and re-running `turbo run test --filter=@scp/plugin-managed-scan` reported
+  // `>>> FULL TURBO`, 5/5 cached, green. Nothing in this package had changed, so nothing ran. A
+  // cache hit on the very input a test is about is the same defect as a test that never asserts,
+  // and it would have quietly undone the anchoring fix that landed alongside this file.
+  //
+  // `$TURBO_ROOT$` (turbo 2.1+) is what makes an out-of-package input expressible.
+  //
+  // DELIBERATELY WIDE, and honest about it: `scanner-containment.test.ts` sweeps `git ls-files`
+  // across every tracked file under apps/, packages/, deploy/, scripts/ and tools/, because the
+  // invariant it guards ("a scanner exists ONLY in apps/runner-scan") is a property of the WHOLE
+  // repo — a `RUN dnf install openscap-scanner` added anywhere is what it is looking for. Narrowing
+  // these inputs to make the cache hit more often would narrow the sweep to match, which is how the
+  // gate gets weakened until it passes vacuously. This package's suite runs in about a second; the
+  // cache is not worth the hole.
+  "tasks": {
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/**",
+        "$TURBO_ROOT$/packages/**",
+        "$TURBO_ROOT$/deploy/**",
+        "$TURBO_ROOT$/scripts/**",
+        "$TURBO_ROOT$/tools/**",
+        "$TURBO_ROOT$/Dockerfile"
+      ]
+    }
+  }
+}

@@ -6,7 +6,7 @@ import {
   matchingParen,
   productionSourceFiles,
   readStripped
-} from "../test-support/source-census.js";
+} from "@scp/source-census";
 import {
   DOMAIN_EVENT_ROUTERS,
   domainEventRouters,
@@ -78,7 +78,7 @@ const MAIN_TS = join(SRC_DIR, "main.ts");
 // -------------------------------------------------------------------------------------------
 //
 // The scanner itself — the production-source walk, the declaration-start regex and the
-// balanced-paren parameter skip — lives in `test-support/source-census.ts`, shared with the
+// balanced-paren parameter skip — lives in `@scp/source-census`, shared with the
 // dependency-loop census in `dependencies/commander-only.test.ts`. It was written here first and
 // moved out the moment there were two consumers: a scanner in two copies is exactly the property
 // CLAUDE.md's census rule names, and the next fix to it would have landed in one of them. Read

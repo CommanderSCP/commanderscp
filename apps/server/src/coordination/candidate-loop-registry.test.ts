@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { readStripped } from "../test-support/source-census.js";
+import { readStripped } from "@scp/source-census";
 
 /**
  * THE CANDIDATE-LOOP REGISTRY — a CI guard for one specific, expensive failure class.

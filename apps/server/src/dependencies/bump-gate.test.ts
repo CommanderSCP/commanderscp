@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { DomainEventJob } from "../events/pgboss.js";
-import { readStripped } from "../test-support/source-census.js";
+import { readStripped } from "@scp/source-census";
 import { BUMP_OBSERVED_EVENT } from "../coordination/correlation.js";
 import {
   DOMAIN_EVENT_ROUTERS,

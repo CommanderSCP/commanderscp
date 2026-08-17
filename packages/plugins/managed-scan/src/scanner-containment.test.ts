@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readStripped } from "@scp/source-census";
 
 /**
  * SCANNER CONTAINMENT — the 13.3a DoD's "grep-level proof the scanners exist only in the runner
@@ -184,10 +185,16 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
   });
 
   it("the orchestrator plugin launches `docker`, never a scanner", () => {
-    const plugin = read("packages/plugins/managed-scan/src/index.ts");
-    expect(invocationHits(plugin)).toEqual([]);
+    // RAW for the ABSENCE half: `invocationHits` finding nothing is the assertion, and stripping
+    // could only shrink what it searches.
+    expect(invocationHits(read("packages/plugins/managed-scan/src/index.ts"))).toEqual([]);
     // …and it really does launch containers (so the assertion above is about a live code path).
-    expect(plugin).toMatch(/execFileAsync\(\s*\n?\s*docker,/);
+    // STRIPPED for the PRESENCE half: this is the non-vacuity guard, and a guard satisfiable by a
+    // comment describing the launch would let the launch itself be deleted with the containment
+    // assertion above passing trivially.
+    expect(readStripped(resolve(REPO_ROOT, "packages/plugins/managed-scan/src/index.ts"))).toMatch(
+      /execFileAsync\(\s*\n?\s*docker,/
+    );
   });
 });
 

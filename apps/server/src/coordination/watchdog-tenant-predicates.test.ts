@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { readStripped } from "../test-support/source-census.js";
+import { readStripped } from "@scp/source-census";
 
 /**
  * EVERY TENANT-TABLE QUERY IN `watchdog.ts` CARRIES `org_id` — a source-level guard, because a

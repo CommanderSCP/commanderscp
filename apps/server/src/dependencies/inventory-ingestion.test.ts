@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { readStripped } from "../test-support/source-census.js";
+import { readStripped } from "@scp/source-census";
 import { ManifestParseError } from "@scp/dependency-manifests";
 import { DOMAIN_EVENT_ROUTERS, domainEventRouters } from "../events/domain-event-registry.js";
 import {
