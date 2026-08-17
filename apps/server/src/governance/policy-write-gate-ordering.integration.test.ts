@@ -25,15 +25,27 @@ import {
  * body omits `domainId`, before the check that would have admitted them ever runs.
  *
  * This file MEASURES that ordering and pins it as it stands today, so that:
- *   - the M21.6 web client knows it must send `domainId` (the component's containment domain, or
- *     the component itself) with an objectRef-scoped policy, and its 403 copy names "policy:write at
- *     this component's domain (or the org)";
+ *   - the M21.6 web client knows it must send `domainId` = THE COMPONENT ITSELF with an
+ *     objectRef-scoped policy (case 2 below: any org object is accepted as `domainId`, RBAC expands
+ *     upward from it so component-, domain- and org-bound administrators all pass, and the policy
+ *     lands contained by the component where its team can PATCH/DELETE it — the containment domain
+ *     refuses the component-bound team, case 3), and its 403 copy names "policy:write at this
+ *     component (or above)";
  *   - whoever changes the ordering (the M21.7 session has taken it to the owner) sees exactly which
  *     assertion flips and updates this pin deliberately, rather than the behaviour drifting behind
  *     a UI-milestone commit.
  *
  * Nothing here is a statement that the ordering is RIGHT. It is a statement of what the server
  * DOES, measured, so nothing else in this round is built on a guess about it.
+ *
+ * THE TRIPWIRE (M21.7 session decision, 2026-08-16): the FIRST case — 403 WITHOUT `domainId` for a
+ * component-bound `policy:write` — is deliberately kept as measured and is the assertion that fires
+ * if anyone lands the "ergonomic default" (authorize a bounded `objectRef` policy at-or-above the
+ * ref when the body omits `domainId`) WITHOUT an owner decision. The M21.7 derivation found that
+ * default splits AUTHORIZED SCOPE from WRITTEN CONTAINMENT: `assertMayDeclareDomainLocal` would run
+ * at the component while the row lands at the org root — a policy the component team was allowed
+ * to author but could never PATCH/DELETE (those routes authorize at the policy's own id). If that
+ * case flips to 201, stop: either the owner decided, or the split just shipped.
  */
 describe("PIN (M21.7-owned): POST /policies authorizes policy:write at domainId ?? org BEFORE the scope-authority check", () => {
   let server: ListeningTestServer;
@@ -118,8 +130,9 @@ describe("PIN (M21.7-owned): POST /policies authorizes policy:write at domainId 
     );
     expect(res.status).toBe(403);
 
-    // The shape the M21.6 web client relies on: `domainId` = `component.domainId`, from a principal
-    // bound at that domain -> 201.
+    // A domain-bound principal naming that domain -> 201. (NOT the shape the M21.6 web client
+    // sends — it sends `domainId` = the component itself, case 2, which admits this principal too
+    // by upward expansion; this case shows why the containment domain was the wrong choice.)
     const domainAdmin = await createTestUser(server, org, [
       { role: "Administrator", scope: containmentDomainId }
     ]);

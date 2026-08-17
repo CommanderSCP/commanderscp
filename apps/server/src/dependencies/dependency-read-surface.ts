@@ -10,7 +10,7 @@ import { DependencySubscriptionDeliverySchema } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { componentDependencies, decisions, objects } from "../db/schema.js";
 import { latestDecisionForSubjectKind } from "../coordination/decisions-repo.js";
-import { decodeCursor, encodeCursor } from "../pagination.js";
+import { CURSOR_UUID_RE, decodeCursor, encodeCursor } from "../pagination.js";
 import { listBumpAuthorshipsByComponent } from "./bump-authorship-repo.js";
 import { DEPENDENCY_BUMP_DECISION_KIND } from "./bump-dispatch.js";
 import { DEPENDENCY_BUMP_MERGE_DECISION_KIND } from "./bump-gate.js";
@@ -67,7 +67,11 @@ function encodeInventoryCursor(row: { lineId: string; manifestPath: string }): s
   ).toString("base64url");
 }
 
-function decodeInventoryCursor(cursor: string): { lineId: string; manifestPath: string } | null {
+/** `null` (= the first page) for anything that is not a well-formed cursor — including a `lineId`
+ *  that is not a uuid, which would otherwise reach `::uuid` and answer 500 to a client error. */
+export function decodeInventoryCursor(
+  cursor: string
+): { lineId: string; manifestPath: string } | null {
   try {
     const parsed: unknown = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
     if (
@@ -77,6 +81,7 @@ function decodeInventoryCursor(cursor: string): { lineId: string; manifestPath: 
       typeof (parsed as Record<string, unknown>).manifestPath === "string"
     ) {
       const p = parsed as { lineId: string; manifestPath: string };
+      if (!CURSOR_UUID_RE.test(p.lineId)) return null;
       return { lineId: p.lineId, manifestPath: p.manifestPath };
     }
     return null;
@@ -318,7 +323,10 @@ export async function readComponentDependencyBumps(
   tx: TenantTx,
   input: ReadComponentDependencyBumpsInput
 ): Promise<{ rows: ComponentDependencyBump[]; nextCursor: string | null }> {
-  const cursor = input.cursor ? decodeCursor(input.cursor) : null;
+  // The descending keyset in `listBumpAuthorshipsByComponent` casts the cursor id `::uuid`; a
+  // well-formed cursor carrying a non-uuid id is a client error, answered as the first page.
+  const decoded = input.cursor ? decodeCursor(input.cursor) : null;
+  const cursor = decoded && CURSOR_UUID_RE.test(decoded.id) ? decoded : null;
   const { items, hasMore } = await listBumpAuthorshipsByComponent(
     tx,
     input.orgId,

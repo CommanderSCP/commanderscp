@@ -15,6 +15,8 @@
  *     baseUrl   default http://localhost:8080 (the COMMANDER review instance)
  *     username  default admin
  *     password  default $SCP_ADMIN_PASSWORD (the bootstrap one-time password the server printed)
+ *   SCP_OPERATOR_TOKEN  optional — when set, PUTs the instance dependency-subscription unlock
+ *     (x-scp-operator-token, the commander's own value); otherwise the unlock is skipped and stated
  *
  * PAIRING: this is the commander half of the review pair. The outpost half — the objects that exist
  * only at the outpost site (field-cluster, the field/* mirror mappings, field-registry) — is
@@ -975,8 +977,11 @@ async function main() {
   // with content: the instance UNLOCK (operator-token write — done here only when the token is in
   // the environment, otherwise stated and skipped: the browser never carries it and neither does the
   // session cookie), one ENABLING policy for checkout-api (component scope; the fixture's admin is the
-  // org root, so no `domainId` is needed), and one OPT-OUT policy for a named major line so the row's
-  // Why has both directions to show. NO inventory rows and NO bumps are invented: the review pair's
+  // org root, so no `domainId` is needed), and one OPT-OUT policy for a named major line — a second
+  // policy in the enablement chain, visible today via `scp dependency-subscriptions resolve
+  // --component checkout-api --ecosystem npm --coordinate left-pad --major 1`; it will show in a
+  // row's Why once a manifest is ingested (with NO rows there is no row Why, and the component
+  // gate's Why resolves a witness line no opt-out names). NO inventory rows and NO bumps are invented: the review pair's
   // repos are `.invalid` and its github binding is inert, so ingestion cannot read a manifest here —
   // the tab honestly shows the chain + writes + "Ingestion status not recorded" until a reachable
   // fake git provider exists (a follow-up). Both policies are upserted BY URN like every other typed

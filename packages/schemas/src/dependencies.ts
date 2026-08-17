@@ -967,9 +967,18 @@ export const ComponentDependencyBumpSchema = z.object({
   pullRequestUrl: z.string().nullable(),
   /** The commit SCP's own branch is at; `null` until the authored push is observed back. */
   headCommit: z.string().nullable(),
-  /** When SCP recorded the authorship — the dispatch. */
+  /**
+   * When SCP RECORDED THE AUTHORSHIP: the change and its branch were proposed and the
+   * `dependency_bump_dispatch` Decision written, in one transaction. The plugin trigger that
+   * actually opens the pull request runs AFTER that transaction, so this timestamp proves the
+   * record, not the trigger — a bump whose trigger failed is listed identically to one whose pull
+   * request is merely pending. `pullRequestNumber: null` therefore reads as "no pull request
+   * recorded", never as "pending". A stored trigger outcome is M21.7's.
+   */
   dispatchedAt: z.string(),
-  /** When the provider confirmed the merge; `null` while open. */
+  /** When the provider confirmed the merge; `null` while no merge is recorded (which includes a
+   *  pull request that is still open, one closed without a merge — never observed — and one that
+   *  was never opened). */
   mergedAt: z.string().nullable(),
   /** The delivery the dispatch RESOLVED TO (the first look is always `pull_request`, ADR-0032 §8c)
    *  and why, read from the newest `dependency_bump_dispatch` Decision; `null` when that Decision

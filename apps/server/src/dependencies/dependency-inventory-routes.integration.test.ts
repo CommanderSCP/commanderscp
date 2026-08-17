@@ -5,15 +5,17 @@ import { randomUUID } from "node:crypto";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import type { ReadFileAtRefRequest, ReadFileAtRefResult } from "@scp/git-provider-core";
-import type {
-  ComponentDependencyBumpsResponse,
-  ComponentDependencyInventoryResponse,
-  DependencyLineKey
+import {
+  asTrustDomainId,
+  type ComponentDependencyBumpsResponse,
+  type ComponentDependencyInventoryResponse,
+  type DependencyLineKey
 } from "@scp/schemas";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { dependencyBumpAuthorships, users } from "../db/schema.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { createSourceMapping } from "../coordination/source-mappings-repo.js";
+import { createObject } from "../graph/objects-repo.js";
 import {
   createOrphanComponent,
   createTestOrg,
@@ -63,7 +65,17 @@ import { resolveComponentIngestionGate } from "./subscription-resolution.js";
  *     it 403s, an unknown component 404s. This is the property that makes the inventory reachable to
  *     a component team at all (`GET /changes` / `GET /decisions` are org-scoped and would 403 them).
  *  7. THE COORDINATE TRAVELS VERBATIM (`@acme/lib`).
- *  8. PAGINATION terminates and neither drops nor repeats a row.
+ *  8. PAGINATION terminates and neither drops nor repeats a row; a syntactically valid but
+ *     semantically garbage cursor (a non-uuid id, an unparseable date) is the FIRST PAGE, not a 500.
+ *  8a. RESOLVED AS THE CALLER — not merely "byte-equal to resolve() for the admin". The objectRef
+ *     policies above match independently of the actor, so the admin and the SYSTEM sentinel gather
+ *     the SAME candidates and a read path that hard-coded `SYSTEM_ACTOR_ID` (or dropped the
+ *     parameter) would leave every other pin green. The one place the actor changes the answer is a
+ *     group-only enable (acting half `via: "group"` — no `owns` edge), which the authoring guard
+ *     refuses at every local door but which reaches the DB over the `federationImport` exemption.
+ *     A member of that group reads `enabled` and the org admin reads `not_enabled` for the SAME
+ *     row; both byte-equal to THEIR OWN resolve(). Mutated once (actor → SYSTEM sentinel in
+ *     `dependency-read-surface.ts`): this pin RED, everything else green; restored.
  *  9. BUMPS: rows are joined to the change name and to the newest merge Decision (drop the join and
  *     the test dies — mutated once), `pullRequestUrl` is `null` on every row, newest dispatch first,
  *     the dispatch Decision's delivery is read (not the tenant-writable `source_ref`), and RBAC is
@@ -449,6 +461,86 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       const tooBig = await getInventory(component, org.adminToken, { limit: "201" });
       expect(tooBig.status).toBe(400);
     });
+
+    it("a well-formed but GARBAGE cursor (non-uuid lineId) is the first page, never a 500", async () => {
+      const garbage = Buffer.from(JSON.stringify({ lineId: "nope", manifestPath: "x" })).toString(
+        "base64url"
+      );
+      const res = await getInventory(component, org.adminToken, { cursor: garbage });
+      expect(res.status).toBe(200);
+      expect(res.body.rows.length).toBe(3);
+    });
+
+    it("rows are resolved AS THE CALLER: a group-only enable (imported, acting half) reads `enabled` for a member and `not_enabled` for the org admin, each byte-equal to THEIR resolve()", async () => {
+      // A fresh component with ONE declared line and NO objectRef policy, so the only enable in
+      // play is the group-scoped one below.
+      const groupComp = (await createOrphanComponent(admin, `group-read-${uuidv7()}`)).id;
+      await declare(
+        groupComp,
+        { ecosystem: "go", coordinate: "golang.org/x/net", major: "0" },
+        "go.mod",
+        "v0.30.0"
+      );
+      const group = await admin.groups.create({ name: `dep-readers-${uuidv7()}` });
+      // The member can READ the component (object:read at it) and is transitively member_of the
+      // group; the admin is bound at the org root and is a member of nothing.
+      const member = await createTestUser(server, org, [{ role: "Viewer", scope: groupComp }]);
+      await admin.relationships.create({
+        typeId: "member_of",
+        fromId: member.objectId,
+        toId: group.id
+      });
+      // A SOLE-group-scoped enable — refused 400 by every local write door (ADR-0032 §6a, both
+      // directions), so it is planted the one way it can reach the DB: the `federationImport`
+      // path, where the choke-point guard is skipped (objects-repo.ts). Foreign origin, revision 1.
+      await inOrg((tx) =>
+        createObject(tx, {
+          orgId: org.orgId,
+          typeId: "policy",
+          actorObjectId,
+          requestId: randomUUID(),
+          name: `group-only-enable-${uuidv7()}`,
+          properties: {
+            scope: { group: group.id },
+            enforcement: "advisory",
+            effects: [{ dependencySubscription: { enabled: true } }]
+          },
+          federationImport: { originDomainId: asTrustDomainId(randomUUID()), revision: 1 }
+        })
+      );
+
+      const asMember = await getInventory(groupComp, member.token);
+      expect(asMember.status).toBe(200);
+      expect(asMember.body.rows.length).toBe(1);
+      const memberRow = asMember.body.rows[0]!;
+      expect(memberRow.subscription.reason).toBe("enabled");
+      expect(memberRow.subscription.contributions.map((c) => c.contributed)).toEqual([
+        "unlock",
+        "enable"
+      ]);
+      const memberClient = new ScpClient({ baseUrl: server.baseUrl, token: member.token });
+      const memberResolved = await memberClient.dependencySubscriptions.resolve(groupComp, {
+        ecosystem: "go",
+        coordinate: "golang.org/x/net",
+        major: "0"
+      });
+      expect(JSON.stringify(memberRow.subscription)).toBe(
+        JSON.stringify(memberResolved.resolution)
+      );
+
+      const asAdmin = await getInventory(groupComp, org.adminToken);
+      const adminRow = asAdmin.body.rows[0]!;
+      expect(adminRow.subscription.reason).toBe("not_enabled");
+      const adminResolved = await admin.dependencySubscriptions.resolve(groupComp, {
+        ecosystem: "go",
+        coordinate: "golang.org/x/net",
+        major: "0"
+      });
+      expect(JSON.stringify(adminRow.subscription)).toBe(JSON.stringify(adminResolved.resolution));
+      // And the gate follows the same actor: the member's gate is open, the admin's is not.
+      expect(asMember.body.componentGate.reason).toBe("enabled");
+      expect(asAdmin.body.componentGate.reason).toBe("no_enabling_contribution");
+    });
   });
 
   // -----------------------------------------------------------------------------------------
@@ -582,6 +674,18 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       // NOT STORED, NOT SYNTHESISED — on every row, PR number or not.
       for (const row of body.rows) expect(row.pullRequestUrl).toBeNull();
       expect(body.nextCursor).toBeNull();
+    });
+
+    it("a well-formed but GARBAGE cursor (unparseable date / non-uuid id) is the first page, never a 500", async () => {
+      for (const junk of [
+        { createdAt: "garbage", id: randomUUID() },
+        { createdAt: new Date().toISOString(), id: "x" }
+      ]) {
+        const cursor = Buffer.from(JSON.stringify(junk)).toString("base64url");
+        const res = await getBumps(bumped, org.adminToken, { cursor });
+        expect(res.status, JSON.stringify(junk)).toBe(200);
+        expect(res.body.rows.map((r) => r.changeId)).toEqual([newerChange, olderChange]);
+      }
     });
 
     it("pages newest-first with limit/cursor", async () => {
