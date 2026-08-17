@@ -77,6 +77,14 @@ jobs:
       # It runs FIRST because it is the cheapest of the three and its failure is the most trivially
       # fixable — `pnpm format` and commit. A contributor should not wait out a typecheck to be
       # told about whitespace.
+      #
+      # `nul-census` runs ahead of even that. It is sub-second, and it is wired HERE rather than left
+      # as a root script for the reason the paragraph above documents: a root script referenced by no
+      # workflow is a check that does not exist. It reports when the set of tracked files containing
+      # literal NUL bytes changes — those files are invisible to `grep -rn` and `rg`, which drop them
+      # from a recursive search silently (no output, exit 1), so the set has to stay known and
+      # committed rather than remembered. See BUILD_AND_TEST.md §4.4b.
+      - run: pnpm nul-census
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
