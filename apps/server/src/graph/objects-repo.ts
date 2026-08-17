@@ -924,6 +924,18 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     // as the walk's "does not itself reach the org root", which would send an operator to repair an
     // ancestor that is fine.
     //
+    // GATED ON A CHANGE, WHICH IS ALSO THE FAIL DIRECTION — worth separating from the cost argument
+    // the outer guard makes, because they happen to agree here and do not always. A row that is
+    // ALREADY parented under a tombstone (grandfathered, or planted before this call existed) can
+    // still be written, including by a full-replacement PUT that restates the parent it has: that
+    // resolves to `nextDomainId === existing.domainId` and never reaches this check. That is
+    // deliberate and is the opposite choice from ADR-0032 §6a's guard a few lines above, which
+    // checks the value about to be STORED precisely so a grandfathered row becomes un-editable until
+    // it is fixed. The difference is what "fixed" costs: an unenforceable policy document can be
+    // rewritten by its author, whereas a detached row's only remaining principal is one bound
+    // directly at it, and refusing its writes would take away the last handle anyone has on it.
+    // Refuse NEW detachments; never brick an existing one further.
+    //
     // The return value is discarded on purpose: the refusal is the whole point. The resolved id is
     // `nextDomainId` by construction for any non-null argument, and the `domainLocal` half is a
     // CREATE-only concern (ADR-0031 §2 — locality is immutable on an update, and `updateObject`
