@@ -72,6 +72,10 @@ describe("router: URLs other code depends on still resolve", () => {
     [`/components/${ID}`, "e2e/component-settings-tab.spec.ts"],
     [`/components/${ID}/settings`, "the component Settings tab"],
     [`/components/${ID}/infrastructure`, "the component Infrastructure lane"],
+    [
+      `/components/${ID}/dependencies`,
+      "the component Dependencies tab (routes/component-detail.tsx's fourth Link)"
+    ],
     [`/graph/${ID}`, "e2e/graph.spec.ts + e2e/seeded-demo.spec.ts"],
     ["/services", "e2e/browse.spec.ts + e2e/seeded-demo.spec.ts"],
     ["/assemblies", "the Assemblies registry (migration 0055)"],

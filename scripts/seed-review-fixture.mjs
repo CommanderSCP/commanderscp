@@ -970,6 +970,93 @@ async function main() {
     }
   }
 
+  // ------------------------------------------ dependency subscriptions (dependency-subscription-ui.md §4.5)
+  // The enablement chain, so the component Dependencies tab has a header strip and a Why dialog
+  // with content: the instance UNLOCK (operator-token write — done here only when the token is in
+  // the environment, otherwise stated and skipped: the browser never carries it and neither does the
+  // session cookie), one ENABLING policy for checkout-api (component scope; the fixture's admin is the
+  // org root, so no `domainId` is needed), and one OPT-OUT policy for a named major line so the row's
+  // Why has both directions to show. NO inventory rows and NO bumps are invented: the review pair's
+  // repos are `.invalid` and its github binding is inert, so ingestion cannot read a manifest here —
+  // the tab honestly shows the chain + writes + "Ingestion status not recorded" until a reachable
+  // fake git provider exists (a follow-up). Both policies are upserted BY URN like every other typed
+  // registry here, so re-runs converge.
+  {
+    const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+    if (!operatorToken) {
+      console.log(
+        "  - skip: SCP_OPERATOR_TOKEN not set — the instance dependency-subscription unlock is not " +
+          "written (the tab will read 'locked (never set)' / 'instance locked'); export the " +
+          "commander's SCP_OPERATOR_TOKEN and re-run, or `scp dependency-subscriptions set-unlock --unlocked`"
+      );
+    } else {
+      try {
+        const res = await fetch(`${BASE}/api/v1/instance/dependency-subscription-unlock`, {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+            "x-scp-operator-token": operatorToken,
+            ...(cookie ? { cookie } : {})
+          },
+          body: JSON.stringify({
+            unlocked: true,
+            note: "review fixture — unlocked so the enablement chain can be exercised"
+          })
+        });
+        const text = await res.text();
+        if (!res.ok) throw new Error(`PUT unlock -> ${res.status}: ${text.slice(0, 300)}`);
+        created.push("instance: dependency-subscription unlock (unlocked)");
+      } catch (e) {
+        failed.push(`instance dependency-subscription unlock: ${e.message}`);
+      }
+    }
+    if (components["checkout-api"]) {
+      await put(
+        "policies",
+        urn("policy", "checkout-api-dependency-subscription"),
+        {
+          name: "dependency subscription: checkout-api",
+          properties: {
+            enforcement: "advisory",
+            scope: { objectRef: components["checkout-api"] },
+            effects: [
+              {
+                dependencySubscription: {
+                  enabled: true,
+                  granularity: "minor_and_patch",
+                  delivery: "pull_request"
+                }
+              }
+            ]
+          }
+        },
+        "checkout-api-dependency-subscription (enable, component scope)"
+      );
+      await put(
+        "policies",
+        urn("policy", "checkout-api-left-pad-opt-out"),
+        {
+          name: "dependency opt-out: left-pad 1 for checkout-api",
+          properties: {
+            enforcement: "advisory",
+            scope: { objectRef: components["checkout-api"] },
+            effects: [
+              {
+                dependencySubscription: {
+                  enabled: false,
+                  ecosystem: "npm",
+                  coordinate: "left-pad",
+                  major: "1"
+                }
+              }
+            ]
+          }
+        },
+        "checkout-api-left-pad-opt-out (opt out of npm left-pad 1)"
+      );
+    }
+  }
+
   console.log(`\n=== created/upserted (${created.length}) ===`);
   for (const c of created) console.log("  +", c);
   if (failed.length) {

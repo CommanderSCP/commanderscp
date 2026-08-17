@@ -16,6 +16,7 @@ import { ChangeDetailPage } from "./routes/change-detail";
 import { ChangePipelinePage } from "./routes/change-pipeline";
 import { ComponentInfrastructurePage, ComponentPipelinePage } from "./routes/component-pipeline";
 import { ComponentDetailLayout } from "./routes/component-detail";
+import { ComponentDependenciesPage } from "./routes/component-dependencies";
 import { ServiceBoardPage } from "./routes/service-board";
 import { ServiceDetailLayout } from "./routes/service-detail";
 import { ServiceInfrastructurePage } from "./routes/service-infrastructure";
@@ -154,6 +155,17 @@ const componentSettingsRoute = createRoute({
   getParentRoute: () => componentDetailRoute,
   path: "/settings",
   component: RegistryDetailPage
+});
+
+// The DEPENDENCIES tab (docs/proposals/dependency-subscription-ui.md §4.1): what this component
+// declares, the head of each major line, whether it is subscribed and why, what has been bumped,
+// and the offered enable / opt-out writes. A fourth child of the same layout so it is a real,
+// deep-linkable URL like the other three. Registered on BOTH sites — the outpost renders the bumps
+// section as a sentence, never an empty table that looks up to date.
+const componentDependenciesRoute = createRoute({
+  getParentRoute: () => componentDetailRoute,
+  path: "/dependencies",
+  component: ComponentDependenciesPage
 });
 
 // ONE SERVICE — a LAYOUT route carrying the Board/Settings tabs, with the release board as its INDEX
@@ -334,6 +346,7 @@ const routeTree = rootRoute.addChildren([
     componentDetailRoute.addChildren([
       componentPipelineRoute,
       componentInfrastructureRoute,
+      componentDependenciesRoute,
       componentSettingsRoute
     ]),
     assemblyDetailRoute.addChildren([assemblyBoardRoute, assemblySettingsRoute]),

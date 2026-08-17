@@ -118,3 +118,23 @@ export const authConfigKey = ["auth", "config"];
 export function componentPipelineKey(idOrUrn: string): unknown[] {
   return ["component", "pipeline", idOrUrn];
 }
+
+/** Query key for the instance dependency-subscription unlock (`GET /instance/dependency-subscription-unlock`)
+ *  — the first conjunct of the enablement chain, one singleton row per deployment, so the key is
+ *  not parameterized. Read-only in the tenant UI (the write is an operator-token CLI action). */
+export function dependencySubscriptionUnlockKey(): unknown[] {
+  return ["dependency-subscriptions", "unlock"];
+}
+
+/** Query key for a component's dependency INVENTORY (`GET /components/{id}/dependency-inventory`)
+ *  — its declared major lines with each line's head and resolved dependency subscription, plus the
+ *  component-level ingestion gate. Invalidated after a policy write authored from the Dependencies
+ *  tab (enable / opt out), because the rows' resolutions are read off the server, never recomputed. */
+export function componentDependencyInventoryKey(idOrUrn: string): unknown[] {
+  return ["component", "dependency-inventory", idOrUrn];
+}
+
+/** Query key for the bumps SCP authored for a component (`GET /components/{id}/dependency-bumps`). */
+export function componentDependencyBumpsKey(idOrUrn: string): unknown[] {
+  return ["component", "dependency-bumps", idOrUrn];
+}
