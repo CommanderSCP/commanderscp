@@ -160,9 +160,19 @@ export async function compileAndPersistPlan(
 
   let topologyDocument: Record<string, unknown> | null = null;
   if (input.topologyObjectId) {
+    // LIVE-FILTERED, the same call `pipeline-resolution.ts`'s `attachedTopology` already makes on the
+    // INHERITED path, whose comment states the rule outright: "a change must not be born pointing at
+    // a tombstone." This is the EXPLICIT path — a `topologyObjectId` passed in by the caller — and it
+    // was the half that skipped the check, so a soft-deleted release-topology was still loaded,
+    // snapshotted into `change_plans.topology_document`, and left to determine the entire wave shape
+    // of the release. Two doors into one decision, one of them unguarded.
+    //
+    // Refusing is safe here in a way it is not at trigger time: this runs on the
+    // `evaluated -> coordinated` edge, so nothing has been dispatched yet and the 404 lands on the
+    // transition rather than mid-flight.
     const topology = await tx.query.objects.findFirst({
-      where: (t, { eq: eqOp, and: andOp }) =>
-        andOp(eqOp(t.id, input.topologyObjectId!), eqOp(t.orgId, input.orgId))
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(eqOp(t.id, input.topologyObjectId!), eqOp(t.orgId, input.orgId), isNullOp(t.deletedAt))
     });
     if (!topology) throw notFound(`release-topology '${input.topologyObjectId}' not found`);
     topologyDocument = topology.properties as Record<string, unknown>;

@@ -65,3 +65,35 @@ export async function markCampaignWaveTargetTerminal(
     .set({ status, updatedAt: new Date() })
     .where(and(eq(campaignWaveTargets.orgId, orgId), eq(campaignWaveTargets.id, targetId)));
 }
+
+/**
+ * Terminalize a campaign wave target the reconciler REFUSED to fan out — today, one whose target
+ * object has been tombstoned (`target-liveness.ts`). The campaign-side sibling of
+ * `wave-targets-repo.ts`'s `terminalizeRefusedWaveTarget`, and guarded the same way and for the same
+ * reason: `status = 'pending'` in the WHERE plus RETURNING, so the caller emits the block Decision +
+ * hash-chained audit event EXACTLY ONCE no matter how many 1 s ticks arrive.
+ *
+ * `failed` rather than a bespoke status, unlike the change side. A campaign wave target's statuses
+ * are `pending | change_proposed | succeeded | failed` and they describe the FAN-OUT, not an
+ * execution — there is no executor here and nothing for a distinct terminal to disambiguate against.
+ * WHY it failed is carried by the block Decision the caller writes, which is where a campaign already
+ * records its compile faults (`campaign-reconcile.ts`'s `plan_diff` verdict).
+ */
+export async function terminalizeRefusedCampaignWaveTarget(
+  tx: TenantTx,
+  orgId: string,
+  targetId: string
+): Promise<boolean> {
+  const result = await tx
+    .update(campaignWaveTargets)
+    .set({ status: "failed", updatedAt: new Date() })
+    .where(
+      and(
+        eq(campaignWaveTargets.orgId, orgId),
+        eq(campaignWaveTargets.id, targetId),
+        eq(campaignWaveTargets.status, "pending")
+      )
+    )
+    .returning({ id: campaignWaveTargets.id });
+  return result.length > 0;
+}

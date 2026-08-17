@@ -53,9 +53,14 @@ export async function compileAndPersistCampaignPlan(
 
   let topologyDocument: Record<string, unknown> | null = null;
   if (input.topologyObjectId) {
+    // LIVE-FILTERED, identically to `plan-service.ts`'s twin — this file is the campaign-side COPY of
+    // that lookup and carried the same missing predicate. Fixing one and not the other is exactly the
+    // half-census this project keeps paying for; a soft-deleted release-topology must not shape a
+    // campaign's waves either. The refusal is recorded as a `plan_diff` block Decision by
+    // `campaign-reconcile.ts`'s compile catch, so it is explainable rather than a bare throw.
     const topology = await tx.query.objects.findFirst({
-      where: (t, { eq: eqOp, and: andOp }) =>
-        andOp(eqOp(t.id, input.topologyObjectId!), eqOp(t.orgId, input.orgId))
+      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+        andOp(eqOp(t.id, input.topologyObjectId!), eqOp(t.orgId, input.orgId), isNullOp(t.deletedAt))
     });
     if (!topology) throw notFound(`release-topology '${input.topologyObjectId}' not found`);
     topologyDocument = topology.properties as Record<string, unknown>;
