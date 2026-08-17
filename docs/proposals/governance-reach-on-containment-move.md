@@ -31,7 +31,7 @@ Two claims in the original framing of this task were **overstated and are correc
 
 > An actor holding `relationship:write` (or `object:write`) at a **service or broader** scope, but **not** `policy:write`, can move a component from a governed container to an ungoverned one. Both endpoint checks pass **legitimately** — that is an ordinary platform-team Operator, not an escalation.
 
-Both containment routes are now two-ended (route 1's move authorization is `feat/m21-7-authz-and-pr-url`'s `resolveDeclaredContainmentParent`; route 2's has always been). **But two-endedness protects the CONTAINERS' holders, not the POLICY AUTHOR.** Nobody who holds `policy:write` is consulted, and nothing tells them afterwards. That is the whole of the gap, and it is real without being dramatic.
+Both containment routes are now two-ended (route 1's move authorization is `graph/containment-parent-authz.ts`'s `resolveDeclaredContainmentParent`, **merged as #244**; route 2's has always been). **But two-endedness protects the CONTAINERS' holders, not the POLICY AUTHOR.** Nobody who holds `policy:write` is consulted, and nothing tells them afterwards. That is the whole of the gap, and it is real without being dramatic.
 
 ## 3. The census — and the third door, which had not been named
 
@@ -67,7 +67,7 @@ Every containment route in `graph/containment.ts` joins `parent.deleted_at IS NU
 Neither is a reach-recording problem, and both are someone else's decision:
 
 - **`POST /api/v1/discovery/accept` is the widest relationship door in the codebase.** It mints a relationship with a `typeId` taken **straight from the request body** — `contains` included, and the three system-managed types the generic route and IaC apply both refuse — on nothing but `object:write` at the org root (`routes/executors.ts:884-889`, `:954`). No `relationship:write`, no both-endpoint check, no system-managed refusal. The *recording* half is covered (it calls `createRelationship`); the authorization half is not, and it should be brought to parity with `routes/relationships.ts`.
-- **`updateObject` never validates the destination.** There is no `resolveDomainId`/`resolveContainmentParent` on the update path, unlike `createObject`, so a new `domain_id` is written verbatim with no proof it names a live object in this org. The *authorization* half of this is `feat/m21-7-authz-and-pr-url`'s and is landing; the *validation* half appears to be nobody's.
+- **`updateObject` never validates the destination.** There is no `resolveDomainId`/`resolveContainmentParent` on the update path, unlike `createObject`, so a new `domain_id` is written verbatim with no proof it names a live object in this org. The *authorization* half is #244's `resolveDeclaredContainmentParent`, now merged; the *validation* half appears to be nobody's.
 
 ## 4. THE OWNER DECISION — prevention, and why it is not taken here
 
@@ -151,6 +151,6 @@ Three cases pin the **negative** half — `3b` (a non-move), `4b` (a leaf delete
 ## 8. What this deliberately does not do
 
 - **It does not prevent anything.** §4 is the open question.
-- **It does not authorize route 1's move.** That is `feat/m21-7-authz-and-pr-url`'s `resolveDeclaredContainmentParent`, landing separately; this change adds no authorization to any path and does not touch `routes/relationships.ts`.
+- **It does not authorize route 1's move.** That is #244's `resolveDeclaredContainmentParent`, already merged; this branch is rebased on it, adds no authorization to any path, and does not touch `routes/relationships.ts`. All 78 of #244's containment tests pass alongside this change.
 - **It does not record reach changes from non-containment match keys** — labels, ownership edges, CEL conditions. Same property, different key, owned by the label-namespace proposal.
 - **It does not fix the two authorization defects in §3**, which are reported with their remedies because each is a separate decision with its own blast radius.

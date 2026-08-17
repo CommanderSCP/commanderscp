@@ -40,11 +40,12 @@ import {
  *    was a misreading of the LIST handler. `CASE 2` pins the symmetry from the component side.
  *  - CLAIM (holds): a COMPONENT-scoped Operator cannot do this at all — authority expands strictly
  *    upward, so a component binding satisfies neither endpoint check at a service. `CASE 2`.
- *  - CLAIM (holds): route 1 (`objects.domain_id`) move-authorization is `feat/m21-7-authz-and-pr-url`'s
- *    and is not duplicated here. This file records reach for route 1; it authorizes nothing.
- *  - CLAIM (STALE when stated): "that branch adds no authorization to `relationships-repo.ts`". It
- *    now changes 96 lines there — but for CYCLES, not for governance reach, so the residual below is
- *    untouched by it either way.
+ *  - CLAIM (holds): route 1 (`objects.domain_id`) move-authorization belongs to
+ *    `graph/containment-parent-authz.ts` (merged as #244; this branch is rebased on it) and is not
+ *    duplicated here. This file records reach for route 1; it authorizes nothing.
+ *  - CLAIM (STALE when stated): "#244 adds no authorization to `relationships-repo.ts`". It changes
+ *    96 lines there — but for CYCLES, not for governance reach, so the residual below is untouched
+ *    by it either way.
  *
  * ## The residual this change addresses, stated exactly
  *
