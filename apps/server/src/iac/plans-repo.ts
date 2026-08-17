@@ -765,9 +765,28 @@ export async function prepareApplyChecks(
       // changes — `plan-diff.ts` records exactly that as the `domainId` changed-field. Only a real
       // change is checked, so an unchanged re-apply demands nothing extra: the same "re-stating the
       // current parent is not a move" rule the helper applies, for the same idempotency reason.
+      //
+      // BOTH ends, not just the destination. The entry below was only half of "a write at two
+      // places": authority expands strictly UPWARD, so holding it at the OBJECT says nothing about
+      // the container the object is being taken OUT of, and a manifest could yank a row out of a
+      // subtree the applier holds nothing at — the mirror image of the escalation the destination
+      // entry stops. The same second end `graph/containment-parent-authz.ts` now checks, and the
+      // one `graph/components-repo.ts`'s `setComponentService` has always checked ("the OLD service
+      // too on a move (it loses a child)"). `found.domainId` is null only for the org root, which
+      // has no source container to authorize at.
+      //
+      // The CYCLE half of the same fix is deliberately NOT duplicated here: it is a subject-free
+      // invariant and lives in `graph/objects-repo.ts`'s `updateObject`, which this path writes
+      // through — see the comment there for why the repo, not the doors, owns it.
       const destination = entry.target?.domainId;
       if (entry.action === "update" && destination && destination !== found.domainId) {
         checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: destination });
+        if (found.domainId) {
+          checks.push({
+            permission: writePermissionFor(entry.typeId),
+            scopeObjectId: found.domainId
+          });
+        }
       }
       if (entry.typeId === "policy" && entry.action === "update") {
         await assertPolicyScopeWithinAuthority(tx, {

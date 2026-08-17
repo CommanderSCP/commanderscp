@@ -14,6 +14,8 @@ import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagin
 // Value import back into relationships-repo. Not a runtime cycle: relationships-repo imports only a
 // TYPE from here (`FederationImportContext`), which erases at compile time.
 import { deleteRelationship } from "./relationships-repo.js";
+// No runtime cycle: containment.ts imports only drizzle, the tenant tx type and errors.
+import { assertRootedContainmentParent } from "./containment.js";
 import { computeObjectContentHash } from "./content-hash.js";
 import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
@@ -765,6 +767,31 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
 
   const nextName = input.name ?? existing.name;
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
+
+  // THE ROOT-REACHABILITY INVARIANT, at the one place an EXISTING row's containment parent is
+  // written. `upsertObjectByUrn`'s update branch delegates here; its only other `domain_id` write is
+  // the federation hand-fill id replacement, which is `federationImport`-only and exempt below.
+  //
+  // At the REPO rather than at the doors on purpose — the doctrine `containment-parent-authz.ts`
+  // states and `federation/domain-local.ts` argues: authorization at the door, invariant at the
+  // repo. It needs no subject and gives every caller the same answer, and — decisively —
+  // `iac/plans-repo.ts` reaches this function through its own drained check list without ever
+  // calling that helper. A door-only cycle refusal ships INERT for IaC apply, which is the second
+  // copy of this decision and was measured writing the cycle happily
+  // (`routes/containment-move-cycle-and-source-authz.integration.test.ts` pins both doors).
+  //
+  // Guarded on an actual CHANGE, so an unchanged re-apply pays no recursive-CTE round trip, and
+  // exempt for `federationImport`: an imported row's parent comes from `resolveImportDomainId`,
+  // which already falls back to the org root, and a refusal here would abort a whole peer bundle
+  // over a row this domain does not own.
+  if (!input.federationImport && nextDomainId !== null && nextDomainId !== existing.domainId) {
+    await assertRootedContainmentParent(tx, {
+      orgId: input.orgId,
+      childId: existing.id,
+      parentId: nextDomainId
+    });
+  }
+
   const nextVersion = existing.version + 1;
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   const nextProvenance = input.federationImport

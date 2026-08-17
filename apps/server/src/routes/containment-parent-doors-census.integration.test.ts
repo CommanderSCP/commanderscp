@@ -33,7 +33,11 @@ import {
  *
  *  - a row may not become its own containment parent. Reachable the moment `null` started
  *    resolving to the org root: `PATCH <org-root> {domainId: null}` would otherwise write a
- *    self-loop, and a cycle has no org-root ancestor.
+ *    self-loop, and a cycle has no org-root ancestor. NOTE the refusal is no longer the depth-1
+ *    test these two cases exercise — a two-hop loop walked straight past that one. It is now a full
+ *    chain walk (`graph/containment.ts`'s `assertRootedContainmentParent`), pinned at every depth,
+ *    on both containment routes and on both doors by
+ *    `containment-move-cycle-and-source-authz.integration.test.ts`.
  *  - a SOFT-DELETED object may not be a containment parent. `authz/resolve.ts` joins
  *    `parent_o.deleted_at IS NULL` on every hop of the scope walk, so parenting under a tombstone
  *    detaches exactly as `null` did. Measured, not reasoned: before the fix, `DELETE /domains/{d}`
@@ -183,8 +187,21 @@ describe("every door that writes a caller-supplied containment parent", () => {
     expect(typed.status, typed.body).toBe(201);
     expect(typed.json().domainId).toBe(org.orgId);
 
-    const generic = await post(org.adminToken, "/api/v1/objects/service", {
-      name: "generic-null-service",
+    // `/objects/service` is NOT the generic door. Fastify prefers the literal static route over the
+    // parametric `/objects/:type` for that exact path, and `services/objects-service.ts` says so in
+    // as many words: "this is the ONLY handler that ever runs for that path". A case aimed there
+    // exercises the M0 shadow handler and reports on a door it never touched — the census's own
+    // failure mode. `team` has no static shadow and is refused by none of the generic route's type
+    // guards, so it genuinely lands in `routes/objects-generic.ts`'s handler.
+    const shadowed = await post(org.adminToken, "/api/v1/objects/service", {
+      name: "shadow-null-service",
+      domainId: null
+    });
+    expect(shadowed.status, shadowed.body).toBe(201);
+    expect(shadowed.json().domainId).toBe(org.orgId);
+
+    const generic = await post(org.adminToken, "/api/v1/objects/team", {
+      name: "generic-null-team",
       domainId: null
     });
     expect(generic.status, generic.body).toBe(201);
