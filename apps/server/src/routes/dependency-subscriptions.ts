@@ -426,7 +426,11 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
           repo: target.repo ?? undefined,
           ref,
           readManifest,
-          actorObjectId: auth.subjectObjectId
+          actorObjectId: auth.subjectObjectId,
+          // WHICH PRODUCER THIS IS, on the component's ingestion stamp (M21.7, drizzle/0065) — so a
+          // reader can tell "this inventory is maintained by the component's own releases" from
+          // "this inventory is only as fresh as the last time an operator ran a backfill".
+          source: "backfill"
         });
         if (outcome.reads > 0) fetched += 1;
         components.push({

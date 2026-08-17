@@ -1932,6 +1932,113 @@ export const componentDependencies = pgTable(
   ]
 );
 
+/** One entry of {@link dependencyIngestionStamps.manifests} — what a pass established about ONE
+ *  manifest path. Declared here beside the column so the jsonb has a type at every read. */
+export interface IngestionStampManifest {
+  /** Repo-relative path, as `component_dependencies.manifest_path` spells it. */
+  readonly path: string;
+  /** `ok` read and parsed; `unreadable` a read or parse that failed THIS TIME and may succeed on
+   *  the next pass; `unsupported` a file SCP structurally cannot read (no parser registered for
+   *  that filename in this build, an LFS pointer, a directory, a binary, an encoding the decoder
+   *  does not implement). The split is by OPERATOR ACTION, which is the test for whether a reason
+   *  deserves its own name (ADR-0032 §7b clause 6). */
+  readonly outcome: "ok" | "unreadable" | "unsupported";
+  /** The ingestion's own sentence about this path. Absent on the ordinary `ok` entry. */
+  readonly detail?: string;
+}
+
+/**
+ * ================================================================================================
+ * THE DEPENDENCY INGESTION'S RECEIPT, PER COMPONENT (migration 0065, ADR-0032 §4)
+ * ================================================================================================
+ * `component_dependencies.observed_at` is PER ROW, so a component with ZERO rows carries no
+ * timestamp at all and three different truths produce the same empty list: never ingested;
+ * ingested fine and genuinely declares nothing; ingestion ran and every manifest was unreadable.
+ * The ingestion has always COMPUTED which one — the verdict, the per-manifest skip reason and a
+ * detail are all on `ComponentIngestionOutcome`, the backfill route reports them per component and
+ * the loop logs them — and NOTHING PERSISTED IT, so a reader arriving later has only the absence of
+ * rows to go on and is forced to render "no dependencies" over all three. The third rendered as the
+ * second is a lie told with a straight face: the component is silently unsubscribed from everything
+ * it declares, and the screen says it has nothing to declare.
+ *
+ * ONE ROW PER COMPONENT, UPSERTED. Bounded by the component count, not by the event rate — a pass
+ * updates a row rather than appending one, which is the distinction ADR-0024's 1.44 GB/day
+ * measurement is actually about.
+ *
+ * "NEVER ATTEMPTED" IS THE ABSENCE OF A ROW, never a value: the only writer of "we have never
+ * looked at this component" would be a pass that ran, which is a contradiction. `scp_app` holds no
+ * DELETE grant here for the same reason — deleting a stamp forges that absence.
+ *
+ * WHY NOT THE DECISION THE INGESTION ALREADY WRITES: it writes NO Decision on the refused paths
+ * (not enabled, not addressable), which are exactly the components whose empty list needs
+ * explaining; and it is persist-on-change with the ref, the commit and every timestamp deliberately
+ * excluded, so "when did we last look?" is unanswerable from it BY DESIGN.
+ */
+export const dependencyIngestionStamps = pgTable(
+  "dependency_ingestion_stamps",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** Org-unbound `references(objects.id)` — the form `changes.objectId` and
+     *  `component_dependencies.component_object_id` use. There is NO composite foreign key here and
+     *  that is a finding rather than an omission: `component_dependencies` carries one because a
+     *  row of it points at a `dependency_lines` row and 0061 gave that table a `(org_id, id)`
+     *  UNIQUE constraint expressly so a composite key had something to reference. This table points
+     *  at nothing org-scoped, and `objects` carries no `(org_id, id)` unique constraint to hang one
+     *  on. 0061's barrier-2 residue therefore applies verbatim (drizzle/0065's header states it in
+     *  full, including what a future read route owes). */
+    componentObjectId: uuid("component_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** WHEN THIS PASS LOOKED — the phase-2 read time where a provider was reached, the start of the
+     *  pass where it refused before reaching one. The same clock `component_dependencies.observed_at`
+     *  is stamped from, so a pass's stamp and its rows describe one instant and two overlapping
+     *  passes order identically in both places. */
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }).notNull(),
+    /** `loop` (event-driven, reacting to an accepted change) or `backfill` (an operator ran
+     *  `POST /dependencies/inventory/backfill`) — "is this inventory maintained by the component's
+     *  own releases, or only by whoever last ran a backfill?", two very different freshnesses
+     *  behind one timestamp. Plain text with no CHECK, like `dependencyLines.ecosystem`: the closed
+     *  set is enforced by the union type at the one write door, and `source` is a REQUIRED input of
+     *  `ingestComponentManifests`, so a third producer does not compile until it names itself. */
+    source: text("source").$type<"loop" | "backfill">().notNull(),
+    /** What this pass established. `ok` everything it had evidence about was read; `partial` some
+     *  read and some not (the mixed case, which `manifests` names); `unreadable` nothing was read
+     *  at all; `not_enabled` the gate was closed so nothing was fetched — the empty list is correct
+     *  and is not evidence about the manifests. */
+    outcome: text("outcome").$type<"ok" | "partial" | "unreadable" | "not_enabled">().notNull(),
+    /** The ingestion's own sentence behind `outcome`. It exists because `manifests` is keyed BY
+     *  PATH and the refusals that matter most have no path — "there is no repository to read this
+     *  component's manifests from" cannot be said in a per-path array. */
+    detail: text("detail"),
+    /** `component_dependencies` rows this pass upserted. 0 IS LEGAL AND MEANINGFUL: `ok` + 0 is
+     *  "read fine, genuinely declares nothing", the state that could not be expressed before this
+     *  table. Counts what was written, never what was pruned — this describes the observation. */
+    rowsWritten: integer("rows_written").notNull(),
+    /** Per manifest path, sorted by path. Per path rather than a count because `manifest_path` is
+     *  part of `component_dependencies`' primary key: one component legitimately declares from
+     *  several manifests, so "one readable, one not" is ordinary rather than hypothetical, and a
+     *  count cannot tell an operator WHICH file to fix. `[]` — never NULL — states "this pass named
+     *  no manifests". */
+    manifests: jsonb("manifests")
+      .$type<IngestionStampManifest[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** When this component was FIRST attempted. Not derivable from `lastAttemptAt`: "attempted once
+     *  months ago and never since" and "attempted for the first time an hour ago" are different
+     *  operational stories behind the same last-attempt timestamp. */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    // `orgId` LEADS, so the primary-key index IS both reads — the point lookup ("what happened to
+    // component C?") and the batched one a list view takes over many components at once. No second
+    // index, because there is no second access path.
+    primaryKey({
+      name: "dependency_ingestion_stamps_pk",
+      columns: [table.orgId, table.componentObjectId]
+    })
+  ]
+);
+
 /**
  * ================================================================================================
  * WHAT COMMANDERSCP ITSELF AUTHORED FOR A DEPENDENCY BUMP (migration 0063, ADR-0032 §8/§9)

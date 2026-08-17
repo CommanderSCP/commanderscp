@@ -7,10 +7,15 @@ import {
   isGitLfsPointer,
   literalRepoFor,
   manifestBasename,
+  manifestStampOutcome,
   MANIFEST_PARSERS,
   MAX_MANIFEST_READS,
+  projectIngestionStamp,
   repoManifestScope,
-  scopeClaims
+  scopeClaims,
+  type IngestedManifest,
+  type ManifestSkipReason,
+  type SkippedManifest
 } from "./inventory-ingestion.js";
 
 /**
@@ -259,6 +264,116 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
 
     it("refuses TWO different repos rather than picking one", () => {
       expect(literalRepoFor(["acme/widgets", "acme/other"])).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // M21.7 — the stamp projection: which of THREE meanings an empty inventory has
+  // -----------------------------------------------------------------------------------------
+  describe("projectIngestionStamp — an empty inventory has three meanings and this picks one", () => {
+    const read = (path: string, declared: number): IngestedManifest => ({
+      path,
+      declared,
+      pruned: 0,
+      removed: false
+    });
+    const skip = (path: string, reason: ManifestSkipReason): SkippedManifest => ({
+      path,
+      reason,
+      detail: `${path} was skipped because ${reason}`
+    });
+
+    it("READ AND EMPTY is `ok` with rowsWritten 0 — the state that was impossible to express", () => {
+      // The whole reason the table exists. Every probe came back "not there", nothing was known
+      // before, so this pass has positive evidence and the honest answer is "declares nothing".
+      // If this ever became `unreadable`, a component with genuinely no dependencies would be
+      // reported to an operator as broken.
+      expect(projectIngestionStamp({ manifests: [], skipped: [] })).toEqual({
+        outcome: "ok",
+        rowsWritten: 0,
+        manifests: []
+      });
+    });
+
+    it("counts rowsWritten as the DECLARATIONS WRITTEN, summed across manifests", () => {
+      const stamp = projectIngestionStamp({
+        manifests: [read("go.mod", 2), read("Dockerfile", 1)],
+        skipped: []
+      });
+      expect(stamp.outcome).toBe("ok");
+      expect(stamp.rowsWritten).toBe(3);
+    });
+
+    it("a manifest that WENT AWAY is still positive evidence: `ok`, and the entry says so", () => {
+      // `removed` means the provider said the path is not there and its rows were pruned. It is an
+      // answer, not a failure — so it must not drag the component into `unreadable`.
+      const stamp = projectIngestionStamp({
+        manifests: [{ path: "go.mod", declared: 0, pruned: 4, removed: true }],
+        skipped: []
+      });
+      expect(stamp.outcome).toBe("ok");
+      expect(stamp.rowsWritten).toBe(0);
+      expect(stamp.manifests[0]?.path).toBe("go.mod");
+      expect(stamp.manifests[0]?.outcome).toBe("ok");
+      expect(stamp.manifests[0]?.detail).toBeDefined();
+    });
+
+    it("MIXED is `partial`, and names WHICH path failed — a count could not", () => {
+      const stamp = projectIngestionStamp({
+        manifests: [read("package.json", 3)],
+        skipped: [skip("Dockerfile", "manifest_unparseable")]
+      });
+      expect(stamp.outcome).toBe("partial");
+      // The declarations that DID land are still counted: a partial pass wrote real rows.
+      expect(stamp.rowsWritten).toBe(3);
+      expect(stamp.manifests.map((m) => [m.path, m.outcome])).toEqual([
+        ["Dockerfile", "unreadable"],
+        ["package.json", "ok"]
+      ]);
+      // The ingestion's own sentence rides along — WHICH file and WHY is the actionable half.
+      expect(stamp.manifests.find((m) => m.path === "Dockerfile")?.detail).toContain(
+        "manifest_unparseable"
+      );
+    });
+
+    it("NOTHING READ is `unreadable` — never `ok`, which would claim the component declares nothing", () => {
+      const stamp = projectIngestionStamp({
+        manifests: [],
+        skipped: [skip("package.json", "read_failed"), skip("go.mod", "ref_not_found")]
+      });
+      expect(stamp.outcome).toBe("unreadable");
+      expect(stamp.rowsWritten).toBe(0);
+      expect(stamp.manifests.map((m) => m.path)).toEqual(["go.mod", "package.json"]);
+    });
+  });
+
+  describe("manifestStampOutcome — `unsupported` and `unreadable` carry different operator actions", () => {
+    it("splits `manifest_unparseable` STRUCTURALLY, not by reading the skip's prose", () => {
+      // The one reason pushed by two different branches: a malformed body (fix the file, and the
+      // next pass may succeed) and "no parser is registered for this filename in this build"
+      // (nothing to fix). They are told apart by asking MANIFEST_PARSERS the same question the
+      // skipping branch asked — the alternative, matching on the detail sentence, is a label named
+      // after a string that any reword breaks.
+      expect(manifestStampOutcome("services/api/go.mod", "manifest_unparseable")).toBe(
+        "unreadable"
+      );
+      expect(manifestStampOutcome("Cargo.toml", "manifest_unparseable")).toBe("unsupported");
+    });
+
+    it("a file SCP structurally cannot decode is `unsupported` — re-running changes nothing", () => {
+      expect(manifestStampOutcome("package.json", "lfs_pointer")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "too_large")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "not_a_file")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "not_text")).toBe("unsupported");
+      expect(manifestStampOutcome("package.json", "unsupported_encoding")).toBe("unsupported");
+    });
+
+    it("a read that failed THIS TIME is `unreadable` — the next pass may succeed", () => {
+      expect(manifestStampOutcome("package.json", "read_failed")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "ref_not_found")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "read_indeterminate")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "incomplete_body")).toBe("unreadable");
+      expect(manifestStampOutcome("package.json", "read_budget_exhausted")).toBe("unreadable");
     });
   });
 

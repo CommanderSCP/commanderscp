@@ -250,7 +250,12 @@ export async function ingestChangeInventory(
         componentObjectId,
         repo: source.repo,
         ref: source.commit ?? source.ref ?? "HEAD",
-        readManifest
+        readManifest,
+        // WHICH PRODUCER THIS IS, on the component's ingestion stamp (M21.7, drizzle/0065). The
+        // distinction is operationally real rather than bookkeeping: `loop` means this component's
+        // inventory is maintained by its OWN releases, `backfill` means it is only as fresh as
+        // whoever last ran one — two very different readings of the same timestamp.
+        source: "loop"
       })
     );
   }
