@@ -1,8 +1,10 @@
 import type { GraphObject, Relationship } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { badRequest, forbidden } from "../errors.js";
+import { hasPermission } from "../authz/resolve.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { createRelationship, listRelationships } from "../graph/relationships-repo.js";
+import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
@@ -110,6 +112,73 @@ export async function createOverlay(
         `via an overlay — use /api/v1/${input.overlayTypeId}s, which requires both endpoints and ` +
         `writes the derived edges atomically`
     );
+  }
+
+  // M21.7 — THE FOURTH SIBLING, AND THE ONE THE OTHER THREE CENSUSES NEVER LOOKED FOR.
+  //
+  // The three refusals above were each written by censusing a guard that `routes/objects-generic.ts`
+  // installs. That file installs FIVE, and the FIRST of them —
+  // `assertNotGovernanceManagedObjectType` — is the one nobody carried over. Measured on the pre-fix
+  // tree: an Operator (plain `object:write` at the org root, `policy:write` nowhere) POSTed
+  // `{base:<a service>, typeId:"policy", properties:{enforcement:"required", effects:[{requireApprovals:
+  // {count:99, fromRole:"Owner", scope:"organization"}}]}}` and got 201. `governance/policy-resolve.ts`
+  // selects EVERY live `policy` row and an unscoped one matches every target, so that is an org-wide
+  // `required` policy demanding an unmeetable quorum — authored by an actor the permission split
+  // (`0010_governance.sql:174-175` grants `policy:write` to Administrator and Owner only) exists to
+  // keep out of governance entirely. Note `assertPolicyOverlayOnlyAddsStrictness` below could not
+  // have caught it: it is gated on base AND overlay both being `policy`, and the base was a service.
+  //
+  // WHY A PERMISSION CHECK AND NOT A TYPE REFUSAL, unlike the three siblings. Those types have a
+  // stricter typed door that writes rows this one cannot, so refusing them here loses nothing.
+  // `policy` is the opposite: DESIGN §13's CANONICAL overlay case is "locally annotating a
+  // commander-distributed global policy", and `assertPolicyOverlayOnlyAddsStrictness` exists for
+  // precisely that shape. Refusing the type would delete the feature and leave that validator dead.
+  // So this door gets the treatment `iac/plans-repo.ts`'s `writePermissionFor` already gives the same
+  // free-form-`typeId` problem: the governance types clear the GOVERNANCE bar instead.
+  //
+  // WHY THE ORG ROOT, and why the sibling `assertPolicyScopeWithinAuthority` is NOT also called here.
+  // `createObject` below passes no `domainId`, so an overlay is ALWAYS created at org-root containment
+  // — which makes org-root `policy:write` exactly the bar `routes/typed-registries.ts` applies to the
+  // same document (`authorize(policy:write, <resolved containment>)`), not a stricter invention. And an
+  // actor who clears it clears every branch of `assertPolicyScopeWithinAuthority` by construction: its
+  // broadest branch (unscoped / selector / group) asks for org-root `policy:write`, and its narrow
+  // `objectRef` branch asks for `policy:write` at-or-above that object, which an org-root grant
+  // satisfies because `authz/resolve.ts`'s `scope_expand` walks UPWARD from the scope being checked.
+  // So calling it too would be an AUTHORIZATION check that can never refuse — an inert guard reads as
+  // coverage and is worse than none. (It has one non-authorization behaviour, a 400 when
+  // `scope.objectRef` resolves to nothing; that is validation, not a bound on reach, and a dangling
+  // ref matches no target — `governance/policy-resolve.ts` compares it against the TARGET's
+  // containment chain — so it fails safe.) If overlays ever gain a containment domain, the
+  // authorization argument stops holding and the scope check has to come back with it.
+  //
+  // WHY IT SITS HERE AND NOT IN THE ROUTE HANDLER, given `routes/typed-registries.ts:122-133` states
+  // the opposite rule ("authorization at the door, invariant at the repo"). Read that rule's REASON,
+  // not its shape: it warns against pushing authorization down onto a function ALSO reached by the
+  // federation importer, whose `actorObjectId` is the synthetic `FEDERATION_IMPORT_ACTOR_ID` — a
+  // subject with no bindings, so the check would refuse every arriving bundle. `createOverlay` is on
+  // no such path: `POST /api/v1/federation/overlays` is its only non-test caller (censused filterless
+  // — `grep -rn createOverlay apps packages`), and journal replay goes to `federation/import-repo.ts`,
+  // never here. The hazard the rule names therefore cannot arise, and the three sibling guards
+  // directly above — plus `iac/plans-repo.ts`, which runs this SAME `policy:write` check
+  // (`writePermissionFor`) inside the repo — put it at the altitude that covers every caller of the
+  // function rather than only today's one door. Two `federation.integration.test.ts` cases that passed
+  // the org-root OBJECT as their actor went red on this and were given real `policy:write` authors:
+  // that is the check being audible, which is the direction an authorization check may fail in.
+  if (isGovernanceManagedObjectType(input.overlayTypeId)) {
+    const ok = await hasPermission(tx, {
+      orgId: input.orgId,
+      subjectObjectId: input.actorObjectId,
+      permission: "policy:write",
+      // The org root object's id IS the org id (auth/local-auth.ts `ensureOrgRootObject`).
+      scopeObjectId: input.orgId
+    });
+    if (!ok) {
+      throw forbidden(
+        `object type '${input.overlayTypeId}' is governance-managed: creating one as an overlay ` +
+          `requires 'policy:write' at the organization root (an overlay is always created at ` +
+          `org-root containment), which is the same bar /api/v1/policies and /api/v1/controls apply`
+      );
+    }
   }
 
   if (base.typeId === "policy" && input.overlayTypeId === "policy") {

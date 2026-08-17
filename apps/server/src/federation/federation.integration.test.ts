@@ -701,10 +701,19 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       importSyncBundle(tx, domainB.orgId, bundle)
     );
 
+    // M21.7 — a GOVERNANCE overlay now needs a real `policy:write` author, so this case names one
+    // instead of passing the org-root OBJECT as its actor. `createOverlay` gained the governance
+    // permission check the three type guards beside it always implied (`federation/overlay-repo.ts`
+    // — an Operator was minting live org-wide policies through this door), and the org root object
+    // holds no role bindings, so the old actor is refused. This case is about overlay MECHANICS
+    // (replicated base, merged view, base never mutated) and an authorized author is what lets it
+    // reach them; the refusal itself is asserted in
+    // `governance/governance-managed-write-doors.integration.test.ts`.
+    const policyAuthor = await createApprover(domainB, "Administrator");
     const { overlay } = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       createOverlay(tx, {
         orgId: domainB.orgId,
-        actorObjectId: domainB.orgId,
+        actorObjectId: policyAuthor.objectId,
         requestId: "t-overlay",
         baseIdOrUrn: basePolicy.id,
         overlayTypeId: "policy",
@@ -780,11 +789,17 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       importSyncBundle(tx, domainB.orgId, bundle)
     );
 
+    // M21.7 — an AUTHORIZED policy author (see the overlay round-trip case above for why). The point
+    // of this case is that `policy:write` is not a licence to WEAKEN a base policy: the actor clears
+    // the new governance permission check and is still refused by
+    // `assertPolicyOverlayOnlyAddsStrictness`, with a 400 rather than a 403. Passing an unauthorized
+    // actor here would make it green off the permission refusal and prove nothing about strictness.
+    const strictnessAuthor = await createApprover(domainB, "Administrator");
     await expect(
       withTenantTx(domainB.db, domainB.orgId, (tx) =>
         createOverlay(tx, {
           orgId: domainB.orgId,
-          actorObjectId: domainB.orgId,
+          actorObjectId: strictnessAuthor.objectId,
           requestId: "t-weaken",
           baseIdOrUrn: basePolicy.id,
           overlayTypeId: "policy",

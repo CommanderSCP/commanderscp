@@ -39,6 +39,7 @@ import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
+import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import {
@@ -898,6 +899,39 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
             throw forbidden(
               `discovery proposals may not create '${proposedObject.typeId}' objects — commander-authored ` +
                 `federation config is written only through /api/v1/federation/outposts ('federation:write')`
+            );
+          }
+
+          // M21.7 (ADR-0032 §6a census) — THE SAME PERMISSION MISMATCH, ONE TYPE FAMILY OVER, AND IT
+          // WAS LIVE. The refusal directly above was written by censusing the PEER-BOUND guard; the
+          // census that produced it never asked the same question about the GOVERNANCE-managed types,
+          // so this door kept admitting them. MEASURED on the pre-fix tree: an Operator — plain
+          // `object:write` at the org root, `policy:write` nowhere — POSTed
+          // `{proposal:{objects:[{typeId:"policy", properties:{enforcement:"required", effects:
+          // [{requireApprovals:{count:99, fromRole:"Owner", scope:"organization"}}]}}]}}` and got 201.
+          // `governance/policy-resolve.ts`'s `listPolicyCandidates` selects EVERY live `policy` row and
+          // an unscoped policy matches every target, so that row is a live org-wide `required` policy
+          // demanding an unmeetable quorum, authored by exactly the actor the `object:write` /
+          // `policy:write` split (`drizzle/0010_governance.sql:174-175` grants `policy:write` to
+          // Administrator and Owner only) exists to keep out of governance.
+          //
+          // A TYPE REFUSAL, not a permission upgrade — and unlike the overlay door
+          // (`federation/overlay-repo.ts`, which took a `policy:write` check because DESIGN §13's
+          // canonical overlay case IS annotating a distributed policy), nothing here needs `policy` to
+          // keep working: no discovery plugin proposes governance documents, and a proposal carries no
+          // scope binding for `assertPolicyScopeWithinAuthority` to bind, so there is no author
+          // authority to check against even if we wanted a permission check. The refusal therefore
+          // holds for EVERY caller, including one who legitimately holds `policy:write`.
+          //
+          // Uses the SHARED predicate (`governance/governance-managed-types.ts`), the same one
+          // `routes/objects-generic.ts`'s `assertNotGovernanceManagedObjectType` calls — a second copy
+          // of the type list is how the next governance type gets refused at one door and not the other.
+          if (isGovernanceManagedObjectType(proposedObject.typeId)) {
+            throw forbidden(
+              `discovery proposals may not create '${proposedObject.typeId}' objects — governance ` +
+                `documents are authored only through /api/v1/policies and /api/v1/controls, which ` +
+                `require 'policy:write' and (for policies) bind the declared scope to the author's ` +
+                `own authority; a discovery proposal carries neither`
             );
           }
         }
