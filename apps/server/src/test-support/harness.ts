@@ -545,9 +545,11 @@ export async function waitUntil<T>(
  *
  * The right-hand columns are why "several ticks" was never several ticks. The ARRIVAL column is why
  * the sleep-based `assertStaysExecuting` failed: it asserted `state === "executing"` 4000 ms after
- * `propose()`, in a file whose 25th test runs with ~25 orgs in the sweep, where arrival takes about
- * eleven seconds. That is not a race the test lost occasionally — it is a deadline the test had
- * already missed by 7 s, hidden by the fact that most call sites had waited for something else first.
+ * `propose()`, from the 16th test of a file that has already created 15 orgs by then (28 by the
+ * end) — so the sweep it is waiting on is a long way down the right-hand columns. Reproduced: after
+ * the full 4000 ms the change had not left `proposed`. That is not a race the test lost
+ * occasionally; it is a deadline it had already missed, hidden by the fact that seven of the eight
+ * call sites happen to wait for something else first and are therefore already in `executing`.
  *
  * ## This is a BUDGET, not a measurement
  *

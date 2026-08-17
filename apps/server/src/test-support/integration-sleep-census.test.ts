@@ -28,8 +28,9 @@ import { matchingParen, readStripped } from "@scp/source-census";
  *     interval defaults to 2000ms and is not overridden anywhere in this repo, and each tick then
  *     walks EVERY org in the database (`runReconcileSweep`). Measured: a 2025ms median tick with ONE
  *     org, 2821ms (max 5972ms) with 21, and `propose -> executing` going from 1391ms to **10903ms**
- *     over the same range — against a 4000ms grace. A 3s "several ticks" grace is at most one tick,
- *     and often zero. `RECONCILE_TICK_BUDGET_MS` in `harness.ts` carries the full table.
+ *     over the same range — against a 4000ms grace, in a file that creates 28 orgs. A 3s "several
+ *     ticks" grace is at most one tick, and often zero. `RECONCILE_TICK_BUDGET_MS` in `harness.ts`
+ *     carries the full table.
  *
  * THE REMEDY IS A POSITIVE SIGNAL, not a longer sleep — `harness.ts`'s `assertStaysExecuting` and
  * `waitForChangeParked` are the worked examples. Both watch something the engine WRITES when it
