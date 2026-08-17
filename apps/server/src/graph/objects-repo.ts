@@ -909,8 +909,14 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const nextName = input.name ?? existing.name;
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
 
-  // THE ROOT-REACHABILITY INVARIANT, at the one place an EXISTING row's containment parent is
-  // written. `upsertObjectByUrn`'s update branch delegates here; its only other `domain_id` write is
+  // THE TWO SUBJECT-FREE INVARIANTS BEHIND AN EXISTING ROW'S CONTAINMENT-PARENT WRITE, at the one
+  // place it happens: the parent must still EXIST AND BE LIVE IN THIS ORG (the first call in the
+  // block), and the row must still REACH THE ORG ROOT afterwards (the second). They are separate
+  // questions with separate refusals — see the first call's comment for why the walk does not
+  // subsume the liveness check, which is precisely the assumption that left the liveness half
+  // uninstalled here for four rounds of work on this code.
+  //
+  // `upsertObjectByUrn`'s update branch delegates here; its only other `domain_id` write is
   // the federation hand-fill id replacement, which is `federationImport`-only and exempt below.
   //
   // At the REPO rather than at the doors on purpose — the doctrine `containment-parent-authz.ts`
@@ -926,6 +932,75 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   // which already falls back to the org root, and a refusal here would abort a whole peer bundle
   // over a row this domain does not own.
   if (!input.federationImport && nextDomainId !== null && nextDomainId !== existing.domainId) {
+    // THE VALIDATION HALF OF THIS WRITE — "does this id still name a LIVE object in this org?" —
+    // and it belongs FIRST, ahead of the walk below, for two independent reasons.
+    //
+    // `createObject` has always resolved its parent through this function; `updateObject` never
+    // did. It took `input.domainId` and put it on the column. `containment-parent-authz.ts`'s
+    // module doc has named this split from the day it was written — "what the repo owns is the
+    // invariant half: `resolveContainmentParent` (called from here) is what rejects a `domainId`
+    // naming an object outside the org, and `createObject` still resolves the default parent for
+    // itself" — and the update half of that sentence was never installed.
+    //
+    // WHY THE WALK BELOW IS NOT THIS CHECK, which is what made it survive four rounds of work on
+    // this exact code. `assertRootedContainmentParent` walks `containmentChain(parentId)`, and that
+    // walk deliberately does NOT filter `deleted_at` on its SEED row — "the TARGET itself is not
+    // filtered — governance may legitimately be evaluated over a deleted object", which is correct
+    // for its own purpose. The consequence here is that a TOMBSTONED parent seeds the walk, climbs
+    // to the org root through its own still-live ancestors, and is pronounced rooted. The two
+    // functions ask genuinely different questions and only one of them asks this one.
+    //
+    // MEASURED on the real doors before this call existed, not reasoned about. `POST /plans`
+    // resolves a manifest's `domainId` ONCE, at plan-compute time, and PERSISTS the resolved id in
+    // the plan's diff; `POST /plans/{id}/apply` is a separate request that replays that stored
+    // pointer through this function without ever calling the door helper. Soft-delete the parent in
+    // the window between them and apply answered **200**, the row landed under the tombstone, and
+    // the ORG-ROOT ADMIN's own next GET, PATCH and DELETE of it all answered **403 — permanently**
+    // (`authz/resolve.ts`'s `scopeExpandCte` joins `parent_o.deleted_at IS NULL` on every hop, so
+    // the row's scope expansion terminates at itself). That is byte-for-byte the unrecoverable state
+    // this column's guards exist to prevent, and `resolveContainmentParent`'s own comment records
+    // being paid for once already through `PATCH /services/{s}`.
+    //
+    // The same TOCTOU on the CREATE branch of apply is already refused — because `createObject`
+    // re-validates at APPLY time by calling this function. The asymmetry WAS the bug.
+    //
+    // FIRST, AND CHEAP. This is one PK-indexed SELECT; the walk below is a bounded recursive CTE
+    // (~1 ms measured on this machine). Ordering the narrow refusal ahead of the broad walk is how
+    // the guards on this path have been sequenced since they were installed, and it also produces
+    // the RIGHT diagnostic: a dead parent reported as "does not reference a live object" rather than
+    // as the walk's "does not itself reach the org root", which would send an operator to repair an
+    // ancestor that is fine.
+    //
+    // GATED ON A CHANGE, WHICH IS ALSO THE FAIL DIRECTION — worth separating from the cost argument
+    // the outer guard makes, because they happen to agree here and do not always. A row that is
+    // ALREADY parented under a tombstone (grandfathered, or planted before this call existed) can
+    // still be written, including by a full-replacement PUT that restates the parent it has: that
+    // resolves to `nextDomainId === existing.domainId` and never reaches this check. That is
+    // deliberate and is the opposite choice from ADR-0032 §6a's guard a few lines above, which
+    // checks the value about to be STORED precisely so a grandfathered row becomes un-editable until
+    // it is fixed. The difference is what "fixed" costs: an unenforceable policy document can be
+    // rewritten by its author, whereas a detached row's only remaining principal is one bound
+    // directly at it, and refusing its writes would take away the last handle anyone has on it.
+    // Refuse NEW detachments; never brick an existing one further.
+    //
+    // The return value is discarded on purpose: the refusal is the whole point. The resolved id is
+    // `nextDomainId` by construction for any non-null argument, and the `domainLocal` half is a
+    // CREATE-only concern (ADR-0031 §2 — locality is immutable on an update, and `updateObject`
+    // reads it from the ROW, never from the request).
+    //
+    // FEDERATION IMPORT IS EXEMPT, and here the exemption is PROVABLY INERT rather than a hole —
+    // worth stating, because an exemption whose safety is only asserted is where the next one hides.
+    // `import-repo.ts`'s `object_upsert` branch obtains its `domainId` from `resolveImportDomainId`,
+    // which runs the identical `deleted_at IS NULL` filter and falls back to `undefined` (the org
+    // root) for anything else, so an import can only ever arrive here with `undefined` or an id
+    // already shown to be live and in-org — this guard could never fire for it. The exemption is
+    // therefore kept for consistency with every sibling guard in this function, and because that
+    // branch has NO try/catch: a refusal raised mid-bundle aborts a peer's whole signed journal and
+    // wedges that channel over a row this domain does not own and has no standing to referee. If
+    // `resolveImportDomainId` ever stops filtering tombstones, IT is the place to fix that — not
+    // here, where the blast radius is a peer's entire sync rather than one entry.
+    await resolveContainmentParent(tx, input.orgId, nextDomainId);
+
     await assertRootedContainmentParent(tx, {
       orgId: input.orgId,
       childId: existing.id,
