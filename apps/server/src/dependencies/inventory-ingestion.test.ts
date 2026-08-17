@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { readStripped } from "../test-support/source-census.js";
 import { ManifestParseError } from "@scp/dependency-manifests";
 import { DOMAIN_EVENT_ROUTERS, domainEventRouters } from "../events/domain-event-registry.js";
 import {
@@ -402,12 +402,17 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
      * `events/domain-event-registry.ts`, so this capability's registration is asserted below by
      * running it.
      *
+     * That paragraph was honest and STILL not enough: until 2026-08-17 this read `main.ts` raw, so
+     * it could not tell a live call from a COMMENTED-OUT one either — commenting the whole
+     * `startInventoryIngestionLoop` block out left all 38 cases here green. `readStripped` closes
+     * that one gap and no other; its doc lists the ones that remain.
+     *
      * The behavioural half is `inventory-ingestion.integration.test.ts`'s "the production path"
      * block: a real pg-boss, this capability's real router, `startInventoryIngestionLoop` itself,
      * and the assertion that a domain event lands ROWS IN THE TABLE. That is what fails when the
      * wiring is deleted.
      */
-    const mainTs = readFileSync(join(import.meta.dirname, "..", "main.ts"), "utf8");
+    const mainTs = readStripped(join(import.meta.dirname, "..", "main.ts"));
 
     it("the production registry registers THIS router, under THIS capability's guard", () => {
       // By function identity, not by name: the mis-binding this rules out is the registry pairing

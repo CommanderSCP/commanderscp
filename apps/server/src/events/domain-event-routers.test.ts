@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -102,8 +101,23 @@ function routerFactoriesIn(source: string): string[] {
     .map((declaration) => declaration.name);
 }
 
+/**
+ * `readStripped`, and this read was MISSED when the sibling loop census in
+ * `dependencies/commander-only.test.ts` was converted — the same file's OTHER read (`mainCode`,
+ * below) was converted at the time and this one, three functions up, was not. Fixing one call site
+ * of a concept is this codebase's named recurring bug; a census that only half strips is an
+ * instance of it.
+ *
+ * Measured 2026-08-17, on raw text: an `export function bumpRetryRouter(): DomainEventRouter { … }`
+ * written inside a `/* … *\/` block in `dependencies/bump-gate.ts` — a shape reference in a module
+ * doc, which is ordinary style in this tree — was DISCOVERED as a real router, imported, found
+ * absent from the module, and reported as
+ * `declaredButNotRegistered: ["bumpRetryRouter (dependencies/bump-gate.ts)"]`. A false RED, and an
+ * unfixable-looking one: it names a router that does not exist and no registry entry can satisfy
+ * it. Stripping is what makes this a census of the CODE.
+ */
 const declaredRouters: DiscoveredRouter[] = productionSourceFiles(SRC_DIR).flatMap((file) =>
-  routerFactoriesIn(readFileSync(file, "utf8")).map((factory) => ({
+  routerFactoriesIn(readStripped(file)).map((factory) => ({
     factory,
     file: relative(SRC_DIR, file)
   }))

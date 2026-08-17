@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { DependencyLine } from "@scp/schemas";
+import { readStripped } from "../test-support/source-census.js";
 import type { DomainEventJob } from "../events/pgboss.js";
 import {
   DOMAIN_EVENT_ROUTERS,
@@ -51,12 +51,16 @@ const npmLine = (
  * `events/domain-event-registry.ts`, a pure importable value, precisely so this does not have to be
  * a substring match on a file that cannot be imported. The LOOP half still is one — `main.ts` calls
  * `main()` at module scope — and is labelled as such.
+ *
+ * `readStripped`, NOT `readFileSync`. This census read `main.ts` as RAW TEXT until 2026-08-17, and
+ * a source census that does not strip comments does not check wiring at all: commenting out
+ * `const bumpDispatchLoop = await startBumpDispatchLoop(boss, {…})` left this describe block —
+ * INCLUDING the case named "starts the worker, and stops it on shutdown" — passing 20/20, and the
+ * whole apps/server unit suite green at 972/972. Read `readStripped`'s doc for what a source census
+ * still cannot prove after stripping.
  */
 describe("the composition root actually wires it", () => {
-  const mainTs = readFileSync(
-    join(dirname(fileURLToPath(import.meta.url)), "..", "main.ts"),
-    "utf8"
-  );
+  const mainTs = readStripped(join(dirname(fileURLToPath(import.meta.url)), "..", "main.ts"));
 
   it("registers the router in the production registry, under THIS capability's guard", () => {
     // Identity, not name: the mis-binding this rules out is the registry pairing this router with

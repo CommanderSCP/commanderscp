@@ -206,14 +206,33 @@ interface DiscoveredLoop {
 }
 
 /**
- * `readStripped`, NOT a bare `readFileSync` — the shared module exports it for exactly this, and
- * this census was the one consumer still reading raw text.
+ * `readStripped`, NOT a bare `readFileSync` — the shared module exports it for exactly this.
  *
  * A `export function startSomethingLoop(` inside a `/* … *\/` block — a loop commented out during a
  * revert, or one quoted in a module doc explaining the shape — was DISCOVERED, then `import`ed,
  * then found to export no such name, and landed in `unclassified` as "add it to DEPENDENCY_JOBS".
  * A false RED, and a confusing one: the failure names a loop that does not exist and cannot be
  * fixed by adding a table entry. Stripping comments is what makes the census a census of the CODE.
+ *
+ * THIS NOTE USED TO END "…and this census was the one consumer still reading raw text". THAT WAS
+ * FALSE WHEN IT WAS WRITTEN, and it is worth leaving the correction here rather than deleting the
+ * sentence, because the sentence is the bug. Six other censuses were reading raw text — including
+ * the OTHER read in `events/domain-event-routers.test.ts`, the very file converted alongside this
+ * one, three functions above the line that was fixed. Every one of them was then measured passing
+ * over commented-out wiring (2026-08-17): `bump-dispatch.test.ts` 20/20, `bump-gate.test.ts` 11/11,
+ * `inventory-ingestion.test.ts` 38/38, `candidate-loop-registry.test.ts` 5/5 with a round-robin
+ * bump deleted, and `watchdog-tenant-predicates.test.ts` 1/1 over a tenant query left scoped by RLS
+ * alone.
+ *
+ * Two lessons, both already in CLAUDE.md and both re-learned the expensive way:
+ *   - a census with a FILTER hides the next instance. The sweep that produced "the one consumer"
+ *     looked at census-shaped tests in `dependencies/`; the misses were in `coordination/`,
+ *     `events/` and `deploy/`, and one was a second call site in an already-visited file.
+ *   - a WELL-WRITTEN COMMENT NAMING A HAZARD IS A SIGNAL TO SWEEP, NOT EVIDENCE IT WAS HANDLED.
+ *     This paragraph is not evidence either. Re-derive it.
+ *
+ * And stripping is only the first of the things a text census cannot do — the rest are enumerated
+ * on `readStripped` in `test-support/source-census.ts`. Read them before trusting one.
  */
 const discoveredLoops: DiscoveredLoop[] = productionSourceFiles(SRC_DIR).flatMap((file) =>
   exportedDeclarations(readStripped(file))

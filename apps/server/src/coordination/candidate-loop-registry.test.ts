@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readStripped } from "../test-support/source-census.js";
 
 /**
  * THE CANDIDATE-LOOP REGISTRY — a CI guard for one specific, expensive failure class.
@@ -292,8 +292,25 @@ const SELF_EVICTING: Record<string, string> = {
     "filters out; the same query also filters out S10 foreign-origin rows"
 };
 
+/**
+ * COMMENTS STRIPPED (2026-08-17), and this guard needed it in BOTH directions.
+ *
+ * The false GREEN, measured: comment out BUMP 1 OF 5 in `advanceWaitingChanges` and all five cases
+ * here passed. `bumpColumnsIn` counted the commented-out `.set({ reconcileCursorAt: new Date() })`,
+ * so the count still reached 5 and "the cursor agrees with itself" still found a matching column —
+ * the registry went on asserting a round-robin bump that the engine no longer performs, which is
+ * the 13-day production outage restored. The comment on that assertion said "Looks for the write,
+ * not for a comment"; on raw text that sentence was false.
+ *
+ * The false RED, the other way: `functionNames` matches `async function <name>(`, so an
+ * `async function` quoted in a doc comment — the reconcile files quote plenty — would be censused
+ * as a real candidate loop and demand classification in a table that can never satisfy it.
+ *
+ * These files are heavily commented BY DESIGN (read this file's header), which is exactly what made
+ * a raw-text census here so weak: comments are most of the text it was searching.
+ */
 function readSource(name: string): string {
-  return readFileSync(fileURLToPath(new URL(name, import.meta.url)), "utf8");
+  return readStripped(fileURLToPath(new URL(name, import.meta.url)));
 }
 
 /** Every `async function <name>(` in the given sources — the universe of candidate loop bodies. */

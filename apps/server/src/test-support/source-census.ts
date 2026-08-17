@@ -161,7 +161,76 @@ export function stripComments(source: string): string {
   return out;
 }
 
-/** Read + strip in one step, for the census that reads a composition root as text. */
+/**
+ * Read + strip in one step, for the census that reads a composition root as text.
+ *
+ * ================================================================================================
+ * WHAT A SOURCE CENSUS CAN AND CANNOT PROVE — read this before writing one, and before believing one
+ * ================================================================================================
+ * Use `readStripped`, never a bare `readFileSync`, for any census over TS/JS source. That is not a
+ * style preference: on 2026-08-17 SEVEN censuses in this repo were reading raw text, and every one
+ * of them was measured passing over wiring that had been commented out. The worst were the two
+ * built specifically to catch "component built, never installed" — the failure class CLAUDE.md
+ * names as this codebase's dominant one — so the guard against the dominant bug had the dominant
+ * bug. `bump-dispatch.test.ts` stayed green at 20/20, including a case literally named "the
+ * composition root actually wires it > starts the worker, and stops it on shutdown", with
+ * `startBumpDispatchLoop` commented out in `main.ts`; the whole unit suite stayed green at 972/972.
+ *
+ * STRIPPING BUYS EXACTLY ONE THING: the census stops mistaking a DESCRIPTION of code for code. It
+ * buys nothing else, and the temptation after fixing it is to believe the census is now sound. It
+ * is not. A source census is a grep with good manners. After stripping, ALL OF THIS STILL PASSES:
+ *
+ *   1. DEAD CODE. The call is real, compiles, and is never reached — inside a function nobody
+ *      calls, a branch behind `if (false)`, a module never imported. Text has no call graph.
+ *   2. A FALSE CONDITION. `if (config.enableX) startXLoop(...)` satisfies a census for
+ *      `startXLoop(` while `enableX` is never true in any shipped configuration. This is the
+ *      likeliest way a wiring census goes quietly wrong, because the code looks completely correct.
+ *   3. A STRING LITERAL. `stripComments` deliberately PRESERVES string and template contents (they
+ *      are data, and eating them would corrupt the source), so `const doc = "call startXLoop() to
+ *      begin"` still matches a census for `startXLoop(`. Stripping moved the hazard from comments
+ *      into strings; it did not remove it.
+ *   4. A CALL THAT DOES NOTHING. The composition root calls the starter and the starter's own body
+ *      registers no worker. Measured, and recorded in `inventory-ingestion.test.ts`: deleting
+ *      `startInventoryIngestionLoop`'s own `boss.createQueue`/`boss.work` left that file green.
+ *   5. THE WRONG ARGUMENTS. `toMatch(/startXLoop\(/)` cannot tell which db, host, queue or guard
+ *      was handed over. A census that slices the call text out with a regex and inspects it (see
+ *      `bump-gate.test.ts`'s CEL-sandbox arm) narrows this but never closes it.
+ *   6. A SHADOW. A locally-declared `function startXLoop()` in the same file matches the text of a
+ *      census aimed at the imported one.
+ *
+ * SO: A SOURCE CENSUS PROVES A NECESSARY CONDITION, NEVER A SUFFICIENT ONE. It answers "does the
+ * composition root still MENTION this, in code" — which is worth having, because the realistic
+ * regression is an edit that drops the line entirely, and nothing else in the suite touches
+ * `main.ts`. It does not answer "does this run in production". Only executing the thing does.
+ *
+ * PAIR EVERY SOURCE CENSUS WITH SOMETHING THAT RUNS, and say in the test file which is which. The
+ * pattern this repo settled on:
+ *   - anything IMPORTABLE is asserted by RUNNING it, not by matching its text. M21.7 moved the
+ *     router list out of `main.ts` into `events/domain-event-registry.ts` for exactly this reason,
+ *     so router registration is now a function-identity check against a real value and the text
+ *     census covers only the loops, which `main.ts` starts at module scope and nothing can import;
+ *   - the BEHAVIOUR is an integration test that drives the real component and asserts an effect
+ *     (`inventory-ingestion.integration.test.ts`'s "the production path" — a domain event lands
+ *     rows in the table).
+ * The standing check from CLAUDE.md still governs and no census replaces it: DELETE THE WIRING AND
+ * WATCH A TEST DIE. If nothing goes red, the wiring is not covered — whatever the census says.
+ *
+ * AN OVER-CLAIMING CENSUS IS HOW THIS BUG HAPPENED, so state the limit in the test file too, next
+ * to the assertion. A comment claiming a protection that does not exist is the hazard, not the
+ * documentation of one — `commander-only.test.ts` carried a note saying its census was "the one
+ * consumer still reading raw text" while five others were, and a reviewer who trusted that note
+ * would have stopped looking.
+ *
+ * NON-TS SOURCES ARE THE SAME PROPERTY AND THIS IS THE WRONG TOOL FOR THEM. `stripComments` knows
+ * `//` and slash-star only. Dockerfiles, shell, YAML and `pin.env` comment with `#`, and passing
+ * them through here strips nothing. The property is live there, measured the same day: commenting
+ * out `ARG COSIGN_IMAGE=…` in the root `Dockerfile` left `deploy/airgap/src/cosign-bin.test.ts`
+ * green at 10/11, and that gate exists precisely so the image cannot ship a binary the code does
+ * not assert. Two censuses already handle it correctly and are the pattern to copy — filter the
+ * `#` lines out yourself (`managed-dep/src/runner-image.test.ts`), or anchor the match so a
+ * comment prefix cannot satisfy it (`governance/scan-db.test.ts`'s `/^KEY=(\d+)$/m`). Do NOT run a
+ * Markdown file through a `#` stripper; there `#` is a heading.
+ */
 export function readStripped(file: string): string {
   return stripComments(readFileSync(file, "utf8"));
 }

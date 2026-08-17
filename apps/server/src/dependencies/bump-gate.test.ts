@@ -1,8 +1,8 @@
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { DomainEventJob } from "../events/pgboss.js";
+import { readStripped } from "../test-support/source-census.js";
 import { BUMP_OBSERVED_EVENT } from "../coordination/correlation.js";
 import {
   DOMAIN_EVENT_ROUTERS,
@@ -39,9 +39,16 @@ const srcDir = dirname(fileURLToPath(import.meta.url));
  * `dependency-bump-gate` would resolve `auto_merge`, downgrade it forever, and be green everywhere.
  * That is the fifth instance of "built and never installed" this milestone exists to not become a
  * sixth of, so it is asserted rather than reviewed.
+ *
+ * `readStripped`, NOT `readFileSync` (2026-08-17). Measured on this very block: commenting out
+ * `const bumpGateLoop = await startBumpGateLoop(boss, {…})` and its `.stop()` left all 11 cases
+ * green — and not only the two `toMatch`es. The "hands it the SHARED CEL sandbox" arm slices the
+ * call out with a regex and asserts on its text, so it happily read `getSharedCelSandbox()` and
+ * `host: pluginHost` out of the COMMENTED-OUT call. A census on raw text cannot tell code from a
+ * description of code. See `readStripped`'s doc for what stripping still does not buy.
  */
 describe("the composition root actually wires the gate", () => {
-  const mainTs = readFileSync(join(srcDir, "..", "main.ts"), "utf8");
+  const mainTs = readStripped(join(srcDir, "..", "main.ts"));
 
   it("registers the observed-bump router in the production registry, under the DISPATCHER's guard", () => {
     // By identity: "same guard as the dispatcher's, by import rather than by copy" is the claim the
@@ -90,12 +97,14 @@ describe("the composition root actually wires the gate", () => {
  * this pins the SITE, because the emit lives in `coordination/webhook-processor.ts` — a file the
  * dependencies suite has no other reason to look at, and a place a later edit could quietly drop it
  * from while every dependency test stayed green.
+ *
+ * Stripped for the same reason as the block above, and here the raw read was arguably worse: this
+ * census slices a BRANCH out with `/if \(authoredChangeId\) \{[\s\S]*?continue;/` and asks what is
+ * inside it. Comments are the bulk of that branch's text, so a `writeOutboxEvent` named only in a
+ * comment explaining the emit satisfied the assertion just as well as the emit did.
  */
 describe("the trigger is emitted at the ingress choke point (source census)", () => {
-  const processorTs = readFileSync(
-    join(srcDir, "..", "coordination", "webhook-processor.ts"),
-    "utf8"
-  );
+  const processorTs = readStripped(join(srcDir, "..", "coordination", "webhook-processor.ts"));
 
   it("writes the observed-bump outbox event in the branch that attached the event to a bump", () => {
     const attached = /if \(authoredChangeId\) \{[\s\S]*?continue;/.exec(processorTs)?.[0] ?? "";

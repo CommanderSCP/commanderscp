@@ -1,6 +1,6 @@
-import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readStripped } from "../test-support/source-census.js";
 
 /**
  * EVERY TENANT-TABLE QUERY IN `watchdog.ts` CARRIES `org_id` — a source-level guard, because a
@@ -27,9 +27,23 @@ import { describe, expect, it } from "vitest";
  *
  * WHAT IT CANNOT DO: prove the predicate names the right org. It checks that the query is scoped at
  * all, which is the property that was violated.
+ *
+ * READ WITH COMMENTS STRIPPED (2026-08-17), and of the five censuses converted that day this was
+ * the one whose false green was a SECURITY hole rather than a dead loop. The check asks whether the
+ * literal text `objects.orgId` appears in a window after `.from(objects)` — so
+ *
+ *     .where(and(/* eq(objects.orgId, orgId), *\/ eq(objects.id, change.objectId)))
+ *
+ * passed. Measured: that exact edit to the `waiting` arm left this file green at 1/1 while the
+ * query it guards read rows scoped by RLS alone — the precise defect the block above says nothing
+ * else in the codebase can catch. The same hazard applies to the vacuity floor: on raw text, three
+ * commented-out queries satisfy `toBeGreaterThanOrEqual(3)`.
+ *
+ * That is why this guard's subject must be the CODE and never the file. See `readStripped`'s doc
+ * for what a text census still cannot prove once comments are gone.
  */
 
-const source = readFileSync(fileURLToPath(new URL("./watchdog.ts", import.meta.url)), "utf8");
+const source = readStripped(fileURLToPath(new URL("./watchdog.ts", import.meta.url)));
 
 /** Every `…from(<table>)` in the file, paired with the query text that follows it — up to the next
  *  `.from(`, or 600 characters, whichever comes first. Deliberately crude rather than a parse: the
