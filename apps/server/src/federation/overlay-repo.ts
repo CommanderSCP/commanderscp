@@ -8,7 +8,6 @@ import { isGovernanceManagedObjectType } from "../governance/governance-managed-
 import { isServiceMemberObjectType } from "../graph/service-member-types.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
-import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 
 /**
  * Shared-authority overlays (DESIGN.md §13 "review decision — resolved"): "two domains never
@@ -184,35 +183,6 @@ export async function createOverlay(
 
   if (base.typeId === "policy" && input.overlayTypeId === "policy") {
     assertPolicyOverlayOnlyAddsStrictness(base.properties, input.overlayProperties ?? {});
-  }
-
-  // CRITICAL #1b AT THE FOURTH AND FIFTH DOOR — bind a policy overlay's DECLARED scope to the
-  // author's own `policy:write` authority.
-  //
-  // `assertPolicyScopeWithinAuthority` is AUTHORIZATION, so it deliberately lives at the doors
-  // rather than at the repo choke point (`routes/typed-registries.ts`'s note explains why: the
-  // choke point also serves the federation importer's synthetic subject). Its census named THREE
-  // doors — the typed `/policies` routes and `iac/plans-repo.ts`'s create and update branches. This
-  // route is a FOURTH, and it was not on the list. `POST /api/v1/federation/overlays` takes a
-  // free-form `overlayTypeId` and free-form `overlayProperties`, is authorized with plain
-  // `object:write`, and calls `createObject` directly — and `governance/policy-resolve.ts`'s
-  // `listPolicyCandidates` selects EVERY live `type_id = 'policy'` row in the org with no overlay
-  // exclusion, so an overlay policy is a first-class policy candidate the moment it exists.
-  //
-  // `assertPolicyOverlayOnlyAddsStrictness` above is not a substitute and was never meant to be: it
-  // reads `enforcement` and nothing else, by its own "not a full policy-semantics validator" note.
-  // The scope was unchecked, so an `object:write` holder could mint an org-wide selector-scoped
-  // policy here — including a `dependencySubscription` opt-out, whose whole effect is to TURN
-  // SOMETHING OFF and which therefore gets no protection from a strictest-wins merge.
-  //
-  // Checked against the OVERLAY's own properties, not the base's: the overlay is a separate object
-  // this domain owns, resolved on its own terms, and its scope is whatever it declares.
-  if (input.overlayTypeId === "policy") {
-    await assertPolicyScopeWithinAuthority(tx, {
-      orgId: input.orgId,
-      actorObjectId: input.actorObjectId,
-      properties: input.overlayProperties
-    });
   }
 
   const overlay = await createObject(tx, {

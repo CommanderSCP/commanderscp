@@ -1122,17 +1122,17 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
           orgId: auth.orgId,
           // Authorization only — the ROW is still authored by `FEDERATION_IMPORT_ACTOR_ID`, which is
           // what makes a later signed bundle reconcile over it (see `handfill-repo.ts`'s module doc).
+          // `handFillObject` deliberately does NOT reuse this for the upsert's own `actorObjectId`
+          // (that stays the synthetic import actor, which is what makes the row a shadow copy) — it
+          // is the subject the governance-authority, policy-scope and governance-label refusals all
+          // resolve.
           actorObjectId: auth.subjectObjectId,
           peerIdOrName: request.body.peer,
           typeId: request.body.typeId,
           urn: request.body.urn,
           name: request.body.name,
           properties: request.body.properties,
-          labels: request.body.labels,
-          // The REQUESTING operator. `handFillObject` deliberately does NOT reuse this for the
-          // upsert's `actorObjectId` (that stays the synthetic import actor, which is what makes the
-          // row a shadow copy) — it is the subject the governance-label refusal resolves.
-          actorObjectId: auth.subjectObjectId
+          labels: request.body.labels
         });
       });
       reply.status(201).send(object);
