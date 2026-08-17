@@ -236,7 +236,12 @@ export async function ensureControlRun(
       orgId: input.orgId,
       controlRunId: run.id,
       method: scanMethod,
-      capped
+      capped,
+      // M22.2 — the plugin decided which findings an admitted clause excluded; only the server can
+      // record that as an ADR-0024 retention class. `takeScanFindingsFromTransport` re-validated
+      // these ordinals against the array that actually landed, so a buggy or tampered producer
+      // cannot promote a row that does not exist.
+      excludedOrdinals: taken.excludedOrdinals
     });
   }
   return status;

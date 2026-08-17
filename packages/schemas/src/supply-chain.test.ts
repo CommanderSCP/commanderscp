@@ -1,17 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  SCAN_EXCLUSION_EVIDENCE_CAP,
   SCAN_FINDINGS_PERSIST_CAP,
   SCAN_FINDINGS_TRANSPORT_KEY,
   SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY,
   ScanEvidenceSchema,
+  ScanExclusionClauseSchema,
+  ScanExclusionEffectSchema,
+  applyScanExclusions,
   attachScanFindingsForTransport,
   capScanFindings,
+  effectiveSeverityCountsAfterExclusions,
   parseTrivyFindings,
   scanFindingRetentionClass,
   scanFindingsRecordFor,
   scanMethodCarriesFindings,
   severityCountsFromFindings,
   takeScanFindingsFromTransport,
+  type AdmittedScanExclusionClause,
+  type ScanExclusionClause,
   type ScanFinding
 } from "./supply-chain.js";
 
@@ -252,5 +259,267 @@ describe("M22.1b — the plugin→server transport seam", () => {
         purl: "pkg:apk/alpine/zlib@1.3"
       }
     ]);
+  });
+});
+
+// ===========================================================================================
+// M22.2 (ADR-0033 §1–§4, §7) — the EXCLUSION dimension's pure half: what a clause reaches, what
+// refuses one outright, and how the post-exclusion count is derived.
+//
+// MUTATIONS RUN against this file (2026-08-17), each reverted by an exact inverse edit. MEASURED
+// results; baseline 33 passed. The WIRING mutations live in the header of
+// `apps/server/src/governance/scan-exclusions.integration.test.ts`.
+//
+//   S-1  skip the `record !== "full"` refusal entirely
+//          -> 4 failed (truncated refuses / OpenSCAP never excluded / an ABSENT record refuses /
+//             a truncated scan's effective counts equal its raw counts).
+//   S-2  give the not-yet-built classes a predicate (`() => true`)
+//          -> 1 failed ("a clause of a class whose PREDICATE is not yet built").
+//   S-3  stop decrementing in `effectiveSeverityCountsAfterExclusions`
+//          -> 1 failed ("effectiveSeverityCounts is severityCounts MINUS the excluded").
+//   S-4  drop the `pkgName` matcher comparison
+//          -> 2 failed (A MATCHER MISS / a finding that LACKS the field a clause names).
+// ===========================================================================================
+
+describe("M22.2: applying exclusion clauses to findings", () => {
+  const admitted = (
+    clause: ScanExclusionClause,
+    over: Partial<AdmittedScanExclusionClause> = {}
+  ): AdmittedScanExclusionClause => ({
+    clause,
+    tier: "org",
+    source: "policy:secops@p1",
+    admittedBy: [{ tier: "platform", source: "instance:platform:local" }],
+    ...over
+  });
+
+  /** The base `finding()` helper above carries NO `fixedVersion`, so these two spell the
+   *  distinction out rather than relying on it: `fixable` has one, `noFix` deliberately does not. */
+  const fixable = (over: Partial<ScanFinding> = {}): ScanFinding =>
+    finding({ fixedVersion: "1.1.1t", ...over });
+  const noFix = (over: Partial<ScanFinding> = {}): ScanFinding => {
+    const { fixedVersion: _drop, ...rest } = finding(over);
+    return rest as ScanFinding;
+  };
+
+  it("with NO clauses, nothing is excluded and NO evidence key is produced at all", () => {
+    // The byte-identical default. An `exclusions` key on a deployment with nothing authored would
+    // change every evidence document (and every promotion bundle) on the day this ships.
+    const findings = [fixable(), noFix()];
+    const applied = applyScanExclusions(findings, undefined, "full");
+    expect(applied.findings).toEqual(findings);
+    expect(applied.excludedOrdinals).toEqual([]);
+    expect(applied.evidence).toBeUndefined();
+    expect(applyScanExclusions(findings, { clauses: [] }, "full").evidence).toBeUndefined();
+  });
+
+  it("a `no_fix_available` clause excludes ONLY the findings with no FixedVersion", () => {
+    const findings = [fixable(), noFix({ vulnerabilityId: "CVE-2026-2" }), fixable()];
+    const applied = applyScanExclusions(
+      findings,
+      { clauses: [admitted({ class: "no_fix_available" })] },
+      "full"
+    );
+    expect(applied.excludedOrdinals).toEqual([1]);
+    expect(applied.findings).toHaveLength(2);
+    expect(applied.evidence?.appliedCount).toBe(1);
+    expect(applied.evidence?.applied[0]).toMatchObject({
+      ordinal: 1,
+      class: "no_fix_available",
+      tier: "org",
+      source: "policy:secops@p1",
+      vulnerabilityId: "CVE-2026-2"
+    });
+  });
+
+  it("A MATCHER MISS YIELDS NO EXCLUSION — the opposite sign from the ceiling's fail-closed miss", () => {
+    const findings = [noFix({ pkgName: "openssl" })];
+    const missed = applyScanExclusions(
+      findings,
+      { clauses: [admitted({ class: "no_fix_available", pkgName: "zlib" })] },
+      "full"
+    );
+    expect(missed.excludedOrdinals).toEqual([]);
+    expect(missed.evidence?.appliedCount).toBe(0);
+    // Negative control: the same clause naming the package that is actually there DOES exclude.
+    const hit = applyScanExclusions(
+      findings,
+      { clauses: [admitted({ class: "no_fix_available", pkgName: "openssl" })] },
+      "full"
+    );
+    expect(hit.excludedOrdinals).toEqual([0]);
+  });
+
+  it("a finding that LACKS the field a clause names never matches it", () => {
+    // `ScanFindingSchema` makes nearly every field optional because an entry is counted on Severity
+    // alone. An unidentifiable finding is therefore one no clause can reach — and it still counts.
+    const applied = applyScanExclusions(
+      [{ severity: "high" }],
+      { clauses: [admitted({ class: "no_fix_available", pkgName: "openssl" })] },
+      "full"
+    );
+    expect(applied.excludedOrdinals).toEqual([]);
+  });
+
+  it("EVERY matcher a clause carries must match — they narrow, they never widen", () => {
+    const findings = [noFix({ pkgName: "openssl", class: "os-pkgs" })];
+    const wrongClass = applyScanExclusions(
+      findings,
+      {
+        clauses: [
+          admitted({ class: "no_fix_available", pkgName: "openssl", findingClass: "lang-pkgs" })
+        ]
+      },
+      "full"
+    );
+    expect(wrongClass.excludedOrdinals).toEqual([]);
+  });
+
+  it("a clause of a class whose PREDICATE is not yet built excludes NOTHING", () => {
+    // `vendor_latest`, `declared_fact` and `approved_override` need machinery M22.4–M22.6 build.
+    // Until then a clause of that class is admitted (that is a separate question) and matches
+    // nothing — degrading to "the matchers alone" would exclude a strictly larger set today than
+    // the day the real predicate lands.
+    for (const cls of ["vendor_latest", "declared_fact", "approved_override"] as const) {
+      const applied = applyScanExclusions(
+        [noFix({ pkgName: "openssl" })],
+        { clauses: [admitted({ class: cls, pkgName: "openssl" })] },
+        "full"
+      );
+      expect(applied.excludedOrdinals, `${cls} must exclude nothing yet`).toEqual([]);
+    }
+  });
+
+  it("A TRUNCATED finding set REFUSES EVERY exclusion, and says so", () => {
+    const findings = [noFix()];
+    const applied = applyScanExclusions(
+      findings,
+      { clauses: [admitted({ class: "no_fix_available" })] },
+      "truncated"
+    );
+    expect(applied.excludedOrdinals).toEqual([]);
+    expect(applied.findings).toEqual(findings);
+    expect(applied.evidence).toEqual({
+      clauseCount: 1,
+      appliedCount: 0,
+      applied: [],
+      refused: "truncated"
+    });
+  });
+
+  it("AN OPENSCAP VERDICT CAN NEVER BE EXCLUDED FROM — refused by WHAT SCANNED, never by an empty set", () => {
+    // The refusal must survive a NON-EMPTY findings array. A guard keyed on "there were no findings
+    // to exclude" would pass this test's inverse and be fail-open the day a runner shim emitted
+    // something for OpenSCAP.
+    const applied = applyScanExclusions(
+      [noFix({ pkgName: "openssl" })],
+      { clauses: [admitted({ class: "no_fix_available" })] },
+      scanFindingsRecordFor("openscap", capScanFindings([noFix({ pkgName: "openssl" })]))
+    );
+    expect(applied.excludedOrdinals).toEqual([]);
+    expect(applied.evidence?.refused).toBe("unsupported");
+  });
+
+  it("AN ABSENT record (every pre-M22.1b verdict) refuses too — `not_recorded`, stated positively", () => {
+    const applied = applyScanExclusions(
+      [noFix()],
+      { clauses: [admitted({ class: "no_fix_available" })] },
+      undefined
+    );
+    expect(applied.evidence?.refused).toBe("not_recorded");
+    expect(applied.excludedOrdinals).toEqual([]);
+  });
+
+  it("the applied ENUMERATION is capped while `appliedCount` stays EXACT", () => {
+    // Evidence is copied verbatim into every signed promotion bundle, so the list is bounded — but
+    // the count an operator reads must never be the bounded one.
+    const findings = Array.from({ length: SCAN_EXCLUSION_EVIDENCE_CAP + 5 }, () => noFix());
+    const applied = applyScanExclusions(
+      findings,
+      { clauses: [admitted({ class: "no_fix_available" })] },
+      "full"
+    );
+    expect(applied.evidence?.appliedCount).toBe(SCAN_EXCLUSION_EVIDENCE_CAP + 5);
+    expect(applied.evidence?.applied).toHaveLength(SCAN_EXCLUSION_EVIDENCE_CAP);
+    expect(applied.excludedOrdinals).toHaveLength(SCAN_EXCLUSION_EVIDENCE_CAP + 5);
+  });
+
+  it("effectiveSeverityCounts is severityCounts MINUS the excluded, per severity", () => {
+    const findings = [
+      noFix({ severity: "critical" }),
+      fixable({ severity: "critical" }),
+      noFix({ severity: "high" }),
+      fixable({ severity: "low" })
+    ];
+    const counts = severityCountsFromFindings(findings);
+    expect(counts).toEqual({ critical: 2, high: 1, medium: 0, low: 1 });
+    const applied = applyScanExclusions(
+      findings,
+      { clauses: [admitted({ class: "no_fix_available" })] },
+      "full"
+    );
+    expect(effectiveSeverityCountsAfterExclusions(counts, applied, findings)).toEqual({
+      critical: 1,
+      high: 0,
+      medium: 0,
+      low: 1
+    });
+  });
+
+  it("a TRUNCATED scan's effective counts equal its raw counts — the delta, not a recount", () => {
+    // A recount of the SURVIVORS would report the capped subset's numbers, which are smaller than
+    // what the scanner found. Because a truncated set excludes nothing, the delta is zero and the
+    // two counts stay identical — the property a recount would silently break.
+    const findings = Array.from({ length: SCAN_FINDINGS_PERSIST_CAP + 10 }, () =>
+      noFix({ severity: "high" })
+    );
+    const counts = severityCountsFromFindings(findings);
+    const capped = capScanFindings(findings);
+    const applied = applyScanExclusions(
+      capped.findings,
+      { clauses: [admitted({ class: "no_fix_available" })] },
+      scanFindingsRecordFor("trivy", capped)
+    );
+    expect(applied.evidence?.refused).toBe("truncated");
+    expect(effectiveSeverityCountsAfterExclusions(counts, applied, capped.findings)).toEqual(
+      counts
+    );
+  });
+
+  it("the excluded ORDINALS survive the transport and are re-validated server-side", () => {
+    const findings = [fixable(), noFix()];
+    const wire = attachScanFindingsForTransport(
+      { scanner: "trivy" },
+      capScanFindings(findings),
+      // `99` is past the end — a buggy or tampered producer must not be able to promote a row that
+      // does not exist to accepted-risk retention.
+      [1, 99]
+    );
+    const overRpc = JSON.parse(JSON.stringify(wire)) as Record<string, unknown>;
+    const taken = takeScanFindingsFromTransport(overRpc);
+    expect(taken.excludedOrdinals).toEqual([1]);
+    expect(taken.evidence).not.toHaveProperty("$scanFindingsExcluded");
+  });
+
+  it("no excluded ordinals means no transport key at all", () => {
+    const wire = attachScanFindingsForTransport({ scanner: "trivy" }, capScanFindings([finding()]));
+    expect(wire).not.toHaveProperty("$scanFindingsExcluded");
+    expect(takeScanFindingsFromTransport(wire).excludedOrdinals).toEqual([]);
+  });
+
+  it("retention class splits by role: an EXCLUDED finding is `E`, an ordinary one `O`", () => {
+    expect(scanFindingRetentionClass(true)).toBe("E");
+    expect(scanFindingRetentionClass(false)).toBe("O");
+  });
+
+  it("a clause with an unknown key is REFUSED, not silently widened", () => {
+    // The strictObject is the whole guard: a stripped narrowing key leaves FEWER matchers, and for
+    // a loosening fewer matchers is a WIDENING.
+    expect(
+      ScanExclusionClauseSchema.safeParse({ class: "no_fix_available", pkgNmae: "openssl" }).success
+    ).toBe(false);
+    expect(ScanExclusionEffectSchema.safeParse({ admitt: ["no_fix_available"] }).success).toBe(
+      false
+    );
   });
 });

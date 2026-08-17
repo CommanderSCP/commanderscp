@@ -56,6 +56,21 @@ export interface PersistScanFindingsInput {
   /** The producer's findings, already capped at `SCAN_FINDINGS_PERSIST_CAP` with truncation
    *  recorded. `undefined` when the producer transported none. */
   capped: CappedScanFindings | undefined;
+  /**
+   * M22.2 (ADR-0033 D10, ADR-0024 §D1) — the positions an admitted exclusion clause EXCLUDED.
+   *
+   * These rows are written at retention class `E` instead of `O`, and the split is the whole point
+   * of assigning a class per row: an excluded finding is ACCEPTED-RISK EVIDENCE that explains a live
+   * verdict and records what an operator chose to tolerate, so it must outlive the short telemetry
+   * window an ordinary finding gets. Collapsing the two classes would either keep every finding
+   * forever (this is the highest-cardinality table in the system) or discard the only per-finding
+   * record of why a promotion was allowed.
+   *
+   * The DECIDER is upstream, never here: the plugin (or the promotion scan step) applied the clauses
+   * against a gate context this transaction no longer holds, so re-deriving the set here is not
+   * possible and guessing it would be worse.
+   */
+  excludedOrdinals?: readonly number[];
 }
 
 export async function persistScanFindings(
@@ -71,6 +86,7 @@ export async function persistScanFindings(
   const findings = input.capped?.findings ?? [];
   if (findings.length === 0) return record;
 
+  const excluded = new Set(input.excludedOrdinals ?? []);
   await tx.insert(scanFindings).values(
     findings.map((f, ordinal) => ({
       orgId: input.orgId,
@@ -87,12 +103,13 @@ export async function persistScanFindings(
       class: f.class ?? null,
       target: f.target ?? null,
       purl: f.purl ?? null,
-      // ADR-0024 §D1 class, assigned PER ROW at write time (ADR-0033 D10). NOTHING is excluded until
-      // M22.2 resolves exclusions, so every row written today is `O` — telemetry. This is the
-      // mechanism honestly parameterised, not a classification faked ahead of the thing that
-      // produces it: the day an exclusion applies, that row is written (or promoted) `E` because it
-      // is then accepted-risk evidence explaining a live verdict.
-      retentionClass: scanFindingRetentionClass(false)
+      // ADR-0024 §D1 class, assigned PER ROW at write time (ADR-0033 D10). `E` for a finding an
+      // admitted exclusion clause tolerated — accepted-risk evidence explaining a LIVE verdict — and
+      // `O` for every other, which is telemetry about what a scanner saw. Assigned at INSERT rather
+      // than by a later UPDATE, because the exclusion decision is made in the same call that
+      // produced these rows and a two-step would leave a window where the row's class contradicts
+      // the evidence beside it.
+      retentionClass: scanFindingRetentionClass(excluded.has(ordinal))
     }))
   );
   return record;

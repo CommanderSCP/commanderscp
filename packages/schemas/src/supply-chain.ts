@@ -279,9 +279,10 @@ export const ScanFindingRetentionClassSchema = z.enum(["E", "O"]);
 export type ScanFindingRetentionClass = z.infer<typeof ScanFindingRetentionClassSchema>;
 
 /**
- * The class a finding row is written with. NOTHING is excluded until M22.2 lands the exclusion
- * dimension, so every row written today is `O` — this is the mechanism, honestly parameterised,
- * NOT a classification faked ahead of the thing that produces it.
+ * The class a finding row is written with. M22.2 landed the exclusion dimension, so the `E` arm is
+ * now REACHED in production: a finding an admitted clause excluded is accepted-risk evidence
+ * explaining a live verdict, and is written `E` in the same transaction as the verdict itself.
+ * Every other row stays `O` — telemetry about what a scanner saw.
  */
 export function scanFindingRetentionClass(excluded: boolean): ScanFindingRetentionClass {
   return excluded ? "E" : "O";
@@ -307,17 +308,26 @@ export function scanFindingRetentionClass(excluded: boolean): ScanFindingRetenti
  */
 export const SCAN_FINDINGS_TRANSPORT_KEY = "$scanFindings";
 export const SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY = "$scanFindingsTruncated";
+/** M22.2 — which of the transported findings the plugin EXCLUDED, by position. It rides the same
+ *  seam and for the same reason: the plugin decided the exclusion (it has the findings and the
+ *  gate-resolved clauses on its context) but only the server can write the row's ADR-0024 retention
+ *  class, and an excluded finding is accepted-risk evidence (class `E`) rather than telemetry. */
+export const SCAN_FINDINGS_EXCLUDED_TRANSPORT_KEY = "$scanFindingsExcluded";
 
 /** Attach a producer's capped findings to an outcome's evidence for the trip across the plugin-host
  *  RPC. Called AFTER `ScanEvidenceSchema.parse`, because that parse strips unknown keys. */
 export function attachScanFindingsForTransport(
   evidence: Record<string, unknown>,
-  capped: CappedScanFindings
+  capped: CappedScanFindings,
+  excludedOrdinals: readonly number[] = []
 ): Record<string, unknown> {
   return {
     ...evidence,
     [SCAN_FINDINGS_TRANSPORT_KEY]: capped.findings,
-    [SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY]: capped.truncated
+    [SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY]: capped.truncated,
+    ...(excludedOrdinals.length > 0
+      ? { [SCAN_FINDINGS_EXCLUDED_TRANSPORT_KEY]: [...excludedOrdinals] }
+      : {})
   };
 }
 
@@ -334,19 +344,30 @@ export function attachScanFindingsForTransport(
 export function takeScanFindingsFromTransport(evidence: Record<string, unknown>): {
   evidence: Record<string, unknown>;
   capped: CappedScanFindings | undefined;
+  /** M22.2 — positions within the (re-capped) finding set the producer excluded. Re-validated
+   *  server-side against the array that actually landed: an ordinal past its end is dropped rather
+   *  than trusted, exactly as the findings themselves are re-parsed and re-capped. */
+  excludedOrdinals: number[];
 } {
   const hasKey = SCAN_FINDINGS_TRANSPORT_KEY in evidence;
   const rawTruncated = evidence[SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY];
+  const rawExcluded = evidence[SCAN_FINDINGS_EXCLUDED_TRANSPORT_KEY];
   const rest = { ...evidence };
   delete rest[SCAN_FINDINGS_TRANSPORT_KEY];
   delete rest[SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY];
-  if (!hasKey) return { evidence: rest, capped: undefined };
+  delete rest[SCAN_FINDINGS_EXCLUDED_TRANSPORT_KEY];
+  if (!hasKey) return { evidence: rest, capped: undefined, excludedOrdinals: [] };
   const parsed = z.array(ScanFindingSchema).safeParse(evidence[SCAN_FINDINGS_TRANSPORT_KEY]);
-  if (!parsed.success) return { evidence: rest, capped: undefined };
+  if (!parsed.success) return { evidence: rest, capped: undefined, excludedOrdinals: [] };
   const capped = capScanFindings(parsed.data);
+  const excluded = z.array(z.number().int().nonnegative()).safeParse(rawExcluded);
+  const excludedOrdinals = excluded.success
+    ? [...new Set(excluded.data.filter((o) => o < capped.findings.length))].sort((a, b) => a - b)
+    : [];
   return {
     evidence: rest,
-    capped: { findings: capped.findings, truncated: capped.truncated || rawTruncated === true }
+    capped: { findings: capped.findings, truncated: capped.truncated || rawTruncated === true },
+    excludedOrdinals
   };
 }
 
@@ -536,6 +557,348 @@ export const PutInstanceScanFloorRequestSchema = z.object({
 });
 export type PutInstanceScanFloorRequest = z.infer<typeof PutInstanceScanFloorRequestSchema>;
 
+// ===========================================================================================
+// M22.2 (ADR-0033 §1–§4) — THE EXCLUSION DIMENSION: what is COUNTED, resolved separately from
+// what the count is compared against.
+//
+// ADR-0016's ceiling is a per-severity MIN over an unordered set: commutative, associative, and
+// a child may only ever TIGHTEN. That algebra is untouched here. This is the OPPOSITE direction
+// and therefore gets the OPPOSITE guard — a monotone AND down the tier chain, so a loosening at
+// any depth requires admission from every tier above it. The two dimensions never meet:
+// exclusions change WHAT IS COUNTED, the ceiling changes WHAT THE COUNT IS COMPARED AGAINST.
+//
+// THE INVARIANT THAT OUTRANKS EVERY CONVENIENCE HERE: `severityCounts` keeps meaning WHAT THE
+// SCANNER FOUND. Operators author CEL conditions against `evidence.severityCounts.*`, so
+// redefining that field post-exclusion would silently change the meaning of every rule already
+// written — a compatibility promise to policy authors, not to a linter (there is no contract gate
+// on this shape; `ScanEvidence` never reaches `openapi.v1.json`). The post-exclusion number lives
+// in a NEW `effectiveSeverityCounts`, and ONLY the threshold comparison reads it.
+// ===========================================================================================
+
+/**
+ * The CLASSES of exclusion — the unit the tier chain admits or declines.
+ *
+ * Admission is per CLASS, never per clause: SecOps above says "override requests of this kind may
+ * have effect beneath me", and a tier below then authors the individual clauses. That is what makes
+ * §6's accepted escalation seam (a component owner authors a declaration they benefit from, at a
+ * weaker permission than the one that set the constraint) bounded rather than unbounded — "the
+ * component authors the override; it does not author its own admission".
+ *
+ * A CLOSED enum. A clause naming an unrecognized class fails to parse and therefore excludes
+ * nothing — the safe direction for a loosening.
+ */
+export const ScanExclusionClassSchema = z.enum([
+  /** M22.3 — upstream has shipped no fix at all (`FixedVersion` absent). Pure data over the
+   *  retained finding; no join. */
+  "no_fix_available",
+  /** M22.4 (owner decision D1) — the component is on the latest version of that dependency's major
+   *  line. Needs the ADR-0032 dependency inventory. */
+  "vendor_latest",
+  /** M22.5 (owner decision D2) — the component declared a fact that makes the finding
+   *  inapplicable. */
+  "declared_fact",
+  /** M22.6 (owner decisions D3/D4) — a standing, expiring grant approved at the tier that set the
+   *  rule. */
+  "approved_override"
+]);
+export type ScanExclusionClass = z.infer<typeof ScanExclusionClassSchema>;
+
+/**
+ * ONE exclusion clause — what a `scanExclusion` policy effect's `exclude` key carries.
+ *
+ * `class` is REQUIRED and is the admission key. The remaining fields NARROW which findings the
+ * clause reaches; every one that is PRESENT must equal the finding's corresponding field, and a
+ * finding that does not carry that field never matches (ADR-0033 §1: "on a matcher miss, yields no
+ * exclusion" — the opposite sign from the ceiling's fail-closed miss).
+ *
+ * `z.strictObject` for exactly the reason drizzle/0062's header gives for
+ * `DependencySubscriptionEffectSchema`, and it bites HARDER here: a mistyped NARROWING key would be
+ * silently stripped, leaving a clause with FEWER matchers — which for a loosening is a WIDENING.
+ * `{"class": "no_fix_available", "pkgNmae": "openssl"}` must be refused, not quietly turned into
+ * "every finding with no fix, anywhere in scope".
+ */
+export const ScanExclusionClauseSchema = z.strictObject({
+  class: ScanExclusionClassSchema,
+  /** Exact match on `ScanFinding.vulnerabilityId` (Trivy `VulnerabilityID`). */
+  vulnerabilityId: z.string().min(1).optional(),
+  /** Exact match on `ScanFinding.pkgName`. */
+  pkgName: z.string().min(1).optional(),
+  /** Exact match on `ScanFinding.purl`, VERBATIM as the scanner emitted it — no normalization here,
+   *  matching `ScanFindingSchema.purl`'s own rule that canonicalization belongs at a join where both
+   *  sides are visible. */
+  purl: z.string().min(1).optional(),
+  /** Exact match on `ScanFinding.class` (Trivy `Results[].Class`, e.g. `os-pkgs`/`lang-pkgs`). Named
+   *  `findingClass` because `class` is already taken by the clause's own admission class, and one
+   *  key meaning two different things is how a provenance label goes quietly false. */
+  findingClass: z.string().min(1).optional(),
+  /** Free text recorded verbatim in evidence and in the Decision (charter principle 6 — an auditor
+   *  reads WHY a finding was tolerated, never just that it was). */
+  reason: z.string().max(500).optional()
+});
+export type ScanExclusionClause = z.infer<typeof ScanExclusionClauseSchema>;
+
+/**
+ * The `scanExclusion` POLICY EFFECT — one effect kind carrying BOTH of §1's roles, because they are
+ * two halves of one authoring act and splitting them into two effect kinds would let a reader
+ * believe an `admit` had been authored where a `exclude` was.
+ *
+ *   `{"scanExclusion": {"admit": ["no_fix_available"]}}`
+ *       — this tier ADMITS that class BENEATH it. Authored by whoever holds `policy:write` at or
+ *         above the object it is scoped to.
+ *   `{"scanExclusion": {"exclude": {"class": "no_fix_available", "pkgName": "openssl"}}}`
+ *       — this tier CONTRIBUTES a clause. It has effect only if every tier ABOVE it admitted the
+ *         class.
+ *
+ * An effect carrying NEITHER key is INERT — not an error. It reaches the resolver only from a
+ * document that passed the migration's JSON Schema, and an inert contribution is the safe reading
+ * for a loosening.
+ */
+export const ScanExclusionEffectSchema = z.strictObject({
+  admit: z.array(ScanExclusionClassSchema).optional(),
+  exclude: ScanExclusionClauseSchema.optional()
+});
+export type ScanExclusionEffect = z.infer<typeof ScanExclusionEffectSchema>;
+
+/**
+ * A clause that survived the AND, with the full chain of tiers that admitted it.
+ *
+ * `admittedBy` is not decoration: ADR-0033 §11 requires that "every applied exclusion names its
+ * clause, admitting tier, authority and expiry", and a verdict that says only "excluded" is exactly
+ * the coarse waiver §2 rejected.
+ */
+export const AdmittedScanExclusionClauseSchema = z.object({
+  clause: ScanExclusionClauseSchema,
+  /** The tier the CLAUSE was anchored at. */
+  tier: ScanRequirementTierSchema,
+  /** Human-legible origin: `policy:<name>@<objectId>`. */
+  source: z.string(),
+  /** Every tier above that admitted this clause's class, with the statement that did it. */
+  admittedBy: z.array(z.object({ tier: ScanRequirementTierSchema, source: z.string() }))
+});
+export type AdmittedScanExclusionClause = z.infer<typeof AdmittedScanExclusionClauseSchema>;
+
+/** The gate-resolved exclusion set, threaded to `scan-result-control` on the control-run CONTEXT
+ *  (`context.scanExclusions`) — the SAME conditional-context mechanism that already carries
+ *  `artifactDigest` and `scanThreshold`. A plugin has no database and no lookup ability, so every
+ *  exclusion FACT is resolved server-side and serialized here. */
+export const EffectiveScanExclusionsSchema = z.object({
+  clauses: z.array(AdmittedScanExclusionClauseSchema)
+});
+export type EffectiveScanExclusions = z.infer<typeof EffectiveScanExclusionsSchema>;
+
+/**
+ * WHY EVERY EXCLUSION FOR A SCAN WAS REFUSED — a positive statement, never an inference from an
+ * empty applied list.
+ *
+ *   `truncated`    — the persisted finding set hit `SCAN_FINDINGS_PERSIST_CAP`. "You cannot except
+ *                    what you did not record" (ADR-0033 §7).
+ *   `unsupported`  — this scanner family carries no per-finding material at all. OpenSCAP: XCCDF
+ *                    rule-results have no package, no purl, no `FixedVersion`, no `Class`, and
+ *                    XCCDF emits no `critical`. ADR-0033's consequences list requires this be
+ *                    explicit and tested rather than left to "there were no findings to exclude".
+ *   `not_recorded` — no finding set was recorded at all (a pre-M22.1b verdict, or a producer whose
+ *                    payload did not survive validation).
+ */
+export const ScanExclusionRefusalSchema = z.enum(["truncated", "unsupported", "not_recorded"]);
+export type ScanExclusionRefusal = z.infer<typeof ScanExclusionRefusalSchema>;
+
+/** How many APPLIED exclusions are enumerated in evidence. `control_runs.evidence` is copied
+ *  VERBATIM into every signed promotion bundle (`federation/promotion-repo.ts`), so the enumeration
+ *  is bounded while `appliedCount` stays exact. */
+export const SCAN_EXCLUSION_EVIDENCE_CAP = 100;
+
+/** ONE applied exclusion, as it appears in evidence and in the Decision. */
+export const AppliedScanExclusionSchema = z.object({
+  /** Position of the excluded finding within the PERSISTED set — the `scan_findings.ordinal` of the
+   *  row this decision is about, so evidence and table join without a second identity. */
+  ordinal: z.number().int().nonnegative(),
+  severity: z.enum(COUNTED_SEVERITIES),
+  class: ScanExclusionClassSchema,
+  /** The tier the clause was anchored at, and the policy that authored it. */
+  tier: ScanRequirementTierSchema,
+  source: z.string(),
+  vulnerabilityId: z.string().optional(),
+  pkgName: z.string().optional(),
+  reason: z.string().optional()
+});
+export type AppliedScanExclusion = z.infer<typeof AppliedScanExclusionSchema>;
+
+export const ScanExclusionEvidenceSchema = z.object({
+  /** How many clauses the gate resolved as admitted for this change's targets. */
+  clauseCount: z.number().int().nonnegative(),
+  /** How many findings were actually excluded — EXACT, even when `applied` below is capped. */
+  appliedCount: z.number().int().nonnegative(),
+  applied: z.array(AppliedScanExclusionSchema),
+  /** Present iff admitted clauses existed and NONE could be applied, with the reason. */
+  refused: ScanExclusionRefusalSchema.optional()
+});
+export type ScanExclusionEvidence = z.infer<typeof ScanExclusionEvidenceSchema>;
+
+/**
+ * THE CLASS'S OWN PREDICATE — the half of a clause that the class name promises.
+ *
+ * A clause is `class` + narrowing matchers, and the class is NOT merely a label for admission: it is
+ * an assertion about the finding. A `no_fix_available` clause that excluded a finding which HAS a
+ * fix would make the Decision misdescribe its own inputs (charter principle 6), so the class is
+ * enforced as a conjunct, not trusted as a name.
+ *
+ * `undefined` means THIS CLASS CANNOT YET BE RESOLVED, and a clause of such a class yields NO
+ * exclusion. That is the safe sign and it is deliberate: three of the four classes need machinery
+ * that later increments build (`vendor_latest` an ADR-0032 inventory join, `declared_fact` a typed
+ * component property, `approved_override` a standing grant with a read-time expiry window), and a
+ * class whose predicate is missing must fail CLOSED rather than degrade into "the matchers alone".
+ * Degrading would mean `{"class": "approved_override", "pkgName": "openssl"}` excluded every openssl
+ * finding today and a strictly smaller set the day the grants land — a silent semantic change to an
+ * already-authored clause.
+ *
+ * EXHAUSTIVE over `ScanExclusionClass` on purpose: a fifth class added later is a compile error
+ * here, forcing a decision, rather than silently inheriting either arm.
+ */
+function scanExclusionClassPredicate(
+  cls: ScanExclusionClass
+): ((finding: ScanFinding) => boolean) | undefined {
+  switch (cls) {
+    case "no_fix_available":
+      // The ONLY class resolvable from a retained finding alone. `fixedVersion` is absent exactly
+      // when Trivy reported no `FixedVersion` — read as the signal, never inferred from anything
+      // else (an EMPTY string is already normalized to absent by `parseTrivyFindings`).
+      return (finding) => finding.fixedVersion === undefined;
+    case "vendor_latest":
+    case "declared_fact":
+    case "approved_override":
+      return undefined;
+  }
+}
+
+/** Whether a clause reaches a finding: the class's own predicate AND every present matcher. A
+ *  finding lacking a field the clause names never matches — `undefined !== "openssl"`. */
+export function scanExclusionClauseMatches(
+  clause: ScanExclusionClause,
+  finding: ScanFinding
+): boolean {
+  const predicate = scanExclusionClassPredicate(clause.class);
+  if (!predicate) return false; // class not yet resolvable — NO exclusion
+  if (!predicate(finding)) return false;
+  if (clause.vulnerabilityId !== undefined && finding.vulnerabilityId !== clause.vulnerabilityId)
+    return false;
+  if (clause.pkgName !== undefined && finding.pkgName !== clause.pkgName) return false;
+  if (clause.purl !== undefined && finding.purl !== clause.purl) return false;
+  if (clause.findingClass !== undefined && finding.class !== clause.findingClass) return false;
+  return true;
+}
+
+export interface AppliedScanExclusions {
+  /** The findings that SURVIVE — what the threshold comparison counts. */
+  findings: ScanFinding[];
+  /** Ordinals (positions in the input array) that were excluded, ascending. This is what promotes a
+   *  `scan_findings` row from retention class `O` to `E`: an excluded finding is accepted-risk
+   *  evidence explaining a live verdict (ADR-0024 §D1 per-row assignment, ADR-0033 D10). */
+  excludedOrdinals: number[];
+  /** The evidence projection — exact counts, bounded enumeration. `undefined` when the gate
+   *  resolved NO clauses at all, so a deployment with nothing authored writes byte-identical
+   *  evidence to pre-M22. */
+  evidence: ScanExclusionEvidence | undefined;
+}
+
+/**
+ * APPLY the resolved clauses to a scan's findings — BEFORE counting, never as a waiver on a verdict
+ * (ADR-0033 §2).
+ *
+ * PURE, and the ONE place a clause meets a finding, so both verdict producers (the
+ * `scan-result-control` plugin and the commander's own promotion scan step) can never diverge about
+ * what an exclusion means.
+ *
+ * `record` is the finding set's own marker and it GATES EVERYTHING. Only `full` admits an exclusion:
+ * `truncated`, `unsupported` and ABSENT each refuse EVERY exclusion for the scan, with the reason
+ * stated positively in evidence. That is not defensive coding — it is the ADR-0033 §7 rule, and it
+ * is why the per-scan cap keeping the first N findings in parse order is safe.
+ *
+ * FIRST MATCHING CLAUSE WINS for attribution. A finding is excluded once; which of two matching
+ * clauses is named is decided by the clauses' own deterministic order, so two identical evaluations
+ * attribute identically (the M22.0 write-suppression rule — nothing here may vary between two
+ * evaluations of the same inputs).
+ */
+export function applyScanExclusions(
+  findings: readonly ScanFinding[],
+  effective: EffectiveScanExclusions | undefined,
+  record: ScanFindingsRecord | undefined
+): AppliedScanExclusions {
+  const clauses = effective?.clauses ?? [];
+  if (clauses.length === 0) {
+    return { findings: [...findings], excludedOrdinals: [], evidence: undefined };
+  }
+  if (record !== "full") {
+    const refused: ScanExclusionRefusal =
+      record === "truncated"
+        ? "truncated"
+        : record === "unsupported"
+          ? "unsupported"
+          : "not_recorded";
+    return {
+      findings: [...findings],
+      excludedOrdinals: [],
+      evidence: { clauseCount: clauses.length, appliedCount: 0, applied: [], refused }
+    };
+  }
+
+  const survivors: ScanFinding[] = [];
+  const excludedOrdinals: number[] = [];
+  const applied: AppliedScanExclusion[] = [];
+  for (const [ordinal, finding] of findings.entries()) {
+    const hit = clauses.find((c) => scanExclusionClauseMatches(c.clause, finding));
+    if (!hit) {
+      survivors.push(finding);
+      continue;
+    }
+    excludedOrdinals.push(ordinal);
+    if (applied.length < SCAN_EXCLUSION_EVIDENCE_CAP) {
+      applied.push({
+        ordinal,
+        severity: finding.severity,
+        class: hit.clause.class,
+        tier: hit.tier,
+        source: hit.source,
+        ...(finding.vulnerabilityId ? { vulnerabilityId: finding.vulnerabilityId } : {}),
+        ...(finding.pkgName ? { pkgName: finding.pkgName } : {}),
+        ...(hit.clause.reason ? { reason: hit.clause.reason } : {})
+      });
+    }
+  }
+  return {
+    findings: survivors,
+    excludedOrdinals,
+    evidence: {
+      clauseCount: clauses.length,
+      appliedCount: excludedOrdinals.length,
+      applied
+    }
+  };
+}
+
+/**
+ * The POST-EXCLUSION counts, derived from the counts the scanner actually produced MINUS one per
+ * excluded finding.
+ *
+ * Deliberately a DELTA on `severityCounts` rather than a recount of the survivors. The survivor list
+ * is the CAPPED set, so recounting it would silently report a truncated scan's numbers as smaller
+ * than the scanner's own — while `severityCounts` is derived BEFORE the cap. A truncated set refuses
+ * every exclusion, so the delta is zero there and the two counts stay identical, which is exactly
+ * the property a recount would break.
+ */
+export function effectiveSeverityCountsAfterExclusions(
+  counts: ScanSeverityCounts,
+  applied: AppliedScanExclusions,
+  findings: readonly ScanFinding[]
+): ScanSeverityCounts {
+  const out = { ...counts };
+  for (const ordinal of applied.excludedOrdinals) {
+    const finding = findings[ordinal];
+    if (!finding) continue;
+    out[finding.severity] = Math.max(0, out[finding.severity] - 1);
+  }
+  return out;
+}
+
 /**
  * The full evidence payload a `scan-result-control` outcome carries. Bound to a SPECIFIC artifact
  * digest (`artifactDigest` = the digest Trivy actually scanned; `expectedDigest` = the digest the
@@ -576,6 +939,20 @@ export const ScanEvidenceSchema = z.object({
    *  `scan_findings` and deliberately never reach this document, because evidence is copied verbatim
    *  into the promotion bundle. */
   findingsRecord: ScanFindingsRecordSchema.optional(),
+  /** M22.2 (ADR-0033 §2) — the counts the threshold was ACTUALLY compared against, AFTER exclusions.
+   *
+   *  `severityCounts` above is untouched and keeps meaning WHAT THE SCANNER FOUND, because operators
+   *  author CEL conditions against `evidence.severityCounts.*` and redefining it post-exclusion would
+   *  silently change the meaning of every rule already written. Those conditions stay STRICTER than
+   *  the gate's own comparison — a divergence, but safe-signed, and documented here rather than
+   *  discovered.
+   *
+   *  WRITTEN ONLY WHEN THE GATE RESOLVED AT LEAST ONE ADMITTED CLAUSE. With nothing authored this
+   *  key is absent and the evidence document is byte-identical to pre-M22.2. */
+  effectiveSeverityCounts: ScanSeverityCountsSchema.optional(),
+  /** M22.2 — WHICH findings were excluded, under whose clause and at which tier — or the positive
+   *  reason every exclusion was refused. Same absent-when-nothing-authored rule as above. */
+  exclusions: ScanExclusionEvidenceSchema.optional(),
   /** The threshold ACTUALLY applied to reach this verdict (post-merge). */
   threshold: ScanThresholdSchema,
   /** M17.5 (ADR-0016) — WHERE the APPLIED ceilings actually came from, per severity. This is the

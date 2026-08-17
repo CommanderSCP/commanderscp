@@ -31,15 +31,21 @@
  */
 import type { ControlOutcome, ControlPlugin, ControlRequest, PluginContext } from "@scp/plugin-api";
 import {
+  EffectiveScanExclusionsSchema,
   EffectiveScanThresholdSchema,
   ScanEvidenceSchema,
+  applyScanExclusions,
   attachScanFindingsForTransport,
   capScanFindings,
+  effectiveSeverityCountsAfterExclusions,
   parseTrivyFindings,
+  scanFindingsRecordFor,
   severityCountsFromFindings,
+  type AppliedScanExclusions,
+  type CappedScanFindings,
+  type EffectiveScanExclusions,
   type EffectiveScanThreshold,
   type ScanEvidence,
-  type ScanFinding,
   type ScanThreshold,
   type ScanThresholdSource,
   type ScanThresholdSourceMap
@@ -79,8 +85,6 @@ interface TrivyResultJson {
   Version?: unknown;
   trivyVersion?: unknown;
 }
-
-const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 
 function timeout(ms: number): Promise<"timeout"> {
   return new Promise((resolve) => setTimeout(() => resolve("timeout"), ms));
@@ -160,10 +164,18 @@ function scannedDigest(raw: TrivyResultJson): string | undefined {
  * is misattributed; and a FAILING verdict is precisely the one an exclusion would later act on, so
  * dropping them there would make the mechanism inert exactly where it is meant to work.
  */
-function withFindings(evidence: ScanEvidence, findings: readonly ScanFinding[]) {
+function withFindings(
+  evidence: ScanEvidence,
+  capped: CappedScanFindings,
+  applied: AppliedScanExclusions
+) {
   return attachScanFindingsForTransport(
     evidence as unknown as Record<string, unknown>,
-    capScanFindings(findings)
+    capped,
+    // M22.2 — WHICH of them were excluded. The server needs this to write those rows at ADR-0024
+    // retention class `E` (accepted-risk evidence) instead of `O` (telemetry); it cannot re-derive
+    // it, because the clauses were resolved for a gate context it no longer holds here.
+    applied.excludedOrdinals
   );
 }
 
@@ -194,6 +206,30 @@ function resolveContextThreshold(
   if (raw === undefined || raw === null) return undefined;
   const parsed = EffectiveScanThresholdSchema.safeParse(raw);
   return parsed.success ? parsed.data : "malformed";
+}
+
+/**
+ * M22.2 (ADR-0033) — the GATE-RESOLVED exclusion clauses, threaded on the request context by the
+ * same `buildControlContext` mechanism that carries `artifactDigest` and `scanThreshold`.
+ *
+ * A plugin has no database and no lookup ability, so every exclusion FACT — which classes each tier
+ * admitted, which clauses survived the monotone AND, for which targets — is resolved SERVER-SIDE and
+ * serialized here. This function only reads what the gate decided.
+ *
+ * ABSENT is the shipped default (nothing admitted anywhere) and means "no exclusions" — NOT an
+ * error. A PRESENT-BUT-MALFORMED value is treated the same way, and the asymmetry with
+ * `resolveContextThreshold` is deliberate rather than an oversight: a threshold this control cannot
+ * interpret means it would judge against a LOOSER ceiling than governance resolved, so it fails
+ * closed; an exclusion set it cannot interpret means it would count MORE findings than governance
+ * intended, which is strictly stricter. Failing the control closed on a malformed loosening would
+ * convert an authoring mistake into a blocked promotion — the wrong sign for this dimension.
+ */
+function resolveContextExclusions(req: ControlRequest): EffectiveScanExclusions | undefined {
+  const raw = (req.context as { scanExclusions?: unknown }).scanExclusions;
+  if (raw === undefined || raw === null) return undefined;
+  const parsed = EffectiveScanExclusionsSchema.safeParse(raw);
+  if (!parsed.success) return undefined;
+  return parsed.data.clauses.length > 0 ? parsed.data : undefined;
 }
 
 /**
@@ -375,7 +411,31 @@ export function createScanResultControlPlugin(): ControlPlugin {
       // ONE parse: the counts stay derived from exactly the entries that are handed to the server,
       // so `severityCounts` and `scan_findings` can never describe different sets.
       const findings = parseTrivyFindings(trivy);
+      // WHAT THE SCANNER FOUND. Derived BEFORE the cap and BEFORE any exclusion, and it keeps that
+      // meaning forever: operators author CEL conditions against `evidence.severityCounts.*`.
       const counts = severityCountsFromFindings(findings);
+
+      // M22.2 — EXCLUDE BEFORE COUNTING (ADR-0033 §2), never as a waiver on the verdict.
+      //
+      // Capped ONCE here and reused, because the ordinals in `exclusions.applied` must index the
+      // rows the server will actually persist. `scanFindingsRecordFor` is the same pure function the
+      // server uses to stamp `evidence.findingsRecord`, so a TRUNCATED set refuses every exclusion
+      // on both sides of the transport rather than only on one ("you cannot except what you did not
+      // record").
+      const capped = capScanFindings(findings);
+      const exclusions = resolveContextExclusions(req);
+      const applied = applyScanExclusions(
+        capped.findings,
+        exclusions,
+        scanFindingsRecordFor("trivy", capped)
+      );
+      // The counts the THRESHOLD is compared against. Identical to `counts` whenever nothing was
+      // excluded, which is every deployment with nothing authored.
+      const effectiveCounts = effectiveSeverityCountsAfterExclusions(
+        counts,
+        applied,
+        capped.findings
+      );
       const {
         threshold,
         source: thresholdSource,
@@ -390,6 +450,11 @@ export function createScanResultControlPlugin(): ControlPlugin {
         expectedDigest,
         digestMatch,
         severityCounts: counts,
+        // M22.2 — written ONLY when the gate resolved at least one admitted clause, so a deployment
+        // with nothing authored produces a byte-identical evidence document to pre-M22.2.
+        ...(applied.evidence
+          ? { effectiveSeverityCounts: effectiveCounts, exclusions: applied.evidence }
+          : {}),
         // The RESOLVED threshold actually applied, plus WHERE it came from and WHICH tiers set it —
         // so a blocked promotion's Decision explains why it blocked, not merely that it did
         // (charter principle 6, ADR-0016 §5).
@@ -405,11 +470,12 @@ export function createScanResultControlPlugin(): ControlPlugin {
         return {
           status: "fail",
           detail: `scan-result-control: digest mismatch — scanned ${scanned}, change is promoting ${expectedDigest}`,
-          evidence: withFindings(evidence, findings)
+          evidence: withFindings(evidence, capped, applied)
         };
       }
 
-      const breached = breachedSeverities(counts, threshold);
+      // POST-EXCLUSION counts, and only here. `counts` above stays what the scanner found.
+      const breached = breachedSeverities(effectiveCounts, threshold);
       if (breached.length > 0) {
         // Name the breached ceilings AND the source that actually supplied each one — a block must
         // never cite "the scoped threshold" when the per-binding config set the deciding value.
@@ -418,19 +484,29 @@ export function createScanResultControlPlugin(): ControlPlugin {
           .join(", ");
         return {
           status: "fail",
-          detail: `scan-result-control: verdict exceeds ${thresholdSource === "scoped" || thresholdSource === "mixed" ? "the effective (most-restrictive-wins) " : ""}threshold — breached ${breachDetail}; counts critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low}${
+          detail: `scan-result-control: verdict exceeds ${thresholdSource === "scoped" || thresholdSource === "mixed" ? "the effective (most-restrictive-wins) " : ""}threshold — breached ${breachDetail}; counts critical=${effectiveCounts.critical}, high=${effectiveCounts.high}, medium=${effectiveCounts.medium}, low=${effectiveCounts.low}${
+            applied.evidence && applied.evidence.appliedCount > 0
+              ? ` (after ${applied.evidence.appliedCount} exclusion${applied.evidence.appliedCount === 1 ? "" : "s"}; scanner found critical=${counts.critical}, high=${counts.high}, medium=${counts.medium}, low=${counts.low})`
+              : applied.evidence?.refused
+                ? ` (exclusions REFUSED: ${applied.evidence.refused})`
+                : ""
+          }${
             scoped && scoped.contributors.length > 0
               ? ` [tiers: ${scoped.contributors.map((c) => `${c.tier}(${c.source})`).join(", ")}]`
               : ""
           }`,
-          evidence: withFindings(evidence, findings)
+          evidence: withFindings(evidence, capped, applied)
         };
       }
 
       return {
         status: "pass",
-        detail: `scan-result-control: trivy verdict within threshold for ${scanned} (critical=${counts.critical}, high=${counts.high})`,
-        evidence: withFindings(evidence, findings)
+        detail: `scan-result-control: trivy verdict within threshold for ${scanned} (critical=${effectiveCounts.critical}, high=${effectiveCounts.high})${
+          applied.evidence && applied.evidence.appliedCount > 0
+            ? ` after ${applied.evidence.appliedCount} exclusion${applied.evidence.appliedCount === 1 ? "" : "s"} (scanner found critical=${counts.critical}, high=${counts.high})`
+            : ""
+        }`,
+        evidence: withFindings(evidence, capped, applied)
       };
     }
   };

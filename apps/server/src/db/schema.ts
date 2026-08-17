@@ -1796,6 +1796,47 @@ export const scanRequirementFloors = pgTable(
 );
 
 // -------------------------------------------------------------------------------------------
+// M22.2 — instance-scoped scan-EXCLUSION admissions (ADR-0033 §1, §7a). Hand-authored table/RLS/
+// grants in drizzle/0066_scan_exclusion_admissions.sql; read that file's header for the full
+// rationale.
+//
+// THE SECOND TABLE IN THIS SCHEMA WITH NO `org_id`, and it is the SAME documented exception as
+// `scanRequirementFloors` above rather than a new one: an admission is an operator statement about
+// the DEPLOYMENT ("exclusions of this class may have effect beneath the platform/trust-domain
+// rung"), identical for every org hosted here, so it holds no per-tenant rows and exposes no
+// cross-tenant visibility. Access is the same: tenant-READ (RLS `FOR SELECT USING (true)`, `scp_app`
+// holds SELECT only) / operator-WRITE over the admin connection.
+//
+// DO NOT REASON ABOUT THIS TABLE BY ANALOGY WITH `scanFindings` BELOW — M22 added both and they are
+// deliberately opposite. `scan_findings` is ordinary tenant data (`org_id NOT NULL`, standard RLS):
+// it records what a scanner saw for one tenant's artifact. This one is instance config.
+//
+// A ROW IS AN ADMISSION; NO ROW IS NO ADMISSION. The table ships EMPTY and is never seeded, so on
+// every existing deployment the `platform` rung admits nothing, every clause beneath fails the
+// monotone AND, and behaviour is byte-identical to pre-M22.2. Note the sign is the OPPOSITE of the
+// neighbour above: an absent floor row means NO CEILING (a loosening), an absent admission row means
+// NO ADMISSION (a tightening). A tightening and a loosening cannot share a default.
+//
+// `class` must agree with `ScanExclusionClassSchema` (packages/schemas/src/supply-chain.ts); the
+// migration carries a CHECK holding the same four values, and an integration test pins that the two
+// lists agree.
+// -------------------------------------------------------------------------------------------
+export const scanExclusionAdmissions = pgTable(
+  "scan_exclusion_admissions",
+  {
+    tier: text("tier").notNull(), // 'platform' | 'trust_domain'
+    /** 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override' */
+    class: text("class").notNull(),
+    /** 'local' | 'federated'. As on `scanRequirementFloors`, the CHECK admits both but no federation
+     *  writer produces `federated` rows today — outposts never evaluate scan policy (ADR-0020 §3). */
+    origin: text("origin").notNull().default("local"),
+    note: text("note"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [primaryKey({ columns: [table.tier, table.class, table.origin] })]
+);
+
+// -------------------------------------------------------------------------------------------
 // M21.2 — the DEPENDENCY INVENTORY substrate (ADR-0032 §3/§4/§5/§7). Hand-authored table/RLS/grants
 // in drizzle/0061_dependency_inventory.sql; read that file's header for the full rationale — the
 // four measurements behind the principle-2 bend, the URN-collision argument, and the RLS mirroring.

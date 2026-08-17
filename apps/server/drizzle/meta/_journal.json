@@ -519,6 +519,13 @@
       "when": 1788133001000,
       "tag": "0073_scan_findings",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "7",
+      "when": 1788109137000,
+      "tag": "0066_scan_exclusion_admissions",
+      "breakpoints": true
     }
   ]
 }

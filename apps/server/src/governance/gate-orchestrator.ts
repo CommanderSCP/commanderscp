@@ -2,11 +2,12 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "./cel-sandbox.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
-import { resolvePolicies } from "./policy-model.js";
+import { resolvePolicies, type MatchedPolicy } from "./policy-model.js";
 import {
   buildCelContext,
   evaluateFiredPolicies,
   resolveFiredPolicies,
+  type FiredPolicy,
   type PolicyEvaluationContext
 } from "./evaluate.js";
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
@@ -20,8 +21,11 @@ import {
 } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
-import { resolveEffectiveScanThreshold } from "./scan-requirements.js";
-import type { EffectiveScanThreshold } from "@scp/schemas";
+import {
+  resolveEffectiveScanExclusionsForTargets,
+  resolveEffectiveScanThreshold
+} from "./scan-requirements.js";
+import type { EffectiveScanExclusions, EffectiveScanThreshold } from "@scp/schemas";
 
 /**
  * The orchestrator every gate check (lifecycle-edge AND wave-boundary) funnels through — where
@@ -387,6 +391,7 @@ function buildControlContext(input: {
   artifactDigest?: string | undefined;
   commitSha?: string | undefined;
   scanThreshold?: EffectiveScanThreshold | undefined;
+  scanExclusions?: EffectiveScanExclusions | undefined;
 }): Record<string, unknown> {
   return {
     changeId: input.changeId,
@@ -394,7 +399,47 @@ function buildControlContext(input: {
     ...(input.gateRef ? { gateRef: input.gateRef } : {}),
     ...(input.artifactDigest ? { artifactDigest: input.artifactDigest } : {}),
     ...(input.commitSha ? { commitSha: input.commitSha } : {}),
-    ...(input.scanThreshold ? { scanThreshold: input.scanThreshold } : {})
+    ...(input.scanThreshold ? { scanThreshold: input.scanThreshold } : {}),
+    ...(input.scanExclusions ? { scanExclusions: input.scanExclusions } : {})
+  };
+}
+
+/**
+ * M22.2 (ADR-0033 §11) — the resolved exclusion set, shaped for the gate's DECISION `inputContext`.
+ *
+ * The RULE and the EXCEPTION TO IT belong in the same Decision. M22.0 put the ceiling there
+ * precisely so no exception could later hide inside evidence; landing the exclusion dimension
+ * without also landing it here would re-open that hole one increment after closing it.
+ *
+ * This records what the gate ADMITTED, not what was ultimately APPLIED — the application happens
+ * inside the control, against findings this function has never seen, and lands in
+ * `control_runs.evidence.exclusions`. Both halves are needed: "which loosenings were in force" is a
+ * governance fact about the change, "which findings they touched" is a fact about one scan.
+ *
+ * SAME DETERMINISM RULE AS `scanThresholdForDecision`, and for the same measured reason:
+ * `restatesDecision` canonicalises key order but PRESERVES array order, so an unsorted array defeats
+ * `insertDecisionIfChanged` and re-opens the 1.44 GB/day write amplification. The resolver already
+ * returns `clauses` sorted by content; every entry here is rebuilt with a FIXED key order and
+ * carries no timestamp, no row id, and nothing else that varies between two identical evaluations.
+ */
+function scanExclusionsForDecision(
+  resolved: EffectiveScanExclusions | undefined
+): { scanExclusions: Record<string, unknown> } | undefined {
+  if (!resolved || resolved.clauses.length === 0) return undefined;
+  return {
+    scanExclusions: {
+      clauses: resolved.clauses.map((c) => ({
+        class: c.clause.class,
+        tier: c.tier,
+        source: c.source,
+        ...(c.clause.vulnerabilityId ? { vulnerabilityId: c.clause.vulnerabilityId } : {}),
+        ...(c.clause.pkgName ? { pkgName: c.clause.pkgName } : {}),
+        ...(c.clause.purl ? { purl: c.clause.purl } : {}),
+        ...(c.clause.findingClass ? { findingClass: c.clause.findingClass } : {}),
+        ...(c.clause.reason ? { reason: c.clause.reason } : {}),
+        admittedBy: c.admittedBy.map((a) => ({ tier: a.tier, source: a.source }))
+      }))
+    }
   };
 }
 
@@ -436,6 +481,97 @@ function scanThresholdForDecision(
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
     .map(({ entry }) => entry);
   return { scanThreshold: { effective: resolved.threshold, contributors } };
+}
+
+/**
+ * M22.2 — WHICH POLICIES FIRE FOR A CHANGE'S TARGETS, as a callable, for the ONE consumer outside
+ * this file that needs it: the commander's promotion scan step.
+ *
+ * WHY IT EXISTS. `federation/promotion-scan-step.ts` resolved its scan ceiling with
+ * `firedPolicies: []` — a hardcoded empty firing set, which admits the instance floors and NOTHING
+ * from org, containment domain, service, assembly or component. Its own comment called that a
+ * documented follow-on, and it was defensible while the only dimension was a TIGHTENING (the
+ * fail-closed 0/0 default already refuses any Critical or High). It stops being defensible the
+ * moment a LOOSENING exists: an exclusion admitted by the lifecycle gate would be invisible to the
+ * commander's managed scan, so the two paths would disagree about the same artifact at exactly the
+ * boundary where evidence is FROZEN into a signed bundle.
+ *
+ * WHAT IT SHARES, AND WHAT IT IS NOT. Every step below is the same function `evaluateGovernanceGate`
+ * calls, in the same order — `matchPoliciesForTargets`, `resolvePolicies`, the emergency-policy
+ * substitution, `governanceSubjectOf`/`graphFactsFor`, `buildCelContext`, `resolveFiredPolicies`.
+ * Nothing is reimplemented. It is deliberately NOT a gate: it evaluates no controls, materializes no
+ * approvals, checks no freeze, and writes no Decision. It answers one question — "which contributors
+ * are in force for these targets right now" — so a non-gate consumer can resolve scan requirements
+ * against the same firing set the gate would.
+ *
+ * THE SANDBOX IS LAZY BY CONTRACT. `resolveFiredPolicies` takes `Pick<CelSandbox, "evaluate">` and
+ * calls it ONLY for a contributor that actually carries a `condition`, so a caller may pass a thunk
+ * that constructs the shared sandbox on first use. That matters: `new CelSandbox()` spawns its
+ * worker pool EAGERLY in the constructor, and the promotion scan step must not spin up worker
+ * threads for an org whose policies carry no conditions at all.
+ */
+export async function resolveFiredPoliciesForTargets(
+  tx: TenantTx,
+  sandbox: Pick<CelSandbox, "evaluate">,
+  input: {
+    orgId: string;
+    changeObjectId: string;
+    targetObjectIds: string[];
+    actorObjectId: string;
+    emergency: boolean;
+    now: Date;
+  }
+): Promise<{ matches: MatchedPolicy[]; fired: FiredPolicy[] }> {
+  const matches = await matchPoliciesForTargets(tx, {
+    orgId: input.orgId,
+    targetObjectIds: input.targetObjectIds,
+    actorObjectId: input.actorObjectId
+  });
+  let effectivePolicies = resolvePolicies(matches);
+  // Same substitution the gate makes (DESIGN §10.3): an emergency change follows the CONFIGURED
+  // emergency policies, and an org that configured none evaluates nothing. Omitting this here would
+  // have made the managed scan the one path an emergency change could not relax — a divergence in
+  // the opposite direction from the one this function exists to close.
+  if (input.emergency) {
+    const emergencyPolicies = effectivePolicies.filter((p) => p.emergencyPolicy);
+    effectivePolicies = emergencyPolicies;
+  }
+
+  const primaryTarget = input.targetObjectIds[0];
+  const primarySubject = primaryTarget
+    ? await governanceSubjectOf(tx, input.orgId, primaryTarget)
+    : undefined;
+  const subjectObject = primarySubject
+    ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primarySubject).catch(() => null)
+    : null;
+  const graphFacts = primarySubject
+    ? await graphFactsFor(tx, input.orgId, primarySubject)
+    : { ownerIds: [], dependentIds: [], domainIds: [] };
+  const celContext = buildCelContext({
+    change: {
+      id: input.changeObjectId,
+      emergency: input.emergency,
+      targets: input.targetObjectIds,
+      sourceKind: null,
+      correlationKey: null
+    },
+    subject: subjectObject
+      ? {
+          id: subjectObject.id,
+          typeId: subjectObject.typeId,
+          name: subjectObject.name,
+          labels: subjectObject.labels
+        }
+      : null,
+    graph: graphFacts,
+    controlOutcomes: {},
+    approvals: {},
+    time: input.now.toISOString(),
+    actor: { id: input.actorObjectId }
+  });
+
+  const fired = await resolveFiredPolicies(sandbox, effectivePolicies, celContext);
+  return { matches, fired };
 }
 
 /**
@@ -545,6 +681,22 @@ export async function prewarmGovernanceForChange(
       // cannot tighten anything here either.
       firedPolicies: fired
     });
+    // M22.2 — the exclusion dimension, threaded through the SAME conditional-context mechanism.
+    //
+    // THIS SITE IS THE ONE THAT MATTERS MOST and it is easy to miss: the prewarm's run is the one
+    // that gets CACHED and later READ by the host-less accept edge (`readExistingControlOutcomes`).
+    // Threading exclusions only at the evaluate site below would leave the accept edge consuming a
+    // verdict computed without them — the loosening would appear to work at a wave boundary and
+    // silently not exist at the edge a human actually clicks.
+    const scanExclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
+      orgId: input.orgId,
+      targetObjectIds: input.targetObjectIds,
+      actorObjectId: input.actorObjectId,
+      matches,
+      // FIRED ONLY, and never the ceiling's key set: an unevaluable condition must yield NO
+      // exclusion (ADR-0033 §4 — the opposite sign from `ceilingContributorKeys`).
+      firedPolicies: fired
+    });
     await ensureControlRuns(tx, host, {
       orgId: input.orgId,
       changeObjectId: input.changeObjectId,
@@ -556,7 +708,8 @@ export async function prewarmGovernanceForChange(
         targetObjectIds: input.targetObjectIds,
         artifactDigest,
         commitSha,
-        scanThreshold
+        scanThreshold,
+        scanExclusions
       })
     });
   }
@@ -718,6 +871,18 @@ export async function evaluateGovernanceGate(
     firedPolicies: fired
   });
 
+  // M22.2 — resolved beside the ceiling, and UNCONDITIONALLY for the same reason M22.0 hoisted the
+  // ceiling out of the `host` ternary: the `validating -> accepted` edge runs with `host: null`, and
+  // a Decision that named the rule but not the exceptions in force would be exactly half an
+  // explanation on the surface an operator resolves by `decision_id`.
+  const effectiveScanExclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
+    orgId: ctx.orgId,
+    targetObjectIds: ctx.targetObjectIds,
+    actorObjectId: ctx.actorObjectId,
+    matches,
+    firedPolicies: fired
+  });
+
   const controlOutcomes = host
     ? await ensureControlRuns(tx, host, {
         orgId: ctx.orgId,
@@ -733,7 +898,8 @@ export async function evaluateGovernanceGate(
           // M10.4 — the change's real source commit, for `github-check` (same threading discipline
           // as `artifactDigest`).
           commitSha: await resolveChangeCommitSha(tx, ctx.orgId, ctx.changeObjectId),
-          scanThreshold: effectiveScanThreshold
+          scanThreshold: effectiveScanThreshold,
+          scanExclusions: effectiveScanExclusions
         })
       })
     : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds, {
@@ -784,7 +950,8 @@ export async function evaluateGovernanceGate(
       firedPolicyCount: fired.filter((fp) => fp.fired).length,
       ...(emergencyNote ? { emergency: emergencyNote } : {}),
       ...(freezeOverrides.length > 0 ? { freezeOverrides } : {}),
-      ...(scanThresholdForDecision(effectiveScanThreshold) ?? {})
+      ...(scanThresholdForDecision(effectiveScanThreshold) ?? {}),
+      ...(scanExclusionsForDecision(effectiveScanExclusions) ?? {})
     },
     reasonTree: { ...result.reasonTree, ...(emergencyNote ? { emergencyNote } : {}) },
     freezeOverrides: freezeOverrides.length > 0 ? freezeOverrides : undefined

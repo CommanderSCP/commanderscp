@@ -6,7 +6,9 @@ import { join } from "node:path";
 import {
   ScanEvidenceSchema,
   ScanSeverityCountsSchema,
+  applyScanExclusions,
   capScanFindings,
+  effectiveSeverityCountsAfterExclusions,
   parseTrivyFindings,
   scanFindingsRecordFor,
   severityCountsFromFindings,
@@ -37,6 +39,7 @@ import {
 import { persistScanFindings } from "../governance/scan-findings-repo.js";
 import { resolveScannersForType } from "../governance/scanner-registry.js";
 import {
+  resolveEffectiveScanExclusionsForTargets,
   resolveEffectiveScanThreshold,
   readInstanceScanFloors
 } from "../governance/scan-requirements.js";
@@ -46,6 +49,8 @@ import {
   MANAGED_SCAN_CONTROL_OBJECT_ID,
   type SeverityCeiling
 } from "./scan-evidence.js";
+import { resolveFiredPoliciesForTargets } from "../governance/gate-orchestrator.js";
+import { getSharedCelSandbox, type CelSandbox } from "../governance/cel-sandbox.js";
 import { readScanDbStatus } from "../governance/scan-db.js";
 import {
   managedRunnerSettings,
@@ -354,6 +359,9 @@ interface DepositRow {
    *  Carried on the deposit rather than re-derived in phase C, because phase B is where the scan
    *  actually happened. */
   capped: CappedScanFindings | undefined;
+  /** M22.2 — which of them an admitted clause excluded, so phase C writes those rows at ADR-0024
+   *  retention class `E` (accepted-risk evidence) rather than `O` (telemetry). */
+  excludedOrdinals: number[];
 }
 
 /**
@@ -366,7 +374,10 @@ interface DepositRow {
 export async function runPromotionScanStep(
   db: Db,
   input: RunPromotionScanStepInput,
-  runner: ManagedScanRunner
+  runner: ManagedScanRunner,
+  /** Test seam ONLY. Production passes nothing and the shared sandbox is constructed on first use
+   *  (and only if a policy contributor actually carries a CEL `condition`). */
+  sandbox?: Pick<CelSandbox, "evaluate">
 ): Promise<void> {
   // Phase A (tx, read-only): gather the plan — which artifacts still need a managed scan, with what
   // methods, and the effective threshold. Pure DB; no subprocess runs while a connection is held.
@@ -388,17 +399,59 @@ export async function runPromotionScanStep(
           (t): t is string => typeof t === "string"
         )
       : [];
-    // Reuse the M17.5 six-tier resolver. `firedPolicies: []` applies the instance-level floors
-    // (platform/trust_domain, always read) plus the fail-closed default (any Critical/High fails);
-    // scoped org/service/component scan-requirement POLICY ceilings are enforced authoritatively for
-    // org-pipeline evidence by the normal lifecycle gate (gate-orchestrator.ts). Tightening the
-    // managed step to also evaluate fired scoped policies is a documented follow-on — safe because
-    // the fail-closed default already refuses any Critical/High.
+    // ===================================================================================
+    // M22.2 — THE FIRING SET, FOR REAL. This used to be `firedPolicies: []`.
+    //
+    // An empty firing set admits the instance-level floors (platform/trust_domain, always read)
+    // plus the fail-closed default, and NOTHING authored at org, containment domain, service,
+    // assembly or component. That was a documented follow-on and it was defensible while the only
+    // dimension was a TIGHTENING — the 0/0 default already refuses any Critical or High, so a
+    // missing scoped ceiling could only ever make this step stricter than the gate.
+    //
+    // It stops being defensible the moment a LOOSENING exists. An exclusion resolved by the
+    // lifecycle gate would be invisible here, so the commander's own managed scan would count
+    // findings the gate had agreed not to count — the two paths disagreeing about the same artifact
+    // at exactly the boundary where evidence is FROZEN into a signed bundle and the E6 export gate
+    // reads it. So both dimensions now resolve off the SAME firing set the gate would compute.
+    //
+    // THIS IS A BEHAVIOUR CHANGE FOR THE CEILING TOO, and in both directions — stated rather than
+    // buried. A scoped policy that sets `maxHigh: 5` now applies here, where before this step used
+    // the 0/0 default; a scoped policy that sets `maxHigh: 0` now applies where before nothing did.
+    // Convergence with the lifecycle gate is the point: two verdicts about one artifact must not be
+    // produced under two different rules.
+    //
+    // The sandbox is a THUNK. `new CelSandbox()` spawns its worker pool in the constructor, and
+    // `resolveFiredPolicies` calls `evaluate` only for a contributor that actually carries a
+    // `condition` — so an org whose policies have no conditions spins up no worker threads.
+    // ===================================================================================
+    const lazySandbox: Pick<CelSandbox, "evaluate"> = {
+      evaluate: (expression, context) =>
+        (sandbox ?? getSharedCelSandbox()).evaluate(expression, context)
+    };
+    const { matches, fired } = await resolveFiredPoliciesForTargets(tx, lazySandbox, {
+      orgId: input.orgId,
+      changeObjectId: change.id,
+      targetObjectIds,
+      actorObjectId: input.actorObjectId,
+      emergency: change.emergency,
+      now: new Date()
+    });
+
     const effective = await resolveEffectiveScanThreshold(tx, {
       orgId: input.orgId,
       targetObjectIds,
       actorObjectId: input.actorObjectId,
-      firedPolicies: []
+      matches,
+      firedPolicies: fired
+    });
+    // M22.2 — the exclusion dimension, resolved server-side here because this producer has no plugin
+    // to thread a context to: it parses the Trivy result itself in phase B.
+    const exclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
+      orgId: input.orgId,
+      targetObjectIds,
+      actorObjectId: input.actorObjectId,
+      matches,
+      firedPolicies: fired
     });
 
     const planned: PlannedScan[] = [];
@@ -419,7 +472,7 @@ export async function runPromotionScanStep(
         methods
       });
     }
-    return { changeId: change.id, planned, effective };
+    return { changeId: change.id, planned, effective, exclusions };
   });
 
   if (!plan || plan.planned.length === 0) return;
@@ -448,9 +501,9 @@ export async function runPromotionScanStep(
       const { report } = result;
       const scannedDigest = normalizeSha256Digest(report.scannedDigest) ?? report.scannedDigest;
       const digestMatch = scannedDigest === subject.digest;
+      // WHAT THE SCANNER FOUND — unchanged, and it keeps that meaning (operators author CEL
+      // conditions against `evidence.severityCounts.*`).
       const severityCounts = ScanSeverityCountsSchema.parse(report.severityCounts);
-      const overThreshold = breaches(severityCounts, threshold);
-      const status: "pass" | "fail" = digestMatch && !overThreshold ? "pass" : "fail";
 
       // M22.1b — cap the set that will be persisted, and let ONE pure function decide the marker
       // that goes on the evidence here and the rows that go into `scan_findings` in phase C. The
@@ -460,6 +513,24 @@ export async function runPromotionScanStep(
       const capped = report.findings ? capScanFindings(report.findings) : undefined;
       const findingsRecord = scanFindingsRecordFor(method, capped);
 
+      // M22.2 — EXCLUDE BEFORE COUNTING (ADR-0033 §2), through the SAME pure function the
+      // `scan-result-control` plugin uses, so the two verdict producers cannot diverge about what a
+      // clause means.
+      //
+      // `findingsRecord` gates it, and this is where the OpenSCAP guarantee actually lands: an
+      // `openscap` verdict carries `unsupported`, so every exclusion is refused BECAUSE OF WHAT
+      // SCANNED — recorded positively in evidence — never because the finding array happened to be
+      // empty. ADR-0033's consequences list requires exactly that distinction be explicit.
+      const applied = applyScanExclusions(capped?.findings ?? [], plan.exclusions, findingsRecord);
+      const effectiveCounts = effectiveSeverityCountsAfterExclusions(
+        severityCounts,
+        applied,
+        capped?.findings ?? []
+      );
+      // ONLY the threshold comparison reads the post-exclusion number.
+      const overThreshold = breaches(effectiveCounts, threshold);
+      const status: "pass" | "fail" = digestMatch && !overThreshold ? "pass" : "fail";
+
       const evidence = ScanEvidenceSchema.parse({
         scanner: method,
         scannerVersion: report.scannerVersion || "unknown",
@@ -468,6 +539,11 @@ export async function runPromotionScanStep(
         digestMatch,
         severityCounts,
         ...(findingsRecord ? { findingsRecord } : {}),
+        // Written ONLY when the gate resolved at least one admitted clause, so a deployment with
+        // nothing authored deposits a byte-identical evidence document to pre-M22.2.
+        ...(applied.evidence
+          ? { effectiveSeverityCounts: effectiveCounts, exclusions: applied.evidence }
+          : {}),
         threshold,
         thresholdSource: source,
         ...(plan.effective ? { thresholdContributors: plan.effective.contributors } : {}),
@@ -485,6 +561,15 @@ export async function runPromotionScanStep(
 
       // Surface a soft-stale (WARN) DB in the deposited detail so the Decision reads it (owner
       // 2026-07-24: a warn scans but is never silent).
+      // Name the exclusions in the deposited detail — a verdict that reads "within threshold" while
+      // a loosening decided it is exactly the coarse, unexplained waiver ADR-0033 §2 rejected.
+      const exclusionNote = applied.evidence
+        ? applied.evidence.refused
+          ? ` [exclusions REFUSED: ${applied.evidence.refused}]`
+          : applied.evidence.appliedCount > 0
+            ? ` [${applied.evidence.appliedCount} exclusion(s) applied; scanner found critical=${severityCounts.critical}, high=${severityCounts.high}, medium=${severityCounts.medium}, low=${severityCounts.low}]`
+            : ""
+        : "";
       const dbWarn =
         report.scanDb && report.scanDb.staleness === "warn"
           ? ` [scan DB WARN: ${report.scanDb.source}, ${report.scanDb.ageHours?.toFixed(1) ?? "?"}h old, past soft max]`
@@ -492,8 +577,8 @@ export async function runPromotionScanStep(
       const detail = !digestMatch
         ? `managed-scan (${method}): digest mismatch — scanned ${scannedDigest}, promoting ${subject.digest}${dbWarn}`
         : overThreshold
-          ? `managed-scan (${method}): verdict exceeds threshold — critical=${severityCounts.critical}, high=${severityCounts.high}, medium=${severityCounts.medium}, low=${severityCounts.low}${dbWarn}`
-          : `managed-scan (${method}): within threshold for ${scannedDigest} (critical=${severityCounts.critical}, high=${severityCounts.high})${dbWarn}`;
+          ? `managed-scan (${method}): verdict exceeds threshold — critical=${effectiveCounts.critical}, high=${effectiveCounts.high}, medium=${effectiveCounts.medium}, low=${effectiveCounts.low}${exclusionNote}${dbWarn}`
+          : `managed-scan (${method}): within threshold for ${scannedDigest} (critical=${effectiveCounts.critical}, high=${effectiveCounts.high})${exclusionNote}${dbWarn}`;
 
       deposits.push({
         changeObjectId: plan.changeId,
@@ -502,7 +587,8 @@ export async function runPromotionScanStep(
         detail,
         method,
         digest: subject.digest,
-        capped
+        capped,
+        excludedOrdinals: applied.excludedOrdinals
       });
     }
   }
@@ -535,7 +621,8 @@ export async function runPromotionScanStep(
         orgId: input.orgId,
         controlRunId: run.id,
         method: d.method,
-        capped: d.capped
+        capped: d.capped,
+        excludedOrdinals: d.excludedOrdinals
       });
     }
   });
@@ -767,8 +854,6 @@ interface ParsedTrivy {
   scannedDigest: string | undefined;
   scannerVersion: string;
 }
-
-const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 
 /** Distil Trivy's native result JSON into the four ScanSeverityCounts + the digest it scanned +
  *  version. Total and defensive — a malformed/partial document degrades to zero counts (a broken
