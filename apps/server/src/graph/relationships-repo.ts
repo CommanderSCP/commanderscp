@@ -11,6 +11,7 @@ import { computeRelationshipContentHash } from "./content-hash.js";
 import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
+import { policyReachFor, recordGovernanceReachChange } from "../governance/governance-reach.js";
 import { inArray } from "drizzle-orm";
 
 /**
@@ -290,6 +291,18 @@ export async function createRelationship(
 
   await assertCardinality(tx, input.orgId, type.id, type.cardinality, input.fromId, input.toId);
 
+  // CONTAINMENT ROUTE 2 — a `contains` edge IS a containment parent (`graph/containment.ts` route
+  // 2, walked backwards), so creating one changes which policies reach the CHILD, under
+  // `relationship:write`. That is weaker and differently held than the `policy:write` that authored
+  // those policies — see `governance/governance-reach.ts`.
+  //
+  // The type guard keeps this off every other relationship write in the system: a `member_of`,
+  // `owns`, `places` or `depends_on` create short-circuits on a string comparison and costs nothing.
+  const reachBefore =
+    input.typeId === "contains"
+      ? await policyReachFor(tx, input.orgId, input.toId, input.actorObjectId)
+      : null;
+
   const id = input.id ?? uuidv7();
   const contentHash = computeRelationshipContentHash({
     id,
@@ -396,6 +409,19 @@ export async function createRelationship(
     // tell a peer that a domain-local object gained an edge. Same reasoning as M20.2's object case.
     subjectDomainLocal: edgeIsDomainLocal
   });
+  if (reachBefore) {
+    // Subject is the CHILD — see the matching note in `deleteRelationship`.
+    await recordGovernanceReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      subjectObjectId: input.toId,
+      route: "contains",
+      detail: { edgeAction: "create", relationshipId: id, containerObjectId: input.fromId },
+      before: reachBefore,
+      subjectDomainLocal: edgeIsDomainLocal
+    });
+  }
   // Never journaled when either endpoint is local — see M20.2's note in `graph/objects-repo.ts` for
   // why this is a SKIP rather than a stamp-and-filter (a filtered bundle is sparse, and a full-scope
   // receiver refuses a sparse chain).
@@ -512,6 +538,13 @@ export async function deleteRelationship(
     }
   }
 
+  // CONTAINMENT ROUTE 2 — see `createRelationship` for the property. DETACHING is the dangerous
+  // direction of the two: it is what takes an object out from under a `required` gate.
+  const reachBefore =
+    existing.typeId === "contains"
+      ? await policyReachFor(tx, input.orgId, existing.toId, input.actorObjectId)
+      : null;
+
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
     .update(relationships)
@@ -541,6 +574,25 @@ export async function deleteRelationship(
     requestId: input.requestId,
     subjectDomainLocal: edgeIsDomainLocal
   });
+  if (reachBefore) {
+    // Subject is the CHILD (`to_id`) — the object whose governance changed. The edge is the
+    // instrument, not the victim, and an operator searching the audit log for "what happened to this
+    // component" must find this event under the component's id.
+    await recordGovernanceReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      subjectObjectId: existing.toId,
+      route: "contains",
+      detail: {
+        edgeAction: "delete",
+        relationshipId: existing.id,
+        containerObjectId: existing.fromId
+      },
+      before: reachBefore,
+      subjectDomainLocal: edgeIsDomainLocal
+    });
+  }
   if (!input.federationImport && !edgeIsDomainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,
