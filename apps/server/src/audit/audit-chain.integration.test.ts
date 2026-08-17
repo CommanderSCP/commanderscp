@@ -145,7 +145,21 @@ describe("audit chain: 10,000 mixed writes", () => {
     } finally {
       await server.close();
     }
-  }, 180_000);
+    // THE BUDGET IS A HANG DETECTOR, NOT A PERFORMANCE ASSERTION — and the 180_000 it replaces was
+    // never sized by a measurement. Measured 2026-08-17, both arms in ONE vitest invocation in
+    // parallel forks so they saw identical conditions (and deliberately contended for the same
+    // Postgres, which is what 4-fork CI looks like):
+    //
+    //     concurrent (this file, 8 writers in flight)   248_023 ms
+    //     sequential (the code this replaced)           322_924 ms
+    //
+    // The concurrency is worth having — it is a real 1.3x, and it puts the chain's advisory-lock
+    // serialization under the contention it exists for — but it is nowhere near sufficient on its
+    // own: the workload is 10,000 blocking transactions and no amount of client-side overlap makes
+    // that insensitive to a busy box. What made the test RED was the budget, and the budget was a
+    // throughput assertion nobody meant to write (125s passing / 181s timing out against 180s, on
+    // unmodified main, with no code change in between). 600s is ~2.4x the worst measured run.
+  }, 600_000);
 
   it("scp audit verify detects a tampered chain (belt-and-braces on top of the unit-tested pure verifier)", async () => {
     const server = await listenTestServer();
