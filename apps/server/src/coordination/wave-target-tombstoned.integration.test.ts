@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
@@ -7,7 +8,14 @@ import {
   type TestServer
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { auditEvents, changes, changeWaveTargets, changeWaves, decisions } from "../db/schema.js";
+import {
+  auditEvents,
+  changes,
+  changeWaveTargets,
+  changeWaves,
+  decisions,
+  objects
+} from "../db/schema.js";
 import { CountingCelSandbox } from "./test-support/counting-cel-sandbox.js";
 import { createInMemoryFakeHost, withRefusingTrigger } from "./test-support/fake-plugin-host.js";
 import type { PluginHost } from "../plugin-host/contract.js";
@@ -274,6 +282,110 @@ describe("a tombstoned wave target is never driven", () => {
     expect((await targetRow(waveTargetId)).status).toBe("target_deleted");
     expect((await decisionsFor(changeObjectId)).length).toBe(decisionsAfterFirst);
     expect((await auditFor(changeObjectId)).length).toBe(auditAfterFirst);
+  }, 180_000);
+
+  // ===============================================================================================
+  // THE OTHER ADR-0026 SHAPE — the one that would have been missed by checking the wave target's own
+  // row alone, and the reason this fix is not a one-liner.
+  //
+  // Under stage-shaped compilation the wave target IS a `placement`. `deleteObject` cascades to
+  // `relationships` and to NOTHING ELSE, and a placement carries its pair in
+  // `properties.componentId` / `properties.deploymentTargetId` — soft references the cascade cannot
+  // see. So deleting the COMPONENT leaves the placement `deleted_at IS NULL` forever: a perfectly
+  // healthy-looking row naming a dead component. This arm pins BOTH halves — that the placement
+  // really does survive (otherwise the second hop is dead code and this test is vacuous), and that
+  // reconcile refuses anyway.
+  // ===============================================================================================
+  it("STAGE SHAPE: deleting the COMPONENT stops a placement wave target, even though the placement itself is still live", async () => {
+    const label = `stage-${randomUUID().slice(0, 8)}`;
+    const service = await inject("/api/v1/services", { name: `svc-${label}` });
+    const component = await inject("/api/v1/components", {
+      name: `comp-${label}`,
+      service: service.id
+    });
+    const place = await inject("/api/v1/deployment-targets", { name: `prod-${label}` });
+    const placement = await inject("/api/v1/placements", {
+      component: component.id as string,
+      deploymentTarget: place.id as string
+    });
+    const topo = await inject("/api/v1/objects/release-topology", {
+      name: `topo-${label}`,
+      properties: { waves: [{ name: "prod", mode: "parallel", targets: [place.id] }] }
+    });
+
+    const gateDeps: GateDeps = { sandbox, host: inner };
+    const changeObjectId = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const { change, targetObjectIds } = await proposeChange(tx, {
+        orgId: org.orgId,
+        actorObjectId: org.orgId,
+        requestId: "tombstone-test",
+        name: `change-${label}`,
+        targets: [component.id as string]
+      });
+      for (const toState of ["evaluated", "coordinated", "executing"] as const) {
+        if (toState === "coordinated") {
+          await compileAndPersistPlan(tx, {
+            orgId: org.orgId,
+            changeObjectId: change.id,
+            targetObjectIds,
+            topologyObjectId: topo.id as string,
+            topologyVersion: null
+          });
+        }
+        await transitionChange(
+          tx,
+          {
+            orgId: org.orgId,
+            changeObjectId: change.id,
+            toState,
+            actorObjectId: org.orgId,
+            requestId: "tombstone-test"
+          },
+          gateDeps
+        );
+      }
+      return change.id;
+    });
+
+    // Stage-shaped: the wave target is the PLACEMENT, not the component. If this ever stops being
+    // true the rest of the arm is testing the legacy shape by accident.
+    const plan = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      getLatestPlanForChange(tx, org.orgId, changeObjectId)
+    );
+    const waveTarget = plan!.waves[0]!.targets[0]!;
+    expect(waveTarget.targetObjectId).toBe(placement.id);
+
+    await deleteComponentViaApi(component.id as string);
+
+    // THE PREMISE, asserted rather than assumed: the placement OUTLIVES its component. Were the
+    // cascade to start tombstoning placements, the second hop in `readTargetLiveness` would be dead
+    // code and this test would pass for the wrong reason.
+    const [placementRow] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ deletedAt: objects.deletedAt })
+        .from(objects)
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, placement.id as string)))
+    );
+    expect(placementRow!.deletedAt).toBeNull();
+
+    const { host, calls } = withRefusingTrigger(inner, () => false);
+    await tickWith(host);
+
+    expect(calls.filter((c) => c.targetRef === placement.id)).toHaveLength(0);
+    expect((await targetRow(waveTarget.id)).status).toBe("target_deleted");
+
+    // The Decision names the COMPONENT the operator actually deleted — not the placement that merely
+    // referenced it — and says which hop found it.
+    const blockDecision = (await decisionsFor(changeObjectId)).find(
+      (d) => d.kind === "wave_target" && d.verdict === "block"
+    );
+    expect(blockDecision!.inputContext).toMatchObject({
+      targetObjectId: placement.id,
+      deadObjectId: component.id,
+      deadObjectTypeId: "component",
+      reachedVia: "placement.component",
+      liveness: "deleted"
+    });
   }, 180_000);
 
   it("SCOPE GUARD: a LIVE target is untouched — it triggers exactly as before", async () => {
