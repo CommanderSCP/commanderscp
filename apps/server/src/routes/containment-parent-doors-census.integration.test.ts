@@ -179,6 +179,129 @@ describe("every door that writes a caller-supplied containment parent", () => {
   });
 
   // -----------------------------------------------------------------------------------------
+  // The COORDINATION create doors — same wire `null`, four more handlers
+  // -----------------------------------------------------------------------------------------
+
+  async function readObjectDomainId(
+    org: TestOrg,
+    typeId: string,
+    id: string
+  ): Promise<string | null> {
+    const res = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/objects/${typeId}/${id}`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    return (res.json() as { domainId: string | null }).domainId;
+  }
+
+  it("POST /initiatives, /campaigns, /changes and /placements all read {domainId: null} as the org root", async () => {
+    const org = await createTestOrg(server, "coordination-null");
+    const service = await post(org.adminToken, "/api/v1/services", { name: "coord-null-svc" });
+    expect(service.status, service.body).toBe(201);
+    const component = await post(org.adminToken, "/api/v1/components", {
+      name: "coord-null-cmp",
+      service: service.json().id as string
+    });
+    expect(component.status, component.body).toBe(201);
+    const target = await post(org.adminToken, "/api/v1/deployment-targets", {
+      name: "coord-null-target"
+    });
+    expect(target.status, target.body).toBe(201);
+    const componentId = component.json().id as string;
+
+    const initiative = await post(org.adminToken, "/api/v1/initiatives", {
+      name: "coord-null-initiative",
+      domainId: null
+    });
+    expect(initiative.status, initiative.body).toBe(201);
+    expect(await readObjectDomainId(org, "initiative", initiative.json().id as string)).toBe(
+      org.orgId
+    );
+
+    const campaign = await post(org.adminToken, "/api/v1/campaigns", {
+      name: "coord-null-campaign",
+      targets: [componentId],
+      domainId: null
+    });
+    expect(campaign.status, campaign.body).toBe(201);
+    expect(await readObjectDomainId(org, "campaign", campaign.json().id as string)).toBe(org.orgId);
+
+    const change = await post(org.adminToken, "/api/v1/changes", {
+      name: "coord-null-change",
+      targets: [componentId],
+      domainId: null
+    });
+    expect(change.status, change.body).toBe(201);
+    expect(await readObjectDomainId(org, "change", change.json().id as string)).toBe(org.orgId);
+
+    const placement = await post(org.adminToken, "/api/v1/placements", {
+      component: componentId,
+      deploymentTarget: target.json().id as string,
+      domainId: null
+    });
+    expect(placement.status, placement.body).toBe(201);
+    expect(await readObjectDomainId(org, "placement", placement.json().id as string)).toBe(
+      org.orgId
+    );
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // IaC apply — the ninth door, and the only one that authorizes through a drained check list
+  // -----------------------------------------------------------------------------------------
+
+  it("POST /plans/{id}/apply refuses a manifest that re-parents an object into a domain the actor holds nothing at", async () => {
+    const org = await createTestOrg(server, "iac-move");
+    const victim = await post(org.adminToken, "/api/v1/domains", { name: "iac-victim" });
+    const home = await post(org.adminToken, "/api/v1/domains", { name: "iac-home" });
+    expect(victim.status, victim.body).toBe(201);
+    expect(home.status, home.body).toBe(201);
+    const homeDomainId = home.json().id as string;
+    const victimDomainId = victim.json().id as string;
+
+    const service = await post(org.adminToken, "/api/v1/services", {
+      name: "iac-movable",
+      domainId: homeDomainId
+    });
+    expect(service.status, service.body).toBe(201);
+    const serviceId = service.json().id as string;
+    const serviceUrn = service.json().urn as string;
+
+    const mover = await createTestUser(server, org, [{ role: "Administrator", scope: serviceId }]);
+
+    // `POST /plans` needs `object:read` at the org root, which the mover does not hold — so the
+    // plan is authored by someone who does. That is the honest shape of the attack anyway: the
+    // manifest is data, and the only question that matters is who may APPLY it.
+    const plan = await post(org.adminToken, "/api/v1/plans", {
+      manifest: {
+        stackName: `iac-move-${serviceId.slice(0, 8)}`,
+        objects: [
+          { urn: serviceUrn, typeId: "service", name: "iac-movable", domainId: victimDomainId }
+        ],
+        relationships: []
+      }
+    });
+    expect(plan.status, plan.body).toBe(201);
+
+    const applied = await server.app.inject({
+      method: "POST",
+      url: `/api/v1/plans/${plan.json().id as string}/apply`,
+      headers: { authorization: `Bearer ${mover.token}` }
+    });
+    expect(applied.statusCode, applied.body).toBe(403);
+    expect(applied.body).toContain(victimDomainId);
+
+    const after = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/services/${serviceId}`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(after.statusCode, after.body).toBe(200);
+    expect((after.json() as { domainId: string | null }).domainId).toBe(homeDomainId);
+  });
+
+  // -----------------------------------------------------------------------------------------
   // The new refusal: a containment cycle has no org-root ancestor
   // -----------------------------------------------------------------------------------------
 

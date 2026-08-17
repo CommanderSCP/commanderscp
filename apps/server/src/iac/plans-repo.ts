@@ -754,6 +754,21 @@ export async function prepareApplyChecks(
     objectResolutions.set(entry.urn, { id: found.id, scopeObjectId: found.id });
     if (entry.action !== "noop") {
       checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: found.id });
+      // A CONTAINMENT MOVE IS A WRITE AT TWO PLACES, and IaC apply is a door like any other.
+      // `executePlanDiff` writes `target.domainId` onto the row through the same `updateObject` the
+      // HTTP doors use, so without this a manifest re-parents an object the actor holds
+      // `object:write` over into a subtree they hold nothing at — and because RBAC scope expands
+      // strictly upward (`authz/resolve.ts`), that hands the destination subtree's holders custody
+      // of it. The apply-path twin of `graph/containment-parent-authz.ts`, written as a `checks`
+      // entry rather than a call to that helper because this path authorizes through one drained
+      // list (module doc above) and because the diff engine has ALREADY decided whether the parent
+      // changes — `plan-diff.ts` records exactly that as the `domainId` changed-field. Only a real
+      // change is checked, so an unchanged re-apply demands nothing extra: the same "re-stating the
+      // current parent is not a move" rule the helper applies, for the same idempotency reason.
+      const destination = entry.target?.domainId;
+      if (entry.action === "update" && destination && destination !== found.domainId) {
+        checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: destination });
+      }
       if (entry.typeId === "policy" && entry.action === "update") {
         await assertPolicyScopeWithinAuthority(tx, {
           orgId,
