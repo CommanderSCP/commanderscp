@@ -174,7 +174,9 @@ describe("property_schema edits reach a live process (no restart)", () => {
       propertySchema: { type: "object", properties: { budget: { type: "string" } } }
     });
 
-    const from = await client.object("service").create({ name: `svc-a-${randomUUID().slice(0, 8)}` });
+    const from = await client
+      .object("service")
+      .create({ name: `svc-a-${randomUUID().slice(0, 8)}` });
     const to = await client.object("service").create({ name: `svc-b-${randomUUID().slice(0, 8)}` });
 
     const rel = await client.relationships.create({
