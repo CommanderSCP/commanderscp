@@ -154,18 +154,29 @@ export interface ManagedDepConfig {
    *  edit is a text transform on one small file, so a run that takes longer is stuck, not busy. */
   timeoutMs?: number;
   /**
-   * The docker CLI to spawn. Defaults to `"docker"`, resolved on the subprocess's PATH, and NOTHING
-   * SETS IT IN PRODUCTION — a test/fixture seam, exactly as it is for `@scp/plugin-managed-iac` and
-   * `@scp/plugin-managed-scan`.
+   * The container CLI to spawn. Defaults to `"docker"`, resolved on the subprocess's PATH, and
+   * SERVER-INJECTED IN PRODUCTION from `SCP_MANAGED_RUNNER_DOCKER_BINARY` — the operator-governed
+   * knob that lets a deployment run rootless podman instead, which is the sanctioned runtime on the
+   * RHEL/air-gapped estates this class ships into (docs/container-runtimes.md).
    *
-   * It used to say "Server-injected in production", which was false: `executor-bindings-repo.ts`'s
-   * `managedDepServerSettings` injects `runnerImage` and `workspaceRoot` and nothing else. That is
-   * the same shape as the shipped managed-scan schema hole — a comment describing a control that
-   * does not exist — and a reader who trusted it would believe an operator governs which executable
-   * this plugin spawns. What actually keeps a TENANT from setting it is the manifest at the bottom
-   * of this file: `additionalProperties: false` with `dockerBinary` absent, so a binding carrying it
-   * is rejected at create/update by `routes/executors.ts`
-   * (`plugin-manifests-managed-dep.test.ts` pins that refusal by name).
+   * THE HISTORY IS WORTH KEEPING, because it is the shape of the bug rather than a war story. This
+   * comment previously said "NOTHING SETS IT IN PRODUCTION — a test/fixture seam", and that was
+   * accurate: `managedDepServerSettings` injected `runnerImage` and `workspaceRoot` and nothing
+   * else, on BOTH of this class's construction paths, while its two sibling managed classes
+   * injected the binary correctly. The gap had been NOTICED — an earlier edit corrected this
+   * comment from "Server-injected in production" to describe the hole — but the comment was
+   * corrected to match the broken behaviour instead of the behaviour being fixed, which left an
+   * operator's `podman` silently applying to two managed classes out of three, and left the
+   * defence-in-depth argument in `managedRunnerDockerBinary`'s doc ("the two defences now fail
+   * independently") untrue for this one. Wired 2026-08-16; both paths are pinned by tests
+   * (`routes/executors.integration.test.ts` for the hand-made binding,
+   * `dependencies/bump-dispatch.integration.test.ts` for the ordinary binding-free dispatch).
+   *
+   * A TENANT still cannot set it: the manifest at the bottom of this file is
+   * `additionalProperties: false` with `dockerBinary` absent, so a binding carrying it is rejected
+   * at create/update by `routes/executors.ts` (`plugin-manifests-managed-dep.test.ts` pins that
+   * refusal by name). The write door refuses it and the server overwrites it — two independent
+   * defences, which is the point.
    */
   dockerBinary?: string;
 
