@@ -16,6 +16,7 @@ import {
   assertMayWriteGovernanceLabels,
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
+import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 
 /**
  * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
@@ -216,6 +217,39 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
     typeId: input.typeId,
     properties: input.properties
   });
+  // ...AND THE AUTHORIZATION HALF, which had never reached this door at all.
+  //
+  // `assertPolicyScopeWithinAuthority` deliberately does NOT live at the repo choke point — it is
+  // AUTHORIZATION, not an invariant, and pushing it down would run it for the federation importer's
+  // synthetic subject, "which is precisely how an authorization check quietly becomes a no-op"
+  // (`routes/typed-registries.ts`'s note). So it stays at the doors — and its census names THREE:
+  // that typed route plus `iac/plans-repo.ts`'s create and update branches. Hand-fill is a fourth
+  // door, reached by a `federation:write` holder with a free-form `typeId` and free-form
+  // `properties`, and it was not on the list: `POST /v1/federation/hand-fill` with
+  // `{typeId:"policy", properties:{scope:{selector:{...}}}}` planted an org-wide policy with no
+  // `policy:write` anywhere. That is the CRITICAL #1b vector the guard exists to close, reopened at
+  // a door the guard's own comment names as reaching `createObject` without passing through it.
+  //
+  // Called with the REQUESTING operator for the same reason the label check above is — see
+  // `actorObjectId`. This is exactly the shape the "authorization at the door" split prescribes; the
+  // door simply had to be added to it.
+  // Narrowed to `policy` exactly as `iac/plans-repo.ts`'s two calls are, not to every
+  // governance-managed type: a `control` carries no `scope`, so widening this would silently impose
+  // an ORG-ROOT bar on a document the typed `/controls` route gates at its own domain — a permission
+  // regression smuggled in beside a security fix.
+  //
+  // NOT ADDRESSED HERE, and reported separately: this door still authorizes the WRITE itself with
+  // `federation:write` rather than the `policy:write` that `iac/plans-repo.ts`'s `writePermissionFor`
+  // demands for the same types. Raising that bar is a new decision with its own blast radius (an
+  // air-gapped operator hand-filling commander governance config), not the completion of an existing
+  // one, so it belongs to the owner rather than to this change.
+  if (input.typeId === "policy") {
+    await assertPolicyScopeWithinAuthority(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      properties: input.properties
+    });
+  }
   await assertMayWriteGovernanceLabels(tx, {
     orgId: input.orgId,
     actorObjectId: input.actorObjectId,
