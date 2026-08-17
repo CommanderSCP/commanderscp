@@ -1,6 +1,6 @@
 # ADR-0032: Dependency subscriptions — a declared inventory, a three-level enablement chain, and a managed bump actuator
 
-**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13. **The §8 actuator is now BUILT (M21.5, 2026-08-16) on the charter amendment it was contingent on (approved 2026-08-13, qualified 2026-08-15); §8a–§8f are that build's own normative clauses, every one of them a defect an adversarial review found in a component that was correct and had no caller.** **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.**
+**Status:** Proposed (2026-08-13) — five decision points settled with the owner on 2026-08-13. **The §8 actuator is now BUILT (M21.5, 2026-08-16) on the charter amendment it was contingent on (approved 2026-08-13, qualified 2026-08-15); §8a–§8f are that build's own normative clauses, every one of them a defect an adversarial review found in a component that was correct and had no caller.** **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.** **Amended 2026-08-16 (§3a-i): §3a's own attachment clause was wrong — a subscription is attached by the policy's `properties.scope`, not by the `governed_by` edge §3a named; the ADR now agrees with the code comment that caught it.**
 **Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (the four-arm ownership test and six-gate boundary test this feature must pass); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (SCP stores no SBOM bytes); [ADR-0016](0016-scoped-scan-requirement-policies.md) (the multi-tier resolution shape reused here); [ADR-0022](0022-outpost-config-authority-split.md) (commander-declared config must be a graph object to reach an outpost); [ADR-0028](0028-stage-scoped-component-coupling.md) (`provides`/`requires` — prior art for the wait predicate); [ADR-0030](0030-dev-branch-pipelines.md) §2 (declared, never inferred); [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local work does not journal)
 
@@ -99,6 +99,29 @@ Four consequences, all improvements:
 The **instance-level unlock** is not a policy: it is instance-scoped rather than org-scoped, so it
 follows the singleton-table precedent (migrations 0029 / 0035 / 0036) with operator-token-gated
 writes — the same split ADR-0016 uses for its above-org tiers.
+
+### 3a-i. Amendment (2026-08-16) — attachment is `properties.scope`, not a `governed_by` edge
+
+**Status of §3a: unchanged.** The subscription is still a `dependencySubscription` effect on an
+ordinary `policy` object, mirroring `scanThreshold` exactly, for all four consequences recorded
+above. What was wrong is the one clause naming the attachment mechanism.
+
+**§3a as originally written said** the effect is "attached by the existing `governed_by` edge". That
+is not what shipped. `governed_by` is indeed a registered
+`(organization|domain|service|component|team) -> policy` relationship type, but nothing in policy
+resolution reads it today: `policy-resolve.ts` records it as the natural later optimization behind
+the same function signature, and the shipped matcher works off the policy's own `properties.scope` —
+`scope.objectRef` / `scope.selector` / `scope.group` — exactly as it does for every other policy,
+`scanThreshold` included. A subscription is attached by authoring it at a scope, the same way a scan
+ceiling is; mirroring `scanThreshold` "in every structural respect" means mirroring *that*, not
+inventing a second attachment mechanism this feature alone would use.
+
+**The `governed_by` mention is preserved, not deleted, because it is forward-compatible rather than
+simply wrong**: if `governed_by` is ever materialised into the matcher, this module inherits it for
+free, since resolution already goes through the unchanged `matchPoliciesForTargets` /
+`resolvePolicies` / `containmentChain` machinery §3a describes. Found and corrected during M21.4;
+the module doc at `dependencies/subscription-resolution.ts:38-45` states the corrected mechanism
+in the code, and this amendment brings the ADR into agreement with it.
 
 ### 4. Direct declared dependencies only
 

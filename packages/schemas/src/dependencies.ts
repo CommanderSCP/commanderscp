@@ -539,7 +539,7 @@ export const DEFAULT_DEPENDENCY_SUBSCRIPTION_DELIVERY: DependencySubscriptionDel
 // THERE IS NO SUBSCRIPTION-WRITE SHAPE HERE, ON PURPOSE. A dependency subscription IS a
 // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored,
 // listed, versioned and federated through the EXISTING policy surface
-// (`CreatePolicyRequestSchema` / `scp policy create`). A bespoke create/update/delete shape here
+// (`CreateObjectRequestSchema` / `scp policy register`). A bespoke create/update/delete shape here
 // would be a second authoring path for one concept — it would need its own versioning, its own
 // journal handling and its own scope semantics, and the two would drift. Do not add one.
 // ===========================================================================================

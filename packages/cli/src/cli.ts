@@ -3539,14 +3539,14 @@ export function buildProgram(): Command {
   //
   // THERE IS NO `subscribe` VERB, AND ONE MUST NOT BE ADDED. A dependency subscription IS a
   // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored
-  // with `scp policy create` — the same command, versioning and federation path every other policy
+  // with `scp policy register` — the same command, versioning and federation path every other policy
   // uses. `scp dependency-subscriptions --help` says so out loud, because the first thing someone
   // will look for here is the verb that does not exist.
   // -------------------------------------------------------------------------------------
   const depSubsCmd = program
     .command("dependency-subscriptions")
     .description(
-      "Dependency subscriptions (ADR-0032 §6) — the instance unlock and the (component, line) enablement resolution. Subscriptions THEMSELVES are policy effects: author them with `scp policy create` carrying effects: [{ dependencySubscription: { enabled: true } }]"
+      "Dependency subscriptions (ADR-0032 §6) — the instance unlock and the (component, line) enablement resolution. Subscriptions THEMSELVES are policy effects: author them with `scp policy register` carrying effects: [{ dependencySubscription: { enabled: true } }]"
     );
 
   depSubsCmd

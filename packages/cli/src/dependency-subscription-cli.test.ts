@@ -81,7 +81,7 @@ describe("scp dependency-subscriptions — the CLI surface (ADR-0032 §6)", () =
     }
     // The absence is only defensible if the surface points at the real path. The first thing
     // somebody will look for here is the verb that does not exist.
-    expect(root!.description()).toMatch(/scp policy create/i);
+    expect(root!.description()).toMatch(/scp policy register/i);
     expect(root!.description()).toMatch(/dependencySubscription/);
   });
 

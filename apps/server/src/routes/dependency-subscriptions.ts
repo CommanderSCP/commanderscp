@@ -57,7 +57,7 @@ import { createGitProviderManifestReader } from "../dependencies/manifest-reader
  * THERE IS NO WRITE PATH FOR A SUBSCRIPTION ITSELF HERE, AND ONE MUST NOT BE ADDED. A dependency
  * subscription IS a `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a) —
  * a team subscribes by authoring a policy at their own component through the EXISTING policy routes
- * (`POST /api/v1/policies`, `scp policy create`) and opts one line back out with a second effect at
+ * (`POST /api/v1/policies`, `scp policy register`) and opts one line back out with a second effect at
  * the same or a deeper scope:
  *
  *     effects: [{ dependencySubscription: { enabled: true } }]

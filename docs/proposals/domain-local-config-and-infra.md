@@ -338,7 +338,10 @@ BUILD_AND_TEST.md §8. M20 is independent of both M18 and M19 and depends on nei
   property of the receiver, not a guarantee of the sender.
 - **M20.3 — edges and changes.** Option A inheritance in `createRelationship`; D5 inheritance and the
   mixed-target refusal in `proposeChange`; the corrected `import-repo.ts:269` comment.
-- **M20.4 — (future, not built) domain-local → shared promotion.** See D6.
+- **M20.4 — domain-local → shared publication — DONE.** `POST /v1/objects/{type}/{id}/publish`, shipped
+  between this section's original planning and today; see BUILD_AND_TEST.md §8 M20.4 and
+  [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) §6b for what actually shipped, which
+  differs from D6's sketch below in the ways this document's own header already flags.
 
 ### Definition of done
 

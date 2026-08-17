@@ -323,7 +323,7 @@ A component may have many placements; a deployment target may hold many. **Neith
 - ***deployment target*** — the place as an executor sees it. A placement pairs a component with one.
 - **the casual sense in `apps/server/src/federation/import-repo.ts:163`**, where *"`domainId` is LOCAL PLACEMENT, not authority"* means an imported object's containment parent. Different axis entirely: where an object sits in the org tree, not where software runs.
 
-**In the code — not built yet.** Reserved by [ADR-0026](adr/0026-placements-and-derived-stage-names.md) and specified in [post-import-configuration.md](proposals/post-import-configuration.md). When built: object type `placement`, named `<component>@<deployment-target>`, unique on `(org_id, component, deployment_target)`, and the referent of both `executor_bindings.target_object_id` and `change_wave_targets.target_object_id`.
+**In the code — built.** Reserved by [ADR-0026](adr/0026-placements-and-derived-stage-names.md) D3, specified in [post-import-configuration.md](proposals/post-import-configuration.md), and shipped as object type `placement`, named `<component>@<deployment-target>`, unique on `(org_id, component, deployment_target)`, and the referent of both `executor_bindings.target_object_id` and `change_wave_targets.target_object_id` (migration 0051; `graph/placements-repo.ts`).
 
 Today the same information is carried by **env-suffixed component pairs** — `agentkit-keycloak` and `agentkit-keycloak-prod`, which hold identical `external_ref`s and differ only in which Argo CD they point at. Those are placements wearing a component costume, and they are what the proposal's §6 migrates. Read them as evidence the concept is already load-bearing, not as a naming accident.
 
@@ -772,7 +772,7 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 **Not to be confused with:** a **dependency** itself (the thing depended on), the **dependency inventory** (what a component declares, derived per-domain into a projection table), or `depends_on` (a **component-topology** edge feeding the wave toposort — package dependencies deliberately mint none).
 
-**In the code.** *(M21, not yet built)* — `dependency_lines` + `component_dependencies` projection tables; the subscription itself is a graph object so it federates ([ADR-0022](adr/0022-outpost-config-authority-split.md) clause 2).
+**In the code.** M21 — done, on `main`. The subscription itself is a `dependencySubscription` **effect on an ordinary `policy` object** ([ADR-0032](adr/0032-dependency-subscriptions.md) §3a — amended from an earlier "new built-in object type" reading), not a bespoke object or relationship type; it federates because `policy` already does, needing no new registration (ADR-0022 clause 2). **There is no `subscribe` verb** — a team authors one through the existing policy routes (`POST /api/v1/policies`, `scp policy register`), carrying `effects: [{ dependencySubscription: { enabled: true } }]`. The inventory — `dependency_lines` + `component_dependencies` — is a separate **projection table** and does not federate (§3).
 
 ---
 
@@ -784,7 +784,7 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 **Not to be confused with:** the **promotion manifest** (see `manifest`), an **OCI image manifest**, a **Kubernetes manifest**, or an **SBOM** (a full component inventory including the transitive closure — a dependency manifest declares only **direct** dependencies, which is precisely why SCP can store one and deliberately does not store the other, [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md)).
 
-**In the code.** *(M21, not yet built)* — read through the `readFileAtRef` `GitProviderAdapter` hook.
+**In the code.** M21 — done, on `main`. Read through the `readFileAtRef` `GitProviderAdapter` hook (`dependencies/manifest-reader.ts`; [ADR-0032](adr/0032-dependency-subscriptions.md) §7a, §7c).
 
 ---
 
