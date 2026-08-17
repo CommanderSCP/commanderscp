@@ -257,7 +257,7 @@ export async function createRelationship(
   const type = await requireRelationshipType(tx, input.typeId);
   const properties = input.properties ?? {};
   const labels = input.labels ?? {};
-  validateProperties(type.propertySchema, properties, `rel:${type.id}`);
+  validateProperties(type.propertySchema, properties);
 
   const fromObj = await requireLiveObject(tx, input.orgId, input.fromId, "from");
   const toObj = await requireLiveObject(tx, input.orgId, input.toId, "to");

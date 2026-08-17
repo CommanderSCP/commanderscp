@@ -224,7 +224,7 @@ export function validatePluginConfig(module: string, config: unknown): void {
         `(apps/server/src/plugin-host/plugin-manifests.ts).`
     );
   }
-  validateProperties(manifest.configSchema, config ?? {}, `plugin-config:${module}`);
+  validateProperties(manifest.configSchema, config ?? {});
 }
 
 /**

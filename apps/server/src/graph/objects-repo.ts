@@ -249,7 +249,7 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   const type = await requireObjectType(tx, input.typeId);
   const properties = input.properties ?? {};
   const labels = input.labels ?? {};
-  validateProperties(type.propertySchema, properties, type.id);
+  validateProperties(type.propertySchema, properties);
 
   const containmentParent = await resolveContainmentParent(tx, input.orgId, input.domainId);
   const domainId = containmentParent.id;
@@ -797,7 +797,7 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const type = await requireObjectType(tx, input.typeId);
   const nextProperties = (input.properties ?? existing.properties) as Record<string, unknown>;
   const nextLabels = (input.labels ?? existing.labels) as Record<string, unknown>;
-  validateProperties(type.propertySchema, nextProperties, type.id);
+  validateProperties(type.propertySchema, nextProperties);
 
   // M16.2 phase A (E1) — the UPDATE half of the same choke point (see `createObject` above). An
   // update that rewrites `properties` must not be able to re-point the binding at an unpaired peer,
