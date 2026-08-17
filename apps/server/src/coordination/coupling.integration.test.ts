@@ -9,6 +9,7 @@ import { runWatchdogSweep } from "./watchdog.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import { createInMemoryFakeHost } from "./test-support/fake-plugin-host.js";
 import {
+  assertStaysWaiting,
   createTestComponent,
   createTestOrg,
   listenTestServer,
@@ -77,9 +78,11 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
     });
     await reaches(waiter.id, "waiting");
 
-    // It stays parked — a wait triggers nothing and never silently advances. Give it several ticks.
-    await new Promise((r) => setTimeout(r, 3_000));
-    expect(await stateOf(waiter.id)).toBe("waiting");
+    // It stays parked — a wait triggers nothing and never silently advances. Asserted from the
+    // reconcile loop's own round-robin bump (`advanceWaitingChanges`, BUMP 1 OF 5) rather than from
+    // a fixed sleep: 3s was NOT "several ticks" (see `assertStaysWaiting`'s doc comment for the
+    // arithmetic), so this negative used to be near-vacuous on a fast box and spurious on a slow one.
+    await assertStaysWaiting(server, org.orgId, waiter.id);
 
     // The infra release provides the key at the infra object; it drives to validating on its own.
     const provider = await admin.changes.propose({
@@ -113,11 +116,10 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
       provides: ["shared-key"]
     });
     await reaches(wrongProvider.id, "validating");
-    // Give the waiter several more ticks AFTER the wrong provider validated: if the predicate
-    // ignored `at` (matched on key alone), this is exactly when it would wrongly release. It must
-    // still be parked.
-    await new Promise((r) => setTimeout(r, 4_000));
-    expect(await stateOf(waiter.id)).toBe("waiting");
+    // Observe the waiter genuinely re-examined AFTER the wrong provider validated: if the predicate
+    // ignored `at` (matched on key alone), that is exactly when it would wrongly release. Counting
+    // the engine's own refusals is what makes "still parked" mean "looked again and said no".
+    await assertStaysWaiting(server, org.orgId, waiter.id);
 
     // The CORRECT provider (same key, at infra) releases it — proving the wait was genuine, not stuck.
     const rightProvider = await admin.changes.propose({
@@ -448,9 +450,8 @@ describe("coupled pipelines: a change waits on a cross-change prerequisite (M12 
 
     // The routing guard must send it to `waiting` (fail-closed park), NEVER `executing`.
     await reaches(changeObjectId, "waiting");
-    // And it stays there — unsatisfiable is unsatisfiable.
-    await new Promise((r) => setTimeout(r, 3_000));
-    expect(await stateOf(changeObjectId)).toBe("waiting");
+    // And it stays there — unsatisfiable is unsatisfiable, re-checked by the loop each tick.
+    await assertStaysWaiting(server, org.orgId, changeObjectId);
     const explained = await admin.changes.explain(changeObjectId);
     expect(explained.waitStatus!.malformed).toEqual(["not-even-an-array"]);
   }, 60_000);

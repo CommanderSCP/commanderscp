@@ -210,6 +210,17 @@ Four layers, matching DESIGN.md §18. Every layer runs offline; no test may reac
 - **Runner:** `pnpm test:integration` — Vitest project with `testTimeout: 60_000`, **one** Postgres container for the whole run whose `scp_template` database is migrated once, then **cloned per worker fork** (`CREATE DATABASE … TEMPLATE`) so workers run in parallel without sharing state; within a worker, isolation is per-test unique `org_id` + RLS. See §6.2 for the full speed model (this replaced the old `singleFork` serial execution).
 - **Plugin conformance:** every shipped plugin runs the relevant `@scp/plugin-testkit` suite in its own package tests.
 
+**No test may stand a fixed sleep in for engine progress.** A `sleep(N)` followed by an assertion about what did or did not happen in that window is wrong in *both* directions at once, and which one you get depends on how busy the machine is: under contention it fails spuriously, and on an idle box it passes vacuously. It is also arithmetically wrong here. `RECONCILE_TICK_INTERVAL_SECONDS` is 1, but the tick re-schedules itself with `startAfter: 1` onto pg-boss — whose `pollingInterval` defaults to **2000 ms** and is not overridden anywhere in this repo — and each tick then walks **every org in the database** (`runReconcileSweep`; production is one instance serving many orgs, so this is correct). A test *file* accumulates one org per test, so the same constant buys fewer ticks the later in the file it is evaluated. Measured 2026-08-17 on an 8-core box at ambient load ~25:
+
+| orgs in the database | `propose` → `executing` | tick gap (median) | tick gap (max) |
+|---|---|---|---|
+| 1 | 1391 ms | 2025 ms | 2154 ms |
+| 21 | **10903 ms** | 2821 ms | 5972 ms |
+
+That arrival column is the whole bug: the helper asserted `state === 'executing'` **4000 ms** after `propose()`, from the 16th test of a file that has created 15 orgs by then and 28 by the end. Deadlines have the same disease — say what a chain needs in *ticks* and let `reconcileTicks()` (`test-support/harness.ts`) convert, rather than writing seconds against the advertised 1 s.
+
+Wait for a **positive signal the engine itself writes** instead: `waitUntil` for the state you expect, `assertStaysExecuting` / `assertStaysWaiting` (`test-support/harness.ts`) for "it is still parked" — they count the engine's own `reconcile_cursor_at` round-robin bumps, so "it stayed blocked" means "the loop looked again and still refused" — and `waitForChangeParked` for "…and it never did X" about a failed wave, whose `reconcile_blocked_at` marks the exact point after which the engine will never look again. A sleep-based test is exactly as slow as its constant on every run; a signal-based one is exactly as slow as the engine actually is. `test-support/integration-sleep-census.test.ts` is the standing gate (§4.4a's "leave a guard, not just a fix"): every `setTimeout` in an integration test whose delay is not a literal under 1000 ms must be registered with the reason it is not an instance of the property.
+
 ### 4.3 Contract
 
 - **Spec stability — BUILT.** `tools/openapi/check.sh` runs vendored `oasdiff breaking` between two **committed** copies of `tools/openapi/openapi.v1.json`: the one at `git merge-base origin/main HEAD`, and the one in the working tree. Any breaking change within `/v1` fails the script. Wired as job 3b, which is advisory (§6.0).

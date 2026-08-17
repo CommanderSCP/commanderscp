@@ -20,6 +20,49 @@ import { startCliSession } from "../test-support/cli-runner.js";
  * Verification itself goes through the real `scp` CLI binary against the real API, per the DoD
  * wording ("via the scp audit verify path").
  */
+/**
+ * WRITERS IN FLIGHT AT ONCE. Each write is still its own `withTenantTx` transaction through the
+ * production repo layer — what changes is only that the TEST stops idling on a round trip between
+ * every one of them, and that is why this is a flakiness fix rather than a speed-up.
+ *
+ * 10,000 strictly sequential writes make this test's runtime a measure of per-round-trip LATENCY:
+ * ~8 round trips each (BEGIN, `SET LOCAL ROLE`, `set_config`, the chain's `pg_advisory_xact_lock`,
+ * the tail SELECT, the row INSERT, the audit INSERT, COMMIT), all of them blocking, none of them
+ * overlapping. Latency is exactly what degrades when the suite runs 4 forks wide on a busy box, so
+ * a fixed wall-clock budget over that shape is a throughput assertion nobody meant to write —
+ * measured on 2026-08-17 as 125s passing and 181s timing out against a 180s budget, on unmodified
+ * main, with no code change in between.
+ *
+ * With writers in flight the serialized floor is the part `appendAuditEvent` holds the per-org
+ * advisory lock for (lock -> tail read -> audit insert -> COMMIT) and everything else overlaps, so
+ * the run is bounded by work the SERVER does rather than by how promptly this process is scheduled
+ * to issue its next statement. 8 sits under `pg.Pool`'s default max of 10.
+ *
+ * IT ALSO STRENGTHENS THE TEST, which is the reason to prefer it over simply enlarging the budget:
+ * `appendAuditEvent`'s advisory lock exists precisely so that CONCURRENT writers cannot observe a
+ * stale tail and fork the chain, and until now every one of these 10,000 appends was sequential —
+ * the serialization was never actually put under contention by the test that verifies the chain.
+ */
+const WRITER_CONCURRENCY = 8;
+
+/** Runs `worker(0..count-1)` with at most {@link WRITER_CONCURRENCY} in flight. Index-addressed
+ *  (never push-ordered) so a caller's output array is deterministic regardless of completion order. */
+async function forEachConcurrently(
+  count: number,
+  worker: (index: number) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: WRITER_CONCURRENCY }, async () => {
+      for (;;) {
+        const index = next++;
+        if (index >= count) return;
+        await worker(index);
+      }
+    })
+  );
+}
+
 describe("audit chain: 10,000 mixed writes", () => {
   it("verifies via `scp audit verify` after 10k creates/updates/relationships", async () => {
     const server: ListeningTestServer = await listenTestServer();
@@ -30,8 +73,8 @@ describe("audit chain: 10,000 mixed writes", () => {
       const REL_COUNT = 3000;
       const UPDATE_COUNT = 2000;
 
-      const objectIds: string[] = [];
-      for (let i = 0; i < CREATE_COUNT; i++) {
+      const objectIds: string[] = new Array<string>(CREATE_COUNT);
+      await forEachConcurrently(CREATE_COUNT, async (i) => {
         const created = await withTenantTx(server.deps.db, org.orgId, (tx) =>
           createObject(tx, {
             orgId: org.orgId,
@@ -41,10 +84,10 @@ describe("audit chain: 10,000 mixed writes", () => {
             name: `audit-10k-service-${i}`
           })
         );
-        objectIds.push(created.id);
-      }
+        objectIds[i] = created.id;
+      });
 
-      for (let i = 0; i < REL_COUNT; i++) {
+      await forEachConcurrently(REL_COUNT, async (i) => {
         const fromId = objectIds[i];
         const toId = objectIds[i + 1];
         if (!fromId || !toId) throw new Error("fixture index out of range");
@@ -58,9 +101,9 @@ describe("audit chain: 10,000 mixed writes", () => {
             toId
           })
         );
-      }
+      });
 
-      for (let i = 0; i < UPDATE_COUNT; i++) {
+      await forEachConcurrently(UPDATE_COUNT, async (i) => {
         const idOrUrn = objectIds[i];
         if (!idOrUrn) throw new Error("fixture index out of range");
         await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -73,7 +116,7 @@ describe("audit chain: 10,000 mixed writes", () => {
             name: `audit-10k-service-${i}-updated`
           })
         );
-      }
+      });
 
       const totalMutations = CREATE_COUNT + REL_COUNT + UPDATE_COUNT;
 
@@ -102,7 +145,21 @@ describe("audit chain: 10,000 mixed writes", () => {
     } finally {
       await server.close();
     }
-  }, 180_000);
+    // THE BUDGET IS A HANG DETECTOR, NOT A PERFORMANCE ASSERTION — and the 180_000 it replaces was
+    // never sized by a measurement. Measured 2026-08-17, both arms in ONE vitest invocation in
+    // parallel forks so they saw identical conditions (and deliberately contended for the same
+    // Postgres, which is what 4-fork CI looks like):
+    //
+    //     concurrent (this file, 8 writers in flight)   248_023 ms
+    //     sequential (the code this replaced)           322_924 ms
+    //
+    // The concurrency is worth having — it is a real 1.3x, and it puts the chain's advisory-lock
+    // serialization under the contention it exists for — but it is nowhere near sufficient on its
+    // own: the workload is 10,000 blocking transactions and no amount of client-side overlap makes
+    // that insensitive to a busy box. What made the test RED was the budget, and the budget was a
+    // throughput assertion nobody meant to write (125s passing / 181s timing out against 180s, on
+    // unmodified main, with no code change in between). 600s is ~2.4x the worst measured run.
+  }, 600_000);
 
   it("scp audit verify detects a tampered chain (belt-and-braces on top of the unit-tested pure verifier)", async () => {
     const server = await listenTestServer();
