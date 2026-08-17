@@ -42,6 +42,7 @@ import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createRelationship } from "../graph/relationships-repo.js";
+import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 import {
   upsertExecutorBinding,
   listExecutorBindingsForTarget,
@@ -936,6 +937,46 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           }
         }
 
+        // THE SAME QUESTION, ONE TABLE OVER — AND IT HAD NEVER BEEN ASKED.
+        //
+        // Every refusal above censuses OBJECT types. The loop below this one takes a `typeId` from
+        // the request body too, hands it to `createRelationship`, and until now carried NEITHER of
+        // the two guards the other two caller-supplied-`typeId` relationship doors carry:
+        // `routes/relationships.ts` (generic `POST`/`DELETE`) and `iac/plans-repo.ts`'s apply
+        // (`:873`) BOTH refuse the system-managed types AND authorize `relationship:write` at both
+        // endpoints. This door did neither, on `object:write` at the org root alone.
+        //
+        // MEASURED on the pre-fix tree: the org-root Owner POSTed
+        // `{proposal:{objects:[],relationships:[{typeId:"annotates",fromUrn:A,toUrn:B}]}}` and got
+        // 201 with the row written — the identical edge the generic door refuses that same actor
+        // with a 403. `annotates` is the one that hurts most: `federation/overlay-repo.ts`'s
+        // `getMergedOverlayView` merges the `from` object's properties into the base for EVERY
+        // `annotates` edge it finds, trusting that `createOverlay` — the only path that runs
+        // `assertPolicyOverlayOnlyAddsStrictness` — was the thing that wrote it. A forged edge is a
+        // silent property rewrite of an object the forger never had write access to, which is
+        // precisely the vector `graph/system-managed-relationships.ts` says closing the creation
+        // side makes unreachable.
+        //
+        // A TYPE REFUSAL, holding for every caller including the org Owner, exactly as at the other
+        // two doors: no `DiscoveryPlugin` proposes an engine-owned edge, and a proposal carries none
+        // of the authority each of those edges is evidence OF (a cast vote, a campaign target check,
+        // a strictness-checked overlay). Uses the SHARED predicate rather than a fourth copy of the
+        // type list — the next engine-owned type must not be refused at two doors and admitted at
+        // the third, which is exactly how this door came to be the odd one out.
+        //
+        // Refused in this pre-pass, before any object is created, so a proposal carrying one bad
+        // edge writes nothing at all rather than relying on the transaction rollback.
+        for (const proposedRelationship of request.body.proposal.relationships) {
+          if (isSystemManagedRelationshipType(proposedRelationship.typeId)) {
+            throw forbidden(
+              `discovery proposals may not create '${proposedRelationship.typeId}' relationships — ` +
+                `that type is system-managed (created only by the engine's own authority-checked ` +
+                `paths: approval voting, campaign/initiative membership, and federation overlays), ` +
+                `and a proposal carries none of the authority those edges are evidence of`
+            );
+          }
+        }
+
         const urnToId = new Map<string, string>();
         const nameToId = new Map<string, string>();
         const createdObjectIds: string[] = [];
@@ -976,6 +1017,22 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
         }
 
         const createdRelationshipIds: string[] = [];
+        // A relationship write is a write at TWO places, so it is authorized at both — the check
+        // `routes/relationships.ts`'s module doc calls "load-bearing, not pedantry" and
+        // `iac/plans-repo.ts` also makes. Memoised per request because an import proposal fans a
+        // handful of endpoints across many edges, and re-asking the identical question is the only
+        // cost this adds to the batch shape this route exists for.
+        const endpointsAuthorized = new Set<string>();
+        const authorizeEndpoint = async (objectId: string): Promise<void> => {
+          if (endpointsAuthorized.has(objectId)) return;
+          await authorize(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            permission: "relationship:write",
+            scopeObjectId: objectId
+          });
+          endpointsAuthorized.add(objectId);
+        };
         for (const proposedRelationship of request.body.proposal.relationships) {
           // Discovered relationships may reference objects created in THIS same acceptance batch
           // (by their freshly-minted URN) or pre-existing graph objects — resolved either way.
@@ -985,6 +1042,33 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           const toId =
             urnToId.get(proposedRelationship.toUrn) ??
             (await getObjectByIdOrUrnAnyType(tx, auth.orgId, proposedRelationship.toUrn)).id;
+          // THE SECOND HALF OF THE GAP (see the type refusal above). The door's own entry check is
+          // `object:write` at the ORG ROOT — neither the permission nor the scope this write needs:
+          //
+          //  - PERMISSION. `object:write` and `relationship:write` land on the same built-in roles
+          //    today (`0002_rls_rbac_seed.sql:208-222`), so nothing reachable through the current
+          //    role table holds one without the other — safety by coincidence between two entries
+          //    of one ARRAY literal, undone by a single org-defined role (`roles.org_id`). The
+          //    census that closed `POST /federation/hand-fill` recorded exactly this reasoning for
+          //    exactly this reason (ADR-0032 §6a).
+          //  - SCOPE, and this half was LIVE. `resolveDeclaredContainmentParent`'s module doc puts
+          //    it plainly: an edge is authorized at both ends because it decides who else holds
+          //    authority. `contains` IS a containment parent (`graph/containment.ts` route 2), so
+          //    minting one moves the child under a container whose policies then reach it
+          //    (`governance/policy-resolve.ts` matches every scope kind over the containment chain)
+          //    and whose role bindings then have authority over it (`authz/resolve.ts`'s
+          //    `scopeExpandCte` walks the same edge upward). MEASURED pre-fix: an actor holding an
+          //    org-root Operator allow AND an explicit Operator DENY at the container minted the
+          //    `contains` edge into it and got 201.
+          //
+          // `graph/governance-reach.ts`'s recorder already fires on this path — `createRelationship`
+          // is one of its five choke points, so the reach change WAS being written to a Decision.
+          // That is detection, and detection of a write nobody was authorized to make is not a
+          // substitute for refusing it; #249's own module doc says so ("It is DETECTION, not
+          // prevention"). The record and the refusal are different halves and this door had only
+          // the record.
+          await authorizeEndpoint(fromId);
+          await authorizeEndpoint(toId);
           const created = await createRelationship(tx, {
             orgId: auth.orgId,
             actorObjectId: auth.subjectObjectId,
