@@ -2,7 +2,7 @@
 
 **Status:** Proposed (owner decisions D1–D11 taken 2026-08-17; the mechanism below is proposal pending review)
 **Context doc:** [docs/proposals/secops-scan-rules-and-overrides.md](../proposals/secops-scan-rules-and-overrides.md)
-**Relates to:** [ADR-0016](0016-scoped-scan-requirement-policies.md) (the tightening MIN this sits beside, unchanged); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan as a boundary-authorization gate); [ADR-0032](0032-dependency-subscriptions.md) (the dependency inventory D1's rule reads); [ADR-0003](0003-internal-egress-for-execution-systems.md) (declaration-grants-nothing, the pattern §6 copies); [ADR-0024](0024-decision-and-audit-retention.md) (the evidentiary classes §7 assigns); [ADR-0031](0031-domain-local-objects-never-federate.md) (the federation default D9 overrides); charter principles 2, 4, 5, 6.
+**Relates to:** [ADR-0016](0016-scoped-scan-requirement-policies.md) (the tightening MIN this sits beside, unchanged); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan as a boundary-authorization gate); [ADR-0032](0032-dependency-subscriptions.md) (the dependency inventory D1's rule reads); [ADR-0003](0003-internal-egress-for-execution-systems.md) (declaration-grants-nothing, the pattern §6 copies); [ADR-0024](0024-decision-and-audit-retention.md) (the evidentiary classes §7 assigns); [ADR-0031](0031-domain-local-objects-never-federate.md) (locality is opt-in — `domain_local NOT NULL DEFAULT false` — so D9 selects the existing default rather than overriding anything); charter principles 2, 4, 5, 6.
 **Supersedes:** the *"adds no way to loosen"* invariant asserted in [ADR-0020](0020-first-class-commander-scanning.md) — see §9. **ADR-0020 is amended to point here.**
 
 ## Context
@@ -23,7 +23,7 @@ Every one of these is a rule **about an individual finding**. That is the proble
 2. **The data is already in hand at parse time.** `apps/runner-scan/run.sh:218-226` runs `trivy image --format json --skip-db-update --offline-scan` with `--network none`. This is a **persist** decision, not a scanning decision: charter principles 1 and 5 are untouched, and no new egress is introduced.
 3. **The parse must not be duplicated.** An earlier draft asserted "a plugin cannot import `@scp/schemas`" and designed a duplicated parser with a cross-boundary conformance test. **That is false** — `@scp/plugin-scan-result-control` already declares `@scp/schemas` as a dependency. The parse is shared.
 4. **There is a THIRD verdict producer that structurally cannot carry findings.** `parseOscapResult` (`:797`) counts failed XCCDF rule-results into the same `ScanSeverityCounts`. XCCDF rule-results have no package, no purl, no `FixedVersion`, no `Class`, and XCCDF emits no `critical` at all. Any code assuming "findings exist wherever a verdict exists" is fail-open there.
-5. **A control outcome is cached without gate identity.** `latestControlRun` is keyed `(orgId, changeObjectId, controlObjectId)` — not `gateKind`, not `gateRef` — and `prewarmGovernanceForChange`'s only caller queries changes in `validating`. So one run made during validation satisfies the accept edge **and every later wave boundary, including production**. No production call site passes `force`, and `ensureControlRuns` does not forward the parameter it accepts.
+5. **A control outcome is cached without gate identity.** `latestControlRun` is keyed `(orgId, changeObjectId, controlObjectId)` — not `gateKind`, not `gateRef` — and `prewarmGovernanceForChange` has **two** non-test callers and neither reaches a post-accept gate — `reconcile.ts:562` sweeps only `validating`, and `dependencies/bump-gate.ts:406` prewarms one bump change (controls only, `materializeApprovals: false`) that is deliberately never advanced. So one run made during validation satisfies the accept edge **and every later wave boundary, including production**. No production call site passes `force` — and `ensureControlRuns` does not **accept** a `force` parameter at all (`control-runner.ts:185-196` takes `{orgId, changeObjectId, controlObjectIds, gateKind, gateRef, context}`); only the singular `ensureControlRun` declares it. Widening the plural signature is therefore part of the work, not just forwarding a value through it.
 
 ## Decision
 
@@ -39,7 +39,7 @@ Keep ADR-0016's ceiling exactly as it is, and add a **second, separately-authori
 | Default | absent contributes nothing | admission is **empty at every tier** |
 | On a matcher miss | contributes nothing (safe) | **yields no exclusion** (safe) |
 
-Both are commutative and associative, so **ADR-0016 §4's order-independence survives** — which matters for the documented containment-domain-vs-service tie (`containment.ts:59-73`), where "most specific wins" would be undefined. The two dimensions never touch: exclusions change *what is counted*, the ceiling changes *what the count is compared against*.
+Both are commutative and associative, so **ADR-0016 §4's order-independence survives** — which matters for the documented containment-domain-vs-service tie (`containment.ts:207-219`), where "most specific wins" would be undefined. The two dimensions never touch: exclusions change *what is counted*, the ceiling changes *what the count is compared against*.
 
 **With nothing authored, behaviour is byte-identical to today.**
 
@@ -79,6 +79,21 @@ That is settled. Three guards ride along, none of which contradict it:
 
 **Residual hazard, accepted:** the declaration is read live at gate time from a tenant-writable bag and is not pinned to the artifact, so it can be flipped for the duration of a gate and flipped back. Pinning the declared value into evidence makes the flip *visible after the fact*; it does not prevent it.
 
+### 6a. The override request — a standing, expiring grant, approved at the tier that set the rule (D3, D4)
+
+**Shape (D4).** An approved override is a **standing grant per (component × finding), carrying an expiry** — not a per-change act. A per-change act was considered and rejected: for a genuinely unfixable finding it would have to be re-raised on every release, forever.
+
+**Approver standing (D3): the tier that set the rule.** A platform-set floor is waivable only at platform; an assembly-set ceiling is waivable at assembly. Escalation is then self-evident — you cannot waive a constraint stricter than your own authority.
+
+**This needs no new authority model, which is why D3 is affordable.** Verified end to end:
+- `policy-resolve.ts:271-279` records an `objectRef` hit when the ref is **anywhere on the target's containment chain**, so a policy naming an assembly reaches every component beneath it.
+- `policy-scope-authz.ts` requires `policy:write` **at-or-above that object** for a *bounded* `objectRef` — the org-root bar applies only to unscoped, selector and group scopes.
+- `authz/resolve.ts`'s `scopeExpandCte` expands **upward**, so a binding at an assembly satisfies a check at any component beneath it, while a component binding never reaches its service or its siblings.
+
+Composed, "this assembly and below, at assembly-level authority" is expressible today. What has no representation is a *broad* scope bounded to a subtree — and D3 does not need one, because naming the tier's object concretely **is** the bounded case.
+
+**Expiry is a read-time SQL window, never a status column a job flips** — there is no sweeper in this tree and no `boss.schedule` usage to build one on. And an expiry is only as trustworthy as the re-evaluation that enforces it, which is why D8 folds the control-run cache fix in ahead of this (§10).
+
 ### 7. Retention (D10) — split by evidentiary role
 
 `scan_findings` would otherwise be the highest-cardinality table in the system. Under ADR-0024 §D1 retention is by **evidentiary class, never a global TTL**, and findings do not all have the same role:
@@ -89,6 +104,15 @@ That is settled. Three guards ride along, none of which contradict it:
 This bounds the table by what actually needs explaining. ADR-0024 §D0 applies unchanged: retention does not license write amplification, and a per-scan cap is **not** a retention story.
 
 **If the persisted finding set is ever truncated, refuse every exclusion for that scan.** You cannot except what you did not record.
+
+### 7a. Storage and tenancy — one exception, one ordinary table
+
+Two new pieces of storage, with deliberately different tenancy:
+
+- **Instance-tier exclusion admissions** (the `platform` and `trust_domain` rungs of §1's AND) are **instance-scoped with no `org_id`**, sharing the shape and access semantics of ADR-0016 §3's `scan_requirement_floors`: **operator-write / tenant-read**, holding no per-tenant rows and therefore exposing no cross-tenant visibility. This is the **same** documented exception to the DESIGN §4.2 `org_id NOT NULL` invariant, for the same reason — an admission is an operator statement about the deployment, not tenant data. It is a second instance of that exception, not a second kind of exception.
+- **`scan_findings`** is **ordinary tenant-scoped data under RLS**, with `org_id NOT NULL` like everything else. It is **not** a tenancy exception. Its only novelty is retention (§7), and even that follows ADR-0024 §D1's existing per-row class assignment rather than extending it.
+
+Org-and-below admissions are ordinary policy data on the existing resolver and need no storage at all (charter principle 2).
 
 ### 8. Federation (D9) — grants federate fully
 
@@ -139,9 +163,9 @@ Without re-evaluation, **every grant is inert on any change whose gate has alrea
 - `severityCounts` keeps its meaning, so no existing CEL condition changes behaviour.
 
 **Costs / honesty**
-- **The vendor-pass reaches two of three finding classes, not one.** OS packages are attributable to the **base image** line (`dockerfile.ts` parses every real `FROM` into a declared `oci` dependency), so being on the latest of that line earns them a pass exactly as D1 intends. Direct declared dependencies earn it via their own line. **Transitive language dependencies have no line and cannot** — defensibly, since a transitive is fixable by moving the direct parent that pulls it. The `oci` arm compares `latest_digest`, never the tag; a digest-pinned or `ARG`-interpolated `FROM` is `unresolved`/`unpinned` and does not qualify.
+- **The vendor-pass reaches two of three finding classes, not one.** OS packages are attributable to the **base image** line (`dockerfile.ts` parses every real `FROM` into a declared `oci` dependency), so being on the latest of that line earns them a pass exactly as D1 intends. Direct declared dependencies earn it via their own line. **Transitive language dependencies have no line and cannot** — defensibly, since a transitive is fixable by moving the direct parent that pulls it. The `oci` arm compares `latest_digest`, never the tag. `dockerfile.ts` records an `ARG`-interpolated `FROM` as `unresolved`, a bare `FROM alpine` as `unpinned`, and a digest-only `FROM alpine@sha256:…` as `pinned` **with no comparable `version`** — none of the three yields a version on a known major line, so none qualifies.
 - **A component owner can author an override they benefit from**, at a weaker permission than the one that authored the constraint (§6). Bounded by tier admission and made visible in the Decision; not prevented.
 - **Accepted-risk detail is distributed to every federated domain** (§8).
-- `scan_findings` is a new high-cardinality table, and its two-class retention is a new retention shape ADR-0024 does not yet describe.
+- `scan_findings` is a new high-cardinality table. Its two-class split is **not** a new retention shape: ADR-0024 §D1 already assigns classes **per row, not per table**, and `decisions` itself already splits across all three (P when cited or pinned, E while current for its subject, O when uncited and superseded). This table follows that precedent rather than extending it.
 - **OpenSCAP verdicts can never be excluded from** (Context 4). Explicit and tested, not left to "there were no findings to exclude".
 - The E6 export gate accepting *any* passing `control_runs` row — never the latest — is tracked separately, and **an override's expiry is not trustworthy at that boundary until it lands**.

@@ -30,9 +30,6 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **release** | The versioned unit of change moving through its whole pipeline — a change **is** a release | QUALIFIED-STANDARD |
 | **release topology** | A versioned declarative document describing a release's waves, target groups and gates | SCP-SPECIFIC |
 | **deploy / deployment** | The push of an artifact into one environment so it runs there | INDUSTRY-STANDARD |
-| **scan exclusion** | A finding that does not count toward the ceiling, applied before counting — never a waiver on the verdict | QUALIFIED-STANDARD |
-| **exclusion admission** | A tier's declaration that a class of exclusion may have effect at or below it | SCP-SPECIFIC |
-| **scan override request** | An owner-raised request for a standing, expiring exclusion, approved at the tier that set the rule | SCP-SPECIFIC |
 | **deployment target** | The graph object type an executor acts on (cluster, host, environment, region) — deliberately broad | SCP-SPECIFIC |
 | **environment** | A named operational tier (dev / gamma / prod) within one security domain | INDUSTRY-STANDARD |
 | **stage** | **Reserved:** one named deployment **place**, spelled `<domain>[-<location>]-<env>`. A **derived name**, never a row — [ADR-0026](adr/0026-placements-and-derived-stage-names.md) | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
@@ -63,6 +60,9 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **control** | An abstract graph object declaring a check; plugins are its bindings | SCP-SPECIFIC |
 | **decision** | The persisted, explainable verdict record every engine judgement writes | SCP-SPECIFIC |
 | **poke / poke-mode** | An optional contentless commander→outpost wake signal | SCP-SPECIFIC |
+| **scan exclusion** | A finding that does not count toward the ceiling, applied before counting — never a waiver on the verdict | QUALIFIED-STANDARD |
+| **exclusion admission** | A tier's declaration that a class of exclusion may have effect at or below it | SCP-SPECIFIC |
+| **scan override request** | An owner-raised request for a standing, expiring exclusion, approved at the tier that set the rule | SCP-SPECIFIC |
 
 ---
 
@@ -828,15 +828,21 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 **Direction, and why it has its own algebra.** A ceiling is *tightening* and merges by per-severity **MIN**; an exclusion is *loosening* and merges by **monotone AND** down the tier chain ([ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §1). Both are order-independent, so the documented containment-domain-vs-service tie stays safe. A matcher miss yields **no** exclusion — the opposite sign from a ceiling, where a miss is already safe.
 
+**In the code — not built yet.** Proposed by [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) and scheduled as M22; nothing in the tree implements it today, and a scan verdict is still four integers with no finding surviving to be excluded.
+
 ---
 
 ### exclusion admission
 
 **Definition.** A tier's declaration that a **class** of scan exclusion may have effect at or below it. An exclusion clause has effect at tier T only if **every tier from platform down to T** admits its class. Default admission is **empty at every tier**, so with nothing authored the system behaves exactly as it did before exclusions existed.
 
+**Industry-standard?** No — SCP-specific. The nearest neighbours are policy-engine words (*allow-list*, *grant*) that all describe permission given to a **principal**; this describes permission given to a **tier**, which is why neither borrows cleanly.
+
 **Why the word is "admission" and not "permission".** It is a property of a **tier**, not of a person — it says *this kind of loosening is allowed to exist here*, independently of who later authors one. Authority to author the clause is a separate question, answered by `policy:write` at-or-above the scope ([ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §6).
 
 **The invariant it exists for.** A component may author an override it benefits from, at a weaker permission than the one that authored the constraint. Admission is what stops that being a self-grant: the component authors the *override*, never its own *admission*.
+
+**In the code — not built yet.** Proposed by [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §1 and scheduled as M22.2.
 
 ---
 
@@ -844,12 +850,15 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 **Definition.** A request raised by a **component**, **service** or **assembly** owner for a standing scan exclusion beyond what component-declared facts already produce — granted with an **expiry**, per (component × finding).
 
+**Industry-standard?** No — SCP-specific as a term. The underlying practice is the industry's **risk acceptance** / **exception process**; "override request" is the owner's word and is kept because *exception* and *waiver* are both reserved here for acting on a **verdict**, which this deliberately does not do (see `scan exclusion`).
+
 **Approver standing.** The tier that **set the rule** (owner decision, 2026-08-17). A platform-set floor is waivable only at platform; an assembly-set ceiling is waivable at assembly. This needs no new authority model: a bounded `scope.objectRef` naming the tier's object requires `policy:write` at-or-above **that object**, and authority expands strictly upward, so an assembly binding reaches its components and never its siblings or its parent.
 
 **Not an `approval_request`.** That table is change-keyed (`change_object_id NOT NULL`), two-state (`pending|satisfied` — no deny, no expire, no revoke) and engine-materialized with no create API; it cannot express a standing grant. The shape to copy is the `freeze.override` act — mandatory non-empty reason, one high-severity audit event per use.
 
 **Expiry is a read-time window, never a status column.** There is no sweeper in this tree and no `boss.schedule` usage to build one on, so a grant's validity is evaluated when it is read.
 
+**In the code — not built yet.** Proposed by [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §6a and scheduled as M22.6. There is no override, waiver or risk-acceptance concept in the tree today.
 
 ---
 
