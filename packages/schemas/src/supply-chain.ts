@@ -39,6 +39,122 @@ export const ScanSeverityCountsSchema = z.object({
 });
 export type ScanSeverityCounts = z.infer<typeof ScanSeverityCountsSchema>;
 
+/** The four severities the threshold model acts on. Trivy also emits `UNKNOWN`, which is folded
+ *  away — see `parseTrivyFindings`. */
+const COUNTED_SEVERITIES = ["critical", "high", "medium", "low"] as const;
+
+/**
+ * M22.1 (ADR-0033) — ONE Trivy finding, retained.
+ *
+ * Until now a scan verdict was four integers: both parsers walked `Results[].Vulnerabilities[]`,
+ * read `.Severity`, incremented a counter, and discarded the vulnerability object; the raw document
+ * was then deleted. Every rule in ADR-0033 is a rule ABOUT A FINDING — "this package is at the
+ * vendor's latest", "this one has no fix", "this component declared the finding inapplicable" — and
+ * none of them can be expressed against four integers. This type is what survives so they can be.
+ *
+ * WHY NEARLY EVERY FIELD IS OPTIONAL, and why that is not laziness. Today an entry is counted on
+ * the strength of its `Severity` ALONE — nothing else is read, so an entry with no
+ * `VulnerabilityID`, no `PkgName` or no versions is still counted. Requiring those fields here
+ * would silently drop such entries and MOVE THE NUMBERS OPERATORS ALREADY SEE, which the M22.1
+ * definition of done forbids. So a finding is retained whenever it would have been counted, and a
+ * finding that lacks an identifier is simply one that no exclusion clause can ever match — the safe
+ * direction, since an unmatchable finding still counts against the ceiling.
+ */
+export const ScanFindingSchema = z.object({
+  /** Trivy `VulnerabilityID` (e.g. `CVE-2026-1234`). */
+  vulnerabilityId: z.string().optional(),
+  /** Trivy `PkgName`. */
+  pkgName: z.string().optional(),
+  installedVersion: z.string().optional(),
+  /** Trivy `FixedVersion`. ABSENT means upstream has shipped no fix — the "no fix available"
+   *  exclusion class reads exactly this, and reads absence as the signal rather than inferring it. */
+  fixedVersion: z.string().optional(),
+  /** Trivy `Results[].Class` — `os-pkgs` distinguishes an OS package (attributable to the BASE
+   *  IMAGE line) from `lang-pkgs` (attributable to a declared manifest dependency, or transitive
+   *  and attributable to nothing). This single field is what makes the vendor rule expressible
+   *  without an inventory join. */
+  class: z.string().optional(),
+  /** Trivy `Results[].Target` — which artifact layer/file the finding came from. */
+  target: z.string().optional(),
+  severity: z.enum(COUNTED_SEVERITIES),
+  /** `PkgIdentifier.PURL` VERBATIM, never normalized here. The dependency inventory stores its
+   *  coordinate deliberately un-normalized too, so any canonicalization belongs at the join, once,
+   *  where both sides are visible — not smeared across two parsers. */
+  purl: z.string().optional()
+});
+export type ScanFinding = z.infer<typeof ScanFindingSchema>;
+
+/**
+ * THE SHARED TRIVY PARSE — the single source of truth for both verdict producers.
+ *
+ * This lives here rather than being duplicated because an earlier draft of ADR-0033 asserted that
+ * "a plugin cannot import `@scp/schemas`" and designed a duplicated parser with a cross-boundary
+ * conformance test to keep the copies honest. That premise was FALSE:
+ * `@scp/plugin-scan-result-control` already declares `@scp/schemas` as a dependency and already
+ * imports values from it. Two hand-synced parse loops with identical semantics is precisely the
+ * shape where a fix lands in one and the paths diverge silently, so the copies are now one function.
+ *
+ * TOTAL AND DEFENSIVE, exactly as both originals were: a malformed or partial document yields an
+ * empty array (and therefore zero counts) rather than throwing. The runner already fails the run for
+ * a broken scan, so this path normally sees a real result.
+ *
+ * PER-ENTRY, NOT PER-CVE. One finding per `Vulnerabilities[]` element, with no de-duplication — the
+ * same CVE affecting three packages counts three times, because that is what both parsers did
+ * before this. De-duplicating would be defensible and is NOT done here: it would change every
+ * operator's numbers on the day this ships.
+ *
+ * `UNKNOWN` (and any unrecognized severity) is dropped, unchanged from both originals.
+ */
+export function parseTrivyFindings(raw: unknown): ScanFinding[] {
+  const findings: ScanFinding[] = [];
+  const results = (raw as { Results?: unknown } | null | undefined)?.Results;
+  if (!Array.isArray(results)) return findings;
+  for (const result of results) {
+    const row = result as { Vulnerabilities?: unknown; Class?: unknown; Target?: unknown };
+    const vulns = row.Vulnerabilities;
+    if (!Array.isArray(vulns)) continue;
+    const cls = typeof row.Class === "string" ? row.Class : undefined;
+    const target = typeof row.Target === "string" ? row.Target : undefined;
+    for (const v of vulns) {
+      const entry = v as {
+        Severity?: unknown;
+        VulnerabilityID?: unknown;
+        PkgName?: unknown;
+        InstalledVersion?: unknown;
+        FixedVersion?: unknown;
+        PkgIdentifier?: { PURL?: unknown };
+      };
+      if (typeof entry.Severity !== "string") continue;
+      const severity = entry.Severity.toLowerCase();
+      if (!(COUNTED_SEVERITIES as readonly string[]).includes(severity)) continue;
+      const str = (value: unknown): string | undefined =>
+        typeof value === "string" && value.length > 0 ? value : undefined;
+      findings.push({
+        severity: severity as (typeof COUNTED_SEVERITIES)[number],
+        ...(str(entry.VulnerabilityID) ? { vulnerabilityId: str(entry.VulnerabilityID)! } : {}),
+        ...(str(entry.PkgName) ? { pkgName: str(entry.PkgName)! } : {}),
+        ...(str(entry.InstalledVersion) ? { installedVersion: str(entry.InstalledVersion)! } : {}),
+        ...(str(entry.FixedVersion) ? { fixedVersion: str(entry.FixedVersion)! } : {}),
+        ...(cls ? { class: cls } : {}),
+        ...(target ? { target } : {}),
+        ...(str(entry.PkgIdentifier?.PURL) ? { purl: str(entry.PkgIdentifier?.PURL)! } : {})
+      });
+    }
+  }
+  return findings;
+}
+
+/** `severityCounts` DERIVED from the retained findings, so the two can never disagree. Because
+ *  `parseTrivyFindings` retains exactly the entries the old loops counted, this is numerically
+ *  identical to what both parsers produced before M22.1 — that equivalence is the property the
+ *  M22.1 suite pins, and it is why `severityCounts` can keep meaning "what the scanner found" while
+ *  a separate post-exclusion count is introduced beside it. */
+export function severityCountsFromFindings(findings: readonly ScanFinding[]): ScanSeverityCounts {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
+  for (const f of findings) counts[f.severity] += 1;
+  return counts;
+}
+
 /** The severity threshold a `scan-result-control` binding applied to reach its verdict — echoed
  *  into evidence so a Decision reconstructs exactly WHICH gate policy authorized (or blocked) the
  *  artifact, not just the raw counts. `maxCritical`/`maxHigh` default to 0 (any is a fail);

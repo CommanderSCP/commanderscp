@@ -33,6 +33,8 @@ import type { ControlOutcome, ControlPlugin, ControlRequest, PluginContext } fro
 import {
   EffectiveScanThresholdSchema,
   ScanEvidenceSchema,
+  parseTrivyFindings,
+  severityCountsFromFindings,
   type EffectiveScanThreshold,
   type ScanEvidence,
   type ScanThreshold,
@@ -127,23 +129,20 @@ function scannedDigest(raw: TrivyResultJson): string | undefined {
   return undefined;
 }
 
+/**
+ * M22.1 — now DERIVED from the shared parse in `@scp/schemas` rather than counting inline.
+ *
+ * This used to be a hand-written loop that read `.Severity` and discarded the vulnerability object,
+ * byte-for-byte mirroring `federation/promotion-scan-step.ts`'s `parseTrivyResult` across the
+ * plugin/server boundary. Two independent loops with identical semantics is the shape where a fix
+ * lands in one and the paths silently diverge — and ADR-0033 needs BOTH to start retaining
+ * per-finding detail, so the duplication had to go before the divergence could.
+ *
+ * The counts are numerically unchanged: `parseTrivyFindings` retains exactly the entries this loop
+ * counted (per-entry, no de-duplication, `UNKNOWN` folded away, malformed input yielding zero).
+ */
 function countSeverities(raw: TrivyResultJson): ScanEvidence["severityCounts"] {
-  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
-  const results = raw.Results;
-  if (!Array.isArray(results)) return counts;
-  for (const result of results) {
-    const vulns = (result as { Vulnerabilities?: unknown }).Vulnerabilities;
-    if (!Array.isArray(vulns)) continue;
-    for (const v of vulns) {
-      const sev = (v as { Severity?: unknown }).Severity;
-      if (typeof sev !== "string") continue;
-      const key = sev.toLowerCase();
-      if ((SEVERITIES as readonly string[]).includes(key)) {
-        counts[key as (typeof SEVERITIES)[number]] += 1;
-      }
-    }
-  }
-  return counts;
+  return severityCountsFromFindings(parseTrivyFindings(raw));
 }
 
 function resolveScannerVersion(raw: TrivyResultJson, config: ScanResultControlConfig): string {

@@ -6,6 +6,8 @@ import { join } from "node:path";
 import {
   ScanEvidenceSchema,
   ScanSeverityCountsSchema,
+  parseTrivyFindings,
+  severityCountsFromFindings,
   ExecutorTypeSchema,
   usesTrivyDb,
   type ScanMethod,
@@ -725,26 +727,19 @@ const SEVERITIES = ["critical", "high", "medium", "low"] as const;
  *  scan, so this path only ever sees a real result). Mirrors scan-result-control's parsing across
  *  the plugin/server boundary (a plugin cannot import server code, and vice versa). */
 export function parseTrivyResult(raw: unknown, versionText?: string): ParsedTrivy {
-  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
   const doc = (raw ?? {}) as {
     Results?: unknown;
     Metadata?: { ImageID?: unknown; RepoDigests?: unknown };
     ArtifactName?: unknown;
   };
-  const results = doc.Results;
-  if (Array.isArray(results)) {
-    for (const result of results) {
-      const vulns = (result as { Vulnerabilities?: unknown }).Vulnerabilities;
-      if (!Array.isArray(vulns)) continue;
-      for (const v of vulns) {
-        const sev = (v as { Severity?: unknown }).Severity;
-        if (typeof sev !== "string") continue;
-        const key = sev.toLowerCase();
-        if ((SEVERITIES as readonly string[]).includes(key))
-          counts[key as (typeof SEVERITIES)[number]] += 1;
-      }
-    }
-  }
+  // M22.1 — the counting loop that used to live here read `.Severity` and threw the vulnerability
+  // object away, byte-for-byte mirroring `scan-result-control`'s `countSeverities` across the
+  // plugin/server boundary. Both now derive from ONE parse in `@scp/schemas`, because ADR-0033
+  // needs both to retain per-finding detail and two hand-synced loops is how one gets fixed and the
+  // other does not. Counts are numerically unchanged — `parseTrivyFindings` retains exactly the
+  // entries this loop counted.
+  const findings = parseTrivyFindings(doc);
+  const counts = severityCountsFromFindings(findings);
   const candidates: string[] = [];
   const repoDigests = doc.Metadata?.RepoDigests;
   if (Array.isArray(repoDigests))
