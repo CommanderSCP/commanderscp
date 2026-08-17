@@ -78,29 +78,40 @@ import {
  *  - THE FEDERATION AXIS APPLIES TOO: commander only, fail-closed on an undeclared role. THE
  *    OWNER'S REASON is not about egress at all. The point of dependency automation is to PULL FROM
  *    PUBLIC REPOSITORIES — Python library versions, CDK versions, base-image versions — which is
- *    not needed from an outpost standpoint, because the resulting change GETS PUSHED DOWN THE
- *    GLOBAL PIPELINE THE COMMANDER MANAGES. An outpost never ORIGINATES a dependency bump; it
- *    RECEIVES the resulting change through the ordinary promotion path. So an outpost derives no
- *    inventory and detects no releases for this feature, and what it used to derive fed nothing:
- *    the only consumer is a bump, and `bumpDispatchRoleGuard` has been commander-only since M21.5.
+ *    not needed from a FIELD outpost's standpoint, because the resulting change GETS PUSHED DOWN
+ *    THE GLOBAL PIPELINE THE COMMANDER MANAGES. A field outpost never ORIGINATES a dependency bump;
+ *    it RECEIVES the resulting change through the ordinary promotion path. So a field outpost
+ *    derives no inventory and detects no releases for this feature, and what it used to derive fed
+ *    nothing: the only consumer is a bump, and `bumpDispatchRoleGuard` has been commander-only since
+ *    M21.5.
  *
- *    THE OLD ARGUMENT'S MEASUREMENT SURVIVES AND BECOMES THE STATED COST. It is true that an
+ *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (ADR-0032 §7d's vocabulary note). An HQ outpost —
+ *    the outpost in the commander's own trust domain — is not a deployment this guard could refuse:
+ *    `SCP_FEDERATION_ROLE` is one value per process (`config.ts:56`), and an `outpost` graph object
+ *    can never name the commander's own domain, because it must be bound 1:1 to a paired
+ *    `federation_peers` row and an instance is never its own peer (`federation/peers-repo.ts:436-439`,
+ *    `federation/outpost-binding.ts:98-100`). A release into the HQ domain is therefore detected by
+ *    THIS loop, in this process, and needs no exemption from the rule above.
+ *
+ *    THE OLD ARGUMENT'S MEASUREMENT SURVIVES AND BECOMES THE STATED COST. It is true that a FIELD
  *    outpost is where the evidence LIVES: `change_wave_targets.status`/`observed_state.images` are
  *    written where the change executed, while a commander receives only `change_status` journal
  *    entries (`{objectId, fromState, toState, trigger}` — no wave targets, no images). So an
- *    internal line whose component releases to prod only at an outpost keeps a NULL
+ *    internal line whose component releases to prod only at a FIELD outpost keeps a NULL
  *    `latest_version`. ADR-0032 §7's schema note already defines NULL as "not observed" and
  *    explicitly NOT "nothing newer exists", so a subscriber sees an honest absence rather than a
  *    wrong version — which is the ordering §7a rule 1 fixes. This is a real reduction in reach and
- *    is recorded as ADR-0032 §7d clause 2, not papered over.
+ *    is recorded as ADR-0032 §7d clause 2, not papered over. It does NOT apply to a component that
+ *    releases to prod in the HQ domain: that evidence is written locally and the derivation runs.
  *
  *    THE OTHER ACCEPTED CONSEQUENCE: dependencies declared in DOMAIN-SPECIFIC repositories —
- *    outpost-only IaC/CaC the commander never sees — are OUT OF SCOPE for dependency
+ *    FIELD-outpost-only IaC/CaC the commander never sees — are OUT OF SCOPE for dependency
  *    subscriptions. The owner accepted that explicitly; there is no workaround, and the shape that
- *    would be one is an outpost-side job.
+ *    would be one is a field-outpost-side job. A repository specific to the HQ domain is in scope
+ *    like any other the commander can see.
  *
  * Scope of the reversal: the SUBSCRIPTION still federates (a `dependencySubscription` effect on an
- * ordinary `policy` object, ADR-0032 §3a) and still reaches an outpost. Only the JOBS and the
+ * ordinary `policy` object, ADR-0032 §3a) and still reaches a field outpost. Only the JOBS and the
  * projection tables they write are commander-only.
  */
 

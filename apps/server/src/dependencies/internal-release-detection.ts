@@ -106,11 +106,15 @@ import {
  * `listComponentsDeclaringLine` (M21.2's reverse lookup). The AND is not re-expressed here; this
  * module cannot disagree with a UI verdict because it does not compute one.
  *
- * THAT IS ALSO WHY THE GROUP-SCOPE GUARD CHANGED. This job resolves as {@link SYSTEM_ACTOR_ID},
- * which is a sentinel with NO `objects` row (`coordination/system-actor.ts:9`) and therefore a
- * member of no group — so `matchPoliciesForTargets` never returns a `scope.group` policy for it and
- * a group-scoped ENABLE is INERT here while reading `enabled` in the API for a human team member.
- * See `subscription-authoring-guard.ts` and ADR-0032 §6a.
+ * THAT IS ALSO WHY THE GROUP-SCOPE GUARD CHANGED — though NOT for the reason this comment used to
+ * give. It said a group-scoped ENABLE is INERT here because this job resolves as
+ * {@link SYSTEM_ACTOR_ID}, a sentinel with NO `objects` row (`coordination/system-actor.ts:9`) and
+ * therefore a member of no group. The membership fact is still true; the conclusion is FALSE
+ * (ADR-0032 §6a-ii). `matchPoliciesForTargets` also matches a group-scoped policy through its
+ * OWNING half, which never reads the actor (`governance/policy-resolve.ts:313`, `:150-173`), so such
+ * a policy DOES contribute here wherever the group owns something on the component's chain. What the
+ * guard actually refuses is a reach nobody declared: membership plus mutable `owns` edges, in place
+ * of what the author wrote. See `subscription-authoring-guard.ts` and ADR-0032 §6a-ii.
  */
 
 /** The Decision `kind` this module writes. One kind, one subject (the change), one row per run. */
@@ -807,10 +811,12 @@ async function listProducedLines(
  * into `listSubscribedComponentLines`, which applies `mergeDependencySubscription` itself. The AND
  * is not restated here, so this gate cannot disagree with what a UI or a Decision reports.
  *
- * THE ACTOR IS THE SYSTEM SENTINEL, and that has a consequence worth naming at the call site: it is
- * a member of no group, so a `group`-scoped `dependencySubscription` effect NEVER contributes for
- * this job. ADR-0032 §6a is amended for exactly this reason and the authoring guard now refuses
- * group scope in both directions.
+ * THE ACTOR IS THE SYSTEM SENTINEL, and the consequence worth naming at the call site is NOT the one
+ * that used to be written here ("it is a member of no group, so a `group`-scoped effect NEVER
+ * contributes for this job"). That is false — group scope's owning half ignores the actor, so such an
+ * effect contributes wherever the group owns something on the chain (ADR-0032 §6a-ii). The real
+ * consequence: whether it contributes is decided by ownership data this job never looks at and the
+ * author never wrote, which is why the authoring guard refuses group scope in both directions.
  */
 async function lineHasSubscriber(tx: TenantTx, orgId: string, lineId: string): Promise<boolean> {
   const declaring = await listComponentsDeclaringLine(tx, orgId, lineId);

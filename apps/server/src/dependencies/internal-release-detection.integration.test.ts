@@ -160,8 +160,11 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
    * The subscriber is a SECOND component that declares the line, plus a policy enabling it at
    * `objectRef` scope. It is not decoration: the derivation refuses to fetch or record for a line
    * nobody subscribes to (ADR-0032 §6, "the ingestion work-list is derived from this resolution"),
-   * and `objectRef` rather than `group` because the job resolves as the system actor, which belongs
-   * to no group (§6a).
+   * and `objectRef` rather than `group` because the authoring guard refuses a group-scoped
+   * `dependencySubscription` effect outright, in both directions (§6a). NOT, as this used to say,
+   * because the job runs as the system actor: group scope's owning half ignores the actor and would
+   * match here if this fixture minted an `owns` edge — which is precisely the unstated, mutable
+   * reach §6a-ii refuses to let a subscription rest on.
    */
   async function lineProducedBy(
     key: DependencyLineKey & { tagPattern?: string },

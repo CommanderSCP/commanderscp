@@ -82,13 +82,23 @@ import { ingestComponentManifests, type ComponentIngestionOutcome } from "./inve
  *    `SCP_FEDERATION_ROLE`, like every other job in this feature. THE OWNER'S REASON, which is not
  *    an argument about egress: the point of dependency automation is to PULL FROM PUBLIC
  *    REPOSITORIES — Python library versions, CDK versions, base-image versions — and that is not
- *    needed from an outpost standpoint, because the resulting change GETS PUSHED DOWN THE GLOBAL
- *    PIPELINE THE COMMANDER MANAGES. An outpost never ORIGINATES a bump; it RECEIVES the resulting
- *    change through the ordinary promotion path, as it receives every other change. So an outpost
- *    needs no inventory, and the inventory it used to derive fed nothing that could act on it: the
- *    only consumer of an inventory is a bump, and `bumpDispatchRoleGuard` has been commander-only
- *    since M21.5 because writing to a source repository with a credential is a thing an air-gapped
- *    or high-side outpost must never do.
+ *    needed from a FIELD outpost's standpoint, because the resulting change GETS PUSHED DOWN THE
+ *    GLOBAL PIPELINE THE COMMANDER MANAGES. A field outpost never ORIGINATES a bump; it RECEIVES the
+ *    resulting change through the ordinary promotion path, as it receives every other change. So a
+ *    field outpost needs no inventory, and the inventory it used to derive fed nothing that could act
+ *    on it: the only consumer of an inventory is a bump, and `bumpDispatchRoleGuard` has been
+ *    commander-only since M21.5 because writing to a source repository with a credential is a thing
+ *    an air-gapped or high-side field outpost must never do.
+ *
+ *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (ADR-0032 §7d's vocabulary note). An HQ outpost —
+ *    the outpost in the commander's own trust domain — is not a second deployment this guard could
+ *    refuse: `SCP_FEDERATION_ROLE` is one value per process (`config.ts:56`), and an `outpost` graph
+ *    object can never name the commander's own domain, because it must be bound 1:1 to a paired
+ *    `federation_peers` row and an instance is never its own peer (`federation/peers-repo.ts:436-439`,
+ *    `federation/outpost-binding.ts:98-100`). So THE HQ OUTPOST'S DEPENDENCY INVENTORY IS THE
+ *    COMMANDER'S — the same rows, in this database, written by this loop. Do not read "an outpost
+ *    holds no inventory" as covering it; the correct statement is that the inventory exists in
+ *    exactly one place.
  *
  *    WHAT THE OLD PARAGRAPH GOT RIGHT, AND WHY IT STILL LOST. Its facts hold — ingestion really
  *    does initiate no timed egress, and `changes`/`source_mappings` really are this domain's own
@@ -96,15 +106,16 @@ import { ingestComponentManifests, type ComponentIngestionOutcome } from "./inve
  *    substrate for an action only the commander performs.
  *
  *    THE ACCEPTED COST, stated rather than left to be discovered: dependencies declared in
- *    DOMAIN-SPECIFIC repositories — outpost-only IaC/CaC the commander never sees — are OUT OF
+ *    DOMAIN-SPECIFIC repositories — FIELD-outpost-only IaC/CaC the commander never sees — are OUT OF
  *    SCOPE for dependency subscriptions. The owner accepted that explicitly. A component whose
  *    manifests live only in a repository the commander has no `source_mappings` for gets no
- *    inventory and no bump, and the shape that would fix it is an outpost-side job, which is the
- *    thing this decision removes.
+ *    inventory and no bump, and the shape that would fix it is a field-outpost-side job, which is the
+ *    thing this decision removes. A repository specific to the HQ DOMAIN is not excluded by this —
+ *    the commander can see it, so it is an ordinary in-scope repository.
  *
  * Note the scope of the reversal: the SUBSCRIPTION still federates (it is a `dependencySubscription`
- * effect on an ordinary `policy` object, ADR-0032 §3a), and an outpost still receives it. What is
- * commander-only is the JOBS and the projection tables they write.
+ * effect on an ordinary `policy` object, ADR-0032 §3a), and a field outpost still receives it. What
+ * is commander-only is the JOBS and the projection tables they write.
  */
 
 export const INVENTORY_INGESTION_QUEUE = "dependency-inventory-ingestion";

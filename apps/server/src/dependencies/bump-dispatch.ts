@@ -422,9 +422,12 @@ export async function runBumpDispatchJob(
     if (componentObjectIds.length === 0) return { line, candidates: [] };
 
     const subscribed = await listSubscribedComponentLines(tx, job.orgId, {
-      // The system actor, exactly as M21.4's two ingresses resolve — and the reason a GROUP-scoped
-      // `dependencySubscription` effect is refused at authoring time (ADR-0032 §6a): this principal
-      // has no `objects` row, so it is a transitive `member_of` nothing.
+      // The system actor, exactly as M21.4's two ingresses resolve. It has no `objects` row and so
+      // is a transitive `member_of` nothing — which is NOT, as this comment used to claim, the
+      // reason a GROUP-scoped `dependencySubscription` effect is refused at authoring time. Group
+      // scope's OWNING half ignores the actor entirely, so such a policy can match right here
+      // (ADR-0032 §6a-ii). The refusal is about a reach decided by mutable `owns` edges instead of
+      // by the author.
       actorObjectId: SYSTEM_ACTOR_ID,
       componentObjectIds
     });

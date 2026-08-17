@@ -1,7 +1,16 @@
 # Dependency subscriptions — subscribe to a major line, receive the bump automatically
 
-**Status:** Proposed (2026-08-13) — five of six decision points settled with the owner on 2026-08-13
-(§10 Q1–Q5); **Q6 open** (federation-importer tolerance as a possible prerequisite).
+**Status:** **Accepted (2026-08-17)** — the feature is built and merged (M21.1–M21.7), which is what
+moves this off *Proposed*. Five of six decision points were settled with the owner on 2026-08-13
+(§10 Q1–Q5). **Q6 never became a prerequisite** — [ADR-0032](../adr/0032-dependency-subscriptions.md)
+§3a made the subscription a `dependencySubscription` effect on an ordinary `policy` object, so M21
+ships no new built-in type and can wedge no field outpost's channel; Q6 survives below as general importer
+hardening, tracked apart from this proposal rather than as an open decision blocking it.
+**Two axes of the reasoning below are superseded, each marked in place:** all dependency automation is
+commander-only ([ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner decision 2026-08-17),
+and the ground for the group-scope authoring refusal is corrected by
+[ADR-0032](../adr/0032-dependency-subscriptions.md) §6a-ii (2026-08-17) — the refusal stands in both
+directions; its "permanently inert" reasoning does not.
 **Relates to:** [ADR-0002](../adr/0002-execution-strategy.md) (four-arm ownership test + six-gate boundary test — the router this feature must pass); [ADR-0013](../adr/0013-supply-chain-scan-sbom-manifest.md) (SCP stores no SBOM bytes); [ADR-0022](../adr/0022-outpost-config-authority-split.md) (commander-declared config must be a graph object to reach an outpost); [ADR-0028](../adr/0028-stage-scoped-component-coupling.md) (`provides`/`requires` coupling — prior art for the wait predicate); [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) (domain-local visibility)
 **Proposed ADR:** ADR-0032 *(provisional number; 0031 is currently the highest on disk)*
 **Proposed milestone:** M21 *(provisional; M20 is currently the last milestone in BUILD_AND_TEST.md §8)*
@@ -93,20 +102,23 @@ survive; several of them contradict the obvious design.
 
 **Federation constrains this harder than anything else.**
 
-- ADR-0022 clause 2: commander-declared config that must reach an outpost **must be a graph object
-  riding `object_upsert`** — the journal has nine entry kinds and **nothing table-shaped can travel**.
-  So an enablement bit in a `scan_requirement_floors`-style table can **never** reach an outpost.
+- ADR-0022 clause 2: commander-declared config that must reach a **field** outpost **must be a graph
+  object riding `object_upsert`** — the journal has nine entry kinds and **nothing table-shaped can
+  travel**. So an enablement bit in a `scan_requirement_floors`-style table can **never** reach a
+  field outpost. (Nothing has to *reach* the HQ outpost: it is the commander's own domain, so the row
+  is already there.)
 - But a new **built-in** object/relationship type is **not a safe migration in a running fleet**: the
   importer's `object_upsert` branch has **no try/catch** (`apps/server/src/federation/import-repo.ts:189-215`)
   and `createObject` 404s on a type not registered locally, so the first such object journaled to a
-  not-yet-migrated outpost **aborts the whole signed bundle and wedges that channel**.
+  not-yet-migrated **field** outpost **aborts the whole signed bundle and wedges that channel**.
 - And a **runtime** custom type via `POST /type-registry` **federates to nobody** — there is no
   `object_type_upsert` journal kind.
 - The charter requires a disconnected domain to keep operating, so a **commander-only dependency
   database is a charter conflict**, not merely an availability concern.
   > **OVERTAKEN 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner
-  > decision.** ALL dependency automation is commander-only and outposts hold no dependency
-  > inventory. This bullet is preserved because it is the strongest form of the argument that was
+  > decision.** ALL dependency automation is commander-only and no **field** outpost holds a
+  > dependency inventory (the HQ outpost is the commander, so its inventory is the commander's —
+  > ADR-0032 §7d's vocabulary note). This bullet is preserved because it is the strongest form of the argument that was
   > overturned, and because the clause it produced (ADR-0032 §3's "each domain derives its own") is
   > cited by both loop module docs and by §4a clause 7. What it misreads: a disconnected domain
   > keeps **operating** — it deploys, gates, coordinates and receives promotions exactly as before —
@@ -301,7 +313,7 @@ unnecessarily getting the latest for dependencies", and it is free once §5.1 ex
 
 ### 5.3 The enablement bit has to be a graph object
 
-By ADR-0022 clause 2, config that must reach an outpost **must ride `object_upsert`** — and every
+By ADR-0022 clause 2, config that must reach a **field** outpost **must ride `object_upsert`** — and every
 table-shaped precedent (`scan_requirement_floors`, `executor_bindings`, `source_mappings`) is
 **provably unable to travel**.
 
@@ -309,17 +321,18 @@ So the split is:
 
 - **inventory** (derived, per-domain, high-churn) → **projection table**, does not federate, each
   domain derives its own;
-- **subscription + enablement** (declared config, low-churn, must reach outposts) → **graph object**,
-  federates.
+- **subscription + enablement** (declared config, low-churn, must reach field outposts) → **graph
+  object**, federates.
 
 > **Amended 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner decision.**
-> The **second** bullet is unchanged: the subscription is a graph object, it federates, and an
+> The **second** bullet is unchanged: the subscription is a graph object, it federates, and a field
 > outpost still receives it. The **first** is half-retired — the inventory is still a projection
 > table that does not federate, but it is **not** per-domain and no domain but the commander derives
 > one. All dependency automation is commander-only, because the feature pulls from **public**
-> repositories and an outpost never originates a bump — it receives the resulting change down the
-> commander's global pipeline. Accepted cost: dependencies declared in outpost-only repositories are
-> out of scope.
+> repositories and a field outpost never originates a bump — it receives the resulting change down
+> the commander's global pipeline. Accepted cost: dependencies declared in field-outpost-only
+> repositories are out of scope; a repository specific to the HQ domain is in scope like any other
+> the commander can see.
 
 This split is what lets a disconnected domain keep operating (§2's charter conflict) while keeping the
 commander the source of truth for the policy.
@@ -351,18 +364,19 @@ Three properties of that path matter:
   it — which is the right meaning;
 - rollback changes **auto-accept**, so the derivation must not treat a rollback as a release;
 - the transition is journaled as `entryKind: 'change_status'` **except when the change is domain-local**
-  (`transition.ts:337-360`), so a commander learns of an outpost's prod acceptance — but **never for
+  (`transition.ts:337-360`), so a commander learns of a field outpost's prod acceptance — but **never for
   domain-local work**, by ADR-0031's design. Domain-local internal dependencies are therefore
   domain-visible only. That is correct, and it must be stated rather than discovered later.
 
 > **Amended 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner decision.**
 > Internal detection is **commander-only**, so "domain-visible only" is now the weaker statement:
 > a domain-local release's head is recorded **nowhere**, and domain-local internal dependencies are
-> out of scope. The same reversal costs the ingress its reach into outposts generally — a commander
-> receives `change_status` journal entries and **not** `change_wave_targets`/`observed_state.images`,
-> so an internal line whose component releases to prod only at an outpost keeps a **NULL**
-> `latest_version`, which is an honest "not observed" rather than a wrong version. Both are stated
-> costs of the decision, not oversights in it.
+> out of scope. The same reversal costs the ingress its reach into **field** outposts generally — a
+> commander receives `change_status` journal entries and **not**
+> `change_wave_targets`/`observed_state.images`, so an internal line whose component releases to prod
+> only at a field outpost keeps a **NULL** `latest_version`, which is an honest "not observed" rather
+> than a wrong version. A component releasing to prod in the HQ domain is unaffected: that evidence
+> is written locally. Both are stated costs of the decision, not oversights in it.
 
 ### 6.2 Third-party — the daily check, and the air-gap shape
 
@@ -381,7 +395,7 @@ the chart ships default-deny egress. Both can hold, because they are different d
 
 **The daily job must not run everywhere.** There is no trustworthy runtime commander/outpost predicate
 — `config.federationRole` is install-time and `self_domain.role` is per-org and advisory — so a job
-dropped into `main.ts`'s background block **runs on air-gapped outposts too**. The job needs an
+dropped into `main.ts`'s background block **runs on air-gapped field outposts too**. The job needs an
 explicit guard, and the guard needs a test.
 
 > **Widened 2026-08-17 — [ADR-0032](../adr/0032-dependency-subscriptions.md) §7d, owner decision.**
@@ -390,8 +404,9 @@ explicit guard, and the guard needs a test.
 > the auto-merge gate — and every one of them is fail-closed on an undeclared `SCP_FEDERATION_ROLE`.
 > The reason above (an unguarded timer dialing the public internet from an air-gapped site) is still
 > true of the poll, but it is not the reason for the others: dependency automation exists to pull
-> from **public** repositories, which an outpost has no need to do, because the resulting change is
-> pushed down the global pipeline the commander manages.
+> from **public** repositories, which a **field** outpost has no need to do, because the resulting
+> change is pushed down the global pipeline the commander manages. The HQ outpost is not an exception
+> to this rule and is not exempted by it — it is the commander, so the jobs already run there.
 
 Cadence follows the shipped idiom: a self-rescheduling pg-boss tick with `startAfter` + `singletonKey`
 (there is no `boss.schedule` usage to copy), and it must run under `SCP_ROLE=all|worker`.
@@ -584,9 +599,11 @@ Each item names the test file, is mutation-proven, and carries a negative contro
   recursive CTE is reachable from the dependency path (the measured 5s/408 hazard).
 - **`depends_on` is untouched** — a test asserting package dependencies mint **no** `depends_on` edge,
   so the plan compiler's toposort and cycle check cannot see them.
-- **NO dependency job runs on an outpost** ([ADR-0032](../adr/0032-dependency-subscriptions.md) §7d,
-  owner decision 2026-08-17; this read "daily job" and covered only the poll) — an explicit
+- **NO dependency job runs on a FIELD outpost** ([ADR-0032](../adr/0032-dependency-subscriptions.md)
+  §7d, owner decision 2026-08-17; this read "daily job" and covered only the poll) — an explicit
   role-guard test per job, with the negative control that each **does** run on a declared commander.
+  There is no HQ-outpost process for such a job to run on, so the guard's non-commander refusal is
+  exactly the field case.
 - **No Decision write amplification** — a two-tick test asserting the second identical poll writes **zero**
   new Decision rows (`insertDecisionIfChanged`).
 - **Air-gap** — a test that with no index plugin and no operator-loaded feed, third-party detection
@@ -658,7 +675,7 @@ M21.1 before any code, per CLAUDE.md, with the reasoning recorded on ADR-0032.
 M21 ships **no new built-in object or relationship type**: a dependency subscription is a
 `dependencySubscription` effect on an ordinary `policy` object, mirroring `scanThreshold` (ADR-0016).
 `policy` exists on every instance and `policy_upsert` shares the importer's `object_upsert` case, so
-nothing in this feature can wedge an outpost's channel. The question below is now decoupled from M21.
+nothing in this feature can wedge a field outpost's channel. The question below is now decoupled from M21.
 
 **Two corrections to it, measured while settling §3a.** The failure mode is a Postgres **foreign-key
 violation (23503)**, not a 404: `objects.type_id` references `object_types.id` and `objects-repo.ts`
@@ -672,7 +689,7 @@ measured silently disabling 11 required prod-gate policies.
 
 *Original question, retained:* if anything in this feature adds a built-in object type, the importer's
 `object_upsert` branch needs a tolerance clause **shipped and fleet-deployed first**, or the first
-journaled object wedges a not-yet-migrated outpost's channel.
+journaled object wedges a not-yet-migrated field outpost's channel.
 
 ---
 

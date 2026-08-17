@@ -158,8 +158,9 @@ require (
   const DOCKERFILE = `FROM node:18.19.0-alpine\nRUN echo hi\n`;
 
   /** Enable dependency subscriptions for one component at `objectRef` scope — the whole authoring
-   *  surface (ADR-0032 §3a). `objectRef` rather than `group` because the event-driven path resolves
-   *  as the system sentinel, which is a member of nothing (§6a). */
+   *  surface (ADR-0032 §3a). `objectRef` rather than `group` because the authoring guard refuses a
+   *  group-scoped `dependencySubscription` effect outright (§6a) — not, as this used to say, because
+   *  the event-driven path's actor is a member of nothing, which §6a-ii retired as the reason. */
   async function enable(componentObjectId: string): Promise<void> {
     const name = `sub-${uuidv7()}`;
     await admin.policies.create({
