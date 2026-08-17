@@ -587,6 +587,11 @@ describe.runIf(await dockerAvailable())(
           changeObjectId: changeId,
           gateKind: "lifecycle_edge",
           gateRef: { fromState: "validating", toState: "accepted" },
+          // ADR-0020 §1's alternate ingress, NAMED. The short-circuit admits a covering outcome by
+          // its producer (`scan-evidence.ts`, shared with E6), so an unattributed row no longer
+          // suppresses the managed run — which is the safe direction: it would otherwise skip the
+          // scan and then refuse the export for having none.
+          pluginModule: "scan-result-control",
           status: "pass",
           evidence: {
             scanner: "trivy",

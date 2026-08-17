@@ -471,6 +471,8 @@ describe("M13.1b retrans auto-relay (Testcontainers: 3 domains + 2 registries + 
         changeObjectId: change.id,
         gateKind: "lifecycle_edge",
         gateRef: { fromState: "validating", toState: "accepted" },
+        // The org-pipeline ingress, named — E6 admits by producer, not by evidence shape.
+        pluginModule: "scan-result-control",
         status: "pass",
         evidence: {
           scanner: "trivy",
