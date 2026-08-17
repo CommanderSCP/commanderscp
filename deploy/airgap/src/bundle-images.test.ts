@@ -251,6 +251,60 @@ describe("install.sh can address every bundled image by the shell stem manifest.
   });
 });
 
+/**
+ * KNOB EXTRACTION, SHARED BY EVERY SURFACE THAT PRESCRIBES ONE.
+ *
+ * Hoisted out of the install.sh describe below because install.sh is not the only place that tells
+ * an operator what to set: the SAME activation guidance is rendered into the bundled
+ * `docs/OFFLINE_INSTALL.md` (`offline-install-doc.ts`), which `deploy/airgap/README.md` calls "the
+ * one to actually read" and which ships INSIDE the bundle, on the far side of the gap. When only
+ * install.sh was gated, the identical no-op instruction could be reintroduced in the doc and the
+ * whole suite stayed green — measured. One definition, both surfaces.
+ */
+
+/** `SCP_MANAGED_SCAN_RUNNER_IMAGE=…` — an env var presented as something to set. */
+const envKnobs = (text: string): string[] => [
+  ...new Set([...text.matchAll(/\b(SCP_[A-Z0-9_]+)=/g)].map((m) => m[1]!))
+];
+/** `managedDep.runnerImage=…` / `postgres.evalInCluster.enabled=…` — a Helm values path. */
+const chartKnobs = (text: string): string[] => [
+  ...new Set(
+    [...text.matchAll(/\b([a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+)=/g)].map((m) => m[1]!)
+  )
+];
+
+/** Every dotted path defined in a shipped chart's values.yaml, e.g. `managedDep.runnerImage`. */
+const chartValuePaths = (chartDir: string): string[] => {
+  const doc: unknown = parseYaml(
+    readFileSync(path.join(REPO_ROOT, chartDir, "values.yaml"), "utf8")
+  );
+  const out: string[] = [];
+  const walk = (node: unknown, prefix: string): void => {
+    if (node === null || typeof node !== "object" || Array.isArray(node)) return;
+    for (const [key, value] of Object.entries(node)) {
+      const dotted = prefix === "" ? key : `${prefix}.${key}`;
+      out.push(dotted);
+      walk(value, dotted);
+    }
+  };
+  walk(doc, "");
+  return out;
+};
+// install.sh drives BOTH shipped charts: the SCP release (deploy/helm) and, via scp-bundled.sh,
+// the out-of-release bundled-backends chart (deploy/helm-bundled) whose `bundledExecutor.*`
+// values it computes in the same branch. A knob is real if either chart defines it.
+const definedChartValues = new Set([
+  ...chartValuePaths("deploy/helm"),
+  ...chartValuePaths("deploy/helm-bundled")
+]);
+
+/** The env vars the server actually reads — the one module all three managed classes read from. */
+const executorBindingsSource = (): string =>
+  readFileSync(
+    path.join(REPO_ROOT, "apps/server/src/coordination/executor-bindings-repo.ts"),
+    "utf8"
+  );
+
 describe("every knob install.sh prescribes is a lever in the mode it prints it in", () => {
   /**
    * M21.7 item 1's follow-up defect, and the reason this whole describe exists: the block that
@@ -296,42 +350,6 @@ describe("every knob install.sh prescribes is a lever in the mode it prints it i
       .map((l) => l.trim())
       .filter((l) => l.startsWith("echo "))
       .join("\n");
-
-  /** `SCP_MANAGED_SCAN_RUNNER_IMAGE=…` — an env var presented as something to set. */
-  const envKnobs = (text: string): string[] => [
-    ...new Set([...text.matchAll(/\b(SCP_[A-Z0-9_]+)=/g)].map((m) => m[1]!))
-  ];
-  /** `managedDep.runnerImage=…` / `postgres.evalInCluster.enabled=…` — a Helm values path. */
-  const chartKnobs = (text: string): string[] => [
-    ...new Set(
-      [...text.matchAll(/\b([a-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)+)=/g)].map((m) => m[1]!)
-    )
-  ];
-
-  /** Every dotted path defined in a shipped chart's values.yaml, e.g. `managedDep.runnerImage`. */
-  const chartValuePaths = (chartDir: string): string[] => {
-    const doc: unknown = parseYaml(
-      readFileSync(path.join(REPO_ROOT, chartDir, "values.yaml"), "utf8")
-    );
-    const out: string[] = [];
-    const walk = (node: unknown, prefix: string): void => {
-      if (node === null || typeof node !== "object" || Array.isArray(node)) return;
-      for (const [key, value] of Object.entries(node)) {
-        const dotted = prefix === "" ? key : `${prefix}.${key}`;
-        out.push(dotted);
-        walk(value, dotted);
-      }
-    };
-    walk(doc, "");
-    return out;
-  };
-  // install.sh drives BOTH shipped charts: the SCP release (deploy/helm) and, via scp-bundled.sh,
-  // the out-of-release bundled-backends chart (deploy/helm-bundled) whose `bundledExecutor.*`
-  // values it computes in the same branch. A knob is real if either chart defines it.
-  const definedChartValues = new Set([
-    ...chartValuePaths("deploy/helm"),
-    ...chartValuePaths("deploy/helm-bundled")
-  ]);
 
   it("the chart values install.sh sets or prints under helm all exist in a shipped chart", () => {
     const knobs = [
@@ -398,10 +416,7 @@ describe("every knob install.sh prescribes is a lever in the mode it prints it i
   it.each(envKnobs(echoed(regions.compose)))(
     "%s, printed as a compose-mode instruction, is an env var the server actually reads",
     (knob) => {
-      const settings = readFileSync(
-        path.join(REPO_ROOT, "apps/server/src/coordination/executor-bindings-repo.ts"),
-        "utf8"
-      );
+      const settings = executorBindingsSource();
       expect(
         settings.includes(`process.env.${knob}`),
         `install.sh tells a compose operator to set ${knob}, but ` +
@@ -523,4 +538,84 @@ describe("the operator-facing offline install doc lists what actually crossed th
     expect(start).toBeGreaterThan(-1);
     expect(doc.slice(start)).toContain(name);
   });
+
+  /**
+   * THE CASE ABOVE ONLY CHECKS THE RUNNER'S NAME IS PRESENT, NEVER WHAT THE DOC TELLS THE OPERATOR
+   * TO SET. That gap was measured: rewriting the scan runner's activation cell to
+   * `helm: --set managedScan.runnerImage=<printed ref>` — a chart value NEITHER shipped chart
+   * defines, so the exact silent no-op M21.7 item 1 was written to remove — left the whole
+   * @scp/airgap suite green (10 files, 139 passed, 0 failed).
+   *
+   * This doc is the higher-consequence surface of the two: install.sh's guidance scrolls past once,
+   * while `docs/OFFLINE_INSTALL.md` ships inside the bundle and is the thing an air-gapped operator
+   * actually reads. So it gets the SAME two-directional check install.sh's describe runs, over the
+   * same extraction — a knob is real only in the mode whose deployment mechanism can carry it.
+   */
+  const runnerSection = (): string => {
+    const start = doc.indexOf("## The managed-execution runner images");
+    if (start < 0) throw new Error("offline install doc: runner section heading is gone");
+    const end = doc.indexOf("\n## ", start + 1);
+    return end < 0 ? doc.slice(start) : doc.slice(start, end);
+  };
+
+  it("names no chart value that neither shipped chart defines", () => {
+    const knobs = chartKnobs(runnerSection());
+    // Guard the extraction: a regex that matched nothing would pass the loop below vacuously.
+    // The doc legitimately names this one — to say it renders env vars WITHOUT launching anything.
+    expect(
+      knobs,
+      "the runner section names no chart value at all, so this case proves nothing — either the " +
+        "extraction broke or the honest `managedIac.enabled` sentence was dropped"
+    ).toContain("managedIac.enabled");
+
+    for (const knob of knobs) {
+      expect(
+        definedChartValues.has(knob),
+        `the bundled OFFLINE_INSTALL.md names the chart value '${knob}', which neither ` +
+          `deploy/helm/values.yaml nor deploy/helm-bundled/values.yaml defines. On the far side ` +
+          `of an air gap a helm value that no chart has applies cleanly and changes nothing — ` +
+          `"it didn't take" is expensive to discover there`
+      ).toBe(true);
+    }
+  });
+
+  it.each(RUNNER_IMAGE_NAMES)(
+    "the activation cell for %s prescribes an env var the server reads, and no chart value",
+    (name) => {
+      const row = runnerSection()
+        .split("\n")
+        .find((l) => l.startsWith("|") && l.includes(name));
+      expect(
+        row,
+        `the enable table has no row for ${name}, so the doc's activation guidance cannot be ` +
+          `checked — the operator gets it here or nowhere`
+      ).toBeDefined();
+
+      // Compose/VM is the one shipped mode whose launch mechanism (the docker CLI, DESIGN §12) can
+      // start a runner, and there the lever is an env var on the `scp` service. A chart value in
+      // this column would be the original defect, re-rendered into the doc that crosses the gap.
+      expect(
+        chartKnobs(row!),
+        `${name}'s "How to enable (compose/VM)" cell names a Helm value; a compose install runs ` +
+          `no chart, so there is nothing for that setting to reach`
+      ).toEqual([]);
+
+      const knobs = envKnobs(row!);
+      expect(
+        knobs.length,
+        `${name}'s activation cell prescribes no SCP_* env var, so the doc names the runner ` +
+          `without ever saying what switches it on`
+      ).toBeGreaterThan(0);
+
+      // VERIFY THE LEVER, NOT JUST THE SIGNAL: the env var is only an instruction if it is read.
+      const settings = executorBindingsSource();
+      for (const knob of knobs) {
+        expect(
+          settings.includes(`process.env.${knob}`),
+          `the bundled OFFLINE_INSTALL.md tells a compose operator to set ${knob} to enable ` +
+            `${name}, but apps/server/src/coordination/executor-bindings-repo.ts never reads it`
+        ).toBe(true);
+      }
+    }
+  );
 });

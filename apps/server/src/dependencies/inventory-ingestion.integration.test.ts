@@ -1487,9 +1487,11 @@ require (
 
       const stamp = await stampOf(component);
       expect(stamp?.outcome).toBe("unreadable");
-      // `rowsWritten` describes THIS PASS, not the component: the component still has two rows and
-      // this pass wrote none of them. Conflating the two would let a failed pass report the
-      // inventory as freshly confirmed.
+      // `rowsWritten` is the SUM of `manifests[].rows` over the MERGED set, not what this pass
+      // wrote. It is 0 here because this component has exactly one repository, whose slice the
+      // failed pass just replaced with an `unreadable` entry carrying `rows: 0` — so the only
+      // contribution to the sum is 0. The `component_dependencies` rows themselves survive
+      // (asserted next): "unreadable is not empty" is about the inventory, not about this column.
       expect(stamp?.rowsWritten).toBe(0);
       expect((await inventoryOf(component)).length).toBe(2);
       expect(stamp?.manifests.some((m) => m.path === "go.mod" && m.outcome === "unreadable")).toBe(
@@ -1774,8 +1776,16 @@ require (
       // that both read the pre-state would each write a row missing the other's slice, and the
       // per-repository merge would be defeated at the write by the very race it exists to survive.
       // `recordIngestionStamp` therefore takes the same transaction-scoped advisory lock
-      // `ingestComponentManifests`' phase 3 already holds — deleting that `pg_advisory_xact_lock`
-      // line reddens this test (measured).
+      // `ingestComponentManifests`' phase 3 already holds.
+      //
+      // WHAT THIS TEST DOES AND DOES NOT PIN. It pins the per-repository MERGE under concurrency.
+      // It does NOT pin the lock line inside `recordIngestionStamp`: every pass that writes a slice
+      // arrives through phase 3, which already holds that lock, so deleting the
+      // `pg_advisory_xact_lock` from `recordIngestionStamp` leaves this test GREEN (measured, 3 of
+      // 3 runs). That line is defence in depth for the one writer outside phase 3 — the gate
+      // refusal — and the residue is stated in full in the doc comment above
+      // `recordIngestionStamp` in `ingestion-stamp-repo.ts`. Read that before assuming a mutation
+      // here would catch you.
       //
       // Eight repositories rather than two: a lost update needs an interleaving, and one pair can
       // serialise by luck where eight cannot.
