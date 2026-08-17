@@ -933,7 +933,13 @@ export const controlRuns = pgTable(
   },
   (table) => [
     index("control_runs_org_change").on(table.orgId, table.changeObjectId, table.createdAt),
-    index("control_runs_org_control").on(table.orgId, table.controlObjectId)
+    index("control_runs_org_control").on(table.orgId, table.controlObjectId),
+    // 0065 — the composite-FK target for `scan_findings`. `id` is already the primary key, so this
+    // adds no new uniqueness; it exists so a `(org_id, control_run_id)` foreign key has something to
+    // reference, which is what makes "a finding cannot point at another org's scan" a STRUCTURAL
+    // barrier rather than a repo-layer habit (0061 could not do this for its `objects(id)`
+    // references and says so).
+    unique("control_runs_org_id_key").on(table.orgId, table.id)
   ]
 );
 
@@ -2283,5 +2289,85 @@ export const dependencyBumpAuthorships = pgTable(
       table.coordinate,
       table.toVersion
     )
+  ]
+);
+
+/**
+ * M22.1b (ADR-0033 §7/§7a, migration 0065) — the per-finding projection of ONE scan verdict.
+ *
+ * A scan verdict was four integers until M22.1a; every rule in ADR-0033 is a rule ABOUT A FINDING,
+ * so this is the substrate the rest of M22 queues behind. See 0065's header for the full argument;
+ * the four load-bearing facts, restated where the code is:
+ *
+ *   1. ORDINARY TENANT DATA, `org_id NOT NULL` under the standard `org_isolation` RLS policy. NOT
+ *      the DESIGN §4.2 tenancy exception — M22.2's instance-tier ADMISSION rows are that, and the
+ *      two land in the same milestone and must not be copied from each other.
+ *   2. A PROJECTION TABLE, not a graph object type, on drizzle/0061's four measured tests: a finding
+ *      has no sluggable identity (the same CVE recurs per package; an entry may carry no
+ *      `VulnerabilityID` at all yet still counts), 2000 rows/scan through the graph write path is
+ *      2000 signed journal rows behind two per-org advisory locks, a new builtin type can wedge a
+ *      peer's whole signed bundle mid-upgrade, and this is high-churn derived observation data.
+ *   3. COMMANDER-LOCAL. `control_runs.evidence` is copied VERBATIM into the promotion bundle, so
+ *      findings are deliberately rows here and never on that column — the bundle keeps counts.
+ *   4. RETENTION IS PER ROW (ADR-0024 §D1, ADR-0033 D10): an EXCLUDED finding is accepted-risk
+ *      evidence ('E'); an ordinary one is telemetry ('O').
+ */
+export const scanFindings = pgTable(
+  "scan_findings",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** The scan verdict these findings decompose — one `control_runs` row is exactly one scan
+     *  outcome for one artifact digest at one gate crossing (M22.0a), which is the unit an exclusion
+     *  is resolved for. */
+    controlRunId: uuid("control_run_id").notNull(),
+    /** POSITION within the persisted set, in the producing parser's order — the identity, because a
+     *  finding has no other one. */
+    ordinal: integer("ordinal").notNull(),
+    /** critical|high|medium|low. Trivy's `UNKNOWN` is folded away upstream and never reaches a row,
+     *  exactly as it never reaches a count. */
+    severity: text("severity").notNull(),
+    /** Every attribution column is NULLABLE for the same reason `ScanFindingSchema`'s fields are
+     *  optional: an entry is retained whenever it would have been COUNTED, on `Severity` alone.
+     *  Requiring identifiers would drop entries and move operators' numbers. */
+    vulnerabilityId: text("vulnerability_id"),
+    pkgName: text("pkg_name"),
+    installedVersion: text("installed_version"),
+    /** ABSENT means upstream shipped no fix — M22.3's "no fix available" class reads this absence as
+     *  the signal rather than inferring it. */
+    fixedVersion: text("fixed_version"),
+    /** Trivy `Results[].Class` — the field that makes M22.4's vendor rule expressible without an
+     *  inventory join (`os-pkgs` attributes to the base image line, `lang-pkgs` to a manifest
+     *  dependency or to nothing). */
+    class: text("class"),
+    target: text("target"),
+    /** `PkgIdentifier.PURL` VERBATIM. Canonicalisation belongs at the join, once, where both sides
+     *  are visible — the dependency inventory stores its coordinate un-normalised too. */
+    purl: text("purl"),
+    /** ADR-0024 §D1 class, per row. 'E' excluded (accepted-risk evidence) | 'O' ordinary
+     *  (telemetry). 'P' is refused by the CHECK: no finding is permanent evidence. Defaults to 'O'
+     *  because nothing is excluded until M22.2 exists to exclude it. */
+    retentionClass: text("retention_class").notNull().default("O"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    /** `orgId` LEADS, so this index IS the one hot lookup ("the findings of control run R") and no
+     *  second index is needed. */
+    primaryKey({
+      name: "scan_findings_pk",
+      columns: [table.orgId, table.controlRunId, table.ordinal]
+    }),
+    /** Barrier 2 (DESIGN §4.2): a row cannot reference another org's control run, even from a
+     *  session that passes RLS for its own org. CASCADE so findings never outlive the verdict they
+     *  explain. */
+    foreignKey({
+      name: "scan_findings_control_run_fk",
+      columns: [table.orgId, table.controlRunId],
+      foreignColumns: [controlRuns.orgId, controlRuns.id]
+    }).onDelete("cascade"),
+    check(
+      "scan_findings_severity_check",
+      sql`${table.severity} IN ('critical','high','medium','low')`
+    ),
+    check("scan_findings_retention_class_check", sql`${table.retentionClass} IN ('E','O')`)
   ]
 );

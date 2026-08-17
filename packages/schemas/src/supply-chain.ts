@@ -155,6 +155,201 @@ export function severityCountsFromFindings(findings: readonly ScanFinding[]): Sc
   return counts;
 }
 
+// ===========================================================================================
+// M22.1b (ADR-0033 §7) — PERSISTING the findings: the cap, the record marker, and the transport
+// seam between a plugin that cannot reach the database and the server that can.
+// ===========================================================================================
+
+/**
+ * The maximum number of findings persisted per scan (ADR-0033 §7).
+ *
+ * `scan_findings` is the highest-cardinality table in the system and one scan of a stale base image
+ * routinely yields thousands of entries. A cap is NOT a retention story (ADR-0024 §D0: retention
+ * never licenses write amplification); it is the bound on a single scan's write.
+ *
+ * The cap keeps the FIRST N findings in parse order — deterministic, and not a severity-priority
+ * selection. Nothing is lost by that choice, because a TRUNCATED set refuses EVERY exclusion for
+ * that scan (ADR-0033 §7: "you cannot except what you did not record"), so the retained subset is
+ * only ever an explanation, never an input to a verdict.
+ *
+ * `severityCounts` is derived BEFORE the cap and is therefore unaffected: capping what is persisted
+ * never moves what the scanner found.
+ */
+export const SCAN_FINDINGS_PERSIST_CAP = 2000;
+
+export interface CappedScanFindings {
+  findings: ScanFinding[];
+  /** True iff the producer saw MORE findings than were retained. */
+  truncated: boolean;
+}
+
+export function capScanFindings(
+  findings: readonly ScanFinding[],
+  cap: number = SCAN_FINDINGS_PERSIST_CAP
+): CappedScanFindings {
+  if (findings.length <= cap) return { findings: [...findings], truncated: false };
+  return { findings: findings.slice(0, cap), truncated: true };
+}
+
+/**
+ * WHAT A SCAN'S PERSISTED FINDING SET IS — stated positively in evidence, never inferred from the
+ * absence of rows.
+ *
+ * ADR-0033's consequences list is explicit that "OpenSCAP verdicts can never be excluded from" must
+ * be "explicit and tested, not left to 'there were no findings to exclude'". The two are genuinely
+ * different states and a reader with only the rows cannot tell them apart:
+ *
+ *   `full`        — every finding the scanner reported is on disk. Exclusions may apply.
+ *   `truncated`   — the set hit `SCAN_FINDINGS_PERSIST_CAP`. EVERY exclusion for this scan is
+ *                   refused (ADR-0033 §7).
+ *   `unsupported` — this scanner family structurally cannot carry findings (OpenSCAP: XCCDF
+ *                   rule-results have no package, no purl, no `FixedVersion` and no `Class`).
+ *                   Exclusions can never apply — not because none matched, but because there is no
+ *                   per-finding material to match on.
+ *
+ * ABSENT is a fourth state and it is the one that matters most for safety: evidence written before
+ * M22.1b recorded no findings at all, so a consumer that reads no marker must refuse exclusions
+ * exactly as it does for `truncated`. Every state except `full` refuses.
+ */
+export const ScanFindingsRecordSchema = z.enum(["full", "truncated", "unsupported"]);
+export type ScanFindingsRecord = z.infer<typeof ScanFindingsRecordSchema>;
+
+/**
+ * Whether a scan METHOD can carry per-finding detail at all.
+ *
+ * Deliberately an EXHAUSTIVE switch over `ScanMethod` rather than `method !== "openscap"`: a fourth
+ * method added later is then a compile error here, forcing a decision, instead of silently
+ * inheriting "yes, it has findings" — which for a rule-based scanner would be a fail-open (an
+ * exclusion applied against a finding set that was never populated).
+ *
+ * It is also NOT `usesTrivyDb`, though the two agree today. That predicate answers "does this method
+ * read the Trivy vulnerability DB?" (a staleness-gate question); this one answers "does a verdict of
+ * this method decompose into findings?". Sharing one helper between two questions is how the answer
+ * to one silently becomes the answer to the other.
+ */
+export function scanMethodCarriesFindings(method: ScanMethod): boolean {
+  switch (method) {
+    case "trivy":
+    case "trivy-vm":
+      return true;
+    case "openscap":
+      return false;
+  }
+}
+
+/**
+ * THE ONE DECISION about what a scan's finding set is — used by BOTH the evidence marker and the
+ * row writer, so the two can never disagree about the same scan.
+ *
+ * `undefined` means NOTHING WAS RECORDED (the producer transported no findings at all). It is a
+ * real, distinct state and it is written as an ABSENT `evidence.findingsRecord`, matching every
+ * pre-M22.1b document — and like every state but `full`, it refuses exclusions.
+ *
+ * The `unsupported` arm is deliberately decided BEFORE the payload is looked at. A caller that
+ * handed OpenSCAP findings (there is no such thing, but a future runner shim could) gets them
+ * refused because of WHAT SCANNED, never because the array happened to be empty — which is exactly
+ * the distinction ADR-0033's consequences list requires be explicit and tested.
+ */
+export function scanFindingsRecordFor(
+  method: ScanMethod,
+  capped: CappedScanFindings | undefined
+): ScanFindingsRecord | undefined {
+  if (!scanMethodCarriesFindings(method)) return "unsupported";
+  if (capped === undefined) return undefined;
+  return capped.truncated ? "truncated" : "full";
+}
+
+/**
+ * The ADR-0024 §D1 evidentiary class of ONE persisted finding row (D10).
+ *
+ * `scan_findings` does not have a single class, and that is the whole point of assigning it per row:
+ *
+ *   `E` — an EXCLUDED finding is accepted-risk evidence. It explains a LIVE verdict and records what
+ *         an operator chose to tolerate, so it is retained at least as long as its subject is live.
+ *   `O` — an ordinary finding is telemetry: bookkeeping about what a scanner saw, on a short window.
+ *
+ * This follows ADR-0024 §D1's EXISTING per-row assignment (`decisions` already splits across all
+ * three classes — P when cited or pinned, E while current for its subject, O when uncited and
+ * superseded) rather than introducing a new retention shape.
+ *
+ * `P` is deliberately not in this enum: no finding is permanent evidence. The permanent record of a
+ * gate verdict is the Decision and the audit event, both of which cite it.
+ */
+export const ScanFindingRetentionClassSchema = z.enum(["E", "O"]);
+export type ScanFindingRetentionClass = z.infer<typeof ScanFindingRetentionClassSchema>;
+
+/**
+ * The class a finding row is written with. NOTHING is excluded until M22.2 lands the exclusion
+ * dimension, so every row written today is `O` — this is the mechanism, honestly parameterised,
+ * NOT a classification faked ahead of the thing that produces it.
+ */
+export function scanFindingRetentionClass(excluded: boolean): ScanFindingRetentionClass {
+  return excluded ? "E" : "O";
+}
+
+/**
+ * THE PLUGIN → SERVER TRANSPORT SEAM, and why the key is not a field on `ScanEvidenceSchema`.
+ *
+ * A ControlPlugin runs in the subprocess plugin host with NO `DATABASE_URL` — it cannot write
+ * `scan_findings` itself. Its ONLY channel back to the server is `ControlOutcome.evidence`, a
+ * free-form record. So the findings ride out on that record and the SERVER persists them.
+ *
+ * They must NOT stay there. `control_runs.evidence` is copied VERBATIM into the promotion bundle
+ * (`federation/promotion-repo.ts` projects `{controlUrn, status, evidence, detail}` for every run),
+ * and ADR-0033 keeps findings COMMANDER-LOCAL — the bundle keeps counts. Leaving them on the
+ * evidence would both bloat every bundle and federate accepted-risk detail that §8 confines to
+ * grants.
+ *
+ * Hence a `$`-prefixed transport key that `takeScanFindingsFromTransport` REMOVES as it reads. The
+ * extract and the strip are ONE function on purpose: a caller cannot obtain the findings and then
+ * forget to strip them, because the only way to get them hands back an already-stripped evidence
+ * object.
+ */
+export const SCAN_FINDINGS_TRANSPORT_KEY = "$scanFindings";
+export const SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY = "$scanFindingsTruncated";
+
+/** Attach a producer's capped findings to an outcome's evidence for the trip across the plugin-host
+ *  RPC. Called AFTER `ScanEvidenceSchema.parse`, because that parse strips unknown keys. */
+export function attachScanFindingsForTransport(
+  evidence: Record<string, unknown>,
+  capped: CappedScanFindings
+): Record<string, unknown> {
+  return {
+    ...evidence,
+    [SCAN_FINDINGS_TRANSPORT_KEY]: capped.findings,
+    [SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY]: capped.truncated
+  };
+}
+
+/**
+ * Read a plugin's transported findings OUT of an evidence record, returning the evidence WITHOUT
+ * the transport keys.
+ *
+ * RE-VALIDATES AND RE-CAPS SERVER-SIDE. The producing plugin is a separate process; a buggy or
+ * tampered one must not be able to steer what lands in the database, so the payload is parsed
+ * through `ScanFindingSchema` and re-capped here rather than trusted. A malformed payload yields
+ * `undefined` (no findings recorded) — the safe direction, since every state but `full` refuses
+ * exclusions.
+ */
+export function takeScanFindingsFromTransport(evidence: Record<string, unknown>): {
+  evidence: Record<string, unknown>;
+  capped: CappedScanFindings | undefined;
+} {
+  const hasKey = SCAN_FINDINGS_TRANSPORT_KEY in evidence;
+  const rawTruncated = evidence[SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY];
+  const rest = { ...evidence };
+  delete rest[SCAN_FINDINGS_TRANSPORT_KEY];
+  delete rest[SCAN_FINDINGS_TRUNCATED_TRANSPORT_KEY];
+  if (!hasKey) return { evidence: rest, capped: undefined };
+  const parsed = z.array(ScanFindingSchema).safeParse(evidence[SCAN_FINDINGS_TRANSPORT_KEY]);
+  if (!parsed.success) return { evidence: rest, capped: undefined };
+  const capped = capScanFindings(parsed.data);
+  return {
+    evidence: rest,
+    capped: { findings: capped.findings, truncated: capped.truncated || rawTruncated === true }
+  };
+}
+
 /** The severity threshold a `scan-result-control` binding applied to reach its verdict — echoed
  *  into evidence so a Decision reconstructs exactly WHICH gate policy authorized (or blocked) the
  *  artifact, not just the raw counts. `maxCritical`/`maxHigh` default to 0 (any is a fail);
@@ -368,6 +563,19 @@ export const ScanEvidenceSchema = z.object({
    *  is by itself sufficient for a `fail` outcome regardless of the vulnerability counts. */
   digestMatch: z.boolean(),
   severityCounts: ScanSeverityCountsSchema,
+  /** M22.1b (ADR-0033 §7) — WHAT THE PERSISTED FINDING SET IS for this verdict: `full`, `truncated`
+   *  at the per-scan cap, or `unsupported` because this scanner family carries no per-finding
+   *  material at all (OpenSCAP). Written by the SERVER at persist time — the only party that knows
+   *  what actually landed — never by the producing plugin.
+   *
+   *  Optional, so every pre-M22.1b evidence document still parses. ABSENT means no finding set was
+   *  recorded, and a consumer must treat it exactly like `truncated`: refuse every exclusion. Only
+   *  `full` admits one.
+   *
+   *  This is the MARKER, not the findings. The findings themselves are commander-local rows in
+   *  `scan_findings` and deliberately never reach this document, because evidence is copied verbatim
+   *  into the promotion bundle. */
+  findingsRecord: ScanFindingsRecordSchema.optional(),
   /** The threshold ACTUALLY applied to reach this verdict (post-merge). */
   threshold: ScanThresholdSchema,
   /** M17.5 (ADR-0016) — WHERE the APPLIED ceilings actually came from, per severity. This is the

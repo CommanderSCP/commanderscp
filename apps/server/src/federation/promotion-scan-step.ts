@@ -6,10 +6,14 @@ import { join } from "node:path";
 import {
   ScanEvidenceSchema,
   ScanSeverityCountsSchema,
+  capScanFindings,
   parseTrivyFindings,
+  scanFindingsRecordFor,
   severityCountsFromFindings,
   ExecutorTypeSchema,
   usesTrivyDb,
+  type CappedScanFindings,
+  type ScanFinding,
   type ScanMethod,
   type ScanSeverityCounts,
   type ScanThreshold,
@@ -30,6 +34,7 @@ import {
   listControlRunsForChange,
   type ControlRunRow
 } from "../governance/controls-repo.js";
+import { persistScanFindings } from "../governance/scan-findings-repo.js";
 import { resolveScannersForType } from "../governance/scanner-registry.js";
 import {
   resolveEffectiveScanThreshold,
@@ -154,6 +159,18 @@ export interface ManagedScanReport {
   scannedDigest: string;
   scannerVersion: string;
   severityCounts: ScanSeverityCounts;
+  /**
+   * M22.1b (ADR-0033 §7) — the per-finding detail the counts were derived from, retained so it can
+   * be PERSISTED (`scan_findings`). Every rule in ADR-0033 is a rule about a finding, and until this
+   * field existed a verdict reaching the server was four integers.
+   *
+   * ABSENT when the runner produced no per-finding material — which is the ordinary case for
+   * OpenSCAP, whose XCCDF rule-results have no package, no purl, no `FixedVersion` and no `Class`.
+   * Absence is NOT what refuses an OpenSCAP finding set, though: `persistScanFindings` refuses on
+   * the METHOD, before it looks at this field, so a runner that one day handed findings alongside
+   * `openscap` still records `unsupported` rather than quietly gaining an exclusion surface.
+   */
+  findings?: readonly ScanFinding[];
   /** M13.3b-ii — the scanner DB this verdict was produced against (trivy only; OpenSCAP uses baked
    *  SSG). Surfaced into the ScanEvidence so a Decision can explain the DB's provenance + freshness.
    *  Only a scannable DB (`fresh`/`warn`) yields a report at all — a hard-fail/missing/corrupt DB
@@ -333,6 +350,10 @@ interface DepositRow {
   detail: string;
   method: ScanMethod;
   digest: string;
+  /** M22.1b — the findings to project into `scan_findings` once this deposit has a control-run id.
+   *  Carried on the deposit rather than re-derived in phase C, because phase B is where the scan
+   *  actually happened. */
+  capped: CappedScanFindings | undefined;
 }
 
 /**
@@ -431,6 +452,14 @@ export async function runPromotionScanStep(
       const overThreshold = breaches(severityCounts, threshold);
       const status: "pass" | "fail" = digestMatch && !overThreshold ? "pass" : "fail";
 
+      // M22.1b — cap the set that will be persisted, and let ONE pure function decide the marker
+      // that goes on the evidence here and the rows that go into `scan_findings` in phase C. The
+      // marker cannot be produced by the writer, because it must be on the `control_runs` row at
+      // INSERT time while the rows need that row's id; deriving both from `scanFindingsRecordFor`
+      // is what keeps "evidence says full, the table says otherwise" unreachable.
+      const capped = report.findings ? capScanFindings(report.findings) : undefined;
+      const findingsRecord = scanFindingsRecordFor(method, capped);
+
       const evidence = ScanEvidenceSchema.parse({
         scanner: method,
         scannerVersion: report.scannerVersion || "unknown",
@@ -438,6 +467,7 @@ export async function runPromotionScanStep(
         expectedDigest: subject.digest,
         digestMatch,
         severityCounts,
+        ...(findingsRecord ? { findingsRecord } : {}),
         threshold,
         thresholdSource: source,
         ...(plan.effective ? { thresholdContributors: plan.effective.contributors } : {}),
@@ -471,7 +501,8 @@ export async function runPromotionScanStep(
         evidence: evidence as unknown as Record<string, unknown>,
         detail,
         method,
-        digest: subject.digest
+        digest: subject.digest,
+        capped
       });
     }
   }
@@ -481,7 +512,7 @@ export async function runPromotionScanStep(
   // Phase C (tx, write): deposit the managed-scan control_runs rows the UNCHANGED E6 gate reads next.
   await withTenantTx(db, input.orgId, async (tx) => {
     for (const d of deposits) {
-      await insertControlRun(tx, {
+      const run = await insertControlRun(tx, {
         orgId: input.orgId,
         controlObjectId: MANAGED_SCAN_CONTROL_OBJECT_ID,
         changeObjectId: d.changeObjectId,
@@ -494,6 +525,17 @@ export async function runPromotionScanStep(
         // id with no `control_bindings` row, so there is no module that produced them. NULL is the
         // honest answer and is what keeps a caller asking "what kind of evidence is this?" able to
         // tell a commander scan deposit apart from a bound plugin's verdict.
+      });
+      // M22.1b (ADR-0033 §7) — project the findings the counts were derived from, in the SAME
+      // transaction as the verdict they explain. `persistScanFindings` refuses on the METHOD for a
+      // scanner family that cannot carry findings, so this call is made unconditionally: an
+      // `openscap` deposit reaching it records `unsupported` rather than being skipped here, which
+      // is the difference between a stated refusal and a silent absence.
+      await persistScanFindings(tx, {
+        orgId: input.orgId,
+        controlRunId: run.id,
+        method: d.method,
+        capped: d.capped
       });
     }
   });
@@ -675,6 +717,9 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
             scannedDigest: req.digest,
             scannerVersion: parsed.scannerVersion,
             severityCounts: parsed.severityCounts,
+            // M22.1b — the per-finding detail travels with the counts it produced. Present for every
+            // trivy-family method; structurally absent for openscap (see `ParsedOscap.findings`).
+            ...(parsed.findings ? { findings: parsed.findings } : {}),
             ...(scanDbInfo ? { scanDb: scanDbInfo } : {})
           }
         };
@@ -715,6 +760,10 @@ function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
 
 interface ParsedTrivy {
   severityCounts: ScanSeverityCounts;
+  /** M22.1b — the entries the counts were derived from, retained so `scan_findings` can persist
+   *  them. `severityCounts` stays exactly `severityCountsFromFindings(findings)`, so the two can
+   *  never disagree and no operator-visible number moves. */
+  findings: ScanFinding[];
   scannedDigest: string | undefined;
   scannerVersion: string;
 }
@@ -761,7 +810,7 @@ export function parseTrivyResult(raw: unknown, versionText?: string): ParsedTriv
     }
     return "unknown";
   })();
-  return { severityCounts: counts, scannedDigest, scannerVersion: version };
+  return { severityCounts: counts, findings, scannedDigest, scannerVersion: version };
 }
 
 async function parseTrivyResultFile(path: string): Promise<ParsedTrivy> {
@@ -804,6 +853,12 @@ async function parseTrivyResultFile(path: string): Promise<ParsedTrivy> {
 
 interface ParsedOscap {
   severityCounts: ScanSeverityCounts;
+  /** M22.1b — `never`, not "empty". An XCCDF rule-result has no package, no purl, no `FixedVersion`
+   *  and no `Class`, so there is no per-finding material for an exclusion to match on and no way to
+   *  invent one. Typed as `never` so an attempt to populate it is a COMPILE error rather than a
+   *  runtime surprise — but note the enforcement that matters is `persistScanFindings` refusing on
+   *  the METHOD, which holds even for a caller that never sees this type. */
+  findings?: never;
   /** An ARF carries no image digest (the runner scanned an extracted rootfs), so always undefined —
    *  the digest binding is the server-verified PULL, not the scanner's self-report (see the runner). */
   scannedDigest: undefined;

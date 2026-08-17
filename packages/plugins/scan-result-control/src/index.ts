@@ -33,10 +33,13 @@ import type { ControlOutcome, ControlPlugin, ControlRequest, PluginContext } fro
 import {
   EffectiveScanThresholdSchema,
   ScanEvidenceSchema,
+  attachScanFindingsForTransport,
+  capScanFindings,
   parseTrivyFindings,
   severityCountsFromFindings,
   type EffectiveScanThreshold,
   type ScanEvidence,
+  type ScanFinding,
   type ScanThreshold,
   type ScanThresholdSource,
   type ScanThresholdSourceMap
@@ -130,19 +133,38 @@ function scannedDigest(raw: TrivyResultJson): string | undefined {
 }
 
 /**
- * M22.1 — now DERIVED from the shared parse in `@scp/schemas` rather than counting inline.
+ * M22.1a introduced a `countSeverities(raw)` wrapper here that derived the counts from the shared
+ * `parseTrivyFindings`. M22.1b inlines it at the call site, because the plugin now needs the
+ * FINDINGS themselves (to hand to the server) as well as the counts, and a wrapper that parses and
+ * throws the findings away would have meant parsing the same document twice — the second parse being
+ * exactly the place the two could drift apart again.
  *
- * This used to be a hand-written loop that read `.Severity` and discarded the vulnerability object,
- * byte-for-byte mirroring `federation/promotion-scan-step.ts`'s `parseTrivyResult` across the
- * plugin/server boundary. Two independent loops with identical semantics is the shape where a fix
- * lands in one and the paths silently diverge — and ADR-0033 needs BOTH to start retaining
- * per-finding detail, so the duplication had to go before the divergence could.
- *
- * The counts are numerically unchanged: `parseTrivyFindings` retains exactly the entries this loop
- * counted (per-entry, no de-duplication, `UNKNOWN` folded away, malformed input yielding zero).
+ * The counts are still numerically unchanged from pre-M22.1: `parseTrivyFindings` retains exactly
+ * the entries the original hand-written loop counted (per-entry, no de-duplication, `UNKNOWN` folded
+ * away, malformed input yielding zero).
  */
-function countSeverities(raw: TrivyResultJson): ScanEvidence["severityCounts"] {
-  return severityCountsFromFindings(parseTrivyFindings(raw));
+
+/**
+ * M22.1b (ADR-0033 §7) — HAND THE FINDINGS TO THE SERVER, because this plugin cannot persist them.
+ *
+ * A ControlPlugin runs in the subprocess plugin host with no `DATABASE_URL`; its only channel back
+ * is `ControlOutcome.evidence`. So the capped findings ride out on that record under a transport key
+ * that `control-runner.ts` STRIPS as it reads (`takeScanFindingsFromTransport`) — they must not
+ * survive onto the persisted `control_runs.evidence`, which federation copies VERBATIM into a
+ * promotion bundle. ADR-0033 §8 keeps findings commander-local; the bundle keeps counts.
+ *
+ * Attached AFTER `ScanEvidenceSchema.parse`, because that parse strips unknown keys.
+ *
+ * ATTACHED ON EVERY OUTCOME, including the digest-mismatch fail. The findings belong to the scan
+ * that produced them and the very same evidence document records which digest that was, so nothing
+ * is misattributed; and a FAILING verdict is precisely the one an exclusion would later act on, so
+ * dropping them there would make the mechanism inert exactly where it is meant to work.
+ */
+function withFindings(evidence: ScanEvidence, findings: readonly ScanFinding[]) {
+  return attachScanFindingsForTransport(
+    evidence as unknown as Record<string, unknown>,
+    capScanFindings(findings)
+  );
 }
 
 function resolveScannerVersion(raw: TrivyResultJson, config: ScanResultControlConfig): string {
@@ -350,7 +372,10 @@ export function createScanResultControlPlugin(): ControlPlugin {
         );
       }
 
-      const counts = countSeverities(trivy);
+      // ONE parse: the counts stay derived from exactly the entries that are handed to the server,
+      // so `severityCounts` and `scan_findings` can never describe different sets.
+      const findings = parseTrivyFindings(trivy);
+      const counts = severityCountsFromFindings(findings);
       const {
         threshold,
         source: thresholdSource,
@@ -380,7 +405,7 @@ export function createScanResultControlPlugin(): ControlPlugin {
         return {
           status: "fail",
           detail: `scan-result-control: digest mismatch — scanned ${scanned}, change is promoting ${expectedDigest}`,
-          evidence
+          evidence: withFindings(evidence, findings)
         };
       }
 
@@ -398,14 +423,14 @@ export function createScanResultControlPlugin(): ControlPlugin {
               ? ` [tiers: ${scoped.contributors.map((c) => `${c.tier}(${c.source})`).join(", ")}]`
               : ""
           }`,
-          evidence
+          evidence: withFindings(evidence, findings)
         };
       }
 
       return {
         status: "pass",
         detail: `scan-result-control: trivy verdict within threshold for ${scanned} (critical=${counts.critical}, high=${counts.high})`,
-        evidence
+        evidence: withFindings(evidence, findings)
       };
     }
   };

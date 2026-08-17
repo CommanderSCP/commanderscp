@@ -1,4 +1,11 @@
 import type { ControlOutcomeStatus } from "@scp/plugin-api";
+import {
+  ScanEvidenceSchema,
+  scanFindingsRecordFor,
+  takeScanFindingsFromTransport,
+  type CappedScanFindings,
+  type ScanMethod
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost, PluginHostInstanceConfig } from "../plugin-host/contract.js";
 import {
@@ -7,6 +14,7 @@ import {
   latestControlRun,
   latestControlRunForGate
 } from "./controls-repo.js";
+import { persistScanFindings } from "./scan-findings-repo.js";
 import { getObjectByIdOrUrnAnyType, isUuid } from "../graph/objects-repo.js";
 
 // `control_bindings.plugin_module` is a free-form string at the schema layer
@@ -171,7 +179,40 @@ export async function ensureControlRun(
     detail = `control plugin call failed: ${err instanceof Error ? err.message : String(err)}`;
   }
 
-  await insertControlRun(tx, {
+  // M22.1b (ADR-0033 §7) — TAKE the plugin's transported findings OFF the evidence before anything
+  // persists it. A ControlPlugin has no `DATABASE_URL` and cannot write `scan_findings` itself, so
+  // `scan-result-control` hands its capped findings back on the outcome's evidence record; this is
+  // the server-side half of that seam.
+  //
+  // THE STRIP IS NOT OPTIONAL AND IT IS NOT COSMETIC. `federation/promotion-repo.ts` projects
+  // `{controlUrn, status, evidence, detail}` for every control run and copies `evidence` VERBATIM
+  // into the signed promotion bundle. Findings left on that column would both bloat every bundle and
+  // federate accepted-risk detail that ADR-0033 §8 confines to grants — the bundle keeps counts.
+  // `takeScanFindingsFromTransport` extracts and strips in ONE call precisely so a caller cannot
+  // obtain the findings and forget the strip. It also RE-VALIDATES and re-caps the payload: the
+  // producer is a separate process and must not be able to steer what lands in the database.
+  //
+  // Runs for EVERY control, not just scan controls: a transport key must never survive onto a
+  // persisted row, whichever plugin put it there.
+  const taken = takeScanFindingsFromTransport(evidence);
+  evidence = taken.evidence;
+  // WHAT SCANNED decides whether findings may be recorded at all, so the method is read from the
+  // evidence the plugin actually produced. A control whose evidence is not a scan verdict
+  // (webhook-control, github-check) yields no method, and its payload — if it somehow carried one —
+  // is dropped rather than attributed to a scan that did not happen.
+  const scanEvidence = ScanEvidenceSchema.safeParse(evidence);
+  const scanMethod: ScanMethod | undefined = scanEvidence.success
+    ? scanEvidence.data.scanner
+    : undefined;
+  const capped: CappedScanFindings | undefined = scanMethod ? taken.capped : undefined;
+  // ONE pure function decides the marker stamped on the evidence here and the rows written below,
+  // because the marker must be on the `control_runs` row at INSERT time while the rows need that
+  // row's id. Deriving both from `scanFindingsRecordFor` keeps "the evidence says full, the table
+  // says otherwise" unreachable.
+  const findingsRecord = scanMethod ? scanFindingsRecordFor(scanMethod, capped) : undefined;
+  if (findingsRecord) evidence = { ...evidence, findingsRecord };
+
+  const run = await insertControlRun(tx, {
     orgId: input.orgId,
     controlObjectId: input.controlObjectId,
     changeObjectId: input.changeObjectId,
@@ -187,6 +228,17 @@ export async function ensureControlRun(
     // an unattributable one.
     pluginModule: binding.pluginModule
   });
+  // Same transaction as the verdict they explain. Skipped only when there is no scan verdict here at
+  // all — for a scan verdict the call is unconditional, so an `openscap` one would record
+  // `unsupported` rather than being quietly passed over.
+  if (scanMethod) {
+    await persistScanFindings(tx, {
+      orgId: input.orgId,
+      controlRunId: run.id,
+      method: scanMethod,
+      capped
+    });
+  }
   return status;
 }
 
