@@ -265,8 +265,10 @@ export async function recordGovernanceReachChange(
     subjectId: input.subjectObjectId,
     verdict,
     inputContext: {
-      route: input.route,
+      // Route-specific detail FIRST, so the fixed keys below always win. The other order let a
+      // `detail` key named `route` silently overwrite the route the record is filtered on.
       ...input.detail,
+      route: input.route,
       actorObjectId: input.actorObjectId,
       // See the module doc: the delta at the moved node is the delta its descendants inherit, and
       // saying so is what keeps a reader from mistaking a one-object record for the whole blast

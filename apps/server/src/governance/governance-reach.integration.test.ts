@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ContainmentDomainId } from "@scp/schemas";
+import type { ContainmentDomainId, TrustDomainId } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { auditEvents, decisions } from "../db/schema.js";
 import { upsertObjectByUrn } from "../graph/objects-repo.js";
@@ -488,7 +488,9 @@ describe("a containment write that changes which policies reach an object", () =
 
     // The peer's claimed authority. `upsertObjectByUrn` compares this against the stored row's
     // `origin_domain_id` and never resolves it, so a bare id is the whole of what the branch needs.
-    const peerDomainId = randomUUID();
+    // Branded (ADR-0021 D4): a TRUST domain id, not a containment one. The cast is the test's own
+    // stand-in for a paired peer — `upsertObjectByUrn` only ever compares this value.
+    const peerDomainId = randomUUID() as unknown as TrustDomainId;
     const urn = `urn:scp:${org.orgName}:service:handfill-shadow`;
 
     // 1. The hand-filled shadow, exactly as `federation/handfill-repo.ts` writes one.
