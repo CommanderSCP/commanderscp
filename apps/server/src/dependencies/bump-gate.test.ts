@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 import type { DomainEventJob } from "../events/pgboss.js";
 import { BUMP_OBSERVED_EVENT } from "../coordination/correlation.js";
 import {
+  DOMAIN_EVENT_ROUTERS,
+  domainEventRouters,
+  type RouterGuardConfig
+} from "../events/domain-event-registry.js";
+import { bumpDispatchRoleGuard } from "./bump-dispatch.js";
+import {
   DEPENDENCY_BUMP_GATE_QUEUE,
   isBumpObservedEvent,
   observedBumpRouter
@@ -34,18 +40,36 @@ const srcDir = dirname(fileURLToPath(import.meta.url));
  * That is the fifth instance of "built and never installed" this milestone exists to not become a
  * sixth of, so it is asserted rather than reviewed.
  */
-describe("the composition root actually wires the gate (source census)", () => {
+describe("the composition root actually wires the gate", () => {
   const mainTs = readFileSync(join(srcDir, "..", "main.ts"), "utf8");
 
-  it("registers the observed-bump router WITH startPgBoss, so its queue exists before any event", () => {
-    const startCall = /startPgBoss\([\s\S]*?\);/.exec(mainTs)?.[0] ?? "";
-    expect(startCall).toContain("observedBumpRouter()");
-    // …and never as a second `boss.work()` on the shared stream, which would steal M21.4's and the
-    // dispatcher's events and receive roughly half of its own.
-    expect(mainTs).not.toMatch(/work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/);
+  it("registers the observed-bump router in the production registry, under the DISPATCHER's guard", () => {
+    // By identity: "same guard as the dispatcher's, by import rather than by copy" is the claim the
+    // module doc makes, and merging is the more consequential repository write of the two — so a
+    // registry entry pairing this router with a laxer guard is the defect this rules out.
+    const entries = DOMAIN_EVENT_ROUTERS.filter((entry) => entry.factory === observedBumpRouter);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.guard).toBe(bumpDispatchRoleGuard);
   });
 
-  it("starts the gate worker, and stops it on shutdown", () => {
+  it("registers it on a declared commander worker, and on nothing else", () => {
+    const queuesFor = (config: RouterGuardConfig): string[] =>
+      domainEventRouters(config).map((router) => router.queue);
+    expect(
+      queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: true })
+    ).toContain(DEPENDENCY_BUMP_GATE_QUEUE);
+    expect(
+      queuesFor({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
+    ).not.toContain(DEPENDENCY_BUMP_GATE_QUEUE);
+    expect(
+      queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: false })
+    ).not.toContain(DEPENDENCY_BUMP_GATE_QUEUE);
+  });
+
+  it("starts the gate worker, and stops it on shutdown (source census — main.ts cannot be imported)", () => {
+    // …and never takes a second `boss.work()` on the shared stream, which would steal M21.4's and
+    // the dispatcher's events and receive roughly half of its own.
+    expect(mainTs).not.toMatch(/work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/);
     expect(mainTs).toMatch(/startBumpGateLoop\(/);
     expect(mainTs).toMatch(/bumpGateLoop\.stop\(\)/);
   });

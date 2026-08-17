@@ -186,8 +186,9 @@ export async function runInternalReleaseJob(
 }
 
 /**
- * Register the capability's worker. Returns the router `startPgBoss` needs, so `main.ts` wires the
- * two halves without either knowing about the other's internals.
+ * Register the capability's worker. The ROUTER half is registered separately, by
+ * `events/domain-event-registry.ts` under this module's own guard, so the two halves are wired
+ * without either knowing about the other's internals.
  *
  * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE — the same shape the version
  * poll, the inbox loop and the auto-relay loop use, and for the same reason: a process that merely

@@ -84,11 +84,12 @@ export class DuplicateRouterRegistrationError extends Error {
  * traffic and jobs that fire twice.
  *
  * This is not a hypothetical. During M21's build a rebase put `acceptedChangeRouter()` on BOTH sides
- * of a conflict in `main.ts`'s registration array; concatenating the two sides — the naive
- * resolution — would have shipped exactly that. The protection at the time was a code comment
- * saying "every entry below appears exactly once", which is a claim, not a check. This is the check.
- * It runs BEFORE any connection is opened so that a misregistration fails the process immediately
- * and cheaply, rather than after the first event has already been double-routed.
+ * of a conflict in the registration array (then a literal in `main.ts`, now
+ * `events/domain-event-registry.ts`); concatenating the two sides — the naive resolution — would
+ * have shipped exactly that. The protection at the time was a code comment saying "every entry
+ * below appears exactly once", which is a claim, not a check. This is the check. It runs BEFORE any
+ * connection is opened so that a misregistration fails the process immediately and cheaply, rather
+ * than after the first event has already been double-routed.
  *
  * Two different routers sharing one `queue` is the same defect wearing a different hat: that queue
  * has ONE worker, owned by one capability, expecting one job shape — so the other router's jobs are

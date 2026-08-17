@@ -833,8 +833,9 @@ export interface BumpDispatchLoopHandle {
 
 /**
  * Register the capability's worker. Returns nothing the caller has to remember to wire: the ROUTER
- * is built separately by `main.ts` under the same guard, and a refused guard contributes NO router,
- * so an event is not even enqueued for a queue nothing will drain.
+ * is registered separately, by `events/domain-event-registry.ts` under `bumpDispatchRoleGuard` —
+ * this same guard, by import rather than by copy — and a refused guard contributes NO router, so an
+ * event is not even enqueued for a queue nothing will drain.
  *
  * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE — the same shape the version
  * poll, the internal-release loop and the inbox loop use, and for the same reason: a process that

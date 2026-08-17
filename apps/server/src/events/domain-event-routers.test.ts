@@ -3,6 +3,11 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  DOMAIN_EVENT_ROUTERS,
+  domainEventRouters,
+  type RouterGuardConfig
+} from "./domain-event-registry.js";
+import {
   DuplicateRouterRegistrationError,
   assertRoutersRegisteredOnce,
   startPgBoss,
@@ -13,35 +18,51 @@ import {
  * ================================================================================================
  * M21.7 item 4 — THE ROUTER REGISTRATION CENSUS
  * ================================================================================================
- * `main.ts` hands `startPgBoss` an array of {@link DomainEventRouter}s. That array has TWO failure
- * modes, and until this file the protection against both was a code comment ("Every entry below
- * appears exactly once"), which is a claim rather than a check:
+ * The composition root hands `startPgBoss` a list of {@link DomainEventRouter}s. That list has TWO
+ * failure modes, and until this file the protection against both was a code comment ("Every entry
+ * below appears exactly once"), which is a claim rather than a check:
  *
  *   1. REGISTERED TWICE (the rebase hazard). During M21's build a rebase put `acceptedChangeRouter()`
- *      on both sides of a conflict in that array; concatenating the sides — the naive resolution —
+ *      on both sides of a conflict in that list; concatenating the sides — the naive resolution —
  *      registers it twice. The domain-events worker calls every router for every event, so the
  *      capability's queue gets two jobs per event, and `boss.work()` on that queue is a COMPETING
  *      consumer: it does not deduplicate, it runs the work twice. pg-boss reports nothing.
  *
  *   2. NEVER REGISTERED (the "built but never installed" hazard). Every router in this tree has an
  *      integration test that registers the router ITSELF, because that is the only way to drive it
- *      deterministically. Those suites stay green when `main.ts` never wires the router at all —
- *      which is this codebase's most-shipped defect class (six instances in M21 alone).
+ *      deterministically. Those suites stay green when the composition root never wires the router
+ *      at all — which is this codebase's most-shipped defect class (six instances in M21 alone).
  *
- * WHY THIS IS A SOURCE CENSUS AND NOT AN IMPORT: `main.ts` calls `main()` at module scope, so
- * importing it starts a server. The registration site is a literal inside that module, and the
- * honest way to read a literal in a module you cannot import is to read the module.
+ * WHAT THIS FILE ASSERTS AGAINST, AND WHY IT CHANGED. The first version of this census read
+ * `main.ts` as TEXT, because `main.ts` calls `main()` at module scope and cannot be imported. Text
+ * cannot distinguish a registration that is LIVE from one that is UNREACHABLE: invert the role
+ * guard on a registration line (`allowed ? [] : [router()]`) and the factory's name is still right
+ * there in the source, so every source census stays green while production registers nothing. So
+ * the list itself moved out of `main.ts` into `events/domain-event-registry.ts`, a pure importable
+ * value, and the assertions below EXECUTE it — `DOMAIN_EVENT_ROUTERS` compared by function
+ * IDENTITY against the routers discovered in the tree, and `domainEventRouters(config)` called for
+ * a matrix of deployment configs.
+ *
+ * THE GAP THAT REMAINS, STATED PLAINLY RATHER THAN PAPERED OVER: the last link — that `main.ts`
+ * passes `domainEventRouters(config)` to `startPgBoss` — is still checked as source text, because
+ * importing `main.ts` starts a server. "The composition root wires the registry" is therefore the
+ * one property here proven by a substring and not by behaviour. It is a much smaller surface than
+ * the old census (one call, not four conditional registrations, with nothing config-dependent left
+ * in it), and two of the three ways that substring could lie while present are closed below: a
+ * LOCAL SHADOW of `domainEventRouters` (checked for), and the call sitting in a DEAD BRANCH of the
+ * argument list (no conditional operator is permitted in it). The third is not closed and cannot
+ * be by reading text: whether the enclosing `if (runsBackgroundWork)` block executes at all. A
+ * mutation that makes that branch unreachable passes this file, and — checked, not assumed — no
+ * other test in this package covers it either, because nothing imports `main.ts`. That is a known,
+ * uncovered edge, recorded here rather than implied away.
  *
  * WHY IT DOES NOT ROT: nothing here names a router. The set of routers is DISCOVERED from the
  * filesystem (every exported factory whose return type is `DomainEventRouter`) and compared against
- * what the composition root registers. Add a fifth router module and this census demands it be
- * registered exactly once; the assertion has no list to forget to update.
+ * the registry. Add a fifth router module and this census demands it be registered exactly once.
  *
- * The two comparisons are mutual anti-vacuity guards. If the discovery regex ever stopped matching,
- * the declared set would go empty — and the "registered but not declared" half of the second test
- * fails, because the registration site still names four factories. If the argument-list extraction
- * ever broke, the registered set would go empty — and the "declared but not registered" half fails.
- * Neither can silently pass by finding nothing.
+ * The comparisons are mutual anti-vacuity guards: break discovery and the registry's entries have
+ * nothing to match (they land in `registeredButNotDeclared`); empty the registry and every
+ * discovered router lands in `declaredButNotRegistered`. Neither half can pass by finding nothing.
  */
 
 const SRC_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -52,7 +73,9 @@ const MAIN_TS = join(SRC_DIR, "main.ts");
 // -------------------------------------------------------------------------------------------
 
 /** Production sources only — a `*.test.ts` file may define a fixture router, which nothing should
- *  register in the composition root. */
+ *  register in the composition root. NOTHING ELSE IS FILTERED, deliberately: `test-support/*.ts` is
+ *  included, so a fixture router parked there fails this census loudly rather than teaching the
+ *  filter to hide the next real one. */
 function productionSourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -71,43 +94,153 @@ function productionSourceFiles(dir: string): string[] {
   return out;
 }
 
-/** `export function someRouter(…): DomainEventRouter {` — params allowed, so a future factory that
- *  takes a dependency is still discovered. */
-const ROUTER_FACTORY =
-  /export\s+function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*:\s*DomainEventRouter\b/g;
+/**
+ * The start of an exported function declaration, up to and including its opening parenthesis.
+ *
+ * DECLARATION FORMS THIS HAS TO SURVIVE — censused across `apps/server/src` rather than assumed,
+ * because the first version of this regex used `\([^)]*\)` and therefore recognised exactly one
+ * form. Forms in use in this tree today:
+ *   - `export function name(…): T` on one line, and split across lines (399 of them);
+ *   - a parameter that is ITSELF a function — `rand: () => number` (`load-test/stats.ts`), a
+ *     dependency-injected clock, `fn: () => Promise<T>` — which `[^)]*` cannot cross, so a router
+ *     factory written `export function subscriptionDriftRouter(clock: () => Date): DomainEventRouter`
+ *     was invisible to the old census;
+ *   - a default value that calls something: `now: Date = new Date()` (`federation/crl-parse.ts`);
+ *   - a generic: `export function sampleDistinct<T>(…)` (`load-test/stats.ts`).
+ * `export const name = (…) =>` is NOT used for exported functions anywhere in this tree; it is
+ * matched anyway, because the point of a census is to find the instance that does not look like
+ * the others. `export async function` is matched too, though such a factory would return
+ * `Promise<DomainEventRouter>` and so would not satisfy the return-type test below.
+ *
+ * The parameter list is not matched by this regex at all — {@link matchingParen} walks it — which
+ * is what makes the nested-paren forms work.
+ */
+const DECLARATION_START = new RegExp(
+  [
+    String.raw`export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^(]*?>\s*)?\(`,
+    String.raw`export\s+const\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]*)?=\s*(?:async\s+)?(?:<[^(]*?>\s*)?\(`
+  ].join("|"),
+  "g"
+);
+
+/** Index of the `)` closing the `(` at `open`, or -1. */
+function matchingParen(source: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "(") depth++;
+    else if (source[i] === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** The return type must be ONE router — `: DomainEventRouter` followed by a function body (`{`) or
+ *  an arrow's `=>`. Anchoring on what FOLLOWS the type is what keeps `DomainEventRouter[]` (the
+ *  registry's own `domainEventRouters(config)` returns a list of them) and `Promise<…>` out: those
+ *  are consumers of routers, not declarations of one. */
+const RETURNS_ROUTER = /^\s*:\s*DomainEventRouter\s*(?:\{|=>)/;
 
 interface DiscoveredRouter {
   factory: string;
   file: string;
 }
 
-const declaredRouters: DiscoveredRouter[] = productionSourceFiles(SRC_DIR).flatMap((file) => {
-  const source = readFileSync(file, "utf8");
-  return [...source.matchAll(ROUTER_FACTORY)].map((m) => ({
-    factory: m[1]!,
+function routerFactoriesIn(source: string): string[] {
+  const found: string[] = [];
+  for (const match of source.matchAll(DECLARATION_START)) {
+    const name = match[1] ?? match[2];
+    if (name === undefined) continue;
+    const open = match.index + match[0].length - 1;
+    const close = matchingParen(source, open);
+    if (close === -1) continue;
+    if (RETURNS_ROUTER.test(source.slice(close + 1))) found.push(name);
+  }
+  return found;
+}
+
+const declaredRouters: DiscoveredRouter[] = productionSourceFiles(SRC_DIR).flatMap((file) =>
+  routerFactoriesIn(readFileSync(file, "utf8")).map((factory) => ({
+    factory,
     file: relative(SRC_DIR, file)
-  }));
-});
+  }))
+);
+
+/** Each discovered factory, IMPORTED — so the census below compares the actual function object the
+ *  registry holds against the actual function the module exports. A name string would be satisfied
+ *  by a local shadow; a function reference is not. */
+const discovered = await Promise.all(
+  declaredRouters.map(async (declared) => {
+    const mod: Record<string, unknown> = await import(
+      pathToFileURL(join(SRC_DIR, declared.file)).href
+    );
+    return { ...declared, exported: mod[declared.factory] };
+  })
+);
 
 // -------------------------------------------------------------------------------------------
-// The registration site: what does the composition root actually pass to `startPgBoss`?
+// The composition root, as text — the one link that cannot be imported
 // -------------------------------------------------------------------------------------------
 
 /**
+ * Source with COMMENTS REMOVED — both `//` and `/* … *\/`, and neither inside a string or template
+ * literal, where those character pairs are data. The predecessor of this function handled `//`
+ * only while its own comment claimed a commented-out registration would not count: a registration
+ * inside a block comment still counted as registered, which is precisely the "comment asserting a
+ * protection that does not exist" this milestone is cleaning up.
+ *
+ * NOT TRACKED: regular-expression literals, so `/\/\* /` would start a spurious comment. `main.ts`
+ * contains none, and the failure direction is a false RED (text removed, checks below fail loudly),
+ * never a silent pass on the `startPgBoss` link.
+ */
+function stripComments(source: string): string {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const two = source.slice(i, i + 2);
+    if (two === "//") {
+      while (i < source.length && source[i] !== "\n") i++;
+      continue;
+    }
+    if (two === "/*") {
+      const end = source.indexOf("*/", i + 2);
+      i = end === -1 ? source.length : end + 2;
+      continue;
+    }
+    const ch = source[i]!;
+    if (ch === '"' || ch === "'" || ch === "`") {
+      out += ch;
+      i++;
+      while (i < source.length && source[i] !== ch) {
+        if (source[i] === "\\") {
+          out += source.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += source[i];
+        i++;
+      }
+      out += source[i] ?? "";
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
  * The text between `startPgBoss(` and its matching `)`, by balanced-paren scan rather than a
- * non-greedy regex — the argument list contains nested calls and array literals, and a `[\s\S]*?\)`
- * would stop at the first of them the moment anyone reformats the call.
+ * non-greedy regex — the argument list contains nested calls, and a `[\s\S]*?\)` would stop at the
+ * first of them the moment anyone reformats the call.
  *
  * Throws rather than returning empty if the call site cannot be found: "the composition root moved"
  * must be a loud failure, never a census that silently examines nothing.
  */
-function startPgBossArgumentList(source: string): string {
-  const callSites = [...source.matchAll(/(?<![\w.$])startPgBoss\s*\(/g)].filter((m) => {
-    // Skip mentions inside comments — several doc comments in `main.ts` refer to `startPgBoss`.
-    const lineStart = source.lastIndexOf("\n", m.index!) + 1;
-    const before = source.slice(lineStart, m.index!);
-    return !before.includes("//") && !/^\s*\*/.test(before);
-  });
+function startPgBossArgumentList(code: string): string {
+  const callSites = [...code.matchAll(/(?<![\w.$])startPgBoss\s*\(/g)];
   if (callSites.length !== 1) {
     throw new Error(
       `expected exactly one startPgBoss(...) call in main.ts, found ${callSites.length}. ` +
@@ -115,101 +248,140 @@ function startPgBossArgumentList(source: string): string {
         "not deleted."
     );
   }
-  const open = callSites[0]!.index! + callSites[0]![0].length - 1;
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    if (source[i] === "(") depth++;
-    else if (source[i] === ")") {
-      depth--;
-      if (depth === 0) return source.slice(open + 1, i);
-    }
-  }
-  throw new Error("unbalanced parentheses in main.ts's startPgBoss(...) call");
+  const open = callSites[0]!.index + callSites[0]![0].length - 1;
+  const close = matchingParen(code, open);
+  if (close === -1) throw new Error("unbalanced parentheses in main.ts's startPgBoss(...) call");
+  return code.slice(open + 1, close);
 }
 
-/** Strip `//` line comments so a factory name MENTIONED in a comment inside the argument list is
- *  not mistaken for a registration (and so a commented-out registration does not count). */
-const stripLineComments = (text: string): string =>
-  text
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
-
-const mainTs = readFileSync(MAIN_TS, "utf8");
-const registrationSite = stripLineComments(startPgBossArgumentList(mainTs));
-
-/** Every identifier CALLED inside the argument list, with repeats — this is the registered list.
- *  `config.pgBossDatabaseUrl` is a property access, not a call, so the first argument contributes
- *  nothing; the guard predicates (`bumpDispatchRoleGuard(config)`) are evaluated OUTSIDE the call. */
-const registeredFactories: string[] = [
-  ...registrationSite.matchAll(/(?<![\w.$])([A-Za-z_$][\w$]*)\s*\(/g)
-].map((m) => m[1]!);
+const mainCode = stripComments(readFileSync(MAIN_TS, "utf8"));
 
 // -------------------------------------------------------------------------------------------
 
-describe("domain-event router registration (composition-root census)", () => {
-  it("registers no router TWICE — a second registration is two enqueues per event, silently", () => {
-    const seen = new Map<string, number>();
-    for (const name of registeredFactories) seen.set(name, (seen.get(name) ?? 0) + 1);
-    const registeredMoreThanOnce = [...seen.entries()]
-      .filter(([, count]) => count > 1)
-      .map(([name, count]) => `${name} x${count}`);
+describe("the registry holds every router in the tree, exactly once (runtime identity census)", () => {
+  it("registers each discovered router once — not zero times, not twice, and not a lookalike", () => {
+    const registeredFactories = DOMAIN_EVENT_ROUTERS.map((entry) => entry.factory);
+    const countOf = (fn: unknown): number =>
+      registeredFactories.filter((candidate) => candidate === fn).length;
+
+    const declaredButNotRegistered = discovered
+      .filter((router) => countOf(router.exported) === 0)
+      .map((router) => `${router.factory} (${router.file})`);
+    const registeredMoreThanOnce = discovered
+      .filter((router) => countOf(router.exported) > 1)
+      .map((router) => `${router.factory} x${countOf(router.exported)}`);
+    // Anti-vacuity, and the shadow check in one: an entry whose function is not the one the module
+    // exports lands here — same name, different object — so a local `function acceptedChangeRouter()`
+    // in the registry fails even with the real import still present.
+    const registeredButNotDeclared = registeredFactories
+      .filter((fn) => !discovered.some((router) => router.exported === fn))
+      .map(
+        (fn) =>
+          `${fn.name || "<anonymous>"} (not the function the tree exports under that name — a ` +
+          `shadow, a wrapper, or discovery has stopped finding it)`
+      );
 
     expect({
-      site: "main.ts startPgBoss(...)",
-      registeredMoreThanOnce
-    }).toEqual({ site: "main.ts startPgBoss(...)", registeredMoreThanOnce: [] });
-  });
-
-  it("registers EVERY router that exists in the tree, and nothing that does not", () => {
-    const declared = declaredRouters.map((r) => r.factory);
-    const declaredButNotRegistered = declaredRouters
-      .filter((r) => !registeredFactories.includes(r.factory))
-      .map((r) => `${r.factory} (${r.file})`);
-    // Also catches the census breaking: if discovery ever found nothing, every registered name
-    // would land here rather than the suite going quietly green over an empty comparison.
-    const registeredButNotDeclared = [...new Set(registeredFactories)].filter(
-      (name) => !declared.includes(name)
-    );
-
-    expect({ declaredButNotRegistered, registeredButNotDeclared }).toEqual({
+      declaredButNotRegistered,
+      registeredMoreThanOnce,
+      registeredButNotDeclared
+    }).toEqual({
       declaredButNotRegistered: [],
+      registeredMoreThanOnce: [],
       registeredButNotDeclared: []
     });
   });
 
-  it("imports each registered factory rather than shadowing it with a local of the same name", () => {
-    // A registration whose identifier resolves to something defined inside `main()` would satisfy
-    // the two tests above while wiring something other than the discovered factory.
-    const mainFn = mainTs.indexOf("async function main");
-    // Not `slice(0, -1)`-by-accident: a missing marker would leave the whole file as the "import
-    // section" and pass this test for free.
-    expect(mainFn, "main.ts no longer declares `async function main`").toBeGreaterThan(0);
-    const importSection = mainTs.slice(0, mainFn);
-    const notImported = [...new Set(registeredFactories)].filter(
-      (name) => !new RegExp(String.raw`(?<![\w.$])${name}(?![\w$])`).test(importSection)
-    );
-    expect(notImported).toEqual([]);
+  it("gives every router its own name and its own destination queue", () => {
+    // The same predicate production boots through, over the WHOLE registry rather than the subset a
+    // given process's role guards admit: two routers sharing a name or a queue would be a latent
+    // double-registration the moment both guards allowed.
+    const routers = DOMAIN_EVENT_ROUTERS.map((entry) => entry.factory());
+    expect(() => assertRoutersRegisteredOnce(routers)).not.toThrow();
   });
 });
 
-describe("the routers themselves are distinguishable", () => {
-  it("every router in the tree has its own name and its own destination queue", async () => {
-    const routers: DomainEventRouter[] = [];
-    for (const declared of declaredRouters) {
-      const mod: Record<string, unknown> = await import(
-        pathToFileURL(join(SRC_DIR, declared.file)).href
+describe("what a process actually registers is decided by each router's own guard", () => {
+  /** Every deployment shape the guards can see. Not a sample — the full product of the three axes
+   *  `RouterGuardConfig` exposes. */
+  const CONFIG_MATRIX: RouterGuardConfig[] = (["all", "api", "worker"] as const).flatMap((role) =>
+    (["commander", "outpost", "retrans"] as const).flatMap((federationRole) =>
+      [true, false].map((federationRoleDeclared) => ({
+        role,
+        federationRole,
+        federationRoleDeclared
+      }))
+    )
+  );
+
+  it("registers exactly the entries whose OWN guard allows, on every config", () => {
+    const mismatches = CONFIG_MATRIX.flatMap((config) => {
+      const actual = domainEventRouters(config).map((router) => router.name);
+      // The oracle is each entry's own guard, evaluated here independently of the registry's
+      // filter — so a filter that ignores the guard, inverts it, or applies ONE entry's guard to
+      // every entry produces a set this disagrees with.
+      const expected = DOMAIN_EVENT_ROUTERS.filter((entry) => entry.guard(config).allowed).map(
+        (entry) => entry.factory().name
       );
-      const factory = mod[declared.factory];
-      expect(typeof factory, `${declared.factory} is not exported from ${declared.file}`).toBe(
-        "function"
-      );
-      routers.push((factory as () => DomainEventRouter)());
-    }
-    // The same predicate production boots through, over the WHOLE universe of routers rather than
-    // the subset a given process's role guards admit: two routers that shared a name or a queue
-    // would be a latent double-registration the moment both guards allowed.
-    expect(() => assertRoutersRegisteredOnce(routers)).not.toThrow();
+      return JSON.stringify(actual) === JSON.stringify(expected)
+        ? []
+        : [
+            `${JSON.stringify(config)}: registered ${JSON.stringify(actual)}, guards allow ${JSON.stringify(expected)}`
+          ];
+    });
+    expect(mismatches).toEqual([]);
+  });
+
+  it("registers NOTHING on an api-only process, whatever else that process is", () => {
+    // Config-INDEPENDENT of the guards themselves, which is the point: it is not derived from the
+    // registry, so it survives the filter being deleted, inverted, or stubbed `true`. A router
+    // exists to enqueue onto a capability queue that a background worker drains; an api process
+    // drains nothing, so a router registered there fills a queue with work nobody will do.
+    const registeredOnApi = CONFIG_MATRIX.filter((config) => config.role === "api").flatMap(
+      (config) =>
+        domainEventRouters(config).map((router) => `${router.name} @ ${config.federationRole}`)
+    );
+    expect(registeredOnApi).toEqual([]);
+  });
+
+  it("leaves no router permanently inert — each one is reachable on some deployment", () => {
+    // "Registered but its guard refuses everywhere" is the deepest form of built-and-never-installed:
+    // the wiring is present, the census above is green, and the capability never runs anywhere.
+    const neverAllowed = DOMAIN_EVENT_ROUTERS.filter(
+      (entry) => !CONFIG_MATRIX.some((config) => entry.guard(config).allowed)
+    ).map((entry) => entry.factory().name);
+    expect(neverAllowed).toEqual([]);
+  });
+});
+
+describe("the composition root wires the registry (source census — the one link that cannot be imported)", () => {
+  it("hands `domainEventRouters(config)` to startPgBoss, UNCONDITIONALLY, and builds no router of its own", () => {
+    const argumentList = startPgBossArgumentList(mainCode);
+    expect(argumentList).toMatch(/(?<![\w.$])domainEventRouters\s*\(/);
+    // No conditional operator anywhere in the argument list, because a substring cannot tell a live
+    // call from one parked in a dead branch (`cond ? domainEventRouters(config) : []`). The routers
+    // argument is not a decision this file gets to make — the guards decide, inside the registry,
+    // where the decision is observable. A legitimate need for a ternary here fails loudly, which is
+    // the right way for that conversation to start.
+    expect(argumentList).not.toMatch(/\?|&&|\|\|/);
+    // …and main.ts does not ALSO register one directly, which would bypass everything above.
+    // Discovered names, so this covers a router that does not exist yet.
+    const builtInMain = declaredRouters
+      .map((router) => router.factory)
+      .filter((name) => new RegExp(String.raw`(?<![\w.$])${name}\s*\(`).test(mainCode));
+    expect(builtInMain).toEqual([]);
+  });
+
+  it("imports `domainEventRouters` rather than shadowing it with a local of the same name", () => {
+    // A local definition would satisfy the substring above while wiring something else entirely —
+    // and it does not have to REPLACE the import to do that, which is why this looks for the
+    // declaration rather than for the import's absence.
+    expect(mainCode).toMatch(
+      /import\s*\{[^}]*\bdomainEventRouters\b[^}]*\}\s*from\s*["']\.\/events\/domain-event-registry\.js["']/
+    );
+    expect(mainCode).not.toMatch(
+      /(?:const|let|var|function|class)\s+domainEventRouters\b|(?<![\w.$])domainEventRouters\s*=(?!=)/
+    );
   });
 });
 

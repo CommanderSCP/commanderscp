@@ -5,6 +5,11 @@ import { describe, expect, it } from "vitest";
 import type { DependencyLine } from "@scp/schemas";
 import type { DomainEventJob } from "../events/pgboss.js";
 import {
+  DOMAIN_EVENT_ROUTERS,
+  domainEventRouters,
+  type RouterGuardConfig
+} from "../events/domain-event-registry.js";
+import {
   advancedLineHeadRouter,
   bumpDispatchRoleGuard,
   isLineHeadAdvancedEvent,
@@ -37,39 +42,59 @@ const npmLine = (
  * ================================================================================================
  * That file registers the router and starts the loop ITSELF, because that is the only way to drive
  * them deterministically against a Testcontainers database. Which means it would keep passing if
- * `main.ts` never wired either one — the production process would start with no router on
+ * the composition root never wired either one — the production process would start with no router on
  * `domain-events` and no worker on `dependency-bump`, and every subscribed component would receive
  * nothing, forever, with a green suite. That is the EXACT failure this milestone exists to close,
  * four times over, so it gets an assertion of its own rather than a reviewer's attention.
  *
- * A source-level census is the honest tool here — the same one
- * `dependency-inventory.integration.test.ts` uses to pin the absence of a traversal — because the
- * property is "this call site exists in the composition root", and importing `main.ts` would start
- * a server.
+ * The ROUTER half is asserted by RUNNING the registration (M21.7): the router list lives in
+ * `events/domain-event-registry.ts`, a pure importable value, precisely so this does not have to be
+ * a substring match on a file that cannot be imported. The LOOP half still is one — `main.ts` calls
+ * `main()` at module scope — and is labelled as such.
  */
-describe("the composition root actually wires it (source census)", () => {
+describe("the composition root actually wires it", () => {
   const mainTs = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), "..", "main.ts"),
     "utf8"
   );
 
-  it("registers the router WITH startPgBoss — not as a second worker on domain-events", () => {
-    expect(mainTs).toMatch(/advancedLineHeadRouter\(\)/);
-    // Inside the `startPgBoss(...)` call, which is where a router must be registered so its
-    // destination queue exists before the first event can be routed to it.
-    const startCall = /startPgBoss\([\s\S]*?\);/.exec(mainTs)?.[0] ?? "";
-    expect(startCall).toContain("advancedLineHeadRouter()");
-    // …and NOT as a `boss.work(DOMAIN_EVENTS_QUEUE, …)` of its own, which would steal M21.4's events.
-    expect(mainTs).not.toMatch(/work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/);
+  it("registers the router in the production registry, under THIS capability's guard", () => {
+    // Identity, not name: the mis-binding this rules out is the registry pairing this router with a
+    // LAXER guard — internal detection's, say, which allows every federation role — and thereby
+    // authoring repository writes from an outpost.
+    const entries = DOMAIN_EVENT_ROUTERS.filter(
+      (entry) => entry.factory === advancedLineHeadRouter
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.guard).toBe(bumpDispatchRoleGuard);
   });
 
-  it("starts the worker, and stops it on shutdown", () => {
+  it("registers it on a declared commander worker, and on NOTHING else", () => {
+    const queuesFor = (config: RouterGuardConfig): string[] =>
+      domainEventRouters(config).map((router) => router.queue);
+    expect(
+      queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: true })
+    ).toContain(DEPENDENCY_BUMP_QUEUE);
+    // The guard's two axes, observed at the REGISTRATION rather than on the guard in isolation:
+    // an api process, an outpost, and a deployment that never declared its federation role must
+    // none of them end up with this router on the shared event stream.
+    expect(
+      queuesFor({ role: "api", federationRole: "commander", federationRoleDeclared: true })
+    ).not.toContain(DEPENDENCY_BUMP_QUEUE);
+    expect(
+      queuesFor({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
+    ).not.toContain(DEPENDENCY_BUMP_QUEUE);
+    expect(
+      queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: false })
+    ).not.toContain(DEPENDENCY_BUMP_QUEUE);
+  });
+
+  it("starts the worker, and stops it on shutdown (source census — main.ts cannot be imported)", () => {
     expect(mainTs).toMatch(/startBumpDispatchLoop\(/);
     expect(mainTs).toMatch(/bumpDispatchLoop\.stop\(\)/);
-  });
-
-  it("gates the router on the SAME guard as the loop, so no event is queued for a queue nobody drains", () => {
-    expect(mainTs).toMatch(/bumpDispatchRoleGuard\(config\)\.allowed/);
+    // …and the capability never takes a `boss.work(DOMAIN_EVENTS_QUEUE, …)` of its own, which would
+    // steal M21.4's events: `boss.work` on that queue is a competing consumer.
+    expect(mainTs).not.toMatch(/work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/);
   });
 });
 

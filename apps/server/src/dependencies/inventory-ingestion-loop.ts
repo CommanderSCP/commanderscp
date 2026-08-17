@@ -305,7 +305,8 @@ export interface InventoryIngestionLoopHandle {
 
 /**
  * Register the capability's worker. Returns nothing but the handle; the router half is registered
- * with `startPgBoss` by `main.ts`, so neither knows the other's internals.
+ * with `startPgBoss` by `events/domain-event-registry.ts`, under this module's own guard, so
+ * neither knows the other's internals.
  *
  * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE — the same shape every other
  * loop uses, and for the same reason: a process that merely skipped the work inside the handler

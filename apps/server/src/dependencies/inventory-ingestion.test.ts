@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ManifestParseError } from "@scp/dependency-manifests";
+import { DOMAIN_EVENT_ROUTERS, domainEventRouters } from "../events/domain-event-registry.js";
+import {
+  INVENTORY_INGESTION_QUEUE,
+  inventoryIngestionRoleGuard,
+  inventoryIngestionRouter
+} from "./inventory-ingestion-loop.js";
 import {
   candidateManifestPaths,
   isGitLfsPointer,
@@ -385,26 +391,55 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
      * tests called the component directly.
      *
      * So the acceptance criterion is not "the function works", it is WIRED — and the only thing
-     * that can regress the wiring is an edit to `main.ts`, which no unit or integration test of
-     * this module would otherwise touch. This census reads that file and fails if the two halves
-     * are not both there.
+     * that can regress the wiring is an edit to the composition root, which no unit or integration
+     * test of this module would otherwise touch.
      *
-     * WHAT THIS DOES NOT PROVE, said plainly: A SUBSTRING MATCH IS NOT A TEST OF BEHAVIOUR. It
-     * proves the call sites exist in `main.ts` and nothing else — deleting
+     * WHAT A SUBSTRING MATCH DOES NOT PROVE, said plainly: the two `main.ts` assertions below are
+     * text, and text cannot tell a live call from a dead one — deleting
      * `startInventoryIngestionLoop`'s OWN `boss.createQueue` and `boss.work` left this green, and
-     * left the entire suite green, because nothing executed the loop.
+     * left the entire suite green, because nothing executed the loop. The ROUTER half no longer
+     * has that weakness: M21.7 moved the router list out of `main.ts` into the importable
+     * `events/domain-event-registry.ts`, so this capability's registration is asserted below by
+     * running it.
      *
      * The behavioural half is `inventory-ingestion.integration.test.ts`'s "the production path"
      * block: a real pg-boss, this capability's real router, `startInventoryIngestionLoop` itself,
      * and the assertion that a domain event lands ROWS IN THE TABLE. That is what fails when the
-     * wiring is deleted. This census remains only for the one edge it covers that the other cannot
-     * — `main.ts`'s own call sites, which no test of this module would otherwise touch.
+     * wiring is deleted.
      */
     const mainTs = readFileSync(join(import.meta.dirname, "..", "main.ts"), "utf8");
 
-    it("main.ts registers the ROUTER with startPgBoss — without it no event ever reaches the queue", () => {
-      expect(mainTs).toContain("inventoryIngestionRouter()");
-      expect(mainTs).toContain("inventoryIngestionRoleGuard(config)");
+    it("the production registry registers THIS router, under THIS capability's guard", () => {
+      // By function identity, not by name: the mis-binding this rules out is the registry pairing
+      // this router with some other capability's guard, which would register it on processes whose
+      // ingestion worker is refused — an enqueue onto a queue nothing drains.
+      const entries = DOMAIN_EVENT_ROUTERS.filter(
+        (entry) => entry.factory === inventoryIngestionRouter
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]!.guard).toBe(inventoryIngestionRoleGuard);
+    });
+
+    it("a background-work process actually gets it, and an api-only process does not", () => {
+      const onWorker = domainEventRouters({
+        role: "worker",
+        federationRole: "commander",
+        federationRoleDeclared: true
+      });
+      expect(onWorker.map((router) => router.queue)).toContain(INVENTORY_INGESTION_QUEUE);
+      // Every federation role, deliberately (ADR-0032 §3: each domain derives its OWN inventory).
+      const onOutpost = domainEventRouters({
+        role: "worker",
+        federationRole: "outpost",
+        federationRoleDeclared: true
+      });
+      expect(onOutpost.map((router) => router.queue)).toContain(INVENTORY_INGESTION_QUEUE);
+      const onApi = domainEventRouters({
+        role: "api",
+        federationRole: "commander",
+        federationRoleDeclared: true
+      });
+      expect(onApi.map((router) => router.queue)).not.toContain(INVENTORY_INGESTION_QUEUE);
     });
 
     it("main.ts starts the WORKER — without it the queue fills and nothing drains it", () => {
