@@ -210,25 +210,38 @@ describe("evaluateHeadMovement — a head never moves backwards", () => {
 });
 
 describe("asThirdPartyLine — the ingress split is structural", () => {
-  const row = (producedByObjectId: string | null) => ({
+  const row = {
     id: "11111111-1111-1111-1111-111111111111",
     ecosystem: "npm" as const,
     coordinate: "@acme/lib",
     major: "2",
-    tagPattern: null,
-    producedByObjectId
-  });
+    tagPattern: null
+  };
 
   it("an INTERNAL line is not a pollable line", () => {
     // The failure this prevents is dependency-confusion shaped: the org's own `@acme/lib` 2.1.0,
     // derived from its own production release, overwritten by a stranger's 9.9.9 from the public
     // index that happens to carry the same coordinate — and every subscriber bumped onto it.
-    expect(asThirdPartyLine(row("22222222-2222-2222-2222-222222222222"))).toBeNull();
+    expect(asThirdPartyLine(row, { hasDeclaredProducer: true })).toBeNull();
   });
 
-  it("a THIRD-PARTY line is — the negative control that makes the refusal about the producer link", () => {
-    const pollable = asThirdPartyLine(row(null));
+  it("a THIRD-PARTY line is — the negative control that makes the refusal about the declaration", () => {
+    const pollable = asThirdPartyLine(row, { hasDeclaredProducer: false });
     expect(pollable).not.toBeNull();
     expect(pollable?.coordinate).toBe("@acme/lib");
+  });
+
+  it("THE FACT IS AN ARGUMENT, so a caller who never looked cannot get a pollable line by default", () => {
+    // WHY THIS CASE EXISTS (drizzle/0068). Under the old signature the internal-ness fact was a
+    // COLUMN on the line row, and the dangerous path was a row whose column was NULL because nobody
+    // had ever written it — a brand-new major of a coordinate the org publishes. `asThirdPartyLine`
+    // dutifully returned a pollable line, and the org's own package went to a public index.
+    //
+    // The fact is now a required second parameter, so "I did not look" is not expressible: the two
+    // call sites below are the only two answers, and there is no third that means "unknown". This
+    // asserts the SHAPE — `asThirdPartyLine.length === 2` — because the whole guarantee is that the
+    // argument cannot be omitted, and a one-argument overload would restore the old hole with every
+    // other test still green.
+    expect(asThirdPartyLine.length).toBe(2);
   });
 });

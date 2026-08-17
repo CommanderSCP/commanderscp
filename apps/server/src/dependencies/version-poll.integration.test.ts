@@ -32,6 +32,7 @@ import {
 } from "../test-support/harness.js";
 import {
   declareDependencyLineProducer,
+  getDependencyLineProducer,
   getDependencyLineById,
   upsertComponentDependency,
   upsertDependencyLine
@@ -694,16 +695,25 @@ esac
     });
     await inOrg((tx) =>
       declareDependencyLineProducer(tx, org.orgId, {
-        lineId: internalLineId,
-        producedByObjectId: subscribed,
+        ecosystem: "npm",
+        coordinate: "@acme/internal-lib",
+        producerObjectId: subscribed,
         declaredByObjectId: subscribed
       })
     );
-    // READ BACK: without the producer link this test proves nothing at all — the line would simply
-    // be third-party and the assertions below would be about a fixture that never applied.
+    // READ BACK: without the producer declaration this test proves nothing at all — the coordinate
+    // would simply be third-party and the assertions below would be about a fixture that never
+    // applied. (`internalLineId` is still asserted on below; it is minted above.)
+    expect(internalLineId).toBeTruthy();
     expect(
-      (await inOrg((tx) => getDependencyLineById(tx, org.orgId, internalLineId)))
-        ?.producedByObjectId
+      (
+        await inOrg((tx) =>
+          getDependencyLineProducer(tx, org.orgId, {
+            ecosystem: "npm",
+            coordinate: "@acme/internal-lib"
+          })
+        )
+      )?.producerObjectId
     ).toBe(subscribed);
 
     // A host that RECORDS every coordinate it is asked about and answers generously — so an

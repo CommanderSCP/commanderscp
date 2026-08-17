@@ -60694,6 +60694,1333 @@
         ]
       }
     },
+    "/dependencies/producers": {
+      "post": {
+        "operationId": "declareDependencyLineProducer",
+        "summary": "Declare that a component produces one dependency coordinate — the ONE way a coordinate becomes internal, so its versions are derived from the org's own production releases instead of a public index (ADR-0032 §7e). Requires 'policy:write' at the ORG ROOT: the declaration changes behaviour for every component in the org that depends on the coordinate. Returns the blast radius; `dryRun` returns it without writing. COMMANDER-ONLY: a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409",
+        "tags": [
+          "dependencies"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "ecosystem": {
+                    "type": "string",
+                    "enum": [
+                      "npm",
+                      "go",
+                      "maven",
+                      "python",
+                      "oci"
+                    ]
+                  },
+                  "coordinate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "producerIdOrUrn": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "ecosystem",
+                  "coordinate",
+                  "producerIdOrUrn"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ecosystem": {
+                      "type": "string",
+                      "enum": [
+                        "npm",
+                        "go",
+                        "maven",
+                        "python",
+                        "oci"
+                      ]
+                    },
+                    "coordinate": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "declare",
+                        "retract"
+                      ]
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "declaration": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "orgId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "ecosystem": {
+                              "type": "string",
+                              "enum": [
+                                "npm",
+                                "go",
+                                "maven",
+                                "python",
+                                "oci"
+                              ]
+                            },
+                            "coordinate": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "producerObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "declaredAt": {
+                              "type": "string"
+                            },
+                            "declaredByObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          },
+                          "required": [
+                            "orgId",
+                            "ecosystem",
+                            "coordinate",
+                            "producerObjectId",
+                            "declaredAt",
+                            "declaredByObjectId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "lineId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "major": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "tagPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "headBefore": {
+                            "type": "object",
+                            "properties": {
+                              "latestVersion": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestDigest": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestObservedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "latestVersion",
+                              "latestDigest",
+                              "latestObservedAt"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "headCleared": {
+                            "type": "boolean"
+                          },
+                          "subscribedComponentObjectIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          }
+                        },
+                        "required": [
+                          "lineId",
+                          "major",
+                          "tagPattern",
+                          "headBefore",
+                          "headCleared",
+                          "subscribedComponentObjectIds"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "openBumpAuthorships": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "changeObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "componentObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "manifestPath": {
+                            "type": "string"
+                          },
+                          "fromVersion": {
+                            "type": "string"
+                          },
+                          "toVersion": {
+                            "type": "string"
+                          },
+                          "pullRequestUrl": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "changeObjectId",
+                          "componentObjectId",
+                          "repo",
+                          "manifestPath",
+                          "fromVersion",
+                          "toVersion"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "decisionId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "ecosystem",
+                    "coordinate",
+                    "action",
+                    "dryRun",
+                    "declaration",
+                    "lines",
+                    "openBumpAuthorships",
+                    "decisionId",
+                    "dependencyManagement"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "listDependencyLineProducers",
+        "summary": "List this org's declared dependency-line producers — which components the org declares it publishes which coordinates from (ADR-0032 §7e). Narrowable by ecosystem, or to one exact coordinate (compared VERBATIM). Read the `dependencyManagement` envelope: on a field outpost this list is empty BY DESIGN, because declarations live at the commander",
+        "tags": [
+          "dependencies"
+        ],
+        "parameters": [
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "enum": [
+                "npm",
+                "go",
+                "maven",
+                "python",
+                "oci"
+              ]
+            }
+          },
+          {
+            "name": "coordinate",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "producers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "orgId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "ecosystem": {
+                            "type": "string",
+                            "enum": [
+                              "npm",
+                              "go",
+                              "maven",
+                              "python",
+                              "oci"
+                            ]
+                          },
+                          "coordinate": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 512
+                          },
+                          "producerObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "declaredAt": {
+                            "type": "string"
+                          },
+                          "declaredByObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          }
+                        },
+                        "required": [
+                          "orgId",
+                          "ecosystem",
+                          "coordinate",
+                          "producerObjectId",
+                          "declaredAt",
+                          "declaredByObjectId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "producers",
+                    "dependencyManagement"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/dependencies/producers/retract": {
+      "post": {
+        "operationId": "retractDependencyLineProducer",
+        "summary": "Retract a producer declaration and return the coordinate to third-party polling (ADR-0032 §7e). Clears every covered line's observed head — a head the org's own releases put there would otherwise wedge the line, and is a security-gate input. Reports the bumps still in flight, which SCP does NOT close. Requires 'policy:write' at the ORG ROOT. COMMANDER-ONLY (409 elsewhere)",
+        "tags": [
+          "dependencies"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "ecosystem": {
+                    "type": "string",
+                    "enum": [
+                      "npm",
+                      "go",
+                      "maven",
+                      "python",
+                      "oci"
+                    ]
+                  },
+                  "coordinate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "ecosystem",
+                  "coordinate"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ecosystem": {
+                      "type": "string",
+                      "enum": [
+                        "npm",
+                        "go",
+                        "maven",
+                        "python",
+                        "oci"
+                      ]
+                    },
+                    "coordinate": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "declare",
+                        "retract"
+                      ]
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "declaration": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "orgId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "ecosystem": {
+                              "type": "string",
+                              "enum": [
+                                "npm",
+                                "go",
+                                "maven",
+                                "python",
+                                "oci"
+                              ]
+                            },
+                            "coordinate": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "producerObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "declaredAt": {
+                              "type": "string"
+                            },
+                            "declaredByObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          },
+                          "required": [
+                            "orgId",
+                            "ecosystem",
+                            "coordinate",
+                            "producerObjectId",
+                            "declaredAt",
+                            "declaredByObjectId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "lineId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "major": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "tagPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "headBefore": {
+                            "type": "object",
+                            "properties": {
+                              "latestVersion": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestDigest": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestObservedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "latestVersion",
+                              "latestDigest",
+                              "latestObservedAt"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "headCleared": {
+                            "type": "boolean"
+                          },
+                          "subscribedComponentObjectIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          }
+                        },
+                        "required": [
+                          "lineId",
+                          "major",
+                          "tagPattern",
+                          "headBefore",
+                          "headCleared",
+                          "subscribedComponentObjectIds"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "openBumpAuthorships": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "changeObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "componentObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "manifestPath": {
+                            "type": "string"
+                          },
+                          "fromVersion": {
+                            "type": "string"
+                          },
+                          "toVersion": {
+                            "type": "string"
+                          },
+                          "pullRequestUrl": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "changeObjectId",
+                          "componentObjectId",
+                          "repo",
+                          "manifestPath",
+                          "fromVersion",
+                          "toVersion"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "decisionId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "ecosystem",
+                    "coordinate",
+                    "action",
+                    "dryRun",
+                    "declaration",
+                    "lines",
+                    "openBumpAuthorships",
+                    "decisionId",
+                    "dependencyManagement"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/campaigns": {
       "post": {
         "operationId": "proposeCampaign",

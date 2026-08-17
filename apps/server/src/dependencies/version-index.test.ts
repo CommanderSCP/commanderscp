@@ -45,15 +45,20 @@ const v = (...versions: string[]): DependencyIndexVersion[] =>
 const pollable = (
   over: Partial<{ ecosystem: string; coordinate: string; major: string; tagPattern: string | null }>
 ): ThirdPartyLine => {
-  const built = asThirdPartyLine({
-    id: "00000000-0000-0000-0000-0000000000ff",
-    ecosystem: "npm",
-    coordinate: "@acme/lib",
-    major: "4",
-    tagPattern: null,
-    producedByObjectId: null,
-    ...over
-  } as Parameters<typeof asThirdPartyLine>[0]);
+  const built = asThirdPartyLine(
+    {
+      id: "00000000-0000-0000-0000-0000000000ff",
+      ecosystem: "npm",
+      coordinate: "@acme/lib",
+      major: "4",
+      tagPattern: null,
+      ...over
+    } as Parameters<typeof asThirdPartyLine>[0],
+    // No producer is declared for this coordinate — the fact is an ARGUMENT since drizzle/0068,
+    // and a fixture that wants a pollable line has to state it rather than inherit it from a NULL
+    // column nobody wrote.
+    { hasDeclaredProducer: false }
+  );
   if (built === null) throw new Error("fixture is not a third-party line");
   return built;
 };

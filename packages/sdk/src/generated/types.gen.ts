@@ -15211,6 +15211,315 @@ export type BackfillDependencyInventoryResponses = {
 
 export type BackfillDependencyInventoryResponse = BackfillDependencyInventoryResponses[keyof BackfillDependencyInventoryResponses];
 
+export type ListDependencyLineProducersData = {
+    body?: never;
+    path?: never;
+    query?: {
+        ecosystem?: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate?: string;
+    };
+    url: '/dependencies/producers';
+};
+
+export type ListDependencyLineProducersErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListDependencyLineProducersError = ListDependencyLineProducersErrors[keyof ListDependencyLineProducersErrors];
+
+export type ListDependencyLineProducersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        producers: Array<{
+            orgId: string;
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            producerObjectId: string;
+            declaredAt: string;
+            declaredByObjectId: string;
+        }>;
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+    };
+};
+
+export type ListDependencyLineProducersResponse = ListDependencyLineProducersResponses[keyof ListDependencyLineProducersResponses];
+
+export type DeclareDependencyLineProducerData = {
+    body: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        producerIdOrUrn: string;
+        dryRun?: boolean;
+    };
+    path?: never;
+    query?: never;
+    url: '/dependencies/producers';
+};
+
+export type DeclareDependencyLineProducerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeclareDependencyLineProducerError = DeclareDependencyLineProducerErrors[keyof DeclareDependencyLineProducerErrors];
+
+export type DeclareDependencyLineProducerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        action: 'declare' | 'retract';
+        dryRun: boolean;
+        declaration: {
+            orgId: string;
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            producerObjectId: string;
+            declaredAt: string;
+            declaredByObjectId: string;
+        } | null;
+        lines: Array<{
+            lineId: string;
+            major: string;
+            tagPattern: string | null;
+            headBefore: {
+                latestVersion: string | null;
+                latestDigest: string | null;
+                latestObservedAt: string | null;
+            };
+            headCleared: boolean;
+            subscribedComponentObjectIds: Array<string>;
+        }>;
+        openBumpAuthorships: Array<{
+            changeObjectId: string;
+            componentObjectId: string;
+            repo: string;
+            manifestPath: string;
+            fromVersion: string;
+            toVersion: string;
+            pullRequestUrl?: string;
+        }>;
+        decisionId: string | null;
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+    };
+};
+
+export type DeclareDependencyLineProducerResponse = DeclareDependencyLineProducerResponses[keyof DeclareDependencyLineProducerResponses];
+
+export type RetractDependencyLineProducerData = {
+    body: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        dryRun?: boolean;
+    };
+    path?: never;
+    query?: never;
+    url: '/dependencies/producers/retract';
+};
+
+export type RetractDependencyLineProducerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RetractDependencyLineProducerError = RetractDependencyLineProducerErrors[keyof RetractDependencyLineProducerErrors];
+
+export type RetractDependencyLineProducerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        action: 'declare' | 'retract';
+        dryRun: boolean;
+        declaration: {
+            orgId: string;
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            producerObjectId: string;
+            declaredAt: string;
+            declaredByObjectId: string;
+        } | null;
+        lines: Array<{
+            lineId: string;
+            major: string;
+            tagPattern: string | null;
+            headBefore: {
+                latestVersion: string | null;
+                latestDigest: string | null;
+                latestObservedAt: string | null;
+            };
+            headCleared: boolean;
+            subscribedComponentObjectIds: Array<string>;
+        }>;
+        openBumpAuthorships: Array<{
+            changeObjectId: string;
+            componentObjectId: string;
+            repo: string;
+            manifestPath: string;
+            fromVersion: string;
+            toVersion: string;
+            pullRequestUrl?: string;
+        }>;
+        decisionId: string | null;
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+    };
+};
+
+export type RetractDependencyLineProducerResponse = RetractDependencyLineProducerResponses[keyof RetractDependencyLineProducerResponses];
+
 export type ListCampaignsData = {
     body?: never;
     path?: never;

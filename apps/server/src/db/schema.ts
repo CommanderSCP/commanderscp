@@ -1,7 +1,6 @@
 import {
   bigint,
   boolean,
-  check,
   foreignKey,
   index,
   integer,
@@ -1860,32 +1859,22 @@ export const dependencyLines = pgTable(
      *  extractor cannot parse are SKIPPED, never guessed (ADR-0032 §7). NULL for the four language
      *  ecosystems. */
     tagPattern: text("tag_pattern"),
-    /**
-     * The component/service this org DECLARES produces this line. NULL = third-party.
-     *
-     * DECLARED, NEVER INFERRED (ADR-0032 §7, ADR-0030 §2). Nothing reads a coordinate, repo name or
-     * registry host and concludes "this one is ours" — a label named after WHAT MATCHED goes false
-     * the moment the matcher covers a second case, which this repo has already shipped once
-     * (charter principle 6). There is no material to infer it from anyway: SCP has no artifact name
-     * at all (`ArtifactRef` is `{type, digest}`; no `purl` exists in the tree).
-     *
-     * What removes the capability rather than guarding it is the INGESTION VERB, not the CHECK:
-     * `UpsertDependencyLineInputSchema` has no producer field and `upsertDependencyLine`'s ON
-     * CONFLICT set cannot reach these columns, so a manifest-parsing path has nowhere to put a
-     * producer it "worked out". That is the shape 0059 used for `objects.domainLocal`. The
-     * `dependency_lines_internal_is_declared` CHECK is the weaker, complementary half: it refuses a
-     * HALF-WRITTEN row from raw SQL or a future verb that forgets a column. It does not make the
-     * writer a human — see 0060's "INTERNAL vs THIRD-PARTY" header.
-     */
-    producedByObjectId: uuid("produced_by_object_id").references(() => objects.id),
-    producedByDeclaredAt: timestamp("produced_by_declared_at", { withTimezone: true }),
-    /** The principal (graph `user` object) that declared the producer link — principle 6: "which
-     *  principal asserted this line is internal?" must be answerable. `references(objects.id)` and
-     *  part of the CHECK below so the answer can be neither NULL nor a fabricated uuid; org-unbound,
-     *  like the other two `objects(id)` references here (0060 header, barrier 2's scope note). */
-    producedByDeclaredByObjectId: uuid("produced_by_declared_by_object_id").references(
-      () => objects.id
-    ),
+    // THE PRODUCER LINK USED TO BE HERE — `produced_by_object_id` + `produced_by_declared_at` +
+    // `produced_by_declared_by_object_id`, with a partial index and the
+    // `dependency_lines_internal_is_declared` CHECK. All five are gone (drizzle/0068, ADR-0032 §7e).
+    //
+    // They made the declaration PER MAJOR LINE, and a line is minted only by a CONSUMER's manifest.
+    // So every new major of a coordinate the org publishes minted a fresh row with a NULL producer —
+    // honestly third-party, since nobody had filled it in — and `buildLineWorkList` then handed the
+    // org's own coordinate to a PUBLIC INDEX. That is §7b clause 1's dependency-confusion
+    // catastrophe, re-armed silently at each major bump; both barriers that exist against it read
+    // the column, and neither can protect a column nobody filled in. The declaration now lives in
+    // `dependencyLineProducers`, keyed `(org_id, ecosystem, coordinate)`.
+    //
+    // DO NOT REINSTATE THIS AS A MATERIALIZED CACHE stamped by `upsertDependencyLine` at mint time.
+    // It closes the same hole with no human step, and it puts a `produced_by_*` write back inside
+    // the ingestion verb — which deletes "the capability is absent from ingestion", the property
+    // this whole feature protects. The join makes the projection unnecessary rather than safe.
     /** The head of the line as last OBSERVED. Written by M21.4 detection, never by manifest
      *  ingestion — a component declaring `1.2.0` says nothing about what the line's head is. NULL is
      *  "not yet observed", which is NOT "no newer version exists": absent never means zero, the same
@@ -1910,21 +1899,78 @@ export const dependencyLines = pgTable(
     // The composite-FK target for `componentDependencies` — see that table's `line_id` note.
     // Redundant with the primary key for uniqueness; it exists so a `(org_id, id)` foreign key has
     // something to reference.
-    unique("dependency_lines_org_id_key").on(table.orgId, table.id),
-    // "Which lines does component X publish?" — the M21.4 internal-release derivation. PARTIAL over
-    // the declared minority (internal lines are the exception, third-party the rule), so it stays
-    // proportional to that minority instead of to the table — 0059's partial index, same reasoning.
-    index("dependency_lines_org_producer")
-      .on(table.orgId, table.producedByObjectId)
-      .where(sql`${table.producedByObjectId} IS NOT NULL`),
-    // Link, timestamp and declaring principal exist together or not at all. The second conjunct is
-    // load-bearing: without it a producer link could carry a NULL principal, which is exactly the
-    // state that makes `producedByDeclaredByObjectId`'s "must be answerable" comment false.
-    check(
-      "dependency_lines_internal_is_declared",
-      sql`(${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredAt} IS NULL)
-          AND (${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredByObjectId} IS NULL)`
-    )
+    unique("dependency_lines_org_id_key").on(table.orgId, table.id)
+    // `dependency_lines_org_producer` (the partial index over the declared minority) and
+    // `dependency_lines_internal_is_declared` (the all-three-or-none CHECK) were dropped with the
+    // columns they served — drizzle/0068. "Which lines does component X publish?" is now
+    // `dependency_line_producers_org_producer` -> this table's `dependency_lines_identity`, whose
+    // `(org_id, ecosystem, coordinate)` PREFIX serves the second hop, so no index was added to
+    // replace it. The CHECK is retired rather than reproduced: in the new table every column is NOT
+    // NULL and the ROW'S EXISTENCE IS THE DECLARATION, so a half-written declaration is not
+    // representable instead of being refused.
+  ]
+);
+
+/**
+ * WHICH COMPONENT THIS ORG DECLARES IT PRODUCES ONE COORDINATE (ADR-0032 §7e, proposal §12.1).
+ * Hand-authored table/RLS/grants in `drizzle/0068_dependency_line_producers.sql`.
+ *
+ * THE GRAIN IS THE COORDINATE, NOT THE LINE, and that is a security property rather than tidiness.
+ * A `dependency_lines` row is `(org, ecosystem, coordinate, major)` and is minted ONLY by a
+ * consumer's manifest, so under per-line grain (a) a producer with no consumers yet had no row to
+ * attach to, and (b) every new major minted a fresh NULL-producer row that the version poll then
+ * handed to a public index — §7b clause 1's dependency confusion, on a daily timer, re-armed at
+ * each major bump with nothing to alert on. Keyed by coordinate, a brand-new major of a declared
+ * coordinate is internal FROM THE INSTANT IT IS MINTED, because there is no per-major field left to
+ * populate.
+ *
+ * IT IS NOT A GRAPH OBJECT, AND THAT IS THE FEDERATION DECISION (proposal §12.4). A `produces`
+ * relationship or a `producedBy` policy effect WOULD federate — `policy` does — and a field outpost
+ * would then hold a declaration with no inventory behind it: a visible assertion nothing can act on.
+ * A projection table cannot make that mistake; it exists only where the inventory does, which since
+ * ADR-0032 §7d is the commander alone.
+ *
+ * DECLARED, NEVER INFERRED. Nothing writes this table except the two verbs in
+ * `routes/dependency-producers.ts`; `inventory-ingestion.ts` does not import it, which is the
+ * enforcement, exactly as `dependency-inventory-repo.ts` not importing `relationships` is the
+ * enforcement for "no `depends_on` edge is minted".
+ */
+export const dependencyLineProducers = pgTable(
+  "dependency_line_producers",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** `npm` | `go` | `maven` | `python` | `oci`. Plain text with no CHECK, exactly as on
+     *  `dependencyLines.ecosystem`: packages/schemas is the only enforcement point. */
+    ecosystem: text("ecosystem").notNull(),
+    /** The ecosystem-native coordinate, VERBATIM and case-preserved — the same bytes
+     *  `dependencyLines.coordinate` holds, because the join between the two is byte equality. */
+    coordinate: text("coordinate").notNull(),
+    /** The producing COMPONENT's graph object id. A `service` is refused by the verb in the first
+     *  cut (ADR-0032 §7e): `listProducedLines` derives a head only from the component a prod
+     *  placement names, so a service-valued declaration would remove the coordinate from
+     *  third-party polling — the harmful half — and derive no head at all — the useful half. */
+    producerObjectId: uuid("producer_object_id")
+      .notNull()
+      .references(() => objects.id),
+    declaredAt: timestamp("declared_at", { withTimezone: true }).notNull().defaultNow(),
+    /** WHO asserted it (principle 6). Taken from the authenticated subject at the route and never
+     *  from the request body — a caller-supplied provenance label is a forgeable one. */
+    declaredByObjectId: uuid("declared_by_object_id")
+      .notNull()
+      .references(() => objects.id)
+  },
+  (table) => [
+    // ONE declaration per coordinate. The org cannot model "we produce @acme/lib@2, upstream
+    // produces @acme/lib@1" — and that refusal is deliberate: that shape means a public index
+    // legitimately answers for a coordinate the org also publishes, which is dependency confusion
+    // with a data model behind it.
+    primaryKey({
+      name: "dependency_line_producers_pk",
+      columns: [table.orgId, table.ecosystem, table.coordinate]
+    }),
+    // "Which coordinates does component X produce?" — the first hop of M21.4's internal-release
+    // derivation, which used to be `dependency_lines_org_producer`.
+    index("dependency_line_producers_org_producer").on(table.orgId, table.producerObjectId)
   ]
 );
 

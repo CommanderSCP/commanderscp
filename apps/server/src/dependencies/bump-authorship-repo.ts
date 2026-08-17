@@ -187,6 +187,39 @@ export async function findOpenBumpAuthorship(
 }
 
 /**
+ * Every OPEN bump SCP authored for one coordinate — what a producer retraction reports and CANNOT
+ * recall (ADR-0032 §7e, proposal §12.3.2).
+ *
+ * READ-ONLY, DELIBERATELY, and the caller must do nothing else with the result. A dispatched bump
+ * has left SCP: it is a pull request in another team's repository, or under `auto_merge` a commit on
+ * their branch. Closing or rewriting these rows would make SCP assert it closed a PR it did not
+ * close — a false record, which is worse than an open one. Retraction stops FUTURE triggers only;
+ * this list exists so an operator has the set to go and close by hand.
+ *
+ * `merged_at IS NULL` is what "open" means, the same predicate `findOpenBumpAuthorship` uses.
+ * Matched on `(ecosystem, coordinate)` as a PAIR: a coordinate carries no ecosystem in itself.
+ */
+export async function listOpenBumpAuthorshipsForCoordinate(
+  tx: TenantTx,
+  orgId: string,
+  key: { ecosystem: string; coordinate: string }
+): Promise<BumpAuthorship[]> {
+  const rows = await tx
+    .select()
+    .from(dependencyBumpAuthorships)
+    .where(
+      and(
+        eq(dependencyBumpAuthorships.orgId, orgId),
+        eq(dependencyBumpAuthorships.ecosystem, key.ecosystem),
+        eq(dependencyBumpAuthorships.coordinate, key.coordinate),
+        sql`${dependencyBumpAuthorships.mergedAt} is null`
+      )
+    )
+    .orderBy(dependencyBumpAuthorships.changeObjectId);
+  return rows.map(toAuthorship);
+}
+
+/**
  * The bump whose OWN branch head is `commit` in `repo`, or `undefined` — the CI-conclusion
  * correlation route (GitHub's `workflow_run` names a commit and no ref).
  *

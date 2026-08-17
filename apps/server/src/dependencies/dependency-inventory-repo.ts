@@ -1,16 +1,18 @@
-import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   type ComponentDependency,
   type DeclareLineProducerInput,
   type DependencyLine,
   type DependencyLineKey,
+  type DependencyLineProducer,
+  type DependencyLineProducerKey,
   type ObserveDependencyLineHeadInput,
   type UpsertComponentDependencyInput,
   type UpsertDependencyLineInput
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { componentDependencies, dependencyLines } from "../db/schema.js";
+import { componentDependencies, dependencyLineProducers, dependencyLines } from "../db/schema.js";
 import { writeOutboxEvent } from "../events/outbox-repo.js";
 import {
   asThirdPartyLine,
@@ -52,9 +54,9 @@ function toDependencyLine(row: typeof dependencyLines.$inferSelect): DependencyL
     coordinate: row.coordinate,
     major: row.major,
     tagPattern: row.tagPattern,
-    producedByObjectId: row.producedByObjectId,
-    producedByDeclaredAt: row.producedByDeclaredAt?.toISOString() ?? null,
-    producedByDeclaredByObjectId: row.producedByDeclaredByObjectId,
+    // NO PRODUCER FIELDS. The declaration is per COORDINATE and lives in
+    // `dependency_line_producers` (drizzle/0068); a caller that needs internal-ness JOINS. That is
+    // what makes a brand-new major of a declared coordinate internal from the instant it is minted.
     latestVersion: row.latestVersion,
     latestDigest: row.latestDigest,
     latestObservedAt: row.latestObservedAt?.toISOString() ?? null,
@@ -103,10 +105,11 @@ function tagPatternFor(
  * coordinate goes in verbatim, case preserved; no normalisation is applied anywhere on this path.
  *
  * The update branch touches ONLY `tag_pattern` (and only when a non-null one is supplied). It
- * deliberately cannot reach `produced_by_*` — internal-ness is declared through
- * `declareDependencyLineProducer` — nor the `latest_*` observation columns, which belong to M21.4
- * detection. Two different ingresses writing one row must not be able to clobber each other's
- * fields.
+ * deliberately cannot reach the `latest_*` observation columns, which belong to M21.4 detection.
+ * Two different ingresses writing one row must not be able to clobber each other's fields. It
+ * cannot reach the PRODUCER DECLARATION either, and since drizzle/0068 that is structural rather
+ * than a matter of this SET list: the declaration is a row of `dependency_line_producers`, a table
+ * `inventory-ingestion.ts` does not import.
  *
  * NOTHING BUT THE LITERAL SET LIST BELOW ENFORCES THAT — no constraint, no trigger, no column-level
  * grant. Widening the set by one key is a one-line change that type-checks and that every
@@ -183,45 +186,204 @@ export async function getDependencyLineById(
   return row ? toDependencyLine(row) : null;
 }
 
+function toDependencyLineProducer(
+  row: typeof dependencyLineProducers.$inferSelect
+): DependencyLineProducer {
+  return {
+    orgId: row.orgId,
+    // Plain `text` with no CHECK (0068 header, same reading as `dependencyLines.ecosystem`).
+    ecosystem: row.ecosystem as DependencyLineProducer["ecosystem"],
+    coordinate: row.coordinate,
+    producerObjectId: row.producerObjectId,
+    declaredAt: row.declaredAt.toISOString(),
+    declaredByObjectId: row.declaredByObjectId
+  };
+}
+
 /**
- * DECLARE (or retract) the component/service that produces this line — the ONE way a line becomes
- * internal (ADR-0032 §7, ADR-0030 §2).
+ * DECLARE the component that produces this COORDINATE — the ONE way a coordinate becomes internal
+ * (ADR-0032 §7/§7e, ADR-0030 §2). Idempotent: re-declaring restates the producer and re-stamps the
+ * provenance.
  *
- * It is a separate verb from `upsertDependencyLine` on purpose. If ingestion could pass a producer
- * alongside a coordinate it just observed, "declared, never inferred" would survive only as long as
- * every ingestion call site remembered to leave the field unset — and this repo has already shipped
- * a provenance label that went false the moment its matcher covered a second case (charter principle
- * 6). Splitting the verb removes the capability FROM INGESTION rather than guarding it there.
+ * IT IS A SEPARATE VERB FROM `upsertDependencyLine`, AND THAT IS THE WHOLE PROPERTY. If ingestion
+ * could pass a producer alongside a coordinate it just observed, "declared, never inferred" would
+ * survive only as long as every ingestion call site remembered to leave the field unset — and this
+ * repo has already shipped a provenance label that went false the moment its matcher covered a
+ * second case (charter principle 6). The split removes the capability FROM INGESTION rather than
+ * guarding it there, and since 0068 it is stronger than a split verb: the producer lives in a
+ * DIFFERENT TABLE that `inventory-ingestion.ts` does not import at all.
  *
- * `declaredAt`/`declaredByObjectId` move with the link and are cleared together with it, which the
- * `dependency_lines_internal_is_declared` CHECK also enforces at the database level: all three
- * columns are NULL or all three are set, so a producer with no declaration and no principal behind
- * it cannot be stored at all.
+ * THE GRAIN IS THE COORDINATE. It used to be the line, i.e. one major; see 0068's header for why
+ * that re-armed dependency confusion at every major bump.
  *
- * What that CHECK does NOT do — because the split above is the strong half and this is the weak one
- * — is make the declaration HUMAN. This function stamps all three columns unconditionally, so the
- * CHECK never fires on this path; it fires on a raw-SQL half-write or on a future verb that forgets
- * a column. "A human asserted this" is a property of this function's call sites and of the authz an
- * M21.3 route puts in front of it (0060's "INTERNAL vs THIRD-PARTY" header states the same split).
+ * WHAT THIS FUNCTION DOES NOT DO, and must not be read as doing: it does not make the declaration
+ * HUMAN, it does not check that `producerObjectId` names a live in-org `component`, and it does not
+ * clear the affected lines' heads. Those are the ROUTE's obligations (`routes/dependency-producers.ts`)
+ * — the org-unbound `objects(id)` reference here is the mitigation 0061's header said an eventual
+ * route owed, and `resetLineHead` below is the head half.
  */
 export async function declareDependencyLineProducer(
   tx: TenantTx,
   orgId: string,
   input: DeclareLineProducerInput
-): Promise<DependencyLine> {
-  const retracting = input.producedByObjectId === null;
+): Promise<DependencyLineProducer> {
   const [row] = await tx
-    .update(dependencyLines)
-    .set({
-      producedByObjectId: input.producedByObjectId,
-      producedByDeclaredAt: retracting ? null : new Date(),
-      producedByDeclaredByObjectId: retracting ? null : input.declaredByObjectId,
-      updatedAt: new Date()
+    .insert(dependencyLineProducers)
+    .values({
+      orgId,
+      ecosystem: input.ecosystem,
+      coordinate: input.coordinate,
+      producerObjectId: input.producerObjectId,
+      declaredAt: new Date(),
+      declaredByObjectId: input.declaredByObjectId
     })
-    .where(and(eq(dependencyLines.orgId, orgId), eq(dependencyLines.id, input.lineId)))
+    .onConflictDoUpdate({
+      target: [
+        dependencyLineProducers.orgId,
+        dependencyLineProducers.ecosystem,
+        dependencyLineProducers.coordinate
+      ],
+      // The provenance MOVES WITH THE LINK: re-declaring to a different producer records who said
+      // so and when, so principle 6's "which principal asserted this coordinate is ours" answers
+      // about the assertion that is standing, not about the first one ever made.
+      set: {
+        producerObjectId: input.producerObjectId,
+        declaredAt: new Date(),
+        declaredByObjectId: input.declaredByObjectId
+      }
+    })
     .returning();
-  if (!row) throw new Error(`dependency line not found: ${input.lineId}`);
-  return toDependencyLine(row);
+  if (!row) throw new Error("failed to declare dependency line producer");
+  return toDependencyLineProducer(row);
+}
+
+/**
+ * RETRACT the declaration for one coordinate, returning the row that was removed, or `null` when
+ * there was none.
+ *
+ * Retraction is a DELETE rather than a `retracted_at` flag, which is why 0068 grants DELETE on this
+ * table and 0061 deliberately withheld it on `dependency_lines`. The row's EXISTENCE is the
+ * declaration; a tombstone column would put the table back in the business of representing a
+ * half-state, which is exactly the shape the retired `dependency_lines_internal_is_declared` CHECK
+ * existed to police.
+ *
+ * IT DOES NOT CLEAR THE HEADS, AND IT MUST BE CALLED WITH SOMETHING THAT DOES. See `resetLineHead`.
+ */
+export async function retractDependencyLineProducer(
+  tx: TenantTx,
+  orgId: string,
+  key: DependencyLineProducerKey
+): Promise<DependencyLineProducer | null> {
+  const [row] = await tx
+    .delete(dependencyLineProducers)
+    .where(
+      and(
+        eq(dependencyLineProducers.orgId, orgId),
+        eq(dependencyLineProducers.ecosystem, key.ecosystem),
+        eq(dependencyLineProducers.coordinate, key.coordinate)
+      )
+    )
+    .returning();
+  return row ? toDependencyLineProducer(row) : null;
+}
+
+/** The declaration for one coordinate, or `null` — one primary-key descent. THE point read behind
+ *  `isInternalDependencyLine`. */
+export async function getDependencyLineProducer(
+  tx: TenantTx,
+  orgId: string,
+  key: DependencyLineProducerKey
+): Promise<DependencyLineProducer | null> {
+  const [row] = await tx
+    .select()
+    .from(dependencyLineProducers)
+    .where(
+      and(
+        eq(dependencyLineProducers.orgId, orgId),
+        eq(dependencyLineProducers.ecosystem, key.ecosystem),
+        eq(dependencyLineProducers.coordinate, key.coordinate)
+      )
+    )
+    .limit(1);
+  return row ? toDependencyLineProducer(row) : null;
+}
+
+/** Every declaration in the org, optionally narrowed to one ecosystem or one exact coordinate. The
+ *  coordinate filter is BYTE EQUALITY, never a prefix — `@acme/lib` and `acme-lib` share a URN slug
+ *  and must not share an answer. */
+export async function listDependencyLineProducers(
+  tx: TenantTx,
+  orgId: string,
+  filter: { ecosystem?: string; coordinate?: string } = {}
+): Promise<DependencyLineProducer[]> {
+  const conditions = [eq(dependencyLineProducers.orgId, orgId)];
+  if (filter.ecosystem !== undefined) {
+    conditions.push(eq(dependencyLineProducers.ecosystem, filter.ecosystem));
+  }
+  if (filter.coordinate !== undefined) {
+    conditions.push(eq(dependencyLineProducers.coordinate, filter.coordinate));
+  }
+  const rows = await tx
+    .select()
+    .from(dependencyLineProducers)
+    .where(and(...conditions))
+    .orderBy(dependencyLineProducers.ecosystem, dependencyLineProducers.coordinate);
+  return rows.map(toDependencyLineProducer);
+}
+
+/**
+ * The coordinates a set of components is DECLARED to produce — the FIRST hop of M21.4's
+ * internal-release derivation, served by `dependency_line_producers_org_producer`.
+ *
+ * This replaces the partial index on the old column. It returns DECLARATIONS, not lines: the caller
+ * resolves each coordinate's lines with {@link listDependencyLinesForCoordinates}, whose predicate
+ * is a prefix of `dependency_lines_identity`.
+ */
+export async function listDependencyLineProducersForComponents(
+  tx: TenantTx,
+  orgId: string,
+  componentObjectIds: string[]
+): Promise<DependencyLineProducer[]> {
+  if (componentObjectIds.length === 0) return [];
+  const rows = await tx
+    .select()
+    .from(dependencyLineProducers)
+    .where(
+      and(
+        eq(dependencyLineProducers.orgId, orgId),
+        inArray(dependencyLineProducers.producerObjectId, componentObjectIds)
+      )
+    )
+    .orderBy(dependencyLineProducers.ecosystem, dependencyLineProducers.coordinate);
+  return rows.map(toDependencyLineProducer);
+}
+
+/**
+ * EVERY MAJOR LINE of one coordinate — the set a producer declaration covers, and the set whose
+ * heads both verbs clear.
+ *
+ * One index descent on the `(org_id, ecosystem, coordinate)` PREFIX of `dependency_lines_identity`.
+ * An EMPTY result is ordinary and correct: a producer may be declared before any consumer's
+ * manifest has minted a line, which is exactly what per-coordinate grain exists to make
+ * representable.
+ */
+export async function listDependencyLinesForCoordinate(
+  tx: TenantTx,
+  orgId: string,
+  key: DependencyLineProducerKey
+): Promise<DependencyLine[]> {
+  const rows = await tx
+    .select()
+    .from(dependencyLines)
+    .where(
+      and(
+        eq(dependencyLines.orgId, orgId),
+        eq(dependencyLines.ecosystem, key.ecosystem),
+        eq(dependencyLines.coordinate, key.coordinate)
+      )
+    )
+    .orderBy(dependencyLines.major, dependencyLines.id);
+  return rows.map(toDependencyLine);
 }
 
 /** What {@link recordDependencyLineHead} did, and why — the caller puts this in its Decision, so a
@@ -364,6 +526,98 @@ export async function recordDependencyLineHead(
     movement: movement.movement,
     detail: movement.detail,
     line: after
+  };
+}
+
+/**
+ * THE ONE EXCEPTION TO "`recordDependencyLineHead` IS THE ONLY WRITER OF THE `latest_*` TRIO", and
+ * it is named here rather than discovered (ADR-0032 §7e, proposal §12.3.2).
+ *
+ * It sets the trio back to NULL — "not observed", which is exactly the state — and it is reachable
+ * ONLY from the two producer verbs. It is deliberately IN THIS MODULE, beside the writer whose
+ * monopoly it qualifies, under the same `FOR UPDATE`: a second module writing these columns is how
+ * two ingresses come to disagree about what they mean, which is the failure `line-head.ts` exists to
+ * have prevented once already.
+ *
+ * ==========================================================================================
+ * WHY BOTH VERBS MUST CALL IT — AND WHY THIS IS A SECURITY FIX, NOT A TIDINESS ONE
+ * ==========================================================================================
+ * A head, once written, has NO RESET PATH: `recordDependencyLineHead` refuses backward movement
+ * (`evaluateHeadMovement`), §7b clause 3's bounded exception rescues only a stored value that is not
+ * on the line as defined now, and no API resets the column.
+ *
+ *  - RETRACTION must clear it. The coordinate returns to third-party polling carrying a head that
+ *    the ORG'S OWN releases put there. In the ordinary case — internal `2.7.0` against upstream
+ *    `2.3.1` — the line is WEDGED: the poll refuses every real public version until upstream passes
+ *    `2.7.0`, and refuses it as `behind_head`, which reads as normal operation.
+ *
+ *    And a wedge is the mild reading. `latest_version` IS NOW A SECURITY-GATE INPUT: the M22 vendor
+ *    rule grants a scan pass when a component is on the latest of its major line. A stale head left
+ *    over from the internal era, on a coordinate that is third-party again, can therefore grant a
+ *    VENDOR PASS AGAINST A VERSION NO REGISTRY EVER PUBLISHED. That is a gate answering yes on
+ *    evidence the world never produced, which is a different class of defect from a stalled poll.
+ *
+ *  - DECLARATION must clear it too, symmetrically. A poisoned public head — the stranger's `9.9.9`
+ *    — would otherwise survive the very declaration that exists to undo the confusion, and internal
+ *    detection could never move the head back down to the org's real `2.1.0`, because that is
+ *    backward movement and the door refuses it. Clearing is what makes the declaration an actual
+ *    remedy rather than a change of ingress with the damage left in place.
+ *
+ * NO EVENT IS EMITTED. `DEPENDENCY_LINE_HEAD_ADVANCED_EVENT` means "a newer version exists"; a reset
+ * means "we no longer know", and dispatching bumps off a clearing would be a fan-out from an absence.
+ *
+ * Returns the head as it stood BEFORE, so the caller's Decision and its response can report what was
+ * discarded rather than only that something was.
+ */
+export async function resetLineHead(
+  tx: TenantTx,
+  orgId: string,
+  lineId: string
+): Promise<{
+  cleared: boolean;
+  before: Pick<DependencyLine, "latestVersion" | "latestDigest" | "latestObservedAt">;
+}> {
+  const [current] = await tx
+    .select()
+    .from(dependencyLines)
+    .where(and(eq(dependencyLines.orgId, orgId), eq(dependencyLines.id, lineId)))
+    .limit(1)
+    .for("update");
+  if (!current) throw new Error(`dependency line not found: ${lineId}`);
+  const before = toDependencyLine(current);
+  const had =
+    before.latestVersion !== null ||
+    before.latestDigest !== null ||
+    before.latestObservedAt !== null;
+  // A line with nothing observed is left ALONE rather than written with three NULLs it already has:
+  // `updated_at` is what a reader uses to tell "this row was touched" from "this row was not", and
+  // stamping it on a no-op would make every dry-run-shaped reasoning about the row false.
+  if (!had) {
+    return {
+      before: {
+        latestVersion: before.latestVersion,
+        latestDigest: before.latestDigest,
+        latestObservedAt: before.latestObservedAt
+      },
+      cleared: false
+    };
+  }
+  await tx
+    .update(dependencyLines)
+    .set({
+      latestVersion: null,
+      latestDigest: null,
+      latestObservedAt: null,
+      updatedAt: new Date()
+    })
+    .where(and(eq(dependencyLines.orgId, orgId), eq(dependencyLines.id, lineId)));
+  return {
+    before: {
+      latestVersion: before.latestVersion,
+      latestDigest: before.latestDigest,
+      latestObservedAt: before.latestObservedAt
+    },
+    cleared: true
   };
 }
 
@@ -560,8 +814,14 @@ export async function listDependencyLinesByIds(
  *   2. the {@link ThirdPartyLine} brand this returns — `queryLineHead` accepts nothing else, so a
  *      future caller that hydrates lines some other way does not compile rather than silently
  *      polling.
- * `isNull` is what makes barrier 1 real and `asThirdPartyLine` re-reads the same column for barrier
- * 2, so removing either alone still leaves the other refusing.
+ * The SQL `NOT EXISTS` is what makes barrier 1 real and `asThirdPartyLine` re-reads the same fact
+ * for barrier 2, so removing either alone still leaves the other refusing.
+ *
+ * SINCE drizzle/0068 THE PREDICATE IS AN ANTI-JOIN, not `produced_by_object_id IS NULL`, and the
+ * change is the point of the migration rather than a mechanical port. The declaration is keyed by
+ * `(org_id, ecosystem, coordinate)`, so a BRAND-NEW MAJOR of a declared coordinate is excluded from
+ * the poll the instant ingestion mints it — under the old per-line column that row carried a NULL
+ * producer nobody had filled in, and the poll handed the org's own coordinate to a public index.
  */
 export async function listThirdPartyDependencyLinesByIds(
   tx: TenantTx,
@@ -576,12 +836,20 @@ export async function listThirdPartyDependencyLinesByIds(
       and(
         eq(dependencyLines.orgId, orgId),
         inArray(dependencyLines.id, lineIds),
-        isNull(dependencyLines.producedByObjectId)
+        sql`NOT EXISTS (
+          SELECT 1 FROM ${dependencyLineProducers} p
+          WHERE p.org_id = ${dependencyLines.orgId}
+            AND p.ecosystem = ${dependencyLines.ecosystem}
+            AND p.coordinate = ${dependencyLines.coordinate}
+        )`
       )
     );
   const out: ThirdPartyLine[] = [];
   for (const row of rows) {
-    const line = asThirdPartyLine(toDependencyLine(row));
+    // The row survived the anti-join, so there is no declaration for its coordinate. That FACT is
+    // what the constructor takes — it is not re-derived from a column, because there is no longer a
+    // column to re-derive it from.
+    const line = asThirdPartyLine(toDependencyLine(row), { hasDeclaredProducer: false });
     if (line !== null) out.push(line);
   }
   return out;

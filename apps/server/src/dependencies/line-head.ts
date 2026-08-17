@@ -67,8 +67,11 @@ import type { DependencyLine } from "@scp/schemas";
  * arriving through a background job nobody watches.
  *
  * {@link asThirdPartyLine} is how the split is enforced: `queryLineHead` accepts ONLY a
- * {@link ThirdPartyLine}, and the only way to obtain one is to hand a row with a NULL
- * `produced_by_object_id` to that function. A caller that "forgets the filter" does not compile.
+ * {@link ThirdPartyLine}, and the only way to obtain one is to hand that function a line TOGETHER
+ * WITH the joined fact that no producer declaration exists for its coordinate (drizzle/0068 moved
+ * the declaration off the line row and onto `dependency_line_producers`). A caller that "forgets
+ * the filter" does not compile — and, since the fact is now an argument rather than a column that
+ * may simply never have been written, a caller that never looked cannot supply it either.
  */
 
 // -------------------------------------------------------------------------------------------
@@ -88,7 +91,8 @@ export type PollableLineKey = Pick<
 declare const THIRD_PARTY_LINE: unique symbol;
 
 /**
- * A line whose head the THIRD-PARTY POLL is allowed to move: `produced_by_object_id IS NULL`.
+ * A line whose head the THIRD-PARTY POLL is allowed to move: NO producer declaration exists for its
+ * COORDINATE.
  *
  * The brand is not decoration. It is the difference between "the poll happens to filter internal
  * lines out today" and "the poll cannot be handed one" — and this repo has already shipped the first
@@ -101,14 +105,29 @@ export type ThirdPartyLine = PollableLineKey & { readonly [THIRD_PARTY_LINE]: "t
 /**
  * The ONE constructor of a {@link ThirdPartyLine} — `null` for an internal line.
  *
- * `produced_by_object_id` is the declared internal-producer link (migration 0061, ADR-0032 §7), and
- * "declared, never inferred" is the whole reason it is the test: nothing here looks at the
- * coordinate for the org's name or at a registry host.
+ * THE INTERNAL-NESS FACT IS AN ARGUMENT, NOT A FIELD ON THE LINE (drizzle/0068, ADR-0032 §7e). It
+ * used to read `line.producedByObjectId`, back when the declaration was a per-major column. It is
+ * now per COORDINATE, so the caller must have JOINED `dependency_line_producers` and passes what
+ * that join found.
+ *
+ * The lost convenience is the point. A caller who has not looked cannot supply the argument and so
+ * cannot obtain a `ThirdPartyLine` by forgetting to check — whereas under the old signature the
+ * forgetful path was a row whose column was NULL because NOBODY HAD EVER WRITTEN IT, and that path
+ * polled the org's own package against a public index. The barrier could not protect a column
+ * nobody filled in; it can refuse an argument nobody supplied.
+ *
+ * "Declared, never inferred" is why the declaration is the test: nothing here looks at the
+ * coordinate for the org's name, or at a registry host.
  */
 export function asThirdPartyLine(
-  line: PollableLineKey & Pick<DependencyLine, "producedByObjectId">
+  line: PollableLineKey,
+  producer: {
+    /** True iff `dependency_line_producers` holds a row for this line's `(org, ecosystem,
+     *  coordinate)`. The CALLER reads it; this function never derives it. */
+    hasDeclaredProducer: boolean;
+  }
 ): ThirdPartyLine | null {
-  if (line.producedByObjectId !== null) return null;
+  if (producer.hasDeclaredProducer) return null;
   return {
     id: line.id,
     ecosystem: line.ecosystem,
