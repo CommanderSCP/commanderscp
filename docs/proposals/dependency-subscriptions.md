@@ -492,9 +492,21 @@ Two cautions specific to images:
 - **Tag ≠ identity.** A mutable tag can be repointed at new bytes. The subscription must record the
   **digest** it bumped to, so "we are on 1.2.3" is a statement about bytes rather than about a label.
 
-Scope for the manifest source is the component's **own build input** (`Dockerfile` `FROM`), not its
+~~Scope for the manifest source is the component's **own build input** (`Dockerfile` `FROM`), not its
 deployment manifests — a Helm values image tag is a *placement* concern and belongs to the promotion
-path that already exists, not to this feature.
+path that already exists, not to this feature.~~
+
+> **SUPERSEDED (2026-08-17, owner ask in M21.7) — see
+> [kubernetes-image-references.md](kubernetes-image-references.md).** The struck sentence reasoned
+> about *who owns the change* (promotion owns placement — true) and concluded *therefore SCP does not
+> record the declaration*, which does not follow. Most Kubernetes users pin image versions in Helm
+> values rather than in a `FROM` line, so under the struck rule such an image did not appear in the
+> inventory **at all**: it read as "no dependency" rather than "unsupported", which is the class of
+> dishonesty ADR-0032 §4a/§7b exists to prevent. The `oci` ecosystem, the line identity, the version
+> comparison, the poll, the subscription model and the bump actuator all carry the widened scope
+> unchanged. The same claim is repeated as a code comment in
+> `packages/dependency-manifests/src/dockerfile.ts:31–33`; correcting it is a build-round item of the
+> superseding proposal.
 
 ### 6.4 Persist on change
 
