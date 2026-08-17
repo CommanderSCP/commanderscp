@@ -53,11 +53,9 @@ export function pokeWakeStats(): PokeWakeStats {
   return { ...stats };
 }
 
-/** Test seam. */
-export function resetPokeWakeStats(): void {
-  stats.accepted = 0;
-  stats.wokenSync = 0;
-  stats.wokenInbox = 0;
-  stats.wokenRelay = 0;
-  stats.notWoken = 0;
-}
+// A `resetPokeWakeStats()` "test seam" stood here with ZERO callers, including tests. Removed as
+// part of the census that fixed the id-keyed property-schema validator cache: an exported
+// reset/invalidate function with no caller is the exact tell that let that bug survive a green
+// suite for its whole life, because it reads as a guard that exists. These counters need no reset
+// — they are monotonic and nothing derives a verdict from them — so the honest state is no seam.
+// Should a test ever need one, add it back WITH the caller in the same commit.
