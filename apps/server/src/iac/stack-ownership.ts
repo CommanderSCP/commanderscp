@@ -50,9 +50,9 @@ import type { TenantTx } from "../db/tenant-tx.js";
  * `noop` alike. `noop` is not an optimisation to skip: a declared row that happens to be
  * byte-identical to what is stored is still a row this stack declares, and leaving it unstamped
  * would make it undeletable by the stack that owns it (the escape direction, arrived at by
- * accident). Both statements below are written as ONE bulk UPDATE with `IS DISTINCT FROM`, so an
- * apply that changes no ownership writes no rows — this must not become per-object write
- * amplification on the hottest path IaC has.
+ * accident). Each half below is ONE bulk UPDATE whose predicate skips rows already carrying this
+ * stack, so an apply that changes no ownership writes no rows — this must not become per-object
+ * write amplification on the hottest path IaC has.
  *
  * Ownership is never CLEARED here. A row leaves a stack by being pruned (which deletes it), and the
  * only other way out would be another stack declaring it — which is a `create`/`update`/`noop` in
@@ -82,9 +82,11 @@ export async function stampObjectStackOwnership(
         eq(objects.orgId, orgId),
         inArray(objects.id, [...objectIds]),
         isNull(objects.deletedAt),
-        // `IS DISTINCT FROM` rather than `<> OR IS NULL`: the column is nullable, and a plain `<>`
-        // is NULL (not TRUE) for an unowned row, so it would skip exactly the rows that need
-        // stamping most — the ones being adopted.
+        // `IS NULL OR <> $stack`, spelled out because drizzle's query builder has no
+        // `IS DISTINCT FROM` (the relationship statement below, being raw SQL, uses the operator
+        // directly — same predicate, two spellings). The `IS NULL` arm is not belt-and-braces: a
+        // bare `<>` evaluates to NULL, not TRUE, against an unowned row, so leaving it out would
+        // skip precisely the rows that need stamping most — the ones being adopted.
         or(isNull(objects.managedByStack), ne(objects.managedByStack, stackName))
       )
     );
