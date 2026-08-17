@@ -1,6 +1,12 @@
 # ADR-0016: Scoped scan-requirement policies (platform / trust domain / org / containment domain / service / component), most-restrictive-wins
 
 **Status:** Accepted (owner-decided 2026-07-19; **tier model corrected by the owner 2026-07-20** — see §1; **§2a added 2026-08-15 — implemented, pending owner ratification**: `scope.group` now matches on the owning subject as well as the acting one, closing a fail-open in the matcher §2 reuses)
+
+> **EXTENDED 2026-08-17 by [ADR-0033](0033-scan-exclusions-and-overrides.md) — nothing in this ADR is superseded.** ADR-0033 adds a **second, separately-authorized dimension** beside this one: per-finding **exclusions**, which narrow *what is counted* before the comparison, while everything here continues to govern *what the count is compared against*. Three things a reader of this document should know:
+>
+> - **The MIN is unchanged.** Tightening remains a per-severity MIN over an unordered set. A loosening deliberately does **not** ride this merge — expressed as a raised ceiling it would break the commutativity §4 makes load-bearing and reintroduce the undefined-at-a-tie behaviour that motivated most-restrictive-wins; expressed as "contribute nothing" it would do nothing, because absent is never read as 0. Exclusions therefore get their own algebra (**monotone AND** down the same chain), also commutative, so §4's order-independence property holds across both dimensions.
+> - **The error-handling sign is inverted, and the helper is not shared.** §"AN UNEVALUABLE CONDITION FAILS CLOSED" re-admits condition-error contributors *because dropping a ceiling turns a fail into a pass*. For an exclusion the same move **is** the fail-open, so `ceilingContributorKeys` must not be reused there.
+> - **§5's tier-label promise had a second hole.** `tierForObjectType` predates the `assembly` rung (drizzle/0055) and falls it through to `component`, so an assembly-anchored ceiling enforces correctly and misreports its tier — the same class of defect §2a fixed for group scope, at a rung added later. ADR-0033 §5 / M22 closes it.
 **Context doc:** [docs/proposals/promotion-and-execution-model.md](../proposals/promotion-and-execution-model.md)
 **Relates to:** [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan as a boundary-authorization gate); [ADR-0015](0015-cosign-cross-boundary-signing.md) (the sibling cosign-verify gate); charter principle 2 (graph-native), principle 4 (PostgreSQL-only), principle 6 (explainability)
 

@@ -38,7 +38,11 @@ Five parts, verbatim in substance:
 | D4 | An approved override is a **standing grant per (component × finding), with an expiry**. |
 | D5 | **Administrator serves as SecOps for now**; a least-privilege security role comes later. |
 | D6 | Adjacent defects found during the census are **spun off**, not folded in. |
-| D7 | **Ingestion and polling coverage are decoupled from automation enablement** (§10). Observation is not automation. |
+| D7 | **The GATE is decoupled from automation; the vendor-pass DATA stays coupled.** Every component is scanned and gated regardless of dependency automation. The vendor-pass needs ingested manifests and a polled line head, so it is available only to automation-enabled components; everyone else upgrades manually, and only *unfixable* findings need an override. **No widening of ingestion or polling** — the original "ingestion only for enabled components/services" requirement stands unreversed. (Resolved 2026-08-17 after two conversations used "decoupled" for two different things — see §10.) |
+| D8 | The **control-run cache fix is folded into M22 as a blocking prerequisite**, ahead of the override work. D4's expiry must bind on day one. |
+| D9 | Exclusions and approved overrides **federate fully** as ordinary federated objects (summary-only was recommended and declined; cost recorded in ADR-0033). |
+| D10 | Scan-finding retention **splits by evidentiary role**: an *excluded* finding is accepted-risk evidence (ADR-0024 class **E**); an ordinary finding is telemetry (class **O**). |
+| D11 | The first build slice is **all nine increments** (M22). |
 
 D1 is a happy convergence: "latest *within the major line*" is exactly `dependency_lines`' identity `(org_id, ecosystem, coordinate, major)`. The security rule and the inventory's key are the same shape, arrived at independently.
 
@@ -130,60 +134,56 @@ Three independent lenses attacked the shape. The blocking ones and their answers
 
 ADR-0020 states as a **preserved invariant** that the promotion scan step "adds no way to loosen" E6. The exclusion dimension is exactly a way to loosen it. ADR-0016 is therefore the *wrong and insufficient* ADR to amend: this needs a new ADR that supersedes that invariant explicitly, with ADR-0020 amended to point at it. Quietly extending ADR-0016 would leave two Accepted documents contradicting each other — a failure mode this project has hit before.
 
-## 10. Coverage decoupling (D7 — decided 2026-08-17)
+## 10. Coverage: the gate is decoupled from automation, the vendor-pass data is not (D7)
 
-**Decision: ingestion and polling coverage are decoupled from automation enablement.** Evaluation coverage becomes broader than automation coverage, at both levels.
+**Resolved 2026-08-17, after two conversations used the word "decoupled" for two different things and reached opposite conclusions. Recorded in full because the near-miss is the useful part.**
 
-### 10.1 This REVERSES an earlier owner requirement — it does not correct a misplaced gate
+### 10.1 The two senses
 
-**Recorded precisely, because getting this wrong invites a future reader to re-tighten it as a bug fix.**
+- **The GATE.** Every component is scanned and gated regardless of whether dependency automation is enabled. Nobody escapes a scan by not opting in. This was never in question.
+- **The DATA.** The vendor-pass (D1: "on the latest of our major line") can only be *evaluated* where SCP has ingested the component's manifests and polled the line's head. Both happen only for automation-enabled components.
 
-An earlier draft of this section argued that the enablement gate was the **gate-1 flip** — the opt-in ADR-0032 introduced because Mode C has SCP *author bump commits*, a repository-**write** credential class that required a charter amendment — and that applying it to *ingestion* was an over-application, since reads need no write credential. **That argument is wrong on its load-bearing half**, and the correction comes from the session that was present for the original specification: when the owner first specified this feature they said, in the same breath as the enablement chain, *"ingestion only for enabled components/services."*
+An earlier draft of this section recorded a decision to widen **the data**, and argued the enablement gate on ingestion had been over-applied — that the gate-1 flip guards a repository-**write** credential class, ingestion is a read, so the gate was misplaced. **That argument was wrong**, and the correction came from the session present for the original specification: *"ingestion only for enabled components/services"* was an original, explicit requirement, not a consequence of the credential-class reasoning.
 
-So the gate on ingestion was **an original, explicit requirement**, not a consequence of the credential-class reasoning. D7 therefore **reverses a stated requirement of the owner's, on 2026-08-17** — deliberately and with the tradeoff understood. It does not repair a mistake. Any future reader who finds this section and concludes the gate was misplaced all along, and re-tightens it, will be undoing a decision rather than fixing one.
+### 10.2 The resolution
 
-What survives from the original argument, and is still true: **a component that has not opted into automation still gets no bumps.** Nothing is authored, no PR is opened, no branch is pushed. Decoupling makes a component *evaluable*, not *automated*. That is the reason the reversal is affordable — not the reason it is owed.
+**The gate is decoupled from automation. The data stays coupled.** No widening of ingestion or polling. The original requirement stands unreversed. A component without dependency automation gets scanned, gets gated, and gets no vendor-pass — its engineer upgrades manually until the finding clears.
 
-### 10.1a The real cost: reads against tenant repositories
+**Why that is coherent rather than merely cheaper.** An earlier objection here claimed the coupling would produce an override queue on day one. That was overstated. A *fixable* finding disappears when the engineer upgrades — no override needed, no queue. Only a genuinely **unfixable** finding on an unenabled component reaches the override path, which is a far smaller set than "every unevaluable dependency".
 
-"No **write** credential is used" is true. "No credential is used" is false, and that is where the actual cost sits.
+### 10.3 What the vendor-pass actually reaches — three classes, not one
 
-Ingestion reads a component's repository through its git-provider binding — a **read** credential, against a tenant's own source, daily, at whatever scale the estate has. Decoupling means SCP begins reading repositories belonging to components **nobody opted in**. Nothing is authored, but the posture changes: more API calls against the tenant's provider, more rate-limit surface there, and a materially broader answer to *"whose source does SCP touch?"*
+An earlier draft of this section claimed OS packages and transitive dependencies "can never earn a vendor-pass," because the inventory holds only directly declared manifest dependencies. **That was wrong for the largest class**, and the correction matters more than the coverage question it was written under.
 
-This is not disqualifying, and the owner has decided it. It is stated here because an earlier draft framed the cost as egress-to-public-indexes, and the larger cost is reads-against-tenant-repos. A reviewer weighing D7 should weigh that one.
+**OS packages come from the base image, and the base image IS a tracked dependency line.** `packages/dependency-manifests/src/dockerfile.ts` parses every `FROM` that names a real image into a declared image dependency — its module doc calls this "the owner's headline case: a component builds `FROM alpine:1.0`, Alpine publishes `1.1`, and the subscription rewrites that one line." Those lines are ecosystem `oci`, with heads resolved by `@scp/plugin-dependency-index-oci`.
 
-### 10.2 What must not change
+So D1's logic applies to them directly: **if the component is on the latest of its base image's major line, there is nothing more the team can do about an OS-package CVE**, and the finding earns a vendor-pass — attributed to the *image line*, not to the individual package.
 
-- **No component acquires an automation behaviour it did not opt into.** The cleanest expression is a **second, separate predicate** — rather than widening what `resolveComponentIngestionGate` returns. Widening the existing gate's meaning would silently re-point every current caller, which is the same "retroactive custody change" objection that got an adjacent relaxation rejected on 2026-08-17. **Name the new predicate for what it authorises (evaluability), never for what it is not** — a name like "weakly enabled" invites reading it as a lesser form of the opt-in rather than a different question.
-- **Air-gap posture.** `version-poll.ts:47`'s care that air-gapped sites never dial registries on a timer is preserved by ADR-0032 §7d (commander-only), and must remain explicit rather than incidental.
-- **Repo reads are still reads of someone's repository.** Ingestion needs a source mapping and a readable repo; a component with neither is `not_addressable` and stays so. Decoupling widens *who is eligible*, not *what SCP may reach*.
-- **`dependencyManagement: {managedHere, reason}`** still answers "is this data expected here?" — on an outpost the answer is structurally empty by design, and a scan gate reading it must fail closed rather than treat empty as clean.
+| Finding class | Trivy signal | Attributable to | Vendor-pass reachable? |
+|---|---|---|---|
+| OS package | `Class = os-pkgs` | the **base image** line (Dockerfile `FROM`) | **Yes** — via the image line's head |
+| Direct declared dependency | `Class = lang-pkgs`, matches a manifest line | its own line | **Yes** |
+| Transitive dependency | `Class = lang-pkgs`, no manifest line | nothing | **No** — falls through to the ceiling, the no-fix-available class (§7 Increment 3), or an override |
 
-### 10.3 Cost (measured)
+Only the third class is genuinely unreachable, and it is unreachable for a defensible reason: a transitive dependency *is* fixable, by moving the direct parent that pulls it. The rule declining to excuse it is the rule working.
 
-Index plugin instances are capped at **five per org**, started on demand and torn down per tick, so widening adds **no** subprocesses. Decision volume is already bounded by `insertDecisionIfChanged`.
+**Two consequences for the `oci` arm.** The head is a *tag*, and a tag is not an identity — so this comparison uses `latest_digest`, not `latest_version`. And a `FROM` that is digest-pinned or `ARG`-interpolated may be `unresolved` or `unpinned` rather than a comparable version, in which case it does **not** qualify: absent never means up to date.
 
-**Rate-limit exposure is not uniform, and bounding by the obvious axis does not help.** The four language registries are generous — there the ceiling really is just sequential HTTP, one query per distinct line, one tick per day. **`oci` is the throttle-sensitive one**, Docker Hub especially. So a widening bounded to "lines belonging to scan-gated components" mixes the cheap and expensive cases and still throttles.
+### 10.3a Blast radius: a scan blocks one component's progression
 
-**Preferred shape: widen to all lines, and make the widening observable and bounded per tick** — a cap, with a *stated skip reason* on every line it did not reach. A partially-covered estate must say so rather than silently answering NULL and manufacturing override requests out of its own incompleteness. This is the same honesty rule as the ingestion stamp: **an absent answer must carry why.** If Docker Hub proves binding in practice, a per-ecosystem knob is a small follow-up rather than a design to be locked into now.
+A scan covers everything inside an artifact, but a failing verdict stops **only that component from moving forward** — not its service, not its siblings. The enforcement unit is the component even though the scan subject is an image.
 
-### 10.4 Ownership
+That is why §5.2's exclusions resolve **per target and are never unioned across a target set** (ADR-0033 §3). For a *ceiling* a union is safe, because more contributors can only tighten. For an *exclusion* a union would let a clause admitted for one component leak to its siblings — widening a loosening past the blast radius the gate itself has.
 
-Both levels live in `apps/server/src/dependencies/` — `resolveComponentIngestionGate` / `ingestComponentManifests` and `version-poll.ts`'s work-list — which is the Continuous Dependency Upgrades session's active surface, with three unmerged branches on it. **This section is a statement of the decision and its constraints, not a licence to edit those files.** Sequencing and implementation are being agreed with that session.
+### 10.4 Granularity, verified
 
-### 10.5 The problem this solves
+A scan's subject is an **artifact digest**, not a component: `ScanSubject` carries `digest`/`pullRef`, and `ScanEvidence` records `artifactDigest`/`expectedDigest`/`digestMatch`. The gate context threads `targetObjectIds`. The **inventory** is component-scoped — `component_dependencies` keyed `(orgId, componentObjectId, lineId, manifestPath)` — and enablement is per component.
 
-*(Retained as the rationale of record.)*
+So the vendor-pass chain is **finding → package → dependency line → component**, and the component is where enablement and the rule meet. The scan being artifact-subjected and the inventory being component-scoped is not a mismatch; it is the join the rule walks.
 
-D1 says a vendor dependency is accepted only when we are on the latest of its major line, with no exception but an approved override. That rule can only be *evaluated* where `latest_version` is known. It is NULL for two independent reasons:
+### 10.5 Process note — why this nearly shipped wrong
 
-1. **No `dependency_lines` row at all** — ingestion is gated on component enablement (`ingestComponentManifests` resolves `resolveComponentIngestionGate` first and returns before it looks at a repo). An unenabled component has no inventory. *Widening the poll cannot help; there is no row to poll.*
-2. **A line exists but nobody subscribes**, so it is never polled.
-
-Both fail closed. Under "no exceptions unless an override", that means an override request per unevaluable dependency — on a sparsely-enabled estate, potentially an override queue on day one, which would make the feature unusable at rollout. This is an implementation problem *with* the rule, not an argument against it.
-
-This is why D7 was taken: without it, D1 is only enforceable where someone already opted into dependency automation, which is not a security posture — it is an accident of who happened to want bump PRs.
-
+Two sessions relayed the same decision to the owner within an hour and got opposite answers, because each framed it differently: one emphasised that the rule is otherwise unenforceable, the other that it reverses a stated requirement. Neither framing was dishonest and both answers were real. What caught it was the standing rule to **confirm every relayed decision with the owner directly, regardless of size**. Had either session treated its own relay as authoritative, an argued-for reversal of an explicit requirement would have entered an Accepted document.
 ## 11. Charter check
 
 1. **Coordinate not execute** — nothing new is executed; the managed scan gains no capability.

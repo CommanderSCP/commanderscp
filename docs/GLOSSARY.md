@@ -30,6 +30,9 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **release** | The versioned unit of change moving through its whole pipeline — a change **is** a release | QUALIFIED-STANDARD |
 | **release topology** | A versioned declarative document describing a release's waves, target groups and gates | SCP-SPECIFIC |
 | **deploy / deployment** | The push of an artifact into one environment so it runs there | INDUSTRY-STANDARD |
+| **scan exclusion** | A finding that does not count toward the ceiling, applied before counting — never a waiver on the verdict | QUALIFIED-STANDARD |
+| **exclusion admission** | A tier's declaration that a class of exclusion may have effect at or below it | SCP-SPECIFIC |
+| **scan override request** | An owner-raised request for a standing, expiring exclusion, approved at the tier that set the rule | SCP-SPECIFIC |
 | **deployment target** | The graph object type an executor acts on (cluster, host, environment, region) — deliberately broad | SCP-SPECIFIC |
 | **environment** | A named operational tier (dev / gamma / prod) within one security domain | INDUSTRY-STANDARD |
 | **stage** | **Reserved:** one named deployment **place**, spelled `<domain>[-<location>]-<env>`. A **derived name**, never a row — [ADR-0026](adr/0026-placements-and-derived-stage-names.md) | QUALIFIED-STANDARD *(word-sense precedent only; the definition is ours)* |
@@ -506,7 +509,13 @@ How wide that is — how many non-test source lines and files, with the exact co
 
 **Optional, and only one level.** Containment is `service → assembly → component` **or** `service → component`; never `assembly → assembly`. `relationships-repo.ts` refuses the nested case outright rather than bounding it, because a depth limit is a number to argue about and a refusal is a rule. The owner's grouping decision (D2) capped the ladder at **three hops**, which one optional level cannot exceed.
 
-**What it inherits for free.** Everything that walks containment. `containmentChain` (`apps/server/src/graph/containment.ts`) matches on the `contains` **edge**, never on the parent's type, so an assembly rung is walked by policy resolution, RBAC scope expansion, freeze scoping, approval scope, and the scan-requirement tier chain with **no code change** — which is why [migration 0055](../apps/server/drizzle/0055_assembly_object_type.sql) touched no resolver. Binding resolution reaches it explicitly through the nearest-wins ancestor ladder of [ADR-0029](adr/0029-containment-ancestor-binding-rung.md).
+**What it inherits for free — and the two places that claim was too broad.** `containmentChain` (`apps/server/src/graph/containment.ts`) matches on the `contains` **edge**, never on the parent's type, so an assembly rung is genuinely *walked* by policy resolution, RBAC scope expansion and freeze scoping with **no code change** — which is why [migration 0055](../apps/server/drizzle/0055_assembly_object_type.sql) touched no resolver.
+
+> **Corrected 2026-08-17 (measured).** This paragraph previously included **approval scope** and **the scan-requirement tier chain** in that list. Traversal reaches both, but each has a *hardcoded rung list* the edge-generic walk does not feed:
+> - **Scan-requirement tier chain.** `tierForObjectType` (`governance/scan-requirements.ts`) switches on `organization`/`domain`/`service` and falls everything else through to `component`. An assembly-anchored ceiling therefore **enforces correctly** (the merge is an order-independent MIN that ignores tier labels) and **misreports its tier**, breaking [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §5's promise that a block can name the tier that bound it.
+> - **Approval scope.** `APPROVAL_SCOPE_KEYWORDS` (`governance/gate-orchestrator.ts`) has no `assembly` case, so `requireApprovals: {scope: "assembly"}` resolves to null and becomes a **permanently unsatisfiable** required approval — fail-closed, but silently inexpressible.
+>
+> Both are fixed under [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §5 / M22. The general lesson is the one this glossary should carry: *walking* a rung is edge-generic and free; *naming* it is not, and every hardcoded rung list is a place a new container level has to be added by hand. Binding resolution reaches it explicitly through the nearest-wins ancestor ladder of [ADR-0029](adr/0029-containment-ancestor-binding-rung.md).
 
 **What it is not.** Not a **containment domain** (that sits *above* service and is where policy scoping is normally expressed). Not a deployment unit — an assembly is never a wave target; **placements** are still per-component. Not a release unit either: a change is per-component, and rolling "the assembly is blocked" up out of its children would need a rule nobody has chosen, so the service board shows an assembly with a **component count and a link down**, not a status.
 
@@ -804,6 +813,43 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
 **Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry describes each sense, and [ADR-0021](adr/0021-terminology.md) Consequences (iii) carries the complete site roster. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.
+
+---
+
+### scan exclusion
+
+**Definition.** An individual scan **finding** that does not count toward the severity ceiling, because a rule someone authorized says it should not. Exclusions are applied **before counting**; they never turn a `fail` verdict into a `pass`.
+
+**Industry-standard?** QUALIFIED — the industry word for the artifact that carries this is **VEX** (Vulnerability Exploitability eXchange). SCP does not consume or emit VEX documents today, and "exclusion" names *our* mechanism rather than claiming that interchange format. If VEX ingestion ever lands it should map onto this concept, not beside it.
+
+**Why not "waiver", "suppression" or "exception".** *Waiver* and *exception* both suggest acting on the **verdict** ("this failure is forgiven"), which is precisely the design [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §2 rejected — a verdict-level waiver hides which finding was tolerated and is invisible at the E6 federation boundary, which identifies a scan outcome purely by shape. *Suppression* implies the finding is hidden; an exclusion is recorded, counted separately, and named in the Decision. The finding still exists and is still reported — it just does not count.
+
+**The two counts.** `severityCounts` continues to mean **what the scanner found**, so every CEL condition already authored against it keeps its meaning. A separate `effectiveSeverityCounts` carries the post-exclusion number, and **only the threshold comparison uses it**.
+
+**Direction, and why it has its own algebra.** A ceiling is *tightening* and merges by per-severity **MIN**; an exclusion is *loosening* and merges by **monotone AND** down the tier chain ([ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §1). Both are order-independent, so the documented containment-domain-vs-service tie stays safe. A matcher miss yields **no** exclusion — the opposite sign from a ceiling, where a miss is already safe.
+
+---
+
+### exclusion admission
+
+**Definition.** A tier's declaration that a **class** of scan exclusion may have effect at or below it. An exclusion clause has effect at tier T only if **every tier from platform down to T** admits its class. Default admission is **empty at every tier**, so with nothing authored the system behaves exactly as it did before exclusions existed.
+
+**Why the word is "admission" and not "permission".** It is a property of a **tier**, not of a person — it says *this kind of loosening is allowed to exist here*, independently of who later authors one. Authority to author the clause is a separate question, answered by `policy:write` at-or-above the scope ([ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §6).
+
+**The invariant it exists for.** A component may author an override it benefits from, at a weaker permission than the one that authored the constraint. Admission is what stops that being a self-grant: the component authors the *override*, never its own *admission*.
+
+---
+
+### scan override request
+
+**Definition.** A request raised by a **component**, **service** or **assembly** owner for a standing scan exclusion beyond what component-declared facts already produce — granted with an **expiry**, per (component × finding).
+
+**Approver standing.** The tier that **set the rule** (owner decision, 2026-08-17). A platform-set floor is waivable only at platform; an assembly-set ceiling is waivable at assembly. This needs no new authority model: a bounded `scope.objectRef` naming the tier's object requires `policy:write` at-or-above **that object**, and authority expands strictly upward, so an assembly binding reaches its components and never its siblings or its parent.
+
+**Not an `approval_request`.** That table is change-keyed (`change_object_id NOT NULL`), two-state (`pending|satisfied` — no deny, no expire, no revoke) and engine-materialized with no create API; it cannot express a standing grant. The shape to copy is the `freeze.override` act — mandatory non-empty reason, one high-severity audit event per use.
+
+**Expiry is a read-time window, never a status column.** There is no sweeper in this tree and no `boss.schedule` usage to build one on, so a grant's validity is evaluated when it is read.
+
 
 ---
 
