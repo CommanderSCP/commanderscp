@@ -51,8 +51,21 @@ import { resolveContainmentParent } from "./objects-repo.js";
  * the path the federation importer, IaC apply and internal machinery take, and their
  * `actorObjectId` is a synthetic subject that holds no bindings — running an `authorize()` down
  * there would abort every import rather than protect anything. What the repo owns is the invariant
- * half: `resolveContainmentParent` (called from here) is what rejects a `domainId` naming an object
- * outside the org, and `createObject` still resolves the default parent for itself.
+ * half: `resolveContainmentParent` is what rejects a `domainId` that does not name a LIVE object in
+ * this org, and it is called from here, from `createObject`, and from `updateObject`.
+ *
+ * THAT THIRD CALL SITE WAS MISSING until it was measured, and the gap is worth recording because its
+ * shape recurs. This paragraph asserted the repo owned the invariant half while only `createObject`
+ * actually called the function — so the guarantee held for every caller that arrived through a door
+ * here, and for nobody else. `iac/plans-repo.ts` is the "nobody else": it resolves a manifest's
+ * parent ONCE at PLAN time, persists the resolved id in the plan diff, and replays that stored
+ * pointer through `updateObject` at APPLY time without ever calling this helper. Soft-delete the
+ * parent in the window between the two requests and the tombstone was written onto the row; the
+ * org-root admin's own next GET, PATCH and DELETE of it then answered 403, permanently. The walk
+ * (`assertRootedContainmentParent`) does not substitute for this check — it seeds
+ * `containmentChain` with the parent row UNFILTERED by `deleted_at`, on purpose, so a dead parent
+ * with live ancestors is pronounced rooted. `graph/objects-repo.ts`'s `updateObject` carries the
+ * full account; `routes/containment-parent-liveness.integration.test.ts` pins it.
  *
  * The risk that a NEW door forgets to call this is handled the way this codebase already handles it
  * for ADR-0022 and ADR-0031's route sets — by a census test that enumerates every door whose body
