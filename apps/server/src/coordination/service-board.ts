@@ -33,6 +33,7 @@ import { listUnattachedChangeStatusInStates } from "../federation/unattached-cha
 import { limitingUpstreamFreshness } from "../federation/upstream-freshness.js";
 import { sqlIn } from "../graph/sql-helpers.js";
 import { placementComponentParentSql } from "../graph/containment.js";
+import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
 
 /**
  * Layer-A server projection backing `GET /services/:idOrUrn/board`
@@ -116,9 +117,18 @@ import { placementComponentParentSql } from "../graph/containment.js";
  * `federation/upstream-freshness.ts`.
  */
 
-/** Terminal statuses that count as a target/wave failure for the "blocked" derivation. `no_executor`
- *  (ADR-0006) is a fail-closed terminal — the target had bindings but none for the Type this wave rolls. */
-const FAILED_STATUSES = new Set(["failed", "aborted", "no_executor"]);
+/** Terminal statuses that count as a target/wave failure for the "blocked" derivation. Both
+ *  fail-closed REFUSALS belong here beside the genuine failures: `no_executor` (ADR-0006 — the target
+ *  had bindings but none for the Type this wave rolls) and `target_deleted` (`target-liveness.ts` —
+ *  the object the wave target names was tombstoned mid-flight). Omitting either would under-report
+ *  `failedTargets` on a wave that reconcile deliberately stopped, which is the one case an operator
+ *  most needs the board to show. */
+const FAILED_STATUSES = new Set([
+  "failed",
+  "aborted",
+  "no_executor",
+  WAVE_TARGET_TOMBSTONED_STATUS
+]);
 
 /** A component's latest change, plus WHO DRIVES IT. `drivenHere` is false when the change's graph
  *  object is a read-only replica of another domain's change (`originDomainId !== self.domainId`) —

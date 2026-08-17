@@ -9,10 +9,18 @@ import { badRequest, describeError } from "../errors.js";
 import { getObjectByIdOrUrnAnyType, updateObject } from "../graph/objects-repo.js";
 import type { GateDeps } from "./gates.js";
 import { evaluateWaveGate } from "./gates.js";
-import { insertDecisionIfChanged } from "./decisions-repo.js";
+import { insertDecision, insertDecisionIfChanged } from "./decisions-repo.js";
 import { proposeChange, typeOf } from "./changes-repo.js";
 import { createRelationship } from "../graph/relationships-repo.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
+import {
+  DEAD_TARGET_REMEDIATION,
+  deadTargetInputContext,
+  describeDeadTarget,
+  readTargetLiveness,
+  WAVE_TARGET_TOMBSTONED_AUDIT_ACTION
+} from "./target-liveness.js";
 import {
   campaignTargetObjectIdsOf,
   listActiveCampaignObjectIds,
@@ -28,7 +36,8 @@ import {
   markCampaignWaveRunning,
   markCampaignWaveTargetProposed,
   markCampaignWaveTargetTerminal,
-  markCampaignWaveTerminal
+  markCampaignWaveTerminal,
+  terminalizeRefusedCampaignWaveTarget
 } from "./campaign-wave-targets-repo.js";
 
 /**
@@ -310,11 +319,89 @@ async function reconcileOneCampaign(
 
     if (target.status === "pending") {
       allTerminal = false;
+      // ===========================================================================================
+      // IS THE TARGET OBJECT STILL THERE? — the campaign-side twin of `reconcile.ts`'s liveness gate
+      // (`target-liveness.ts`), and the failure it replaces is a WEDGE rather than a bad deploy.
+      //
+      // A campaign plan is compiled ONCE. Delete one of its targets afterwards and the fan-out below
+      // still ran: `proposeChange` resolves targets through `getObjectByIdOrUrnAnyType`, which IS
+      // live-filtered, so it threw `notFound` — straight into `logCampaignError`, which logs "will
+      // retry next tick" and does exactly that. Once a second. Forever. `allTerminal` stayed false,
+      // the wave never terminalized, `markCampaignWaveTargetProposed` was never reached, and the
+      // campaign sat there emitting a line a second with NO Decision, no `decision_id`, no terminal
+      // status and nothing an operator could query. The engine had the right answer and threw it away.
+      //
+      // So the question is asked EXPLICITLY, and answered with the record the throw never produced:
+      // a `block` Decision naming the object, a hash-chained audit event carrying its id, and the
+      // wave target terminalized — which fails the wave and parks the campaign through its existing
+      // `activeWave.status === "failed"` branch. "Why did this stop" now has an answer.
+      //
+      // FAIL DIRECTION: `readTargetLiveness` throws on a database fault rather than reporting
+      // "not live", so a transient read failure lands in the SAME `logCampaignError` as before and is
+      // retried — it must never be mistaken for a deletion and terminalize a healthy campaign.
+      const liveness = await withTenantTx(db, orgId, (tx) =>
+        readTargetLiveness(tx, orgId, target.targetObjectId)
+      ).catch((err) => {
+        logCampaignError(
+          orgId,
+          campaignObjectId,
+          `wave ${activeWave.waveIndex} target ${target.targetObjectId} liveness`,
+          err
+        );
+        return undefined; // unreadable — NOT "deleted". Retried next tick, nothing terminalized.
+      });
+      if (liveness && !liveness.live) {
+        try {
+          await withTenantTx(db, orgId, async (tx) => {
+            // Guarded + RETURNING, so the Decision and the audit event are appended exactly once
+            // even though this branch is reached on every tick until the wave terminalizes.
+            const terminalized = await terminalizeRefusedCampaignWaveTarget(tx, orgId, target.id);
+            if (!terminalized) return;
+            const summary = describeDeadTarget(target.targetObjectId, liveness);
+            const decision = await insertDecision(tx, {
+              orgId,
+              kind: "wave_target",
+              subjectId: campaignObjectId,
+              verdict: "block",
+              inputContext: {
+                waveId: activeWave.id,
+                waveIndex: activeWave.waveIndex,
+                ...deadTargetInputContext(target.targetObjectId, liveness)
+              },
+              reasonTree: { summary, remediation: DEAD_TARGET_REMEDIATION }
+            });
+            await appendAuditEvent(tx, {
+              orgId,
+              actorId: SYSTEM_ACTOR_ID,
+              action: WAVE_TARGET_TOMBSTONED_AUDIT_ACTION,
+              subjectId: campaignObjectId,
+              reason: summary,
+              decisionId: decision.id,
+              requestId: "campaign-reconcile"
+            });
+          });
+        } catch (err) {
+          logCampaignError(
+            orgId,
+            campaignObjectId,
+            `wave ${activeWave.waveIndex} target ${target.targetObjectId} refuse`,
+            err
+          );
+        }
+        anyFailed = true;
+        continue;
+      }
       try {
         await withTenantTx(db, orgId, async (tx) => {
           const targetObject = await tx.query.objects.findFirst({
-            where: (t, { eq: eqOp, and: andOp }) =>
-              andOp(eqOp(t.orgId, orgId), eqOp(t.id, target.targetObjectId))
+            where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+              andOp(
+                eqOp(t.orgId, orgId),
+                eqOp(t.id, target.targetObjectId),
+                // Live-filtered like every other read of this object. It only supplies a display
+                // name, but a name read off a tombstone is still a tombstone being read as present.
+                isNullOp(t.deletedAt)
+              )
           });
           const { change } = await proposeChange(tx, {
             orgId,

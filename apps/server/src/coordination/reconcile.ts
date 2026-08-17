@@ -42,13 +42,21 @@ import {
   findOriginalWaveTarget,
   getWaveStatus,
   markWaveRunning,
-  markWaveTargetNoExecutor,
+  terminalizeRefusedWaveTarget,
   markWaveTargetTriggered,
   markWaveTargetTriggerFailed,
   markWaveTerminal,
   observedStateFrom,
   updateWaveTargetObserved
 } from "./wave-targets-repo.js";
+import {
+  DEAD_TARGET_REMEDIATION,
+  deadTargetInputContext,
+  describeDeadTarget,
+  readTargetLiveness,
+  WAVE_TARGET_TOMBSTONED_AUDIT_ACTION,
+  WAVE_TARGET_TOMBSTONED_STATUS
+} from "./target-liveness.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { tryAcquireTriggerClaimLock } from "./trigger-claim-lock.js";
 import { tryAcquireChangeCoordinationLock } from "./change-coordination-lock.js";
@@ -941,10 +949,18 @@ async function reconcileExecutingChange(
       anyFailed = true;
       continue;
     }
-    if (target.status === "no_executor") {
-      // Terminal + a wave failure — a masking executor-binding gap was already blocked, audited, and
-      // the change parked when this target was terminalized (docs/adr/0006). Counts toward `anyFailed`
-      // but is NEVER re-triggered (that would duplicate the block Decision + audit event).
+    if (target.status === "no_executor" || target.status === WAVE_TARGET_TOMBSTONED_STATUS) {
+      // Terminal + a wave failure — reconcile REFUSED to drive this target and already blocked,
+      // audited and parked the change when it terminalized the row: a masking executor-binding gap
+      // (docs/adr/0006) or a tombstoned target object (`target-liveness.ts`). Counts toward
+      // `anyFailed` but is NEVER re-triggered (that would duplicate the block Decision + audit
+      // event).
+      //
+      // BOTH REFUSAL STATUSES ARE NAMED HERE, and this branch is exactly half of a two-place
+      // invariant: `wave-targets-repo.ts`'s TERMINAL_WAVE_TARGET_STATUSES is the same list read the
+      // other way round. A terminal status added to only one of them falls through to the poll arm
+      // below, increments `nonTerminalTargets` forever, and keeps a settled wave alive for the
+      // lifetime of the database while its change holds a BATCH_LIMIT slot. Add to both or neither.
       anyFailed = true;
       continue;
     }
@@ -1412,15 +1428,23 @@ async function recordStageDependencyUnscoped(
 }
 
 /**
- * The shared FAIL-CLOSED effects for a wave target that must NOT be driven against the shared default
- * executor — the masking-gap block (M12/ADR-0006) and the silent-region-deploy block (M15.6) both use
- * it so they emit an IDENTICAL, consistent set of records: terminalize the target on the dedicated
- * `no_executor` status, a `block` Decision (with decision_id), a hash-chained audit event referencing
- * it, fail the wave, and park the change (reconcile-blocked). Idempotent: `markWaveTargetNoExecutor`'s
- * status guard returns false when a prior tick already blocked+audited this target, in which case this
- * appends nothing and just reports "still blocked" (true). Must run INSIDE the caller's tenant tx.
+ * The shared FAIL-CLOSED effects for a wave target reconcile REFUSES to drive — the masking-gap block
+ * (M12/ADR-0006), the silent-region-deploy block (M15.6) and the tombstoned-target block
+ * (`target-liveness.ts`) all use it so they emit an IDENTICAL, consistent set of records: terminalize
+ * the target on a dedicated per-cause status, a `block` Decision (with decision_id), a hash-chained
+ * audit event referencing it, fail the wave, and park the change (reconcile-blocked). Idempotent:
+ * `terminalizeRefusedWaveTarget`'s status guard returns false when a prior tick already
+ * blocked+audited this target, in which case this appends nothing and just reports "still blocked"
+ * (true). Must run INSIDE the caller's tenant tx.
+ *
+ * PARKING, NOT THROWING, is the deliberate failure mode and it is the whole reason this helper is
+ * shared. A refusal raised as an exception would surface as one `console.error` per tick and nothing
+ * an operator could query — the change would be stranded with no `decision_id` to resolve it and no
+ * terminal row to read. Parking gives up forward progress in exchange for an explanation (charter
+ * principle 6): the operator's recourse is `scp change cancel` / `scp change rollback`, both of which
+ * remain available on a parked change.
  */
-async function blockWaveTargetNoExecutor(
+async function blockWaveTarget(
   tx: TenantTx,
   args: {
     orgId: string;
@@ -1428,6 +1452,9 @@ async function blockWaveTargetNoExecutor(
     waveId: string;
     waveTargetId: string;
     targetObjectId: string;
+    /** The terminal status this refusal earns. Explicit at every call site — see
+     *  `terminalizeRefusedWaveTarget` for why it is not a literal in one place. */
+    status: "no_executor" | typeof WAVE_TARGET_TOMBSTONED_STATUS;
     action: string;
     summary: string;
     remediation: string;
@@ -1435,7 +1462,12 @@ async function blockWaveTargetNoExecutor(
     inputContext: Record<string, unknown>;
   }
 ): Promise<boolean> {
-  const terminalized = await markWaveTargetNoExecutor(tx, args.orgId, args.waveTargetId);
+  const terminalized = await terminalizeRefusedWaveTarget(
+    tx,
+    args.orgId,
+    args.waveTargetId,
+    args.status
+  );
   if (!terminalized) return true; // a prior tick already blocked+audited this — append nothing.
 
   const decision = await insertDecision(tx, {
@@ -1539,9 +1571,63 @@ async function triggerWaveTarget(
     // audit event, terminalizes the target on the dedicated `no_executor` status, fails the wave, and
     // PARKS the change (reconcile-blocked) for manual remediation. The Decision NAMES the gap only —
     // it never auto-offers the managed-iac executor (charter: managed execution is never a default).
-    // All emitted ONCE: `markWaveTargetNoExecutor`'s status guard makes a later tick that finds it
+    // All emitted ONCE: `terminalizeRefusedWaveTarget`'s status guard makes a later tick that finds it
     // already `no_executor` a no-op.
     const blocked = await withTenantTx(db, orgId, async (tx) => {
+      // ===========================================================================================
+      // (0) IS THE TARGET OBJECT STILL THERE? — checked FIRST, before any binding is resolved, and
+      // this ordering is the fix rather than an accident of layout. See `target-liveness.ts` for the
+      // property; three things downstream of this line go wrong when a tombstoned target reaches
+      // them, and every one of them fails OPEN:
+      //
+      //   * `listVisibleBindingsForTarget` (case (a)/(b) below) IS live-filtered, so a tombstoned
+      //     target with real bindings returns ZERO of them and reads as case (a) INTENDED-FAKE. The
+      //     target is then handed to the shared default fake executor and the change goes GREEN with
+      //     nothing deployed — the exact masking failure ADR-0006 exists to prevent, arriving
+      //     through the tombstone door instead of the binding door.
+      //   * `evaluateRegionalDeployGate` (case (c)) resolves a placement's deployment-target with a
+      //     `deleted_at IS NULL` filter, so a tombstoned region target reads as "not a region" and
+      //     the M15.6 silent-region-deploy gate simply STOPS FIRING — case (c) collapsing into case
+      //     (a), which its own comment says must never happen.
+      //   * the stage-dependency hold (ADR-0028) resolves the placement pair the same way, gets
+      //     `null`, and records every declared dependency as `unscopeable` -> satisfied. The
+      //     coupling silently evaporates and the target triggers on that very tick.
+      //
+      // In other words: every guard between here and the executor already asks "is this object
+      // live?", gets "no", and interprets it as "nothing to enforce". Absence read as permission,
+      // three times over. Asking the question FIRST — and answering it with a refusal — is what
+      // turns all three fail-opens into one explainable stop.
+      //
+      // WHY HERE AND NOT IN THE PER-TARGET LOOP: this is inside `triggerWaveTarget`'s advisory
+      // trigger-claim lock and shares `blockWaveTarget`'s exactly-once status guard, so the Decision
+      // and the audit event are emitted once no matter how many ticks or replicas arrive. A check in
+      // the loop would need its own transaction and its own idempotency, and would be the second
+      // place that decides whether a target may be driven.
+      //
+      // A THROWN read is NOT a deletion: `readTargetLiveness` has no catch, so a database blip
+      // propagates out of this tx, through the caller's per-target try/catch, and the target is
+      // retried next tick with nothing terminalized. See that module's "fail direction" note.
+      const liveness = await readTargetLiveness(tx, orgId, targetObjectId);
+      if (!liveness.live) {
+        return blockWaveTarget(tx, {
+          orgId,
+          change,
+          waveId,
+          waveTargetId,
+          targetObjectId,
+          status: WAVE_TARGET_TOMBSTONED_STATUS,
+          action: WAVE_TARGET_TOMBSTONED_AUDIT_ACTION,
+          summary: describeDeadTarget(targetObjectId, liveness),
+          remediation: DEAD_TARGET_REMEDIATION,
+          reason: describeDeadTarget(targetObjectId, liveness),
+          inputContext: {
+            waveId,
+            requestedType: type,
+            ...deadTargetInputContext(targetObjectId, liveness)
+          }
+        });
+      }
+
       // ADR-0026 amendment: resolution now falls back through the target's PLACEMENTS when the
       // target itself carries no binding of this type. Direct is still checked first, so nothing
       // that resolves today changes answer. See `binding-resolution.ts` for why the fallback exists
@@ -1565,12 +1651,13 @@ async function triggerWaveTarget(
         // exists to kill, silently. The remediation is not "add a binding" — it is to make the wave
         // target a placement, i.e. attach a stage-shaped topology.
         const named = resolution.candidates.map((c) => c.placementObjectId).join(", ");
-        return blockWaveTargetNoExecutor(tx, {
+        return blockWaveTarget(tx, {
           orgId,
           change,
           waveId,
           waveTargetId,
           targetObjectId,
+          status: "no_executor",
           action: "change.wave_target.ambiguous_placement_binding",
           summary:
             `wave target ${targetObjectId} is a component whose '${type}' binding lives on ` +
@@ -1595,12 +1682,13 @@ async function triggerWaveTarget(
       // (c) declared region target with no resolvable binding — must not fall through to (a).
       const regionGate = await evaluateRegionalDeployGate(tx, orgId, targetObjectId, type);
       if (regionGate && !regionGate.deployAllowed) {
-        return blockWaveTargetNoExecutor(tx, {
+        return blockWaveTarget(tx, {
           orgId,
           change,
           waveId,
           waveTargetId,
           targetObjectId,
+          status: "no_executor",
           action: "change.wave_target.no_executor",
           summary:
             `wave target ${targetObjectId} is region '${regionGate.region}' of multi-region ` +
@@ -1634,12 +1722,13 @@ async function triggerWaveTarget(
 
       // case (b): masking gap.
       const boundTypes = all.map((b) => b.binding.type).sort();
-      return blockWaveTargetNoExecutor(tx, {
+      return blockWaveTarget(tx, {
         orgId,
         change,
         waveId,
         waveTargetId,
         targetObjectId,
+        status: "no_executor",
         action: "change.wave_target.no_executor",
         summary:
           `wave target ${targetObjectId} has no '${type}' executor binding ` +
