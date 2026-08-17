@@ -145,6 +145,8 @@ describe("M21.2 dependency-inventory ingestion (ADR-0032 §4/§6)", () => {
 
   const RESOLVED_COMMIT = "a".repeat(40);
   const REPO = "acme/widgets";
+  /** A real, full-length sha256 digest. See the `values-digest` case for why the length matters. */
+  const VALUES_DIGEST = "sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b";
 
   const GO_MOD = `module github.com/acme/widgets
 
@@ -848,13 +850,64 @@ require (
         repo: REPO,
         ref: RESOLVED_COMMIT,
         readManifest: recordingReader({
-          "chart/values.yaml":
-            "image:\n  registry: ghcr.io\n  repository: acme/api\n  tag: 2.0.1\n  digest: sha256:feedface\n"
+          "chart/values.yaml": `image:\n  registry: ghcr.io\n  repository: acme/api\n  tag: 2.0.1\n  digest: ${VALUES_DIGEST}\n`
         }).read
       });
       const [row] = await inventoryOf(component);
       expect(row?.declaredVersion).toBe("2.0.1");
-      expect(row?.resolvedDigest).toBe("sha256:feedface");
+      // FULL LENGTH ON PURPOSE. `resolved_digest` is what the version poller compares a registry's
+      // answer against, so `sha256:feedface` — 8 hex characters where 64 belong — is a row that
+      // reads as identity-pinned and can never match anything. The parser refuses that shape now,
+      // and a fixture spelling it would make this test pass for the wrong reason.
+      expect(row?.resolvedDigest).toBe(VALUES_DIGEST);
+    });
+
+    it("an ORDINARY chart's furniture is `ok`, not a component-wide `partial` (M21.7 round 5)", async () => {
+      // THE HONESTY MECHANISM ONLY WORKS IF IT IS QUIET. A values file's `sources[].repository`, a
+      // Kafka client's `schemaRegistry.registry`, a `<<:` merging resource presets and a `tag` used
+      // as a pod label each used to mint either a phantom dependency or an unresolved declaration —
+      // and a file whose declarations are all unresolved stamps the manifest `unsupported` and the
+      // component `partial`. That fires on ordinary charts, and a warning that fires on everything
+      // is a warning nobody reads.
+      const component = await chartComponent("values-ordinary-furniture");
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml": [
+            "sources:",
+            "  - repository: https://github.com/acme/api",
+            "    tag: v2.4.0",
+            "kafka:",
+            "  schemaRegistry:",
+            "    registry: http://schema-registry.kafka.svc:8081",
+            "presets: &presets",
+            "  cpu: 500m",
+            "controller:",
+            "  resources:",
+            "    <<: *presets",
+            "  podLabels:",
+            "    tag: canary",
+            "  image:",
+            "    registry: ''",
+            "    repository: acme/api",
+            "    tag: 1.2.3",
+            ""
+          ].join("\n")
+        }).read
+      });
+
+      expect(outcome.verdict).toBe("ingested");
+      // Nothing is reported unreadable, because nothing in this file IS an unreadable image.
+      expect(outcome.declarationsSkipped).toEqual([]);
+      const stamp = await stampOf(component);
+      expect(stamp?.manifests.find((m) => m.path === "chart/values.yaml")?.outcome).toBe("ok");
+      expect(stamp?.outcome).toBe("ok");
+      // And exactly the ONE real image reached a row. `registry: ''` means "the default registry",
+      // so the coordinate is `acme/api` — `/acme/api` would be a second line for the same image.
+      expect(await coordinatesOf(component)).toEqual(["chart/values.yaml:acme/api@1"]);
     });
 
     it("a values file SCP cannot resolve is stamped `unsupported` — FOUND, not absent", async () => {

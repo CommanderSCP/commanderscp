@@ -171,6 +171,23 @@ export interface DeclaredDependency {
   /** 1-based line number in the source manifest, where the format is line-oriented. */
   readonly line?: number;
   /**
+   * HOW MANY DECLARATION SITES IN THIS FILE FED THIS ENTRY. `1` for an ordinary declaration; `n`
+   * when the parser MERGED n byte-identical declarations into one entry because the inventory row
+   * they produce merges (`kubernetes-images.ts` trap 9: `component_dependencies` is keyed
+   * `(org, component, line, manifest_path)`, so a Deployment and a CronJob both pinning
+   * `acme/api:1.2.3` in one file are ONE row however many times the file says it).
+   *
+   * **Undefined means "this parser does not merge", which is the same as `1`** — read it as
+   * `occurrences ?? 1`. Only `parseKubernetesImages` sets it, because it is the only parser that can
+   * merge; the other four emit one entry per declaration site by construction.
+   *
+   * IT EXISTS AS A NUMBER BECAUSE IT IS A GATE INPUT. `n > 1` means an edit to ONE of those sites
+   * would leave the others behind, so a bump actuator must refuse rather than pick — and until this
+   * field existed that fact lived only inside the human-readable {@link note}, where a gate would
+   * have had to match prose. See `@scp/plugin-managed-dep`'s `locateVersionLine` step 5.
+   */
+  readonly occurrences?: number;
+  /**
    * Set when the entry is understood but something about it is worth surfacing — an unresolvable
    * `ARG` interpolation, an inherited Maven version, a non-registry npm specifier. Human-readable,
    * never parsed.

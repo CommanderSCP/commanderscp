@@ -8,6 +8,13 @@ pre-dispatch refusal landed in `planBump` as `manifest_not_editable_in_this_buil
 `dispatchForComponent`, so it is reported through the refusal table every other "not due" reason
 already goes through.
 
+**Round-5 correction (2026-08-17), and it is a behaviour change, not a wording one:** the shapes in
+§2.1/§2.2 are read only from a mapping IN IMAGE CONTEXT — see **§2.5**, which also records why an
+empty coordinate is a cross-component merge rather than one bad row, why `registry: ""` is the
+default registry, why a `digest:` is now shape-checked in BOTH image parsers, and two measured facts
+that contradicted the parser header (`yaml`'s duplicate-key scan is quadratic in
+siblings-per-mapping, and an empty `---` document was stamped `unreadable` forever).
+
 **One correction the build measured**, recorded here because §5 rests on it: `packages/plugins/managed-dep`
 does NOT ship into the `scp-runner-dep` image. `apps/runner-dep/Dockerfile` is `FROM scratch` plus a
 BusyBox multi-call binary and seven applets, with no Node runtime at all — so no version of
@@ -166,6 +173,10 @@ in a values file is the same line as the same image pinned in a `FROM`.
 | C | `image: {registry, repository, tag}` | `registry/repository` | `tag` | no — §2.3 |
 | D | any of A–C carrying `digest:` (with or without a tag) | as above | tag if present | no — no comparable version when digest-only |
 
+**Every row of this table and the next is conditioned on IMAGE CONTEXT — see §2.5**, which is a
+round-5 correction to the build, not a refinement of it. `repository`, `registry`, `tag` and `digest`
+read off any mapping that carries them are false positives on ordinary charts.
+
 Shape A is split with the *same* rules `splitImageRef` (`dockerfile.ts:101–143`) already applies: last
 depth-0 colon after the last depth-0 slash is the tag (so `localhost:5000/foo:1.2` is a port plus a
 tag), `@` is cut before the colon so a digest's own `algo:hex` colon is not read as a tag separator.
@@ -181,10 +192,12 @@ version, so it is reported and no line row is written — exactly `dockerfile.ts
 
 | # | Shape | Why | Behaviour |
 |---|---|---|---|
-| E | a bare `tag:` whose sibling mapping declares no `image`/`repository` | the image name is in the chart's templates or hardcoded — **not resolvable from this file** | `constraint: "unresolved"`, coordinate = the dotted key path (`controller.image.tag`), no row, named in the Decision |
+| E | a bare `tag:` **in image context** whose mapping declares no `image`/`repository` | the image name is in the chart's templates or hardcoded — **not resolvable from this file** | `constraint: "unresolved"`, coordinate = the dotted key path (`controller.image.tag`), no row, named in the Decision |
 | F | any of `registry`/`repository`/`image`/`tag` whose scalar text contains `{{` | a Go template; not resolvable from the file (§4 T2) | as E |
-| G | a value reached through a YAML alias or a `<<:` merge key | the edit site is not the read site (§4 T10) | as E |
-| H | `tag:` whose node is not a scalar (a sequence, a mapping) | not a version | as E |
+| G | a value reached through a YAML alias, or a `<<:` merge key **in image context** | the edit site is not the read site (§4 T10) | as E |
+| H | `tag:` whose node is not a scalar (a sequence, a mapping, a block scalar) | not a version, or not one a single line of a diff can rewrite | as E |
+| I | `repository`/`registry` that is empty or not repository-shaped, or a `digest:` that is not `algorithm:hex` | an empty coordinate MERGES components across the org; a non-digest can never match a registry's answer | as E (§2.5) |
+| J | one of the five image keys spelled TWICE in one mapping | Helm's Go YAML takes the last, a scan takes the first — which one this image uses is not knowable | as E (§2.5) |
 
 Shape E is the case the owner's brief calls out, and it is handled with the package's own precedent:
 `dockerfile.ts:218–230` already emits an entry whose coordinate is *the raw unresolvable text* with
@@ -254,6 +267,82 @@ Bumping shapes B and C requires widening the verifier from "the changed line nam
 "the changed line is the `tag` node of the image block the inventory row came from". That is a change
 to a **charter-enforcement surface** whose entire design is "deliberately ecosystem-agnostic and
 deliberately textual" (`bump-edit.ts:24–28`), so it is §6 Q2, not an implementation detail.
+
+### 2.5 IMAGE CONTEXT — the round-5 correction, and why it is the load-bearing rule
+
+**Measured after the build, on the code as shipped.** The first implementation applied §2.1's shapes
+to *every mapping in the document*, which read as elegant ("one rule, no per-convention branch") and
+was a false-positive generator. `repository`, `registry`, `tag` and `digest` are ordinary English
+words. A real values file spends them on ordinary things:
+
+```yaml
+sources:                                  # upstream provenance, not an image
+  - repository: https://github.com/acme/api
+    tag: v2.4.0
+kafka:
+  schemaRegistry:
+    registry: http://schema-registry.kafka.svc:8081   # a URL, not an image host
+npm:
+  registry: https://registry.npmjs.org               # a package feed
+controller:
+  resources:
+    <<: *presets                          # ordinary YAML
+  podLabels:
+    tag: canary                           # a label
+```
+
+Each of those minted a dependency that does not exist, or an unresolved declaration — and §2.3's
+class fix stamps a manifest whose declarations are ALL unresolved as `unsupported` and its component
+`partial`. So the honesty mechanism this whole document exists to build would have fired on nearly
+every chart in the estate, and **a warning that fires on everything is a warning nobody reads.** A
+phantom coordinate is worse than the noise: it makes SCP author a bump against something that does
+not exist, or rewrite the wrong line in a real file.
+
+**The rule, and it is not a heuristic — it is the discipline the pod-spec walk already had.** A pod
+spec is found because the key is spelled `image`, never because a value looks image-ish. A mapping is
+IN IMAGE CONTEXT iff:
+
+- (a) it carries an exact `image` key whose value is a SCALAR — the one-scalar shape, `containers[]`
+  or anywhere else in the tree; or
+- (b) it IS the value of an exact `image` key, directly or as an element of a sequence that is —
+  Helm's `image: {repository, tag}` block. **One hop**, never inherited deeper, because "somewhere
+  below a key called image" is the loose reading that mints the phantoms back.
+
+An `image:` key whose value is a MAPPING does not put its own mapping in context: that mapping is the
+PARENT of the image block, and reading its sibling `tag:` (a chart version, typically) as the image's
+tag is the same defect. Outside image context nothing is read and **nothing is reported** — this is
+not an image reference SCP failed to resolve, it is not an image reference.
+
+Three refusals follow from the same "skipped rather than guessed" rule (ADR-0032 §7), each reported
+so it is visible rather than dropped:
+
+1. **An empty or near-empty coordinate is refused.** `repository: ""` is a live chart placeholder,
+   and `dependency_lines` is keyed `(org, ecosystem, coordinate, major)` **org-wide**. An empty
+   coordinate is therefore not one bad row — it is a cross-component MERGE: every component in the
+   org carrying that placeholder collapses onto ONE line, one team's subscription silently governs
+   another's, and a bump dispatched for it fans out across components that never declared it.
+2. **`registry: ""` is the DEFAULT registry, not a registry named empty.** It is the standard
+   placeholder a chart ships so `global.imageRegistry` can override it — the common case, not an
+   edge. Joined it yields `/acme/api`, so the same image sits on two different lines depending on
+   whether a values file happened to spell the registry. Empty is treated as absent; a non-empty
+   registry that is not repository-shaped is reported rather than joined.
+3. **A `digest:` must BE a digest** — `algorithm:hex`, at the registered length for sha256/sha512.
+   `resolved_digest` is what the version poller compares a registry's answer against, so
+   `sha256:feedface` is a row that reads as identity-pinned and can never match. **Fixed in both
+   image parsers**: `parseDockerfile` had the identical hole on `FROM …@…`, and fixing one would
+   have been the incomplete-census failure. A bad `digest:` beside a good tag does not lose the
+   declaration — the digest is refused and reported, and the tag-pinned row survives without it.
+
+**Two things the round measured rather than reasoned about.** `yaml`'s duplicate-key check rescans
+every sibling already composed for each new pair, which is **quadratic in siblings-per-mapping** — a
+flat 32 000-key mapping composes in 7.1 s with it on and 0.18 s with it off, and this call is in the
+ingestion path behind a 1 MiB read cap. The parser header claimed the work was "linear in the bytes
+the read cap already bounds"; it was not. The check is off (`uniqueKeys: false`) and the five image
+keys carry their own duplicate report, because Helm's Go YAML takes the LAST duplicate where a scan
+takes the first. Separately, `yaml` composes an empty document (`---`) as a Scalar node holding null
+rather than as `contents: null`, so T8's "no mapping at any root" refusal caught it and the manifest
+was stamped `unreadable` — "this attempt failed and the next may not" — about a file that fails
+identically forever. An empty document is an honest empty: `ok / 0 rows`.
 
 ---
 

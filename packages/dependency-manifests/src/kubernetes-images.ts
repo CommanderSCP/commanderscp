@@ -48,6 +48,9 @@
  *     file". So no version is ever read through a node's JS value — {@link scalarText} reads the
  *     scalar's own SOURCE TEXT, and a node whose source cannot be recovered is reported
  *     `unresolved` rather than guessed. This trap alone is why a real YAML parser is used.
+ *     A BLOCK SCALAR (`tag: |`) is the one style whose source text is not the edit target: it
+ *     carries the block's own trailing newline and spans lines, so `1.2.3\n` would go into the
+ *     inventory as the string an actuator must find on one line. Reported `unresolved`.
  *  2. **Go templates are not resolvable from the file.** `tag: "{{ .Chart.AppVersion }}"`,
  *     `repository: "{{ .Values.global.registry }}/api"`. Reported `unresolved` — the same rule
  *     `dockerfile.ts` applies to `ARG` interpolation, and for the same reason: resolving it would
@@ -62,7 +65,11 @@
  *     wrote.
  *  5. **Digests.** `digest: sha256:…`, with or without a tag: both are carried and neither is
  *     derived from the other. Only the key literally spelled `digest` is read — a chart spelling it
- *     `sha` or `imageDigest` is not guessed at.
+ *     `sha` or `imageDigest` is not guessed at. And what it holds has to BE a digest: the value is
+ *     checked against {@link isDigestShaped} before it is recorded, because a `digest:` carrying
+ *     `latest` or a truncated hex string lands in `component_dependencies.resolved_digest` and is
+ *     then compared against a registry's real digest — a pin to nothing that can never match, which
+ *     is the "a wrong version is worse than a missing one" rule applied to identity.
  *  6. **A values file for a chart the org CONSUMES vs its own chart.** Both are read and this parser
  *     does NOT branch on which it is: branching would be a label named after which condition
  *     matched, and it is wrong for umbrella charts where both are true at once. This package reports
@@ -82,28 +89,83 @@
  *     mapping root but some non-null root throws. Stated cost: a genuinely zero-byte `values.yaml`
  *     is reported `unreadable` rather than `ok / 0` — a false alarm in the safe direction, because
  *     it does not prune. A comments-only file (no documents at all, but not empty) is the negative
- *     control and returns `[]`.
+ *     control and returns `[]`. So is a file whose only document is EMPTY (`---` on its own, or an
+ *     explicit `null`): `yaml` composes that as a Scalar node holding null, not as `contents:
+ *     null`, so "some root that is not a mapping" used to catch it and stamp it `unreadable` —
+ *     "this attempt failed and the next may not" about a file that will fail identically forever.
+ *     An empty document is an honest empty, and honest empty is `ok / 0`.
  *  9. **The same image twice in one file is ONE row, and its bump is correctly ambiguous.** The
  *     inventory's primary key is `(org, component, line, manifest_path)`, so a Deployment and a
  *     CronJob pinning `acme/api:1.2.3` in one file collapse. Identical declarations are therefore
  *     merged into one entry HERE, and the entry's `note` names every key path that fed it — the
  *     ambiguity is reported at ingestion instead of being discovered months later as a mystery
- *     refusal from the bump verifier.
+ *     refusal from the bump verifier. The count is ALSO carried as a number
+ *     (`DeclaredDependency.occurrences`), because the note is what an operator reads and a number is
+ *     what a gate reads: `@scp/plugin-managed-dep` refuses to anchor a bump on a merged entry, and
+ *     matching that refusal against prose would be a gate on wording.
  * 10. **Anchors, aliases and merge keys.** `tag: *appVersion` and `<<: *defaults` are ordinary in
  *     values files, and for them the EDIT SITE IS NOT THE READ SITE: one edit to the anchor moves
  *     every alias, which a single-changed-line verifier would see as one line changed and several
- *     declarations silently moved. So an aliased value is `unresolved`, and a merge key is reported
- *     as `unresolved` too — the keys it merges in are not in this mapping's AST at all, and silence
- *     about them is the exact dishonesty this parser exists to remove. This also settles the
- *     billion-laughs question by construction: alias EXPANSION happens when a document is resolved
- *     to plain JS, and this parser never resolves one — it reads the AST, so the work is linear in
- *     the bytes the 4 MB read cap already bounds.
+ *     declarations silently moved. So an aliased value is `unresolved`, and a merge key IN IMAGE
+ *     CONTEXT (trap 13) is reported as `unresolved` too — the keys it merges in are not in this
+ *     mapping's AST. It is scoped to image context deliberately: a `<<: *resourceDefaults` on a
+ *     resources block is ordinary YAML and reporting it stamped the whole file `unsupported`
+ *     (trap 16). This also settles the billion-laughs question by construction: alias EXPANSION
+ *     happens when a document is resolved to plain JS, and this parser never resolves one — it
+ *     reads the AST, so there is nothing to expand.
  * 11. **`image` is matched as an EXACT key, never as a substring.** `imagePullSecrets`,
  *     `imagePullPolicy`, `initImage`, `imageCredentials` and `global.imageRegistry` are not images.
  *     A key matched by "contains `image`" is a label named after what happened to match.
  * 12. **The prune blast radius is larger here than for a Dockerfile.** One values file can be the
  *     sole declaration site for a dozen images, so a mis-parse returning `[]` would unsubscribe a
  *     dozen lines in one pass. That is why trap 8's root rule is a THROW and not a skip.
+ * 13. **`repository`/`registry`/`tag`/`digest` MEAN NOTHING ON THEIR OWN — the `image` key is what
+ *     makes them an image.** Read off every mapping that happens to carry them, they mint phantom
+ *     dependencies out of ordinary chart furniture: a `sources:` block's `repository:`, a
+ *     `schemaRegistry:`'s `registry:`, a `tag:` on a label or a metrics config. The pod-spec walk
+ *     already had the answer — it finds an image because the key is spelled `image`, not because
+ *     the value looks like one — and that discipline is extended rather than joined by a heuristic.
+ *     A mapping is IN IMAGE CONTEXT iff either
+ *       (a) it carries an exact `image` key whose value is a SCALAR — the pod-spec/one-scalar shape,
+ *           `containers[].image`, wherever in the tree it sits; or
+ *       (b) it IS the value of an exact `image` key (directly, or as an element of a sequence that
+ *           is) — Helm's `image: {repository, tag}` block, one hop, never deeper.
+ *     Outside image context the four split keys are not read at all, and nothing is reported: this
+ *     is not an image reference SCP failed to resolve, it is not an image reference. The
+ *     `image:` key holding a MAPPING does not put its own mapping in context — that mapping is the
+ *     PARENT of the image block, and reading its sibling `tag:` as a bare tag is the same phantom.
+ *     STATED RESIDUE: a chart that spells the repository under `image:` beside a `registry:`
+ *     (ingress-nginx does) is read by rule (a), so the coordinate is the repository alone and the
+ *     sibling registry is NOT joined onto it — joining would double a registry that a pod spec's
+ *     `image:` already spells in full. The un-joined `registry` is named in the entry's note.
+ * 14. **An EMPTY coordinate is not a phantom row, it is a SHARED one.** `repository: ""` is a live
+ *     chart placeholder, and `dependency_lines` is keyed `(org, ecosystem, coordinate, major)` —
+ *     org-scoped. So every component in the org carrying that placeholder collapses onto ONE line:
+ *     one team's subscription governs another's, and a bump dispatched for it fans out across
+ *     unrelated components. An empty or near-empty coordinate is therefore refused outright
+ *     ({@link isUsableCoordinate}) rather than minted, and reported so it is visible.
+ * 15. **`registry: ""` MEANS "the default registry", not "a registry named empty".** It is the
+ *     standard chart placeholder (bitnami's `global.imageRegistry` override point), so it is the
+ *     COMMON case rather than an edge. Joined naively it yields `/acme/api`, which splits one image
+ *     across two coordinates depending on whether a values file happened to spell the registry.
+ *     An empty/whitespace registry is treated as ABSENT; a non-empty one that is not
+ *     repository-shaped is reported, never joined.
+ * 16. **`unsupported` must mean "an image reference is in here that I could not resolve".** A
+ *     manifest whose every declaration is unresolved is stamped `unsupported` and its component
+ *     `partial` (`inventory-ingestion.ts:projectIngestionStamp`), so anything this parser reports
+ *     unresolved on an ORDINARY values file destroys the honesty mechanism the round exists to
+ *     provide: a warning that fires on everything is a warning nobody reads. Traps 13 and 10 are
+ *     what scope it — every `unresolved` this parser emits is an image reference, in image context.
+ * 17. **DUPLICATE KEYS, and why `uniqueKeys` is off.** `yaml`'s duplicate-key check scans every
+ *     sibling already composed for each new pair, which is QUADRATIC in siblings-per-mapping — a
+ *     flat 218 KB mapping composes in 1.26 s and a 32 000-key one in 7.1 s, so the 1 MiB read cap
+ *     bounds this ingestion-path call at roughly a minute of CPU per manifest, not at "linear in
+ *     the bytes". Measured, not reasoned about: with `uniqueKeys: false` the same 32 000-key file
+ *     composes in 0.18 s and the curve is linear. Turning the check off means a duplicated key
+ *     arrives as two pairs, and Go's YAML — which is what Helm renders with — takes the LAST while
+ *     a scan takes the first, so a duplicated image key is REPORTED rather than picked between.
+ *     (The check's other effect, throwing on any duplicate key anywhere in the file, was the wrong
+ *     stamp anyway: `unreadable` says "may succeed next pass" about a file that will fail forever.)
  *
  * ============================================================================================
  * WHAT IS NOT READ, DELIBERATELY
@@ -120,12 +182,13 @@ import {
   isScalar,
   isSeq,
   parseAllDocuments,
+  Scalar,
   type Node,
-  type Scalar,
+  type Pair,
   type YAMLMap
 } from "yaml";
 
-import { splitImageRef } from "./dockerfile.js";
+import { isDigestShaped, splitImageRef } from "./dockerfile.js";
 import { ManifestParseError, type DeclaredDependency } from "./types.js";
 import { parseComparableVersion } from "./version.js";
 
@@ -137,6 +200,25 @@ const TAG_KEY = "tag";
 const DIGEST_KEY = "digest";
 /** YAML's merge key. Its value is an alias, and the keys it brings in are not in this mapping. */
 const MERGE_KEY = "<<";
+/** The five image keys, in the order a duplicate report reads them. `<<` is deliberately absent:
+ *  a repeated merge key is legal YAML and merges both anchors. */
+const IMAGE_KEYS = [IMAGE_KEY, REGISTRY_KEY, REPOSITORY_KEY, TAG_KEY, DIGEST_KEY] as const;
+
+/**
+ * Is this text usable as an image coordinate at all? (trap 14)
+ *
+ * Deliberately a SHAPE test and not a grammar: the OCI reference grammar would refuse things real
+ * registries accept, and this package's job is to refuse the values that are not coordinates at all
+ * — the empty string, whitespace, and anything that joins to a leading/doubled `/`. Those are the
+ * ones that COLLIDE: `dependency_lines` is keyed `(org, ecosystem, coordinate, major)` org-wide, so
+ * an empty coordinate is not one bad row, it is every component in the org sharing one line.
+ */
+export function isUsableCoordinate(text: string): boolean {
+  if (text === "" || text !== text.trim()) return false;
+  // An empty path segment covers `""`, `"/"`, `"/acme/api"`, `"ghcr.io//api"` and `"acme/api/"`;
+  // whitespace anywhere covers a value that is prose rather than a reference.
+  return text.split("/").every((segment) => segment !== "" && !/\s/.test(segment));
+}
 
 /**
  * One image reference as it was read, before identical ones are merged.
@@ -206,8 +288,50 @@ interface WalkContext {
   readonly push: (occurrence: Occurrence) => void;
 }
 
+/** The six keys this parser cares about, found in ONE pass over a mapping's items (trap 17). */
+interface MappingKeys {
+  /** First pair for each key. `yaml` is composed with `uniqueKeys: false`, so there can be more. */
+  readonly pairs: ReadonlyMap<string, Pair>;
+  /** Keys spelled more than once here. Reported, never picked between — Helm takes the LAST. */
+  readonly duplicated: ReadonlySet<string>;
+}
+
+/**
+ * ONE pass, not one per key.
+ *
+ * The previous shape ran `map.items.find(...)` six times per mapping. That was linear too, and it
+ * was never the cost that mattered — the composer's own duplicate-key scan was (trap 17) — but a
+ * single pass is what lets duplicates be SEEN at all, which turning that scan off makes necessary.
+ */
+function collectKeys(map: YAMLMap): MappingKeys {
+  const pairs = new Map<string, Pair>();
+  const duplicated = new Set<string>();
+  for (const item of map.items) {
+    const key = item.key;
+    if (!isScalar(key)) continue;
+    const name = String(key.value);
+    if (name !== MERGE_KEY && !(IMAGE_KEYS as readonly string[]).includes(name)) continue;
+    if (pairs.has(name)) duplicated.add(name);
+    else pairs.set(name, item);
+  }
+  return { pairs, duplicated };
+}
+
 function joinPath(prefix: string, key: string): string {
   return prefix === "" ? key : `${prefix}.${key}`;
+}
+
+/**
+ * A document with NO CONTENT — `---` on its own, an explicit `null`, a document that is only a
+ * comment (trap 8).
+ *
+ * `yaml` does not report these as `contents: null`; it composes a Scalar node whose `value` is
+ * null. So the "some root is not a mapping" refusal caught them, and a `values.yaml` holding only
+ * `---` was stamped `unreadable` — "this attempt failed and the next may not" about a file whose
+ * next 10 000 passes fail identically. An empty document declares nothing, honestly.
+ */
+function isEmptyDocument(root: Node | null): boolean {
+  return root === null || (isScalar(root) && root.value === null);
 }
 
 function nodeLine(ctx: WalkContext, node: Node): number {
@@ -240,9 +364,17 @@ export function parseKubernetesImages(content: string): DeclaredDependency[] {
     // THE AST, NEVER `toJS`. That is what bounds the work rather than an alias-count cap: alias
     // EXPANSION is a property of resolving a document to plain JS, and this parser never resolves
     // one — it reads nodes, and an alias node is reported `unresolved` at its own site (trap 10).
-    // A billion-laughs values file is therefore linear in the bytes the 4 MB read cap already
-    // bounds, with nothing to expand.
-    documents = parseAllDocuments(content);
+    // A billion-laughs values file is therefore linear in the bytes the read cap already bounds,
+    // with nothing to expand.
+    //
+    // (trap 17) `uniqueKeys: false` IS A MEASURED CHOICE, NOT A LOOSENING. The default check scans
+    // every sibling already composed for each new pair — quadratic in siblings-per-mapping, and
+    // this call sits in the ingestion path behind a 1 MiB read cap: a flat 32 000-key mapping
+    // composes in 7.1 s with it on and 0.18 s with it off. What the check bought (a throw on any
+    // duplicate key) was the wrong outcome anyway — `unreadable` claims the next pass may succeed —
+    // and what it protected against is handled where it matters, on the five image keys, by
+    // `collectKeys` reporting a duplicate instead of silently taking the first.
+    documents = parseAllDocuments(content, { uniqueKeys: false });
   } catch (err) {
     throw new ManifestParseError(
       `the content is not parseable as YAML: ${err instanceof Error ? err.message : String(err)}`,
@@ -259,8 +391,8 @@ export function parseKubernetesImages(content: string): DeclaredDependency[] {
   // (traps 8, 12) A 404 HTML BODY IS A VALID YAML SCALAR. `[]` for it would read as "this component
   // declares no images" and would prune every image row this path holds — a dozen of them, from one
   // file. A stream with no mapping anywhere, but with something that is not nothing, is not a
-  // Kubernetes document.
-  if (!anyMapping && roots.some((root) => root !== null && !isMap(root))) {
+  // Kubernetes document. An EMPTY document is nothing, whatever node `yaml` composes for it.
+  if (!anyMapping && roots.some((root) => !isEmptyDocument(root) && !isMap(root))) {
     throw new ManifestParseError(
       "no document in this YAML stream has a mapping at its root, so it is not a Helm values file " +
         "or a Kubernetes manifest (a 404 body, an HTML error page and a Git-LFS pointer all land here)"
@@ -279,27 +411,39 @@ export function parseKubernetesImages(content: string): DeclaredDependency[] {
     // (trap 7) A document that is not a mapping is skipped rather than fatal — the throw above has
     // already refused the case where NO document is one.
     if (!isMap(root)) return;
-    walk(root, multiDocument ? `doc[${index}]` : "", ctx);
+    walk(root, multiDocument ? `doc[${index}]` : "", ctx, false);
   });
 
   return toDeclarations(occurrences);
 }
 
-/** Every mapping in the document is examined, and every mapping is examined the same way. */
-function walk(node: Node, path: string, ctx: WalkContext): void {
+/**
+ * Every mapping in the document is examined, and every mapping is examined the same way.
+ *
+ * `underImageKey` is trap 13's rule (b) and it is the ONLY context this walk carries: true for the
+ * mapping that is the value of an exact `image:` key, and for a mapping inside a sequence that is.
+ * It is not inherited any further — a mapping two hops under `image:` is ordinary again — because
+ * "somewhere below a key called image" is precisely the loose reading that mints phantoms.
+ */
+function walk(node: Node, path: string, ctx: WalkContext, underImageKey: boolean): void {
   if (isMap(node)) {
-    readMapping(node, path, ctx);
+    readMapping(node, path, ctx, underImageKey);
     for (const pair of node.items) {
       const key = pair.key;
       const value = pair.value;
       if (!isScalar(key)) continue;
-      if (isMap(value) || isSeq(value)) walk(value as Node, joinPath(path, String(key.value)), ctx);
+      const name = String(key.value);
+      if (isMap(value) || isSeq(value)) {
+        walk(value as Node, joinPath(path, name), ctx, name === IMAGE_KEY);
+      }
     }
     return;
   }
   if (isSeq(node)) {
+    // A sequence does not introduce a key, so it neither grants nor revokes context: `image: [{…}]`
+    // keeps it, and `containers: [{…}]` never had it (each container mapping earns it by rule (a)).
     node.items.forEach((item, index) => {
-      if (isMap(item) || isSeq(item)) walk(item as Node, `${path}[${index}]`, ctx);
+      if (isMap(item) || isSeq(item)) walk(item as Node, `${path}[${index}]`, ctx, underImageKey);
     });
   }
 }
@@ -314,14 +458,11 @@ function walk(node: Node, path: string, ctx: WalkContext): void {
  * other keys a mapping value IS nonsense (`tag:` cannot be a mapping), and stays `unresolved`.
  */
 function readKey(
-  map: YAMLMap,
-  key: string,
-  path: string,
+  pair: Pair | undefined,
+  keyPath: string,
   mappingIsAnotherMapping = false
 ): KeyRead {
-  const pair = map.items.find((item) => isScalar(item.key) && String(item.key.value) === key);
   if (pair === undefined) return { kind: "absent" };
-  const keyPath = joinPath(path, key);
   const value = pair.value as Node | null | undefined;
   if (value === null || value === undefined) return { kind: "absent" };
   if (mappingIsAnotherMapping && isMap(value)) return { kind: "absent" };
@@ -338,6 +479,17 @@ function readKey(
     return {
       kind: "unresolved",
       why: "the value is not a scalar, so it names no single version or repository",
+      node: value,
+      path: keyPath
+    };
+  }
+  // (trap 1) A BLOCK SCALAR'S SOURCE IS NOT AN EDIT TARGET. `tag: |` carries the block's own
+  // trailing newline in `source`, and its text spans lines, so neither the raw source nor a
+  // trimmed copy is a string an actuator can find and replace on one line of a diff.
+  if (value.type === Scalar.BLOCK_LITERAL || value.type === Scalar.BLOCK_FOLDED) {
+    return {
+      kind: "unresolved",
+      why: "the value is a YAML block scalar, whose text spans lines and carries the block's own trailing newline, so it is not a single version string and not something one line of a diff can rewrite",
       node: value,
       path: keyPath
     };
@@ -372,35 +524,18 @@ function joinNotes(...parts: ReadonlyArray<string | undefined>): string | undefi
 }
 
 /**
- * THE WHOLE OF THE SHAPE LOGIC, applied to EVERY mapping — which is what makes one parser cover both
- * a chart's `image:` block and a pod spec's `containers[].image` with no per-convention branch, and
- * what makes raw Kubernetes manifests a registration decision rather than parser work.
+ * THE WHOLE OF THE SHAPE LOGIC, applied to every mapping IN IMAGE CONTEXT — which is what makes one
+ * parser cover both a chart's `image:` block and a pod spec's `containers[].image` with no
+ * per-convention branch, and what makes raw Kubernetes manifests a registration decision rather
+ * than parser work.
+ *
+ * IMAGE CONTEXT IS THE WHOLE GUARD (trap 13). `repository`, `registry`, `tag` and `digest` are
+ * ordinary English words that ordinary values files use for ordinary things, and reading them off
+ * every mapping minted a dependency for each one. They are read here only when the `image` key —
+ * the same marker the pod-spec walk has always used — says this mapping is about an image.
  */
-function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
-  // (trap 10) A MERGE KEY BRINGS IN KEYS THAT ARE NOT IN THIS MAPPING'S AST, so the only honest
-  // report is the merge itself — silence about a merged-in image block is the same
-  // absence-read-as-nothing this parser exists to remove. Over-reporting is deliberate and points
-  // the same way as trap 8's cost: it never prunes and never mints a row.
-  const merge = map.items.find(
-    (item) => isScalar(item.key) && String(item.key.value) === MERGE_KEY
-  );
-  if (merge !== undefined) {
-    const mergeNode = (merge.value ?? merge.key ?? null) as Node;
-    ctx.push({
-      resolved: false,
-      coordinate: joinPath(path, MERGE_KEY),
-      pinned: false,
-      keyPath: joinPath(path, MERGE_KEY),
-      line: nodeLine(ctx, mergeNode),
-      note: "this mapping merges keys from a YAML anchor (<<) and the merged keys are not written here — any image reference among them is declared at the anchor, whose edit site is shared with every other mapping that merges it"
-    });
-  }
-
-  const image = readKey(map, IMAGE_KEY, path, true);
-  const registry = readKey(map, REGISTRY_KEY, path);
-  const repository = readKey(map, REPOSITORY_KEY, path);
-  const tag = readKey(map, TAG_KEY, path);
-  const digest = readKey(map, DIGEST_KEY, path);
+function readMapping(map: YAMLMap, path: string, ctx: WalkContext, underImageKey: boolean): void {
+  const keys = collectKeys(map);
 
   const pushUnresolved = (
     read: Extract<KeyRead, { kind: "unresolved" }>,
@@ -418,6 +553,89 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
     });
   };
 
+  // `image` is read FIRST because it is what establishes context: an `image:` scalar here (rule a),
+  // or this mapping being the value of an `image:` key (rule b, carried in by the walk). An
+  // `image:` whose value is a MAPPING deliberately does NOT put THIS mapping in context — that
+  // mapping is the parent of the image block, and its own `tag:` sibling is not the image's tag.
+  const image = readKey(keys.pairs.get(IMAGE_KEY), joinPath(path, IMAGE_KEY), true);
+  if (image.kind === "unresolved") {
+    // Reported even outside rule (b): the mapping spells `image`, so this IS an image reference,
+    // and it is one that cannot be read (an alias, a sequence, a Go template).
+    pushUnresolved(image);
+    return;
+  }
+  if (!underImageKey && image.kind !== "text") return; // not about an image at all — say nothing
+
+  // (trap 17) A DUPLICATED IMAGE KEY IS NOT PICKED BETWEEN. `uniqueKeys` is off for the composer's
+  // quadratic scan, so both pairs arrive; Helm's Go YAML takes the LAST and `collectKeys` kept the
+  // FIRST. Reporting is the only honest option, and it is scoped to image context like everything
+  // else here — a chart repeating some unrelated key is not this parser's business.
+  const duplicates = IMAGE_KEYS.filter((name) => keys.duplicated.has(name));
+  if (duplicates.length > 0) {
+    for (const name of duplicates) {
+      const pair = keys.pairs.get(name);
+      if (pair === undefined) continue;
+      const keyPath = joinPath(path, name);
+      ctx.push({
+        resolved: false,
+        coordinate: keyPath,
+        pinned: false,
+        keyPath,
+        line: nodeLine(ctx, (pair.value ?? pair.key) as Node),
+        note: `'${name}' is declared more than once in this mapping; Helm's YAML takes the last and a reader takes the first, so which one this image actually uses is not knowable from the file — remove the duplicate`
+      });
+    }
+    return;
+  }
+
+  // (trap 10) A MERGE KEY BRINGS IN KEYS THAT ARE NOT IN THIS MAPPING'S AST, so the only honest
+  // report is the merge itself — silence about a merged-in image block is the same
+  // absence-read-as-nothing this parser exists to remove. IN IMAGE CONTEXT ONLY (trap 16): a
+  // `<<: *resourceDefaults` on a resources or nodeSelector block is ordinary YAML, and reporting it
+  // stamped the whole manifest `unsupported`, which is a warning that fires on everything.
+  const merge = keys.pairs.get(MERGE_KEY);
+  if (merge !== undefined) {
+    const mergeNode = (merge.value ?? merge.key ?? null) as Node;
+    ctx.push({
+      resolved: false,
+      coordinate: joinPath(path, MERGE_KEY),
+      pinned: false,
+      keyPath: joinPath(path, MERGE_KEY),
+      line: nodeLine(ctx, mergeNode),
+      note: "this mapping merges keys from a YAML anchor (<<) and the merged keys are not written here — any image reference among them is declared at the anchor, whose edit site is shared with every other mapping that merges it"
+    });
+  }
+
+  const registry = readKey(keys.pairs.get(REGISTRY_KEY), joinPath(path, REGISTRY_KEY));
+  const repository = readKey(keys.pairs.get(REPOSITORY_KEY), joinPath(path, REPOSITORY_KEY));
+  const tag = readKey(keys.pairs.get(TAG_KEY), joinPath(path, TAG_KEY));
+  const digest = readKey(keys.pairs.get(DIGEST_KEY), joinPath(path, DIGEST_KEY));
+
+  /**
+   * (trap 15) `registry: ""` IS "THE DEFAULT REGISTRY", which is what bitnami-style charts spell
+   * when nothing has overridden `global.imageRegistry`. Treated as text it joins to `/acme/api` and
+   * splits one image across two coordinates depending on whether a values file said the registry.
+   */
+  const registryRead =
+    registry.kind === "text" && registry.text.trim() !== "" ? registry : undefined;
+  const registryText = registryRead?.text;
+
+  /** Refuse an unusable coordinate half at its own key, visibly (trap 14). */
+  const pushUnusable = (
+    read: Extract<KeyRead, { kind: "text" }>,
+    what: "registry" | "repository"
+  ): void => {
+    ctx.push({
+      resolved: false,
+      coordinate: read.path,
+      declared: read.text,
+      pinned: false,
+      keyPath: read.path,
+      line: nodeLine(ctx, read.node),
+      note: `'${read.text}' is not usable as an image ${what} (it is empty, or it has whitespace or an empty path segment). An empty coordinate is not one bad row: 'dependency_lines' is keyed on (org, ecosystem, coordinate, major) org-wide, so every component carrying this placeholder would collapse onto ONE line and one team's subscription would govern another's`
+    });
+  };
+
   // -----------------------------------------------------------------------------------------
   // THE COORDINATE — one scalar (`image: repo/name:tag`), or `repository` with an optional
   // `registry`. Never both: `image` as a MAPPING is read when the walk reaches that mapping.
@@ -431,15 +649,19 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
   /** Was the coordinate CONSTRUCTED, i.e. does it appear nowhere contiguously in the file? */
   let splitNote: string | undefined;
 
-  if (image.kind === "unresolved") {
-    pushUnresolved(image);
-    return;
-  }
   if (image.kind === "text") {
     const split = splitImageRef(image.text);
-    if (split.name === "" || split.tag === "" || split.digest === "") {
-      // Refused outright rather than minted: an empty name is an identity every malformed manifest
-      // in the org would collide on, and an empty digest would be recorded as a pin to nothing.
+    // Refused outright rather than minted (traps 5, 14): an unusable name is an identity every
+    // malformed manifest in the org would COLLIDE on, and a digest that is not one would be
+    // recorded as a pin to bytes no registry can produce.
+    const malformed = !isUsableCoordinate(split.name)
+      ? "its repository is empty, or has whitespace or an empty path segment"
+      : split.tag === ""
+        ? "an empty tag"
+        : split.digest !== undefined && !isDigestShaped(split.digest)
+          ? `'${split.digest}' is not an OCI digest (an algorithm such as sha256, then ':', then its full-length hex)`
+          : undefined;
+    if (malformed !== undefined) {
       ctx.push({
         resolved: false,
         coordinate: image.path,
@@ -447,7 +669,7 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
         pinned: false,
         keyPath: image.path,
         line: nodeLine(ctx, image.node),
-        note: `'${image.text}' is not a well-formed image reference (an empty name, tag or digest)`
+        note: `'${image.text}' is not a well-formed image reference (${malformed})`
       });
       return;
     }
@@ -456,6 +678,12 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
     coordinatePath = image.path;
     refTag = split.tag;
     refDigest = split.digest;
+    // STATED RESIDUE (trap 13). ingress-nginx and friends put the repository under `image:` beside
+    // a `registry:`; a pod spec's `image:` is a COMPLETE reference and joining would double a
+    // registry it already spells. So the sibling is not joined — and not silently dropped either.
+    if (registryText !== undefined) {
+      splitNote = `a sibling 'registry: ${registryText}' is NOT joined onto this coordinate — an 'image:' scalar is a complete reference and joining would double a registry it may already name; if this chart means them to be joined, the coordinate SCP records is the repository half alone`;
+    }
   } else if (repository.kind === "unresolved") {
     pushUnresolved(repository);
     return;
@@ -464,13 +692,22 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
       pushUnresolved(registry);
       return;
     }
-    coordinate = registry.kind === "text" ? `${registry.text}/${repository.text}` : repository.text;
+    if (!isUsableCoordinate(repository.text)) {
+      pushUnusable(repository, "repository");
+      return;
+    }
+    if (registryRead !== undefined && !isUsableCoordinate(registryRead.text)) {
+      pushUnusable(registryRead, "registry");
+      return;
+    }
+    coordinate =
+      registryText !== undefined ? `${registryText}/${repository.text}` : repository.text;
     coordinateNode = repository.node;
     coordinatePath = repository.path;
     // Stated on the entry rather than hidden, because it is exactly what makes this shape
     // unbumpable by a textual, single-changed-line verifier.
     splitNote =
-      registry.kind === "text"
+      registryText !== undefined
         ? "the coordinate is constructed from `registry` + `/` + `repository`, so it appears nowhere contiguously in this file"
         : "the coordinate is on the `repository` line and the version is on another, so no single line of this file carries both";
   } else if (tag.kind === "unresolved") {
@@ -511,9 +748,38 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
   }
 
   const declaredTag = refTag ?? (tag.kind === "text" ? tag.text : undefined);
-  const declaredDigest = refDigest ?? (digest.kind === "text" ? digest.text : undefined);
   const versionNode = refTag === undefined && tag.kind === "text" ? tag.node : coordinateNode;
   const versionPath = refTag === undefined && tag.kind === "text" ? tag.path : coordinatePath;
+
+  // (trap 5) A `digest:` KEY THAT DOES NOT HOLD A DIGEST. `refDigest` came out of the one-scalar
+  // form and was already refused above; this is the split shape's own key, and a `digest: latest`
+  // or a truncated hex string here lands in `component_dependencies.resolved_digest` and is then
+  // compared against what a registry actually publishes — a pin to bytes that can never match.
+  //
+  // Refused WITHOUT refusing the declaration: the coordinate and the tag beside it are still read
+  // correctly, so dropping them too would lose a real dependency over a bad neighbouring key. The
+  // bad digest gets its own reported entry and the surviving row says the digest was refused.
+  const digestRefused =
+    digest.kind === "text" && refDigest === undefined && !isDigestShaped(digest.text)
+      ? digest
+      : undefined;
+  if (digestRefused !== undefined) {
+    ctx.push({
+      resolved: false,
+      coordinate: digestRefused.path,
+      declared: digestRefused.text,
+      pinned: false,
+      keyPath: digestRefused.path,
+      line: nodeLine(ctx, digestRefused.node),
+      note: `'${digestRefused.text}' is not an OCI digest (an algorithm such as sha256, then ':', then its full-length hex), so it identifies no bytes; it is reported rather than recorded as a pin to nothing`
+    });
+  }
+  const declaredDigest =
+    refDigest ?? (digest.kind === "text" && digestRefused === undefined ? digest.text : undefined);
+  const digestNote =
+    digestRefused === undefined
+      ? undefined
+      : "the `digest:` beside this declaration is not an OCI digest and was NOT recorded; the row is pinned by its tag alone";
 
   if (declaredTag === undefined) {
     // (traps 4, 5) A digest-only pin, or a bare name with neither.
@@ -528,6 +794,7 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
         declaredDigest === undefined
           ? "no tag is declared; Kubernetes resolves this to :latest at admission, which is a resolution rule and is deliberately not recorded as the declared version"
           : "digest-pinned with no tag; there is no version string to compare, so a bump must be driven by the subscribed line's tag pattern",
+        digestNote,
         splitNote
       )
     });
@@ -555,6 +822,7 @@ function readMapping(map: YAMLMap, path: string, ctx: WalkContext): void {
           : version.precision === 2
             ? `tag "${declaredTag}" is a moving tag: it names a line, not a point, and today resolves to the newest release on it`
             : undefined,
+      digestNote,
       splitNote
     )
   });
@@ -622,6 +890,11 @@ function toDeclarations(occurrences: readonly Occurrence[]): DeclaredDependency[
       ...(first.digest !== undefined ? { digest: first.digest } : {}),
       declaredIn: first.keyPath,
       line: first.line,
+      // (trap 9) THE MERGE COUNT AS A NUMBER, not only as the sentence below it. The prose note is
+      // what an operator reads; this is what a gate reads. An actuator that edits ONE of n merged
+      // sites leaves the other n-1 behind, and a fact that exists only as English cannot refuse
+      // that — `@scp/plugin-managed-dep`'s `locateVersionLine` declines to anchor when this is > 1.
+      occurrences: members.length,
       ...(note === undefined ? {} : { note })
     });
   }

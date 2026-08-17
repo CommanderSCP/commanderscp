@@ -393,6 +393,42 @@ dependency" rather than "SCP cannot read where you declared it".
    corrected in passing:** the parsers were said to be "trivially usable from a runner image", but
    `apps/runner-dep` is `FROM scratch` plus BusyBox and has never contained a Node runtime.
 
+7. **THE `image` KEY IS WHAT MAKES A MAPPING AN IMAGE — clause 4's reporting is worth nothing if it
+   fires on ordinary charts** (amended 2026-08-17, M21.7 round 5). The first build read
+   `repository`, `registry`, `tag` and `digest` off EVERY mapping that carried them. Those are
+   ordinary English words that ordinary values files use for ordinary things — a `sources:` block's
+   upstream `repository`, a Kafka client's `schemaRegistry.registry`, a package feed's `registry`, a
+   `tag` used as a pod label, a `<<:` merging resource presets — so each minted either a phantom
+   dependency or an unresolved declaration, and a manifest whose declarations are all unresolved is
+   exactly what clause 4 stamps `unsupported`. A warning that fires on every chart in the estate is
+   a warning nobody reads, which destroys the honesty mechanism clause 4 exists to provide; and a
+   phantom coordinate is worse still, because it makes SCP author a bump against something that does
+   not exist. The rule is now the one the pod-spec walk always used: a mapping is read for image
+   keys only when it carries an exact `image` key whose value is a scalar, or IS the value of an
+   exact `image` key (one hop, never deeper). Three consequences are normative:
+   - **An empty or near-empty coordinate is refused, never minted.** `repository: ""` is a live
+     chart placeholder, and a line is keyed `(org, ecosystem, coordinate, major)` ORG-WIDE — so an
+     empty coordinate is not one bad row but a cross-component MERGE: every component carrying the
+     placeholder collapses onto one line, one team's subscription silently governs another's, and a
+     bump dispatched for it fans out across components that never declared the image.
+   - **`registry: ""` means "the default registry", not "a registry named empty".** It is the common
+     spelling, not an edge; joined it yields `/acme/api` and splits one image across two coordinates
+     depending on whether a values file happened to name the registry. Empty is ABSENT.
+   - **A `digest:` is checked to BE a digest** (`algorithm:hex`, at the registered length for
+     sha256/sha512) before it is recorded, in BOTH image parsers. `resolved_digest` is what the
+     version poller compares a registry's answer against, so `sha256:feedface` is a row that reads
+     as identity-pinned and can never match anything. Fixing it only in the YAML reader would have
+     been the same incomplete-census failure clause 4's second half exists to avoid.
+
+   Two measured corrections ride with it. `yaml`'s duplicate-key check rescans every sibling already
+   composed for each new pair — **quadratic in siblings-per-mapping**, and this call sits in the
+   ingestion path behind a 1 MiB read cap (a flat 32 000-key mapping composes in 7.1 s with the
+   check on and 0.18 s with it off). It is turned off, and the five image keys carry their own
+   duplicate report instead, since Helm's Go YAML takes the LAST duplicate where a scan takes the
+   first. And a `values.yaml` whose only document is empty (`---`) was stamped `unreadable` — "this
+   attempt failed and the next may not" — about a file that will fail identically forever; an empty
+   document is an honest empty, and honest empty is `ok / 0 rows`.
+
 ### 5. Package dependencies never use `depends_on`
 
 They mint no `depends_on` edge, so the plan compiler's toposort and cycle check cannot see them

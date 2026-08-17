@@ -14,11 +14,46 @@ import { ManifestParseError, type DeclaredDependency } from "./types.js";
  * The one place a count DOES appear is as a negative control beside a named assertion: e.g. that a
  * file full of `imagePullPolicy`/`imagePullSecrets` keys yields NOTHING, which is what proves the
  * exact-key rule is doing work rather than the fixture being uninteresting.
+ *
+ * MUTATION LOG — ROUND 5, the false positives (each applied ALONE against a green suite, then
+ * reverted). The whole suite passed on the first run after the fix, which is the shape a vacuous
+ * test has, so every one of these was run before the round was called done.
+ *
+ *  1. Delete the image-context guard (`if (!underImageKey && image.kind !== "text") return;`)
+ *     → 6 named tests red, all in "T13 — the `image` key is what makes a mapping an image".
+ *  2. `isUsableCoordinate` returns true unconditionally → 5 red, incl. the pre-existing
+ *     "a malformed reference is refused outright" — so the empty-coordinate rule is one rule.
+ *  2b. Keep the empty check, delete only the per-segment check → 3 red. (Deleting only the
+ *     `text === ""` clause kills NOTHING: it is redundant with the segment check, kept for
+ *     legibility. Recorded rather than quietly left as an untested branch.)
+ *  3. `registryRead` drops the `.trim() !== ""` test → 4 red, incl. the two realistic-file cases.
+ *  4. Hoist the merge-key report above the context guard (the pre-fix behaviour) → 3 red.
+ *  5. `parseAllDocuments(content)` without `{ uniqueKeys: false }` → 3 red, and the timing budget
+ *     fails at 7.1 s against its 2 s bound rather than passing slowly.
+ *  6. Delete the BLOCK_LITERAL/BLOCK_FOLDED refusal in `readKey` → 1 red.
+ *  7. `isDigestShaped` returns true → 3 red, ONE OF THEM IN `dockerfile.test.ts` — which is the
+ *     point of putting the helper in `dockerfile.ts` rather than here.
+ *  8. `isEmptyDocument` narrowed back to `root === null` → 1 red.
+ *  9. Suppress the duplicate-image-key report → 1 red.
+ *
+ * FIXTURE MUTATION: stripping the non-image furniture out of `REALISTIC_VALUES` leaves the suite
+ * green — expected, since removing a hazard cannot fail a test. What proves the fixture is
+ * load-bearing is mutation 1: with the guard gone, that one file alone reddens six cases.
  */
 
 /** The entry for one coordinate, or `undefined`. Assertions name the entry they mean. */
 const at = (declarations: readonly DeclaredDependency[], coordinate: string) =>
   declarations.find((d) => d.coordinate === coordinate);
+
+/**
+ * A REAL sha256 digest, spelled at full length everywhere a fixture needs one.
+ *
+ * `sha256:deadbeef` used to do this job, and it is not a digest — it is 8 hex characters where 64
+ * belong. Since M21.7's own fix checks the shape, a short fixture would now pass for the wrong
+ * reason (refused as malformed) in tests written to prove the digest is CARRIED.
+ */
+const DIGEST = "sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7";
+const DIGEST_2 = "sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b";
 
 describe("parseKubernetesImages — the shapes that ARE read (§2.1)", () => {
   it("A: one scalar `image: repo/name:tag` is a pinned oci declaration on the same line", () => {
@@ -42,9 +77,9 @@ describe("parseKubernetesImages — the shapes that ARE read (§2.1)", () => {
     // implementation is how two parsers come to place one image on two different lines.
     const port = at(parseKubernetesImages("image: localhost:5000/foo:1.2\n"), "localhost:5000/foo");
     expect(port?.declared).toBe("1.2");
-    const both = at(parseKubernetesImages("image: acme/api:1.2.3@sha256:abc123\n"), "acme/api");
+    const both = at(parseKubernetesImages(`image: acme/api:1.2.3@${DIGEST}\n`), "acme/api");
     expect(both?.declared).toBe("1.2.3");
-    expect(both?.digest).toBe("sha256:abc123");
+    expect(both?.digest).toBe(DIGEST);
   });
 
   it("B: `image: {repository, tag}` is read, and the note says no single line carries both", () => {
@@ -74,20 +109,18 @@ describe("parseKubernetesImages — the shapes that ARE read (§2.1)", () => {
 
   it("D: a tag AND a digest are both carried, and neither is derived from the other", () => {
     const entry = at(
-      parseKubernetesImages(
-        "image:\n  repository: acme/api\n  tag: 1.2.3\n  digest: sha256:deadbeef\n"
-      ),
+      parseKubernetesImages(`image:\n  repository: acme/api\n  tag: 1.2.3\n  digest: ${DIGEST}\n`),
       "acme/api"
     );
     // Tag is a mutable label; the digest is identity. Collapsing them loses one of the two facts.
     expect(entry?.declared).toBe("1.2.3");
-    expect(entry?.digest).toBe("sha256:deadbeef");
+    expect(entry?.digest).toBe(DIGEST);
   });
 
   it("D: a digest-only pin is `pinned` with NO comparable version, so it mints no line", () => {
-    const entry = at(parseKubernetesImages("image: acme/api@sha256:deadbeef\n"), "acme/api");
+    const entry = at(parseKubernetesImages(`image: acme/api@${DIGEST}\n`), "acme/api");
     expect(entry?.constraint).toBe("pinned");
-    expect(entry?.digest).toBe("sha256:deadbeef");
+    expect(entry?.digest).toBe(DIGEST);
     expect(entry?.declared).toBeUndefined();
     expect(entry?.version).toBeUndefined();
   });
@@ -220,13 +253,13 @@ describe("the shapes reported `unresolved` — FOUND and not readable, never sil
     expect(entry?.note).toContain("alias");
   });
 
-  it("G: a MERGE KEY is reported, because the keys it brings in are not in this mapping at all", () => {
+  it("G: a MERGE KEY IN AN IMAGE BLOCK is reported — the merged keys are not in this mapping", () => {
     // Silence here would be the exact absence-read-as-nothing this parser exists to remove: the
     // merged mapping may declare an image and this parser cannot see it.
     const declarations = parseKubernetesImages(
-      "base: &b\n  repository: acme/api\n  tag: 1.0.0\napp:\n  <<: *b\n"
+      "image: &img\n  repository: acme/api\n  tag: 1.0.0\nsidecar:\n  image:\n    <<: *img\n"
     );
-    const merge = at(declarations, "app.<<");
+    const merge = at(declarations, "sidecar.image.<<");
     expect(merge?.constraint).toBe("unresolved");
     expect(merge?.note).toContain("merges keys from a YAML anchor");
     // The ANCHOR's own mapping is a real declaration site and is still read normally.
@@ -344,6 +377,18 @@ describe("T9 — the same image twice in one file is ONE row, and says so", () =
     expect(entry?.note).toContain("spec.containers[0].image");
     expect(entry?.note).toContain("spec.containers[1].image");
     expect(entry?.note).toContain("ONE inventory row");
+    // AND AS A NUMBER. The sentence above is for an operator; this is what a gate can read. A bump
+    // actuator that edits one of two merged sites leaves the other behind, and it must be able to
+    // refuse on a fact rather than by matching the prose of a note.
+    expect(entry?.occurrences).toBe(2);
+  });
+
+  it("an UNMERGED declaration reports one occurrence, so the field is never 'set only when bad'", () => {
+    // The negative control for the assertion above: if `occurrences` were populated only on the
+    // merge path, `occurrences > 1` would be indistinguishable from `occurrences === undefined` for
+    // a consumer, and the gate would be reading absence rather than a count.
+    const declarations = parseKubernetesImages("image: acme/api:1.2.3\n");
+    expect(at(declarations, "acme/api")?.occurrences).toBe(1);
   });
 
   it("two DIFFERENT versions of one image stay two entries, each warned about the other", () => {
@@ -354,6 +399,350 @@ describe("T9 — the same image twice in one file is ONE row, and says so", () =
     for (const entry of declarations) {
       expect(entry.note).toContain("more than once with differing versions");
     }
+  });
+});
+
+/**
+ * A values file with the FURNITURE a real chart carries.
+ *
+ * Every false positive this block exists to catch comes from a file richer than a test author
+ * invents: the shapes below are taken from charts that ship — a `sources:` block that names an
+ * upstream repository and its release tag, a Kafka client's `schemaRegistry.registry`, a package
+ * feed's `registry`, a `<<:` merging resource presets, a `tag` used as a pod LABEL, and the
+ * `registry: ""` placeholder that means "the default registry". Exactly TWO images are declared in
+ * it, and a parser that reads `repository`/`registry`/`tag` off whatever mapping carries them
+ * reports six.
+ */
+const REALISTIC_VALUES = [
+  "## upstream provenance this chart records verbatim",
+  "sources:",
+  "  - name: upstream",
+  "    repository: https://github.com/acme/api",
+  "    tag: v2.4.0",
+  "",
+  "## the schema registry the client talks to — a URL, not an image host",
+  "kafka:",
+  "  bootstrapServers: kafka-0.kafka.svc:9092",
+  "  schemaRegistry:",
+  "    registry: http://schema-registry.kafka.svc:8081",
+  "    subjectNameStrategy: TopicNameStrategy",
+  "",
+  "## the package feed an init container installs from",
+  "npm:",
+  "  registry: https://registry.npmjs.org",
+  "  scope: '@acme'",
+  "",
+  "resourcePresets: &resources",
+  "  limits:",
+  "    cpu: 500m",
+  "    memory: 512Mi",
+  "",
+  "global:",
+  "  imageRegistry: ''",
+  "  imagePullSecrets: []",
+  "",
+  "controller:",
+  "  replicaCount: 2",
+  "  imagePullPolicy: IfNotPresent",
+  "  imagePullSecrets:",
+  "    - name: regcred",
+  "  resources:",
+  "    <<: *resources",
+  "  podLabels:",
+  "    tag: canary",
+  "  image:",
+  "    registry: ''",
+  "    repository: acme/controller",
+  "    tag: 1.11.2",
+  "",
+  "metrics:",
+  "  enabled: true",
+  "  image: ghcr.io/acme/metrics:0.7.1"
+].join("\n");
+
+describe("T13 — the `image` key is what makes a mapping an image, and nothing else is", () => {
+  it("reads exactly the TWO images in a realistic values file and invents no others", () => {
+    // THE FALSE-POSITIVE CLASS, END TO END. A phantom coordinate makes SCP author a bump against
+    // something that does not exist, or rewrite the wrong line in a real file.
+    const declarations = parseKubernetesImages(REALISTIC_VALUES);
+    expect(declarations.map((d) => d.coordinate)).toEqual([
+      "acme/controller",
+      "ghcr.io/acme/metrics"
+    ]);
+    // `registry: ''` is the placeholder for "the default registry", so the coordinate is the
+    // repository alone — NOT `/acme/controller`, which would be a second line for the same image.
+    expect(at(declarations, "acme/controller")?.declared).toBe("1.11.2");
+  });
+
+  it("and reports NOTHING unresolved about it, because `unsupported` must stay meaningful", () => {
+    // `projectIngestionStamp` stamps a manifest `unsupported` and its component `partial` when
+    // every declaration in it is unresolved, and names every unresolved one in the Decision. A
+    // parser that reported this file's `sources[0].tag`, its two non-image `registry` keys and its
+    // `resources.<<` would fire that warning on ordinary charts — and a warning that fires on
+    // everything is a warning nobody reads, which destroys the honesty mechanism M21.7 exists for.
+    expect(
+      parseKubernetesImages(REALISTIC_VALUES).filter((d) => d.constraint === "unresolved")
+    ).toEqual([]);
+  });
+
+  it("a bare `tag:` is reported INSIDE an image block and silent OUTSIDE one — the same key", () => {
+    // The pair is the point: the honest report the round was built for survives, and the identical
+    // key elsewhere in the file says nothing. One of these without the other is either the
+    // false-positive class or a regression of the owner's called-out case.
+    const inside = parseKubernetesImages("controller:\n  image:\n    tag: 1.4.2\n");
+    expect(inside.map((d) => d.coordinate)).toEqual(["controller.image.tag"]);
+    expect(inside[0]?.constraint).toBe("unresolved");
+    expect(parseKubernetesImages("controller:\n  podLabels:\n    tag: 1.4.2\n")).toEqual([]);
+  });
+
+  it("`repository:` and `registry:` outside an image block mint nothing at all", () => {
+    expect(
+      parseKubernetesImages(
+        "sources:\n  - repository: https://github.com/acme/api\n    tag: v2.4.0\n"
+      )
+    ).toEqual([]);
+    expect(
+      parseKubernetesImages("npm:\n  registry: https://registry.npmjs.org\n  scope: '@acme'\n")
+    ).toEqual([]);
+  });
+
+  it("an `image:` MAPPING does not put its PARENT in context — the parent's own `tag:` is not read", () => {
+    // The image block's context belongs to the block, one hop. Granting it to the parent reads
+    // `controller.tag` — a chart version, here — as a version for `acme/api`.
+    const declarations = parseKubernetesImages(
+      "controller:\n  tag: chart-2.0\n  image:\n    repository: acme/api\n    tag: 1.2.3\n"
+    );
+    expect(declarations.map((d) => d.coordinate)).toEqual(["acme/api"]);
+    expect(at(declarations, "acme/api")?.declared).toBe("1.2.3");
+  });
+
+  it("a `<<:` merge is reported in an image block and ignored on a resources block", () => {
+    // Scoped for the same reason: `<<: *resourceDefaults` is ordinary YAML, and reporting it
+    // stamped the whole manifest `unsupported`.
+    expect(
+      parseKubernetesImages("presets: &p\n  cpu: 500m\ncontroller:\n  resources:\n    <<: *p\n")
+    ).toEqual([]);
+    const inImage = parseKubernetesImages(
+      "defaults: &d\n  repository: acme/api\nimage:\n  <<: *d\n  tag: 1.2.3\n"
+    );
+    expect(at(inImage, "image.<<")?.constraint).toBe("unresolved");
+  });
+
+  it("STATED RESIDUE: a sibling `registry` beside an `image:` SCALAR is not joined, and says so", () => {
+    // ingress-nginx's shape: the repository lives under `image:` beside a `registry:`. An `image:`
+    // scalar is a complete reference in a pod spec, so joining would double a registry it may
+    // already name — the un-joined half is named instead of silently dropped.
+    const entry = at(
+      parseKubernetesImages(
+        "controller:\n  image:\n    registry: registry.k8s.io\n    image: ingress-nginx/controller\n    tag: v1.11.2\n"
+      ),
+      "ingress-nginx/controller"
+    );
+    expect(entry?.declared).toBe("v1.11.2");
+    expect(entry?.note).toContain("is NOT joined onto this coordinate");
+  });
+});
+
+describe("T14 — an EMPTY coordinate is a SHARED line, not one bad row", () => {
+  it('`repository: ""` is refused outright and reported at its own key path', () => {
+    // `dependency_lines` is keyed `(org, ecosystem, coordinate, major)` ORG-WIDE, so an empty
+    // coordinate is a cross-component merge: every component carrying this placeholder lands on
+    // one line, one team's subscription governs another's, and a bump fans out across components
+    // that never declared the image.
+    const [entry, ...rest] = parseKubernetesImages('image:\n  repository: ""\n  tag: 1.2.3\n');
+    expect(rest).toEqual([]);
+    expect(entry?.coordinate).toBe("image.repository");
+    expect(entry?.constraint).toBe("unresolved");
+    expect(entry?.version).toBeUndefined();
+    expect(entry?.note).toContain("would collapse onto ONE line");
+  });
+
+  it("near-empty spellings are refused too, and none of them mints a coordinate", () => {
+    for (const repository of ['""', '"   "', '"/"', '"acme//api"', '"acme/api/"', '"acme api"']) {
+      const declarations = parseKubernetesImages(
+        `image:\n  repository: ${repository}\n  tag: 1.2.3\n`
+      );
+      expect(
+        declarations.map((d) => d.constraint),
+        repository
+      ).toEqual(["unresolved"]);
+      expect(declarations[0]?.coordinate, repository).toBe("image.repository");
+    }
+    // And with a registry beside it, so the refusal is not something the join happens to hide.
+    const joined = parseKubernetesImages(
+      'image:\n  registry: ghcr.io\n  repository: ""\n  tag: 1.2.3\n'
+    );
+    expect(joined.map((d) => d.coordinate)).toEqual(["image.repository"]);
+    expect(at(joined, "ghcr.io/")).toBeUndefined();
+  });
+
+  it("an `image:` scalar with an unusable name is refused, not minted", () => {
+    expect(parseKubernetesImages('image: ":1.0"\n')[0]?.constraint).toBe("unresolved");
+    expect(parseKubernetesImages('image: "/acme/api:1.0"\n')[0]?.coordinate).toBe("image");
+    // NEGATIVE CONTROL: a registry PORT is a colon inside a usable name and must still parse.
+    expect(
+      at(parseKubernetesImages("image: localhost:5000/foo:1.2\n"), "localhost:5000/foo")
+    ).toBeDefined();
+  });
+});
+
+describe('T15 — `registry: ""` means the DEFAULT registry, not a registry named empty', () => {
+  it("the empty registry is absent, so the coordinate is not split by a leading slash", () => {
+    // The common case, not an edge: it is the placeholder a chart ships so `global.imageRegistry`
+    // can override it. Joined naively it yields `/acme/api`, and the SAME image then sits on two
+    // different `dependency_lines` rows depending on whether a values file spelled the registry.
+    const withEmpty = at(
+      parseKubernetesImages('image:\n  registry: ""\n  repository: acme/api\n  tag: 1.2.3\n'),
+      "acme/api"
+    );
+    expect(withEmpty?.constraint).toBe("pinned");
+    expect(withEmpty?.declared).toBe("1.2.3");
+    const withNone = at(
+      parseKubernetesImages("image:\n  repository: acme/api\n  tag: 1.2.3\n"),
+      "acme/api"
+    );
+    // ONE identity across both spellings — the assertion the split-line defect fails.
+    expect(withEmpty?.coordinate).toBe(withNone?.coordinate);
+    expect(
+      parseKubernetesImages('image:\n  registry: ""\n  repository: acme/api\n  tag: 1.2.3\n').map(
+        (d) => d.coordinate
+      )
+    ).not.toContain("/acme/api");
+  });
+
+  it("a whitespace-only registry is the same placeholder; a malformed one is reported", () => {
+    expect(
+      at(
+        parseKubernetesImages('image:\n  registry: "   "\n  repository: acme/api\n  tag: 1.2.3\n'),
+        "acme/api"
+      )?.declared
+    ).toBe("1.2.3");
+    const slash = parseKubernetesImages(
+      'image:\n  registry: "/"\n  repository: acme/api\n  tag: 1.2.3\n'
+    );
+    expect(slash.map((d) => d.coordinate)).toEqual(["image.registry"]);
+    expect(slash[0]?.constraint).toBe("unresolved");
+  });
+
+  it("NEGATIVE CONTROL: a real registry is still joined with exactly one slash", () => {
+    // Without this the three assertions above are satisfied by a parser that ignores `registry`.
+    const entry = at(
+      parseKubernetesImages("image:\n  registry: ghcr.io\n  repository: acme/api\n  tag: 1.2.3\n"),
+      "ghcr.io/acme/api"
+    );
+    expect(entry?.declared).toBe("1.2.3");
+    expect(entry?.note).toContain("appears nowhere contiguously");
+  });
+});
+
+describe("T5 — a `digest:` has to BE a digest", () => {
+  it("a truncated or non-digest value is reported and the TAG-pinned row survives without it", () => {
+    // `resolved_digest` is what the version poller compares a registry's answer against, so a
+    // value that is not a digest is a row that reads as identity-pinned and can never match.
+    for (const bad of ["latest", "sha256:abc", `sha256:${"z".repeat(64)}`, "1.2.3"]) {
+      const declarations = parseKubernetesImages(
+        `image:\n  repository: acme/api\n  tag: 1.2.3\n  digest: "${bad}"\n`
+      );
+      const refused = at(declarations, "image.digest");
+      expect(refused?.constraint, bad).toBe("unresolved");
+      expect(refused?.note, bad).toContain("is not an OCI digest");
+      // The real dependency is NOT lost over a bad neighbouring key.
+      const kept = at(declarations, "acme/api");
+      expect(kept?.declared, bad).toBe("1.2.3");
+      expect(kept?.digest, bad).toBeUndefined();
+      expect(kept?.note, bad).toContain("was NOT recorded");
+    }
+  });
+
+  it("a `@…` that is not a digest refuses the whole one-scalar reference", () => {
+    const [entry, ...rest] = parseKubernetesImages("image: acme/api:1.2.3@sha256:abc\n");
+    expect(rest).toEqual([]);
+    expect(entry?.constraint).toBe("unresolved");
+    expect(entry?.note).toContain("is not an OCI digest");
+  });
+
+  it("NEGATIVE CONTROL: a full-length digest is carried by both spellings", () => {
+    expect(
+      at(
+        parseKubernetesImages(
+          `image:\n  repository: acme/api\n  tag: 1.2.3\n  digest: ${DIGEST_2}\n`
+        ),
+        "acme/api"
+      )?.digest
+    ).toBe(DIGEST_2);
+    expect(at(parseKubernetesImages(`image: acme/api@${DIGEST_2}\n`), "acme/api")?.digest).toBe(
+      DIGEST_2
+    );
+  });
+});
+
+describe("T1 — a BLOCK SCALAR is not an edit target", () => {
+  it("`tag: |` is unresolved, and its trailing newline never reaches the inventory", () => {
+    const declarations = parseKubernetesImages(
+      "image:\n  repository: acme/api\n  tag: |\n    1.2.3\n"
+    );
+    const entry = at(declarations, "image.tag");
+    expect(entry?.constraint).toBe("unresolved");
+    expect(entry?.note).toContain("block scalar");
+    // The specific violation: no declaration in this file carries `1.2.3\n` as its version text.
+    for (const declaration of declarations) {
+      expect(declaration.declared ?? "").not.toContain("\n");
+    }
+    // The folded form is the same trap with a different marker.
+    expect(
+      at(
+        parseKubernetesImages("image:\n  repository: acme/api\n  tag: >\n    1.2.3\n"),
+        "image.tag"
+      )?.constraint
+    ).toBe("unresolved");
+  });
+});
+
+describe("T17 — duplicate keys, and the composer scan that was quadratic", () => {
+  it("a flat mapping with 32 000 siblings parses in well under a second of budget", () => {
+    // NOT A MICRO-BENCHMARK — a property of a call that sits in the ingestion path behind a 1 MiB
+    // read cap. `yaml`'s duplicate-key check rescans every sibling already composed for each new
+    // pair, so this input took 7.1 s with it on and 0.17 s with it off; at the cap it is the
+    // difference between a minute of CPU per manifest and a fifth of a second. The header used to
+    // claim the work was "linear in the bytes the read cap already bounds", and it was not.
+    const lines = ["image: acme/api:1.2.3"];
+    for (let i = 0; i < 32_000; i++) lines.push(`key${i}: value${i}`);
+    const content = `${lines.join("\n")}\n`;
+
+    const started = performance.now();
+    const declarations = parseKubernetesImages(content);
+    const elapsed = performance.now() - started;
+
+    // The file is still READ correctly — a fast parser that returned nothing would pass a timing
+    // assertion on its own.
+    expect(declarations.map((d) => d.coordinate)).toEqual(["acme/api"]);
+    expect(elapsed).toBeLessThan(2_000);
+  }, 30_000);
+
+  it("a duplicated NON-image key no longer fails the whole file forever", () => {
+    // Turning the scan off means `yaml` stops throwing on any duplicate key anywhere. That throw
+    // was the wrong outcome anyway: it stamped the manifest `unreadable`, whose own words are
+    // "this attempt failed and the next may not", about a file that fails identically forever.
+    const declarations = parseKubernetesImages(
+      "replicaCount: 1\nreplicaCount: 2\nimage: acme/api:1.2.3\n"
+    );
+    expect(declarations.map((d) => d.coordinate)).toEqual(["acme/api"]);
+  });
+
+  it("a duplicated IMAGE key is REPORTED, because Helm takes the last and a reader takes the first", () => {
+    // The one thing the composer's scan was protecting, kept where it matters. Silently taking the
+    // first `tag:` would record a version Helm does not use.
+    const declarations = parseKubernetesImages(
+      "image:\n  repository: acme/api\n  tag: 1.2.3\n  tag: 9.9.9\n"
+    );
+    expect(declarations.map((d) => d.coordinate)).toEqual(["image.tag"]);
+    expect(declarations[0]?.constraint).toBe("unresolved");
+    expect(declarations[0]?.note).toContain("declared more than once");
+    // NEGATIVE CONTROL: the same keys spelled once resolve normally.
+    expect(
+      at(parseKubernetesImages("image:\n  repository: acme/api\n  tag: 1.2.3\n"), "acme/api")
+        ?.declared
+    ).toBe("1.2.3");
   });
 });
 
@@ -413,5 +802,18 @@ describe("T8/T12 — unreadable must never collapse into empty (the whole prune 
     expect(
       parseKubernetesImages("replicaCount: 2\nservice:\n  type: ClusterIP\n  port: 80\n")
     ).toEqual([]);
+  });
+
+  it("a file whose only document is EMPTY returns [] — `unreadable` said the next pass may work", () => {
+    // `yaml` composes `---` as a Scalar node holding null, not as `contents: null`, so the "some
+    // root is not a mapping" refusal caught it and the manifest was stamped `unreadable` — "this
+    // attempt failed and the next may not" about a file whose next ten thousand passes fail
+    // identically. An empty document is an honest empty, and honest empty is `ok / 0 rows`.
+    expect(parseKubernetesImages("---\n")).toEqual([]);
+    expect(parseKubernetesImages("null\n")).toEqual([]);
+    expect(parseKubernetesImages("---\n---\n")).toEqual([]);
+    // NEGATIVE CONTROL, and it is the whole prune argument: a NON-empty scalar root still throws.
+    // Without this the assertions above are satisfied by dropping trap 8 altogether.
+    expect(() => parseKubernetesImages("---\n<!doctype html>\n")).toThrow(ManifestParseError);
   });
 });

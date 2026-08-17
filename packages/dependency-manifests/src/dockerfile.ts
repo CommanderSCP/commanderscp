@@ -95,6 +95,47 @@ function toLogicalLines(content: string): LogicalLine[] {
 }
 
 /**
+ * Registered OCI digest algorithms and the EXACT length of their lowercase-hex encoding.
+ *
+ * The length is the half that matters. A shape-only check passes `sha256:abc`, which is not a
+ * truncation of anything — it is a value that would be compared against a real 64-character digest
+ * for the rest of a subscription's life and never match.
+ */
+const DIGEST_ALGORITHM_HEX_LENGTH: ReadonlyMap<string, number> = new Map([
+  ["sha256", 64],
+  ["sha512", 128]
+]);
+
+/** `algorithm ":" encoded`, per the OCI image spec's descriptor grammar. */
+const DIGEST_SHAPE = /^([a-z0-9]+(?:[.+_-][a-z0-9]+)*):([A-Za-z0-9=_-]+)$/;
+
+/**
+ * Is this text an OCI digest?
+ *
+ * SHARED BY BOTH IMAGE READERS, for the same reason {@link splitImageRef} is: `parseDockerfile`
+ * takes a digest off a `FROM …@…` and `parseKubernetesImages` takes one off a `digest:` key or off
+ * the same `@`, and both write it to `component_dependencies.resolved_digest` — the column the
+ * version poller compares a registry's answer against. A digest is IDENTITY (proposal §6.3, *"Tag ≠
+ * identity"*), so recording a value that is not one records a pin to bytes that do not exist:
+ * strictly worse than recording no digest, because the row then reads as pinned. Fixing this in one
+ * parser and not the other would be the incomplete-census failure — the property is "a digest is
+ * written without checking it is one", and it had two instances.
+ *
+ * Deliberately NOT a general "looks hex-ish" test, and deliberately not a full reference grammar.
+ * An unregistered algorithm is allowed at the spec's own minimum of 32 encoded characters;
+ * `sha256` and `sha512` must be exactly right.
+ */
+export function isDigestShaped(text: string): boolean {
+  const match = DIGEST_SHAPE.exec(text);
+  if (match === null) return false;
+  const algorithm = match[1] ?? "";
+  const encoded = match[2] ?? "";
+  const required = DIGEST_ALGORITHM_HEX_LENGTH.get(algorithm);
+  if (required !== undefined) return encoded.length === required && /^[0-9a-f]+$/.test(encoded);
+  return encoded.length >= 32;
+}
+
+/**
  * Split an image reference into registry+name / tag / digest, brace-aware.
  *
  * EXPORTED FOR ONE OTHER READER, and deliberately not copied: `kubernetes-images.ts` splits the
@@ -252,6 +293,24 @@ export function parseDockerfile(content: string): DeclaredDependency[] {
         declaredIn: "FROM",
         line,
         note: "version is ARG-interpolated; --build-arg overrides the file's default, so it is reported unresolved rather than guessed"
+      });
+      continue;
+    }
+
+    // A `@…` THAT IS NOT A DIGEST. `FROM alpine@latest` and `FROM alpine@sha256:abc` are not pins;
+    // recorded verbatim they become a `resolved_digest` that no registry answer can ever equal, so
+    // the row reads as identity-pinned and the poller compares against nothing. Reported, so the
+    // operator learns it here instead of from a subscription that never fires (ADR-0032 §7).
+    if (digest !== undefined && !isDigestShaped(digest)) {
+      out.push({
+        ecosystem: "oci",
+        coordinate: name,
+        declared: digest,
+        constraint: "unresolved",
+        scope: "build",
+        declaredIn: "FROM",
+        line,
+        note: `'${digest}' is not an OCI digest (an algorithm such as sha256, then ':', then its full-length hex), so it identifies no bytes; it is reported rather than recorded as a pin to nothing`
       });
       continue;
     }
