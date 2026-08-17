@@ -151,21 +151,68 @@ export async function resolveDeclaredContainmentParent(
     parentId: destination
   });
 
-  const allowedAtDestination = await hasPermission(tx, {
-    orgId: input.orgId,
-    subjectObjectId: input.subjectObjectId,
-    permission: input.permission,
-    scopeObjectId: destination
-  });
-  if (!allowedAtDestination) {
-    // Names the DESTINATION, not the object. An operator who reads this must be able to tell "you
-    // may not edit this object" from "you may not put it there" — they have different remedies.
-    throw forbidden(
-      `cannot move object '${current.id}' into container '${destination}': you lack ` +
-        `'${input.permission}' at-or-above that destination. A containment parent decides who else ` +
-        `holds authority over the object (authz scope expands upward), so a move is authorized at ` +
-        `both ends, not only at the object being moved.`
-    );
+  // THE ORG ROOT IS NOT A DESTINATION THAT GAINS CUSTODY, and this is the MIRROR of the source-side
+  // exemption below — the same argument, run in the other direction, and it had never been made.
+  //
+  // The destination check exists for one stated reason (module doc §1): "re-parenting X under V hands
+  // every holder of a binding at-or-above V custody of X", so an actor whose whole authority is "write
+  // this one object" must not be able to plant it in a stranger's subtree. Take V = the org root and
+  // that premise is FALSE:
+  //
+  //   - AFTER the move, X's containment chain is exactly `X -> org root`, so the holders who gain
+  //     custody are the org root's.
+  //   - BEFORE the move, X's chain already terminated at the org root — that is the ROOT-REACHABILITY
+  //     invariant `assertRootedContainmentParent` enforces on every `domain_id` write, on the create
+  //     half (`objects-repo.ts::createObject`) as well as the move half. So the org root's holders
+  //     ALREADY held custody of X.
+  //
+  // The set of principals with custody of X therefore SHRINKS across this move — it goes from
+  // "everyone at-or-above any node on `X -> S -> ... -> root`" to "everyone at-or-above `X -> root`",
+  // a subset — and a move that can only ever remove custodians is not the escalation this check
+  // stops. Every other destination genuinely adds one, which is why the exemption is the org root
+  // and nothing else.
+  //
+  // WHAT THIS IS NOT. It is NOT "the destination is already on X's chain", which is the general form
+  // of the argument (moving X up to its own grandparent grants nobody anything either). That
+  // generalisation is deliberately not taken: proving it needs a second containment walk — of the
+  // SOURCE's chain — on every move, and the org root is the one destination that is on EVERY rooted
+  // row's chain without walking anything. Simplicity over the wider exemption (charter priority 1).
+  //
+  // WHERE THE PROOF IS ONE STEP WEAKER THAN THE SOURCE-SIDE ONE, stated rather than glossed: the
+  // source-side exemption proves BOTH its halves locally (the row's current parent IS the root by
+  // hypothesis, and `assertRootedContainmentParent` has just proven the destination reaches the
+  // root). This one leans on the global invariant for its "before" half. The residual case is a row
+  // whose chain does NOT reach the org root — a legacy row, or one planted before these doors were
+  // closed. Moving such a row to the org root REPAIRS it: the org root's holders gain custody of
+  // something no principal above it could previously reach at all, which is a strictly better state
+  // and the only way out of it for the one principal bound directly at the row. A repair is not an
+  // escalation, so the exemption holds there too — it just holds for a different reason.
+  //
+  // THIS IS NOT A FREE MOVE. The SOURCE check below still runs, and `current.domainId` on any row
+  // this exemption applies to is a real container (the `null` and `=== orgId` cases have already
+  // returned above — a restatement and a cycle respectively). So promoting a row to the top level
+  // requires `permission` at the object AND at-or-above the container it is leaving: exactly "an
+  // actor who fully owns the subtree may move their own object out of it", which is what was being
+  // refused. `routes/containment-root-destination-authz.integration.test.ts` leads with that SUCCESS
+  // case, because an over-broad refusal and a deliberate one look identical from a failing test and
+  // a suite made of refusals cannot tell them apart.
+  if (destination !== input.orgId) {
+    const allowedAtDestination = await hasPermission(tx, {
+      orgId: input.orgId,
+      subjectObjectId: input.subjectObjectId,
+      permission: input.permission,
+      scopeObjectId: destination
+    });
+    if (!allowedAtDestination) {
+      // Names the DESTINATION, not the object. An operator who reads this must be able to tell "you
+      // may not edit this object" from "you may not put it there" — they have different remedies.
+      throw forbidden(
+        `cannot move object '${current.id}' into container '${destination}': you lack ` +
+          `'${input.permission}' at-or-above that destination. A containment parent decides who else ` +
+          `holds authority over the object (authz scope expands upward), so a move is authorized at ` +
+          `both ends, not only at the object being moved.`
+      );
+    }
   }
 
   // THE OTHER END. The module doc has said "a move is a write at two places and must be authorized
@@ -181,6 +228,9 @@ export async function resolveDeclaredContainmentParent(
   // SAME permission bar as the object and the destination, never a weaker one.
   //
   // TWO SOURCES ARE EXEMPT, AND THE SECOND ONE IS NOT AN EXCEPTION — IT IS THE RULE APPLIED.
+  // (The DESTINATION has the mirror of the second one, for the mirror reason — see the block above.
+  //  This one shipped a round before that one, and the gap between them is the whole lesson: the
+  //  argument was made at one end of a check that this module's own doc calls two-ended.)
   //
   //  - `current.domainId === null` means there IS no source container: the row IS the org root.
   //    Nothing to authorize at; the destination check above is the whole of it.

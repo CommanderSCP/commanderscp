@@ -788,6 +788,21 @@ export async function prepareApplyChecks(
       // `graph/containment-parent-authz.ts` for the full argument — the two copies must agree, and
       // `routes/containment-root-source-and-create-rooting.integration.test.ts` pins both doors.
       //
+      // AND THE DESTINATION IS EXEMPT AT THE ORG ROOT FOR THE MIRROR REASON — the half that was
+      // reasoned about at neither end. A manifest that moves a row BACK to the top level named the
+      // org root as its destination, and demanding authority there refused an applier who owns the
+      // whole subtree the row is leaving. Nobody gains custody: X's chain already terminated at the
+      // org root (the root-reachability invariant), so the org root's holders held it before the move
+      // and hold it after, while the intermediate holders LOSE it — a strictly shrinking custodian
+      // set is not the escalation the destination entry stops. Full argument, including where the
+      // proof is one step weaker than the source-side one, in `graph/containment-parent-authz.ts`;
+      // `routes/containment-root-destination-authz.integration.test.ts` pins both doors.
+      //
+      // Reachable on this path in TWO shapes, not one: an explicit `domainId` naming the org root,
+      // and — because `resolveDomainId` maps an ABSENT `domainId` to the org root — a manifest that
+      // simply omits the field for a row that currently sits inside a domain. The second is the
+      // common one and it is why this refusal bit IaC harder than it bit the HTTP doors.
+      //
       // The CYCLE half of the same fix is deliberately NOT duplicated here: it is a subject-free
       // invariant and lives in `graph/objects-repo.ts`'s `updateObject`, which this path writes
       // through — see the comment there for why the repo, not the doors, owns it. The ROOT-
@@ -795,7 +810,9 @@ export async function prepareApplyChecks(
       // in `createObject`, which `executePlanDiff` calls directly.
       const destination = entry.target?.domainId;
       if (entry.action === "update" && destination && destination !== found.domainId) {
-        checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: destination });
+        if (destination !== orgId) {
+          checks.push({ permission: writePermissionFor(entry.typeId), scopeObjectId: destination });
+        }
         if (found.domainId && found.domainId !== orgId) {
           checks.push({
             permission: writePermissionFor(entry.typeId),
