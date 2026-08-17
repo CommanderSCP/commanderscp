@@ -36,6 +36,32 @@ export const BUMP_SPEC: ManifestBumpSpec = {
 
 export const DECLARED_MANIFEST_PATHS = ["package.json"];
 
+/**
+ * A chart's `values.yaml` in the SPLIT shape — the coordinate on one line, the version on the next,
+ * and the same version text present three more times where it means something else. M21.7's
+ * anchored path is the only way this file is editable at all.
+ */
+export const VALUES_YAML_BASE = [
+  "global:",
+  "  imageTag: 1.2.3",
+  "api:",
+  "  image:",
+  "    repository: acme/api",
+  "    tag: 1.2.3",
+  "appVersion: 1.2.3",
+  ""
+].join("\n");
+
+export const VALUES_YAML_PATH = "chart/values.yaml";
+
+export const VALUES_BUMP_SPEC: ManifestBumpSpec = {
+  ecosystem: "oci",
+  coordinate: "acme/api",
+  manifestPath: VALUES_YAML_PATH,
+  fromVersion: "1.2.3",
+  toVersion: "1.2.4"
+};
+
 /** A proof MINTED BY THE REAL VERIFIER for {@link PACKAGE_JSON_BUMPED}, never hand-built. */
 export function realProof(): ManifestEditProof {
   return verifyManifestOnlyEdit({
@@ -119,7 +145,11 @@ export function githubHandler(
    *  granted base — so a suite states only the axis it is contradicting. It is a PARAMETER rather
    *  than a constant because the head branch is derived from the change id, and different suites
    *  merge different changes. */
-  pullRequest: { state?: string; headRef?: string; baseRef?: string } = {}
+  pullRequest: { state?: string; headRef?: string; baseRef?: string } = {},
+  /** What a `GET /contents/…` answers with. Defaults to {@link PACKAGE_JSON_BASE}; a suite bumping a
+   *  chart's `values.yaml` passes that instead. It is a parameter rather than an `overrides` entry
+   *  because `overrides` matches on the URL alone and the contents READ and WRITE share one. */
+  baseContent: string = PACKAGE_JSON_BASE
 ): (req: ScopedHttpRequest) => ScopedHttpResponse {
   const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
   const pr = {
@@ -150,7 +180,7 @@ export function githubHandler(
       return {
         status: 200,
         headers: {},
-        body: { content: b64(PACKAGE_JSON_BASE), encoding: "base64", sha: "blobsha" }
+        body: { content: b64(baseContent), encoding: "base64", sha: "blobsha" }
       };
     }
     if (req.method === "PUT" && req.url.includes("/contents/")) {

@@ -1183,7 +1183,18 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(merge.intent.idempotencyKey).toBe(`${changeObjectId}:merge:${BUMP_COMMIT}`);
 
       // (3) THE VERDICT IS EXPLAINABLE (charter principle 6).
-      const verdicts = await decisionsOfKind(DEPENDENCY_BUMP_MERGE_DECISION_KIND, changeObjectId);
+      // WAITED FOR, not read straight after the merge intent. `recordMergeVerdict` is deliberately
+      // written AFTER the provider attempt and in its OWN transaction (bump-gate.ts — "a Decision
+      // that recorded 'merge authorised' and then [failed] ... leaves the merge unrecorded"), so the
+      // intent appearing does NOT imply the Decision has landed. Reading it synchronously passed on
+      // timing and failed on a loaded CI shard.
+      const verdicts = await waitUntil(
+        async () => {
+          const found = await decisionsOfKind(DEPENDENCY_BUMP_MERGE_DECISION_KIND, changeObjectId);
+          return found.length > 0 ? found : undefined;
+        },
+        { describe: "the dependency_bump_merge Decision for this change" }
+      );
       expect(verdicts).toHaveLength(1);
       expect(verdicts[0]!.verdict).toBe("merged");
     }, 180_000);

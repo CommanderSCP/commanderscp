@@ -20,6 +20,18 @@
 #   find the ONE line that names the coordinate AND carries the version the manifest declares
 #   today, and replace the FIRST occurrence of that version token on that line.
 #
+# ...OR, when the orchestrator supplies an ANCHOR (argv[6]/argv[7], M21.7): edit the line the anchor
+# ADDRESSES, provided the file's own bytes on that line still equal the anchor text, that line
+# carries the version to replace, and the coordinate rule above does not disagree — meaning no line
+# names both, or the only one that does IS the anchor line. That widening exists because Helm's
+# commonest image spelling puts the coordinate and the version on different lines
+# (`repository: acme/api` above `tag: 1.2.3`), and for `{registry, repository, tag}` the coordinate
+# is a construction that appears nowhere in the file at all. The anchor SELECTS; the coordinate rule
+# keeps a VETO, so the anchored mode can only widen where the textual rule was silent.
+#
+# THE ANCHOR TEXT IS COMPARED, NEVER EMITTED. The output line is always rebuilt from lines[] by
+# substr() out of the file's own bytes, so a wrong anchor can only make this script REFUSE.
+#
 # That is the whole transform, it is ecosystem-agnostic, and it is byte-for-byte the reference edit
 # `packages/plugins/managed-dep/src/bump-edit.ts`'s `applyManifestBump` performs — which is what the
 # orchestrator's own tests use as a stand-in for this container, and what
@@ -48,8 +60,22 @@
 #          $3 = coordinate   (the ecosystem-native coordinate, verbatim)
 #          $4 = fromVersion  (what the manifest literally says today)
 #          $5 = toVersion    (what it must say afterwards)
+#          $6 = anchorLine   (OPTIONAL, 1-based; the line to edit when the coordinate is not on it)
+#          $7 = anchorText   (OPTIONAL, required with $6; that line's bytes, compared not written)
 #   /work/in/manifest  — the ONE file, `docker cp`'d in. Nothing else is read.
 #   /work/out/manifest — the edited copy, `docker cp`'d back out. Nothing else is written.
+#
+# VERSION SKEW IS FAIL-CLOSED IN BOTH DIRECTIONS, and that is why the anchor is a trailing OPTIONAL
+# pair rather than a change to the existing five:
+#
+#   old image + new orchestrator (7 operands) — $6/$7 are ignored, the coordinate rule runs, and the
+#     bytes are IDENTICAL for every contiguous shape. A split shape gets exit 3 (a refusal), which is
+#     what this image did for it before the anchor existed.
+#   new image + old orchestrator (5 operands) — $6 is unset, so no anchor is supplied and the
+#     coordinate rule runs unchanged.
+#
+# A missing $6 therefore has to mean NOT SUPPLIED and never line 0: `${6:-}` guards it exactly as the
+# five required arguments are guarded, and an empty value takes the unanchored path.
 #
 # The container is launched `--network none` with no environment, no bind mount and no docker
 # socket, and is `rm -f`'d the moment it exits. It therefore cannot fetch a dependency graph, cannot
@@ -63,6 +89,10 @@ MANIFEST_PATH="${2:-}"
 COORDINATE="${3:-}"
 FROM_VERSION="${4:-}"
 TO_VERSION="${5:-}"
+# OPTIONAL, and absence is not an error — see "VERSION SKEW" above. Guarded with `${n:-}` so an
+# unset positional is the empty string rather than an unbound-variable abort under `set -u`.
+ANCHOR_LINE="${6:-}"
+ANCHOR_TEXT="${7:-}"
 
 # THE SUBJECT AND THE RESULT, RESOLVED AGAINST THE WORKING DIRECTORY — which the Dockerfile fixes as
 # `WORKDIR /work`, so in the container these are exactly /work/in/manifest and /work/out/manifest.
@@ -100,6 +130,23 @@ esac
 [ "$FROM_VERSION" != "$TO_VERSION" ] ||
   fail "fromVersion and toVersion are both '$FROM_VERSION' — there is no bump to author"
 
+# THE ANCHOR IS ALL OR NOTHING. Half an anchor is a caller defect, and proceeding on one would mean
+# either editing a line whose bytes nobody checked ($6 alone) or silently discarding an address the
+# caller believed it had sent ($7 alone). A line number is validated as DIGITS ONLY with no leading
+# zero, which refuses `0`, `-1`, `1.5`, `1e9` and ` 7` without any arithmetic — busybox `test -ge`
+# on a caller-supplied 30-digit string is its own hazard, and there is nothing here that needs it.
+if [ -n "$ANCHOR_LINE" ] || [ -n "$ANCHOR_TEXT" ]; then
+  [ -n "$ANCHOR_LINE" ] ||
+    fail "argv[7] (anchorText) was given without argv[6] (anchorLine) — half an anchor is refused"
+  [ -n "$ANCHOR_TEXT" ] ||
+    fail "argv[6] (anchorLine) was given without argv[7] (anchorText) — half an anchor is refused"
+  case "$ANCHOR_LINE" in
+    0* | *[!0-9]*)
+      fail "argv[6] (anchorLine) '$ANCHOR_LINE' is not a 1-based line number"
+      ;;
+  esac
+fi
+
 [ -f "$IN" ] || fail "no manifest was copied in at $IN (subject: '$MANIFEST_PATH')"
 
 # DOES THE INPUT END IN A NEWLINE? `$(...)` strips every trailing newline, so an empty result means
@@ -114,10 +161,14 @@ else
   TRAILING_NEWLINE=1
 fi
 
-# THE EDIT. The three tenant-supplied strings are passed as awk OPERANDS rather than through `-v`,
-# deliberately: `-v` processes escape sequences in the value, so a coordinate or version containing
-# a backslash would arrive as something other than what the manifest holds. Operands are taken
-# verbatim. They are blanked in BEGIN so awk does not then try to read them as input files.
+# THE EDIT. The FIVE tenant-supplied strings are passed as awk OPERANDS rather than through `-v`,
+# deliberately: `-v` processes escape sequences in the value, so a coordinate, a version or an
+# anchor text containing a backslash would arrive as something other than what the manifest holds.
+# Operands are taken verbatim. They are blanked in BEGIN so awk does not then try to read them as
+# input files — which is ALSO what immunises them against awk's `name=value` operand-assignment
+# rule, since operand processing happens after BEGIN runs and by then they are all empty. The anchor
+# text goes through the same door for the same reason: it is compared byte-for-byte against a line
+# of somebody else's manifest, so any transformation of it on the way in is a false refusal.
 #
 # Matching and replacement are by index()/substr() — never by regex and never by sub() — because a
 # coordinate is arbitrary tenant text (`@acme/lib`, `github.com/acme/lib`, `com.acme:lib`) and a
@@ -126,7 +177,12 @@ fi
 awk '
 BEGIN {
   coordinate = ARGV[1]; from = ARGV[2]; to = ARGV[3];
-  ARGV[1] = ""; ARGV[2] = ""; ARGV[3] = "";
+  anchor_line = ARGV[4]; anchor_text = ARGV[5];
+  ARGV[1] = ""; ARGV[2] = ""; ARGV[3] = ""; ARGV[4] = ""; ARGV[5] = "";
+  # AN EMPTY anchor_line MEANS NOT SUPPLIED, NEVER LINE 0. The shell already refused a `0`, a
+  # non-digit and a leading zero, so anything non-empty here is a 1-based line number.
+  anchored = (anchor_line != "");
+  anchor_nr = anchor_line + 0;
   candidates = 0;
 }
 {
@@ -137,19 +193,61 @@ BEGIN {
   }
 }
 END {
-  # EXACTLY ONE line must both name the coordinate and carry the declared version. Zero means the
-  # manifest disagrees with the inventory the descriptor was built from; more than one means the
-  # edit target is ambiguous, and choosing here would be a guess about which declaration the
-  # subscriber meant. Both are refusals, and both are the same rule `applyManifestBump` applies.
-  if (candidates != 1) {
-    printf("scp-runner-dep: %d lines in the manifest name both the coordinate and its declared version (exactly 1 required)\n", candidates) > "/dev/stderr";
-    exit 3;
+  if (anchored) {
+    # (a) THE ANCHOR ADDRESSES THE BYTES IT WAS DERIVED FROM. A line number alone would be a
+    # confidently wrong edit the moment the file moved under it; the text equality is what makes a
+    # stale anchor a refusal instead.
+    #
+    # THIS ONE COMPARISON IS ALSO THE RANGE CHECK, and that is worth stating because a separate
+    # `anchor_nr > NR` guard stood here and was DEAD CODE — no mutation killed it, on either awk.
+    # An out-of-range subscript reads as the empty string, and anchor_text is guaranteed non-empty
+    # by the all-or-nothing check in the shell above, so `lines[999] != anchor_text` is already
+    # false for the right reason. Measured rather than reasoned about: with the guard removed, both
+    # a 4 on a 3-line file and a 20-digit line number refuse identically under the host awk AND
+    # under the BusyBox awk this image actually runs (which clamps `%d` at 2147483647 where the host
+    # clamps at 2^63-1 — neither WRAPS, so neither can land on a line the file has). run.sh is small
+    # enough to audit by reading, and a guard that reads as protection while protecting nothing is
+    # worse here than none. runner-shim.test.ts pins both cases against the reference edit: a
+    # shim that folded an out-of-range anchor back into the file with a modulo reddens the line-99
+    # case, and the 20-digit case keeps the clamp measurement rather than leaving it in a comment.
+    #
+    # NOTE FOR ANY FUTURE EDIT OF THIS BLOCK: the awk program is a single-quoted shell string, so an
+    # apostrophe anywhere in these comments ends it. That is why they read a little stiffly.
+    if (lines[anchor_nr] != anchor_text) {
+      # NR is named here so an out-of-range anchor still reads as one: "line 999 of a 12-line
+      # manifest" is the diagnosis the deleted range guard used to print, kept without the branch.
+      printf("scp-runner-dep: line %d of the manifest (%d lines) is not the anchor text the descriptor carries\n", anchor_nr, NR) > "/dev/stderr";
+      exit 3;
+    }
+    # (b) ...and it carries the version this bump replaces.
+    if (index(lines[anchor_nr], from) == 0) {
+      printf("scp-runner-dep: line %d does not carry the declared version this bump replaces\n", anchor_nr) > "/dev/stderr";
+      exit 3;
+    }
+    # (c) THE COORDINATE RULE KEEPS A VETO. Where NO line names both the coordinate and the declared
+    # version the rule is silent and the anchor fills the gap — that is the whole widening. Where it
+    # DOES speak, the anchor must agree with it, so every refusal the unanchored rule fires still
+    # fires and nothing that worked before gets weaker.
+    if (candidates > 1 || (candidates == 1 && target != anchor_nr)) {
+      printf("scp-runner-dep: %d line(s) name both the coordinate and its declared version and the anchor (line %d) is not the one\n", candidates, anchor_nr) > "/dev/stderr";
+      exit 3;
+    }
+    target = anchor_nr;
+  } else {
+    # EXACTLY ONE line must both name the coordinate and carry the declared version. Zero means the
+    # manifest disagrees with the inventory the descriptor was built from; more than one means the
+    # edit target is ambiguous, and choosing here would be a guess about which declaration the
+    # subscriber meant. Both are refusals, and both are the same rule `applyManifestBump` applies.
+    if (candidates != 1) {
+      printf("scp-runner-dep: %d lines in the manifest name both the coordinate and its declared version (exactly 1 required)\n", candidates) > "/dev/stderr";
+      exit 3;
+    }
   }
   at = index(lines[target], from);
   lines[target] = substr(lines[target], 1, at - 1) to substr(lines[target], at + length(from));
   for (i = 1; i <= NR; i++) printf("%s\n", lines[i]);
 }
-' "$COORDINATE" "$FROM_VERSION" "$TO_VERSION" "$IN" > "$OUT.tmp" ||
+' "$COORDINATE" "$FROM_VERSION" "$TO_VERSION" "$ANCHOR_LINE" "$ANCHOR_TEXT" "$IN" > "$OUT.tmp" ||
   fail "could not apply the bump to '$MANIFEST_PATH'"
 
 if [ "$TRAILING_NEWLINE" = "0" ]; then

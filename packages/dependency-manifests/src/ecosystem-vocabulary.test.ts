@@ -30,6 +30,7 @@ import { describe, expect, it } from "vitest";
 import { DependencyEcosystemSchema } from "@scp/schemas";
 
 import { parseDockerfile } from "./dockerfile.js";
+import { parseKubernetesImages } from "./kubernetes-images.js";
 import type { DependencyEcosystem } from "./types.js";
 
 /**
@@ -79,6 +80,17 @@ describe("ecosystem vocabulary", () => {
     expect(emitted).toBe("oci");
     // Would have thrown on `"image"`. This is the assertion that fails first if the rename regresses.
     expect(() => DependencyEcosystemSchema.parse(emitted)).not.toThrow();
+  });
+
+  it("the SECOND image parser emits the SAME ecosystem — a values file is not a sixth vocabulary", () => {
+    // M21.7 added a second producer of `oci` rows. The whole design rests on an image pinned in a
+    // chart's `values.yaml` being the SAME `dependency_lines` row as the same image pinned in a
+    // `FROM`; a parser that spelled it anything else would mint a parallel, unmatchable set of
+    // lines — this file's own drift, arriving from a new direction.
+    const deps = parseKubernetesImages("image: acme/api:1.2.3\n");
+    expect(deps).toHaveLength(1);
+    expect(deps[0]?.ecosystem).toBe("oci");
+    expect(() => DependencyEcosystemSchema.parse(deps[0]?.ecosystem)).not.toThrow();
   });
 
   /**

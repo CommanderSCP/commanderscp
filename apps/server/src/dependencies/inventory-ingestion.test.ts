@@ -33,15 +33,40 @@ import {
  */
 describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", () => {
   describe("the parser table", () => {
-    it("covers exactly the six dependency-manifest filenames the five ecosystems declare in", () => {
+    it("covers exactly the SEVEN dependency-manifest filenames this build can read", () => {
+      // Six for the five ecosystems, plus M21.7's `values.yaml` — the Helm/Kubernetes image
+      // reader, which emits into the SAME `oci` ecosystem a Dockerfile does.
+      //
+      // PINNED AS A LIST rather than as a size, because the cost of a new entry is not one read: it
+      // is one read PER PROBE PREFIX (`candidateManifestPaths` is a cross product), against
+      // `MAX_MANIFEST_READS`. Adding a filename here without re-deriving that budget freezes real
+      // manifests behind `read_budget_exhausted`, silently, on every pass.
       expect([...MANIFEST_PARSERS.keys()].sort()).toEqual([
         "Dockerfile",
         "go.mod",
         "package.json",
         "pom.xml",
         "pyproject.toml",
-        "requirements.txt"
+        "requirements.txt",
+        "values.yaml"
       ]);
+    });
+
+    it("the read budget is SIX PREFIXES' worth of the cross product, re-derived as the table grows", () => {
+      // The derivation, asserted rather than left in a comment: 40 bought six prefixes against six
+      // filenames, and it must still buy six against seven. A future filename that leaves this
+      // constant alone reddens here instead of quietly costing a prefix.
+      expect(MAX_MANIFEST_READS).toBe(6 * MANIFEST_PARSERS.size);
+    });
+
+    it("`values.yml` and `Chart.yaml` are NOT registered, each for its own stated reason", () => {
+      // Helm itself only ever reads `values.yaml`, so a `values.yml` in a repository is not a
+      // chart's values file — treating it as one would be a filename-shaped inference. `Chart.yaml`
+      // is a different refusal: its `dependencies[].version` names SUBCHARTS from a Helm
+      // repository, which is a sixth ecosystem (a new enum member, a new DB check-constraint value
+      // and a new version index), not an image.
+      expect(MANIFEST_PARSERS.has("values.yml")).toBe(false);
+      expect(MANIFEST_PARSERS.has("Chart.yaml")).toBe(false);
     });
 
     it("dispatches on the BASENAME, so a manifest nested at any depth is still parsed", () => {
@@ -278,9 +303,10 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
   // M21.7 — the stamp projection: which of THREE meanings an empty inventory has
   // -----------------------------------------------------------------------------------------
   describe("projectIngestionStamp — an empty inventory has three meanings and this picks one", () => {
-    const read = (path: string, declared: number): IngestedManifest => ({
+    const read = (path: string, declared: number, unresolved = 0): IngestedManifest => ({
       path,
       declared,
+      unresolved,
       pruned: 0,
       removed: false
     });
@@ -315,7 +341,7 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
       // `removed` means the provider said the path is not there and its rows were pruned. It is an
       // answer, not a failure — so it must not drag the component into `unreadable`.
       const stamp = projectIngestionStamp({
-        manifests: [{ path: "go.mod", declared: 0, pruned: 4, removed: true }],
+        manifests: [{ path: "go.mod", declared: 0, unresolved: 0, pruned: 4, removed: true }],
         skipped: []
       });
       expect(stamp.outcome).toBe("ok");
@@ -341,6 +367,51 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
       expect(stamp.manifests.find((m) => m.path === "Dockerfile")?.detail).toContain(
         "manifest_unparseable"
       );
+    });
+
+    it("a manifest whose EVERY declaration is unresolved is `unsupported`, never `ok / 0 rows`", () => {
+      // M21.7's class fix. `ok / 0 rows` is this table's own words for "read fine, genuinely
+      // declares nothing", and a file that DECLARED something SCP could not read is the opposite
+      // statement. Nothing here is YAML-specific: the fixture is a DOCKERFILE, because the defect
+      // predates the YAML parser by four milestones (`FROM ${BASE}` and a `pom.xml` of
+      // `${revision}` both hit it) and fixing only the instance that exposed it is the
+      // incomplete-census failure.
+      const stamp = projectIngestionStamp({
+        manifests: [read("Dockerfile", 0, 2)],
+        skipped: []
+      });
+      expect(stamp.manifests[0]?.outcome).toBe("unsupported");
+      expect(stamp.manifests[0]?.rows).toBe(0);
+      // And the detail says WHICH of the two "nothing here" states this is.
+      expect(stamp.manifests[0]?.detail).toContain("cannot resolve from the file itself");
+      // The pass-level verdict follows the evidence: no entry was read, so the component's stamp
+      // must not claim it was.
+      expect(stamp.outcome).not.toBe("ok");
+    });
+
+    it("a MIXED manifest stays `ok` — rows were written, and the unresolved ones ride the Decision", () => {
+      // The per-path enum has no `partial`, and inventing one would say a manifest was half-read.
+      // What actually happened is that rows landed; `declarationsSkipped` names the rest.
+      const stamp = projectIngestionStamp({
+        manifests: [read("chart/values.yaml", 2, 1)],
+        skipped: []
+      });
+      expect(stamp.manifests[0]?.outcome).toBe("ok");
+      expect(stamp.manifests[0]?.rows).toBe(2);
+      expect(stamp.outcome).toBe("ok");
+    });
+
+    it("one unsupported manifest beside one good one is `partial`, not `ok`", () => {
+      const stamp = projectIngestionStamp({
+        manifests: [read("go.mod", 3), read("chart/values.yaml", 0, 4)],
+        skipped: []
+      });
+      expect(stamp.manifests.map((m) => [m.path, m.outcome])).toEqual([
+        ["chart/values.yaml", "unsupported"],
+        ["go.mod", "ok"]
+      ]);
+      expect(stamp.outcome).toBe("partial");
+      expect(stamp.rowsWritten).toBe(3);
     });
 
     it("NOTHING READ is `unreadable` — never `ok`, which would claim the component declares nothing", () => {

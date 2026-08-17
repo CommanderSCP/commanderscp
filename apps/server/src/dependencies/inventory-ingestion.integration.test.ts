@@ -145,6 +145,8 @@ describe("M21.2 dependency-inventory ingestion (ADR-0032 §4/§6)", () => {
 
   const RESOLVED_COMMIT = "a".repeat(40);
   const REPO = "acme/widgets";
+  /** A real, full-length sha256 digest. See the `values-digest` case for why the length matters. */
+  const VALUES_DIGEST = "sha256:c5b1261d6d3e43071626931fc004f70149baeba2c8ec672bd4f27761f8e1ad6b";
 
   const GO_MOD = `module github.com/acme/widgets
 
@@ -656,7 +658,9 @@ require (
       // IS "the manifest is gone from the repo".
       const outcome = await reingest(component, {});
       expect(outcome.manifests).toEqual([
-        { path: "go.mod", declared: 0, pruned: 2, removed: true }
+        // `unresolved: 0` — a manifest that is GONE declared nothing this pass could fail to read,
+        // which is what keeps it `ok` in the stamp rather than `unsupported`.
+        { path: "go.mod", declared: 0, unresolved: 0, pruned: 2, removed: true }
       ]);
       expect(await coordinatesOf(component)).toEqual([]);
     });
@@ -764,6 +768,261 @@ require (
       }
     ]);
     expect(await inventoryOf(component)).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // 5b. M21.7 — AN IMAGE PINNED IN HELM VALUES
+  //
+  // THE WIRING GATE FOR THIS ROUND. `parseKubernetesImages` is a pure function with its own unit
+  // suite, and that suite stays green whether or not anything ever calls it — which is this
+  // repository's single most common defect and M21's own record (six components built and never
+  // installed, one of them a live RCE). The only thing that installs a parser is its entry in
+  // `MANIFEST_PARSERS`, and these tests reach it through `ingestComponentManifests`: delete
+  // `["values.yaml", …]` from that map and the first one goes red, because the candidate path is
+  // never generated, the file is never read, and no row is written.
+  // -------------------------------------------------------------------------------------------
+  describe("an image pinned in a chart's values.yaml (M21.7)", () => {
+    /** The chart-directory shape a real estate has: the Argo CD importer writes
+     *  `pathPattern = <src.path>/**`, and `repoManifestScope` takes `chart` as the probe prefix. */
+    async function chartComponent(label: string): Promise<string> {
+      const component = await componentWithMapping(label, "chart/**");
+      await enable(component);
+      return component;
+    }
+
+    it("reaches component_dependencies through the parser table, on the SAME oci line a FROM would", async () => {
+      const component = await chartComponent("values-wired");
+      const reader = recordingReader({
+        "chart/values.yaml": "image:\n  repository: acme/api\n  tag: 1.2.3\n",
+        // A Dockerfile in the SAME component pinning the SAME image: this is what proves the values
+        // file is not a parallel vocabulary. Two manifest paths, two rows by the primary key, ONE
+        // dependency line — which is the whole reason the ecosystem stays `oci`.
+        "chart/Dockerfile": "FROM acme/api:1.2.3\n"
+      });
+
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: reader.read
+      });
+      expect(outcome.verdict).toBe("ingested");
+      // THE ASSERTION THE DISPATCH ENTRY IS LOAD-BEARING FOR: without it, `candidateManifestPaths`
+      // never generates this path, the recorder is never asked for it, and this list has one entry.
+      expect(await coordinatesOf(component)).toEqual([
+        "chart/Dockerfile:acme/api@1",
+        "chart/values.yaml:acme/api@1"
+      ]);
+      expect(reader.reads.map((r) => r.path)).toContain("chart/values.yaml");
+
+      const rows = await inventoryOf(component);
+      // ONE line, two declaration sites. A second `dependency_lines` row here would mean a values
+      // file and a Dockerfile could never be subscribed by one policy.
+      expect(new Set(rows.map((r) => r.lineId)).size).toBe(1);
+      // VERBATIM, because this is the string an actuator would have to find in the file.
+      expect(new Set(rows.map((r) => r.declaredVersion))).toEqual(new Set(["1.2.3"]));
+    });
+
+    it('YAML\'s number coercion never reaches the row: `tag: 1.20` is stored as "1.20"', async () => {
+      const component = await chartComponent("values-coercion");
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml": "image:\n  repository: acme/api\n  tag: 1.20\n"
+        }).read
+      });
+      const [row] = await inventoryOf(component);
+      // `declared_version` is the exact text the M21.5 actuator has to edit. `1.2` — what
+      // `node.value` yields for this scalar — is an edit target that does not appear in the file.
+      expect(row?.declaredVersion).toBe("1.20");
+      expect(row?.resolvedVersion).toBe("1.20");
+    });
+
+    it("a tag AND a digest both land on the row: a tag is a label, a digest is identity", async () => {
+      const component = await chartComponent("values-digest");
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml": `image:\n  registry: ghcr.io\n  repository: acme/api\n  tag: 2.0.1\n  digest: ${VALUES_DIGEST}\n`
+        }).read
+      });
+      const [row] = await inventoryOf(component);
+      expect(row?.declaredVersion).toBe("2.0.1");
+      // FULL LENGTH ON PURPOSE. `resolved_digest` is what the version poller compares a registry's
+      // answer against, so `sha256:feedface` — 8 hex characters where 64 belong — is a row that
+      // reads as identity-pinned and can never match anything. The parser refuses that shape now,
+      // and a fixture spelling it would make this test pass for the wrong reason.
+      expect(row?.resolvedDigest).toBe(VALUES_DIGEST);
+    });
+
+    it("an ORDINARY chart's furniture is `ok`, not a component-wide `partial` (M21.7 round 5)", async () => {
+      // THE HONESTY MECHANISM ONLY WORKS IF IT IS QUIET. A values file's `sources[].repository`, a
+      // Kafka client's `schemaRegistry.registry`, a `<<:` merging resource presets and a `tag` used
+      // as a pod label each used to mint either a phantom dependency or an unresolved declaration —
+      // and a file whose declarations are all unresolved stamps the manifest `unsupported` and the
+      // component `partial`. That fires on ordinary charts, and a warning that fires on everything
+      // is a warning nobody reads.
+      const component = await chartComponent("values-ordinary-furniture");
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml": [
+            "sources:",
+            "  - repository: https://github.com/acme/api",
+            "    tag: v2.4.0",
+            "kafka:",
+            "  schemaRegistry:",
+            "    registry: http://schema-registry.kafka.svc:8081",
+            "presets: &presets",
+            "  cpu: 500m",
+            "controller:",
+            "  resources:",
+            "    <<: *presets",
+            "  podLabels:",
+            "    tag: canary",
+            "  image:",
+            "    registry: ''",
+            "    repository: acme/api",
+            "    tag: 1.2.3",
+            ""
+          ].join("\n")
+        }).read
+      });
+
+      expect(outcome.verdict).toBe("ingested");
+      // Nothing is reported unreadable, because nothing in this file IS an unreadable image.
+      expect(outcome.declarationsSkipped).toEqual([]);
+      const stamp = await stampOf(component);
+      expect(stamp?.manifests.find((m) => m.path === "chart/values.yaml")?.outcome).toBe("ok");
+      expect(stamp?.outcome).toBe("ok");
+      // And exactly the ONE real image reached a row. `registry: ''` means "the default registry",
+      // so the coordinate is `acme/api` — `/acme/api` would be a second line for the same image.
+      expect(await coordinatesOf(component)).toEqual(["chart/values.yaml:acme/api@1"]);
+    });
+
+    it("a values file SCP cannot resolve is stamped `unsupported` — FOUND, not absent", async () => {
+      // THE POINT OF THE WHOLE ROUND. This file pins a version and SCP cannot tell which image it
+      // pins it for; `ok / 0 rows` would be this table's own words for "we read it and it genuinely
+      // declares nothing", which is the lie the stamp exists to prevent.
+      const component = await chartComponent("values-unsupported");
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml": 'controller:\n  image:\n    tag: "1.4.2"\n'
+        }).read
+      });
+      expect(outcome.verdict).toBe("ingested");
+
+      const stamp = await stampOf(component);
+      const entry = stamp?.manifests.find((m) => m.path === "chart/values.yaml");
+      expect(entry?.outcome).toBe("unsupported");
+      expect(entry?.rows).toBe(0);
+      expect(entry?.detail).toContain("cannot resolve from the file itself");
+      // And the component-level verdict is not `ok` either — nothing was read that could be
+      // recorded, so a reader must not be told the manifests are fine.
+      expect(stamp?.outcome).not.toBe("ok");
+
+      // The declaration is named, with the reason that carries the RIGHT operator action: declare
+      // the repository beside the tag. "no comparable numeric core" would point at pinning a
+      // version, which this file already does.
+      expect(outcome.declarationsSkipped).toEqual([
+        {
+          path: "chart/values.yaml",
+          ecosystem: "oci",
+          coordinate: "controller.image.tag",
+          reason: "unresolved_declaration",
+          detail: expect.stringContaining("cannot resolve from the file itself")
+        }
+      ]);
+      expect(await inventoryOf(component)).toEqual([]);
+    });
+
+    it("THE SAME CLASS FIX ON A DOCKERFILE: `FROM ${BASE}` is `unsupported`, not `ok / 0 rows`", async () => {
+      // Not a YAML behaviour. This defect shipped four milestones before the YAML parser existed,
+      // and fixing only the instance that exposed it is the incomplete-census failure this
+      // repository has shipped before.
+      const component = await chartComponent("dockerfile-unsupported");
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/Dockerfile": "ARG BASE=alpine:3.19\nFROM ${BASE}\n"
+        }).read
+      });
+      const stamp = await stampOf(component);
+      expect(stamp?.manifests.find((m) => m.path === "chart/Dockerfile")?.outcome).toBe(
+        "unsupported"
+      );
+      expect(outcome.declarationsSkipped[0]?.reason).toBe("unresolved_declaration");
+    });
+
+    it("a MIXED values file stays `ok` — rows were written, and the rest are named", async () => {
+      // The other half of the class fix, and the one that keeps it honest: a file that declared
+      // something SCP DID record is not unsupported, however much else it also declared.
+      const component = await chartComponent("values-mixed");
+      const outcome = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml":
+            "api:\n  image:\n    repository: acme/api\n    tag: 1.2.3\n" +
+            "worker:\n  image:\n    tag: 9.9.9\n"
+        }).read
+      });
+      const stamp = await stampOf(component);
+      expect(stamp?.manifests.find((m) => m.path === "chart/values.yaml")?.outcome).toBe("ok");
+      expect(stamp?.outcome).toBe("ok");
+      expect(stamp?.rowsWritten).toBe(1);
+      expect(outcome.declarationsSkipped.map((d) => d.coordinate)).toEqual(["worker.image.tag"]);
+    });
+
+    it("a 404 body at values.yaml prunes NOTHING — the parser throws and the rows stand", async () => {
+      // A values file can be the sole declaration site for a dozen images, so this is the largest
+      // prune blast radius in the parser table. A 404 body is VALID YAML, which is why the parser
+      // has to refuse it explicitly rather than inheriting a grammar error.
+      const component = await chartComponent("values-404");
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml": "image:\n  repository: acme/api\n  tag: 1.2.3\n"
+        }).read
+      });
+      expect(await coordinatesOf(component)).toEqual(["chart/values.yaml:acme/api@1"]);
+
+      const second = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({
+          "chart/values.yaml": "<!DOCTYPE html>\n<html><body>404 Not Found</body></html>\n"
+        }).read
+      });
+      expect(second.skipped.find((s) => s.path === "chart/values.yaml")?.reason).toBe(
+        "manifest_unparseable"
+      );
+      expect(await coordinatesOf(component)).toEqual(["chart/values.yaml:acme/api@1"]);
+    });
   });
 
   // -------------------------------------------------------------------------------------------

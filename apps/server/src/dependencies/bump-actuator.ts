@@ -42,6 +42,62 @@ export function bumpRefFor(changeObjectId: string): string {
 export const BUMP_SOURCE_KIND = "dependency-bump";
 
 /**
+ * CAN THIS BUILD'S RUNNER EDIT A MANIFEST AT THIS PATH FOR THIS ECOSYSTEM?
+ *
+ * `@scp/plugin-managed-dep`'s `MANIFEST_MATCHERS` is the charter-enforcement allowlist — "SCP never
+ * edits a file that declares no dependency", made structural and fail-closed inside the plugin. This
+ * is a RESTATEMENT of the same closed set on the dispatch side, following the convention
+ * {@link BUMP_BRANCH_PREFIX} already sets: the server does not take a build-time dependency on a
+ * plugin package, and `bump-dispatch.test.ts`'s "the write allowlist, pinned across the two modules
+ * that restate it" block proves the two agree — including on what each one REFUSES, which is the
+ * half a subset check would miss.
+ *
+ * WHY THE SERVER ASKS AT ALL, when the plugin refuses anyway. The allowlist is CLOSED and
+ * fail-closed on both sides; this only decides WHERE the refusal is said, and it says it before a
+ * container exists. Without it the dispatcher would start a container, hand it a file the plugin's
+ * allowlist refuses, and surface `not_a_known_manifest`, which reads to an operator as "the runner
+ * is broken" rather than as "this build cannot author into that file".
+ *
+ * `values.yaml` MOVED FROM REFUSED TO ACCEPTED in M21.7's split-shape round, and D4 of
+ * `docs/proposals/split-shape-image-bumps.md` is why it opens WHOLESALE rather than conditionally.
+ * What actually decides whether a chart's image can be edited is whether the manifest's own parser
+ * resolves that declaration to a single line carrying its version — and the server holds no file
+ * content, so it cannot ask that question. It can only ask about the basename. The consequence is
+ * deliberate and stated: `manifest_not_editable_in_this_build` stops being the reason for values
+ * files, and the residue (a stale inventory row, an image declared identically in two places, a
+ * templated tag) is refused plugin-side as `anchor_not_derivable`, which names its own cause
+ * instead of borrowing this one's (ADR-0032 §7b clause 6).
+ */
+export function manifestIsEditableInThisBuild(ecosystem: string, manifestPath: string): boolean {
+  const cut = manifestPath.lastIndexOf("/");
+  const basename = cut === -1 ? manifestPath : manifestPath.slice(cut + 1);
+  switch (ecosystem) {
+    case "npm":
+      return basename === "package.json";
+    case "go":
+      return basename === "go.mod";
+    case "maven":
+      return basename === "pom.xml";
+    case "python":
+      return basename === "pyproject.toml" || /^requirements[A-Za-z0-9._-]*\.txt$/.test(basename);
+    case "oci":
+      // The four Dockerfile spellings in ordinary use, plus `values.yaml` — EXACTLY the basename
+      // `inventory-ingestion.ts`'s manifest-candidate map reads. Not `values.yml`, not
+      // `*-values.yaml`: a path this admits and the inventory never parses is a file SCP would
+      // write into without ever having read a dependency out of it.
+      return (
+        basename === "Dockerfile" ||
+        basename === "Containerfile" ||
+        basename.startsWith("Dockerfile.") ||
+        basename.endsWith(".Dockerfile") ||
+        basename === "values.yaml"
+      );
+    default:
+      return false;
+  }
+}
+
+/**
  * ============================================================================================
  * THE DELEGATION RE-CHECK — the half the authoring-time refusal structurally cannot cover
  * ============================================================================================

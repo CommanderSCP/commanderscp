@@ -350,6 +350,74 @@ describe("scp-runner-dep, as built", () => {
       await rm(scratch, { recursive: true, force: true });
     }
   }, 180_000);
+
+  /**
+   * M21.7 — THE ANCHORED PATH, IN THE REAL IMAGE'S OWN awk.
+   *
+   * `runner-shim.test.ts` proves the anchored program against the HOST's awk (BWK awk on a Mac, GNU
+   * awk in CI). BusyBox awk is a third implementation, and the two things this rule leans on that the
+   * unanchored one did not are exactly where implementations differ: an integer compared against
+   * `NR`, and a NUMERIC value used as an array subscript (`lines[anchor_nr]`, which converts through
+   * CONVFMT in some awks and as `%d` in others). If BusyBox rendered `5` as `5.00000`, the anchor
+   * would address nothing, every split-shape bump would refuse in production, and every unit test
+   * would stay green. So the claim is measured against the artifact rather than reasoned about.
+   */
+  it("applies an ANCHORED split-shape edit in the built image, and refuses a stale anchor", async () => {
+    if (!dockerReady) return expectSkipped();
+    const scratch = await mkdtemp(join(tmpdir(), "scp-runner-dep-anchor-it-"));
+    const inDir = join(scratch, "in");
+    const outDir = join(scratch, "out");
+    await execFileAsync("mkdir", ["-p", inDir, outDir]);
+    // The coordinate is on line 4 and the version on line 5, and `1.2.3` appears twice more where it
+    // is not this image's version at all. NO line names both, so the unanchored rule has no answer.
+    const base = [
+      "global:",
+      "  imageTag: 1.2.3",
+      "image:",
+      "  repository: acme/api",
+      "  tag: 1.2.3",
+      "appVersion: 1.2.3",
+      ""
+    ].join("\n");
+
+    const runInImage = async (argv: readonly string[]): Promise<string | undefined> => {
+      await writeFile(join(inDir, "manifest"), base, "utf8");
+      await rm(join(outDir, "manifest"), { force: true });
+      const { stdout } = await execFileAsync("docker", [
+        "create",
+        "--network",
+        RUNNER_NETWORK_MODE,
+        runnerImageRef,
+        ...argv
+      ]);
+      const id = stdout.trim();
+      try {
+        await execFileAsync("docker", ["cp", `${inDir}/.`, `${id}:/work/in`]);
+        await execFileAsync("docker", ["start", "-a", id], { timeout: 120_000 });
+        await execFileAsync("docker", ["cp", `${id}:/work/out/.`, outDir]);
+        return await readFile(join(outDir, "manifest"), "utf8");
+      } catch {
+        return undefined; // the container exited non-zero: a refusal
+      } finally {
+        await execFileAsync("docker", ["rm", "-f", id]).catch(() => undefined);
+      }
+    };
+
+    try {
+      const descriptor = ["oci", "chart/values.yaml", "acme/api", "1.2.3", "1.2.4"];
+      // Seven operands: the anchor addresses line 5, and ONLY that line moves.
+      expect(await runInImage([...descriptor, "5", "  tag: 1.2.3"])).toBe(
+        base.replace("  tag: 1.2.3", "  tag: 1.2.4")
+      );
+      // A stale anchor text is a refusal, not an edit of whatever happens to be at that number.
+      expect(await runInImage([...descriptor, "5", "  tag: 1.2.3 # pinned"])).toBeUndefined();
+      // ...and five operands — an orchestrator that predates the anchor — still refuse this shape,
+      // which is the "old orchestrator, new image" half of the version-skew table.
+      expect(await runInImage(descriptor)).toBeUndefined();
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }, 300_000);
 });
 
 /** A skip that is VISIBLE. A silent `return` in a docker-gated test is how a suite reports green for

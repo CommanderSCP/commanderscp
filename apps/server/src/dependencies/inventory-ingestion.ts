@@ -2,6 +2,7 @@ import {
   ManifestParseError,
   parseDockerfile,
   parseGoMod,
+  parseKubernetesImages,
   parsePackageJson,
   parsePomXml,
   parsePyprojectToml,
@@ -180,6 +181,31 @@ export const DEPENDENCY_INVENTORY_DECISION_KIND = "dependency_inventory_ingestio
  * `Cargo.toml` is absent even though `discovery`'s component-marker list carries it: Rust is not
  * one of ADR-0032 §10's five ecosystems and there is no parser for it. A sixth ecosystem adds a
  * parser and one line here.
+ *
+ * ============================================================================================
+ * `values.yaml` — M21.7, AND WHY EXACTLY ONE NEW BASENAME
+ * ============================================================================================
+ * Most Kubernetes users pin the image their component RUNS in a chart's values file, not in a
+ * `FROM` line, and until this entry existed such an image did not appear in the inventory at all —
+ * which renders as "declares no dependency" rather than "SCP cannot read where you declared it".
+ *
+ * ONE EXACT BASENAME, deliberately (`docs/proposals/kubernetes-image-references.md` §1):
+ *  - "every `.yaml` in the repository" is not a cost we declined, it is a set SCP CANNOT ENUMERATE.
+ *    The git seam has exactly one file verb, `readFileAtRef`; there is no list, no tree and no walk
+ *    (the same measurement `repoManifestScope` records below).
+ *  - every filename in this map is a MULTIPLIER on every probe prefix, against
+ *    {@link MAX_MANIFEST_READS} — which is re-derived below rather than left at its old value.
+ *  - a probed path is a DURABLE IDENTITY KEY (`component_dependencies` is keyed on `manifest_path`)
+ *    and a `not_found` on one is the branch that PRUNES, so guessing paths is unsafe, not merely
+ *    wasteful.
+ * `values.yml` is excluded because Helm itself only ever reads `values.yaml`, so a `values.yml` is
+ * not a chart's values file and treating it as one would be a filename-shaped inference.
+ * `Chart.yaml` is excluded because its `dependencies[].version` names SUBCHARTS from a Helm
+ * repository — a sixth ecosystem, not an image. `kustomization.yaml` is the obvious next basename
+ * and is deliberately not taken in the same round as the first.
+ *
+ * The parser itself is path-agnostic and reads pod specs too, so registering a raw-manifest
+ * basename later is one line here plus an addressability answer — not parser work.
  */
 export const MANIFEST_PARSERS: ReadonlyMap<
   string,
@@ -190,7 +216,8 @@ export const MANIFEST_PARSERS: ReadonlyMap<
   ["package.json", (c: string) => parsePackageJson(c)],
   ["pyproject.toml", (c: string) => parsePyprojectToml(c)],
   ["requirements.txt", (c: string) => parseRequirementsTxt(c)],
-  ["pom.xml", (c: string) => parsePomXml(c)]
+  ["pom.xml", (c: string) => parsePomXml(c)],
+  ["values.yaml", (c: string) => parseKubernetesImages(c)]
 ]);
 
 /** The basename of a repo-relative path, without importing `node:path` semantics (a repo path is
@@ -383,14 +410,19 @@ export function literalRepoFor(repoPatterns: readonly (string | null)[]): string
 
 /**
  * How many provider reads ONE component's ingestion may make. A bound is required because the
- * candidate set is a cross product (prefixes x six filenames) and `source_mappings` is
+ * candidate set is a cross product (prefixes x {@link MANIFEST_PARSERS}) and `source_mappings` is
  * operator-authored — a component with twenty mappings would otherwise dial a user's git provider
- * 126 times per accepted change.
+ * 140 times per accepted change.
  *
- * Truncation is REPORTED (`read_budget_exhausted`) rather than silent: a component whose manifests
- * were not all looked at must not be indistinguishable from one that declares nothing.
+ * RE-DERIVED WHENEVER THE PARSER TABLE GROWS, and that is a rule rather than a courtesy: every new
+ * filename multiplies EVERY prefix, so a constant left alone quietly buys fewer prefixes than it
+ * did. The budget is stated as SIX PREFIXES' worth of the full cross product — six is what 40 bought
+ * against the original six filenames — so M21.7's `values.yaml` moves it from 6x6 to 6x7. A
+ * component over the budget is not broken, but every path past it is frozen at its last-known
+ * contents until the next pass, and the paths are REPORTED by name (`read_budget_exhausted`) rather
+ * than counted: an operator can act on "this manifest was not read", not on "42 were not".
  */
-export const MAX_MANIFEST_READS = 40;
+export const MAX_MANIFEST_READS = 42;
 
 /**
  * The paths this run will ask for, in a stable order.
@@ -463,12 +495,31 @@ export interface SkippedManifest {
   readonly detail: string;
 }
 
-/** One declaration inside a manifest that WAS read, which cannot be placed on a line. */
+/**
+ * One declaration inside a manifest that WAS read, which cannot be placed on a line.
+ *
+ * TWO REASONS, AND THEY CARRY DIFFERENT OPERATOR ACTIONS — which is the only test for whether a
+ * reason deserves its own name (ADR-0032 §7b clause 6):
+ *
+ *  - `no_comparable_version` — the declaration NAMES its dependency and the version text has no
+ *    numeric core to order on (`FROM alpine`, `image: acme/api:latest`, a bare `requests`). Pin a
+ *    parseable version, or accept that this one is not subscribable.
+ *  - `unresolved_declaration` — the manifest declares SOMETHING SCP COULD NOT READ FROM IT: a
+ *    Dockerfile `ARG`-interpolated tag, a Maven `${revision}`, a Helm values `tag:` with no
+ *    repository beside it, a Go-templated value, a value behind a YAML alias. Nothing about pinning
+ *    a version fixes any of those, and telling an operator that a `{{ .Chart.AppVersion }}` "has no
+ *    comparable numeric core" points them at the wrong repair entirely.
+ *
+ * THE SPLIT IS STRUCTURAL — taken from `DeclaredDependency.constraint`, which every parser sets
+ * deliberately — and never from matching the note's prose. That is `manifestStampOutcome`'s own
+ * discipline applied one level down: a reason picked by reading a sentence is a label named after a
+ * string, and any reword breaks it silently.
+ */
 export interface SkippedDeclaration {
   readonly path: string;
   readonly ecosystem: DependencyEcosystem;
   readonly coordinate: string;
-  readonly reason: "no_comparable_version";
+  readonly reason: "no_comparable_version" | "unresolved_declaration";
   readonly detail: string;
 }
 
@@ -477,6 +528,16 @@ export interface IngestedManifest {
   readonly path: string;
   /** How many declarations became `component_dependencies` rows. */
   readonly declared: number;
+  /**
+   * How many declarations this manifest MADE that SCP could not resolve from it — the
+   * `unresolved_declaration` half of {@link SkippedDeclaration}, counted per manifest.
+   *
+   * REQUIRED, not optional, because it is what separates the two meanings of `declared: 0`:
+   * "read fine and genuinely declares nothing" from "read fine and every declaration in it was
+   * unreadable". {@link projectIngestionStamp} maps the second to `unsupported`, and an optional
+   * field would let a future producer reach that branch by forgetting rather than by deciding.
+   */
+  readonly unresolved: number;
   /** Rows removed because this manifest no longer declares them. A PER-RUN count, not a statement
    *  about the component — which is why it is deliberately absent from the Decision (see the
    *  Decision's own note): it depends on the previous state, so an unchanged component would write
@@ -612,26 +673,62 @@ export function manifestStampOutcome(
  * "not there" with nothing previously known, is `ok` WITH `rowsWritten: 0` — "we looked, and it
  * genuinely declares nothing". That is the state the whole stamp exists to make expressible, and it
  * is why the empty case falls to `ok` rather than to `unreadable`.
+ *
+ * ============================================================================================
+ * A MANIFEST WHOSE EVERY DECLARATION IS UNRESOLVED IS `unsupported`, NOT `ok / 0 rows` (M21.7)
+ * ============================================================================================
+ * This was a defect the moment the table shipped, and it has NOTHING TO DO WITH YAML — it is fixed
+ * as a class because fixing only the instance that exposed it is the incomplete-census failure this
+ * repo has shipped before. Every parsed manifest used to map to `outcome: "ok", rows: declared`,
+ * and `declared` counts rows WRITTEN. So:
+ *
+ *   - a `Dockerfile` that is entirely `FROM ${BASE}` stamped `ok / 0 rows`,
+ *   - a `pom.xml` whose every version is `${revision}` stamped `ok / 0 rows`,
+ *   - and now a `values.yaml` of `tag:` keys with no repository would too —
+ *
+ * and `ok / 0 rows` is the table's own words for "we read it and it genuinely declares nothing". It
+ * is the exact lie the stamp exists to prevent, one level further in: the file DECLARED something,
+ * SCP could not read it, and the receipt said there was nothing to read.
+ *
+ * `unsupported` is the right member and it is already in the per-path enum ("a file SCP structurally
+ * cannot read"; re-running changes nothing), so this needs no schema and no migration — it is a
+ * consumer of machinery that was already here. A MIXED manifest stays `ok`, because rows WERE
+ * written; its unresolved declarations are named in the Decision's `declarationsSkipped`, and the
+ * per-path enum has no `partial` to express the middle.
  */
 export function projectIngestionStamp(input: {
   readonly manifests: readonly IngestedManifest[];
   readonly skipped: readonly SkippedManifest[];
 }): IngestionStampProjection {
   const entries: IngestionStampObservation[] = [
-    ...input.manifests.map((manifest) => ({
-      path: manifest.path,
-      outcome: "ok" as const,
-      // WHAT WAS WRITTEN, never what was pruned: this describes the observation, and a prune count
-      // is a statement about the previous state. Per entry, because the row's total is the sum
-      // across every repository's slice and only the write door can see all of them.
-      rows: manifest.declared,
-      ...(manifest.removed
-        ? {
-            detail:
-              "the manifest is no longer in the repository at this ref, so its declarations were removed"
-          }
-        : {})
-    })),
+    ...input.manifests.map((manifest) => {
+      // READ, DECLARED SOMETHING, AND WROTE NOTHING BECAUSE NOTHING IN IT COULD BE RESOLVED.
+      // Structural: it asks the counts, not the reasons' prose.
+      const allUnresolved = manifest.declared === 0 && manifest.unresolved > 0;
+      return {
+        path: manifest.path,
+        outcome: allUnresolved ? ("unsupported" as const) : ("ok" as const),
+        // WHAT WAS WRITTEN, never what was pruned: this describes the observation, and a prune count
+        // is a statement about the previous state. Per entry, because the row's total is the sum
+        // across every repository's slice and only the write door can see all of them.
+        rows: manifest.declared,
+        ...(allUnresolved
+          ? {
+              detail:
+                `this manifest was read and parsed, and all ${manifest.unresolved} of the ` +
+                `declaration(s) in it name a version SCP cannot resolve from the file itself ` +
+                `(an interpolated or templated value, a value behind an alias, or a version with ` +
+                `no dependency named beside it) — it declares dependencies, and none of them ` +
+                `could be recorded`
+            }
+          : manifest.removed
+            ? {
+                detail:
+                  "the manifest is no longer in the repository at this ref, so its declarations were removed"
+              }
+            : {})
+      };
+    }),
     ...input.skipped.map((skip) => ({
       path: skip.path,
       outcome: manifestStampOutcome(skip.path, skip.reason),
@@ -645,8 +742,20 @@ export function projectIngestionStamp(input: {
     }))
   ].sort((a, b) => (`${a.path}${a.outcome}` < `${b.path}${b.outcome}` ? -1 : 1));
 
+  // COMPUTED FROM THE ENTRIES, not from the manifests/skipped split, so the pass-level verdict and
+  // the per-path evidence cannot disagree — an `unsupported` entry is not a manifest this pass can
+  // claim it read. This is also exactly how `mergeIngestionStamp` recomputes the row across every
+  // repository's slice (`ok` counts entries whose outcome is `ok`), so a pass and the merge that
+  // folds it now answer the same question the same way.
+  const readEntries = entries.filter((entry) => entry.outcome === "ok").length;
   const outcome: IngestionStampOutcome =
-    input.skipped.length === 0 ? "ok" : input.manifests.length > 0 ? "partial" : "unreadable";
+    entries.length === 0
+      ? "ok"
+      : readEntries === entries.length
+        ? "ok"
+        : readEntries === 0
+          ? "unreadable"
+          : "partial";
 
   return {
     outcome,
@@ -1008,6 +1117,8 @@ export async function ingestComponentManifests(
 
     for (const manifest of parsed) {
       const keepLineIds: string[] = [];
+      /** Declarations THIS manifest made that could not be resolved from it — see the stamp. */
+      let unresolvedHere = 0;
       for (const declaration of manifest.declarations) {
         const placed = await placeDeclarationOnLine(tx, orgId, {
           componentObjectId: input.componentObjectId,
@@ -1018,15 +1129,24 @@ export async function ingestComponentManifests(
           declaration
         });
         if (placed === null) {
+          // WHICH OF THE TWO, DECIDED STRUCTURALLY. `constraint` is set by the parser that read the
+          // file — never by matching this module against the note's prose, which would be a reason
+          // named after a sentence (see `SkippedDeclaration`).
+          const unresolved = declaration.constraint === "unresolved";
+          if (unresolved) unresolvedHere += 1;
           declarationsSkipped.push({
             path: manifest.path,
             ecosystem: declaration.ecosystem,
             coordinate: declaration.coordinate,
-            reason: "no_comparable_version",
-            detail:
-              `'${declaration.declared ?? "(no version declared)"}' has no comparable numeric core, ` +
-              `so there is no major line to record this declaration against (ADR-0032 §7: skipped ` +
-              `rather than guessed)`
+            reason: unresolved ? "unresolved_declaration" : "no_comparable_version",
+            detail: unresolved
+              ? `this manifest declares a dependency SCP cannot resolve from the file itself` +
+                `${declaration.note === undefined ? "" : ` (${declaration.note})`} — it is reported ` +
+                `rather than guessed at, because a wrong version here becomes a wrong bump ` +
+                `(ADR-0032 §7)`
+              : `'${declaration.declared ?? "(no version declared)"}' has no comparable numeric core, ` +
+                `so there is no major line to record this declaration against (ADR-0032 §7: skipped ` +
+                `rather than guessed)`
           });
           continue;
         }
@@ -1045,6 +1165,7 @@ export async function ingestComponentManifests(
       manifests.push({
         path: manifest.path,
         declared: keepLineIds.length,
+        unresolved: unresolvedHere,
         pruned,
         removed: false
       });
@@ -1059,7 +1180,8 @@ export async function ingestComponentManifests(
       });
       // A probe that found nothing where nothing was known is not an event. Only a manifest that
       // actually HAD rows and no longer exists is reported.
-      if (pruned > 0) manifests.push({ path, declared: 0, pruned, removed: true });
+      // `unresolved: 0` — a manifest that is GONE declared nothing this pass could fail to read.
+      if (pruned > 0) manifests.push({ path, declared: 0, unresolved: 0, pruned, removed: true });
     }
 
     const sortedManifests = [...manifests].sort((a, b) => (a.path < b.path ? -1 : 1));

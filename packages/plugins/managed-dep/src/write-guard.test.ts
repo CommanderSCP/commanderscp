@@ -19,6 +19,7 @@
  */
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { coordinateRuleCandidates } from "./bump-edit.js";
 import {
   RepoWriteRefusal,
   assertManifestEditProof,
@@ -29,6 +30,7 @@ import {
   basenameOf,
   isLockfileName,
   isRepoWriteRefusal,
+  locateVersionLine,
   manifestParserFor,
   verifyManifestOnlyEdit,
   type ManifestEditProof,
@@ -493,6 +495,73 @@ describe("the change must be confined to the version text", () => {
   });
 });
 
+/**
+ * ADR-0032 §8i — THE EDIT THAT IS STRUCTURALLY PERFECT AND OPERATIONALLY A NO-OP.
+ *
+ * Every other refusal in this file is about an edit that would change TOO MUCH. This one is about
+ * an edit that changes nothing that runs: where a declaration is pinned by a tag AND a digest, the
+ * runtime resolves by the digest, so moving the tag alone leaves the deployed bytes exactly where
+ * they were. Nothing errors, every gate above agrees, the pull request merges, and the image never
+ * moves — which is worse than a refusal, because a refusal is legible.
+ *
+ * The condition is "the digest did not move", never "a digest exists": the accept case directly
+ * above moves both and must stay green, and it is what keeps this from being a rule that refuses
+ * every digest-bearing manifest.
+ */
+describe("a tag that moves while its digest stays", () => {
+  const DIGEST_A = `sha256:${"a".repeat(64)}`;
+
+  it("REFUSES a Dockerfile bump that moves the tag and leaves the digest pinning the old bytes", () => {
+    expectRefusal(
+      () =>
+        verifyEdit({
+          path: "Dockerfile",
+          declaredManifestPaths: ["Dockerfile"],
+          ecosystem: "oci",
+          baseContent: `FROM ghcr.io/acme/base:1.2.3@${DIGEST_A}\n`,
+          newContent: `FROM ghcr.io/acme/base:1.2.4@${DIGEST_A}\n`,
+          coordinate: "ghcr.io/acme/base"
+        }),
+      "digest_pin_not_moved"
+    );
+  });
+
+  it("REFUSES the SPLIT shape too — the values file where the digest is a line of its own", () => {
+    // This is the shape M21.7 made writable, and the one that made the defect reachable through the
+    // anchored branch: the runner edits the `tag:` line, the `digest:` line below it is untouched,
+    // and both verifiers see one clean single-line version change.
+    const base = ["image:", "  repository: acme/api", "  tag: 1.2.3", `  digest: ${DIGEST_A}`, ""];
+    expectRefusal(
+      () =>
+        verifyEdit({
+          path: "values.yaml",
+          declaredManifestPaths: ["values.yaml"],
+          ecosystem: "oci",
+          baseContent: base.join("\n"),
+          newContent: base.join("\n").replace("tag: 1.2.3", "tag: 1.2.4"),
+          coordinate: "acme/api"
+        }),
+      "digest_pin_not_moved"
+    );
+  });
+
+  it("NEGATIVE CONTROL: the identical split shape with NO digest line is ACCEPTED", () => {
+    // Without this, the two refusals above are satisfied by a gate that refuses every values bump —
+    // which is the whole capability the split-shape round added.
+    const base = ["image:", "  repository: acme/api", "  tag: 1.2.3", ""].join("\n");
+    const proof = verifyEdit({
+      path: "values.yaml",
+      declaredManifestPaths: ["values.yaml"],
+      ecosystem: "oci",
+      baseContent: base,
+      newContent: base.replace("tag: 1.2.3", "tag: 1.2.4"),
+      coordinate: "acme/api"
+    });
+    expect(proof.fromDeclared).toBe("1.2.3");
+    expect(proof.toDeclared).toBe("1.2.4");
+  });
+});
+
 // -------------------------------------------------------------------------------------------
 // The proof is a control, not a label
 // -------------------------------------------------------------------------------------------
@@ -729,5 +798,293 @@ describe("write-path URL safety inherits the read path's asserts", () => {
     for (const branch of ["scp/bump-semver-3.2.4", "scp-dep/go/semver", "main"]) {
       expect(() => assertWriteBranch("p", branch), branch).not.toThrow();
     }
+  });
+});
+
+// -------------------------------------------------------------------------------------------
+// M21.7 — `locateVersionLine`, the anchor derivation, and the gate that catches a wrong SELECTION
+// -------------------------------------------------------------------------------------------
+
+/** The adversarial values file of `split-shape-image-bumps.md` §7, byte-identical to the one
+ *  `bump-edit.test.ts` uses — the derivation and the refusal must agree about which line is line 7. */
+const VALUES = [
+  "# charts/api/values.yaml",
+  "global:",
+  "  imageTag: 1.2.3",
+  "api:",
+  "  image:",
+  "    repository: acme/api",
+  "    tag: 1.2.3",
+  "worker:",
+  "  image:",
+  "    repository: acme/worker",
+  "    tag: 1.2.3",
+  "appVersion: 1.2.3",
+  "podLabels:",
+  '  version: "1.2.3"',
+  ""
+].join("\n");
+
+const VALUES_SPEC = {
+  ecosystem: "oci" as const,
+  manifestPath: "chart/values.yaml",
+  coordinate: "acme/api",
+  fromVersion: "1.2.3"
+};
+
+describe("locateVersionLine — the anchor exists exactly where it is honest", () => {
+  it("finds the VERSION line of a split-shape image, not the repository line beside it", () => {
+    // The whole point. `acme/api` is on line 6 and the version it declares is on line 7, and the
+    // edit target is the second of those.
+    expect(locateVersionLine(VALUES, VALUES_SPEC)).toEqual({ line: 7, text: "    tag: 1.2.3" });
+  });
+
+  it("distinguishes two images whose tags are identical", () => {
+    // `worker.image.tag` (line 11) is byte-identical to line 7 and carries the same version. If the
+    // filter were on the version alone, or on the line text, this would be ambiguous.
+    expect(locateVersionLine(VALUES, { ...VALUES_SPEC, coordinate: "acme/worker" })).toEqual({
+      line: 11,
+      text: "    tag: 1.2.3"
+    });
+  });
+
+  it("SHAPE C: anchors a coordinate that appears nowhere contiguously in the file", () => {
+    const content = "image:\n  registry: ghcr.io\n  repository: acme/api\n  tag: 1.2.3\n";
+    expect(content.includes("ghcr.io/acme/api")).toBe(false);
+    expect(locateVersionLine(content, { ...VALUES_SPEC, coordinate: "ghcr.io/acme/api" })).toEqual({
+      line: 4,
+      text: "  tag: 1.2.3"
+    });
+  });
+
+  it("MAVEN YIELDS NO ANCHOR — the four working ecosystems are untouched BY CONSTRUCTION", () => {
+    // This is the mutation-sensitive proof that step 4 is doing the work. `pom-xml.ts` records the
+    // line of the `<dependency>` OPEN TAG, and that line does not carry the version — so the "the
+    // parser's line must contain fromVersion" clause declines, and Maven's path cannot change. Delete
+    // that clause and this test goes red while every other test in the suite stays green.
+    const pom = [
+      "<project>",
+      "  <dependencies>",
+      "    <dependency>",
+      "      <groupId>com.acme</groupId>",
+      "      <artifactId>lib</artifactId>",
+      "      <version>1.2.3</version>",
+      "    </dependency>",
+      "  </dependencies>",
+      "</project>",
+      ""
+    ].join("\n");
+    // The declaration IS parsed, and it IS the one the descriptor names — so this is not "the parser
+    // found nothing", it is step 4 refusing an anchor the parse would otherwise have supplied.
+    expect(
+      manifestParserFor(
+        "maven",
+        "pom.xml"
+      )(pom).map((d) => ({
+        coordinate: d.coordinate,
+        declared: d.declared,
+        line: d.line
+      }))
+    ).toContainEqual({ coordinate: "com.acme:lib", declared: "1.2.3", line: 3 });
+    expect(
+      locateVersionLine(pom, {
+        ecosystem: "maven",
+        manifestPath: "pom.xml",
+        coordinate: "com.acme:lib",
+        fromVersion: "1.2.3"
+      })
+    ).toBeUndefined();
+  });
+
+  it("DOES anchor the ecosystems that already worked, so the veto is exercised and not dead code", () => {
+    // D5: derive the anchor wherever step 4 admits one. For a Dockerfile the coordinate and the
+    // version ARE on one line, so the coordinate rule speaks and the anchor must agree with it —
+    // which is only a real cross-check if an anchor is produced here at all.
+    expect(
+      locateVersionLine("FROM alpine:3.18\nRUN true\n", {
+        ecosystem: "oci",
+        manifestPath: "Dockerfile",
+        coordinate: "alpine",
+        fromVersion: "3.18"
+      })
+    ).toEqual({ line: 1, text: "FROM alpine:3.18" });
+  });
+
+  /**
+   * THE PER-ECOSYSTEM MAP, AS A FACT RATHER THAN AS PROSE.
+   *
+   * `bump-edit.ts` and `index.ts` both carried "…which keeps the four working ecosystems untouched
+   * BY CONSTRUCTION", and it was false of three of them: `go`, `requirements*.txt` and Dockerfile
+   * all take the anchored branch. The claim was in a comment, so nothing could contradict it — and
+   * this milestone has already paid twice for a comment asserting a property the code lacks.
+   *
+   * Enumerated here so the map is CHECKED. It goes red if a parser starts or stops reporting the
+   * line its version is written on, which is exactly the change that would silently move an
+   * ecosystem from one column to the other.
+   */
+  it.each([
+    [
+      "go — anchors: the require line carries the version",
+      "go" as const,
+      "go.mod",
+      "module acme/web\n\nrequire (\n\tgithub.com/acme/lib v1.2.3\n)\n",
+      "github.com/acme/lib",
+      "v1.2.3",
+      4
+    ],
+    [
+      "python/requirements.txt — anchors",
+      "python" as const,
+      "requirements.txt",
+      "other==2.0.0\nacme-lib==1.4.0\n",
+      "acme-lib",
+      "==1.4.0",
+      2
+    ],
+    [
+      "oci/Dockerfile — anchors",
+      "oci" as const,
+      "Dockerfile",
+      "FROM alpine:3.18\n",
+      "alpine",
+      "3.18",
+      1
+    ],
+    [
+      "npm — NO anchor: parsePackageJson reports no line at all",
+      "npm" as const,
+      "package.json",
+      '{\n  "dependencies": {\n    "@acme/lib": "^1.2.3"\n  }\n}\n',
+      "@acme/lib",
+      "^1.2.3",
+      undefined
+    ],
+    [
+      "python/pyproject.toml — NO anchor: same reason as npm",
+      "python" as const,
+      "pyproject.toml",
+      '[project]\nname = "app"\ndependencies = ["requests==2.31.0"]\n',
+      "requests",
+      "==2.31.0",
+      undefined
+    ]
+    // `maven` is the sixth row and has its own case above, because its reason is step 4 (a line IS
+    // reported, and it is the wrong one) rather than steps 3–4 finding no line.
+  ])("%s", (_name, ecosystem, manifestPath, content, coordinate, fromVersion, expectedLine) => {
+    const anchor = locateVersionLine(content, {
+      ecosystem,
+      manifestPath,
+      coordinate,
+      fromVersion
+    });
+    expect(anchor?.line).toBe(expectedLine);
+    if (expectedLine === undefined) return;
+    // AND THE PROPERTY THAT MAKES ANCHORING THEM HARMLESS: the anchor line names the coordinate
+    // too, so it is a candidate of the coordinate rule and clause (c) can only agree with the
+    // selection the unanchored rule would have made. An ecosystem where this failed would be one
+    // the anchor could silently redirect.
+    expect(anchor?.text).toContain(coordinate);
+    expect(coordinateRuleCandidates(content.split("\n"), { coordinate, fromVersion })).toEqual([
+      expectedLine - 1
+    ]);
+  });
+
+  it("declines when the inventory's declared version is not what the file says (a stale row)", () => {
+    expect(locateVersionLine(VALUES, { ...VALUES_SPEC, fromVersion: "9.9.9" })).toBeUndefined();
+  });
+
+  it("declines when the file declares the same image at two versions — ambiguous by coordinate", () => {
+    const two = "a:\n  image: acme/api:1.2.3\nb:\n  image: acme/api:1.2.3\n";
+    // The parser MERGES these into one entry (one inventory row), so there is no single edit site:
+    // editing one line would leave the other behind. Refused at derivation, which costs no container.
+    expect(locateVersionLine(two, VALUES_SPEC)).toBeUndefined();
+  });
+
+  it("MUTATION GUARD on the merge case: the fixture really does merge into ONE entry", () => {
+    // Without this the assertion above is satisfied by a parse that returned TWO entries and tripped
+    // the "exactly one candidate" clause instead — a green test for the wrong reason, and step 5
+    // could then be deleted unnoticed.
+    const two = "a:\n  image: acme/api:1.2.3\nb:\n  image: acme/api:1.2.3\n";
+    const parsed = manifestParserFor("oci", "chart/values.yaml")(two);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.occurrences).toBe(2);
+  });
+
+  it("NEVER THROWS: a lockfile path, an unlisted basename and unparseable bytes all yield undefined", () => {
+    // The derivation runs BEFORE the gate that refuses these properly. If it threw, a missing anchor
+    // would become a failure mode of its own and `verifyManifestOnlyEdit` would never get to say why.
+    expect(
+      locateVersionLine("x", { ...VALUES_SPEC, manifestPath: "pnpm-lock.yaml" })
+    ).toBeUndefined();
+    expect(
+      locateVersionLine("x", { ...VALUES_SPEC, manifestPath: "chart/notes.txt" })
+    ).toBeUndefined();
+    expect(locateVersionLine("\t- [", VALUES_SPEC)).toBeUndefined();
+    // ...and the gate still refuses the lockfile, loudly, so nothing was softened.
+    expectRefusal(() => manifestParserFor("oci", "pnpm-lock.yaml"), "lockfile");
+  });
+});
+
+describe("verifyManifestOnlyEdit catches a WRONG SELECTION in a split-shape values file", () => {
+  const paths = ["chart/values.yaml"];
+
+  it("mints a proof for the correctly-anchored split-shape bump", () => {
+    const edited = VALUES.replace("    tag: 1.2.3\nworker:", "    tag: 1.2.4\nworker:");
+    const proof = verifyManifestOnlyEdit({
+      repo: "acme/widget",
+      headBranch: "scp/dep-bump/c1",
+      path: "chart/values.yaml",
+      declaredManifestPaths: paths,
+      ecosystem: "oci",
+      baseContent: VALUES,
+      newContent: edited,
+      coordinate: "acme/api"
+    });
+    expect(proof).toMatchObject({
+      coordinate: "acme/api",
+      fromDeclared: "1.2.3",
+      toDeclared: "1.2.4"
+    });
+  });
+
+  it("REFUSES when the OTHER image's tag moved — gate 6 is independent of the anchor derivation", () => {
+    // This is the guarantee `split-shape-image-bumps.md` §4 rests on. Suppose the anchor picked the
+    // wrong declaration's line: the runner edits it, and this verifier — asking a DIFFERENT question
+    // (which parsed declaration's version moved?) of DIFFERENT bytes (the AFTER file) — refuses
+    // before the HMAC proof is minted, and there is no way to write without that proof.
+    const edited = VALUES.replace("    tag: 1.2.3\nappVersion", "    tag: 1.2.4\nappVersion");
+    expect(edited).not.toBe(VALUES);
+    expectRefusal(
+      () =>
+        verifyManifestOnlyEdit({
+          repo: "acme/widget",
+          headBranch: "scp/dep-bump/c1",
+          path: "chart/values.yaml",
+          declaredManifestPaths: paths,
+          ecosystem: "oci",
+          baseContent: VALUES,
+          newContent: edited,
+          coordinate: "acme/api"
+        }),
+      "coordinate_not_expected"
+    );
+  });
+
+  it("REFUSES a values.yaml edit that changes something no declaration owns", () => {
+    const edited = VALUES.replace("appVersion: 1.2.3", "appVersion: 9.9.9");
+    expectRefusal(
+      () =>
+        verifyManifestOnlyEdit({
+          repo: "acme/widget",
+          headBranch: "scp/dep-bump/c1",
+          path: "chart/values.yaml",
+          declaredManifestPaths: paths,
+          ecosystem: "oci",
+          baseContent: VALUES,
+          newContent: edited,
+          coordinate: "acme/api"
+        }),
+      "no_version_changed"
+    );
   });
 });

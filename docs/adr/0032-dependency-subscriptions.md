@@ -1,7 +1,7 @@
 # ADR-0032: Dependency subscriptions — a declared inventory, a three-level enablement chain, and a managed bump actuator
 
 **Status:** **Accepted (2026-08-17)** — five decision points settled with the owner on 2026-08-13; the feature is built and merged (M21.1–M21.7), which is what moves this off *Proposed*. **The §8 actuator is now BUILT (M21.5, 2026-08-16) on the charter amendment it was contingent on (approved 2026-08-13, qualified 2026-08-15); §8a–§8f are that build's own normative clauses, every one of them a defect an adversarial review found in a component that was correct and had no caller.** **Amended 2026-08-13 (§3a, during M21.3): the subscription is a `dependencySubscription` POLICY EFFECT, not a new built-in object type — which makes proposal §10 Q6 moot for M21 as built.** **Amended 2026-08-16 (§3a-i): §3a's own attachment clause was wrong — a subscription is attached by the policy's `properties.scope`, not by the `governed_by` edge §3a named; the ADR now agrees with the code comment that caught it.** **Amended 2026-08-17 (§7d), owner decision: ALL DEPENDENCY AUTOMATION IS COMMANDER-ONLY. The federation-axis verdict §3, §4a clause 7 and §7c clause 3 reached is REVERSED — no FIELD outpost runs a dependency job or holds a dependency inventory (the HQ outpost is the commander, so its inventory is the commander's; §7d's vocabulary note reads that distinction out of the code), and dependencies declared in field-outpost-only repositories are out of scope. Those clauses are preserved verbatim and marked; §7d holds the reasoning.** **Amended 2026-08-17 (§6a-ii): §6a's ground (b) — "a group-scoped enable is permanently inert because the acting job is `member_of` nothing" — is FALSE as of ADR-0016 §2a, which shipped group scope's OWNING half the same day §6a was widened. The refusal stands in both directions; ground (a), the opt-out's fail-open, is now the sole ground, and #237 sharpened it into a mutable-reach trapdoor. Preserved and marked; §6a-ii holds the reasoning.**
-**Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md)
+**Context doc:** [docs/proposals/dependency-subscriptions.md](../proposals/dependency-subscriptions.md) — §6.3's manifest-scope sentence is superseded by §4b; see [docs/proposals/kubernetes-image-references.md](../proposals/kubernetes-image-references.md)
 **Relates to:** [ADR-0002](0002-execution-strategy.md) (the four-arm ownership test and six-gate boundary test this feature must pass); [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (SCP stores no SBOM bytes); [ADR-0016](0016-scoped-scan-requirement-policies.md) (the multi-tier resolution shape reused here); [ADR-0022](0022-outpost-config-authority-split.md) (commander-declared config must be a graph object to reach an outpost); [ADR-0028](0028-stage-scoped-component-coupling.md) (`provides`/`requires` — prior art for the wait predicate); [ADR-0030](0030-dev-branch-pipelines.md) §2 (declared, never inferred); [ADR-0031](0031-domain-local-objects-never-federate.md) (domain-local work does not journal)
 
 ## Context
@@ -310,6 +310,139 @@ this" is not the same claim as "this happens".
    while ingestion initiates no timed egress and reads through the git binding this domain's
    executors already coordinate over. §3 says each domain derives its own inventory, so a
    commander-only guard would leave every outpost's `component_dependencies` permanently empty.
+
+### 4b. THE INVENTORY READS IMAGE REFERENCES OUT OF HELM VALUES, NOT ONLY OUT OF A `FROM` (2026-08-17, M21.7)
+
+**This clause reverses a sentence of `docs/proposals/dependency-subscriptions.md` §6.3**, which said
+the manifest scope was the component's own build input "not its deployment manifests — a Helm values
+image tag is a *placement* concern". The reversal is recorded rather than absorbed, because an
+Accepted document that contradicts the code is the failure this milestone has spent rounds
+repairing. Full derivation: `docs/proposals/kubernetes-image-references.md`.
+
+**Why the original clause was wrong**, stated rather than just overturned: it reasoned about *who
+owns the change* (promotion owns placement — true) and concluded *therefore SCP must not record the
+declaration* — which does not follow. §4 says the inventory is what a component's own manifests
+DECLARE, and a `tag: 1.2.3` in a values file the component's repository owns is a declaration in
+exactly the sense `FROM alpine:1.2.3` is. The owner's ask is the ordinary case, not an edge: most
+Kubernetes users pin the image their component runs in chart values, and until this round such an
+image did not appear in the inventory **at all** — which a reader renders as "declares no
+dependency" rather than "SCP cannot read where you declared it".
+
+1. **THE ECOSYSTEM STAYS `oci`.** No sixth member of the enum, no new line identity, no new index
+   plugin, no new comparator. An image pinned in `values.yaml` is the SAME `dependency_lines` row as
+   the same image pinned in a `FROM`; only `manifest_path` differs, and it already distinguishes
+   them. `ecosystem-vocabulary.test.ts` pins the second parser to the same vocabulary as the first.
+
+2. **ONE EXACT BASENAME — `values.yaml` — AND THE ALTERNATIVE IS NOT AVAILABLE, NOT MERELY
+   EXPENSIVE.** "Every `.yaml` in the repository" is a set SCP cannot enumerate: §9 keeps the git
+   seam at one file verb (`readFileAtRef`), with no list, no tree and no directory walk behind it.
+   Two further costs make even a bounded convention list wrong: each filename is a MULTIPLIER on
+   every probe prefix against `MAX_MANIFEST_READS` (re-derived this round from 40 to 42 — six
+   prefixes' worth of the seven-filename cross product), and a probed path is a DURABLE IDENTITY KEY
+   whose `not_found` is the branch that PRUNES (§4a). Guessing paths in a system whose prune rule is
+   "a `not_found` on the path is evidence the file is gone" is unsafe, not wasteful. `values.yml` is
+   excluded (Helm only ever reads `values.yaml`, so guessing otherwise is a filename-shaped
+   inference); `Chart.yaml` is excluded because `dependencies[].version` names subcharts from a Helm
+   repository — a sixth ecosystem, deferred with the question recorded. A chart at a path no
+   mapping's literal head reaches is addressed by a `source_mappings` row that NAMES the file, which
+   `repoManifestScope` already handles — and which is not free, because a mapping is also a
+   correlation rule.
+
+3. **RAW KUBERNETES MANIFESTS ARE OUT OF SCOPE THIS ROUND — for addressability, not for shape.**
+   `spec.template.spec.containers[].image` is the *easiest* shape in the design. `deployment.yaml`,
+   `api.yaml` and `k8s/web-deploy.yaml` are arbitrary names, so clause 2's argument applies with
+   full force. The parser is nevertheless written PATH-AGNOSTIC AND SHAPE-COMPLETE — it reads pod
+   specs, init and ephemeral containers and CronJob templates today — so enabling them later is one
+   line in the parser table plus an addressability answer, never parser work.
+
+4. **A DECLARATION SCP CANNOT RESOLVE FROM THE FILE IS REPORTED, NEVER OMITTED — and a manifest
+   whose EVERY declaration is unresolved is stamped `unsupported`, not `ok / 0 rows`.** This is the
+   clause the round exists for, and its second half is **a class fix to a defect that predates YAML
+   by four milestones**: a `Dockerfile` that is entirely `FROM ${BASE}`, and a `pom.xml` of
+   `${revision}`, both stamped `ok / 0 rows` — the stamp's own words for "read fine, genuinely
+   declares nothing" — on files that declared dependencies SCP could not read. Fixing only the YAML
+   instance would have been the incomplete-census failure. `IngestionStampManifest.outcome` already
+   carried `unsupported`, so this needed no schema and no migration. `SkippedDeclaration.reason`
+   gains a second member, `unresolved_declaration`, selected STRUCTURALLY from the parser's own
+   `constraint` and never by matching a note's prose — the two reasons carry different operator
+   actions ("pin a parseable version" vs "declare the repository beside the tag").
+
+5. **THE SPLIT SHAPES ARE READ AND ARE NOT BUMPABLE IN THIS BUILD, AND THAT IS SAID BEFORE A
+   CONTAINER STARTS.** §8's verifier requires the single changed line to name the coordinate; in
+   `image: {repository, tag}` the coordinate is on the other line, and in
+   `{registry, repository, tag}` it appears nowhere contiguously in the file. The plugin's write
+   allowlist therefore stays CLOSED on `values.yaml` (fail-closed, unchanged), and `planBump` gains
+   a `manifest_not_editable_in_this_build` refusal so the Decision carries a legible reason instead
+   of a runner round trip that ends in `not_a_known_manifest` — which reads as a broken runner.
+   Consequence, stated plainly: a values-file line is **inventoried, subscribable and polled** (the
+   operator learns a newer version exists) and its bump is **refused with its cause**. That is
+   strictly better than the previous silence and it is not the whole feature. Widening the verifier
+   from "the changed line names the coordinate" to "the changed line is the `tag` node of the image
+   block this row came from" touches a charter-enforcement surface whose design is deliberately
+   textual and ecosystem-agnostic, so it is its own round with its own gate.
+
+6. **`@scp/dependency-manifests` SPENDS ITS ZERO-DEPENDENCY PROPERTY, ONCE, ON `yaml`.** Recorded as
+   spent rather than quietly taken. It costs nothing offline (`yaml@2.9.0` was already in the
+   lockfile via `tools/helm-verify` and `deploy/airgap`, and resolves with no transitive
+   dependencies of its own), and a hand-rolled subset was refused on the OPPOSITE reasoning to
+   `toml-lite.ts`'s: YAML's indentation is precisely where a partial implementation returns a
+   confidently wrong tree instead of an error, and one values file can be the sole declaration site
+   for a dozen images. A capability argument settles it independently — a version must be read from
+   the scalar's own SOURCE TEXT, because `tag: 1.20` parses to the number 1.2 and
+   `declared_version` is an edit target. **A claim in that package's own comments was measured and
+   corrected in passing:** the parsers were said to be "trivially usable from a runner image", but
+   `apps/runner-dep` is `FROM scratch` plus BusyBox and has never contained a Node runtime.
+
+7. **THE `image` KEY IS WHAT MAKES A MAPPING AN IMAGE — clause 4's reporting is worth nothing if it
+   fires on ordinary charts** (amended 2026-08-17, M21.7 round 5). The first build read
+   `repository`, `registry`, `tag` and `digest` off EVERY mapping that carried them. Those are
+   ordinary English words that ordinary values files use for ordinary things — a `sources:` block's
+   upstream `repository`, a Kafka client's `schemaRegistry.registry`, a package feed's `registry`, a
+   `tag` used as a pod label, a `<<:` merging resource presets — so each minted either a phantom
+   dependency or an unresolved declaration, and a manifest whose declarations are all unresolved is
+   exactly what clause 4 stamps `unsupported`. A warning that fires on every chart in the estate is
+   a warning nobody reads, which destroys the honesty mechanism clause 4 exists to provide; and a
+   phantom coordinate is worse still, because it makes SCP author a bump against something that does
+   not exist. The rule is now the one the pod-spec walk always used: a mapping is read for image
+   keys only when it carries an exact `image` key whose value is a scalar, or IS the value of an
+   exact `image` key (one hop, never deeper). Three consequences are normative:
+   - **An empty or near-empty coordinate is refused, never minted.** `repository: ""` is a live
+     chart placeholder, and a line is keyed `(org, ecosystem, coordinate, major)` ORG-WIDE — so an
+     empty coordinate is not one bad row but a cross-component MERGE: every component carrying the
+     placeholder collapses onto one line, one team's subscription silently governs another's, and a
+     bump dispatched for it fans out across components that never declared the image.
+   - **`registry: ""` means "the default registry", not "a registry named empty".** It is the common
+     spelling, not an edge; joined it yields `/acme/api` and splits one image across two coordinates
+     depending on whether a values file happened to name the registry. Empty is ABSENT.
+   - **A `digest:` is checked to BE a digest** (`algorithm:hex`, at the registered length for
+     sha256/sha512) before it is recorded, in BOTH image parsers. `resolved_digest` is what the
+     version poller compares a registry's answer against, so `sha256:feedface` is a row that reads
+     as identity-pinned and can never match anything. Fixing it only in the YAML reader would have
+     been the same incomplete-census failure clause 4's second half exists to avoid.
+
+   **AMENDED 2026-08-17 (M21.7 follow-up): rule (a) alone is not enough once values files are
+   WRITABLE.** A mapping is in image context by rule (a) whenever it carries an exact `image:` SCALAR
+   — which admits a chart's own image block (ingress-nginx spells the repository there, beside
+   `registry:`, `tag:` and `digest:`) *and* a Kubernetes **Container object**, where `image` is a
+   complete reference and `tag` is not a field of the schema at all. Reading a container's sibling
+   `tag:` was a wrong row while the file was read-only; since §8h it is the line an anchor would
+   point a BUMP at, so SCP would author a pull request that moves a key nothing consumes. So the
+   split keys are read only where rule (b) ALSO holds — the mapping is the value of an `image:` key
+   and is therefore an image block, never a container. The discriminator is the marker the parser
+   already uses rather than a new heuristic, and it is not a list of pod-spec key names: charts
+   splice `sidecars:` and `extraContainers:` into pod specs too, and a name list would miss both.
+   STATED RESIDUE: a flat `myapp: {image: acme/api, tag: 1.2.3}` whose chart really does read that
+   tag is recorded `unpinned` with the un-read key NAMED, rather than pinned — the file cannot tell
+   it from a container, and a version SCP records is a version SCP will try to bump.
+
+   Two measured corrections ride with it. `yaml`'s duplicate-key check rescans every sibling already
+   composed for each new pair — **quadratic in siblings-per-mapping**, and this call sits in the
+   ingestion path behind a 1 MiB read cap (a flat 32 000-key mapping composes in 7.1 s with the
+   check on and 0.18 s with it off). It is turned off, and the five image keys carry their own
+   duplicate report instead, since Helm's Go YAML takes the LAST duplicate where a scan takes the
+   first. And a `values.yaml` whose only document is empty (`---`) was stamped `unreadable` — "this
+   attempt failed and the next may not" — about a file that will fail identically forever; an empty
+   document is an honest empty, and honest empty is `ok / 0 rows`.
 
 ### 5. Package dependencies never use `depends_on`
 
@@ -1352,6 +1485,148 @@ identical on each:
 `group`-only scope is refused at authoring time in both directions (§6a), and an enable for a
 component whose repository already delegates to Renovate/Dependabot is refused 409 with the probe's
 `decision_id` (§8b). Neither is a `domainId` problem, and neither message should be read as one.
+
+### 8h. A SPLIT-SHAPE IMAGE IS BUMPED BY AN ANCHOR, AND THE COORDINATE RULE KEEPS A VETO (2026-08-17, M21.7)
+
+§4b made an image pinned in a chart's `values.yaml` *visible*. It was still not *writable*, and the
+reason was one clause of one module: `bump-edit.ts`'s decidability rule required the single changed
+line to NAME the coordinate, and Helm's commonest spelling puts `repository: acme/api` on one line
+and `tag: 1.2.3` on the next. For `{registry, repository, tag}` it is worse — the coordinate is a
+CONSTRUCTION and appears nowhere in the file contiguously, so even the file-level
+`before.includes(coordinate)` guard is false. **This was never a charter limit.** The
+`scp-managed-dep` amendment permits "editing the declared version of an already-declared dependency
+in a manifest the component already contains", and `tag: 1.2.3 -> 1.2.4` is exactly that. It was a
+decidability rule, and it is a decidability rule that changed. Full derivation:
+`docs/proposals/split-shape-image-bumps.md`.
+
+1. **THE RULE.** An optional ANCHOR — a 1-based line number and that line's own bytes — may
+   accompany a bump. The target is then the anchor line, refused unless **(a)** the file's line at
+   that index equals the anchor text byte-for-byte, **(b)** that line carries `fromVersion`, and
+   **(c)** the set of lines naming BOTH the coordinate and `fromVersion` is EMPTY, or is exactly the
+   anchor line. With no anchor, the previous rule runs unchanged.
+
+   **(c) is what makes this a widening and not a loosening.** Wherever the textual rule speaks, the
+   anchor must agree with it; a disagreement or an ambiguity refuses exactly as it did before. So
+   every refusal that fired before still fires, and the anchored mode reaches only the shapes the
+   old rule was silent about. **(a) makes the anchor COMPARED, NEVER EMITTED** — the edited line is
+   always rebuilt from the file's own bytes, so a wrong descriptor can only produce a refusal.
+
+2. **THE ANCHOR IS DERIVED AND SPENT IN ONE PLACE — no column, no wire schema, no migration.**
+   `locateVersionLine` (in `write-guard.ts`, beside the parser table that already reads both sides of
+   every edit) runs the registered parser over the bytes the orchestrator has just read at the base
+   branch, and admits an anchor only when exactly one parsed declaration matches
+   `(coordinate, declaredVersion)`, its reported line actually CONTAINS that version, and the entry
+   is not a merged multi-site one. A line number captured at INGESTION and spent at ACTUATION was
+   rejected outright: it would be a number derived from a read at one ref and applied to a read at
+   another, which is a confidently wrong edit rather than a refused one.
+
+   The "its line must contain the version" clause is what keeps **Maven** untouched by construction:
+   `pom-xml.ts` records the `<dependency>` open-tag line and the version sits several lines below it,
+   so Maven yields no anchor and Maven's path cannot change.
+
+   **CORRECTED 2026-08-17.** This clause originally read "keeps the four working ecosystems untouched
+   by construction", and that was false of three of them. An anchor IS derived for `go` (go.mod),
+   `python`'s `requirements*.txt` and `oci`'s Dockerfile, because those parsers report the line the
+   version is written on; only `npm` and `pyproject.toml` (no `line` reported at all) and `maven`
+   (the wrong line reported) yield none. What keeps the anchored three unchanged is **clause (c)**,
+   not the absence of an anchor: their parsers take the coordinate verbatim off that same line, so
+   the anchor line names the coordinate too and is therefore a candidate of the coordinate rule
+   itself — the veto admits it only when it is the sole candidate, which is the unanchored rule's own
+   condition, and refuses when there are several, which is the unanchored rule's own refusal. The
+   anchor cannot redirect an edit there, because a line that names the coordinate is never a line the
+   coordinate rule is silent about, and silence is the only gap an anchor fills. The per-ecosystem
+   map is now an enumerated test in `write-guard.test.ts` rather than a sentence in a comment.
+
+   A dotted key path (`controller.image.tag`) was rejected as the anchor SHAPE for the
+   same reason twice over — resolving one would put YAML structure inside the refusal module, and it
+   would need a YAML reader inside the runner, which is `FROM scratch` plus seven BusyBox applets and
+   has no language runtime to host one.
+
+3. **THE VERIFIER STAYS ECOSYSTEM-AGNOSTIC.** `bump-edit.ts` gains an optional field, three refusal
+   reasons (`anchor_text_mismatch`, `anchor_line_not_changed`, `coordinate_rule_disagrees`) and ONE
+   branch — *is an anchor present*. It learns no YAML, no key paths and no `oci` special case; it
+   still cannot LOCATE a declaration, only check the one it was told about. The transferable rule the
+   npm `verifyJsonDeclarationSets` branch establishes is that **a per-format branch is acceptable
+   when it can only refuse more**; a branch that widens, or that locates, would be the second
+   implementation of the editor that module's header exists to forbid.
+
+4. **THE RUNNER NEEDS NO NEW CAPABILITY, AND SKEW IS FAIL-CLOSED BOTH WAYS.** The anchor arrives as
+   two more argv operands (`$6`, `$7`), read and blanked in `BEGIN` exactly as the existing three are
+   — operands rather than `-v` because `-v` processes escape sequences and these are verbatim tenant
+   text. The rule needs an integer comparison, a string equality and `index()`/`substr()`: all POSIX
+   awk, all already used. No eighth applet. An OLD image given seven operands ignores the last two,
+   produces identical bytes for contiguous shapes, and refuses split ones; a NEW image given five
+   sees no anchor and runs the old rule. The pair is appended only when an anchor exists, so the
+   common command line is byte-identical to the one every shipped image already understands.
+
+5. **WHAT IS GIVEN UP, NAMED AND ACCEPTED.** For a declaration where no line names the coordinate at
+   all — exactly the shapes refused outright before — the line→coordinate binding is no longer
+   parser-independent: it rests on `parseKubernetesImages` associating a `tag` scalar with its
+   sibling `repository`. A wrong SELECTION is still caught, because `verifyManifestOnlyEdit` gate 6
+   re-parses the RETURNED bytes and refuses unless the declaration whose version moved IS the
+   subscribed coordinate — a different question, of different bytes, before the HMAC proof is minted.
+   A wrong ASSOCIATION is common-mode with that same parser and is NOT caught. The comparison is
+   "refused" versus "bumped under a parser-associativity assumption", never "strong guarantee" versus
+   "weak one". Three controls: differential tests where every block has a distinct repository AND a
+   distinct tag; **split-shape bumps are delivered as a pull request this round regardless of a
+   subscription's `auto_merge`** (D2), so a human reads the diff; and the Decision already carries
+   `declaredIn` (`api.image.tag`), so "which key was read" is answerable from the record.
+
+6. **THE ALLOWLIST OPENS ON THE BASENAME, AND A NEW REFUSAL TAKES OVER THE RESIDUE** (D4).
+   `values.yaml` joins `MANIFEST_MATCHERS` and `manifestIsEditableInThisBuild` — the one exact
+   basename §4b clause 2 registers on the ingestion side, so the set SCP writes into can never exceed
+   the set it reads from. The server holds no file content, so it cannot ask whether an anchor is
+   derivable; `manifest_not_editable_in_this_build` therefore stops being the reason for values files
+   and the plugin's `anchor_not_derivable` takes it over — refused before a container is started, so
+   a stale inventory row or an image declared identically twice reads as its own cause rather than as
+   a broken runner.
+
+7. **`DeclaredDependency.occurrences`** carries the merge count as a NUMBER. §4b's trap 9 merges
+   byte-identical declarations into one entry because the inventory row merges, and until now that
+   fact existed only inside a human-readable note — a gate cannot be built on prose. Editing one of
+   `n` merged sites would leave the other `n-1` behind, so `n > 1` yields no anchor.
+
+### 8i. A DECLARATION PINNED BY A DIGEST AS WELL AS A TAG IS REFUSED, NOT BUMPED TAG-ONLY (2026-08-17, M21.7 follow-up)
+
+**Status: DECIDED AND BUILT.** Design and the deferred widening:
+[docs/proposals/split-shape-image-bumps.md §11](../proposals/split-shape-image-bumps.md).
+
+An `oci` declaration can name the release **and** the bytes:
+`FROM alpine:3.19@sha256:aaaa…`, or `{repository, tag, digest}` in a chart's values. §8h made the
+second of those writable, and the result was a bump that **passed every gate and changed nothing that
+runs**: the runner moved the tag, the digest stayed, and Docker and containerd resolve by the digest
+whenever one is present. Gate 7 did not catch it — `versionTextOf` joins `declared` and `digest`, so
+the moved span lies inside the joined text — and neither did the textual verifier, because one line
+changed and the reconstruction matched exactly. The pull request read as an upgrade, delivered none,
+and left the manifest asserting one release in its tag and another's bytes in its digest. Reproduced
+end to end on both shapes before the fix.
+
+1. **REFUSED PRE-DISPATCH** — `planBump` gains `declaration_pinned_by_digest`
+   (`component_dependencies.resolved_digest` is non-null), refused before a credential is minted, with
+   a Decision that names the digest and says the bump WAS due. It is asked BEFORE the editability
+   question — and the honest reason is narrow: either order refuses the same set (a digest-pinned
+   `Dockerfile` is a writable kind and reaches the check on either side of the allowlist question).
+   What the order decides is which reason the Decision CARRIES when both apply, and a fact about the
+   team's own manifest is more actionable than a fact about SCP's build.
+
+2. **REFUSED STRUCTURALLY** — `verifyManifestOnlyEdit` gate 6 gains `digest_pin_not_moved`, on the
+   bytes the runner returned and before the HMAC proof is minted, so the guarantee holds for any
+   caller and any authoring strategy rather than only for what the dispatcher chose to send.
+
+3. **THE CONDITION IS "THE DIGEST DID NOT MOVE", NEVER "A DIGEST EXISTS".** An edit that moves the tag
+   and its digest together is a correct bump and stays accepted — there is a named test on that exact
+   literal — and so is a digest-only move. A rule that refused every digest-bearing manifest would
+   have looked identical on the failing cases and would have closed the door on clause 4.
+
+4. **WHY NOT BUMP BOTH, WHICH IS WHAT THE USER ACTUALLY WANTS.** Not for want of data:
+   `dependency_lines.latest_digest` sits on the same row as `latest_version`, is written by the same
+   poll, and §7b already guarantees it belongs to that version and is never inherited across a version
+   change. It is the SHAPE — in the split form this is a **two-line edit**, and clause 2 of
+   `verifyManifestBump` is *exactly one line differs*. Widening a charter-enforcing refusal from one
+   line to an anchored pair has to be argued once and implemented three times (the verifier, the
+   reference edit, `run.sh`), which is its own round. Refusing meanwhile is the "skipped rather than
+   guessed" rule of §7 applied to an ACTUATION instead of to a reading — and a bump that silently
+   changes nothing is worse than a refusal a human can read.
 
 ### 9. The executor interface does not change
 

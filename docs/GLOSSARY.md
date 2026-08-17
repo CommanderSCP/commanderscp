@@ -795,11 +795,11 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 ### dependency manifest — always qualify
 
-**Definition.** The file in a component's **own source** that declares what it depends on: `package.json`, `go.mod`, `pom.xml`, `requirements.txt`/`pyproject.toml`, or a container build file's `FROM` line.
+**Definition.** The file in a component's **own source** that declares what it depends on: `package.json`, `go.mod`, `pom.xml`, `requirements.txt`/`pyproject.toml`, a container build file's `FROM` line, or — since M21.7 — the image a chart's `values.yaml` pins ([ADR-0032 §4b](adr/0032-dependency-subscriptions.md)). That last one is the SAME `oci` dependency as a `FROM`, read out of a different file: SCP records what the component's own repository **declares**, and a values file the repository owns declares an image in exactly the sense a `FROM` does.
 
 **Always qualify.** Bare **"manifest"** in this codebase means the **promotion manifest** — a commander-signed authorization enumerating exactly which artifacts may cross a boundary. The two have nothing to do with each other, and a dependency manifest authorizes nothing.
 
-**Not to be confused with:** the **promotion manifest** (see `manifest`), an **OCI image manifest**, a **Kubernetes manifest**, or an **SBOM** (a full component inventory including the transitive closure — a dependency manifest declares only **direct** dependencies, which is precisely why SCP can store one and deliberately does not store the other, [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md)).
+**Not to be confused with:** the **promotion manifest** (see `manifest`), an **OCI image manifest**, or an **SBOM** (a full component inventory including the transitive closure — a dependency manifest declares only **direct** dependencies, which is precisely why SCP can store one and deliberately does not store the other, [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md)). A **Kubernetes manifest** used to be on this list and no longer is, exactly: a chart's `values.yaml` IS a dependency-manifest source for `oci`, while a raw `deployment.yaml` is not — not because its shape is harder (it is the easiest one) but because SCP cannot address a file whose name it cannot enumerate (ADR-0032 §4b clauses 2–3).
 
 **In the code.** M21 — done, on `main`. Read through the `readFileAtRef` `GitProviderAdapter` hook (`dependencies/manifest-reader.ts`; [ADR-0032](adr/0032-dependency-subscriptions.md) §7a, §7c).
 

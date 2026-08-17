@@ -240,7 +240,34 @@ describe("parseDockerfile — the awkward reference forms", () => {
     expect(parseDockerfile("FROM alpine:\nRUN true\n")).toEqual([]);
     // NEGATIVE CONTROL: the well-formed spellings of each still parse.
     expect(parseDockerfile("FROM alpine:1.0\n")[0]?.coordinate).toBe("alpine");
-    expect(parseDockerfile("FROM alpine@sha256:abc\n")[0]?.digest).toBe("sha256:abc");
+    expect(parseDockerfile(`FROM alpine@sha256:${"a".repeat(64)}\n`)[0]?.digest).toBe(
+      `sha256:${"a".repeat(64)}`
+    );
+  });
+
+  it("a `@…` that is not a DIGEST is reported, not recorded as a pin to bytes that do not exist", () => {
+    // `resolved_digest` is what the version poller compares a registry's answer against, so a
+    // truncated or non-hex value there is a row that reads as identity-pinned and can never match.
+    // Refusing it in `parseKubernetesImages` alone would be the incomplete-census failure: the
+    // property is "a digest is written without checking it is one", and it had two instances.
+    const short = parseDockerfile("FROM alpine@sha256:abc\n")[0];
+    expect(short?.constraint).toBe("unresolved");
+    expect(short?.digest).toBeUndefined();
+    expect(short?.note).toContain("is not an OCI digest");
+    // Not a truncation at all — a tag written where a digest goes.
+    expect(parseDockerfile("FROM alpine@latest\n")[0]?.constraint).toBe("unresolved");
+    // Right length, not hex.
+    expect(parseDockerfile(`FROM alpine@sha256:${"z".repeat(64)}\n`)[0]?.constraint).toBe(
+      "unresolved"
+    );
+    // NEGATIVE CONTROL: a real digest, and a real digest beside a real tag, are untouched. Without
+    // these, every assertion above is satisfied by a parser that refuses every digest.
+    const real = "sha256:bea051df6a6d3bc84288b6db098df38a81d87b7ed226f34d22aaae1bc329c2b7";
+    expect(parseDockerfile(`FROM alpine@${real}\n`)[0]?.digest).toBe(real);
+    const both = parseDockerfile(`FROM alpine:3.19@${real}\n`)[0];
+    expect(both?.constraint).toBe("pinned");
+    expect(both?.declared).toBe("3.19");
+    expect(both?.digest).toBe(real);
   });
 
   it("does not tell an operator that a sha-pinned base image floats", () => {

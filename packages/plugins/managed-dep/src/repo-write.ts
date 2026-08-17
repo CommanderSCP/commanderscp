@@ -48,7 +48,10 @@ import {
  *     contains no package manager — which is how "never runs a package manager, never resolves or
  *     regenerates a lockfile" becomes true by construction rather than by discipline. See
  *     `index.ts`'s `runEditorContainer`: the container is launched with no environment, no mount and
- *     no socket, and everything it is told is five argv strings that name a declaration.
+ *     no socket, and everything it is told is five argv strings that name a declaration — seven when
+ *     the version is written on a different line from the coordinate and the orchestrator supplies
+ *     the anchor saying which line (M21.7). The anchor is a line number and that line's own bytes:
+ *     still a reference to what the file already holds, never content.
  *   * the ORCHESTRATOR (this plugin, in the plugin host) holds the repository-write credential and
  *     performs the write. It is the component the credential clause is about.
  *
