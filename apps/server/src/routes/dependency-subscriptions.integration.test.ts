@@ -14,6 +14,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-repo.js";
 import { createSourceMapping } from "../coordination/source-mappings-repo.js";
 import { upsertExecutorBinding } from "../coordination/executor-bindings-repo.js";
 import type { GitFileReadPluginClient, PluginHost } from "../plugin-host/contract.js";
@@ -536,6 +537,54 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
           manifestsRemoved: 1
         });
         expect(destructive.declarationsPruned).toBe(1);
+      });
+
+      it("STAMPS ITS OWN PRODUCER — a backfill's receipt says `backfill`, not `loop`", async () => {
+        // WHY THIS TEST EXISTS: `source` answers "is this component's inventory maintained by its
+        // own releases, or is it only as fresh as the last time an operator ran a backfill?" — two
+        // very different readings of one timestamp. Nothing pinned the route's half of it: every
+        // test that asserted `backfill` passed the literal into `ingestComponentManifests` itself,
+        // so swapping THIS route's label to `"loop"` left all 17 tests in this file and the whole
+        // ingestion suite green (measured). A provenance label is only worth having if a mislabel
+        // is loud.
+        bodies = { "package.json": JSON.stringify({ dependencies: { "@acme/lib": "^1.2.3" } }) };
+        const target = await createOrphanComponent(admin, `backfill-stamp-${uuidv7()}`);
+        await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+          await createSourceMapping(tx, {
+            orgId: org.orgId,
+            sourceKind: "github",
+            repoPattern: BACKFILL_REPO,
+            componentIdOrUrn: target.id,
+            type: "configuration"
+          });
+          await upsertExecutorBinding(tx, {
+            orgId: org.orgId,
+            targetObjectId: target.id,
+            pluginModule: "github",
+            pluginInstanceId: `gh-${uuidv7()}`,
+            config: { appId: "1", installationId: "2", owner: "acme", repo: "backfill" }
+          });
+        });
+        await subscriptionPolicy(`backfill-enable-stamp-${uuidv7()}`, target.id, { enabled: true });
+
+        const response = await admin.dependencySubscriptions.backfillInventory({
+          componentIdsOrUrns: [target.id]
+        });
+        expect(response.components[0]).toMatchObject({ verdict: "ingested" });
+
+        const stamp = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+          findIngestionStampByComponent(tx, org.orgId, target.id)
+        );
+        // The route is the ONLY producer that ran here — nothing in this file calls the ingestion
+        // directly — so this value can only have come from `routes/dependency-subscriptions.ts`.
+        expect(stamp?.source).toBe("backfill");
+        // Beside it, the evidence that this is the pass that actually wrote the inventory: a source
+        // label asserted on an empty receipt would pin wording rather than behaviour.
+        expect(stamp?.outcome).toBe("ok");
+        expect(stamp?.rowsWritten).toBe(1);
+        expect(stamp?.manifests.map((m) => [m.repo, m.path])).toEqual([
+          [BACKFILL_REPO, "package.json"]
+        ]);
       });
 
       it("BOUNDS the live provider I/O one request performs, and says what it did not reach", async () => {

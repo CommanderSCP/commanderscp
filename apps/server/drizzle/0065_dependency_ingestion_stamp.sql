@@ -42,7 +42,7 @@
 -- a first-class value rather than an absence.
 --
 -- ===========================================================================================
--- WHY `manifests` IS PER PATH AND NOT A SUMMARY COUNT
+-- WHY `manifests` IS PER (REPOSITORY, PATH) AND NOT A SUMMARY COUNT
 --
 -- `manifest_path` is part of `component_dependencies`' PRIMARY KEY precisely because one component
 -- legitimately declares from several manifests (two Dockerfiles; a root and a workspace
@@ -53,6 +53,23 @@
 -- `candidateManifestPaths` already makes for reporting `read_budget_exhausted` BY NAME.
 --
 -- `outcome = 'partial'` exists for exactly that mixed case.
+--
+-- AND EACH ENTRY NAMES THE REPOSITORY IT CAME FROM, because THE ROW IS PER COMPONENT BUT INGESTION
+-- IS PER (COMPONENT, REPOSITORY). A pass reads exactly one repository and `source_mappings` is
+-- many-per-component: a component releases from `acme/widgets` (its `go.mod`) and from
+-- `acme/charts` (its `Dockerfile`), one pass each. Written as a whole-row replacement, a widgets
+-- pass whose read FAILED wrote `unreadable` and a charts pass minutes later wrote `ok` over it —
+-- state (3) rendered as state (2) on a component whose manifests could not be read, which is the
+-- very lie this table was built to stop, arriving through its own writer. So a pass replaces only
+-- its own `(repo, *)` slice, keeps every other repository's, and the row's `outcome` and
+-- `rows_written` are recomputed ACROSS the merged set (`mergeIngestionStamp`, which is pure and
+-- unit-tested for exactly these orderings). Each entry also carries `at`, the instant of the pass
+-- that wrote it: ordering has to be PER REPOSITORY, or a late-delivered pass over repository B is
+-- dropped whenever a newer pass over repository A landed first and B's verdict is lost entirely.
+--
+-- The PRIMARY KEY is unchanged and stays `(org_id, component_object_id)`: the question this table
+-- answers ("what does this component's empty inventory mean?") is asked of a COMPONENT, and a
+-- reader that does not care which repository broke should not have to fold rows to get an answer.
 --
 -- ===========================================================================================
 -- WHY A TABLE AND NOT A DECISION ROW
@@ -136,37 +153,47 @@ CREATE TABLE IF NOT EXISTS "dependency_ingestion_stamps" (
   -- silently inherit a wrong label, it does not compile until it names itself. That is the property
   -- that matters; a CHECK would only add a second place to edit.
   "source" text NOT NULL,
-  -- WHAT THIS PASS ESTABLISHED about the component's manifests:
-  --   `ok`           every manifest this pass had evidence about was read and parsed. With
+  -- WHAT IS KNOWN about the component's manifests, computed ACROSS every repository that feeds it
+  -- (the merged `manifests` set) rather than reported by whichever pass wrote last:
+  --   `ok`           every manifest there is evidence about was read and parsed. With
   --                  `rows_written = 0` this is "genuinely declares nothing" — the state that was
   --                  impossible to express before this table.
   --   `partial`      at least one manifest was read AND at least one could not be. The mixed case;
-  --                  `manifests` names which is which.
-  --   `unreadable`   nothing was read: every candidate failed, or there was no addressable
-  --                  repository to read from at all.
+  --                  `manifests` names which is which. Reachable ACROSS repositories, which is the
+  --                  reading a component with one healthy and one broken source deserves.
+  --   `unreadable`   nothing was read: every candidate failed, or the first attempt on this
+  --                  component had no addressable repository to read from at all.
   --   `not_enabled`  the enablement gate was closed, so NOTHING WAS FETCHED (ADR-0032 §6). The
   --                  empty list is correct and is not evidence about the component's manifests.
+  --                  A component-level fact, so it OVERRIDES the computed outcome while it is the
+  --                  latest word.
   -- Same plain-text treatment and same reasoning as `source`.
   "outcome" text NOT NULL,
   -- The one-sentence explanation behind `outcome`, as the ingestion itself worded it — why the gate
-  -- was closed, which repository has no mapping, that no repository was named at all. Nullable
-  -- because the ordinary `ok` pass has nothing to add beyond `manifests`. It exists because
-  -- `manifests` is keyed BY PATH and the refusals that matter most have no path: "there is no
-  -- repository to read this component's manifests from" cannot be said in a per-path array.
+  -- was closed, that no repository was named at all. Written ONLY when the outcome is one a pass
+  -- declared rather than one the merged evidence computed, so the sentence and the verdict can
+  -- never describe different things. Nullable, and null on every ordinary pass: it exists because
+  -- `manifests` is keyed BY PATH and those refusals have no path to hang an explanation on.
   "detail" text,
-  -- HOW MANY `component_dependencies` ROWS THIS PASS WROTE. NOT NULL, and 0 is legal and meaningful
-  -- — see the header. Counts what was upserted (a re-observation of an unchanged declaration
-  -- counts), never what was pruned: this describes the observation, not the delta.
+  -- HOW MANY `component_dependencies` ROWS THE COMPONENT'S MANIFESTS ACCOUNT FOR — the SUM of
+  -- `manifests[].rows` over the merged set, so a pass over one repository cannot report its own
+  -- count as the whole component's. NOT NULL, and 0 is legal and meaningful (see the header).
+  -- Counts what was upserted (a re-observation of an unchanged declaration counts), never what was
+  -- pruned: this describes the observation, not the delta.
   "rows_written" integer NOT NULL,
-  -- PER MANIFEST PATH: `[{path, outcome: 'ok'|'unreadable'|'unsupported', detail?}]`, sorted by
-  -- path. See the header for why this is per path rather than a count. `unsupported` is the file
-  -- SCP structurally cannot read (no parser registered for that filename in this build, an LFS
-  -- pointer, a directory, a binary, an encoding the decoder does not implement) as distinct from
-  -- `unreadable`, which is a read or a parse that failed THIS TIME and may succeed on the next
-  -- pass. The two carry different operator actions, which is the whole test for whether a reason
-  -- deserves its own name (ADR-0032 §7b clause 6).
+  -- PER (REPOSITORY, MANIFEST PATH):
+  --   `[{repo, path, outcome: 'ok'|'unreadable'|'unsupported', rows, at, detail?}]`,
+  -- sorted by repo then path. See the header for why it is keyed by both and merged rather than
+  -- replaced. `unsupported` is the file SCP structurally cannot read (no parser registered for that
+  -- filename in this build, an LFS pointer, a directory, a binary, an encoding the decoder does not
+  -- implement) as distinct from `unreadable`, which is a read or a parse that failed THIS TIME and
+  -- may succeed on the next pass. The two carry different operator actions, which is the whole test
+  -- for whether a reason deserves its own name (ADR-0032 §7b clause 6). `rows` is what that
+  -- manifest's last observation wrote and `at` is when that pass looked — the latter is what orders
+  -- two passes over the SAME repository, since the row's own `last_attempt_at` is the newest across
+  -- ALL of them and says nothing about whether one repository's slice is stale.
   --
-  -- Empty array, never NULL: "this pass named no manifests" is a fact and `[]` states it.
+  -- Empty array, never NULL: "no manifest is known for this component" is a fact and `[]` states it.
   "manifests" jsonb DEFAULT '[]'::jsonb NOT NULL,
   -- When this component was FIRST attempted. Distinct from `last_attempt_at` and not derivable from
   -- it: "enabled months ago, attempted once, never since" and "attempted for the first time an hour
@@ -210,7 +237,7 @@ COMMENT ON TABLE dependency_ingestion_stamps IS
   'ADR-0032 §4: the dependency ingestion''s own receipt, one row per component. Exists because component_dependencies.observed_at is per ROW, so a component with no rows carries no timestamp and "never ingested", "ingested and genuinely declares nothing" and "ingestion ran and the manifests were unreadable" are indistinguishable — three truths behind one empty list. Written by both producers through ingestComponentManifests (the event-driven loop and the operator backfill). NEVER ATTEMPTED is the ABSENCE of a row, never a value, which is why there is no DELETE grant.';
 --> statement-breakpoint
 COMMENT ON COLUMN dependency_ingestion_stamps.rows_written IS
-  'component_dependencies rows this pass upserted. 0 is legal and meaningful: outcome=''ok'' with rows_written=0 is "read fine, genuinely declares nothing", which is the state that could not be expressed before this table.';
+  'component_dependencies rows the component''s manifests account for — the SUM of manifests[].rows across every repository, never one pass''s own count. 0 is legal and meaningful: outcome=''ok'' with rows_written=0 is "read fine, genuinely declares nothing", which is the state that could not be expressed before this table.';
 --> statement-breakpoint
 COMMENT ON COLUMN dependency_ingestion_stamps.manifests IS
-  'Per manifest PATH: [{path, outcome: ok|unreadable|unsupported, detail?}]. Per path rather than a count because manifest_path is part of component_dependencies'' key — one component legitimately declares from several manifests, so the mixed case (one readable, one not) is ordinary, and "1 of 2 unreadable" does not tell an operator which file to fix.';
+  'Per (REPOSITORY, manifest PATH): [{repo, path, outcome: ok|unreadable|unsupported, rows, at, detail?}]. Per path because manifest_path is part of component_dependencies'' key — one component legitimately declares from several manifests, so the mixed case (one readable, one not) is ordinary and "1 of 2 unreadable" does not tell an operator which file to fix. Per repository because a pass reads exactly one and source_mappings is many-per-component: a pass replaces only its own slice, so a successful acme/charts release can no longer erase a failed acme/widgets read. The row''s outcome and rows_written are computed across the merged set.';

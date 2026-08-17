@@ -1933,8 +1933,22 @@ export const componentDependencies = pgTable(
 );
 
 /** One entry of {@link dependencyIngestionStamps.manifests} — what a pass established about ONE
- *  manifest path. Declared here beside the column so the jsonb has a type at every read. */
+ *  manifest path IN ONE REPOSITORY. Declared here beside the column so the jsonb has a type at
+ *  every read. */
 export interface IngestionStampManifest {
+  /**
+   * THE REPOSITORY THIS ENTRY'S EVIDENCE CAME FROM — which is what makes the array a merge target
+   * rather than something a pass replaces wholesale.
+   *
+   * A pass reads exactly ONE repository, and `source_mappings` is many-per-component: a component
+   * legitimately releases from `acme/widgets` (its `go.mod`) and from `acme/charts` (its
+   * `Dockerfile`). Keyed by `path` alone, a charts pass replaced the entire array and ERASED the
+   * widgets pass's `unreadable` verdict minutes later — state (iii) "manifests unreadable" rendered
+   * as state (ii) "genuinely declares nothing", which is precisely the lie this table was built to
+   * prevent. So the writer replaces only the `(repo, *)` slice it holds evidence over
+   * (`mergeIngestionStamp`), and the component-level `outcome` is computed ACROSS the merged set.
+   */
+  readonly repo: string;
   /** Repo-relative path, as `component_dependencies.manifest_path` spells it. */
   readonly path: string;
   /** `ok` read and parsed; `unreadable` a read or parse that failed THIS TIME and may succeed on
@@ -1943,6 +1957,17 @@ export interface IngestionStampManifest {
    *  does not implement). The split is by OPERATOR ACTION, which is the test for whether a reason
    *  deserves its own name (ADR-0032 §7b clause 6). */
   readonly outcome: "ok" | "unreadable" | "unsupported";
+  /** `component_dependencies` rows THIS manifest's last observation wrote; 0 on an entry that was
+   *  not read and on one whose manifest went away. The row's `rows_written` is the SUM of these
+   *  over the merged set — it has to be, or a second repository's pass would report its own count
+   *  as the whole component's and `ok` + 0 would stop meaning "declares nothing". */
+  readonly rows: number;
+  /** WHEN THE PASS THAT WROTE THIS ENTRY LOOKED, ISO-8601. The only thing that orders two passes
+   *  over the SAME repository: a late-delivered retry of an earlier pass must not replace a newer
+   *  slice (both delivery hops are at-least-once and the ingestion queue is a competing consumer).
+   *  Per entry rather than per row because the row's own `last_attempt_at` is now the newest across
+   *  ALL repositories, which says nothing about whether this repository's slice is stale. */
+  readonly at: string;
   /** The ingestion's own sentence about this path. Absent on the ordinary `ok` entry. */
   readonly detail?: string;
 }
@@ -2001,24 +2026,32 @@ export const dependencyIngestionStamps = pgTable(
      *  set is enforced by the union type at the one write door, and `source` is a REQUIRED input of
      *  `ingestComponentManifests`, so a third producer does not compile until it names itself. */
     source: text("source").$type<"loop" | "backfill">().notNull(),
-    /** What this pass established. `ok` everything it had evidence about was read; `partial` some
-     *  read and some not (the mixed case, which `manifests` names); `unreadable` nothing was read
-     *  at all; `not_enabled` the gate was closed so nothing was fetched — the empty list is correct
-     *  and is not evidence about the manifests. */
+    /** What the component's manifests are KNOWN TO BE, across every repository that feeds it —
+     *  computed over the merged `manifests` set, not reported by whichever pass wrote last. `ok`
+     *  every entry was read; `partial` some read and some not (the mixed case, which `manifests`
+     *  names, and which a component fed by two repositories reaches routinely); `unreadable`
+     *  nothing was read at all; `not_enabled` the gate is closed so nothing is fetched — the empty
+     *  list is correct and is not evidence about the manifests. */
     outcome: text("outcome").$type<"ok" | "partial" | "unreadable" | "not_enabled">().notNull(),
-    /** The ingestion's own sentence behind `outcome`. It exists because `manifests` is keyed BY
-     *  PATH and the refusals that matter most have no path — "there is no repository to read this
-     *  component's manifests from" cannot be said in a per-path array. */
+    /** The ingestion's own sentence behind `outcome`, and ONLY when the outcome is one a pass
+     *  declared rather than one the merged evidence computed (`not_enabled`, "no repository was
+     *  named"). It exists because `manifests` is keyed BY PATH and those refusals have no path to
+     *  hang an explanation on; where the evidence decides, the per-path details ARE the
+     *  explanation and this is null. */
     detail: text("detail"),
-    /** `component_dependencies` rows this pass upserted. 0 IS LEGAL AND MEANINGFUL: `ok` + 0 is
-     *  "read fine, genuinely declares nothing", the state that could not be expressed before this
-     *  table. Counts what was written, never what was pruned — this describes the observation. */
+    /** `component_dependencies` rows the component's manifests currently account for — the SUM of
+     *  `manifests[].rows` over the merged set, so a pass over one repository cannot report its own
+     *  count as the whole component's. 0 IS LEGAL AND MEANINGFUL: `ok` + 0 is "read fine, genuinely
+     *  declares nothing", the state that could not be expressed before this table. Counts what was
+     *  written, never what was pruned — this describes the observation. */
     rowsWritten: integer("rows_written").notNull(),
-    /** Per manifest path, sorted by path. Per path rather than a count because `manifest_path` is
-     *  part of `component_dependencies`' primary key: one component legitimately declares from
-     *  several manifests, so "one readable, one not" is ordinary rather than hypothetical, and a
-     *  count cannot tell an operator WHICH file to fix. `[]` — never NULL — states "this pass named
-     *  no manifests". */
+    /** Per (REPOSITORY, manifest path), sorted. Per path because `manifest_path` is part of
+     *  `component_dependencies`' primary key — one component legitimately declares from several
+     *  manifests, so "one readable, one not" is ordinary rather than hypothetical, and a count
+     *  cannot tell an operator WHICH file to fix. Per REPOSITORY because a pass reads exactly one
+     *  and `source_mappings` is many-per-component: a pass replaces only its own repository's
+     *  slice, so a successful charts release can no longer erase a failed widgets read. `[]` —
+     *  never NULL — states "no manifest is known for this component". */
     manifests: jsonb("manifests")
       .$type<IngestionStampManifest[]>()
       .notNull()

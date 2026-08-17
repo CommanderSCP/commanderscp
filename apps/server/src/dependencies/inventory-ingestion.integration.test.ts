@@ -1544,6 +1544,114 @@ require (
       expect(stamp?.detail).toContain("acme/somewhere-else");
     });
 
+    it("a refusal for a repository this component is NOT MAPPED TO leaves the good stamp standing", async () => {
+      // THE DEFECT THIS PINS: the refusal above and the good pass below are about DIFFERENT FACTS —
+      // "this repository is not this component's" versus "this component's manifests cannot be
+      // read" — and the stamp used to write the first over the second. An accepted change reaching
+      // a component from an unmapped repo is ordinary (`source_mappings` is a glob-matched
+      // correlation), so a healthy component's receipt was destroyed by the next unrelated release.
+      const component = await enabledComponent("stamp-unmapped-over-good");
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD }).read
+      });
+      const good = await stampOf(component);
+      expect(good?.outcome).toBe("ok");
+      expect(good?.rowsWritten).toBe(2);
+
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const refusal = await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: "acme/somewhere-else",
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD }).read
+      });
+      expect(refusal.verdict).toBe("not_addressable");
+
+      const after = await stampOf(component);
+      // THE WHOLE ROW IS UNTOUCHED — verdict, evidence, row count and freshness. `last_attempt_at`
+      // is deliberately in that list: it is what a reader means by "when were these manifests last
+      // looked at", and this pass looked at none of them.
+      expect(after).toEqual(good);
+      expect(after?.outcome).toBe("ok");
+      expect(after?.rowsWritten).toBe(2);
+      expect(after?.manifests.map((m) => [m.repo, m.path, m.outcome])).toEqual([
+        [REPO, "go.mod", "ok"]
+      ]);
+      expect((await inventoryOf(component)).length).toBe(2);
+      // The negative control for "then just do not stamp on that path at all" is the test above:
+      // with NO stamp yet, the same refusal MUST create one, because the absence of a row means
+      // "never attempted" and this component has been attempted.
+    });
+
+    it("a good pass over one repository does NOT erase the other repository's unreadable verdict", async () => {
+      // THE DEFECT THIS PINS: the stamp is per COMPONENT but ingestion is per (COMPONENT,
+      // REPOSITORY). A widgets pass whose `go.mod` read failed wrote `unreadable`; a charts release
+      // minutes later wrote `ok` over it — and "manifests unreadable" was rendered as "genuinely
+      // declares nothing", which is the exact lie the stamp was built to prevent.
+      const CHARTS = "acme/charts";
+      const component = await componentWithMapping("stamp-two-repo-erase", null, REPO);
+      await addMapping(component, null, CHARTS);
+      await enable(component);
+
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: async () => {
+          throw new Error("provider is down for acme/widgets");
+        }
+      });
+      expect((await stampOf(component))?.outcome).toBe("unreadable");
+
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: CHARTS,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ Dockerfile: DOCKERFILE }).read
+      });
+
+      const mixed = await stampOf(component);
+      // PARTIAL — the honest reading of one healthy source and one broken one, and a reading that
+      // was unreachable while the row was replaced wholesale.
+      expect(mixed?.outcome).toBe("partial");
+      // Each side is attributed, so an operator can see WHICH repository is broken.
+      expect(mixed?.manifests.find((m) => m.repo === CHARTS)).toMatchObject({
+        path: "Dockerfile",
+        outcome: "ok",
+        rows: 1
+      });
+      expect(mixed?.manifests.some((m) => m.repo === REPO && m.outcome === "unreadable")).toBe(
+        true
+      );
+      // The row count is the COMPONENT's, summed across repositories — not the last pass's.
+      expect(mixed?.rowsWritten).toBe(1);
+      expect((await inventoryOf(component)).length).toBe(1);
+
+      // AND IT HEALS: widgets comes back, its slice is replaced by the pass that read it, and the
+      // component is `ok` again. A merge that only ever accumulated would leave `partial` forever.
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD }).read
+      });
+      const healed = await stampOf(component);
+      expect(healed?.outcome).toBe("ok");
+      expect(healed?.rowsWritten).toBe(3);
+      expect(healed?.manifests.map((m) => [m.repo, m.path])).toEqual([
+        [CHARTS, "Dockerfile"],
+        [REPO, "go.mod"]
+      ]);
+    });
+
     it("NEVER ATTEMPTED is the ABSENCE of a row, and one pass is what creates it", async () => {
       const component = await enabledComponent("stamp-absent");
       // The distinction the whole table rests on: no row means nothing has ever looked. There is
@@ -1583,7 +1691,7 @@ require (
       expect(Date.parse(second!.lastAttemptAt)).toBeGreaterThan(Date.parse(first!.lastAttemptAt));
     });
 
-    it("an OLDER pass cannot overwrite a NEWER stamp", async () => {
+    it("an OLDER pass over the SAME repository cannot overwrite a NEWER slice", async () => {
       const component = await enabledComponent("stamp-ordering");
       await ingestComponentManifests(server.deps.db, org.orgId, {
         source: "backfill",
@@ -1595,24 +1703,109 @@ require (
       const winner = await stampOf(component);
       expect(winner?.outcome).toBe("ok");
 
-      // A retry of an EARLIER pass, delivered late — both hops are at-least-once and the queue is a
-      // competing consumer. Landing it would put an `unreadable` receipt over rows that are fine.
+      // A retry of an EARLIER pass over the SAME repository, delivered late — both hops are
+      // at-least-once and the queue is a competing consumer. Landing it would put an `unreadable`
+      // receipt over rows that are fine.
       await inOrg((tx) =>
         recordIngestionStamp(tx, org.orgId, {
           componentObjectId: component,
           lastAttemptAt: new Date(Date.parse(winner!.lastAttemptAt) - 60_000),
           source: "loop",
+          repo: REPO,
           outcome: "unreadable",
           detail: "an older pass, delivered late",
-          rowsWritten: 0,
-          manifests: []
+          manifests: [
+            { path: "go.mod", outcome: "unreadable", rows: 0, detail: "provider was down" }
+          ]
         })
       );
 
       const after = await stampOf(component);
       expect(after?.outcome).toBe("ok");
+      expect(after?.rowsWritten).toBe(2);
       expect(after?.lastAttemptAt).toBe(winner!.lastAttemptAt);
       expect(after?.source).toBe("backfill");
+      expect(after?.manifests).toEqual(winner?.manifests);
+    });
+
+    it("an older pass over a DIFFERENT repository still contributes its slice", async () => {
+      // The other half of per-repository ordering, and the reason the guard is not a row-level one.
+      // Ordering the whole row would DROP this pass — it is older than the widgets pass — and the
+      // charts verdict would be lost entirely, which is the same silence the table replaces.
+      const CHARTS = "acme/charts";
+      const component = await componentWithMapping("stamp-ordering-cross-repo", null, REPO);
+      await addMapping(component, null, CHARTS);
+      await enable(component);
+      await ingestComponentManifests(server.deps.db, org.orgId, {
+        source: "backfill",
+        componentObjectId: component,
+        repo: REPO,
+        ref: RESOLVED_COMMIT,
+        readManifest: recordingReader({ "go.mod": GO_MOD }).read
+      });
+      const widgets = await stampOf(component);
+
+      await inOrg((tx) =>
+        recordIngestionStamp(tx, org.orgId, {
+          componentObjectId: component,
+          lastAttemptAt: new Date(Date.parse(widgets!.lastAttemptAt) - 60_000),
+          source: "loop",
+          repo: CHARTS,
+          outcome: "unreadable",
+          manifests: [
+            { path: "Dockerfile", outcome: "unreadable", rows: 0, detail: "provider was down" }
+          ]
+        })
+      );
+
+      const after = await stampOf(component);
+      expect(after?.outcome).toBe("partial");
+      expect(after?.manifests.map((m) => [m.repo, m.path, m.outcome])).toEqual([
+        [CHARTS, "Dockerfile", "unreadable"],
+        [REPO, "go.mod", "ok"]
+      ]);
+      // The row-level fields still describe the LATEST attempt on the component, which this is not.
+      expect(after?.lastAttemptAt).toBe(widgets!.lastAttemptAt);
+      expect(after?.source).toBe("backfill");
+    });
+
+    it("CONCURRENT passes over different repositories do not lose each other's slices", async () => {
+      // The merge is a READ-MODIFY-WRITE, so it is only correct while it is serialised: two passes
+      // that both read the pre-state would each write a row missing the other's slice, and the
+      // per-repository merge would be defeated at the write by the very race it exists to survive.
+      // `recordIngestionStamp` therefore takes the same transaction-scoped advisory lock
+      // `ingestComponentManifests`' phase 3 already holds — deleting that `pg_advisory_xact_lock`
+      // line reddens this test (measured).
+      //
+      // Eight repositories rather than two: a lost update needs an interleaving, and one pair can
+      // serialise by luck where eight cannot.
+      const component = await componentWithMapping("stamp-concurrent", null, "acme/repo-0");
+      const repos = Array.from({ length: 8 }, (_, i) => `acme/repo-${i}`);
+      for (const repo of repos.slice(1)) await addMapping(component, null, repo);
+      await enable(component);
+
+      await Promise.all(
+        repos.map((repo, i) =>
+          ingestComponentManifests(server.deps.db, org.orgId, {
+            source: "backfill",
+            componentObjectId: component,
+            repo,
+            ref: RESOLVED_COMMIT,
+            // A DISTINCT declaration per repository. Identical ones would collapse onto one
+            // `component_dependencies` row — the row's key is (component, line, manifest path) and
+            // does not include the repo — and the test would then be measuring that collapse
+            // rather than whether a slice was lost.
+            readManifest: recordingReader({ Dockerfile: `FROM svc-${i}:1.0.0\n` }).read
+          })
+        )
+      );
+
+      const stamp = await stampOf(component);
+      // EVERY repository is represented, and the row count is their sum — the two things a lost
+      // update destroys.
+      expect(new Set(stamp?.manifests.map((m) => m.repo))).toEqual(new Set(repos));
+      expect(stamp?.rowsWritten).toBe(repos.length);
+      expect((await inventoryOf(component)).length).toBe(repos.length);
     });
 
     it("reads many components' stamps in ONE round trip, and a component with none is simply absent", async () => {
@@ -1675,16 +1868,51 @@ require (
       );
       expect(visible).toEqual([]);
 
-      // WITH CHECK: nor can it WRITE a row stamped with this org's id. Without the WITH CHECK half
-      // a policy is a read filter only, and a stranger could plant a receipt on somebody else's
+      // WITH CHECK: nor can a stranger WRITE a row stamped with this org's id. Without that half a
+      // policy is a read filter only, and a stranger could plant a receipt on somebody else's
       // component.
       //
-      // The SQLSTATE is asserted rather than "it threw": this insert has a NOT NULL column, a
+      // TWO THINGS THIS TEST HAD TO LEARN BY MUTATION rather than by reading the policy, both of
+      // which had left the earlier version asserting almost nothing:
+      //
+      //  1. THE SUBJECT MUST HAVE NO ROW YET. Aimed at a component that already had one, the
+      //     refusal came from the upsert's ON CONFLICT DO UPDATE meeting a row the USING clause
+      //     hides — Postgres refuses that with 42501 too, whatever WITH CHECK says.
+      //  2. THE STATEMENT MUST BE A PLAIN INSERT. `recordIngestionStamp` is an upsert, and for an
+      //     INSERT ... ON CONFLICT Postgres also checks the policy's USING qual against the
+      //     PROPOSED row — so a cross-org upsert is refused ("new row violates row-level security
+      //     policy", `ExecWithCheckOptions`) even with `WITH CHECK (true)` installed. MEASURED: no
+      //     route through the write door can distinguish the WITH CHECK half at all.
+      //
+      // Hence both writes below. The raw INSERT isolates WITH CHECK — it is the only statement
+      // whose refusal that clause alone produces, and `WITH CHECK (true)` lets it through. The
+      // write door then proves the real writer is refused as well, which `USING (true)` breaks.
+      const control = await enabledComponent("stamp-rls-control");
+      await inOrg((tx) =>
+        recordIngestionStamp(tx, org.orgId, {
+          componentObjectId: control,
+          lastAttemptAt: new Date(),
+          source: "loop",
+          repo: REPO,
+          outcome: "ok",
+          manifests: []
+        })
+      );
+      // THE POSITIVE CONTROL, and without it a refusal proves only that these writes always fail:
+      // the identical one from the OWNING org's session lands.
+      expect(
+        await stampOf(control),
+        "the owning org must be able to write this row"
+      ).not.toBeNull();
+
+      // The SQLSTATE is asserted rather than "it threw": these inserts carry NOT NULL columns, a
       // foreign key and a primary key, so a bare `.rejects.toThrow()` would stay green if the
       // policy were dropped and something unrelated failed instead. `42501` is the policy refusing.
-      const refusal = await withTenantTx(server.deps.db, stranger, (tx) =>
-        recordIngestionStamp(tx, org.orgId, {
-          componentObjectId: component,
+      const planted = await enabledComponent("stamp-rls-planted");
+      const withCheckRefusal = await withTenantTx(server.deps.db, stranger, (tx) =>
+        tx.insert(dependencyIngestionStamps).values({
+          orgId: org.orgId,
+          componentObjectId: planted,
           lastAttemptAt: new Date(),
           source: "loop",
           outcome: "ok",
@@ -1695,8 +1923,33 @@ require (
         () => null,
         (err: unknown) => unwrapDriverError(err)
       );
-      expect(refusal, "the WITH CHECK half must refuse this write").not.toBeNull();
+      expect(withCheckRefusal, "WITH CHECK must refuse a cross-org INSERT").not.toBeNull();
+      expect((withCheckRefusal as { code?: string }).code).toBe("42501");
+      expect(await stampOf(planted)).toBeNull();
+
+      const unstamped = await enabledComponent("stamp-rls-fresh");
+      expect(
+        await stampOf(unstamped),
+        "the subject must have NO row, or ON CONFLICT is what fails"
+      ).toBeNull();
+      const refusal = await withTenantTx(server.deps.db, stranger, (tx) =>
+        recordIngestionStamp(tx, org.orgId, {
+          componentObjectId: unstamped,
+          lastAttemptAt: new Date(),
+          source: "loop",
+          repo: REPO,
+          outcome: "ok",
+          manifests: []
+        })
+      ).then(
+        () => null,
+        (err: unknown) => unwrapDriverError(err)
+      );
+      expect(refusal, "the row check must refuse the write door too").not.toBeNull();
       expect((refusal as { code?: string }).code).toBe("42501");
+      // AND NOTHING LANDED. The SQLSTATE says the statement was refused; this says the table agrees
+      // — read back as the OWNING org, which is the only session that could see a planted row.
+      expect(await stampOf(unstamped)).toBeNull();
     });
   });
 });

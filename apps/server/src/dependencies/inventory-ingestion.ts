@@ -25,7 +25,7 @@ import {
 } from "./dependency-inventory-repo.js";
 import {
   recordIngestionStamp,
-  type IngestionStampManifest,
+  type IngestionStampObservation,
   type IngestionStampOutcome,
   type IngestionStampSource
 } from "./ingestion-stamp-repo.js";
@@ -154,6 +154,15 @@ import type { ManifestReader } from "./internal-release-version.js";
  * IT IS WRITTEN ON THE REFUSED PATHS TOO, where no Decision is written, because those are precisely
  * the components whose empty inventory needs explaining. The one path that does NOT stamp is
  * `superseded`, for a reason stated at that branch.
+ *
+ * AND IT IS WRITTEN AS EVIDENCE ABOUT ONE REPOSITORY, NOT AS THE COMPONENT'S WHOLE STORY. This
+ * function reads one repository per pass and a component is routinely fed by two, so the stamp is
+ * merged per `(repo, path)` and the component-level verdict is recomputed across the merged set
+ * (`mergeIngestionStamp`). The first cut replaced the row wholesale and produced the very lie the
+ * table was built to prevent, twice over: a successful `acme/charts` pass erased a failed
+ * `acme/widgets` read minutes later, and a refusal for a repository the component is not mapped to
+ * overwrote a healthy receipt with `unreadable`. Both are stated where they are fixed — the
+ * `refuse` helper below, and `repo:` on the phase-3 write.
  */
 
 /** The Decision `kind` this module writes — one row per component per distinct inventory outcome. */
@@ -530,11 +539,23 @@ export interface IngestComponentManifestsInput {
   readonly source: IngestionStampSource;
 }
 
-/** What one pass established, projected onto the stamp's columns (migration 0065). */
+/** What one pass established, projected onto the stamp's shape (migration 0065). */
 export interface IngestionStampProjection {
   readonly outcome: IngestionStampOutcome;
+  /**
+   * THIS PASS'S OWN row count, and deliberately NOT what lands in `dependency_ingestion_stamps.
+   * rows_written`.
+   *
+   * A pass speaks for ONE repository; the column is per COMPONENT and a component is routinely fed
+   * by two. Handing a per-pass total straight to a per-component column is how a one-row
+   * `acme/charts` pass came to report the whole component's inventory as one row, erasing what
+   * `acme/widgets` had contributed. The column is therefore summed at the write door over the
+   * MERGED per-repository entries (each carries its own `rows`), and this number is the pass's
+   * own — the quantity the projection's arithmetic is pinned on, and what a caller reporting on a
+   * single pass means by "rows written".
+   */
   readonly rowsWritten: number;
-  readonly manifests: readonly IngestionStampManifest[];
+  readonly manifests: readonly IngestionStampObservation[];
 }
 
 /**
@@ -596,10 +617,14 @@ export function projectIngestionStamp(input: {
   readonly manifests: readonly IngestedManifest[];
   readonly skipped: readonly SkippedManifest[];
 }): IngestionStampProjection {
-  const entries: IngestionStampManifest[] = [
+  const entries: IngestionStampObservation[] = [
     ...input.manifests.map((manifest) => ({
       path: manifest.path,
       outcome: "ok" as const,
+      // WHAT WAS WRITTEN, never what was pruned: this describes the observation, and a prune count
+      // is a statement about the previous state. Per entry, because the row's total is the sum
+      // across every repository's slice and only the write door can see all of them.
+      rows: manifest.declared,
       ...(manifest.removed
         ? {
             detail:
@@ -610,6 +635,10 @@ export function projectIngestionStamp(input: {
     ...input.skipped.map((skip) => ({
       path: skip.path,
       outcome: manifestStampOutcome(skip.path, skip.reason),
+      // NOT READ, so nothing was written for it. Its EXISTING rows are deliberately not counted
+      // here: they are last-known-good from an earlier pass and counting them would let a failed
+      // read report the inventory as freshly confirmed.
+      rows: 0,
       // The ingestion's own sentence, verbatim. It is the actionable half — WHICH file and WHY —
       // and it is the reason the array is per path at all.
       detail: skip.detail
@@ -621,9 +650,7 @@ export function projectIngestionStamp(input: {
 
   return {
     outcome,
-    // What was WRITTEN, never what was pruned: this describes the observation, and a prune count is
-    // a statement about the previous state.
-    rowsWritten: input.manifests.reduce((sum, manifest) => sum + manifest.declared, 0),
+    rowsWritten: entries.reduce((sum, entry) => sum + entry.rows, 0),
     manifests: entries
   };
 }
@@ -670,9 +697,21 @@ export async function ingestComponentManifests(
       componentObjectId: input.componentObjectId,
       actorObjectId: input.actorObjectId ?? SYSTEM_ACTOR_ID
     });
-    /** A refusal, its stamp written before it is returned. The stamp is the ONLY record of these
-     *  paths: no Decision is written for them (see below), so without it a refused component is
-     *  indistinguishable from one nothing has ever looked at. */
+    /**
+     * A refusal, its stamp written before it is returned. The stamp is the ONLY record of these
+     * paths: no Decision is written for them (see below), so without it a refused component is
+     * indistinguishable from one nothing has ever looked at.
+     *
+     * EVERY REFUSAL PASSES `repo: null`, AND THAT IS THE FIX FOR THE WORST THING THIS FUNCTION DID.
+     * None of them reached a provider, so none holds evidence about any repository's manifests —
+     * including the "no mapping names this repository" refusal, where a repository IS named. That
+     * one is the sharp case: an accepted change can target a component from a repo it is not mapped
+     * to, and stamping the refusal as this component's manifest verdict overwrote the good receipt
+     * a real pass had just written, with `unreadable`, on a component whose manifests were fine.
+     * "This repository is not this component's" and "this component's manifests cannot be read" are
+     * different facts, and only the second belongs in a slice. With `null`, the merge replaces
+     * nothing and the standing evidence still decides the outcome.
+     */
     const refuse = async (
       verdict: "not_enabled" | "not_addressable",
       outcome: IngestionStampOutcome,
@@ -682,12 +721,12 @@ export async function ingestComponentManifests(
         componentObjectId: input.componentObjectId,
         lastAttemptAt: attemptAt,
         source: input.source,
+        repo: null,
         outcome,
         detail,
-        // NOTHING WAS FETCHED on any of these paths, so nothing was written. `0` here is a fact
-        // about this pass, and the `outcome` beside it is what stops it reading as "declares
-        // nothing" — which is the whole distinction this table exists to carry.
-        rowsWritten: 0,
+        // NOTHING WAS FETCHED on any of these paths, so this pass names no manifest. What the row
+        // ends up reporting is decided by the merge: this verdict where nothing else is known,
+        // and the standing per-repository evidence where there is some.
         manifests: []
       });
       return { proceed: false as const, verdict, detail };
@@ -939,10 +978,10 @@ export async function ingestComponentManifests(
       //
       // The stamp is deliberately in that list. It describes WHAT THE INVENTORY IS, and this pass
       // established nothing about that: its manifests are stale evidence that was not applied. A
-      // stamp here would restate `rowsWritten` from a pass whose rows are not in the table, over
-      // the winning pass's own stamp. (`recordIngestionStamp`'s `setWhere` would refuse it anyway,
-      // because the winner read later — but relying on that would make the honest answer an
-      // accident of two guards agreeing rather than a decision made here.)
+      // stamp here would publish per-path entries counting rows that are not in the table.
+      // (`mergeIngestionStamp` would refuse the slice anyway, because the winner read this same
+      // repository later — but relying on that would make the honest answer an accident of two
+      // guards agreeing rather than a decision made here.)
       //
       // "Never attempted is the absence of a row" survives this: being superseded REQUIRES a newer
       // pass to have written rows for the same component, and that pass stamped.
@@ -1098,8 +1137,12 @@ export async function ingestComponentManifests(
       componentObjectId: input.componentObjectId,
       lastAttemptAt: readAt,
       source: input.source,
+      // THE REPOSITORY THIS PASS SPEAKS FOR. Its entries replace that repository's slice and no
+      // other: a component fed by `acme/widgets` and `acme/charts` gets one slice each, so a
+      // successful charts pass can no longer erase a failed widgets read — which it did, silently,
+      // turning "manifests unreadable" back into "declares nothing" on the next release.
+      repo: prepared.repo,
       outcome: stamp.outcome,
-      rowsWritten: stamp.rowsWritten,
       manifests: stamp.manifests
       // No `detail`: on this path every explanation is per PATH and lives in `manifests`. The
       // column exists for the refusals that have no path to hang one on.
