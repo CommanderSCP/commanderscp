@@ -48,6 +48,8 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **retrans** | The SCP federation role that sits at a CDS boundary and validate-then-relays | SCP-SPECIFIC |
 | **commander** | The federation role that is the source of truth for global config | SCP-SPECIFIC |
 | **outpost** | The federation role for a per-domain/per-environment instance | SCP-SPECIFIC |
+| **HQ outpost** | The outpost in the commander's **own** trust domain — the record whose `peerDomainId` is this instance's own domain | SCP-SPECIFIC |
+| **field outpost** | Any outpost in **another** trust domain — every paired outpost peer that is not the HQ one, whatever its connectivity | SCP-SPECIFIC |
 | **federation** | Hash-chained, signed journal exchange between SCP instances | QUALIFIED-STANDARD |
 | **org / tenant** | The top-level tenancy unit; one org is one federation identity | SCP-SPECIFIC |
 | **instance** | One running deployment of the SCP binary; multi-tenant | SCP-SPECIFIC |
@@ -586,6 +588,24 @@ Outposts remain **fully operational when disconnected** — federation enhances 
 
 **In the code.** `FederationRoleSchema` in `packages/schemas/src/federation.ts`; `federation_self.role = 'outpost'`.
 
+Every outpost is exactly one of the following two (owner decision, 2026-08-17 — [ADR-0021](adr/0021-terminology.md) D7). The split is **trust-domain topology**, not connectivity: whether the outpost is reachable over mTLS, disconnected, or air-gapped is a separate axis (transport / poke mode) and says nothing about which of the two it is.
+
+**HQ outpost**
+
+**Definition.** The outpost in the **commander's own trust domain** — the "commander and outpost are one and the same" case ([docs/proposals/pipeline-substrate-registry-scan.md §10.5](proposals/pipeline-substrate-registry-scan.md), where it was first called the *co-located outpost*). Every deployment target is part of *some* outpost, and the commander's own targets are part of this one. It is **commander-declared**: an outpost-role instance never authors its own record — it arrives replicated. There is **no peer row** behind it: nothing syncs to or from it, it has no transport and no poke-mode.
+
+**In the code.** The `outpost` object whose `properties.peerDomainId` is this instance's own domain (`federation_self.domainId`); on the wire `OutpostConfig.peerIsSelf === true` and `FederationStatusResponse.selfOutpost` (`packages/schemas/src/federation.ts`); accepted by `apps/server/src/federation/outpost-binding.ts` only when `federation_self.role` is `commander`. The review fixture (`scripts/seed-review-fixture.mjs`) names it `hq-outpost`. Wire field names, code identifiers (`coLocated`, `isSelf`) and test ids (`outpost-detail-co-located`, `config-declare-co-located`) keep their older spelling; only vocabulary and rendered copy changed.
+
+**Not to be confused with:** the poke-mode documents' "co-located" ([ADR-0009](adr/0009-optional-poke-mode-federation.md), [docs/proposals/outpost-poke.md](proposals/outpost-poke.md)), which is the **reachability** sense — same partition, no cross-domain boundary to honor. That is a different axis: a *field* outpost can be reachable that way, and an HQ outpost always is.
+
+**field outpost**
+
+**Definition.** **Any** outpost in **another** trust domain — every paired federation peer of role `outpost` that is not the HQ one, whether it is connected over mTLS, disconnected, or air-gapped. Its record is bound to a paired peer, syncs down as a read-only replica, and carries the peer's transport and poke-mode settings.
+
+**In the code.** An `outpost` object bound to a paired federation peer of role `outpost` (`federation_peers`); on the wire `OutpostConfig.peerIsSelf === false`. The review fixture names it `field-outpost`. In the CLI, `scp federation outpost list`'s `binding` column reads `hq` / `field` (`?` when an older server does not say).
+
+**Not to be confused with:** a **retrans** (a different federation role, also a paired peer) and a **disconnected** or **air-gapped** outpost (a connectivity property some field outposts have, not a third kind).
+
 ---
 
 ### federation
@@ -809,6 +829,7 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 | **"bundle"** unqualified | **"promotion bundle"** / **"air-gap federation bundle"** / **"relay tarball"** | Three different things, only one of which carries artifact bytes. |
 | bare **"subscription"** for the dependency sense | **"dependency subscription"** | Bare *subscription* is already `notification_bindings` — who gets told when something happens. A dependency subscription is a standing authorization to **change code**; conflating an alert with a write is the kind of collision that reads as harmless until someone grants the wrong one ([ADR-0032](adr/0032-dependency-subscriptions.md) §2). |
 | bare **"manifest"** for `package.json` / `go.mod` / a `FROM` line | **"dependency manifest"** | Bare *manifest* is the **promotion manifest**, a commander-signed authorization for a boundary crossing. A dependency manifest authorizes nothing. Two of the four other live senses (OCI image manifest, Kubernetes manifest) already share the word, so this one must be qualified on sight. |
+| **"co-located outpost"** for the outpost in the commander's own trust domain | **"HQ outpost"** (and **"field outpost"** for every other one) | Owner decision 2026-08-17 ([ADR-0021](adr/0021-terminology.md) D7). "Co-located" already means *reachable, same partition* in the poke-mode documents ([ADR-0009](adr/0009-optional-poke-mode-federation.md)) — a connectivity sense, not a topology one. Vocabulary and rendered copy only: wire fields (`peerIsSelf`), code identifiers (`coLocated`) and test ids keep the old spelling. |
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
 **Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry describes each sense, and [ADR-0021](adr/0021-terminology.md) Consequences (iii) carries the complete site roster. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.
@@ -817,7 +838,7 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 ## See also
 
-- [ADR-0021 — Terminology](adr/0021-terminology.md) — the six decisions, the rejected alternatives, the cost table, and the four tracked follow-on code PRs.
+- [ADR-0021 — Terminology](adr/0021-terminology.md) — the seven decisions, the rejected alternatives, the cost table, and the four tracked follow-on code PRs.
 - [ADR-0016 §Terminology](adr/0016-scoped-scan-requirement-policies.md) — the trust-domain / containment-domain split this glossary generalizes.
 - [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md) — commander / outpost / retrans, and the precedent for a breaking pre-1.0 enum rename.
 - [docs/proposals/promotion-and-execution-model.md](proposals/promotion-and-execution-model.md) — the authoritative end-to-end workflow these words describe.

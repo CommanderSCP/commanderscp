@@ -68,6 +68,8 @@ Whether Lanes A and B get a shared task-oriented **setup landing** (a per-domain
 
 ## 5. The colocated instance and "different subdomains"
 
+> **Naming note (2026-08-17).** The outpost record of the colocated instance's own trust domain is now called the **HQ outpost** ([ADR-0021](../adr/0021-terminology.md) D7; [GLOSSARY](../GLOSSARY.md)); every outpost in another trust domain is a **field outpost**. "Colocated" below keeps its original sense — one instance serving both duties.
+
 What is structurally true today (measured, lens 5):
 
 - One org = one federation identity (`federation_self.orgId` is the PK). An instance's role is advisory; nothing anywhere assumes commander XOR outpost.
