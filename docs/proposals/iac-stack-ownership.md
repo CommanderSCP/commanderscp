@@ -147,8 +147,18 @@ zero-drift against the committed OpenAPI spec. Surfacing it (so an operator can 
 this?" without reading a possibly-stale mirror) is a small additive follow-up, listed here rather
 than taken, because it is a capability decision and not part of closing the hole.
 
-**The residual is the same one the label-namespace work names:** ownership is now immovable, and the
-object can still be **moved**. A stack's reach is what its manifest declares, and a subject holding
-`relationship:write` can still re-parent itself out from under a containment-scoped decision. That is
-a strictly larger decision (authorize at both the old and the new container, which touches every
-typed route) and is filed separately.
+**The residual the label-namespace work named — "the assertion is immovable, but the object can still
+be moved" — is CLOSED, and not by this PR.** It landed on `main` as
+[#249](https://github.com/CommanderSCP/commanderscp/pull/249) (`graph/containment-parent-authz.ts`)
+while this branch was in flight: a containment move is now authorized at BOTH ends, and a wire `null`
+means "the org root", not "detach". This section said the opposite until the merge that brought #249
+in; leaving that sentence standing would have been the same class of defect §4d is about — a
+confident statement about a hazard that stopped being true.
+
+The IaC-specific residual that remains is smaller and worth naming precisely: **a stack's prune pool
+follows ownership, not containment**, so nothing here depends on the containment chain at all. What
+this PR does not address is the projection pools' *inheritance* — a `source_mappings` /
+`executor_bindings` / `placement` row's owner is the object it hangs off, so adopting an object still
+adopts every projection row on it in one step. That is the documented C1 design (`plan-diff.ts`), not
+a defect found here, and it is bounded by `unownedProjectionDeclarations` refusing cross-stack
+*writes*.
