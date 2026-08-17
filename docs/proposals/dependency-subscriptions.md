@@ -776,7 +776,29 @@ installation and, if present and unneeded, revoked — separately from M21.
 
 ## 12. The producer declaration has no authoring surface — design (2026-08-17)
 
-**Status: proposed, pending owner review. Design only; nothing here is built.** This section completes
+**Status: BUILT (2026-08-17). The owner took all five open decisions; the build is
+[ADR-0032 §7e](../adr/0032-dependency-subscriptions.md#7e-the-producer-link-had-no-way-to-be-created--and-its-grain-was-wrong-2026-08-17),
+which is authoritative where it and this section differ.** Four things below were decided rather
+than recommended, and one recommendation was overtaken:
+
+- **§12.1's grain** — per COORDINATE — was taken as proposed (ruling 1), with the materialized-column
+  alternative rejected on the stated ground.
+- **§12.2's authority** — `policy:write` at the org root — was taken as recommended (ruling 2). The
+  two-party propose/accept shape was not selected.
+- **§12.2's FK check** was taken as a requirement (ruling 3) and is `assertDeclarableProducer`.
+- **§12.2's recommendation to refuse `service`** was taken (ruling 4), and ADR-0032 §7 is amended to
+  record why rather than leaving §7's "component OR a service" standing.
+- **§12.3.2's head clearing on BOTH verbs** was taken (ruling 5) — and its *reason* is stronger than
+  this section states. §12.3.2 called a stale head a wedge; since M22, `latest_version` is a
+  **security-gate input** (the vendor rule grants a scan pass on the latest of a major line), so a
+  stale head on a re-third-partied coordinate can grant a vendor-pass against a version no registry
+  ever published.
+
+One item of §12.6 is NOT built and is open: **there is no IaC surface**, deferred because an IaC
+collection prunes, and a pruned producer declaration silently returns a coordinate to a public
+index. See ADR-0032 §7e's parity paragraph.
+
+The original design text follows unchanged. This section completes
 [§4.4](#44-internal-vs-third-party-is-a-property-of-the-package-and-it-is-declared), which said "an
 operator accepts it" and never said through what.
 

@@ -1030,6 +1030,129 @@ unchanged) and the **jobs and the projection tables they write** (commander-only
 §6's enablement algebra, §7b's head rules, §8's actuator design and §8a–§8f's wiring clauses are all
 unaffected — none of them was ever a statement about which role runs them.
 
+### 7e. THE PRODUCER LINK HAD NO WAY TO BE CREATED — AND ITS GRAIN WAS WRONG (2026-08-17)
+
+**Status: Accepted.** Five owner rulings, 2026-08-17. §7 above describes a declared producer link and
+never said through what an operator declares one; this clause is that surface, and the grain
+correction the surface forced.
+
+**THE DEFECT, MEASURED.** `dependency_lines.produced_by_object_id` is what `isInternalDependencyLine`
+reads to decide a line is internal. It was written by exactly one function,
+`declareDependencyLineProducer`, and a filterless census of that symbol found **no non-test caller**:
+no route, no CLI verb, no job, no IaC construct. So in production the column was never set,
+`isInternalDependencyLine` was always false, and **the internal half of this feature could not fire
+at all** — half of what was asked for ("internal dependencies refresh the database once released to
+production"). Third-party polling worked; internal detection derived lines for the empty set of
+declared producers.
+
+**WHAT WAS NOT THE FIX.** Wiring the link into ingestion. `UpsertDependencyLineInputSchema` has no
+producer field and `upsertDependencyLine`'s `ON CONFLICT` set list cannot reach the column: the
+capability is **absent** from the ingestion verb rather than guarded on it, which is what makes
+"declared, never inferred" structural. Wiring it in would delete that property and call it a
+completion. The missing piece was an **authoring surface for a deliberately manual declaration**.
+
+**RULING 1 — THE GRAIN IS THE COORDINATE, in a new table (`dependency_line_producers`, drizzle/0068),
+retiring `produced_by_object_id` with its partial index and its CHECK by expand/contract
+(drizzle/0069).** The reason is not tidiness. A `dependency_lines` row is
+`(org, ecosystem, coordinate, major)` and lines are minted **only** by a consumer's manifest, so
+under per-line grain (a) a producer with no consumers yet had no row to attach to, and (b) every new
+major minted a fresh row with a NULL producer, honestly third-party by default, which
+`buildLineWorkList` then handed to a **public index** — §7b clause 1's dependency-confusion
+catastrophe, re-armed silently at each major bump. **Both structural barriers against that read the
+column, and neither can protect a column nobody filled in.** Keyed by coordinate, a brand-new major
+of a declared coordinate is internal from the instant it is minted, because there is no per-major
+field left to populate. The readers moved to a join (`listProducedLines`) and an anti-join
+(`listThirdPartyDependencyLinesByIds`); `asThirdPartyLine` now takes the joined fact as an
+**argument**, so a caller who never looked cannot obtain a pollable line by default.
+
+**THE REJECTED ALTERNATIVE, NAMED because it is the tempting one:** keep the column as a materialized
+projection and have `upsertDependencyLine` stamp it at mint time from the declaration table. It
+closes the same hole with no human step, and the value it copies is a prior human declaration rather
+than anything read out of a manifest. **Rejected: it puts a `produced_by_*` write back inside the
+ingestion verb**, deleting the "capability absent from ingestion" property. The join makes the
+projection unnecessary instead of making it safe.
+
+**RULING 2 — AUTHORITY IS `policy:write` AT THE ORG ROOT.** Declaring "X produces `@acme/lib`" changes
+behaviour for every other component in the org that depends on that coordinate, in two directions at
+once. `governance/policy-scope-authz.ts` already requires exactly this bar for "anything broader …
+which can match objects org-wide … has org-wide blast radius", and its own reasoning applies without
+modification: custody of the producing component is not jurisdiction over its consumers, and
+`scopeExpandCte` expands strictly upward so a component-bound principal reaches its siblings not at
+all. No new `Permission` union member, no seed change, no new binding to provision. A dedicated
+`dependency_producer:write` is the named upgrade path, not the first cut.
+
+**RULING 3 — THE FK IS CONSTRAINED AT THE VERB.** `producer_object_id REFERENCES objects(id)` is
+org-unbound (drizzle/0061's header explains why: `objects` carries no `(org_id, id)` unique
+constraint, and RI triggers are not subject to RLS), so the raw table would accept a deployment
+target, a user, or **another tenant's object**. 0061's header names the mitigation an eventual route
+owes; `routes/dependency-producers.ts`'s `assertDeclarableProducer` is it — a live, non-deleted,
+in-org object of an allowed type, resolved under the caller's own org.
+
+**RULING 4 — A `service`-VALUED PRODUCER IS REFUSED IN THE FIRST CUT, with a message saying so.**
+§7's own wording ("the producer link may name a component OR a service") described a state that does
+only harm: `listProducedLines` matches against the **component** a production placement names, so a
+service-valued declaration derives no head at all while still removing the coordinate from
+third-party polling. That is the harmful half silently and not the useful half. **§7 is amended
+here**: a producer is a `component`. Extending it to a service requires §7 to first say what a
+service declaration derives — which components' releases move the line's head, and what happens when
+two of them publish different versions — and that is a design question, not an argument check.
+
+**RULING 5 — BOTH VERBS CLEAR THE LINE HEAD** (`latest_version`, `latest_digest`,
+`latest_observed_at`), through a single named `resetLineHead` exception placed beside
+`recordDependencyLineHead`, the one writer of that trio. A head, once written, has no reset path:
+`evaluateHeadMovement` refuses backward movement and §7b clause 3's bounded exception rescues only a
+stored value that is not on the line as defined now.
+
+- **Retraction must clear it, and this is a SECURITY fix rather than a wedge fix.** The wedge is
+  real — the coordinate returns to third-party polling carrying a head the org's own releases put
+  there, so the poll refuses every real public version as `behind_head`, which reads as normal
+  operation. But `latest_version` is now also a **security-gate input**: the M22 vendor rule grants a
+  scan pass when a component is on the latest of its major line. A stale head left from the internal
+  era, on a coordinate that is third-party again, can therefore grant a **vendor-pass against a
+  version no registry ever published**.
+- **Declaration must clear it too, symmetrically.** A poisoned public head — the stranger's `9.9.9` —
+  would otherwise survive the very declaration that exists to undo it, and internal detection could
+  never move the head down to the org's real `2.1.0`.
+
+**IN-FLIGHT BUMPS ARE NOT RECALLABLE, and the surface says so rather than implying otherwise.** A
+dispatched bump has left SCP: it is a pull request in another team's repository, or under
+`auto_merge` a commit on their branch. Retraction stops **future triggers only**; the response and
+the Decision **name** the open `dependency_bump_authorships` at the moment of retraction so an
+operator has the list, and SCP closes none of them — asserting it closed a PR it did not close would
+be a false record.
+
+**THE SHAPE — a verb, on two of ADR-0031 §6's three grounds.** Work beyond a field write (it moves the
+head-derivation ingress for every major of the coordinate) **transfers**; a legible report
+**transfers** and is where the verb earns its keep — the response enumerates the lines covered, each
+line's head, and the subscribed components per line, and **that list is the blast radius, unguessable
+from the request**. `dryRun` returns the same report and writes nothing. One-wayness **does not**
+transfer and is not borrowed. The writes are commander-only on the **federation axis only**
+(§7d, 409 elsewhere); the read stays tenant-facing and carries the `dependencyManagement` envelope,
+because on a field outpost the list is empty by design.
+
+**FEDERATION — a projection table for a FEDERATION reason, not a storage-convenience one.** Modelled
+as a graph object (a `produces` relationship, or a `producedBy` policy effect) the declaration
+**would** federate, because `policy` does (§7d). A field outpost would then hold a declaration with
+no inventory behind it: a visible assertion nothing can act on, which is the "true elsewhere, inert
+here" shape `dependencyManagement` exists to close. As a projection table it exists only where the
+inventory does, which since §7d is the commander alone.
+
+**ACCEPTED LIMITATION, recorded rather than designed around.** An org that consumes upstream
+`requests` from PyPI *and* publishes a private package also called `requests` gets one answer for
+both: declaring the producer stops the upstream one being polled, losing its security-update path,
+silently. Per-major grain would not fix this — it would split the wrong answer across majors. The
+ambiguity is in the line identity, which carries no registry host; the real fix is registry-scoped
+coordinates, a separate and much larger change.
+
+**PARITY — API → SDK → CLI. NO IaC SURFACE IN THIS CUT, and that is a deferral rather than a
+decision.** `DesiredStateManifest` does carry non-graph collections (`sourceMappings`,
+`executorBindings`, `placements`), so a `producers` collection is representable and the precedent
+exists. It is not built here because an IaC collection is **authoritative and prunes**: an absent or
+mistakenly-emptied collection would silently RETRACT declarations, and retraction returns coordinates
+to a public index — the failure whose symptom is an absence of security updates. `sourceMappings`
+needed its own reasoning about what "absent" means; the same question for a control of this class is
+an owner decision, not a build detail. **Open, and flagged as such.**
+
 ### 8. The actuator is a managed class — BUILT (M21.5, 2026-08-16; §8a–§8f are the build's own clauses)
 
 Run against ADR-0002 §3, **gate 1 fails wherever Renovate or Dependabot exists** — that is the execution
