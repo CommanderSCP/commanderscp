@@ -5246,6 +5246,15 @@ export const zGetComponentDependencySubscriptionResponse = z.object({
             granularity: z.enum(['patch', 'minor_and_patch']).optional(),
             delivery: z.enum(['pull_request', 'auto_merge']).optional()
         }))
+    }),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
     })
 });
 

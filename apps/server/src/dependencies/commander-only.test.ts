@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { DependencyManagementReason } from "@scp/schemas";
 import {
   commanderOnlyFederationVerdict,
   commanderOnlyJobVerdict,
+  dependencyManagementOf,
   type CommanderOnlyConfig,
   type CommanderOnlyVerdict
 } from "./commander-only.js";
@@ -197,6 +199,98 @@ describe("commanderOnlyFederationVerdict — the half a ROUTE asks", () => {
       expect(commanderOnlyFederationVerdict(config, "x").allowed, describeConfig(config)).toBe(
         commanderOnlyJobVerdict(config, "x").allowed
       );
+    }
+  });
+});
+
+/**
+ * ================================================================================================
+ * `dependencyManagementOf` — THE SAME VERDICT, SHAPED AS AN ANSWER RATHER THAN A REFUSAL
+ * ================================================================================================
+ * The guards above produce refusals. The tenant-facing resolve route does not refuse: it answers
+ * `enabled` on an outpost, correctly computed from federated policies that NOTHING THERE WILL ACT
+ * ON. The envelope is what qualifies that answer, so what has to be true of it is (a) it never
+ * disagrees with the guard that actually gates the work, and (b) `role_undeclared` is its own value
+ * — the branch that reads as `commander` on the config value alone, and is the exact opposite of it.
+ */
+describe("dependencyManagementOf — the answer-shaped verdict (ADR-0032 §7d)", () => {
+  it("answers `true`/`commander` for an explicitly declared commander", () => {
+    expect(
+      dependencyManagementOf({ federationRole: "commander", federationRoleDeclared: true })
+    ).toEqual({ managedHere: true, reason: "commander" });
+  });
+
+  it("answers `role_undeclared` — NOT `commander` — for a deployment that never declared a role", () => {
+    // THE POINT OF THE WHOLE VALUE. `loadConfig` DEFAULTS `federationRole` to 'commander' when
+    // SCP_FEDERATION_ROLE is unset, so the input here is byte-identical to the accepted case on
+    // every field but `federationRoleDeclared`. Folding it into `commander` would hand a caller the
+    // opposite of the truth: it looks like the place work happens and is the place nothing runs.
+    const envelope = dependencyManagementOf({
+      federationRole: "commander",
+      federationRoleDeclared: false
+    });
+    expect(envelope.managedHere).toBe(false);
+    expect(envelope.reason).toBe("role_undeclared");
+    expect(envelope.reason).not.toBe("commander");
+  });
+
+  it("names the DECLARED role on each refusal, so the remedy differs per posture", () => {
+    for (const federationRole of ["outpost", "retrans"] as const) {
+      expect(dependencyManagementOf({ federationRole, federationRoleDeclared: true })).toEqual({
+        managedHere: false,
+        reason: federationRole
+      });
+    }
+  });
+
+  it("reaches every reason value the schema declares — none is unreachable", () => {
+    // A value nobody can produce is a lie in the contract: a consuming client would branch on it
+    // forever and never see it. The oracle is the schema's own member list, written out here so
+    // adding a sixth member without a way to produce it fails.
+    const declared: DependencyManagementReason[] = [
+      "commander",
+      "outpost",
+      "retrans",
+      "role_undeclared"
+    ];
+    const produced = new Set(CONFIG_MATRIX.map((config) => dependencyManagementOf(config).reason));
+    expect([...produced].sort()).toEqual([...declared].sort());
+  });
+
+  it("carries `managedHere` iff `reason` is `commander`, on every deployment shape", () => {
+    // The invariant that lets a caller read either field alone. Asserted rather than trusted,
+    // because `reason` is a LABEL computed beside the verdict rather than from it.
+    const inconsistent = CONFIG_MATRIX.filter((config) => {
+      const envelope = dependencyManagementOf(config);
+      return envelope.managedHere !== (envelope.reason === "commander");
+    }).map(describeConfig);
+    expect(inconsistent).toEqual([]);
+  });
+
+  it("NEVER DISAGREES WITH THE GUARD THAT GATES THE WORK — over the full config matrix", () => {
+    // The whole reason this is one predicate. An envelope that said "managed here" where the
+    // backfill answers 409, or the reverse, would be a worse explanation than no envelope at all.
+    const disagreements = CONFIG_MATRIX.filter(
+      (config) =>
+        dependencyManagementOf(config).managedHere !==
+        commanderOnlyFederationVerdict(config, "x").allowed
+    ).map(describeConfig);
+    expect(disagreements).toEqual([]);
+  });
+
+  it("is a fact about the DEPLOYMENT, not the process — SCP_ROLE never changes the answer", () => {
+    // In the split topology every HTTP request lands on an `SCP_ROLE=api` process while the jobs
+    // drain on a `worker`. Reading the process axis here would tell every caller of a perfectly
+    // correct commander that dependencies are not managed there.
+    for (const role of ["all", "api", "worker"] as const) {
+      expect(
+        dependencyManagementOf({
+          ...{ role },
+          federationRole: "commander",
+          federationRoleDeclared: true
+        }),
+        role
+      ).toEqual({ managedHere: true, reason: "commander" });
     }
   });
 });

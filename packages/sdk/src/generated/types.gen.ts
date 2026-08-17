@@ -15054,6 +15054,10 @@ export type GetComponentDependencySubscriptionResponses = {
                 delivery?: 'pull_request' | 'auto_merge';
             }>;
         };
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
     };
 };
 

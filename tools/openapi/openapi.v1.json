@@ -60080,12 +60080,35 @@
                         "contributions"
                       ],
                       "additionalProperties": false
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
                     "componentObjectId",
                     "line",
-                    "resolution"
+                    "resolution",
+                    "dependencyManagement"
                   ],
                   "additionalProperties": false
                 }

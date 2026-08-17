@@ -212,8 +212,52 @@ describe("the M21.3 CLI formatters", () => {
       granularity: "patch",
       delivery: "pull_request",
       contributions: []
-    }
+    },
+    // The deployment that answered MANAGES dependencies (ADR-0032 §7d) — the ordinary case, so the
+    // fixture carries it and the refusals below are the deviation.
+    dependencyManagement: { managedHere: true, reason: "commander" }
   };
+
+  it("prints WHETHER ANYTHING HERE WILL ACT ON THE VERDICT — an enabled subscription on an outpost is not a running one", () => {
+    // The hole this closes: `enabled: true` is arithmetically correct on an outpost and NOTHING
+    // THERE WILL EVER ACT ON IT. The row must carry both halves or the reader is told something
+    // true and misleading at once.
+    const onOutpost = dependencySubscriptionResolutionRow({
+      ...enabledResponse,
+      dependencyManagement: { managedHere: false, reason: "outpost" }
+    });
+    expect(onOutpost.enabled).toBe("true");
+    expect(onOutpost.managedHere).toBe("false");
+    expect(onOutpost.managedReason).toBe("outpost");
+
+    // `role_undeclared` IS ITS OWN VALUE and must reach the column as itself — it is the branch
+    // whose config VALUE reads 'commander', so a formatter that flattened it would print the
+    // opposite of the truth.
+    expect(
+      dependencySubscriptionResolutionRow({
+        ...enabledResponse,
+        dependencyManagement: { managedHere: false, reason: "role_undeclared" }
+      }).managedReason
+    ).toBe("role_undeclared");
+
+    // NEGATIVE CONTROL: a declared commander prints `true`, so the column is about the payload and
+    // is not hardcoded to a refusal.
+    const onCommander = dependencySubscriptionResolutionRow(enabledResponse);
+    expect(onCommander.managedHere).toBe("true");
+    expect(onCommander.managedReason).toBe("commander");
+  });
+
+  it("never FABRICATES `managedHere` when the server omitted the envelope — `-`, never `true`", () => {
+    // A server that predates the field sends nothing, and inventing "yes, managed here" is the exact
+    // false reassurance the envelope exists to remove. Same guard as `delivery`, sharper consequence.
+    const row = dependencySubscriptionResolutionRow(
+      without(enabledResponse, "dependencyManagement")
+    );
+    expect(row.managedHere).toBe("-");
+    expect(row.managedReason).toBe("-");
+    // …and the verdict is still printed, because the answer is not withheld — only unqualified.
+    expect(row.enabled).toBe("true");
+  });
 
   it("never prints `undefined` in the DELIVERY column — where the two values are 'open a PR' and 'merge it automatically'", () => {
     const stripped: DependencySubscriptionResolutionResponse = {

@@ -1,3 +1,4 @@
+import type { DependencyManagement } from "@scp/schemas";
 import type { ServerConfig } from "../config.js";
 
 /**
@@ -130,5 +131,51 @@ export function commanderOnlyJobVerdict(
   return {
     allowed: true,
     reason: `background-work process on an explicitly-declared commander — ${what} runs here`
+  };
+}
+
+/** The capability name interpolated into the verdict {@link dependencyManagementOf} reads. It is the
+ *  WHOLE feature rather than one job, because that is what the envelope answers about. */
+const DEPENDENCY_MANAGEMENT_CAPABILITY = "dependency management";
+
+/**
+ * THE SAME QUESTION, SHAPED FOR AN API RESPONSE — "does dependency management HAPPEN on this
+ * deployment, and why?" (`DependencyManagementSchema`, ADR-0032 §7d).
+ *
+ * ============================================================================================
+ * WHY THIS EXISTS AT ALL — A CORRECT ANSWER NOBODY WILL ACT ON IS NOT AN EXPLAINED ANSWER
+ * ============================================================================================
+ * The guards above answer a question a JOB or a ROUTE asks about ITSELF, and their product is a
+ * refusal. But the tenant-facing resolve route does not refuse: it answers `enabled` on an outpost,
+ * computed from policies that federated down correctly, for a subscription that NOTHING ON THAT
+ * DEPLOYMENT WILL EVER ACT ON. That is charter principle 6 failing rather than being satisfied — an
+ * answer whose REASON is unavailable — and it is the same shape as an unattributed ingestion stamp
+ * one layer down. This function is what lets every such answer carry the missing qualifier.
+ *
+ * ============================================================================================
+ * ONE PREDICATE, NOT A SECOND OPINION
+ * ============================================================================================
+ * `managedHere` IS {@link commanderOnlyFederationVerdict}'s verdict — called, not re-derived. A
+ * parallel `federationRole === "commander" && federationRoleDeclared` written here would be the
+ * fifth copy of a rule whose fail-closed branch is invisible on every developer machine, which is
+ * precisely the property CLAUDE.md's census rule names. `reason` adds nothing to the DECISION: it is
+ * a pure LABEL of what the operator declared, so the two cannot disagree about the verdict, and
+ * `managedHere === (reason === "commander")` is a property a test can pin rather than an invariant a
+ * reader has to trust. (`commander-only.test.ts` pins it over the full config matrix.)
+ *
+ * THE FEDERATION AXIS ONLY. This is a fact about the DEPLOYMENT, not about the process serving the
+ * request — an `SCP_ROLE=api` process on a correct commander must not report that dependencies are
+ * unmanaged there just because the jobs drain on its `worker` sibling. Same reason a route asks
+ * `commanderOnlyFederationVerdict` and a job asks `commanderOnlyJobVerdict`.
+ */
+export function dependencyManagementOf(
+  config: Pick<ServerConfig, "federationRole" | "federationRoleDeclared">
+): DependencyManagement {
+  return {
+    managedHere: commanderOnlyFederationVerdict(config, DEPENDENCY_MANAGEMENT_CAPABILITY).allowed,
+    // UNDECLARED IS ITS OWN ANSWER, and it is checked FIRST — `config.federationRole` reads
+    // 'commander' on an undeclared deployment, so labelling from the value alone would report the
+    // exact opposite of what happens there (the fail-closed branch, ADR-0032 §7d).
+    reason: config.federationRoleDeclared ? config.federationRole : "role_undeclared"
   };
 }

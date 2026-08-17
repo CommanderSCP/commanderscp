@@ -576,11 +576,22 @@ export function dependencySubscriptionUnlockRow(
  * newer server omits arrives as `undefined` whatever the type says, and printing the literal
  * `undefined` in a DELIVERY column — where the two values are "open a PR" and "merge it
  * automatically" — is a fabrication with teeth.
+ *
+ * `managedHere`/`managedReason` carry the server's `dependencyManagement` envelope (ADR-0032 §7d),
+ * printed BESIDE the verdict because they QUALIFY it: on a deployment that is not an explicitly
+ * declared commander, `enabled: true` is arithmetically correct and NOTHING THERE WILL EVER ACT ON
+ * IT. Guarded like the pair above, and for a sharper reason — a server that omits the key must
+ * render `-`, never a fabricated `true`, because inventing "yes, managed here" is the exact false
+ * reassurance the envelope exists to remove.
  */
 export function dependencySubscriptionResolutionRow(
   response: DependencySubscriptionResolutionResponse
 ): Record<string, string> {
   const r = response.resolution;
+  const managed = response.dependencyManagement as
+    DependencySubscriptionResolutionResponse["dependencyManagement"] | undefined;
+  const managedHere = managed?.managedHere;
+  const managedReason = managed?.reason;
   return {
     component: response.componentObjectId,
     ecosystem: response.line.ecosystem,
@@ -589,7 +600,9 @@ export function dependencySubscriptionResolutionRow(
     enabled: String(r.enabled),
     reason: r.reason,
     granularity: isAbsent(r.granularity) ? "-" : r.granularity,
-    delivery: isAbsent(r.delivery) ? "-" : r.delivery
+    delivery: isAbsent(r.delivery) ? "-" : r.delivery,
+    managedHere: isAbsent(managedHere) ? "-" : String(managedHere),
+    managedReason: isAbsent(managedReason) ? "-" : managedReason
   };
 }
 
@@ -3641,6 +3654,19 @@ export function buildProgram(): Command {
         printResult(response, "table", (raw) =>
           dependencySubscriptionResolutionRow(raw as DependencySubscriptionResolutionResponse)
         );
+        // AND SAY IT IN WORDS WHEN NOTHING HERE WILL ACT ON THE VERDICT (ADR-0032 §7d). A `false`
+        // in a column is easy to read past; the whole point of the envelope is that an operator
+        // reading `enabled: true` on an outpost is being told something true and misleading at once.
+        // Printed only for the refusals — a declared commander needs no caveat, and a caveat on
+        // every invocation is one nobody reads.
+        if (response.dependencyManagement?.managedHere === false) {
+          console.log("");
+          console.log(
+            `NOTE: dependency management does NOT run on this deployment (${response.dependencyManagement.reason}), ` +
+              `so nothing here will act on the verdict above — the subscription is resolved from policies ` +
+              `that federated down, and any bump is authored on the COMMANDER (ADR-0032 §7d).`
+          );
+        }
         // THE CONTRIBUTIONS ARE THE POINT (charter principle 6). Printed as their own table rather
         // than squeezed into a cell — "which level turned this off" is the question this command
         // exists to answer, and the verdict alone does not answer it.

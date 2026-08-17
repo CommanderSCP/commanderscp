@@ -30,7 +30,10 @@ import {
 } from "../dependencies/subscription-resolution.js";
 import { ingestComponentManifests, literalRepoFor } from "../dependencies/inventory-ingestion.js";
 import { createGitProviderManifestReader } from "../dependencies/manifest-reader.js";
-import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.js";
+import {
+  commanderOnlyFederationVerdict,
+  dependencyManagementOf
+} from "../dependencies/commander-only.js";
 
 /**
  * M21.3 — the DEPENDENCY-SUBSCRIPTION ENABLEMENT API (ADR-0032 §3a, §6), API-first per charter
@@ -54,6 +57,10 @@ import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.j
  *
  *  - **The resolution READ is tenant-facing and authorized like any other read of the component**
  *    (`object:read` at the component's scope, exactly as `GET /components/:idOrUrn/pipeline` does).
+ *    It is deliberately NOT commander-only — a team on an outpost may legitimately ask what their
+ *    subscription resolves to — but the answer is QUALIFIED by a required `dependencyManagement`
+ *    envelope, because on that deployment nothing will ever act on it (ADR-0032 §7d). The backfill
+ *    below, which WRITES, is refused there instead.
  *
  * THERE IS NO WRITE PATH FOR A SUBSCRIPTION ITSELF HERE, AND ONE MUST NOT BE ADDED. A dependency
  * subscription IS a `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a) —
@@ -275,7 +282,16 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
         });
         return { componentObjectId: component.id, line, resolution };
       });
-      reply.status(200).send(result);
+      // THE VERDICT IS QUALIFIED BY WHETHER ANYTHING HERE WILL ACT ON IT (ADR-0032 §7d, M21.7).
+      //
+      // This route does NOT refuse on an outpost — the resolution is real and correctly computed
+      // from policies that federated down. What is missing is that no dependency job runs on this
+      // deployment, so `enabled: true` here means "the commander would author a bump", never "a bump
+      // will be authored here". An unqualified `enabled` is an answer whose reason is unavailable,
+      // which is charter principle 6 failing rather than being satisfied. Same predicate as the
+      // guards, so the envelope and the refusals can never disagree about the posture.
+      const dependencyManagement = dependencyManagementOf(deps.config);
+      reply.status(200).send({ ...result, dependencyManagement });
     }
   });
 

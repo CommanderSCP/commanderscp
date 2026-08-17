@@ -1834,7 +1834,12 @@ export class ScpClient {
     },
     /** Resolve ONE (component, line) pair, with the per-tier `contributions` that decided it — the
      *  explainability surface (charter principle 6: WHICH level turned this off?). The line key
-     *  travels VERBATIM; the coordinate is never slugified on either side. */
+     *  travels VERBATIM; the coordinate is never slugified on either side.
+     *
+     *  READ `dependencyManagement` BEFORE ACTING ON `resolution`. It is required and always present,
+     *  and when `managedHere` is false the verdict is correct but INERT: this deployment is not an
+     *  explicitly declared commander, so no dependency job runs on it and nothing here will ever act
+     *  on an `enabled: true` (ADR-0032 §7d, `DependencyManagementSchema`). */
     resolve: async (
       componentIdOrUrn: string,
       line: DependencyLineKey

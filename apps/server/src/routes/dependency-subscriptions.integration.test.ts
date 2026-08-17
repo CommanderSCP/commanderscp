@@ -311,6 +311,17 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
       expect(good.status).toBe(200);
     });
 
+    it("QUALIFIES the verdict with `dependencyManagement` — a declared commander says it manages them HERE", async () => {
+      // The POSITIVE half of the envelope (ADR-0032 §7d). This server declares
+      // `SCP_FEDERATION_ROLE=commander`, so the verdict beside it is one something will actually act
+      // on. Block (7) is the negative control: the same field on three deployments where nothing
+      // ever will.
+      expect(server.deps.config.federationRole).toBe("commander");
+      expect(server.deps.config.federationRoleDeclared).toBe(true);
+      const resolved = await admin.dependencySubscriptions.resolve(componentId, line);
+      expect(resolved.dependencyManagement).toEqual({ managedHere: true, reason: "commander" });
+    });
+
     it("resolves a line the component does NOT declare — it answers ENABLEMENT, not declaration", async () => {
       expect((await putUnlock(org.adminToken, { unlocked: true }, OPERATOR_TOKEN)).status).toBe(
         200
@@ -746,4 +757,141 @@ describe("(6) POST /dependencies/inventory/backfill is COMMANDER-ONLY (ADR-0032 
       expect(detail).not.toMatch(/plugin-host-capable/);
     });
   });
+});
+
+/**
+ * ================================================================================================
+ * (7) EVERY RESOLVE ANSWER SAYS WHETHER ANYTHING HERE WILL ACT ON IT (ADR-0032 §7d, M21.7)
+ * ================================================================================================
+ * Block (6) proves the WRITE door is shut on a non-commander. This block is about the door that
+ * stays OPEN and must therefore explain itself.
+ *
+ * The resolve route does not refuse on an outpost, and should not: a team there may legitimately ask
+ * what their subscription resolves to, and the answer is arithmetically correct — the policies it
+ * merges federated down from the commander. What was missing is that NO DEPENDENCY JOB RUNS ON THAT
+ * DEPLOYMENT, so `enabled: true` there means "the commander would author a bump", never "a bump will
+ * be authored here". An unqualified verdict is an answer whose REASON is unavailable, which is
+ * charter principle 6 failing rather than being satisfied.
+ *
+ * THE FLAGSHIP ASSERTION IS THE COMBINATION, not either field alone: a resolution that says
+ * `enabled: true` sitting beside `managedHere: false`. That pair is the live hole this closes, and
+ * asserting `managedHere: false` on a component that resolved to `enabled: false` anyway would not
+ * exercise it.
+ *
+ * `role_undeclared` GETS ITS OWN POSTURE because it is the branch that reads as `commander` on the
+ * config VALUE alone — `loadConfig` defaults `federationRole` to 'commander' when
+ * SCP_FEDERATION_ROLE is unset. A deployment there is the exact opposite of what the default says,
+ * and it is the population most likely to be an air-gapped outpost.
+ *
+ * A SEPARATE SERVER PER POSTURE, for the same reason block (6) does it: these are install-time
+ * config read from the environment at boot, so toggling them on a shared fixture would lie about
+ * how the value is produced.
+ */
+describe("(7) the resolve answer is QUALIFIED by whether dependencies are managed here", () => {
+  /** The instance unlock is a DEPLOYMENT-GLOBAL singleton in the shared test database, so it is set
+   *  once here and deleted at teardown no matter how this block exits. Written by SQL rather than
+   *  through the operator route because what it is doing here is fixture setup, not the subject. */
+  async function setUnlock(unlocked: boolean): Promise<void> {
+    const pool = new pg.Pool({ connectionString: testDatabaseUrl(), max: 1 });
+    try {
+      if (unlocked) {
+        await pool.query(
+          `INSERT INTO dependency_subscription_unlock (id, unlocked, note, updated_at)
+             VALUES ('default', true, 'M21.7 envelope fixture', now())
+           ON CONFLICT (id) DO UPDATE SET unlocked = true, updated_at = now()`
+        );
+      } else {
+        await pool.query(`DELETE FROM dependency_subscription_unlock WHERE id = 'default'`);
+      }
+    } finally {
+      await pool.end();
+    }
+  }
+
+  const line: DependencyLineKey = { ecosystem: "npm", coordinate: "@acme/lib", major: "1" };
+
+  const POSTURES = [
+    {
+      label: "an explicitly declared OUTPOST",
+      options: { federationRole: "outpost" as const },
+      reason: "outpost"
+    },
+    {
+      label: "an explicitly declared RETRANS",
+      options: { federationRole: "retrans" as const },
+      reason: "retrans"
+    },
+    {
+      // NO `federationRole` — exactly what `loadConfig` sees with SCP_FEDERATION_ROLE unset.
+      label: "a deployment that never DECLARED a federation role",
+      options: {},
+      reason: "role_undeclared"
+    }
+  ] as const;
+
+  beforeAll(async () => {
+    await setUnlock(true);
+  }, 120_000);
+
+  afterAll(async () => {
+    await setUnlock(false).catch(() => undefined);
+  });
+
+  for (const posture of POSTURES) {
+    describe(posture.label, () => {
+      let target: ListeningTestServer;
+      let targetOrg: TestOrg;
+      let client: ScpClient;
+      let component: string;
+
+      beforeAll(async () => {
+        target = await listenTestServer({ ...posture.options });
+        targetOrg = await createTestOrg(target, `dep-env-${posture.reason}`);
+        client = new ScpClient({ baseUrl: target.baseUrl, token: targetOrg.adminToken });
+        component = (await createOrphanComponent(client, `dep-env-${posture.reason}-${uuidv7()}`))
+          .id;
+        // A component-scoped enable, authored the only way a subscription can be — a
+        // `dependencySubscription` effect on an ordinary policy (ADR-0032 §3a). With the instance
+        // unlocked above, this makes the pair resolve ENABLED on a deployment that will never act
+        // on it, which is the state the envelope exists to explain.
+        await client.policies.create({
+          name: `dep-env-${posture.reason}-${uuidv7()}`,
+          urn: `urn:scp:${targetOrg.orgId}:policy:dep-env-${posture.reason}-${uuidv7()}`,
+          properties: {
+            scope: { objectRef: component },
+            enforcement: "advisory",
+            effects: [{ dependencySubscription: { enabled: true } }]
+          }
+        });
+      }, 120_000);
+
+      afterAll(async () => {
+        await target?.close();
+      });
+
+      it(`answers an ENABLED subscription while saying nothing here will act on it — reason '${posture.reason}'`, async () => {
+        const resolved = await client.dependencySubscriptions.resolve(component, line);
+        // The verdict itself is real and correct — this is not a refusal, and it must not become
+        // one. Without it the assertion below would pass on a deployment that simply resolved to
+        // `false` for an unrelated reason, which is not the hole being closed.
+        expect(resolved.resolution.enabled).toBe(true);
+        expect(resolved.resolution.reason).toBe("enabled");
+        // …and the qualifier that makes it honest.
+        expect(resolved.dependencyManagement.managedHere).toBe(false);
+        expect(resolved.dependencyManagement.reason).toBe(posture.reason);
+      });
+
+      it("never reports the DEFAULTED role as an answer — the deployment's own config is the oracle", () => {
+        // The undeclared posture is the one that would be mislabelled `commander`, so the config it
+        // actually booted with is asserted here rather than assumed from the option object.
+        expect(target.deps.config.federationRoleDeclared).toBe(
+          posture.reason !== "role_undeclared"
+        );
+        if (posture.reason === "role_undeclared") {
+          // The trap in one line: the VALUE reads 'commander' and the honest answer does not.
+          expect(target.deps.config.federationRole).toBe("commander");
+        }
+      });
+    });
+  }
 });
