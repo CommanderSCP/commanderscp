@@ -169,10 +169,13 @@ export const objects = pgTable(
   {
     id: uuid("id").primaryKey(), // UUIDv7, client-suppliable
     orgId: uuid("org_id").notNull(),
-    // CONTAINMENT sense (ADR-0021 D4) — the containing `domain` graph object; NULL only for the
-    // org root object. Deliberately branded differently from `originDomainId` nine lines below,
-    // which is the TRUST sense: the two are structurally identical uuids and were freely
-    // interchangeable before branding.
+    // CONTAINMENT sense (ADR-0021 D4) — the containment parent (ANY object; a `domain` in the
+    // common case); NULL only for the org root object. There is deliberately NO FK and NO CHECK
+    // here (0001_graph_core.sql:32) and `resolveContainmentParent` applies no type filter, so a
+    // service id or a component id is valid and is what several shipped tests pass. The brand
+    // asserts the SENSE, never the TYPE. Deliberately branded differently from `originDomainId`
+    // nine lines below, which is the TRUST sense: the two are structurally identical uuids and were
+    // freely interchangeable before branding.
     domainId: uuid("domain_id").$type<ContainmentDomainId>(),
     typeId: text("type_id")
       .notNull()
@@ -2144,6 +2147,12 @@ export const dependencyBumpAuthorships = pgTable(
     /** The pull request SCP opened, read back from the authoring run's own `status().stateRef`. The
      *  merge is addressed to THIS NUMBER, never to the first entry of a provider list. */
     pullRequestNumber: integer("pull_request_number"),
+    /** That pull request's web URL AS THE PROVIDER RETURNED IT (migration 0066). NOT derived from
+     *  `repo` + `pullRequestNumber`: those compose a working link only for github.com, and nothing
+     *  on this row says which provider authored the bump — an outpost-local Gitea (M15) is another
+     *  host AND spells the path `/pulls/`, GitHub Enterprise is another host again. NULL means SCP
+     *  recorded no link; it never means "compose one". */
+    pullRequestUrl: text("pull_request_url"),
     /** Set once the provider confirms the merge — what stops the merge commit's OWN webhook from
      *  re-running the gate and overwriting the audit trail with a refusal for a bump that merged. */
     mergedAt: timestamp("merged_at", { withTimezone: true }),

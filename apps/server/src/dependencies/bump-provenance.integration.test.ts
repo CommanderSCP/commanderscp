@@ -23,7 +23,7 @@ import {
   resolveEffectiveDelivery
 } from "./bump-actuator.js";
 import { DEPENDENCY_DELEGATION_DECISION_KIND } from "./delegation-detection.js";
-import { readBumpAuthorship } from "./bump-authorship-repo.js";
+import { readBumpAuthorship, recordBumpPullRequest } from "./bump-authorship-repo.js";
 import { upsertDependencyLine } from "./dependency-inventory-repo.js";
 
 /**
@@ -765,5 +765,125 @@ describe("M21.5 scp-managed-dep: enablement conflict refusal + the provenance lo
     expect(authored.coordinate).toBe("@acme/lib");
     expect(authored.deliveryReason).toBe("test");
     expect(row!.sourceKind).toBe("dependency-bump");
+  });
+
+  /**
+   * ==============================================================================================
+   * WHAT `recordBumpPullRequest` WILL AND WILL NOT PUT IN `pull_request_url` (migration 0066)
+   * ==============================================================================================
+   * These drive the write door directly and make NO claim that anything calls it — that claim is
+   * `bump-dispatch.integration.test.ts`'s "records the pull request URL THE PROVIDER RETURNED, on
+   * the real authoring path", which enters through the head write door, the queue and the loop.
+   * What is tested here is the SEMANTICS the door owes every caller, and each case below is a value
+   * a real provider response can carry: the plugin degrades an unreadable `html_url` to `""`
+   * (`packages/plugins/managed-dep/src/repo-write.ts`'s `readPullRequest`), a self-hosted forge can
+   * answer with anything at all, and a redelivery can restate a pull request the row already has.
+   */
+  describe("the pull-request record (migration 0066)", () => {
+    /** A fresh bump with its pull request recorded exactly once, as phase 5 records it. */
+    async function bumpWithPullRequest(
+      number: number,
+      url?: unknown
+    ): Promise<{ changeObjectId: string }> {
+      const { changeObjectId } = await authorBump(
+        `acme/${randomUUID().slice(0, 8)}`,
+        "pull_request"
+      );
+      await inOrg((tx) => recordBumpPullRequest(tx, org.orgId, changeObjectId, number, url));
+      return { changeObjectId };
+    }
+
+    it("stores the URL beside the number the provider returned it with", async () => {
+      const url = "https://gitea.dc1.internal/acme/widget/pulls/12";
+      const { changeObjectId } = await bumpWithPullRequest(12, url);
+      const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+      expect(authorship?.pullRequestNumber).toBe(12);
+      expect(authorship?.pullRequestUrl).toBe(url);
+    });
+
+    /**
+     * The number is recorded and the URL is NOT, for every value that is not an absolute http(s)
+     * URL. Absent has to mean "SCP recorded no link": storing `""` would make a consumer
+     * special-case a value the column can already express as NULL, and storing a `javascript:` or
+     * `data:` value would ship a script-execution hazard to whatever renders it as an href —
+     * refused at the ONE writer rather than sanitised in every reader.
+     *
+     * Each case gets its OWN row, so one refusal cannot be hidden behind another's leftovers.
+     */
+    it.each([
+      ["the empty string the plugin degrades an unreadable html_url to", ""],
+      ["whitespace", "   "],
+      ["a javascript: scheme", "javascript:alert(document.domain)"],
+      ["a data: scheme", "data:text/html;base64,PHNjcmlwdD4x"],
+      ["a scheme-relative URL", "//gitea.dc1.internal/acme/widget/pulls/12"],
+      ["a bare path", "/acme/widget/pulls/12"],
+      ["a non-string", 12],
+      ["nothing at all", undefined]
+    ])("records the number but NO url for %s", async (_case, value) => {
+      const { changeObjectId } = await bumpWithPullRequest(31, value);
+      const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+      expect(authorship?.pullRequestNumber).toBe(31);
+      expect(authorship?.pullRequestUrl).toBeUndefined();
+    });
+
+    it("refuses a URL past the 2048-character cap rather than storing it", async () => {
+      const overlong = `https://gitea.dc1.internal/acme/widget/pulls/12?x=${"a".repeat(2048)}`;
+      const { changeObjectId } = await bumpWithPullRequest(44, overlong);
+      const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+      expect(authorship?.pullRequestNumber).toBe(44);
+      expect(authorship?.pullRequestUrl).toBeUndefined();
+    });
+
+    /**
+     * THE WRITE-ONCE CONTROL, WHICH THE URL MUST NOT WEAKEN. The number is what a merge is
+     * addressed to, so a later run naming a DIFFERENT pull request is refused — and the URL that
+     * arrived with it is refused too. A link pointing at pull request 99 sitting beside the number
+     * 7 is worse than no link: it sends a human to read one pull request while SCP merges another.
+     */
+    it("a LATER run naming a DIFFERENT pull request changes neither the number nor the url", async () => {
+      const first = "https://gitea.dc1.internal/acme/widget/pulls/7";
+      const { changeObjectId } = await bumpWithPullRequest(7, first);
+      await inOrg((tx) =>
+        recordBumpPullRequest(
+          tx,
+          org.orgId,
+          changeObjectId,
+          99,
+          "https://gitea.dc1.internal/acme/widget/pulls/99"
+        )
+      );
+      const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+      expect(authorship?.pullRequestNumber).toBe(7);
+      expect(authorship?.pullRequestUrl).toBe(first);
+    });
+
+    /**
+     * ...AND THE ONE CASE THE PREDICATE DELIBERATELY ADMITS. A row from before this column existed,
+     * or one whose first authoring run got a provider response with no readable `html_url`, has a
+     * number and no link. A restatement of THE SAME number carrying a URL cannot re-point anything
+     * — the number is compared, not overwritten — so filling the link in is safe, and refusing it
+     * would only mean the link stayed missing forever.
+     */
+    it("a restatement of the SAME number fills in a url the row was missing", async () => {
+      const { changeObjectId } = await bumpWithPullRequest(7, "");
+      expect(
+        (await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId)))?.pullRequestUrl
+      ).toBeUndefined();
+      const url = "https://gitea.dc1.internal/acme/widget/pulls/7";
+      await inOrg((tx) => recordBumpPullRequest(tx, org.orgId, changeObjectId, 7, url));
+      const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+      expect(authorship?.pullRequestNumber).toBe(7);
+      expect(authorship?.pullRequestUrl).toBe(url);
+    });
+
+    it("does NOT overwrite a url it already recorded, even for the same number", async () => {
+      const first = "https://gitea.dc1.internal/acme/widget/pulls/7";
+      const { changeObjectId } = await bumpWithPullRequest(7, first);
+      await inOrg((tx) =>
+        recordBumpPullRequest(tx, org.orgId, changeObjectId, 7, "https://elsewhere.example/pulls/7")
+      );
+      const authorship = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, changeObjectId));
+      expect(authorship?.pullRequestUrl).toBe(first);
+    });
   });
 });

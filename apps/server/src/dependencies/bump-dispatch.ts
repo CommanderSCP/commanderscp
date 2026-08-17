@@ -802,17 +802,28 @@ async function dispatchOneBump(
   // row. Recording it is what makes "the pull request SCP itself opened" a fact on disk instead of a
   // search performed against a mutable provider.
   //
+  // THE URL IS TAKEN FROM THE SAME OUTCOME, AND THIS IS THE ONLY MOMENT IT EXISTS. The plugin gets
+  // it from the provider's own response (`html_url` on the created pull request, or on the one its
+  // 422 retry path re-reads) and hands it back on the same `stateRef` as the number. Nothing
+  // downstream can recover it: `repo` + number composes a working link for github.com and for
+  // nothing else, and an outpost-local Gitea (M15) is both a different host AND a different path
+  // segment. A consumer that synthesised one would render a confidently-broken link on every
+  // Gitea-authored bump, so the honest value is captured here or not at all (migration 0066).
+  // `recordBumpPullRequest` decides what is storable — this path does not repair or compose one.
+  //
   // A FAILURE HERE IS NOT A FAILED BUMP. The pull request may well exist; what is missing is our
   // record of its number, and the consequence is that the merge gate refuses for lack of one — the
   // fail-closed direction. So it is logged and swallowed rather than thrown, exactly as the rest of
   // this per-declaration path treats a partial outcome.
   try {
     const status = await executor.status(ref);
-    const opened = (status.stateRef as { pullRequestNumber?: unknown } | undefined)
-      ?.pullRequestNumber;
+    const outcome = status.stateRef as
+      | { pullRequestNumber?: unknown; pullRequestUrl?: unknown }
+      | undefined;
+    const opened = outcome?.pullRequestNumber;
     if (typeof opened === "number" && Number.isInteger(opened) && opened > 0) {
       await withTenantTx(deps.db, orgId, (tx) =>
-        recordBumpPullRequest(tx, orgId, prepared.changeObjectId, opened)
+        recordBumpPullRequest(tx, orgId, prepared.changeObjectId, opened, outcome?.pullRequestUrl)
       );
     }
   } catch (err) {

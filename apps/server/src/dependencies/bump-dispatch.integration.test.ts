@@ -55,6 +55,7 @@ import {
 } from "./bump-dispatch.js";
 import { DEPENDENCY_DELEGATION_DECISION_KIND } from "./delegation-detection.js";
 import { BUMP_SOURCE_KIND } from "./bump-actuator.js";
+import { readBumpAuthorship } from "./bump-authorship-repo.js";
 
 /**
  * M21.5 — THE BUMP IS ACTUALLY DISPATCHED, THROUGH THE REAL PATH (ADR-0032 §8/§9).
@@ -131,10 +132,21 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
    *  fail. The `beforeEach` below resets them and the assertions now name the change. */
   const controlEvaluations: { instanceId: string; changeId: unknown; commitSha: unknown }[] = [];
   /** The pull request the fake provider reports the authoring run opened, per change — the number
-   *  `status().stateRef` carries back and the server records. `undefined` for a change the fixture
-   *  wants to leave with no recorded pull request. */
-  const openedPullRequests = new Map<string, number>();
+   *  AND the URL `status().stateRef` carries back and the server records. `undefined` for a change
+   *  the fixture wants to leave with no recorded pull request. */
+  const openedPullRequests = new Map<string, { number: number; url: string }>();
   let nextPullRequestNumber = 100;
+  /**
+   * The web URL the fixture PROVIDER hands back for a pull request it opened.
+   *
+   * DELIBERATELY NOT A GITHUB URL, and that is the whole point of the column it feeds
+   * (migration 0066): this is an outpost-local Gitea (M15), so it is a different HOST and it spells
+   * the path `/pulls/` where github.com spells `/pull/`. A consumer composing a link from `repo` +
+   * `pull_request_number` would emit `https://github.com/<repo>/pull/<n>`, which 404s here — so an
+   * assertion that this exact string reached the database cannot be satisfied by a synthesiser.
+   */
+  const providerPullRequestUrl = (repo: string, number: number): string =>
+    `https://gitea.dc1.internal/${repo}/pulls/${number}`;
   /** What the fixture `github-check` control answers. Mutable so a test can say what "the
    *  component's own checks" reported, and FOR WHICH COMMIT. */
   let controlOutcome: ControlOutcome = { status: "expired", evidence: {} };
@@ -197,14 +209,20 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
             const params = (intent.parameters ?? {}) as {
               action?: string;
               changeObjectId?: string;
+              repo?: string;
             };
-            // AN AUTHORING RUN OPENS A PULL REQUEST, and the number is the only place it exists.
-            // The server reads it back off `status().stateRef` and records it, because the merge is
-            // ADDRESSED to it rather than found by listing — so a fixture that reported no number
-            // would make every merge below unreachable.
+            // AN AUTHORING RUN OPENS A PULL REQUEST, and this run's outcome is the only place its
+            // number and its URL exist. The server reads both back off `status().stateRef` and
+            // records them: the merge is ADDRESSED to the number rather than found by listing (so a
+            // fixture reporting no number would make every merge below unreachable), and the URL is
+            // unrecoverable afterwards because nothing on the row says which provider this was.
             if (params.action !== "merge" && params.changeObjectId) {
               if (!openedPullRequests.has(params.changeObjectId)) {
-                openedPullRequests.set(params.changeObjectId, nextPullRequestNumber++);
+                const number = nextPullRequestNumber++;
+                openedPullRequests.set(params.changeObjectId, {
+                  number,
+                  url: providerPullRequestUrl(params.repo ?? "", number)
+                });
               }
             }
             return { externalId: `managed-dep::${intent.idempotencyKey}` };
@@ -216,13 +234,20 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
               return { phase: mergeRunPhase, detail: "fixture" };
             }
             const changeObjectId = ref.externalId.replace("managed-dep::", "");
-            const pullRequestNumber = openedPullRequests.get(changeObjectId);
+            const opened = openedPullRequests.get(changeObjectId);
             return {
               phase: "succeeded" as const,
               detail: "fixture",
-              ...(pullRequestNumber === undefined
+              ...(opened === undefined
                 ? {}
-                : { stateRef: { commitSha: "fixture", pullRequestNumber, merged: false } })
+                : {
+                    stateRef: {
+                      commitSha: "fixture",
+                      pullRequestNumber: opened.number,
+                      pullRequestUrl: opened.url,
+                      merged: false
+                    }
+                  })
             };
           },
           abort: async () => ({ aborted: false, detail: "fixture" }),
@@ -604,6 +629,63 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     const verdicts = await decisionsOfKind(DEPENDENCY_BUMP_DECISION_KIND, change!.objectId);
     expect(verdicts).toHaveLength(1);
     expect(verdicts[0]?.verdict).toBe("dispatched");
+  }, 120_000);
+
+  /**
+   * ==============================================================================================
+   * THE LINK IS CAPTURED HERE OR NOWHERE (migration 0066, M21.7 item C)
+   * ==============================================================================================
+   * 0064 recorded `repo` and `pull_request_number` and no URL, on the reasoning that the two
+   * compose one. They compose one for github.com. They compose a 404 for an outpost-local Gitea
+   * (M15) — a different host, and `/pulls/` rather than `/pull/` — and for GitHub Enterprise, and
+   * nothing on the authorship row records which provider authored the bump. So the URL the provider
+   * itself returned has to be persisted at the one moment it exists: the authoring run's outcome.
+   *
+   * This test enters through the SAME production seam as the rest of the file — head write door ->
+   * outbox -> router -> queue -> loop -> dispatch -> phase 5 -> `recordBumpPullRequest` — and never
+   * calls the repo function. Delete the URL from phase 5's read of `status().stateRef`, or delete
+   * the phase-5 write entirely, and this goes red.
+   */
+  it("records the pull request URL THE PROVIDER RETURNED, on the real authoring path", async () => {
+    const fixture = await subscribedComponent();
+    await advanceHead(fixture.lineId, "1.4.0");
+    await relayHeadAdvance(fixture.lineId);
+
+    const change = await waitUntil(async () => (await bumpChangesFor(fixture.repo))[0], {
+      describe: "the dispatcher to record its bump change",
+      timeoutMs: 60_000,
+      intervalMs: 200
+    });
+    const authorship = await waitUntil(
+      async () => {
+        const row = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, change.objectId));
+        // Waiting on the URL specifically, not on the row: the row exists from phase 3, so waiting
+        // on it would return before phase 5 had run and the assertions below would race.
+        return row?.pullRequestUrl === undefined ? undefined : row;
+      },
+      {
+        describe: "phase 5 to record the pull request the authoring run opened",
+        timeoutMs: 60_000,
+        intervalMs: 200
+      }
+    );
+
+    const opened = openedPullRequests.get(change.objectId);
+    expect(opened, "the fixture provider must have opened a pull request for this change").toBeDefined();
+    expect(authorship.pullRequestNumber).toBe(opened!.number);
+
+    // ANCHORED ON A LITERAL, NOT ON `opened.url`. Reading the expectation out of the same fixture
+    // that produced the value makes the assertion move with the fixture, which is this repo's
+    // "green for the wrong reason" shape — change the fixture's host and nothing fails. Spelled out
+    // here, changing it DOES fail.
+    expect(authorship.pullRequestUrl).toBe(
+      `https://gitea.dc1.internal/${fixture.repo}/pulls/${opened!.number}`
+    );
+    // AND THE SYNTHESIS IS NOT THE ANSWER — the exact link a consumer would have composed from the
+    // two columns 0064 already had, stated so that composing one can never pass this test.
+    expect(authorship.pullRequestUrl).not.toBe(
+      `https://github.com/${fixture.repo}/pull/${opened!.number}`
+    );
   }, 120_000);
 
   it("REDELIVERY dispatches against the SAME change — one branch, one pull request", async () => {
