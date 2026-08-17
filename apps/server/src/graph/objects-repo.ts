@@ -218,10 +218,28 @@ export async function resolveContainmentParent(
   }
   // The org root itself (bootstrap): no parent, so nothing to inherit.
   if (domainId === null) return { id: null, urn: null, domainLocal: false };
+  // A SOFT-DELETED PARENT IS NOT A PARENT, and this filter is the difference between a contained
+  // row and an unreachable one. `authz/resolve.ts`'s `scopeExpandCte` joins
+  // `parent_o.deleted_at IS NULL` on every hop, so an object parented under a tombstone has its
+  // scope expansion terminate at itself — exactly the state `domain_id IS NULL` produced, reached
+  // through a different value. Measured before this filter existed: `DELETE /domains/{d}` then
+  // `PATCH /services/{s} {domainId: d}` returned 200, and the org-root admin's own next GET of that
+  // service 403'd with "lacks 'object:read'", permanently. Policy still governs the row either way
+  // (matching reads `properties.scope`, never placement), so the outcome is a governed object
+  // nobody can read, edit, move back or delete.
+  //
+  // Applied here rather than at the doors on purpose: it needs no subject and gives the same answer
+  // for every caller, which is this codebase's test for an INVARIANT (see
+  // `federation/domain-local.ts`'s "authorization at the door, invariant at the repo"). The
+  // federation import path is unaffected — `resolveImportDomainId` already filters `deleted_at` and
+  // falls back to `undefined`, so a replica whose parent is locally tombstoned lands at the org root
+  // rather than being refused.
   const parent = await tx.query.objects.findFirst({
-    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId))
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
   });
-  if (!parent) throw badRequest(`domainId '${domainId}' does not reference an object in this org`);
+  if (!parent)
+    throw badRequest(`domainId '${domainId}' does not reference a live object in this org`);
   return { id: domainId, urn: parent.urn, domainLocal: parent.domainLocal };
 }
 

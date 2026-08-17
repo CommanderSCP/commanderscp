@@ -23,9 +23,22 @@ import {
  *    the agreed meaning on both kinds so the asymmetry cannot come back through whichever door was
  *    not looked at.
  *
- * Plus the one behaviour the fix ADDS rather than restores: a row may not become its own
- * containment parent. That became reachable the moment `null` started resolving to the org root —
- * `PATCH <org-root> {domainId: null}` would otherwise write a self-loop with no org-root ancestor.
+ *  - the four coordination create doors (`/campaigns`, `/changes`, `/initiatives`, `/placements`)
+ *    and `POST /plans/{id}/apply`, whose update entries authorized the object and never the
+ *    destination.
+ *
+ * Plus the two refusals the fix ADDS rather than restores, both of which are the SAME PROPERTY as
+ * the `null` detach — "a row whose scope expansion cannot reach the org root" — reached through a
+ * different value:
+ *
+ *  - a row may not become its own containment parent. Reachable the moment `null` started
+ *    resolving to the org root: `PATCH <org-root> {domainId: null}` would otherwise write a
+ *    self-loop, and a cycle has no org-root ancestor.
+ *  - a SOFT-DELETED object may not be a containment parent. `authz/resolve.ts` joins
+ *    `parent_o.deleted_at IS NULL` on every hop of the scope walk, so parenting under a tombstone
+ *    detaches exactly as `null` did. Measured, not reasoned: before the fix, `DELETE /domains/{d}`
+ *    then `PATCH /services/{s} {domainId: d}` answered 200 and the org-root admin's own next GET of
+ *    that service answered 403, permanently.
  */
 describe("every door that writes a caller-supplied containment parent", () => {
   let server: TestServer;
@@ -299,6 +312,52 @@ describe("every door that writes a caller-supplied containment parent", () => {
     });
     expect(after.statusCode, after.body).toBe(200);
     expect((after.json() as { domainId: string | null }).domainId).toBe(homeDomainId);
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // A soft-deleted container is the same unreachable row, reached through a different value
+  // -----------------------------------------------------------------------------------------
+
+  it("a SOFT-DELETED domain is refused as a containment parent — moving under a tombstone is the same detach", async () => {
+    const org = await createTestOrg(server, "deleted-parent");
+    const domain = await post(org.adminToken, "/api/v1/domains", { name: "doomed-domain" });
+    const service = await post(org.adminToken, "/api/v1/services", { name: "deleted-parent-svc" });
+    expect(domain.status, domain.body).toBe(201);
+    expect(service.status, service.body).toBe(201);
+    const domainId = domain.json().id as string;
+    const serviceId = service.json().id as string;
+
+    const deleted = await server.app.inject({
+      method: "DELETE",
+      url: `/api/v1/domains/${domainId}`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(deleted.statusCode, deleted.body).toBe(200);
+
+    const moved = await server.app.inject({
+      method: "PATCH",
+      url: `/api/v1/services/${serviceId}`,
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { domainId }
+    });
+    expect(moved.statusCode, moved.body).toBe(400);
+
+    // THE CONSEQUENCE, asserted rather than described: before the refusal this returned 200, and
+    // this next read — by the ORG-ROOT ADMIN — then 403'd forever, because scope expansion refuses
+    // to walk through a tombstoned ancestor.
+    const read = await server.app.inject({
+      method: "GET",
+      url: `/api/v1/services/${serviceId}`,
+      headers: { authorization: `Bearer ${org.adminToken}` }
+    });
+    expect(read.statusCode, read.body).toBe(200);
+
+    // The create half of the same door agrees.
+    const created = await post(org.adminToken, "/api/v1/services", {
+      name: "born-under-a-tombstone",
+      domainId
+    });
+    expect(created.status, created.body).toBe(400);
   });
 
   // -----------------------------------------------------------------------------------------
