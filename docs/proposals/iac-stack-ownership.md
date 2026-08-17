@@ -89,8 +89,8 @@ sentence: *`managed_by_stack` is written by the IaC apply and by nothing else.*
 (`drizzle/0068`), nullable, with a partial index for the pool lookup.
 
 **4b. One writer.** `iac/stack-ownership.ts`, called only from `executePlanDiff`. No route passes
-it; no request body can express it. Both statements are a single bulk `UPDATE` with
-`IS DISTINCT FROM`, so an apply that changes no ownership writes no rows.
+it; no request body can express it. Each half is a single bulk `UPDATE` whose predicate skips rows
+already carrying this stack, so an apply that changes no ownership writes no rows.
 
 **4c. The read path.** `fetchManagedObjects`/`fetchManagedRelationships` select on the column, and
 `isStackManaged`'s signature changed from a labels map to `string | null` — so a caller cannot re-key
@@ -114,6 +114,15 @@ candidate. Whatever poisoning predates the migration is carried over once and th
 from there the column moves only when an apply moves it. Starting every column `NULL` would empty
 every prune pool in the estate on upgrade — the loud-but-wrong failure, where the next
 decommissioning apply reports nothing to do.
+
+**Pool preservation is measured, not argued** — it is the one part of this change no test can reach,
+because a migration runs before any fixture exists. Nine objects covering every label shape a real
+estate contains (owned; ordinary labels only; none; `scp:stack` without `scp:managed-by`;
+`scp:managed-by` without `scp:stack`; `scp:managed-by` set to something other than `iac`; owned plus
+unrelated keys; a non-string `scp:stack`; an explicit JSON `null`) were loaded into a real
+PostgreSQL 16 and the old and new pool queries compared: **identical**. The two edge rows behave as
+they must — a JSON `null` yields SQL `NULL` through `->>` and stays unowned, and a numeric
+`scp:stack: 123` backfills to the text `'123'`, outside every real pool exactly as it was before.
 
 ## 5. Two things this fixes rather than merely preserves
 

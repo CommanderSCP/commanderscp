@@ -46,6 +46,16 @@
 -- alternative — starting every column NULL — would empty every prune pool in the estate on
 -- upgrade, which is the loud-but-wrong failure: an operator's next `terraform destroy`-shaped apply
 -- would report nothing to do.
+--
+-- POOL-PRESERVATION MEASURED, not argued, because it is the one part of this change no test can
+-- reach (a migration runs before any fixture exists). Nine objects covering every label shape a real
+-- estate contains — owned; ordinary labels only; no labels; `scp:stack` without `scp:managed-by`;
+-- `scp:managed-by` without `scp:stack`; `scp:managed-by` set to something other than `iac`; owned
+-- plus unrelated keys; a NON-STRING `scp:stack`; an explicit JSON `null` — were loaded into a real
+-- PostgreSQL 16, then the old `labels @> '{"scp:managed-by":"iac","scp:stack":"billing"}'` pool and
+-- the new `managed_by_stack = 'billing'` pool were compared. IDENTICAL, and the two edge rows behave
+-- as they must: a JSON `null` yields SQL NULL through `->>` and stays unowned, and a numeric
+-- `scp:stack: 123` backfills to the text `'123'` — outside every real pool, exactly as it was before.
 -- ============================================================================================
 
 ALTER TABLE objects ADD COLUMN managed_by_stack text;
