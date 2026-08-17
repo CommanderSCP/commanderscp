@@ -1754,9 +1754,17 @@ export const scanRequirementFloors = pgTable(
 // -------------------------------------------------------------------------------------------
 
 /**
- * The identity of ONE MAJOR LINE of one dependency, in one org. Derived, per-domain, high-churn
- * observation data — the category `changeSourceEvents` and `objectHealth` already occupy — so it is
- * a projection table and it does NOT federate; each domain derives its own (ADR-0032 §3).
+ * The identity of ONE MAJOR LINE of one dependency, in one org. Derived, high-churn observation
+ * data — the category `changeSourceEvents` and `objectHealth` already occupy — so it is a
+ * projection table and it does NOT federate (ADR-0032 §3, unchanged: that is what justifies the
+ * principle-2 bend).
+ *
+ * IT IS WRITTEN ON THE COMMANDER ONLY (ADR-0032 §7d, owner decision 2026-08-17). This comment used
+ * to say "per-domain … each domain derives its own", quoting §3; that half is reversed. All
+ * dependency automation is commander-only — an outpost never ORIGINATES a bump, it receives the
+ * resulting change down the global pipeline the commander manages — so these rows exist in exactly
+ * one place. `drizzle/0061`'s `COMMENT ON` still carries the old wording and is not editable in
+ * place; a future migration should restate it.
  *
  * THE COORDINATE IS NOT A URN, and that is why this is a table. `graph/urn.ts`'s `slugify`
  * lowercases and hyphenate-collapses every non-alphanumeric run, so `@acme/lib`, `acme/lib` and

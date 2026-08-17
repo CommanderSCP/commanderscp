@@ -111,22 +111,23 @@ import {
  *  - the head is RE-READ from the row rather than trusted from the event.
  *
  * ============================================================================================
- * THE ROLE GUARD — DERIVED, NOT COPIED FROM EITHER M21.4 JOB
+ * THE ROLE GUARD — COMMANDER-ONLY, WITH ITS OWN REASON ON TOP OF THE SHARED ONE
  * ============================================================================================
- * M21.4's two jobs reached OPPOSITE verdicts on the federation axis and both were right, so neither
- * verdict can be inherited; what carries over is the QUESTION. ADR-0032 §7c clause 3 states it:
- * the poll is commander-only because it "dials the public internet on a timer", and internal
- * detection runs everywhere because it "initiates no timed egress" and derives from evidence that
- * exists only where the change executed.
+ * Since ADR-0032 §7d (owner decision, 2026-08-17) EVERY dependency job is commander-only, so this
+ * verdict is no longer the strict one in a split field — it is the shared rule, and the shared
+ * reason lives in `commander-only.ts`: dependency automation exists to pull from PUBLIC
+ * repositories, which an outpost has no need to do, because the resulting change is pushed down the
+ * global pipeline the commander manages. (This paragraph used to open by contrasting M21.4's two
+ * jobs, which "reached OPPOSITE verdicts on the federation axis"; they no longer do, and internal
+ * detection no longer "runs everywhere" — §7d marks that clause reversed.)
  *
- * Asked of THIS job the answer is commander-only, and for a reason neither of those has: it does not
- * merely READ from the internet, it WRITES to somebody's source repository, with a credential, on a
- * trigger nobody watched. An air-gapped or high-side outpost must never do that — and it is exactly
- * the population that would, because internal detection DOES run there (so heads DO advance there)
- * and `SCP_FEDERATION_ROLE` defaults to `commander` for deployments that predate the setting. So the
- * guard is fail-CLOSED on an UNDECLARED deployment, the same shape as the poll's and for a
- * strictly stronger reason. It also logs when it ALLOWS: a posture that writes to a user's
- * repository must not be the invisible one.
+ * THIS JOB'S OWN REASON SURVIVES THE CONVERGENCE AND IS STILL WORTH STATING, because it is what
+ * would keep the guard here even if the shared rule were ever relaxed: it does not merely READ from
+ * the internet, it WRITES to somebody's source repository, with a credential, on a trigger nobody
+ * watched. An air-gapped or high-side outpost must never do that. The guard is fail-CLOSED on an
+ * UNDECLARED deployment, because `SCP_FEDERATION_ROLE` defaults to `commander` for deployments that
+ * predate the setting — and that is exactly the population most likely to be air-gapped. It also
+ * logs when it ALLOWS: a posture that writes to a user's repository must not be the invisible one.
  *
  * The process axis (`SCP_ROLE`) applies unchanged — background work belongs to `all`/`worker`.
  *

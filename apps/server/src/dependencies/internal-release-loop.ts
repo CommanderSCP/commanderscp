@@ -8,6 +8,11 @@ import {
   type InternalReleaseOutcome
 } from "./internal-release-detection.js";
 import { createGitProviderManifestReader } from "./manifest-reader.js";
+import {
+  commanderOnlyJobVerdict,
+  type CommanderOnlyConfig,
+  type CommanderOnlyVerdict
+} from "./commander-only.js";
 
 /**
  * M21.4 — THE PRODUCTION CALLER FOR INTERNAL RELEASE DETECTION (ADR-0032 §7).
@@ -53,30 +58,50 @@ import { createGitProviderManifestReader } from "./manifest-reader.js";
  * A permanent test drives the same change twice and asserts the second run creates nothing.
  *
  * ============================================================================================
- * THE ROLE REASONING — THE POLL'S, APPLIED, NOT THE POLL'S VERDICT, COPIED
+ * THE ROLE REASONING — COMMANDER-ONLY (ADR-0032 §7d, owner decision 2026-08-17)
  * ============================================================================================
  * The version poll is guarded on TWO axes (`dependencyVersionPollRoleGuard`): the PROCESS split
  * (`SCP_ROLE`) and the DEPLOYMENT's declared federation role (`SCP_FEDERATION_ROLE` — commander
- * only, and explicitly declared). Asking the same two questions here gives different answers, and
- * the difference is stated rather than left implicit:
+ * only, and explicitly declared). BOTH apply here too.
+ *
+ * This paragraph previously argued the opposite — at length, citing ADR-0032 §3 clause 3, and
+ * concluding that "restricting to a commander would break the feature". That argument is WRONG. It
+ * is restated and answered here rather than deleted, because it is persuasive and the next reader
+ * of this file is exactly the person who could remove the guard on the strength of it; ADR-0032 §7d
+ * preserves the original clause verbatim beside the reasoning that overturned it.
  *
  *  - THE PROCESS AXIS APPLIES UNCHANGED. This is background work; an `api` process must stay a
  *    request server. Same rule, same reason, and `main.ts` additionally only reaches this inside its
  *    `runsBackgroundWork` branch — the guard is what makes that a property of the job rather than of
  *    where someone happened to call it.
  *
- *  - THE FEDERATION AXIS DOES NOT, AND RESTRICTING TO A COMMANDER WOULD BREAK THE FEATURE. The
- *    poll's federation guard exists because it DIALS THE PUBLIC INTERNET ON A TIMER, which an
- *    air-gapped outpost must never do. This job initiates no timed egress: it reacts to this
- *    domain's own accepted change, reads this domain's own coordination records, and reaches a git
- *    provider only for the language ecosystems — the same provider this domain's executors already
- *    coordinate through, over the same bindings, under the same egress guard. And an outpost is
- *    where the evidence LIVES: `change_wave_targets.status`/`observed_state.images` are written
- *    where the change executed, while a commander receives only `change_status` journal entries
- *    (`{objectId, fromState, toState, trigger}` — no wave targets, no images). ADR-0032 §3 says the
- *    inventory "does not federate, and each domain derives its own"; a commander-only guard would
- *    make every outpost domain derive nothing, forever, silently — the exact failure shape the poll's
- *    guard exists to prevent, pointed the other way.
+ *  - THE FEDERATION AXIS APPLIES TOO: commander only, fail-closed on an undeclared role. THE
+ *    OWNER'S REASON is not about egress at all. The point of dependency automation is to PULL FROM
+ *    PUBLIC REPOSITORIES — Python library versions, CDK versions, base-image versions — which is
+ *    not needed from an outpost standpoint, because the resulting change GETS PUSHED DOWN THE
+ *    GLOBAL PIPELINE THE COMMANDER MANAGES. An outpost never ORIGINATES a dependency bump; it
+ *    RECEIVES the resulting change through the ordinary promotion path. So an outpost derives no
+ *    inventory and detects no releases for this feature, and what it used to derive fed nothing:
+ *    the only consumer is a bump, and `bumpDispatchRoleGuard` has been commander-only since M21.5.
+ *
+ *    THE OLD ARGUMENT'S MEASUREMENT SURVIVES AND BECOMES THE STATED COST. It is true that an
+ *    outpost is where the evidence LIVES: `change_wave_targets.status`/`observed_state.images` are
+ *    written where the change executed, while a commander receives only `change_status` journal
+ *    entries (`{objectId, fromState, toState, trigger}` — no wave targets, no images). So an
+ *    internal line whose component releases to prod only at an outpost keeps a NULL
+ *    `latest_version`. ADR-0032 §7's schema note already defines NULL as "not observed" and
+ *    explicitly NOT "nothing newer exists", so a subscriber sees an honest absence rather than a
+ *    wrong version — which is the ordering §7a rule 1 fixes. This is a real reduction in reach and
+ *    is recorded as ADR-0032 §7d clause 2, not papered over.
+ *
+ *    THE OTHER ACCEPTED CONSEQUENCE: dependencies declared in DOMAIN-SPECIFIC repositories —
+ *    outpost-only IaC/CaC the commander never sees — are OUT OF SCOPE for dependency
+ *    subscriptions. The owner accepted that explicitly; there is no workaround, and the shape that
+ *    would be one is an outpost-side job.
+ *
+ * Scope of the reversal: the SUBSCRIPTION still federates (a `dependencySubscription` effect on an
+ * ordinary `policy` object, ADR-0032 §3a) and still reaches an outpost. Only the JOBS and the
+ * projection tables they write are commander-only.
  */
 
 export const INTERNAL_RELEASE_QUEUE = "dependency-internal-release";
@@ -87,31 +112,18 @@ export const INTERNAL_RELEASE_QUEUE = "dependency-internal-release";
 export const CHANGE_TRANSITIONED_EVENT = "scp.change.transitioned";
 export const ACCEPTED_STATE = "accepted";
 
-export interface InternalReleaseRoleVerdict {
-  allowed: boolean;
-  reason: string;
-}
+export type InternalReleaseRoleVerdict = CommanderOnlyVerdict;
 
 /**
  * MAY THIS PROCESS DERIVE INTERNAL RELEASES? See the module doc for why this asks the poll's two
- * questions and keeps only one of them.
+ * questions and now keeps BOTH of them, and `commander-only.ts` for why the predicate is SHARED
+ * rather than re-spelled here — the fail-closed undeclared branch has five callers and is the one
+ * that regresses invisibly.
  */
 export function internalReleaseDetectionRoleGuard(
-  config: Pick<ServerConfig, "role" | "federationRole">
+  config: CommanderOnlyConfig
 ): InternalReleaseRoleVerdict {
-  if (config.role !== "all" && config.role !== "worker") {
-    return {
-      allowed: false,
-      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
-    };
-  }
-  return {
-    allowed: true,
-    reason:
-      `background-work process; runs on every federation role ('${config.federationRole}' here) ` +
-      `because each domain derives its OWN dependency inventory (ADR-0032 §3) and the wave-target ` +
-      `evidence a release is derived from exists only where the change executed`
-  };
+  return commanderOnlyJobVerdict(config, "internal dependency release detection");
 }
 
 /** True for the one event shape this capability reacts to. Exported so a test can pin the predicate
@@ -159,7 +171,7 @@ export interface InternalReleaseLoopHandle {
 export interface InternalReleaseLoopDeps {
   db: Db;
   host: PluginHost;
-  config: Pick<ServerConfig, "role" | "federationRole" | "secretsMasterKey">;
+  config: CommanderOnlyConfig & Pick<ServerConfig, "secretsMasterKey">;
 }
 
 /**

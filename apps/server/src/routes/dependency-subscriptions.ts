@@ -21,7 +21,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, conflict, forbidden } from "../errors.js";
 import { getObjectByIdOrUrn } from "../graph/objects-repo.js";
 import { listSourceMappingsForComponents } from "../coordination/source-mappings-repo.js";
 import {
@@ -30,6 +30,7 @@ import {
 } from "../dependencies/subscription-resolution.js";
 import { ingestComponentManifests, literalRepoFor } from "../dependencies/inventory-ingestion.js";
 import { createGitProviderManifestReader } from "../dependencies/manifest-reader.js";
+import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.js";
 
 /**
  * M21.3 — the DEPENDENCY-SUBSCRIPTION ENABLEMENT API (ADR-0032 §3a, §6), API-first per charter
@@ -297,6 +298,35 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
   // `matchPoliciesForTargets` resolves `scope.group` against the actor and the sentinel is a member
   // of nothing (ADR-0032 §6a), so a human running a backfill sees the same enablement the resolution
   // API reports to them.
+  //
+  // IT IS COMMANDER-ONLY, AND FAIL-CLOSED ON AN UNDECLARED DEPLOYMENT (ADR-0032 §7d, M21.7). This
+  // route is the OPERATOR-TRIGGERED half of the same ingestion the loop performs, so it must not be
+  // the door the loop's guard is walked around: an outpost that can no longer ingest on an accepted
+  // change could otherwise ingest the identical inventory by POSTing here, and the guard would be
+  // decorative. The predicate is `commander-only.ts`'s, shared with the four background jobs, so
+  // the two doors cannot drift.
+  //
+  // ONLY THE FEDERATION AXIS, DELIBERATELY. The jobs additionally require an `all`/`worker`
+  // `SCP_ROLE`; a ROUTE must not, because in the split topology every HTTP request lands on an
+  // `SCP_ROLE=api` process by design — carrying the process axis here would refuse every caller on
+  // a perfectly correct commander. See `commanderOnlyFederationVerdict`'s own doc.
+  //
+  // WHY 409 AND NOT 400/403/404. This is "right request, wrong place": the body is valid, the
+  // caller may be entirely entitled, and the resource is not hidden — what is wrong is the
+  // DEPLOYMENT the request arrived at. 403 would say the principal lacks permission, which is a
+  // different remedy (grant a role) from the real one (call the commander), and this route already
+  // spends 403 on the authorization failure it really has. 400 would blame the request, which is
+  // well-formed — the sibling `badRequest` below is about THIS PROCESS lacking a plugin host, a
+  // narrower "wrong process" the operator fixes by routing to a worker-capable one, and conflating
+  // the two would send an outpost operator hunting for a plugin host. 404 would deny the route
+  // exists, which is false and unhelpful. 409 Conflict is what this codebase already uses for a
+  // request that conflicts with THE STATE OF THIS INSTANCE rather than with the caller's rights —
+  // `POST /federation/poke`'s "this instance is not configured for poke-mode from peer X"
+  // (routes/federation.ts) is the same shape and the precedent followed here. The detail names why
+  // and says WHERE to run it, because a refusal an operator cannot act on is the same as silence.
+  // Adding a documented 409 to an existing operation is additive under the /v1 oasdiff gate (a
+  // non-success status ADDED is not an ERR-level break; nothing existing is removed and no required
+  // response field becomes optional).
   // -------------------------------------------------------------------------------------------
   typed.route({
     method: "POST",
@@ -308,19 +338,29 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        409: ProblemSchema
       }
     },
     config: {
       openapi: {
         operationId: "backfillDependencyInventory",
         summary:
-          "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4)",
+          "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4). COMMANDER-ONLY: a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409 (ADR-0032 §7d)",
         tags: ["dependencies"]
       }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+      // Checked BEFORE the plugin-host fail-close, so an outpost is told the true answer ("run it
+      // on the commander") rather than being sent to find a plugin-host-capable process it should
+      // not be running this on either way. After `requireAuth`, so the route does not become an
+      // unauthenticated oracle for this deployment's federation role.
+      const commander = commanderOnlyFederationVerdict(
+        deps.config,
+        "the dependency-inventory backfill"
+      );
+      if (!commander.allowed) throw conflict(commander.reason);
       const host = deps.pluginHost;
       if (!host) {
         // Reading a manifest is a live plugin call, exactly as `POST /discovery/run` is. `main.ts`

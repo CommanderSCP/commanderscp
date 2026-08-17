@@ -248,10 +248,13 @@ async function main(): Promise<void> {
       config
     );
     // M21.4 internal release detection (ADR-0032 §7) — the other half of the router registered with
-    // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event; it runs
-    // on EVERY federation role, deliberately, since each domain derives its own inventory and the
-    // wave-target evidence exists only where the change executed (the loop's module doc has the
-    // reasoning in full).
+    // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event.
+    // COMMANDER-ONLY, like every dependency job (ADR-0032 §7d, owner decision 2026-08-17): this
+    // comment used to say it ran on EVERY federation role. An outpost never ORIGINATES a dependency
+    // bump — it receives the resulting change down the global pipeline the commander manages — so it
+    // derives no inventory and detects no releases for this feature. The loop's module doc carries
+    // the full reasoning and the accepted cost (an internal line released only at an outpost keeps a
+    // NULL head, which §7 defines as "not observed", never "nothing newer exists").
     const internalReleaseLoop = await startInternalReleaseLoop(boss, {
       db,
       host: pluginHost,
@@ -260,10 +263,12 @@ async function main(): Promise<void> {
     // M21.2 dependency-inventory ingestion (ADR-0032 §4/§6) — the worker half of the ingestion
     // router registered above. THIS IS WHAT WRITES `component_dependencies`: without it the table is
     // empty on every deployment and the enablement chain, the version poll and internal detection
-    // all resolve over nothing. Same role reasoning as internal detection, derived from ingestion's
-    // own facts in the loop's module doc (it reads this domain's own change and this domain's own
-    // git binding; it never dials a public index on a timer, which is the poll's whole reason for
-    // being commander-only).
+    // all resolve over nothing. Same role answer as internal detection and the poll — COMMANDER-ONLY
+    // (ADR-0032 §7d, owner decision 2026-08-17), where this comment previously pointed at an
+    // ingestion-specific derivation that concluded the opposite. An outpost holds no dependency
+    // inventory: the only consumer of one is a bump, and the dispatcher below has been
+    // commander-only since M21.5. Accepted consequence, in the loop's module doc: dependencies
+    // declared in outpost-only repositories are out of scope for dependency subscriptions.
     const inventoryIngestionLoop = await startInventoryIngestionLoop(boss, {
       db,
       host: pluginHost,

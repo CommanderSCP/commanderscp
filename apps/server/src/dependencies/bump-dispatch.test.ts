@@ -59,9 +59,13 @@ describe("the composition root actually wires it", () => {
   );
 
   it("registers the router in the production registry, under THIS capability's guard", () => {
-    // Identity, not name: the mis-binding this rules out is the registry pairing this router with a
-    // LAXER guard — internal detection's, say, which allows every federation role — and thereby
-    // authoring repository writes from an outpost.
+    // Identity, not name: the mis-binding this rules out is the registry pairing this router with
+    // some OTHER capability's guard, and thereby authoring repository writes from an outpost. Until
+    // ADR-0032 §7d (2026-08-17) that hazard was concrete — internal detection's guard allowed every
+    // federation role, so binding to it would have been a live escape. Every dependency guard now
+    // reaches the same verdict (`commander-only.test.ts` proves that across the full matrix), which
+    // makes this assertion a defence against the NEXT divergence rather than a current one — and
+    // that is exactly when an identity check is worth keeping rather than deleting.
     const entries = DOMAIN_EVENT_ROUTERS.filter(
       (entry) => entry.factory === advancedLineHeadRouter
     );

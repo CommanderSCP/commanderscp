@@ -70,18 +70,20 @@ export interface RouterRegistration {
  */
 export const DOMAIN_EVENT_ROUTERS: readonly RouterRegistration[] = [
   // M21.4 (ADR-0032 §7) internal release detection — the FIRST consumer of the domain-event stream.
-  // Runs on every federation role, deliberately: each domain derives its OWN inventory and the
-  // wave-target evidence a release is derived from exists only where the change executed.
+  // COMMANDER-ONLY (ADR-0032 §7d, owner decision 2026-08-17); this comment previously said it ran on
+  // every federation role, deliberately. An outpost never ORIGINATES a dependency bump — it receives
+  // the resulting change down the global pipeline the commander manages — so it derives nothing here.
   { factory: acceptedChangeRouter, guard: internalReleaseDetectionRoleGuard },
   // M21.2 (ADR-0032 §4/§6) dependency-inventory ingestion — the SECOND router on the same event.
   // Routers do not compete: the domain-events worker calls every router for every event and each
   // enqueues onto its OWN queue, so a slow manifest read cannot starve internal detection.
   { factory: inventoryIngestionRouter, guard: inventoryIngestionRoleGuard },
   // M21.5 (ADR-0032 §8) the bump dispatcher — a line's head advancing is what makes a bump due.
-  // Its guard is STRICTER than internal detection's and derived rather than copied (see
-  // `bumpDispatchRoleGuard`): this job writes to a source repository with a credential, which an
-  // air-gapped or high-side outpost must never do — and internal detection running on every role
-  // means heads DO advance there.
+  // Commander-only, and derived rather than copied (see `bumpDispatchRoleGuard`): this job writes to
+  // a source repository with a credential, which an air-gapped or high-side outpost must never do.
+  // It USED to be the strictest guard in the table, because internal detection ran on every role and
+  // so heads advanced at outposts; since ADR-0032 §7d (2026-08-17) every dependency job reaches the
+  // same verdict, and this one's reason is still its own rather than inherited.
   { factory: advancedLineHeadRouter, guard: bumpDispatchRoleGuard },
   // M21.5 (ADR-0032 §8c) the auto-merge link. Its trigger is an observed provider event that
   // correlated to a bump SCP authored — the authored push, then the CI conclusion on that same

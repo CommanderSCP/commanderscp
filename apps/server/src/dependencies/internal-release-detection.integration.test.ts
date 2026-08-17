@@ -1048,7 +1048,16 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
       loop = await startInternalReleaseLoop(boss, {
         db: server.deps.db,
         host: recordingHost(),
-        config: server.deps.config
+        // THE POSTURE THE LOOP REQUIRES, STATED BY THE FIXTURE (ADR-0032 §7d). Internal detection is
+        // commander-only and FAIL-CLOSED on an undeclared `SCP_FEDERATION_ROLE`; the harness leaves
+        // that env var unset, so `server.deps.config` alone is a DEFAULTED (undeclared) commander
+        // and this loop would hand back an inert handle without ever creating its queue.
+        config: {
+          ...server.deps.config,
+          role: "all" as const,
+          federationRole: "commander" as const,
+          federationRoleDeclared: true
+        }
       });
     }, 60_000);
 

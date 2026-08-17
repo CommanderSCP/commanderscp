@@ -420,26 +420,40 @@ describe("M21.2 dependency-inventory ingestion — pure parts (ADR-0032 §4)", (
       expect(entries[0]!.guard).toBe(inventoryIngestionRoleGuard);
     });
 
-    it("a background-work process actually gets it, and an api-only process does not", () => {
-      const onWorker = domainEventRouters({
-        role: "worker",
-        federationRole: "commander",
-        federationRoleDeclared: true
-      });
-      expect(onWorker.map((router) => router.queue)).toContain(INVENTORY_INGESTION_QUEUE);
-      // Every federation role, deliberately (ADR-0032 §3: each domain derives its OWN inventory).
-      const onOutpost = domainEventRouters({
-        role: "worker",
-        federationRole: "outpost",
-        federationRoleDeclared: true
-      });
-      expect(onOutpost.map((router) => router.queue)).toContain(INVENTORY_INGESTION_QUEUE);
-      const onApi = domainEventRouters({
-        role: "api",
-        federationRole: "commander",
-        federationRoleDeclared: true
-      });
-      expect(onApi.map((router) => router.queue)).not.toContain(INVENTORY_INGESTION_QUEUE);
+    it("a declared-commander background process gets it, and NO other deployment shape does", () => {
+      const queuesFor = (config: {
+        role: "all" | "api" | "worker";
+        federationRole: "commander" | "outpost" | "retrans";
+        federationRoleDeclared: boolean;
+      }): string[] => domainEventRouters(config).map((router) => router.queue);
+
+      expect(
+        queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: true })
+      ).toContain(INVENTORY_INGESTION_QUEUE);
+
+      // AN OUTPOST NO LONGER GETS IT (ADR-0032 §7d, owner decision 2026-08-17). This assertion was
+      // the exact inverse until then — "every federation role, deliberately (§3: each domain
+      // derives its OWN inventory)" — and it was green, because that is precisely what the guard
+      // did. The decision reversed the QUESTION, not the mechanics: an outpost never ORIGINATES a
+      // dependency bump, it RECEIVES the resulting change down the global pipeline the commander
+      // manages, so the inventory it used to derive fed nothing that could ever act on it.
+      expect(
+        queuesFor({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
+      expect(
+        queuesFor({ role: "worker", federationRole: "retrans", federationRoleDeclared: true })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
+
+      // THE FAIL-CLOSED CASE, which is the branch that regresses silently: `federationRole`
+      // DEFAULTS to `commander`, so an outpost predating the setting — or a chart that omits it —
+      // presents here as a commander unless the DECLARATION is required as well.
+      expect(
+        queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: false })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
+
+      expect(
+        queuesFor({ role: "api", federationRole: "commander", federationRoleDeclared: true })
+      ).not.toContain(INVENTORY_INGESTION_QUEUE);
     });
 
     it("main.ts starts the WORKER — without it the queue fills and nothing drains it", () => {

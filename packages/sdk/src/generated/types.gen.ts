@@ -15115,6 +15115,17 @@ export type BackfillDependencyInventoryErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type BackfillDependencyInventoryError = BackfillDependencyInventoryErrors[keyof BackfillDependencyInventoryErrors];

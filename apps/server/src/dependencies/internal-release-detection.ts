@@ -64,14 +64,19 @@ import {
  * the free-text `rollback_trigger_reason`, which is an English sentence a refactor can change.
  *
  * ============================================================================================
- * DOMAIN-LOCAL CHANGES ARE DOMAIN-VISIBLE ONLY. STATED, NOT WORKED AROUND.
+ * DOMAIN-LOCAL CHANGES ARE OUT OF SCOPE. STATED, NOT WORKED AROUND.
  * ============================================================================================
  * A domain-local change does not journal (`transition.ts:337-360`, ADR-0031): its `change_status`
  * entry is deliberately withheld, because "the commander doesn't need to know when these deploy
- * out" is exactly what domain-locality means. The head this module records for such a release is
- * therefore a fact in THIS domain's `dependency_lines` and travels nowhere — a subscriber in
- * another domain will not learn of it. That is ADR-0031's design, and ADR-0032 §7 records it as a
- * known consequence ("stated, not discovered later"). Nothing here tries to route around it: a
+ * out" is exactly what domain-locality means. Until 2026-08-17 this module ran on every federation
+ * role, so the head it recorded for such a release was a fact in THAT domain's `dependency_lines`
+ * that travelled nowhere — "domain-visible only", the consequence ADR-0032 §7 records.
+ *
+ * SINCE ADR-0032 §7d (owner decision, 2026-08-17) THIS MODULE RUNS ON THE COMMANDER ONLY, so the
+ * statement is now stronger: a domain-local release at an outpost reaches no detection at all, and
+ * its head is recorded NOWHERE. That is the same class as §7d clause 1's outpost-only repositories
+ * and is accepted on the same terms — an outpost never ORIGINATES a bump, it receives the resulting
+ * change down the global pipeline the commander manages. Nothing here tries to route around it: a
  * feature that federated what locality withheld would defeat the locality decision, not extend it.
  *
  * ============================================================================================

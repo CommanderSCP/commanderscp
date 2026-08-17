@@ -2092,7 +2092,7 @@ export const getComponentDependencySubscription = <ThrowOnError extends boolean 
 });
 
 /**
- * Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4)
+ * Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4). COMMANDER-ONLY: a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409 (ADR-0032 §7d)
  */
 export const backfillDependencyInventory = <ThrowOnError extends boolean = false>(options: Options<BackfillDependencyInventoryData, ThrowOnError>): RequestResult<BackfillDependencyInventoryResponses, BackfillDependencyInventoryErrors, ThrowOnError> => (options.client ?? client).post<BackfillDependencyInventoryResponses, BackfillDependencyInventoryErrors, ThrowOnError>({
     responseValidator: async (data) => await zBackfillDependencyInventoryResponse.parseAsync(data),

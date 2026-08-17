@@ -3658,10 +3658,16 @@ export function buildProgram(): Command {
   // manifests. That covers components that RELEASE and nothing else, so an existing estate — and any
   // component that has not pushed since it was enabled — needs this once. Idempotent, so running it
   // twice is a no-op, and it reports every skip rather than a bare count.
+  //
+  // POINT IT AT THE COMMANDER. All dependency automation is commander-only (ADR-0032 §7d), so an
+  // instance whose `SCP_FEDERATION_ROLE` is not an explicitly declared `commander` answers 409 with
+  // a detail naming why — including the fail-closed case where the role was never declared at all.
+  // It is said in the description because that 409 is a mistake an operator makes when choosing
+  // `--base-url`, not a mistake in the request, and the flag is right here.
   depSubsCmd
     .command("backfill-inventory")
     .description(
-      "Read enabled components' dependency manifests and (re)build their inventory (ADR-0032 §4). Idempotent. A component with no enabling subscription is REFUSED BEFORE ITS REPO IS READ — this command cannot bypass the enablement chain"
+      "Read enabled components' dependency manifests and (re)build their inventory (ADR-0032 §4). Idempotent. A component with no enabling subscription is REFUSED BEFORE ITS REPO IS READ — this command cannot bypass the enablement chain. COMMANDER-ONLY: run it against the commander; an outpost, or a deployment that never declared its federation role, answers 409"
     )
     // Repeatable rather than comma-separated: a component URN legitimately contains punctuation, and
     // the existing repeatable flags on `scp change create` set the precedent.

@@ -122,7 +122,17 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
     // `withPluginHost` because the M21.2 backfill route fail-closes on `deps.pluginHost` — reading a
     // dependency manifest is a live plugin call, exactly as `POST /discovery/run` is. No
     // reconcile loop: nothing here needs one, and it would be a live competitor for queued work.
-    server = await listenTestServer({ operatorToken: OPERATOR_TOKEN, withPluginHost: true });
+    //
+    // `federationRole: "commander"` because the backfill is COMMANDER-ONLY and fail-closed on an
+    // UNDECLARED deployment (ADR-0032 §7d). The harness leaves `SCP_FEDERATION_ROLE` unset by
+    // default, which yields a DEFAULTED commander — `federationRoleDeclared: false` — under which
+    // every backfill below would answer 409. Setting it here DECLARES the posture these tests mean
+    // to exercise; the refusals get their own servers in the block after "(5)".
+    server = await listenTestServer({
+      operatorToken: OPERATOR_TOKEN,
+      withPluginHost: true,
+      federationRole: "commander"
+    });
     org = await createTestOrg(server, "dep-sub-api");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     componentId = (await createOrphanComponent(admin, `dep-sub-api-${uuidv7()}`)).id;
@@ -625,6 +635,115 @@ describe("M21.3 dependency-subscription API (ADR-0032 §6)", () => {
         expect(response.ingested).toBe(1);
         expect(response.components.find((c) => c.verdict === "ingested")?.reads).toBeGreaterThan(0);
       });
+    });
+  });
+});
+
+/**
+ * ================================================================================================
+ * (6) THE BACKFILL IS COMMANDER-ONLY, AND THE ROUTE IS NOT THE DOOR AROUND THE JOBS' GUARD
+ * ================================================================================================
+ * ADR-0032 §7d (owner decision, 2026-08-17): all dependency automation runs on the commander only.
+ * The event-driven ingestion loop is guarded, and this route performs THE SAME INGESTION on demand
+ * — so an unguarded route would let an outpost rebuild the identical inventory by POSTing, and the
+ * loop's guard would be decorative.
+ *
+ * A SEPARATE SERVER PER POSTURE, deliberately. `federationRole`/`federationRoleDeclared` are
+ * install-time config read from the environment at boot, so they cannot be toggled on the shared
+ * fixture without lying about how the value is produced. Each block below boots the deployment
+ * shape it is about, which is also what makes the UNDECLARED case reachable at all: it is the
+ * harness's own default, and it is the branch that would otherwise never be executed by anything.
+ *
+ * WHAT IS ASSERTED IS THE SPECIFIC VIOLATION, not a status code alone: a 409 that came from some
+ * other conflict would satisfy `status === 409`, so each case also requires the refusal to name the
+ * axis that refused and where the work belongs.
+ */
+describe("(6) POST /dependencies/inventory/backfill is COMMANDER-ONLY (ADR-0032 §7d)", () => {
+  /** Calls the route over real HTTP and returns the status plus the RFC7807 detail. The SDK is not
+   *  used here because it throws on a non-2xx and the body is the thing under test. */
+  async function backfill(
+    target: ListeningTestServer,
+    token: string
+  ): Promise<{ status: number; detail: string }> {
+    const response = await fetch(`${target.baseUrl}/dependencies/inventory/backfill`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({})
+    });
+    const body = (await response.json().catch(() => ({}))) as { detail?: string };
+    return { status: response.status, detail: body.detail ?? "" };
+  }
+
+  describe("an explicitly declared OUTPOST", () => {
+    let outpost: ListeningTestServer;
+    let outpostOrg: TestOrg;
+
+    beforeAll(async () => {
+      outpost = await listenTestServer({ withPluginHost: true, federationRole: "outpost" });
+      outpostOrg = await createTestOrg(outpost, "dep-backfill-outpost");
+    }, 120_000);
+
+    afterAll(async () => {
+      await outpost?.close();
+    });
+
+    it("REFUSES with 409, names the role, and says to run it on the commander", async () => {
+      const { status, detail } = await backfill(outpost, outpostOrg.adminToken);
+      // 409 rather than 403: the caller is the org's bootstrap ADMIN and is entirely entitled —
+      // what is wrong is the DEPLOYMENT, which is a conflict with this instance's state.
+      expect(status).toBe(409);
+      expect(detail).toContain("outpost");
+      expect(detail).toMatch(/COMMANDER-ONLY/);
+      expect(detail).toMatch(/RUN IT ON THE COMMANDER/);
+    });
+
+    it("REFUSES THE ORG ADMIN, which is the proof it is not an authorization check", async () => {
+      // The negative control for the status choice itself. This principal holds `object:write` at
+      // the org scope — the exact permission the handler authorizes — so a 403 here would send an
+      // operator to grant a role that is already granted. The same token succeeds against the
+      // declared-commander server in block (5).
+      const { status } = await backfill(outpost, outpostOrg.adminToken);
+      expect(status).not.toBe(403);
+      expect(status).toBe(409);
+    });
+  });
+
+  describe("a deployment that never DECLARED its federation role (the fail-closed branch)", () => {
+    let undeclared: ListeningTestServer;
+    let undeclaredOrg: TestOrg;
+
+    beforeAll(async () => {
+      // NO `federationRole` — exactly what `loadConfig` sees with `SCP_FEDERATION_ROLE` unset, which
+      // is what a pre-M16.3 install and a chart that omits the value both produce. `config.
+      // federationRole` therefore READS 'commander' here; only `federationRoleDeclared` separates
+      // this from the accepted case, which is why a guard testing the value alone is fail-OPEN for
+      // exactly the population most likely to be an outpost.
+      undeclared = await listenTestServer({ withPluginHost: true });
+      undeclaredOrg = await createTestOrg(undeclared, "dep-backfill-undeclared");
+    }, 120_000);
+
+    afterAll(async () => {
+      await undeclared?.close();
+    });
+
+    it("REFUSES with 409 even though `federationRole` reads 'commander'", async () => {
+      expect(undeclared.deps.config.federationRole).toBe("commander");
+      expect(undeclared.deps.config.federationRoleDeclared).toBe(false);
+      const { status, detail } = await backfill(undeclared, undeclaredOrg.adminToken);
+      expect(status).toBe(409);
+      expect(detail).toMatch(/not declared/);
+      // The REMEDY has to be in the line, or an operator running a genuine commander cannot turn
+      // it back on from the log alone.
+      expect(detail).toMatch(/federationRole/);
+    });
+
+    it("is refused BEFORE the plugin-host check, so the operator gets the true answer", async () => {
+      // Ordering matters for the remedy: this server HAS a plugin host, so the assertion that
+      // distinguishes the two refusals is that the 409's detail is about federation and never about
+      // a plugin-host-capable process — a 400 would send an outpost operator hunting for a worker.
+      const { status, detail } = await backfill(undeclared, undeclaredOrg.adminToken);
+      expect(status).toBe(409);
+      expect(detail).not.toMatch(/plugin-host-capable/);
     });
   });
 });

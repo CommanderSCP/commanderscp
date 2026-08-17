@@ -1218,7 +1218,17 @@ require (
       loop = await startInventoryIngestionLoop(boss, {
         db: server.deps.db,
         host: recordingHost(),
-        config: server.deps.config
+        // THE POSTURE THE LOOP REQUIRES, STATED BY THE FIXTURE RATHER THAN INHERITED (ADR-0032 §7d).
+        // Ingestion is commander-only and FAIL-CLOSED on an undeclared `SCP_FEDERATION_ROLE`, and
+        // the harness deliberately leaves that env var unset — so `server.deps.config` alone is a
+        // defaulted, UNdeclared commander and this loop would return an inert handle, silently.
+        // That is the guard working; the fixture has to declare the posture it wants to test.
+        config: {
+          ...server.deps.config,
+          role: "all" as const,
+          federationRole: "commander" as const,
+          federationRoleDeclared: true
+        }
       });
     }, 60_000);
 
