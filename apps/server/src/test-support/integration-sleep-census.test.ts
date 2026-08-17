@@ -192,4 +192,12 @@ describe("integration tests do not stand a fixed sleep in for engine progress", 
       expect(fixedSleeps(readStripped(full)), `${file} is registered as converted`).toEqual([]);
     }
   });
+
+  it("every registry entry says WHY — the reason is the point, the count is bookkeeping", () => {
+    // Without this, the cheapest way past the guard above is `{ count: n, why: "" }`, which
+    // authorises an instance while recording nothing about which side of the property it is on.
+    for (const [file, entry] of Object.entries(REGISTRY)) {
+      expect(entry.why.length, `${file} needs a reason, not just a count`).toBeGreaterThan(60);
+    }
+  });
 });
