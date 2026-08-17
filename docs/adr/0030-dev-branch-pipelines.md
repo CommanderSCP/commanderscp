@@ -2,7 +2,7 @@
 
 **Status:** Accepted (owner sign-off 2026-08-10, including §3 — supersedes part of [ADR-0018](0018-domain-local-dev-pipelines.md) §1/§4)
 **Context doc:** [BUILD_AND_TEST.md §8 M18](../BUILD_AND_TEST.md); [ADR-0018](0018-domain-local-dev-pipelines.md)
-**Relates to:** [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0016](0016-scoped-scan-requirement-policies.md) (scoped scan-requirement policies — the *local* gate); [ADR-0017](0017-ownership-refinement.md) (E6, the export-time gate); [ADR-0007](0007-executor-type-taxonomy.md) (the routing Type a mapping carries); charter principle 1 (coordinate, not execute), principle 6 (explainability)
+**Relates to:** [ADR-0013](0013-supply-chain-scan-sbom-manifest.md) (scan is a *boundary-crossing* authorization gate); [ADR-0016](0016-scoped-scan-requirement-policies.md) (scoped scan-requirement policies — the *local* gate); [ADR-0017](0017-ownership-refinement.md) (E6, the export-time gate); [ADR-0007](0007-executor-binding-type-taxonomy.md) (the routing Type a mapping carries); charter principle 1 (coordinate, not execute), principle 6 (explainability)
 
 ## Context
 
