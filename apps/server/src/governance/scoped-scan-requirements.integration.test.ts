@@ -31,6 +31,11 @@ import {
  *
  *   platform -> trust domain (partition) -> org -> containment domain -> service -> component
  *
+ * ...plus the OPTIONAL `assembly` rung between service and component (migration 0055; named as a
+ * tier by M22.0 / ADR-0033 §5, pinned by test (a2) below). It is optional in the sense the others
+ * are not — most chains have no assembly at all — which is why the list above is still "the six
+ * tiers" and why every test that does not care about it uses the four-rung `buildChain` default.
+ *
  * TWO SENSES OF "DOMAIN": `trust_domain` is the ambient federation boundary ABOVE org (an
  * instance-scoped floor row, no `org_id`); `containment_domain` is the intra-org `domain` OBJECT
  * TYPE BELOW org (an ordinary graph node). The fixture below builds BOTH, in the same chain, so the
@@ -197,19 +202,40 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
 
   /** org root -> containment domain -> service -> component, with the component reachable from BOTH
    *  the service (`contains`) and the org root (its own `domain_id`) — the real four-tier chain the
-   *  org-and-below resolver walks. */
-  async function buildChain(admin: ScpClient, label: string) {
+   *  org-and-below resolver walks.
+   *
+   *  `withAssembly` inserts the OPTIONAL rung migration 0055 added, giving
+   *  `org -> containment domain -> service -> ASSEMBLY -> component`. The component then hangs off
+   *  the assembly rather than the service, so the service is reached only by continuing up through
+   *  the assembly — which is what makes the two tiers separable in the contributor list below. Only
+   *  ONE assembly rung is built because `assembly -> assembly` is refused at write time
+   *  (`relationships-repo.ts`; migration 0054's header), so this is the deepest legal ladder. */
+  async function buildChain(
+    admin: ScpClient,
+    label: string,
+    opts: { withAssembly?: boolean } = {}
+  ) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
       .object("service")
       .create({ name: `svc-${label}`, domainId: containmentDomain.id });
     const component = await createOrphanComponent(admin, `comp-${label}`);
+    const assembly = opts.withAssembly
+      ? await admin.assemblies.create({ name: `asm-${label}` })
+      : undefined;
+    if (assembly) {
+      await admin.relationships.create({
+        typeId: "contains",
+        fromId: service.id,
+        toId: assembly.id
+      });
+    }
     await admin.relationships.create({
       typeId: "contains",
-      fromId: service.id,
+      fromId: assembly?.id ?? service.id,
       toId: component.id
     });
-    return { containmentDomain, service, component };
+    return { containmentDomain, service, assembly, component };
   }
 
   /** A policy carrying ONLY a `scanThreshold` effect, scoped at one object — the org-and-below
@@ -334,6 +360,79 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     expect([...tiers].sort()).toEqual(
       ["component", "containment_domain", "org", "platform", "service", "trust_domain"].sort()
     );
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // (a2) THE ASSEMBLY RUNG (M22.0, ADR-0033 §5). Migration 0055 added the OPTIONAL
+  //      `service -> assembly -> component` level. `containmentChain` walks it for free (it matches
+  //      on the `contains` EDGE, never on the parent's TYPE), so an assembly-anchored ceiling has
+  //      always ENFORCED correctly — the merge is an order-independent per-severity MIN that never
+  //      reads a tier label. But `tierForObjectType` is a HARDCODED rung list, and until M22.0 it
+  //      fell `assembly` through to `component`: the ceiling bound, and the Decision named the wrong
+  //      tier, breaking ADR-0016 §5's promise that a block can say which tier bound it.
+  //
+  //      THE TWO ARMS ARE DELIBERATELY SPLIT, and the contrast is the point:
+  //        * ENFORCEMENT — the assembly's maxHigh: 0 really does tighten the org's 5 and fail the
+  //          run. Reverting `case "assembly"` leaves this GREEN, because the merge never reads a
+  //          tier. A test that asserted only this would be green for the wrong reason.
+  //        * THE LABEL — the persisted contributor names tier `assembly`. Reverting `case
+  //          "assembly"` turns it into `component` and ONLY this arm goes red.
+  //
+  //      A LOOSE `service` FLOOR IS AUTHORED ALONGSIDE so the assertion also rules out the other
+  //      plausible mislabel (reporting the assembly at its parent's tier): three contributors, three
+  //      distinct labels, one of which can only come from the new switch case.
+  // -----------------------------------------------------------------------------------------
+
+  it("(a2) an ASSEMBLY-anchored ceiling is reported at tier 'assembly' — and still BINDS, which is the half that was never broken", async () => {
+    await setInstanceFloors({}); // org-and-below only: the contributor set below must be exhaustive
+
+    const org = await createTestOrg(server, "assembly-tier");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const { service, assembly, component } = await buildChain(admin, "assembly-tier", {
+      withAssembly: true
+    });
+    expect(assembly, "the fixture is meaningless without the assembly rung").toBeDefined();
+
+    await scanFloorPolicy(admin, "floor-org", org.orgId, { maxHigh: 5 });
+    // LOOSE, so it cannot be the thing that binds — it is here purely so `service` and `assembly`
+    // are two separately-observable labels on the same chain.
+    await scanFloorPolicy(admin, "floor-service", service.id, { maxMedium: 9 });
+    // THE BINDING CEILING, anchored at the assembly.
+    await scanFloorPolicy(admin, "floor-assembly", assembly!.id, { maxHigh: 0 });
+
+    const control = await scanControl(admin, org, {
+      suffix: "assembly-tier",
+      severities: ["HIGH", "HIGH"]
+    });
+    await requireScanControl(admin, "scan-gate", component.id, control.id);
+
+    const change = await admin.changes.propose({
+      name: "assembly-tier-change",
+      targets: [component.id]
+    });
+    const run = await waitForControlRun(admin, change.id, control.id, "fail");
+    const evidence = run.evidence as unknown as ScanEvidenceShape;
+
+    // ARM 1 — ENFORCEMENT IS UNCHANGED. The assembly's 0 beat the org's 5 and the two HIGHs failed.
+    // This arm passes with `case "assembly"` reverted; that is exactly what makes arm 2 meaningful.
+    expect(evidence.threshold.maxHigh).toBe(0);
+    expect(run.detail).toMatch(/exceeds/i);
+    await assertStaysExecuting(admin, change.id);
+
+    // ARM 2 — THE LABEL, read back out of the evidence the REAL gate persisted.
+    const contributors = evidence.thresholdContributors ?? [];
+    const fromAssembly = contributors.find((c) => c.source.includes("floor-assembly"));
+    expect(fromAssembly, "the assembly-anchored policy must appear as a contributor").toBeDefined();
+    // The `objectTypeId` is read straight off the containment chain and was ALWAYS right — it is
+    // asserted here to localize the defect: the graph knew what this object was; the hardcoded rung
+    // list did not.
+    expect(fromAssembly!.objectTypeId).toBe("assembly");
+    expect(fromAssembly!.tier).toBe("assembly"); // "component" before M22.0
+    expect(fromAssembly!.threshold).toEqual({ maxHigh: 0 });
+
+    // ...and the whole contributor set, so a mislabel cannot hide behind a coincidence: three tiers,
+    // all distinct. Reverting `case "assembly"` yields ["component","org","service"].
+    expect([...contributors].map((c) => c.tier).sort()).toEqual(["assembly", "org", "service"]);
   });
 
   // -----------------------------------------------------------------------------------------
