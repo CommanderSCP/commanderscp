@@ -45,6 +45,19 @@ import { changes, changeWaveTargets, decisions } from "../db/schema.js";
  * that the asymmetry is real: a delta read backwards makes ADDING a region declaration the
  * privileged act and leaves REMOVING one free — the defect, inverted, and V3 stays green throughout
  * so the suite would still look 10/11 healthy.
+ *
+ * RE-VERIFIED AFTER THE REBASE ONTO #249, which installs a containment-reach recorder in the SAME
+ * two functions. Two things now share `deleteObject`, so "my case is green" stopped being evidence
+ * that MY hook is the reason — and the two mutations below say which is which, each run alone on
+ * the rebased tree:
+ *
+ *   | mutation                                     | died                          | stayed green        |
+ *   |----------------------------------------------|-------------------------------|---------------------|
+ *   | remove THIS guard from `deleteObject`        | V3, and V3 alone              | #249's 9 CASEs      |
+ *   | neuter #249's route-3 reach capture          | #249's CASE 4, and it alone   | all 11 cases here   |
+ *
+ * Neither guard is carrying the other. The refusal is ordered FIRST in `deleteObject` so a rejected
+ * un-declaration pays no containment walk; see the call site for why that ordering is free to make.
  */
 describe("M15.6: un-declaring a region is an authority act, not a field edit", () => {
   let server: ListeningTestServer;
