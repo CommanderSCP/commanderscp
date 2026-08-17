@@ -463,11 +463,12 @@ export function federationStatusRow(
 export function outpostConfigRow(o: OutpostConfig): Record<string, string> {
   return {
     peerDomainId: o.peerDomainId,
-    // §10.5 — WHAT `peerDomainId` NAMES: a paired peer, or THIS instance's own trust domain (the
-    // co-located outpost, which has no peer row — every peer join must say "this instance" for
-    // it). `peerIsSelf` is optional on the wire (additive): an older server that does not resolve
-    // it prints `?`, never "peer" — absence is not a statement.
-    binding: o.peerIsSelf === true ? "this instance" : o.peerIsSelf === false ? "peer" : "?",
+    // §10.5 — WHAT `peerDomainId` NAMES (GLOSSARY / ADR-0021 D7 vocabulary): `hq` = THIS
+    // instance's own trust domain — the HQ outpost (formerly "co-located"), which has no peer row;
+    // `field` = a paired peer in another trust domain — a field outpost, whatever its
+    // connectivity. `peerIsSelf` is optional on the wire (additive): an older server that does not
+    // resolve it prints `?`, never "field" — absence is not a statement.
+    binding: o.peerIsSelf === true ? "hq" : o.peerIsSelf === false ? "field" : "?",
     name: o.name,
     trustTier: o.trustTier ?? "?",
     originDomainId: o.originDomainId,
@@ -4218,11 +4219,11 @@ export function buildProgram(): Command {
   outpostCmd
     .command("declare")
     .description(
-      "Declare the config object for an already-paired outpost peer — or, with --peer set to this instance's own domain id ('scp federation self'), the co-located outpost (commander-role instances only: an outpost's own record arrives replicated)"
+      "Declare the config object for an already-paired outpost peer — or, with --peer set to this instance's own domain id ('scp federation self'), the HQ outpost — the outpost in this instance's own trust domain (commander-role instances only: an outpost's own record arrives replicated)"
     )
     .requiredOption(
       "--peer <domainId>",
-      "the paired outpost peer's trust-domain id, or this instance's own domain id for the co-located outpost"
+      "the paired outpost peer's trust-domain id (a field outpost), or this instance's own domain id for the HQ outpost"
     )
     .option("--name <name>", "display name for the config object (defaults to the peer's name)")
     .option(

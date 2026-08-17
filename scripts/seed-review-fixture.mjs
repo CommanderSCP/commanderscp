@@ -937,7 +937,8 @@ async function main() {
     }
   }
 
-  // THE CO-LOCATED OUTPOST (pipeline-substrate-registry-scan.md §10.5, owner 2026-08-16): every
+  // THE HQ OUTPOST (formerly "co-located"; pipeline-substrate-registry-scan.md §10.5, owner
+  // 2026-08-16; named by owner decision 2026-08-17, ADR-0021 D7): every
   // deployment target is part of SOME outpost — the commander's own trust domain has one too, the
   // "commander and outpost are one and the same" case. Its record binds `peerDomainId` = THIS
   // instance's own domain id (read off `GET /federation/self`, never minted), which the binding
@@ -961,12 +962,12 @@ async function main() {
         if (e.status !== 404) failed.push(`outpost hq-outpost lookup: ${e.message}`);
       }
       if (existing) {
-        created.push(`/federation/outposts: outpost hq-outpost (commercial, co-located) (exists)`);
+        created.push(`/federation/outposts: outpost hq-outpost (commercial, HQ outpost) (exists)`);
       } else {
         await post(
           "/federation/outposts",
           { peerDomainId: self.domainId, name: "hq-outpost", trustTier: "commercial" },
-          "outpost hq-outpost (commercial) — the co-located outpost (peerDomainId = this instance's domain)"
+          "outpost hq-outpost (commercial) — the HQ outpost (peerDomainId = this instance's domain)"
         );
       }
     }

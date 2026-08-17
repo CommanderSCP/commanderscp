@@ -3,25 +3,27 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { OutpostConfig } from "@scp/schemas";
 
 /**
- * pipeline-substrate-registry-scan.md §10.5 — THE CO-LOCATED OUTPOST on the M16 Outposts surfaces.
+ * pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST (formerly "co-located"; GLOSSARY,
+ * ADR-0021 D7 — the file name, the `coLocated` prop and the test ids keep the older spelling; the
+ * RENDERED copy says "HQ outpost") on the M16 Outposts surfaces.
  *
  * A self-bound `outpost` record (`peerDomainId` = THIS instance's own domain) has NO
  * `federation_peers` row, so it can never be a `peers[]` entry and no peer-keyed cell can render it.
  * The census of every join from an outpost record to its peer row on the web side is:
  *   * the Outposts overview's table (peer rows) — self is NOT a row; its record is read off
  *     `FederationStatusResponse.selfOutpost` into the self-domain panel (`SelfOutpostLine`);
- *   * the per-outpost detail page (`findPeerStatus`) — for self's own id it renders the co-located
+ *   * the per-outpost detail page (`findPeerStatus`) — for self's own id it renders the HQ-outpost
  *     card + the configuration section keyed on `selfDomain`, not "No peer … is paired";
  *   * the configuration section's DeclareConfigCard (peer role check) — the `coLocated` variant.
  *
  * WHAT IS PINNED, and how each would fail
  *   * `SelfOutpostLine` states three things three ways: a record (name, tier, the marker
- *     `co-located · this instance`), `null` = "no outpost registered" + a declare link, `undefined`
+ *     `HQ outpost · this instance`), `null` = "no outpost registered" + a declare link, `undefined`
  *     = "not reported" (an older server) — dropping the undefined arm reads an old server as "none".
  *   * The tier of a self record follows the same three-state honesty as a peer row: null → unknown
  *     marker, in `unknownFields` → `· unverified`, else the tier.
  *   * `SelfDomainPanel` still forbids every peer-row column for self.
- *   * `DeclareConfigCard coLocated` renders the declare control with the co-located copy and does
+ *   * `DeclareConfigCard coLocated` renders the declare control with the HQ-outpost copy and does
  *     NOT run the peer-role refusal (there is no peer) — but ONLY for `selfRole: "commander"`, the
  *     one role the server's self-shape door accepts (`outpost-binding.ts`; measured in
  *     `outpost-config-sync.integration.test.ts`): every other role renders the refusal and no
@@ -34,7 +36,7 @@ import type { OutpostConfig } from "@scp/schemas";
  * |---|---|
  * | `SelfOutpostLine`: treat `undefined` like `null` | the "not reported" case FAILS |
  * | `SelfOutpostTier`: ignore `unknownFields` | the unverified case FAILS (`data-tier-provenance="declared"`) |
- * | `DeclareConfigCard`: drop the `!coLocated &&` guard and pass `peer={{role:"commander"}}` | the co-located case FAILS (`config-role-not-outpost`) |
+ * | `DeclareConfigCard`: drop the `!coLocated &&` guard and pass `peer={{role:"commander"}}` | the HQ-outpost case FAILS (`config-role-not-outpost`) |
  * | `DeclareConfigCard`: drop the `selfRole !== "commander"` refusal | the "any OTHER role" case FAILS (`config-declare-save` rendered) |
  * | `SelfOutpostLine`: offer the declare link on every role | the "NON-commander role" case FAILS (`self-outpost-declare-link` present) |
  * | `SelfDomainPanel`: stop threading `selfOutpost` | the registered case FAILS (`data-self-outpost="unreported"`) |
@@ -87,8 +89,8 @@ function visibleText(html: string): string {
     .trim();
 }
 
-describe("SelfOutpostLine (§10.5): the co-located record, read off selfOutpost, three states", () => {
-  it("a record: its name, its tier, and the marker `co-located · this instance` — never a peer column", () => {
+describe("SelfOutpostLine (§10.5): the HQ-outpost record, read off selfOutpost, three states", () => {
+  it("a record: its name, its tier, and the marker `HQ outpost · this instance` (never `co-located`) — never a peer column", () => {
     const html = renderToStaticMarkup(<SelfOutpostLine self={SELF} selfOutpost={selfConfig()} />);
     expect(html).toContain('data-self-outpost="registered"');
     // The router `Link` is mocked to a bare `<a>` (attributes do not survive) — the assertion is
@@ -97,7 +99,9 @@ describe("SelfOutpostLine (§10.5): the co-located record, read off selfOutpost,
     const text = visibleText(html);
     expect(text).toContain("hq-outpost");
     expect(text).toContain("commercial");
-    expect(text).toContain("co-located · this instance");
+    expect(text).toContain("HQ outpost · this instance");
+    // ADR-0021 D7: the old working name is not rendered copy any more (test ids keep it).
+    expect(text).not.toContain("co-located");
     expect(html).toContain('data-tier-provenance="declared"');
     for (const forbidden of ["Last sync", "Exported", "Transport", "Health"]) {
       expect(text).not.toContain(forbidden);
@@ -167,11 +171,12 @@ describe("SelfOutpostTier (§10.5): the same three-state tier honesty as a peer 
   });
 });
 
-describe("SelfDomainPanel (§10.5): carries the co-located record beside the domain identity", () => {
+describe("SelfDomainPanel (§10.5): carries the HQ-outpost record beside the domain identity", () => {
   it("threads selfOutpost through — a registered record renders on the panel", () => {
     const html = renderToStaticMarkup(<SelfDomainPanel self={SELF} selfOutpost={selfConfig()} />);
     expect(html).toContain('data-self-outpost="registered"');
-    expect(visibleText(html)).toContain("Co-located outpost");
+    expect(visibleText(html)).toContain("HQ outpost");
+    expect(visibleText(html)).not.toContain("Co-located outpost");
     expect(visibleText(html)).toContain("hq-outpost");
     // Still says self is not a paired peer — the record does not make it one.
     expect(visibleText(html)).toContain("not a paired peer");
@@ -199,13 +204,15 @@ describe("SelfDomainPanel (§10.5): carries the co-located record beside the dom
 });
 
 describe("SelfOutpostCard (§10.5): the detail page's card for this instance's own domain id", () => {
-  it("names the domain, its role and the co-located record — and NO peer-row status cell", () => {
+  it("names the domain, its role and the HQ-outpost record — and NO peer-row status cell", () => {
     const html = renderToStaticMarkup(<SelfOutpostCard self={SELF} selfOutpost={selfConfig()} />);
     expect(html).toContain('data-testid="self-outpost-card"');
     const text = visibleText(html);
     expect(text).toContain("hq-commander");
     expect(text).toContain("hq-outpost");
-    expect(text).toContain("co-located · this instance");
+    expect(text).toContain("HQ outpost · this instance");
+    expect(text).toContain("HQ outpost");
+    expect(text).not.toContain("co-located");
     // The status cells are PEER-ROW readings; self has no peer row, so none may appear.
     for (const forbidden of [
       "Last sync",
@@ -228,7 +235,7 @@ describe("SelfOutpostCard (§10.5): the detail page's card for this instance's o
 });
 
 describe("DeclareConfigCard coLocated (§10.5): the declare control for this instance's own domain", () => {
-  it("on a COMMANDER-role instance it renders the declare control with the co-located copy and no peer-role refusal", () => {
+  it("on a COMMANDER-role instance it renders the declare control with the HQ-outpost copy and no peer-role refusal", () => {
     const html = renderToStaticMarkup(
       <DeclareConfigCard coLocated selfRole="commander" onCreate={() => {}} />
     );
@@ -238,7 +245,8 @@ describe("DeclareConfigCard coLocated (§10.5): the declare control for this ins
     expect(html).toContain('data-testid="config-declare-save"');
     expect(html).not.toContain('data-testid="config-role-not-outpost"');
     expect(html).not.toContain('data-testid="config-self-role-not-commander"');
-    expect(visibleText(html)).toContain("co-located outpost");
+    expect(visibleText(html)).toContain("HQ outpost");
+    expect(visibleText(html)).not.toContain("co-located");
   });
 
   it("on any OTHER role (outpost / retrans / unset / not given) it renders the refusal the server measures — no declare control", () => {

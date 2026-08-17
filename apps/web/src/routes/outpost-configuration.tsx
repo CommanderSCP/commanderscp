@@ -390,7 +390,8 @@ export function declaredTierOf(selectValue: string): OutpostTrustTier | undefine
 /** No config object exists for this peer yet. `POST /federation/outposts` binds only to a peer whose
  *  role is `outpost` — a `retrans` peer is a MEASURED 400 (`outpost-object.integration.test.ts`), so
  *  the create control is not offered for one rather than offered and refused — OR (§10.5) to THIS
- *  instance's own trust domain, the CO-LOCATED outpost: `coLocated` renders that case, for which
+ *  instance's own trust domain, the HQ outpost (formerly "co-located" — GLOSSARY, ADR-0021 D7;
+ *  the `coLocated` prop and test ids keep the older spelling): `coLocated` renders that case, for which
  *  there is no peer row; the role checked is THIS instance's own (`selfRole`, `federation_self.role`),
  *  which must be `commander` — an outpost's own record is commander-declared and arrives replicated,
  *  and the server 400s the self shape on any other role (MEASURED —
@@ -403,7 +404,7 @@ export function DeclareConfigCard({
   isCreating = false,
   onCreate
 }: {
-  /** The peer this record would be about — omitted for the co-located outpost, which has none. */
+  /** The peer this record would be about — omitted for the HQ outpost, which has none. */
   peer?: Pick<FederationPeer, "role">;
   /** §10.5 — declaring the record for THIS instance's own domain (`peerDomainId` = self). */
   coLocated?: boolean;
@@ -454,7 +455,7 @@ export function DeclareConfigCard({
       {coLocated ? (
         <p className="text-sm text-slate-600" data-testid="config-declare-co-located">
           This instance&apos;s own trust domain has no outpost record yet. Every deployment target
-          is part of some outpost — declaring the <strong>co-located outpost</strong> registers this
+          is part of some outpost — declaring the <strong>HQ outpost</strong> registers this
           instance&apos;s domain as one, so the targets it authors read that outpost on their
           pipeline tiles instead of &ldquo;no outpost registered&rdquo;. It is an ordinary
           commander-origin graph object; at an outpost the same record arrives replicated from this
@@ -922,7 +923,7 @@ function isNotFound(err: unknown): boolean {
 /**
  * The wired-up Configuration card — for a PAIRED PEER (`status`, the peer-status row) or, since
  * pipeline-substrate-registry-scan.md §10.5, for THIS INSTANCE'S OWN DOMAIN (`selfDomain`): the
- * CO-LOCATED outpost, whose record binds `peerDomainId` = this instance's domain id and has NO peer
+ * HQ outpost, whose record binds `peerDomainId` = this instance's domain id and has NO peer
  * row. Exactly one of the two is given. The config half (declare / tier / reconcile) is identical
  * for both — it keys on the domain id alone; the poke-mode card is a PEER-ROW flag and is rendered
  * only for a peer (there is no peer row to flag for self, and an instance never pokes itself).
@@ -933,7 +934,7 @@ export function OutpostConfigurationSection({
 }: {
   status?: FederationPeerStatus;
   /** §10.5 — this instance's own domain (`GET /federation/self` / status `self`), for the
-   *  co-located outpost. `role` is `federation_self.role`: the declare card offers the write only
+   *  HQ outpost. `role` is `federation_self.role`: the declare card offers the write only
    *  for `commander`, the one role the server's self-shape door accepts. */
   selfDomain?: { domainId: string; name: string; role: FederationRole };
 }): React.JSX.Element {
@@ -1055,7 +1056,7 @@ export function OutpostConfigurationSection({
             </>
           ) : (
             <>
-              Commander-declared configuration for the <strong>co-located outpost</strong> — this
+              Commander-declared configuration for the <strong>HQ outpost</strong> — this
               instance&apos;s own trust domain, registered as an outpost. It is an ordinary graph
               object; there is no peer row behind it, so there is no transport, sync or poke-mode to
               configure here.

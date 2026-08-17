@@ -293,11 +293,12 @@ type TargetOutpost = ComponentPipelineStage["outpost"];
  *                               their writes are the commander's; plain text anywhere else. The tier is
  *                               appended only when the server read one (`null` = none declared, not
  *                               "commercial"). Since §10.5 (object-first resolution) this is ALSO what a
- *                               self-origin target reads once the CO-LOCATED outpost is registered —
+ *                               self-origin target reads once the HQ outpost (formerly "co-located";
+ *                               GLOSSARY, ADR-0021 D7) is registered —
  *                               `peerDomainId` is then this instance's own domain, and the link opens
  *                               that record on the Outposts page (it renders the self-bound record).
  *   - `self`                  → `this instance's domain — no outpost registered` — the STATED ABSENCE
- *                               of a co-located outpost (quiet; on the COMMANDER the title says how
+ *                               of an HQ outpost (quiet; on the COMMANDER the title says how
  *                               to declare one: Federation › Outposts, `peerDomainId` = this
  *                               instance's domain; on any other `instanceRole` it says the record is
  *                               commander-declared and arrives replicated — the server 400s the self
@@ -362,7 +363,7 @@ function TargetOutpostLine({
               // `outpost-config-sync.integration.test.ts`), so pointing an outpost operator at
               // Federation › Outposts would guide them into a 400.
               (instanceRole === "commander"
-                ? `An outpost co-located with this instance can be declared under Federation › Outposts (peerDomainId = this instance's domain).`
+                ? `The HQ outpost (the outpost in this instance's own trust domain) can be declared under Federation › Outposts (peerDomainId = this instance's domain).`
                 : `This instance's own outpost record is commander-declared and arrives replicated from the commander — declare it there.`)
             }
           >

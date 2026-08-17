@@ -616,7 +616,7 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
  * `environment` property that derivation needs — so there is nothing honest to print yet.
  */
 /**
- * THE CO-LOCATED OUTPOST'S TIER (§10.5) — the same three states `TrustTierCell` renders for a peer
+ * THE HQ OUTPOST'S TIER (§10.5; formerly "co-located" — GLOSSARY, ADR-0021 D7) — the same three states `TrustTierCell` renders for a peer
  * row, read off the OutpostConfig itself (this record has no peer-status row): no tier → the unknown
  * marker; a tier the server ALSO lists in `unknownFields` (an unverified hand-filled shadow) →
  * `<tier> · unverified`; else the plain badge. Never blank, never defaulted.
@@ -628,7 +628,7 @@ export function SelfOutpostTier({ config }: { config: OutpostConfig }): React.JS
       <span data-testid="self-outpost-tier" data-trust-tier="unknown" data-tier-provenance="none">
         <UnknownHere
           label="no tier asserted"
-          title="No trust tier has been asserted for the co-located outpost. The tier is entered by an operator and has no other source — it is not defaulted."
+          title="No trust tier has been asserted for the HQ outpost (the outpost in this instance's own trust domain). The tier is entered by an operator and has no other source — it is not defaulted."
         />
       </span>
     );
@@ -655,13 +655,13 @@ export function SelfOutpostTier({ config }: { config: OutpostConfig }): React.JS
 }
 
 /**
- * THE CO-LOCATED OUTPOST LINE inside the self-domain panel (pipeline-substrate-registry-scan.md
+ * THE HQ OUTPOST LINE inside the self-domain panel (pipeline-substrate-registry-scan.md
  * §10.5): the `outpost` record whose `peerDomainId` is THIS instance's own domain, read off
  * `FederationStatusResponse.selfOutpost` — the ONE place a self-bound record can be read, since it
  * has no peer row and so no `peers[]` entry. Three states, each stated:
  *   * a record  → its name (linked to `/federation/outposts/$peerDomainId` with self's own id — that
- *                 page renders the co-located record), its tier, and the marker
- *                 `co-located · this instance`;
+ *                 page renders the HQ record), its tier, and the marker
+ *                 `HQ outpost · this instance`;
  *   * `null`    → `no outpost registered` — a stated absence, with the way to declare one (quiet)
  *                 ONLY when `self.role` is `commander` (the one role the server's self-shape door
  *                 accepts); on any other role it reads `declared at the commander` with no link;
@@ -680,7 +680,7 @@ export function SelfOutpostLine({
         data-testid="self-outpost"
         data-self-outpost="unreported"
         className="text-xs text-slate-500"
-        title="This server did not report whether this domain has a co-located outpost record; it is not a statement that there is none."
+        title="This server did not report whether this domain has an HQ outpost record (the outpost in this instance's own trust domain); it is not a statement that there is none."
       >
         not reported
       </span>
@@ -697,7 +697,7 @@ export function SelfOutpostLine({
         data-testid="self-outpost"
         data-self-outpost="none"
         className="text-xs text-slate-500"
-        title="No outpost record names this instance's own trust domain. Every deployment target is part of some outpost; declare the co-located one so this domain's own targets read it on their pipeline tiles."
+        title="No outpost record names this instance's own trust domain. Every deployment target is part of some outpost; declare the HQ outpost (the outpost in this instance's own trust domain) so this domain's own targets read it on their pipeline tiles."
       >
         no outpost registered —{" "}
         <Link
@@ -740,10 +740,10 @@ export function SelfOutpostLine({
       <Badge
         variant="info"
         icon={OutpostFort}
-        title="This record's peerDomainId is this instance's own trust domain — the outpost co-located with this instance. It has no peer row: nothing syncs to or from it."
+        title="This record's peerDomainId is this instance's own trust domain — the HQ outpost (the outpost in this instance's own trust domain, not a field outpost in another one). It has no peer row: nothing syncs to or from it."
         data-testid="self-outpost-marker"
       >
-        co-located · this instance
+        HQ outpost · this instance
       </Badge>
     </span>
   );
@@ -801,7 +801,7 @@ export function SelfDomainPanel({
             },
             { label: "Domain id", value: self.domainId, mono: true },
             {
-              label: "Co-located outpost",
+              label: "HQ outpost",
               value: <SelfOutpostLine self={self} selfOutpost={selfOutpost} />
             }
           ]}
@@ -825,7 +825,7 @@ export function OutpostsPage(): React.JSX.Element {
     <div className="flex flex-col gap-6">
       <PageHeader
         title="Outposts"
-        description="Every outpost and retrans peer this domain syncs with."
+        description="Every field outpost (an outpost in another trust domain) and retrans peer this domain syncs with."
         meta={<ObservationScopeNote />}
       />
 

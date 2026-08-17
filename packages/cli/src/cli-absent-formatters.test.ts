@@ -389,12 +389,12 @@ describe("outpostConfigRow: an omitted `unknownFields` must not kill six command
     expect(outpostConfigRow(baseOutpostConfig({ unknownFields: [] })).notObservable).toBe("-");
   });
 
-  it("§10.5 `binding`: `this instance` for a self-bound (co-located) record, `peer` for a peer-bound one, `?` when an older server does not say", () => {
-    expect(outpostConfigRow(baseOutpostConfig({ peerIsSelf: true })).binding).toBe("this instance");
-    expect(outpostConfigRow(baseOutpostConfig({ peerIsSelf: false })).binding).toBe("peer");
+  it("§10.5 `binding`: `hq` for a self-bound record (the HQ outpost, formerly 'co-located'), `field` for a peer-bound one (a field outpost), `?` when an older server does not say", () => {
+    expect(outpostConfigRow(baseOutpostConfig({ peerIsSelf: true })).binding).toBe("hq");
+    expect(outpostConfigRow(baseOutpostConfig({ peerIsSelf: false })).binding).toBe("field");
     const config: Partial<OutpostConfig> = baseOutpostConfig();
     delete config.peerIsSelf;
-    // Absence is NOT "peer": an older server that never resolved the flag has made no statement.
+    // Absence is NOT "field": an older server that never resolved the flag has made no statement.
     expect(outpostConfigRow(config as OutpostConfig).binding).toBe("?");
   });
 });

@@ -79,17 +79,26 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
                 </span>
               )
             },
-            { label: "Last sync in (from this outpost)", value: <InboundSyncCell status={status} /> },
+            {
+              label: "Last sync in (from this outpost)",
+              value: <InboundSyncCell status={status} />
+            },
             { label: "Exported by this side", value: <PendingExportCell status={status} /> },
             {
               label: "Applied at outpost",
               value: (
-                <SourcelessCell status={status} field="appliedAtPeer" title={APPLIED_AT_PEER_TITLE} />
+                <SourcelessCell
+                  status={status}
+                  field="appliedAtPeer"
+                  title={APPLIED_AT_PEER_TITLE}
+                />
               )
             },
             {
               label: "Health rollup",
-              value: <SourcelessCell status={status} field="healthRollup" title={HEALTH_ROLLUP_TITLE} />
+              value: (
+                <SourcelessCell status={status} field="healthRollup" title={HEALTH_ROLLUP_TITLE} />
+              )
             },
             {
               label: "Last poke received",
@@ -126,7 +135,8 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
 }
 
 /**
- * THE CO-LOCATED OUTPOST'S own card (pipeline-substrate-registry-scan.md §10.5) — rendered when the
+ * THE HQ OUTPOST'S own card (pipeline-substrate-registry-scan.md §10.5; formerly "co-located" —
+ * GLOSSARY, ADR-0021 D7) — rendered when the
  * route's id is THIS instance's own trust domain. There is no peer row behind it, so NONE of the
  * status cells apply (nothing syncs to or from self, no transport, no poke): the card states what
  * `federation_self` and `FederationStatusResponse.selfOutpost` actually know and nothing more — the
@@ -144,10 +154,10 @@ export function SelfOutpostCard({
       <CardHeader>
         <CardTitle>This instance&apos;s own domain</CardTitle>
         <CardDescription>
-          The outpost <strong>co-located with this instance</strong>: its record binds this
-          instance&apos;s own trust domain, not a paired peer. It never syncs with, exports to, or
-          pokes itself, so there is no status, transport or peer settings to show for it — only its
-          declared configuration below.
+          The <strong>HQ outpost</strong> — the outpost in this instance&apos;s own trust domain:
+          its record binds that domain, not a paired peer (a field outpost). It never syncs with,
+          exports to, or pokes itself, so there is no status, transport or peer settings to show for
+          it — only its declared configuration below.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -161,7 +171,7 @@ export function SelfOutpostCard({
               value: <span data-testid="self-domain-role">{roleBadge(self.role)}</span>
             },
             {
-              label: "Co-located outpost",
+              label: "HQ outpost",
               value: <SelfOutpostLine self={self} selfOutpost={selfOutpost} />
             }
           ]}
@@ -180,7 +190,7 @@ export function OutpostDetailPage(): React.JSX.Element {
   });
 
   const status = findPeerStatus(statusQuery.data?.peers, peerDomainId);
-  // §10.5 — the id names THIS instance's own domain: the co-located outpost. Decided from the
+  // §10.5 — the id names THIS instance's own domain: the HQ outpost. Decided from the
   // server's own `self`, never by "no peer matched" (an unpaired foreign id is still "not paired").
   const self = statusQuery.data?.self ?? null;
   const isSelf = self !== null && self.domainId === peerDomainId;
@@ -197,7 +207,7 @@ export function OutpostDetailPage(): React.JSX.Element {
             </span>
             {isSelf && (
               <Badge variant="info" icon={OutpostFort} data-testid="outpost-detail-co-located">
-                co-located · this instance
+                HQ outpost · this instance
               </Badge>
             )}
           </span>

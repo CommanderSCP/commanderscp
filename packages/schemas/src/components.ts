@@ -51,11 +51,12 @@ export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSche
 
 /**
  * WHICH OUTPOST A TARGET IS PART OF (pipeline-substrate-registry-scan.md §10.2 — the owner's
- * TRUST-DOMAIN RULE; §10.5 — every target is within an outpost, the co-located outpost), resolved by
+ * TRUST-DOMAIN RULE; §10.5 — every target is within an outpost, the HQ outpost (formerly 'co-located'; GLOSSARY,
+ * ADR-0021 D7)), resolved by
  * the server and READ by the client, never inferred.
  *
  * The rule: an `outpost` object carries `properties.peerDomainId` — a paired peer's federation
- * identity, i.e. its trust domain, OR (§10.5) this instance's OWN trust domain, the co-located
+ * identity, i.e. its trust domain, OR (§10.5) this instance's OWN trust domain, the HQ
  * outpost (`outpost-binding.ts` refuses anything else); every object carries `originDomainId` — the
  * trust domain that authored it; ADR-0017 §1 puts one outpost deployment per trust domain. So a
  * target's outpost is THE `outpost` OBJECT WHOSE `peerDomainId` EQUALS THE TARGET'S `originDomainId`.
@@ -68,7 +69,7 @@ export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSche
  * target's origin domain wins WHETHER OR NOT that domain is self; then `self` (only when NO object
  * names this instance's domain); then the peer lookup. So on an outpost site its own targets read
  * `outpost <its own name> · <tier>` off its replica of its own config, and on a commander with a
- * co-located outpost registered its own targets read that outpost — `self` is the stated absence
+ * HQ outpost registered its own targets read that outpost — `self` is the stated absence
  * of one.
  *   - `outpost`               — an `outpost` object names the target's origin domain (a paired peer's,
  *                               or this instance's own — §10.5). `id`/`name` are that object's;
@@ -76,7 +77,7 @@ export type ComponentPipelineDomain = z.infer<typeof ComponentPipelineDomainSche
  *                               one this build does not know — `outposts-repo.ts`'s `readTrustTier`,
  *                               never defaulted); `peerDomainId` the domain it names (the link target
  *                               on the commander site, `/federation/outposts/$peerDomainId`, which
- *                               renders the co-located record too); `peerRole` the peer row's role,
+ *                               renders the HQ record too); `peerRole` the peer row's role,
  *                               or this instance's `federation_self.role` when the domain is self.
  *   - `self`                  — the target's origin IS this instance (`federation_self`) and NO
  *                               `outpost` object names this instance's domain. `name` is this

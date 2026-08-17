@@ -1334,7 +1334,7 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     expect(line).not.toContain("commercial");
   });
 
-  it("`self`: the STATED ABSENCE of a co-located outpost — `this instance's domain — no outpost registered` (§10.5), with the declare hint in the title on the COMMANDER, never the target's name", () => {
+  it("`self`: the STATED ABSENCE of an HQ outpost — `this instance's domain — no outpost registered` (§10.5), with the declare hint in the title on the COMMANDER (naming the HQ outpost, ADR-0021 D7), never the target's name", () => {
     const selfStage = stage({
       deploymentTarget: OUTPOST_TARGET,
       outpost: {
@@ -1358,6 +1358,8 @@ describe("which OUTPOST a place is part of — the server's stated resolution, n
     expect(outpostLine(html), "the fix lives in the title").toContain(
       "peerDomainId = this instance"
     );
+    expect(outpostLine(html), "the hint uses the D7 vocabulary").toContain("HQ outpost");
+    expect(outpostLine(html)).not.toContain("co-located");
     expect(line).not.toContain("field-cluster");
 
     // On an OUTPOST site (or an unknown role) the SAME absence is stated, but the title does NOT
