@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { DependencyEcosystem } from "./dependencies.js";
 import {
   ScanDbSourceSchema,
   ScanDbStalenessClassSchema,
@@ -677,12 +678,120 @@ export const AdmittedScanExclusionClauseSchema = z.object({
 });
 export type AdmittedScanExclusionClause = z.infer<typeof AdmittedScanExclusionClauseSchema>;
 
+// ===========================================================================================
+// M22.4 (ADR-0033 D1) — THE VENDOR RULE'S FACTS.
+//
+// The owner's headline rule: a vendor dependency is accepted only if we are on the LATEST VERSION
+// OF A MAJOR VERSION. That maps exactly onto `dependency_lines`' identity
+// `(org_id, ecosystem, coordinate, major)` — being "at the head" of the line a declaration sits on.
+//
+// WHY THE FACTS TRAVEL AS DATA RATHER THAN BEING LOOKED UP. The exclusion set is resolved at GATE
+// time, before any scan has been read, and it is then handed to a PLUGIN that has no database and
+// no lookup ability. So every fact the rule needs is resolved server-side against the ADR-0032
+// inventory and serialized here; the matcher below is pure and reaches nothing.
+//
+// THREE FINDING CLASSES, TWO REACHABLE (ADR-0033 "costs/honesty"):
+//   - `os-pkgs`   — attributable to the BASE IMAGE line. `dockerfile.ts` parses every real `FROM`
+//                   into a declared `oci` dependency, so "we are on the latest base image" is a
+//                   fact about that line and it earns every OS-package finding a pass.
+//   - `lang-pkgs` with a DECLARED line — attributable to its own line, via {@link packageKeys}.
+//   - `lang-pkgs` TRANSITIVE — NO line, and therefore NO pass. Defensible rather than a gap: a
+//                   transitive is fixed by moving the DIRECT parent that pulls it, and the direct
+//                   parent has a line of its own.
+// ===========================================================================================
+
+/**
+ * The `(ecosystem, coordinate)` identity of one at-head line, canonicalised ONCE, here, where both
+ * sides of the join are visible.
+ *
+ * `ScanFindingSchema.purl` and `dependency_lines.coordinate` are BOTH stored deliberately
+ * un-normalised, each in its own producer's vocabulary, and both of those decisions say the same
+ * thing: canonicalisation belongs at the join, not smeared across the two writers. This is that
+ * join, and it is a single exported function precisely so the server (building the fact) and the
+ * matcher (consuming it) cannot drift into two spellings of one package.
+ *
+ * ONLY `python` IS FOLDED, and only by its own published rule (PEP 503: lower-case, and runs of
+ * `-`, `_` and `.` collapsed to a single `-`) — Trivy reports a distribution's metadata name while a
+ * manifest spells the requirement, and `Flask` vs `flask` vs `zope.interface` vs `zope-interface`
+ * are the SAME distribution by specification. Nothing else is case-folded: npm names are lower-case
+ * by registry rule, Maven coordinates are case-sensitive, and Go module paths are case-sensitive by
+ * language specification (`github.com/Masterminds/semver`). Folding those would be inventing an
+ * equality the ecosystem does not grant — and for a LOOSENING an invented equality is a false
+ * positive, which is the one direction this feature may not fail in.
+ */
+export function vendorLatestPackageKey(ecosystem: DependencyEcosystem, coordinate: string): string {
+  const canonical =
+    ecosystem === "python" ? coordinate.toLowerCase().replace(/[-_.]+/g, "-") : coordinate;
+  return `${ecosystem}|${canonical}`;
+}
+
+/** purl `type` → this project's `DependencyEcosystem`. A purl whose type is not one of the four
+ *  LANGUAGE ecosystems (an `apk`/`deb`/`rpm` OS package, an unknown type, a malformed string) yields
+ *  `undefined`, and a finding with no ecosystem can match no package key — the fail-closed
+ *  direction. `oci` is deliberately ABSENT from this map: an image is never a `lang-pkgs` finding,
+ *  and the base image is reached through {@link ScanVendorLatestFactsSchema.baseImageAtLatest}
+ *  instead. */
+const PURL_TYPE_TO_ECOSYSTEM: Readonly<Record<string, DependencyEcosystem>> = {
+  npm: "npm",
+  golang: "go",
+  maven: "maven",
+  pypi: "python"
+};
+
+/** Read the ecosystem out of a purl's `type` segment — `pkg:npm/lodash@4.17.21` → `npm`. Total: any
+ *  string that is not a purl of a known LANGUAGE type yields `undefined`. */
+export function purlEcosystem(purl: string | undefined): DependencyEcosystem | undefined {
+  if (!purl) return undefined;
+  const match = /^pkg:([^/@?#]+)\//.exec(purl);
+  const type = match?.[1]?.toLowerCase();
+  if (type === undefined) return undefined;
+  return PURL_TYPE_TO_ECOSYSTEM[type];
+}
+
+/**
+ * WHAT THE SERVER RESOLVED ABOUT THIS TARGET'S DEPENDENCY INVENTORY — the only input the
+ * `vendor_latest` predicate has.
+ *
+ * ABSENT MEANS NO VENDOR-PASS, never "everything is current". That is the same reading
+ * `dependency_lines.latest_version`'s own NULL carries ("not yet observed" is never "no newer
+ * version exists") and the same reading `scan_requirement_floors` established for its nullable
+ * ceilings. Every one of D1's fail-closed cases — a NULL `latest_version`, a stale
+ * `latest_observed_at`, no inventory row at all, an `unresolved`/`unpinned` `FROM`, an outpost where
+ * `dependencyVersionPollRoleGuard` means the head was never observed locally, and a component with
+ * no dependency automation at all (D7) — arrives here as a MISSING fact rather than as a special
+ * case in the matcher.
+ */
+export const ScanVendorLatestFactsSchema = z.object({
+  /**
+   * TRUE iff this target declares at least one `oci` base-image line AND every one of them is at
+   * its observed head BY DIGEST.
+   *
+   * THE COMPARISON IS THE DIGEST, NEVER THE TAG (ADR-0033: "a tag is not an identity"). An OCI index
+   * reports tags, and a tag is mutable — `3.19` names a different set of bytes this week than last —
+   * so agreeing on a tag is not evidence of being on the same image. `latest_digest` is recorded in
+   * the SAME observation as `latest_version` for exactly this reason.
+   *
+   * EVERY declared line, not any: a multi-stage build declares several, an `os-pkgs` finding names
+   * no image, and there is no material to attribute it to one of them. Requiring all of them is the
+   * only reading that cannot pass a finding that came from a stale base.
+   */
+  baseImageAtLatest: z.boolean(),
+  /** {@link vendorLatestPackageKey} for every DECLARED LANGUAGE line this target is at the head of.
+   *  Sorted, so two identical resolutions serialize identically — the M22.0 write-suppression rule
+   *  reaches this array through the gate Decision's `inputContext`. */
+  packageKeys: z.array(z.string())
+});
+export type ScanVendorLatestFacts = z.infer<typeof ScanVendorLatestFactsSchema>;
+
 /** The gate-resolved exclusion set, threaded to `scan-result-control` on the control-run CONTEXT
  *  (`context.scanExclusions`) — the SAME conditional-context mechanism that already carries
  *  `artifactDigest` and `scanThreshold`. A plugin has no database and no lookup ability, so every
  *  exclusion FACT is resolved server-side and serialized here. */
 export const EffectiveScanExclusionsSchema = z.object({
-  clauses: z.array(AdmittedScanExclusionClauseSchema)
+  clauses: z.array(AdmittedScanExclusionClauseSchema),
+  /** M22.4 — resolved ONLY when a `vendor_latest` clause actually survived the AND, so a deployment
+   *  that authored no such clause pays no inventory query and writes no extra key. */
+  vendorLatest: ScanVendorLatestFactsSchema.optional()
 });
 export type EffectiveScanExclusions = z.infer<typeof EffectiveScanExclusionsSchema>;
 
@@ -755,28 +864,86 @@ export type ScanExclusionEvidence = z.infer<typeof ScanExclusionEvidenceSchema>;
  * here, forcing a decision, rather than silently inheriting either arm.
  */
 function scanExclusionClassPredicate(
-  cls: ScanExclusionClass
+  cls: ScanExclusionClass,
+  facts: ScanExclusionFacts | undefined
 ): ((finding: ScanFinding) => boolean) | undefined {
   switch (cls) {
     case "no_fix_available":
-      // The ONLY class resolvable from a retained finding alone. `fixedVersion` is absent exactly
-      // when Trivy reported no `FixedVersion` — read as the signal, never inferred from anything
-      // else (an EMPTY string is already normalized to absent by `parseTrivyFindings`).
+      // M22.3 — PURE DATA OVER THE RETAINED FIELDS, no join of any kind. `fixedVersion` is absent
+      // exactly when Trivy reported no `FixedVersion` — read as the signal, never inferred from
+      // anything else (an EMPTY string is already normalized to absent by `parseTrivyFindings`, so
+      // `""` and a missing key are one state here rather than two).
+      //
+      // NOTE WHAT THIS DELIBERATELY DOES NOT DO: it does not ask whether a fix exists ANYWHERE, only
+      // whether THE SCANNER SAID SO for this entry. A finding whose `FixedVersion` the scanner could
+      // not populate (an old vulnerability DB, a package ecosystem Trivy tracks without fix data) is
+      // excluded by a clause of this class, and that is the accepted meaning of the class: "the
+      // scanner offered us no remediation". Inferring the opposite from a second source would be a
+      // provenance label named after the branch that matched.
       return (finding) => finding.fixedVersion === undefined;
     case "vendor_latest":
+      return vendorLatestPredicate(facts?.vendorLatest);
     case "declared_fact":
     case "approved_override":
       return undefined;
   }
 }
 
+/**
+ * M22.4 (D1) — "we are on the latest version of this dependency's major line", read off the
+ * SERVER-RESOLVED facts and the finding's own `Results[].Class`.
+ *
+ * `undefined` when NO facts were resolved: a `vendor_latest` clause with no inventory behind it
+ * excludes nothing at all, which is the whole of D7's "the gate is decoupled from automation, the
+ * data is not" — a component with no dependency automation has no ingested manifests and no polled
+ * head, so it gets no vendor-pass and upgrades manually.
+ */
+function vendorLatestPredicate(
+  facts: ScanVendorLatestFacts | undefined
+): ((finding: ScanFinding) => boolean) | undefined {
+  if (!facts) return undefined;
+  const keys = new Set(facts.packageKeys);
+  return (finding) => {
+    // OS PACKAGES → THE BASE IMAGE LINE. An `apk`/`deb`/`rpm` package is not declared in any
+    // manifest; what the component declares is the `FROM` it came in on, so the base image line's
+    // head is the fact that speaks for it.
+    if (finding.class === "os-pkgs") return facts.baseImageAtLatest;
+    if (finding.class !== "lang-pkgs") {
+      // An UNRECOGNISED or ABSENT `Class` attributes to nothing. Trivy emits other classes
+      // (`license`, `secret`, `config`) and a finding with no class at all is retained by
+      // `parseTrivyFindings` on its severity alone. None of them names a dependency line, and
+      // guessing one is the inversion this feature may not make.
+      return false;
+    }
+    // A LANGUAGE PACKAGE → ITS OWN DECLARED LINE. `pkgName` is the join key rather than the purl's
+    // own name segment because Trivy spells a package the way its ecosystem does — `@babel/core`,
+    // `com.acme:lib`, `github.com/acme/lib` — which is exactly how the manifest parsers spell a
+    // coordinate. The purl is read for the ECOSYSTEM only, and a finding with no purl (or a purl of
+    // an OS type) yields no ecosystem and therefore no match: the alternative, matching a bare name
+    // across all four ecosystems, would let a transitive npm `requests` be excused by a declared
+    // Python `requests` at head.
+    const ecosystem = purlEcosystem(finding.purl);
+    if (ecosystem === undefined || finding.pkgName === undefined) return false;
+    // A TRANSITIVE dependency has no declared line, so its key is simply not in the set and it does
+    // not qualify. That is the mechanism, not an omission (ADR-0033: a transitive is fixed by moving
+    // the direct parent that pulls it).
+    return keys.has(vendorLatestPackageKey(ecosystem, finding.pkgName));
+  };
+}
+
+/** The server-resolved facts a class predicate may consult. Structurally the exclusion set minus its
+ *  clauses, so `applyScanExclusions` can hand the whole resolved object down without the pure
+ *  matcher needing to know how it was assembled. */
+export type ScanExclusionFacts = Pick<EffectiveScanExclusions, "vendorLatest">;
+
 /** Whether a clause reaches a finding: the class's own predicate AND every present matcher. A
  *  finding lacking a field the clause names never matches — `undefined !== "openssl"`. */
 export function scanExclusionClauseMatches(
   clause: ScanExclusionClause,
-  finding: ScanFinding
+  finding: ScanFinding,
+  facts?: ScanExclusionFacts
 ): boolean {
-  const predicate = scanExclusionClassPredicate(clause.class);
+  const predicate = scanExclusionClassPredicate(clause.class, facts);
   if (!predicate) return false; // class not yet resolvable — NO exclusion
   if (!predicate(finding)) return false;
   if (clause.vulnerabilityId !== undefined && finding.vulnerabilityId !== clause.vulnerabilityId)
@@ -845,7 +1012,7 @@ export function applyScanExclusions(
   const excludedOrdinals: number[] = [];
   const applied: AppliedScanExclusion[] = [];
   for (const [ordinal, finding] of findings.entries()) {
-    const hit = clauses.find((c) => scanExclusionClauseMatches(c.clause, finding));
+    const hit = clauses.find((c) => scanExclusionClauseMatches(c.clause, finding, effective));
     if (!hit) {
       survivors.push(finding);
       continue;

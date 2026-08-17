@@ -10,9 +10,14 @@ import {
   type ScanExclusionClass,
   type ScanExclusionClause,
   type ScanRequirementTier,
-  type ScanThresholdContribution
+  type ScanThresholdContribution,
+  type ScanVendorLatestFacts
 } from "@scp/schemas";
 import { containmentChain } from "../graph/containment.js";
+import {
+  intersectVendorLatestFacts,
+  resolveVendorLatestFactsForTarget
+} from "./scan-vendor-latest.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import type { MatchedPolicy } from "./policy-model.js";
 import type { FiredPolicy } from "./evaluate.js";
@@ -586,6 +591,10 @@ export interface ResolveScanExclusionsInput {
   /** The condition-resolved firing set — REQUIRED for the same reason the ceiling's is: no call site
    *  may silently fall back to "every match contributes". */
   firedPolicies: FiredPolicy[];
+  /** M22.4 — the instant the vendor rule's freshness bound is measured against. Injectable for
+   *  tests ONLY; every production caller omits it and gets `new Date()`. It never enters a Decision
+   *  or evidence — a timestamp in either would defeat write suppression (M22.0). */
+  now?: Date;
 }
 
 /**
@@ -650,5 +659,45 @@ export async function resolveEffectiveScanExclusionsForTargets(
     });
   }
 
-  return resolveEffectiveScanExclusions(targets);
+  const resolved = resolveEffectiveScanExclusions(targets);
+  return attachVendorLatestFacts(tx, input.orgId, targets, resolved, input.now);
+}
+
+/**
+ * M22.4 (owner decision D1) — resolve the VENDOR FACTS, but only if a `vendor_latest` clause
+ * actually survived the AND.
+ *
+ * TWO PHASES ON PURPOSE, and the order is the point. Phase one is the admission algebra, which is
+ * pure and cheap; phase two is an inventory read per target, which is neither. Resolving the facts
+ * unconditionally would put two joins per target on EVERY gate evaluation in the estate — including
+ * the overwhelming majority that have authored no exclusion at all, for whom M22.2's promise is that
+ * behaviour is byte-identical to pre-M22. So the facts are resolved only once a clause of that class
+ * has been admitted by every tier above it.
+ *
+ * The facts are then INTERSECTED across targets, exactly like the clauses and for exactly the same
+ * reason (ADR-0033 §3): a fact is as much a loosening as a clause is, and one target's currency must
+ * never excuse a sibling's findings.
+ */
+async function attachVendorLatestFacts(
+  tx: TenantTx,
+  orgId: string,
+  targets: ScanExclusionTargetInput[],
+  resolved: EffectiveScanExclusions | undefined,
+  now: Date | undefined
+): Promise<EffectiveScanExclusions | undefined> {
+  if (!resolved) return undefined;
+  if (!resolved.clauses.some((c) => c.clause.class === "vendor_latest")) return resolved;
+  const perTarget: ScanVendorLatestFacts[] = [];
+  for (const target of targets) {
+    perTarget.push(
+      await resolveVendorLatestFactsForTarget(tx, orgId, target.targetObjectId, {
+        ...(now !== undefined ? { now } : {})
+      })
+    );
+  }
+  const vendorLatest = intersectVendorLatestFacts(perTarget);
+  // `undefined` only when there were no targets, which cannot be true here (the resolver returns
+  // `undefined` for an empty target set and we returned above). Carried anyway rather than asserted
+  // away: an absent fact must remain "no vendor-pass", never a thrown gate.
+  return vendorLatest ? { ...resolved, vendorLatest } : resolved;
 }

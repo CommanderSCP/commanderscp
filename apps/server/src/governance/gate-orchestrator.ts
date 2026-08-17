@@ -438,7 +438,21 @@ function scanExclusionsForDecision(
         ...(c.clause.findingClass ? { findingClass: c.clause.findingClass } : {}),
         ...(c.clause.reason ? { reason: c.clause.reason } : {}),
         admittedBy: c.admittedBy.map((a) => ({ tier: a.tier, source: a.source }))
-      }))
+      })),
+      // M22.4 — the FACTS the vendor rule was resolved against, not just the clause that invoked it.
+      // "Passed because the component is on the latest of that major line" is only auditable if the
+      // Decision says WHICH lines were at their head when the gate looked; a clause alone would say
+      // that a rule was in force and nothing about what it found. Present only when a
+      // `vendor_latest` clause survived, and already content-sorted by the resolver — no timestamp
+      // and no row id, so two identical evaluations still compare equal.
+      ...(resolved.vendorLatest
+        ? {
+            vendorLatest: {
+              baseImageAtLatest: resolved.vendorLatest.baseImageAtLatest,
+              packageKeys: resolved.vendorLatest.packageKeys
+            }
+          }
+        : {})
     }
   };
 }
