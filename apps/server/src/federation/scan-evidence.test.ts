@@ -102,8 +102,9 @@ describe("producer admission — a scan outcome is WHAT PRODUCED IT, never the s
     // Nothing but the step itself may wear the commander's identity, and the step deposits with no
     // binding — so a module here means something else wrote it.
     expect(
-      covers([run({ controlObjectId: MANAGED_SCAN_CONTROL_OBJECT_ID, pluginModule: "webhook-control" })])
-        .covered
+      covers([
+        run({ controlObjectId: MANAGED_SCAN_CONTROL_OBJECT_ID, pluginModule: "webhook-control" })
+      ]).covered
     ).toBe(false);
   });
 
@@ -212,8 +213,10 @@ describe("the commander's step multiplexes methods, so its question key carries 
 
   it("all methods passing covers the artifact", () => {
     expect(
-      covers([managed("trivy", "pass", new Date(1000)), managed("openscap", "pass", new Date(1001))])
-        .covered
+      covers([
+        managed("trivy", "pass", new Date(1000)),
+        managed("openscap", "pass", new Date(1001))
+      ]).covered
     ).toBe(true);
   });
 });
@@ -241,9 +244,9 @@ describe("digest binding is re-verified at the boundary, unchanged", () => {
   });
 
   it("a run with no expectedDigest is about no artifact — it neither satisfies nor blocks", () => {
-    expect(covers([run({ evidence: passingEvidence({ expectedDigest: undefined }) })]).covered).toBe(
-      false
-    );
+    expect(
+      covers([run({ evidence: passingEvidence({ expectedDigest: undefined }) })]).covered
+    ).toBe(false);
   });
 });
 
@@ -268,13 +271,17 @@ describe("the operator's instance floor binds at the boundary (ADR-0016 §3)", (
   });
 
   it("admits findings AT the floor — a ceiling is a maximum, not a strict inequality", () => {
-    expect(covers([run({ evidence: passingEvidence({}, { high: 2 }) })], { maxHigh: 2 }).covered).toBe(
-      true
-    );
+    expect(
+      covers([run({ evidence: passingEvidence({}, { high: 2 }) })], { maxHigh: 2 }).covered
+    ).toBe(true);
   });
 
   it("merges floors per-severity by MIN, order-independently", () => {
-    const a = { tier: "platform" as const, source: "instance:platform:local", threshold: { maxHigh: 5 } };
+    const a = {
+      tier: "platform" as const,
+      source: "instance:platform:local",
+      threshold: { maxHigh: 5 }
+    };
     const b = {
       tier: "trust_domain" as const,
       source: "instance:trust_domain:local",
@@ -286,9 +293,9 @@ describe("the operator's instance floor binds at the boundary (ADR-0016 §3)", (
 
   it("ABSENT NEVER MEANS ZERO — a severity no floor constrains is unconstrained, not capped at 0", () => {
     expect(mergeInstanceFloor([]).maxHigh).toBeUndefined();
-    expect(covers([run({ evidence: passingEvidence({}, { medium: 99 }) })], { maxHigh: 0 }).covered).toBe(
-      true
-    );
+    expect(
+      covers([run({ evidence: passingEvidence({}, { medium: 99 }) })], { maxHigh: 0 }).covered
+    ).toBe(true);
   });
 });
 

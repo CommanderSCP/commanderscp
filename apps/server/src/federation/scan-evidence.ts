@@ -1,4 +1,8 @@
-import { ScanEvidenceSchema, type ScanEvidence, type ScanThresholdContribution } from "@scp/schemas";
+import {
+  ScanEvidenceSchema,
+  type ScanEvidence,
+  type ScanThresholdContribution
+} from "@scp/schemas";
 
 /**
  * WHAT COUNTS AS A SCAN OUTCOME AT THE FEDERATION EXPORT BOUNDARY — the single rule the M17.3 (E6)

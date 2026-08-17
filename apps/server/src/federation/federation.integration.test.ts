@@ -1028,8 +1028,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
         changeObjectId: changeId,
         gateKind: "lifecycle_edge",
         gateRef: { fromState: "validating", toState: "accepted" },
-        pluginModule:
-          "pluginModule" in over ? over.pluginModule : ("scan-result-control" as const),
+        pluginModule: "pluginModule" in over ? over.pluginModule : ("scan-result-control" as const),
         status: over.status ?? "pass",
         evidence: {
           scanner: "trivy",
@@ -1756,9 +1755,7 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     const genuine = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
     await seedScanOutcome(genuine.changeId, OCI_DIGEST, { pluginModule: "scan-result-control" });
     const bundle = await exportBundleA(genuine.changeId);
-    expect(bundle.artifacts).toEqual(
-      expect.arrayContaining([{ type: "oci", digest: OCI_DIGEST }])
-    );
+    expect(bundle.artifacts).toEqual(expect.arrayContaining([{ type: "oci", digest: OCI_DIGEST }]));
   });
 
   it("E6 RECENCY: a LATER failing scan supersedes an earlier pass (refused) — and a later PASS clears an earlier fail (exports)", async () => {
@@ -2232,7 +2229,10 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       // per-binding ceiling of 50 highs, which is what a tenant-authored `config.threshold` looks
       // like — carrying findings that breach the operator's floor of 0. The control's verdict is not
       // the boundary's verdict.
-      const dirty = await proposeApprovedChangeInA({ artifact_digest: DEV_DIGEST }, { seedScan: false });
+      const dirty = await proposeApprovedChangeInA(
+        { artifact_digest: DEV_DIGEST },
+        { seedScan: false }
+      );
       await seedScanOutcome(dirty.changeId, DEV_DIGEST, {
         severityCounts: { critical: 0, high: 4, medium: 0, low: 0 },
         threshold: { maxCritical: 50, maxHigh: 50 }
