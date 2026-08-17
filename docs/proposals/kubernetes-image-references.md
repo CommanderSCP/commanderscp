@@ -443,6 +443,8 @@ only via an explicit `source_mappings` path (§1.4), and `kustomization.yaml` de
 bumped (§2.4), or is round one visibility + a legible dispatch refusal?** This is the one that decides
 whether the owner's own deployments get bumps or only get seen. Widening touches a charter-enforcement
 surface. *Recommended: visibility this round; widening as its own round with its own gate.*
+**ANSWERED — visibility shipped in M21.7; the widening round's design is
+[split-shape-image-bumps.md](split-shape-image-bumps.md) (2026-08-17, proposed, not built).**
 
 **Q3 — Does `Chart.yaml` (subchart `dependencies[].version`) become a sixth ecosystem later?** It needs
 a new `DependencyEcosystemSchema` member, a DB check-constraint value, and a Helm-repository version
