@@ -206,11 +206,13 @@ export async function buildLineWorkList(db: Db, orgId: string): Promise<LineWork
     // THE WORK-LIST IS THE RESOLUTION (property 1 in the module doc). Not filtered afterwards.
     const subscribed = await listSubscribedComponentLines(tx, orgId, {
       // A background tick has no human actor. `SYSTEM_ACTOR_ID` is the same sentinel the reconcile
-      // loop threads into `matchPoliciesForTargets`, and its consequence here is stated rather than
-      // discovered: it is a member of no group, so a `group`-scoped ENABLE does not contribute for
-      // this caller — which is the SAFE direction (§6's "absent never means enabled") and yields
-      // not-enabled, never a spurious poll. The unsafe direction — a group-scoped OPT-OUT failing to
-      // subtract — cannot arise, because ADR-0032 §6a refuses authoring one at all.
+      // loop threads into `matchPoliciesForTargets`. This comment used to draw a conclusion from that
+      // which is FALSE (ADR-0032 §6a-ii): "it is a member of no group, so a `group`-scoped ENABLE
+      // does not contribute for this caller — the SAFE direction". The sentinel's membership is
+      // still nothing, but group scope's OWNING half never reads the actor, so a group-scoped enable
+      // DOES contribute here wherever that group owns something on the component's chain. Neither
+      // direction is therefore inert for this caller; what makes both safe is upstream, not here —
+      // ADR-0032 §6a refuses authoring a group-scoped effect at all, in either direction.
       actorObjectId: SYSTEM_ACTOR_ID
     });
     if (subscribed.length === 0) return [];
