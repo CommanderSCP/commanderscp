@@ -54,19 +54,29 @@ import { GOVERNANCE_LABEL_PREFIX } from "./governance-labels.js";
  *   6. delete it from `updateObject`                                → C2
  *   7. delete `assertSyncScopeSelectorKeys…` from `pairPeer`        → D1
  *   8. delete it from `updatePeerTransport`                         → D2
- *   9. delete `assertPolicyScopeWithinAuthority` from `createOverlay` → F1
- *  10. delete it from `handFillObject`                              → F2
- *  11. compute the delta over `after`'s keys only (lose REMOVAL)    → A4, A5
- *  12. `isGovernanceLabelKey` returns `true` for every key          → A2, B0, B4, C1, C2, C3, C4, C5, D1, D2
- *  13. delete `assertSelectorKeysAreGovernanceLabels` from `handFillObject` → C4
+ *   9. compute the delta over `after`'s keys only (lose REMOVAL)    → A4, A5
+ *  10. `isGovernanceLabelKey` returns `true` for every key          → A2, B0, B4, C1, C2, C3, C4, C5, D1, D2
+ *  11. delete `assertSelectorKeysAreGovernanceLabels` from `handFillObject` → C4
+ *
+ * A PART F WAS HERE, AND IT WAS REMOVED BECAUSE ITS MUTATIONS STOPPED KILLING ANYTHING.
+ * It added `assertPolicyScopeWithinAuthority` to `createOverlay` and `handFillObject` on the reading
+ * that the check's census had missed those two doors, and claimed mutations 9/10 (delete each call
+ * site → F1/F2 die). Re-measured after #244 merged, on this tree:
+ *   - F2 FAILED outright — `assertGovernanceAuthorityForHandFill` throws FIRST, with a different
+ *     message, so the case was asserting a refusal that no longer came from the guard it named.
+ *   - F1 PASSED WITH THE CALL SITE DELETED. The refusal was #244's governance-managed org-root
+ *     `policy:write` bar all along; F1's assertion (`/policy:write/`) matched either message.
+ * #244 closed both doors independently and more strongly, so the added calls could no longer refuse
+ * anything — see `federation/overlay-repo.ts` and `federation/handfill-repo.ts` for the argument.
+ * The doors' real coverage is `governance-managed-write-doors.integration.test.ts` DOOR 1 and DOOR 5.
  *
  * THREE OF THESE ARE THE POINT, not bookkeeping:
- *   - #5 does NOT kill C4 and #13 does — which is the measured proof that hand-fill runs the
+ *   - #5 does NOT kill C4 and #11 does — which is the measured proof that hand-fill runs the
  *     selector refusal FOR ITSELF rather than inheriting the choke point it is exempt from. The
  *     same separation holds for #1 vs #4.
- *   - #11 kills A4 and A5 and nothing else: the removal case is the whole defect, and a delta
- *     written the obvious way (over `after`'s keys) leaves it wide open with 26 of 28 still green.
- *   - #12 kills the CONTROLS (A2, B0, B4). An over-broad namespace refuses ordinary estate
+ *   - #9 kills A4 and A5 and nothing else: the removal case is the whole defect, and a delta
+ *     written the obvious way (over `after`'s keys) leaves it wide open with 23 of 25 still green.
+ *   - #10 kills the CONTROLS (A2, B0, B4). An over-broad namespace refuses ordinary estate
  *     description, which is the failure mode option (b) in the proposal was rejected for.
  *
  * A5's failure under #2 and #11 is a genuine cascade, not a flake: A4's refusal is what leaves the
@@ -633,79 +643,5 @@ describe("governance labels: the namespace is enforced at every local write door
       syncScope: { mode: "custom", labelSelector: { [GOV_TIER]: "gold" } }
     });
     expect(peer.syncScope).toEqual({ mode: "custom", labelSelector: { [GOV_TIER]: "gold" } });
-  });
-
-  // ---------------------------------------------------------------------------------------------
-  // PART F — `assertPolicyScopeWithinAuthority` reached three doors of five. Same invariant, same
-  // family of evasion: a broad-matching policy authored without broad authority.
-  // ---------------------------------------------------------------------------------------------
-
-  it("CASE F1: the overlay door refuses an org-wide policy from an actor with no policy:write", async () => {
-    const base = await admin.policies.create({
-      name: `f1-base-${randomUUID().slice(0, 8)}`,
-      properties: { enforcement: "advisory" }
-    });
-    const urn = `urn:scp:${org.orgId}:policy:f1-${randomUUID().slice(0, 8)}`;
-    const res = await asOperator("POST", "/api/v1/federation/overlays", {
-      base: base.id,
-      typeId: "policy",
-      name: "f1-overlay",
-      urn,
-      // A compliant selector — so the refusal is unambiguously about AUTHORITY, not about the
-      // namespace rule PART C covers.
-      properties: {
-        scope: { selector: { labels: { [GOV_TIER]: "pci" } } },
-        enforcement: "required",
-        effects: [{ dependencySubscription: { enabled: false, coordinate: "acme-lib" } }]
-      }
-    });
-    expect(res.statusCode).toBe(403);
-    expect(res.body).toMatch(/policy:write/);
-    expect(await liveRowsByUrn("policy", urn)).toHaveLength(0);
-  });
-
-  it("CASE F2: the hand-fill door refuses the same", async () => {
-    const domainId = asTrustDomainId(randomUUID());
-    const { publicKey } = generateKeyPairSync("ed25519");
-    await withTenantTx(server.deps.db, org.orgId, (tx) =>
-      pairPeer(tx, {
-        orgId: org.orgId,
-        domainId,
-        name: `f2-${domainId.slice(0, 8)}`,
-        role: "commander",
-        publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64")
-      })
-    );
-    const urn = `urn:scp:${org.orgId}:policy:f2-${randomUUID().slice(0, 8)}`;
-    expect(
-      await refusalDetail(
-        withTenantTx(server.deps.db, org.orgId, (tx) =>
-          handFillObject(tx, {
-            orgId: org.orgId,
-            peerIdOrName: domainId,
-            typeId: "policy",
-            urn,
-            name: "f2",
-            properties: {
-              scope: { selector: { labels: { [GOV_TIER]: "pci" } } },
-              enforcement: "required"
-            },
-            actorObjectId: operator.objectId
-          })
-        )
-      )
-    ).toMatch(/lack 'policy:write' at the organization root/);
-    expect(await liveRowsByUrn("policy", urn)).toHaveLength(0);
-  });
-
-  it("CASE F3 (CONTROL): the overlay door still creates an ORDINARY overlay for the operator", async () => {
-    // Without this, F1 passes just as well against a route that refuses every overlay.
-    const base = await admin.object("service").create({ name: `f3-${randomUUID().slice(0, 8)}` });
-    const res = await asOperator("POST", "/api/v1/federation/overlays", {
-      base: base.id,
-      typeId: "service",
-      name: `f3-overlay-${randomUUID().slice(0, 8)}`
-    });
-    expect(res.statusCode, res.body).toBe(201);
   });
 });

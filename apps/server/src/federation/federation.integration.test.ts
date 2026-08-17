@@ -638,19 +638,19 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
     const handFilled = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       handFillObject(tx, {
         orgId: domainB.orgId,
-        // M21.7 — authorization-only subject. `service` is not governance-managed, so the
-        // `policy:write` check `handFillObject` gained does not fire and any id will do; the
-        // governance case is asserted in `governance-managed-write-doors.integration.test.ts`.
+        // M21.7 — authorization-only subject, which this direct-repo call has to supply for itself.
+        // It is what the governance-authority, policy-scope and governance-label refusals resolve —
+        // never the synthetic import actor `handFillObject` hands to the upsert. `service` is not
+        // governance-managed and carries no governance labels here, so none of those three fire and
+        // the org-root object (the bootstrap admin subject) will do; the governance cases are
+        // asserted in `governance-managed-write-doors.integration.test.ts` and
+        // `governance-label-write-doors.integration.test.ts`.
         actorObjectId: domainB.orgId,
         peerIdOrName: domainA.orgName,
         typeId: "service",
         urn,
         name: "guessed-name",
-        properties: { guess: true },
-        // The requesting operator, which this direct-repo call has to supply for itself — the
-        // governance-label refusal resolves it, never the synthetic import actor `handFillObject`
-        // hands to the upsert. The org root object is the bootstrap admin subject here.
-        actorObjectId: domainB.orgId
+        properties: { guess: true }
       })
     );
     expect(handFilled.provenance).toBe("manual");
