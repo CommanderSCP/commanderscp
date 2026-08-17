@@ -60,7 +60,10 @@ export function managedLabels(stackName: string): Record<string, unknown> {
  * reason: a predicate that still ACCEPTED a labels map would let a caller re-introduce the evasion
  * by passing the wrong argument, and it would type-check. There is one input and it is server-written.
  */
-export function isStackManaged(managedByStack: string | null | undefined, stackName: string): boolean {
+export function isStackManaged(
+  managedByStack: string | null | undefined,
+  stackName: string
+): boolean {
   return managedByStack === stackName;
 }
 

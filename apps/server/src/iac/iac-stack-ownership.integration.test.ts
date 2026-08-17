@@ -37,15 +37,24 @@ import {
  * So every case here drives real HTTP doors: `PATCH /objects/{type}/{id}`, `POST /plans`,
  * `POST /plans/{id}/apply`.
  *
- * INSTALLATION PROVEN BY MUTATION. Each of these was applied alone against a green suite and the
- * named case watched to fail (log in the PR body):
+ * INSTALLATION PROVEN BY MUTATION — MEASURED, and the results are recorded as observed rather than
+ * as intended. Each was applied against an otherwise-green suite and the named cases FAILED:
  *
- *   1. `fetchManagedObjects` back to the `labels @> managedLabels(stack)` containment test  -> R1, R2
- *   2. `isStackManaged(existing.managedByStack, …)` -> `isStackManaged(existing.labels?.…)`   -> R1, R2
- *   3. delete the `stampObjectStackOwnership` call in `executePlanDiff`                       -> R2, A1
- *   4. narrow that stamp to `action === "create"` (i.e. drop `update`/`noop`)                 -> A1
- *   5. delete the `stampRelationshipStackOwnership` call                                      -> E1
- *   6. `fetchManagedRelationships` back to the label containment test                         -> E1
+ *   m1. `fetchManagedObjects` back to `labels @> managedLabels(stack)`                -> R2
+ *   m2. the object prune's `isStackManaged(existing.managedByStack, …)` back to the
+ *       two-label test                                                               -> R2
+ *   m1+m2 together (i.e. the whole pre-0068 object read path restored)               -> R1, R2
+ *   m3. delete the `stampObjectStackOwnership` call in `executePlanDiff`             -> R2, A1
+ *   m4. narrow that stamp to `action === "create"` (drop `update`/`noop`)            -> A1
+ *   m5. delete the `stampRelationshipStackOwnership` call                            -> E1
+ *   m6. `fetchManagedRelationships` back to the label containment test               -> E1, E2
+ *
+ * READ m1 AND m2 CAREFULLY — the result is more interesting than "both are wired". Neither ALONE
+ * revives R1, because the two are independent gates over the same fact: the pool QUERY selects on
+ * the column, and the prune PREDICATE re-tests it. Reverting one leaves the other refusing the
+ * enrolled object. R1 needs both reverted, which is exactly what the composite row shows. That is
+ * defence in depth rather than a gap, but it does mean neither mutation alone is a complete
+ * installation proof for R1, and saying so is the point of listing the composite.
  */
 describe("IaC stack ownership is server-written, not tenant-written", () => {
   let server: TestServer;
@@ -232,7 +241,9 @@ describe("IaC stack ownership is server-written, not tenant-written", () => {
 
     const declared: DesiredStateManifest = {
       stackName,
-      objects: [{ urn: adopteeUrn, typeId: "service", name: "Adoptee", properties: {}, labels: {} }],
+      objects: [
+        { urn: adopteeUrn, typeId: "service", name: "Adoptee", properties: {}, labels: {} }
+      ],
       relationships: []
     };
     // Nothing to change: name, properties and (after the merge) labels all already match.

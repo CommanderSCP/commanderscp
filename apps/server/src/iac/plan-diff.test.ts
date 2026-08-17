@@ -586,7 +586,15 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
     // verb, so an update needs no contains edge.
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
-        { urn: COMP, typeId: "component", name: "old", domainId: null, properties: {}, labels: {}, managedByStack: null }
+        {
+          urn: COMP,
+          typeId: "component",
+          name: "old",
+          domainId: null,
+          properties: {},
+          labels: {},
+          managedByStack: null
+        }
       ],
       managedRelationships: [],
       existingRelationships: [],

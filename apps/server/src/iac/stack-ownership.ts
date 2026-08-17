@@ -1,5 +1,5 @@
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
-import { objects, relationships } from "../db/schema.js";
+import { objects } from "../db/schema.js";
 import type { TenantTx } from "../db/tenant-tx.js";
 
 /**

@@ -45,10 +45,7 @@ import {
   type ResolvedManifestPlacement,
   type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
-import {
-  stampObjectStackOwnership,
-  stampRelationshipStackOwnership
-} from "./stack-ownership.js";
+import { stampObjectStackOwnership, stampRelationshipStackOwnership } from "./stack-ownership.js";
 import {
   DEFAULT_BINDING_TYPE,
   EXECUTION_SYSTEM_INSTANCE_PREFIX,
@@ -106,9 +103,9 @@ function assertProjectionsOwned(diff: PlanDiff): void {
   if (unowned.length === 0) return;
   throw badRequest(
     `plan declares source mapping(s)/executor binding(s) on object(s) this stack does not manage: ` +
-      `${unowned.join(", ")}. Neither table carries stack labels, so ownership is inherited from the ` +
-      `object the row hangs off — declare that object in this stack's manifest (which adopts it), or ` +
-      `configure it from the stack that already manages it.`
+      `${unowned.join(", ")}. Neither table carries an owner of its own, so ownership is inherited ` +
+      `from the object the row hangs off — declare that object in this stack's manifest (which ` +
+      `adopts it), or configure it from the stack that already manages it.`
   );
 }
 
