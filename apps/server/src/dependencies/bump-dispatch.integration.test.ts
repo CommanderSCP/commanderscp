@@ -162,6 +162,9 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
    *  egress refusal all look like from the server's side of the plugin-host RPC. */
   const repoReadFailures = new Map<string, string>();
   const startedInstances: string[] = [];
+  /** The CONFIG each instance was started with, not just its id — `startedInstances` alone cannot
+   *  see what the server actually handed the plugin, which is where the runtime binary lives. */
+  const startedConfigs: { id: string; config: Record<string, unknown> }[] = [];
   const stoppedInstances: string[] = [];
 
   const inOrg = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> =>
@@ -186,6 +189,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     controlEvaluations.length = 0;
     fileReads.length = 0;
     startedInstances.length = 0;
+    startedConfigs.length = 0;
     stoppedInstances.length = 0;
   });
 
@@ -195,7 +199,10 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     };
     return {
       async start(instances) {
-        for (const i of instances) startedInstances.push(i.id);
+        for (const i of instances) {
+          startedInstances.push(i.id);
+          startedConfigs.push({ id: i.id, config: (i.config ?? {}) as Record<string, unknown> });
+        }
       },
       async stop() {},
       async stopInstances(ids) {
@@ -1552,6 +1559,47 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       // credential and config resolution are unchanged.
       const bindingOf = (id: string) => id.split(":")[1];
       expect(new Set(dep.map(bindingOf)).size).toBe(1);
+    }, 180_000);
+
+    /**
+     * ============================================================================================
+     * THE OPERATOR'S CONTAINER RUNTIME REACHES THE RUNNER THIS PATH STARTS (2026-08-16)
+     * ============================================================================================
+     * `@scp/plugin-managed-dep` runs `execFile(config.dockerBinary ?? "docker", …)`, and
+     * `SCP_MANAGED_RUNNER_DOCKER_BINARY` is how an operator points that at podman — the sanctioned
+     * runtime on the RHEL/air-gapped estates this class ships into (docs/container-runtimes.md).
+     *
+     * ASSERTED HERE, SEPARATELY FROM THE BINDING PATH, because this class has two ways of being
+     * constructed and this is the one that runs. `routes/executors.integration.test.ts` covers
+     * `resolveExecutorPluginInstance`, the path taken only for a `managed-dep` binding an operator
+     * makes BY HAND; ordinary dispatch never touches it — `managed-dep-instance.ts` builds the
+     * instance itself from `managedDepServerSettings()`. When the runtime knob was first wired,
+     * both of this class's paths were missed while its two sibling classes were wired correctly, so
+     * an operator on podman got a silent hardcoded `docker` for every ordinary bump. A test on the
+     * binding path alone would have stayed green through exactly that.
+     *
+     * The value is deliberately NOT `"docker"`: asserting the fallback would pass whether or not
+     * anything was injected at all.
+     */
+    it("hands the operator's container runtime to the runner it starts", async () => {
+      const saved = process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY;
+      process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY = "/usr/bin/operator-chosen-runtime";
+      try {
+        await authoredAndPushed();
+
+        const dep = startedConfigs.filter((i) => i.id.startsWith("managed-dep:"));
+        // Non-vacuity: an empty list would make the loop below assert nothing at all.
+        expect(dep.length).toBeGreaterThan(0);
+        for (const started of dep) {
+          expect(
+            started.config.dockerBinary,
+            `${started.id} was started with a runtime the operator did not choose`
+          ).toBe("/usr/bin/operator-chosen-runtime");
+        }
+      } finally {
+        if (saved === undefined) delete process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY;
+        else process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY = saved;
+      }
     }, 180_000);
 
     /**
