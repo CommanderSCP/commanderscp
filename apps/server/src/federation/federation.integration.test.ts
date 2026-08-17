@@ -646,7 +646,11 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
         typeId: "service",
         urn,
         name: "guessed-name",
-        properties: { guess: true }
+        properties: { guess: true },
+        // The requesting operator, which this direct-repo call has to supply for itself — the
+        // governance-label refusal resolves it, never the synthetic import actor `handFillObject`
+        // hands to the upsert. The org root object is the bootstrap admin subject here.
+        actorObjectId: domainB.orgId
       })
     );
     expect(handFilled.provenance).toBe("manual");

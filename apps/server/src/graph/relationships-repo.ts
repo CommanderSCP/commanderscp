@@ -12,6 +12,7 @@ import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import { policyReachFor, recordGovernanceReachChange } from "../governance/governance-reach.js";
+import { assertMayWriteGovernanceLabels } from "../governance/governance-labels.js";
 import { inArray } from "drizzle-orm";
 
 /**
@@ -259,6 +260,28 @@ export async function createRelationship(
   const properties = input.properties ?? {};
   const labels = input.labels ?? {};
   validateProperties(type.propertySchema, properties);
+
+  // THE RESERVED GOVERNANCE LABEL NAMESPACE, on the edge table too — see
+  // `governance/governance-labels.ts`. No governance decision reads a RELATIONSHIP's labels today
+  // (`iac/plans-repo.ts`'s stack-ownership markers are the only reader), and that is exactly why it
+  // is guarded here rather than later: the namespace is worth having only if the sentence "a
+  // `scp.governance/` key was set by an org-root `policy:write` holder" is true of every labels bag
+  // in the system. Left off, the next consumer to read an edge label inherits the same evasion, and
+  // nothing about this file would flag it. Relationships have no update verb (create + soft-delete
+  // only — see `deleteRelationship`), so this create is the complete census of edge-label writes.
+  //
+  // The `federationImport` exemption is the one this repo already applies at both choke points, for
+  // the same reason: `federation/import-repo.ts`'s replay branch has no try/catch, so a throw there
+  // aborts a whole signed bundle rather than one entry.
+  if (!input.federationImport) {
+    await assertMayWriteGovernanceLabels(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      before: {},
+      after: labels,
+      subject: `relationship '${type.id}'`
+    });
+  }
 
   const fromObj = await requireLiveObject(tx, input.orgId, input.fromId, "from");
   const toObj = await requireLiveObject(tx, input.orgId, input.toId, "to");

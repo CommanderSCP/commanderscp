@@ -11,6 +11,7 @@ import { federationPeers, federationPeerKeys } from "../db/schema.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { isUuid } from "../graph/objects-repo.js";
+import { assertSyncScopeSelectorKeysAreGovernanceLabels } from "../governance/governance-labels.js";
 import { maxAppliedSequenceForPeer, permitCursorReanchor } from "./cursors-repo.js";
 import { federationPeerRequiresMtls } from "./federation-outbound.js";
 
@@ -209,6 +210,13 @@ export async function pairPeer(tx: TenantTx, input: PairPeerInput): Promise<Fede
     .from(federationPeers)
     .where(and(eq(federationPeers.orgId, input.orgId), eq(federationPeers.id, input.domainId)))
     .limit(1);
+
+  // THE RESERVED GOVERNANCE LABEL NAMESPACE, applied to the OTHER label-keyed decision in the tree
+  // (governance/governance-labels.ts). Keyed off the DECLARED scope, never the effective one, so an
+  // already-stored `custom` selector is grandfathered until someone edits it — the same
+  // grandfathering ADR-0032 §6a's guard accepted, and for the same reason: a refusal that fires on a
+  // request which declared nothing is a refusal nobody can act on.
+  assertSyncScopeSelectorKeysAreGovernanceLabels(input.syncScope);
 
   const syncScope = input.syncScope ?? { mode: "full" as const };
   // ADDITIVE (E5): distinguish "cosign key omitted" (undefined — a pre-E5 client that never knew the
@@ -505,6 +513,11 @@ export async function updatePeerTransport(
       "poke-mode requires an mTLS/https peer — the poke must authenticate the caller as the enrolled commander"
     );
   }
+
+  // The PATCH half of the same refusal — `pairPeer`'s note applies unchanged, and this half is the
+  // one that matters, since a peer paired at `full` can be narrowed to `custom` here without ever
+  // passing through a pair.
+  assertSyncScopeSelectorKeysAreGovernanceLabels(input.syncScope);
 
   const effectiveSyncScope = input.syncScope ?? (existing.syncScope as SyncScope);
 
