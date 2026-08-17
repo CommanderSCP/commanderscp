@@ -638,9 +638,13 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
     const handFilled = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       handFillObject(tx, {
         orgId: domainB.orgId,
-        // M21.7 — authorization-only subject. `service` is not governance-managed, so the
-        // `policy:write` check `handFillObject` gained does not fire and any id will do; the
-        // governance case is asserted in `governance-managed-write-doors.integration.test.ts`.
+        // M21.7 — authorization-only subject, which this direct-repo call has to supply for itself.
+        // It is what the governance-authority, policy-scope and governance-label refusals resolve —
+        // never the synthetic import actor `handFillObject` hands to the upsert. `service` is not
+        // governance-managed and carries no governance labels here, so none of those three fire and
+        // the org-root object (the bootstrap admin subject) will do; the governance cases are
+        // asserted in `governance-managed-write-doors.integration.test.ts` and
+        // `governance-label-write-doors.integration.test.ts`.
         actorObjectId: domainB.orgId,
         peerIdOrName: domainA.orgName,
         typeId: "service",
@@ -705,15 +709,26 @@ describe("M6 Federation: two-domain sync (Testcontainers)", () => {
       importSyncBundle(tx, domainB.orgId, bundle)
     );
 
-    // M21.7 — a GOVERNANCE overlay now needs a real `policy:write` author, so this case names one
-    // instead of passing the org-root OBJECT as its actor. `createOverlay` gained the governance
-    // permission check the three type guards beside it always implied (`federation/overlay-repo.ts`
-    // — an Operator was minting live org-wide policies through this door), and the org root object
-    // holds no role bindings, so the old actor is refused. This case is about overlay MECHANICS
-    // (replicated base, merged view, base never mutated) and an authorized author is what lets it
-    // reach them; the refusal itself is asserted in
-    // `governance/governance-managed-write-doors.integration.test.ts`.
+    // A REAL subject holding org-root `policy:write`, not the org-root object id this file uses as a
+    // synthetic actor elsewhere. TWO independent checks now demand that, and this one author
+    // satisfies both:
+    //
+    //  - M21.7/#244 — `createOverlay` gained the governance permission check the three type guards
+    //    beside it always implied (`federation/overlay-repo.ts` — an Operator was minting live
+    //    org-wide policies through this door). The refusal itself is asserted in
+    //    `governance/governance-managed-write-doors.integration.test.ts`.
+    //  - This PR — `createOverlay` now also runs `assertPolicyScopeWithinAuthority` for a `policy`
+    //    overlay (this route was one of the two doors that check never reached), and this overlay
+    //    declares no `scope`, which means org-wide: exactly the bar that check enforces.
+    //
+    // The org-root OBJECT holds no role bindings, so the old actor is refused by both. `Administrator`
+    // carries org-root `policy:write` (`drizzle/0010_governance.sql:174-175` grants it to
+    // Administrator and Owner), and `createApprover` binds at the org root — which is the scope
+    // `assertPolicyScopeWithinAuthority` requires for an unscoped policy. This case is about overlay
+    // MECHANICS (replicated base, merged view, base never mutated); an authorized author is what lets
+    // it reach them.
     const policyAuthor = await createApprover(domainB, "Administrator");
+
     const { overlay } = await withTenantTx(domainB.db, domainB.orgId, (tx) =>
       createOverlay(tx, {
         orgId: domainB.orgId,

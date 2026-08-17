@@ -30,6 +30,10 @@ import {
   assertNoDelegatedDependencyUpdates
 } from "../dependencies/subscription-authoring-guard.js";
 import { assertMayUndeclareRegionMembership } from "../coordination/region-membership-guard.js";
+import {
+  assertMayWriteGovernanceLabels,
+  assertSelectorKeysAreGovernanceLabels
+} from "../governance/governance-labels.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 import {
@@ -417,6 +421,23 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       orgId: input.orgId,
       typeId: input.typeId,
       properties
+    });
+    // THE RESERVED GOVERNANCE LABEL NAMESPACE — the THIRD and FOURTH refusals at this choke point,
+    // here for the identical reason the two above are, against the identical `federationImport`
+    // census, and closed at the identical other caller (`federation/handfill-repo.ts`).
+    //
+    // A selector-scoped policy's match key must be out of its own subject's write reach, in both
+    // directions: the DOCUMENT may only key on a reserved label, and the reserved LABEL may only be
+    // written by org-root `policy:write`. Installing either half alone leaves the evasion — a
+    // namespace nobody is required to use, or a required namespace anyone may edit. See
+    // `governance/governance-labels.ts`.
+    assertSelectorKeysAreGovernanceLabels({ typeId: input.typeId, properties });
+    await assertMayWriteGovernanceLabels(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      before: {},
+      after: labels,
+      subject: `${input.typeId} '${input.name}'`
     });
   }
 
@@ -844,11 +865,37 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       typeId: input.typeId,
       properties: nextProperties
     });
+    // THE UPDATE HALF of the governance-label namespace, and the half that actually closes the
+    // reported evasion — the attack is an EDIT, not a create. `nextLabels` vs `existing.labels` is a
+    // DELTA over the stored row, deliberately, and it is a delta rather than a check on the request
+    // field for two reasons at once: a PATCH that never mentions `labels` must stay free (the delta
+    // is empty, so no permission is even resolved), and a full-replacement PUT that OMITS a
+    // governance label is a REMOVAL and must be refused (the delta is not empty). Those two are the
+    // same bytes on the wire and only the stored row can tell them apart.
+    //
+    // Ordered FIRST of the three because it is the cheapest: the selector check is pure and
+    // synchronous, and the label check resolves a permission only when the delta is non-empty — so
+    // a refused write never pays for the region walk below it.
+    assertSelectorKeysAreGovernanceLabels({
+      typeId: input.typeId,
+      properties: nextProperties
+    });
+    await assertMayWriteGovernanceLabels(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      before: existing.labels as Record<string, unknown>,
+      after: nextLabels,
+      subject: `${input.typeId} '${existing.urn}'`
+    });
     // M15.6 / ADR-0017 §3 — the UPDATE half of the un-declaration guard, checked against
     // `nextProperties` (the value about to be STORED) beside the two above and for the same reason:
     // `updateObject` replaces `properties` wholesale, so a full-replacement PUT that merely OMITS
     // `region` deletes it, and omission is the whole attack. See `region-membership-guard.ts` for
     // the measured evasion this closes and why the bar is org-root `object:write`.
+    //
+    // INDEPENDENT of the governance-label guards above: that pair keys on `labels`, this one on
+    // `properties.region`/`properties.environment`. Same property (a match key writable by its own
+    // subject), different key, different bar — neither subsumes the other.
     await assertMayUndeclareRegionMembership(tx, {
       orgId: input.orgId,
       actorObjectId: input.actorObjectId,
