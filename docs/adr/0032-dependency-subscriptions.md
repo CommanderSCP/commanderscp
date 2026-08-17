@@ -1186,6 +1186,130 @@ so re-pointing one control at `github-check` retroactively relabelled every hist
 own-check pass, and the grant reads historical runs. Evidence about the past must not be re-narrated by
 a present-tense edit (ADR-0030 §2).
 
+### 8g. HOW A COMPONENT TEAM ACTUALLY AUTHORS ONE — AND THE ONE FIELD THAT DECIDES WHETHER THEY CAN (2026-08-17)
+
+§8 makes opting a component in **itself the gate-1 flip**, and §3a/§3a-i settle that a team opts in by
+authoring a `dependencySubscription` effect on an ordinary `policy` at their own component's scope.
+Neither clause says **how**, and the single field that decides whether a component team's request is
+accepted or refused — **`domainId`** — appeared **zero times** in this ADR and zero times in
+`docs/proposals/dependency-subscriptions.md` until this clause was written.
+
+The capability was real from the day M21.3 landed (`governance.integration.test.ts`'s CRITICAL #1b
+case (d) has asserted a 201 for exactly this shape since then) and was undiscoverable from the two
+documents that promise it. That is **built, never installed at the documentation layer** — the same
+defect §8a and §7c record for code, wearing a different hat, and it is recorded here for the same
+reason.
+
+**The request, literally.** The team owning component `11111111-1111-1111-1111-111111111111`
+subscribes with:
+
+```http
+POST /api/v1/policies
+Authorization: Bearer <the team's token>
+Content-Type: application/json
+
+{
+  "name": "deps-checkout-api",
+  "domainId": "11111111-1111-1111-1111-111111111111",
+  "properties": {
+    "enforcement": "advisory",
+    "scope": { "objectRef": "11111111-1111-1111-1111-111111111111" },
+    "effects": [{ "dependencySubscription": { "enabled": true } }]
+  }
+}
+```
+
+and opts one line back out with a second effect at the same or a deeper scope (§6):
+
+```json
+{ "dependencySubscription": { "coordinate": "@acme/lib", "enabled": false } }
+```
+
+`enforcement` is **required by the `policy` type's property schema** (migration 0010, extended by
+0062) and must therefore be sent, but **nothing in the subscription path reads it** — `enforcement`
+appears nowhere in `dependencies/subscription-resolution.ts`, because §3a consequence 4 deliberately
+keeps `dependencySubscription` out of `policy-model.ts`'s `PolicyEffect` union so it never
+participates in require/approve enforcement. All three values behave identically here; `advisory` is
+recommended as the honest declaration, not because the resolver treats it specially.
+
+**The same value appears twice, and the two occurrences are different questions.** Conflating them
+is the mistake this clause exists to prevent; `governance/policy-scope-authz.ts`'s header argues the
+distinction at length and is the authority for it:
+
+* `domainId` is **CUSTODY** — where the policy row is *placed*. The create authorizes `policy:write`
+  at the resolved containment parent, and because PATCH and DELETE later re-check at the row's own
+  id, that placement is also what decides who may edit or delete the subscription afterwards.
+* `properties.scope.objectRef` is **JURISDICTION** — what the policy *reaches*. Placement bounds
+  nothing: `listPolicyCandidates` has no `domain_id` predicate at all, so an unscoped policy written
+  under a component is a candidate for every target in the org.
+
+**Why the component's own id is the right value for `domainId`.** Authority expands strictly upward
+from the scope object (`authz/resolve.ts`'s `scopeExpandCte`), so the component's own id is the one
+value that satisfies **all three actor shapes** a real org has:
+
+| the author holds `policy:write` at | `domainId` = the component | `domainId` = the component's containment domain |
+|---|---|---|
+| the component itself | **works** | 403 — a binding at the component is not in `scope_expand(domain)` |
+| the component's domain | **works** | works |
+| the org root | **works** | works |
+
+Sending the containment domain instead is the intuitive-looking choice and it is the one that
+excludes the actor this whole flow is *for*. Prefer the deepest object the author holds write
+authority over; for a component team that is their component.
+
+**What happens if you omit it — and why the refusal is unhelpful.** `domainId` is optional, and
+`resolveContainmentParent` (`graph/objects-repo.ts`) resolves `undefined` to **the org root**. The
+custody `authorize` therefore runs at the org root, and a narrowly-bound author is refused with
+
+```
+403  subject '<author-uuid>' lacks 'policy:write' at scope '<org-root-uuid>'
+```
+
+— a message naming a bare uuid the caller never mentioned, for a scope they never asked for, with no
+indication that a field they omitted is the lever. The team's reasonable reading is "component teams
+cannot author subscriptions", which is false and is exactly the belief that produced this clause. The
+refusal is correct (default-deny at the org root is the right behaviour); it is the *discoverability*
+that was missing, which is why the fix is documentation at every authoring surface rather than a
+change to the check.
+
+**The other two surfaces carry the same field.** Parity is charter principle 3, so the flow must be
+identical on each:
+
+* **CLI** — `scp policy register --domain-id <component-id> --properties '{...}'`
+  (`packages/cli/src/cli.ts`; the option's help text is "containing object id (defaults to the org
+  root)", the same default and the same consequence).
+* **IaC** — `ManifestObjectSchema.domainId` (`packages/schemas/src/iac.ts`) is the same field with
+  the same org-root default and the same consequence, though it is spelled differently in the code:
+  apply's create branch computes the custody scope as `entry.target?.domainId ?? orgId` rather than
+  by calling `resolveDomainId`, so do not go looking for that helper there. It then runs the same
+  permission check and the same `assertPolicyScopeWithinAuthority`. The manifest equivalent of the
+  request above is:
+
+```json
+{
+  "stackName": "checkout-api",
+  "objects": [
+    {
+      "urn": "urn:scp:checkout-api:policy:deps-checkout-api",
+      "typeId": "policy",
+      "name": "deps-checkout-api",
+      "domainId": "11111111-1111-1111-1111-111111111111",
+      "properties": {
+        "enforcement": "advisory",
+        "scope": { "objectRef": "11111111-1111-1111-1111-111111111111" },
+        "effects": [{ "dependencySubscription": { "enabled": true } }]
+      }
+    }
+  ],
+  "relationships": []
+}
+```
+
+**Two refusals a team will meet, both deliberate and both explained by their own message.** A
+`group`-only scope is refused at authoring time in both directions (§6a), and an enable for a
+component whose repository already delegates to Renovate/Dependabot is refused 409 with the probe's
+`decision_id` (§8b). Neither is a `domainId` problem, and neither message should be read as one.
+
 ### 9. The executor interface does not change
 
 No fifth verb is added: the four-verb set **is** the structural enforcement of charter principle 1, so a

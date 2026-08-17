@@ -1080,6 +1080,9 @@ export type CreateObjectData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -2053,6 +2056,9 @@ export type CreateDomainData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -2605,6 +2611,9 @@ export type CreateServiceData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -3157,6 +3166,9 @@ export type CreateAssemblyData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -3709,6 +3721,9 @@ export type CreateDeploymentTargetData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -4261,6 +4276,9 @@ export type CreateTeamData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -4813,6 +4831,9 @@ export type CreateGroupData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -5365,6 +5386,9 @@ export type CreateUserData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -5917,6 +5941,9 @@ export type CreateServiceAccountData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -6667,6 +6694,9 @@ export type CreateComponentData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -10587,6 +10617,9 @@ export type CreatePlanData = {
                 urn: string;
                 typeId: string;
                 name: string;
+                /**
+                 * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT, and apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                 */
                 domainId?: string | null;
                 properties?: {
                     [key: string]: unknown;
@@ -10692,6 +10725,9 @@ export type CreatePlanResponses = {
                 urn: string;
                 typeId: string;
                 name: string;
+                /**
+                 * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT, and apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                 */
                 domainId?: string | null;
                 properties?: {
                     [key: string]: unknown;
@@ -10883,6 +10919,9 @@ export type GetPlanResponses = {
                 urn: string;
                 typeId: string;
                 name: string;
+                /**
+                 * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT, and apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                 */
                 domainId?: string | null;
                 properties?: {
                     [key: string]: unknown;
@@ -11086,6 +11125,9 @@ export type ApplyPlanResponses = {
                     urn: string;
                     typeId: string;
                     name: string;
+                    /**
+                     * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT, and apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                     */
                     domainId?: string | null;
                     properties?: {
                         [key: string]: unknown;
@@ -12624,6 +12666,9 @@ export type CreatePolicyData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -13176,6 +13221,9 @@ export type CreateControlData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
