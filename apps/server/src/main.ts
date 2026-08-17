@@ -181,7 +181,15 @@ async function main(): Promise<void> {
     // OWN queue, so a slow manifest read cannot starve internal detection or vice versa. The same
     // reasoning is why this array is the ONE registration site: a router listed twice would be two
     // enqueues per event, and `boss.work()` on the receiving queue is a competing consumer that
-    // would then do the work twice. Every entry below appears exactly once.
+    // would then do the work twice.
+    //
+    // "Every entry below appears exactly once" USED TO BE THE WHOLE PROTECTION, and it is a claim,
+    // not a check — a rebase that put `acceptedChangeRouter()` on both sides of a conflict here
+    // would have been resolved by concatenation and shipped silently. M21.7 item 4 replaced the
+    // claim with two: `startPgBoss` REFUSES a duplicate before it opens a connection
+    // (`assertRoutersRegisteredOnce`), and `events/domain-event-routers.test.ts` censuses THIS array
+    // against every router that exists in the tree — so a router registered twice fails, and one
+    // built but never added here fails too. Neither has a list to keep up to date.
     const internalReleaseAllowed = internalReleaseDetectionRoleGuard(config).allowed;
     const inventoryIngestionAllowed = inventoryIngestionRoleGuard(config).allowed;
     // M21.5 (ADR-0032 §8): a line's head advancing is what makes a bump due, and that event is

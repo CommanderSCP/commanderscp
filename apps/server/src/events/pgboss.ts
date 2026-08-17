@@ -46,6 +46,79 @@ export interface DomainEventRouter {
 }
 
 /**
+ * Thrown when a routers list registers the same subscriber twice, or hands two different
+ * subscribers the same destination queue. Carries the offending identifiers as DATA rather than
+ * only in the message, so a caller (and a test) can assert WHICH registration is duplicated instead
+ * of matching prose.
+ */
+export class DuplicateRouterRegistrationError extends Error {
+  /** Router `name`s that appear more than once in the list. */
+  readonly duplicateNames: readonly string[];
+  /** `[queue, [name, name, …]]` for queues claimed by more than one distinct router. */
+  readonly sharedQueues: readonly (readonly [string, readonly string[]])[];
+
+  constructor(
+    duplicateNames: readonly string[],
+    sharedQueues: readonly (readonly [string, readonly string[]])[]
+  ) {
+    super(
+      "domain-event routers registered more than once — " +
+        `duplicate names: [${duplicateNames.join(", ")}]; ` +
+        `queues claimed by several routers: [${sharedQueues
+          .map(([queue, names]) => `${queue} <- ${names.join("+")}`)
+          .join(", ")}]`
+    );
+    this.name = "DuplicateRouterRegistrationError";
+    this.duplicateNames = duplicateNames;
+    this.sharedQueues = sharedQueues;
+  }
+}
+
+/**
+ * REFUSE A DOUBLE REGISTRATION AT BOOT, because it is otherwise SILENT.
+ *
+ * The domain-events worker calls every router for every event, so a router listed twice enqueues
+ * TWICE per event onto its capability's queue — and `boss.work()` on that queue is a COMPETING
+ * consumer, so the second copy is not deduplicated, it is picked up and the capability's work runs
+ * again. None of pg-boss's machinery complains: no error, no warning, just a queue with double the
+ * traffic and jobs that fire twice.
+ *
+ * This is not a hypothetical. During M21's build a rebase put `acceptedChangeRouter()` on BOTH sides
+ * of a conflict in `main.ts`'s registration array; concatenating the two sides — the naive
+ * resolution — would have shipped exactly that. The protection at the time was a code comment
+ * saying "every entry below appears exactly once", which is a claim, not a check. This is the check.
+ * It runs BEFORE any connection is opened so that a misregistration fails the process immediately
+ * and cheaply, rather than after the first event has already been double-routed.
+ *
+ * Two different routers sharing one `queue` is the same defect wearing a different hat: that queue
+ * has ONE worker, owned by one capability, expecting one job shape — so the other router's jobs are
+ * either mis-shaped or a second enqueue of the first's work.
+ */
+export function assertRoutersRegisteredOnce(routers: readonly DomainEventRouter[]): void {
+  const nameCounts = new Map<string, number>();
+  for (const router of routers) {
+    nameCounts.set(router.name, (nameCounts.get(router.name) ?? 0) + 1);
+  }
+  const duplicateNames = [...nameCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name);
+
+  const queueClaims = new Map<string, string[]>();
+  for (const router of routers) {
+    const claimants = queueClaims.get(router.queue) ?? [];
+    if (!claimants.includes(router.name)) claimants.push(router.name);
+    queueClaims.set(router.queue, claimants);
+  }
+  const sharedQueues = [...queueClaims.entries()]
+    .filter(([, names]) => names.length > 1)
+    .map(([queue, names]) => [queue, names] as const);
+
+  if (duplicateNames.length > 0 || sharedQueues.length > 0) {
+    throw new DuplicateRouterRegistrationError(duplicateNames, sharedQueues);
+  }
+}
+
+/**
  * pg-boss worker skeleton (DESIGN.md §8, BUILD_AND_TEST.md §8 M1 item 7): durable job queue over
  * Postgres, proving the outbox → job pipeline flows end to end.
  *
@@ -67,6 +140,9 @@ export async function startPgBoss(
   databaseUrl: string,
   routers: readonly DomainEventRouter[] = []
 ): Promise<PgBoss> {
+  // BEFORE the connection, deliberately: a double registration is a wiring defect, and a wiring
+  // defect should fail without having touched the database. See the function's own doc.
+  assertRoutersRegisteredOnce(routers);
   const boss = new PgBoss({ connectionString: databaseUrl, schema: "pgboss" });
   boss.on("error", (err) => {
     console.error("[pg-boss] error", err);
