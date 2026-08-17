@@ -23,11 +23,11 @@ scp-bundle-<version>/
     <name>/                     OCI layout (skopeo-copyable) of each bundled image
     <name>.digest               its pinned manifest digest, sha256:<hex>
     <name>.digest.sig           cosign signature over <name>.digest
-                                <name> ∈ scpd; the three managed-execution runners
-                                (scp-runner-iac, scp-runner-scan, scp-runner-dep);
-                                postgres-eval; and the Mode B bundled backends
-                                (argocd, valkey, argo-workflows-cli,
-                                 argo-workflows-controller, argo-events, gitea)
+                                <name> ranges over EVERY image in the canonical list;
+                                `--list-images` prints today's set, and the bundle's own
+                                docs/OFFLINE_INSTALL.md is generated from that same list.
+                                Not enumerated here, and `bundle-images.test.ts` fails if
+                                it ever is again.
   helm/                         The full Helm chart (copy of deploy/helm)
   compose/
     docker-compose.yml            original dev/eval file (builds from source — reference only)
@@ -51,17 +51,16 @@ Alongside the tarball (not inside it): `scp-bundle-<version>.tar.gz.sig` and a c
 # What must be present locally before you build (name, source transport, source ref):
 pnpm --filter @scp/airgap bundle --list-images
 
+# Every flag is optional; the defaults build a bundle from the local daemon's dev images.
 pnpm --filter @scp/airgap bundle --version 1.0.0-rc \
   [--scpd-ref scp:dev] [--scpd-source docker-daemon] \
-  [--runner-iac-ref scp-runner-iac:dev] [--runner-iac-source docker-daemon] \
-  [--runner-scan-ref scp-runner-scan:dev] [--runner-scan-source docker-daemon] \
-  [--runner-dep-ref scp-runner-dep:dev] [--runner-dep-source docker-daemon] \
-  [--postgres-ref postgres:16] [--postgres-source docker-daemon] \
+  [--<stem>-ref <ref>] [--<stem>-source docker-daemon|docker] ... \
   [--out-dir dist-bundle]
 ```
 
-Every image gets a `--<stem>-ref`/`--<stem>-source` pair, generated from the canonical list — see
-`--help` for the Mode B backends' flags too.
+Every image gets a `--<stem>-ref`/`--<stem>-source` pair, generated from the canonical list — so
+the stems are not listed here either. `pnpm --filter @scp/airgap bundle --help` prints all of them
+with their defaults, and `--list-images` prints the set they resolve to.
 
 (No extra `--` before the flags — this pnpm version forwards `pnpm --filter <pkg> <script> <args>`
 straight through to the script's own argv. Adding an extra `--` gets forwarded LITERALLY as an

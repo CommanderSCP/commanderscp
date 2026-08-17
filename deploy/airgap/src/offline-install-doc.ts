@@ -112,22 +112,52 @@ reading — read it once before running it against a production system).
 
 The bundle carries all three ephemeral runner images — \`scp-runner-iac\`, \`scp-runner-scan\`,
 \`scp-runner-dep\` — unconditionally, so every managed-execution class is **installable** offline.
-It does not follow that any of them is **enabled**: each class is off until an operator names its
-image, and for two of the three THAT SETTING IS THE ONLY CONTROL, so \`install.sh\` deliberately
-does not set it for you. It pushes and digest-pins all three into your registry and then prints the
-exact refs, which you supply yourself:
+Two things do not follow from that, and both are worth knowing before you plan a rollout: none of
+them is **enabled**, and not every deployment mode can **run** one.
 
-| Runner | What it does | How to enable |
+**\`--mode helm\` cannot start any of them today, and no chart value changes that.** The
+orchestrator plugins launch a runner with the docker CLI (\`docker create\` / \`docker cp\` /
+\`docker start\`) against a host Docker daemon. A Kubernetes pod has none, this chart deliberately
+mounts no docker socket (a container-escape risk it will not paper over), and the plugins have no
+Kubernetes-native launch mode yet — see \`helm/templates/runner-iac.yaml\` ("HONEST SCOPE") and
+\`helm/README.md\`. Under helm, \`install.sh\` therefore prints the pinned refs as an **inventory**,
+not as an instruction: there is nothing to set that would make managed execution run.
+\`managedIac.enabled=true\` renders the env vars and the Job-template on-ramp; it does not launch a
+container. \`SCP_MANAGED_SCAN_RUNNER_IMAGE\` has no chart value at all. Plan managed execution on a
+compose/VM instance until that changes.
+
+**\`--mode compose\` — which is also what the \`scp.platform\` Ansible role runs on a VM — is the
+mode where they work.** Each class is off until you name its image, that image setting IS the
+class's on/off control, and here the setting is an environment variable on the \`scp\` service. So
+\`install.sh\` pushes and digest-pins all three, prints the exact refs, and leaves the choice to you:
+
+| Runner | What it does | How to enable (compose/VM) |
 | --- | --- | --- |
-| \`scp-runner-iac\` | managed-IaC releases for orgs without a pipeline | \`managedIac.enabled=true\` — \`install.sh\` already sets \`managedIac.runnerImage\` for you |
-| \`scp-runner-scan\` | the commander's promotion-scan toolchain (trivy + oscap) | \`SCP_MANAGED_SCAN_RUNNER_IMAGE\` (no chart value yet — see \`helm/README.md\`) |
-| \`scp-runner-dep\` | the isolated manifest editor for dependency bumps | \`managedDep.runnerImage=<printed ref>\` — this class WRITES to your repositories |
+| \`scp-runner-iac\` | managed-IaC releases for orgs without a pipeline | \`SCP_MANAGED_IAC_RUNNER_IMAGE=<printed ref>\` |
+| \`scp-runner-scan\` | the commander's promotion-scan toolchain (trivy + oscap) | \`SCP_MANAGED_SCAN_RUNNER_IMAGE=<printed ref>\` |
+| \`scp-runner-dep\` | the isolated manifest editor for dependency bumps | \`SCP_MANAGED_DEP_RUNNER_IMAGE=<printed ref>\` — this class WRITES to your repositories |
 
-Pass the printed refs through \`install.sh\`'s \`SCP_EXTRA_HELM_SET\`, e.g.:
+Add the ones you want to the \`scp\` service's \`environment:\` block in the retargeted compose file
+\`install.sh\` wrote, then \`docker compose up -d\` again:
 
-\`\`\`bash
-SCP_EXTRA_HELM_SET="managedDep.runnerImage=<the ref install.sh printed>" ./install.sh ...
+\`\`\`yaml
+services:
+  scp:
+    environment:
+      SCP_MANAGED_SCAN_RUNNER_IMAGE: <the ref install.sh printed>
 \`\`\`
+
+**Two prerequisites, or none of those settings starts anything.** Both widen what the \`scp\`
+container can do to its host, so both are deliberately yours to decide rather than something
+\`install.sh\` arranges:
+
+1. **a docker CLI inside the container** — the scpd image ships none (it carries cosign and skopeo
+   and nothing else). Mount one and point \`SCP_MANAGED_RUNNER_DOCKER_BINARY\` at its path.
+2. **a reachable Docker daemon** — a mounted \`/var/run/docker.sock\`, or \`DOCKER_HOST\`. Each
+   runner is launched with \`docker create\` / \`docker cp\` / \`docker start\`, and the shipped
+   compose file mounts no socket.
+
+Without both, the image ref is set and no runner can be launched.
 
 Use the printed **digest-pinned** ref rather than a tag you compose yourself: the digest is the
 thing this bundle's signatures actually attest to, and a bare tag in your registry is mutable.

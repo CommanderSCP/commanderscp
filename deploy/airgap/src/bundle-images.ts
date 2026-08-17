@@ -99,7 +99,7 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     defaultRef: "scp-runner-iac:dev",
     defaultSource: "docker-daemon",
     flagDescription: "scp-runner-iac image reference to bundle",
-    doc: "the isolated managed-IaC executor image (helm: managedIac.runnerImage)"
+    doc: "the isolated managed-IaC executor image (env: SCP_MANAGED_IAC_RUNNER_IMAGE)"
   },
   {
     name: "scp-runner-scan",
@@ -115,7 +115,7 @@ export const BUNDLE_IMAGE_SPECS: readonly BundleImageSpec[] = [
     defaultRef: "scp-runner-dep:dev",
     defaultSource: "docker-daemon",
     flagDescription: "scp-runner-dep image reference to bundle",
-    doc: "the isolated managed-dep manifest editor image (helm: managedDep.runnerImage)"
+    doc: "the isolated managed-dep manifest editor image (env: SCP_MANAGED_DEP_RUNNER_IMAGE)"
   },
   {
     name: "postgres-eval",
