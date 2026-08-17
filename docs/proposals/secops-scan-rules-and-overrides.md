@@ -38,6 +38,7 @@ Five parts, verbatim in substance:
 | D4 | An approved override is a **standing grant per (component × finding), with an expiry**. |
 | D5 | **Administrator serves as SecOps for now**; a least-privilege security role comes later. |
 | D6 | Adjacent defects found during the census are **spun off**, not folded in. |
+| D7 | **Ingestion and polling coverage are decoupled from automation enablement** (§10). Observation is not automation. |
 
 D1 is a happy convergence: "latest *within the major line*" is exactly `dependency_lines`' identity `(org_id, ecosystem, coordinate, major)`. The security rule and the inventory's key are the same shape, arrived at independently.
 
@@ -129,9 +130,50 @@ Three independent lenses attacked the shape. The blocking ones and their answers
 
 ADR-0020 states as a **preserved invariant** that the promotion scan step "adds no way to loosen" E6. The exclusion dimension is exactly a way to loosen it. ADR-0016 is therefore the *wrong and insufficient* ADR to amend: this needs a new ADR that supersedes that invariant explicitly, with ADR-0020 amended to point at it. Quietly extending ADR-0016 would leave two Accepted documents contradicting each other — a failure mode this project has hit before.
 
-## 10. Open item requiring an owner decision
+## 10. Coverage decoupling (D7 — decided 2026-08-17)
 
-**Evaluation coverage must be broader than automation coverage — and it has to be answered at two levels or D1 is only enforceable where someone already opted into dependency automation.**
+**Decision: ingestion and polling coverage are decoupled from automation enablement.** Evaluation coverage becomes broader than automation coverage, at both levels.
+
+### 10.1 This REVERSES an earlier owner requirement — it does not correct a misplaced gate
+
+**Recorded precisely, because getting this wrong invites a future reader to re-tighten it as a bug fix.**
+
+An earlier draft of this section argued that the enablement gate was the **gate-1 flip** — the opt-in ADR-0032 introduced because Mode C has SCP *author bump commits*, a repository-**write** credential class that required a charter amendment — and that applying it to *ingestion* was an over-application, since reads need no write credential. **That argument is wrong on its load-bearing half**, and the correction comes from the session that was present for the original specification: when the owner first specified this feature they said, in the same breath as the enablement chain, *"ingestion only for enabled components/services."*
+
+So the gate on ingestion was **an original, explicit requirement**, not a consequence of the credential-class reasoning. D7 therefore **reverses a stated requirement of the owner's, on 2026-08-17** — deliberately and with the tradeoff understood. It does not repair a mistake. Any future reader who finds this section and concludes the gate was misplaced all along, and re-tightens it, will be undoing a decision rather than fixing one.
+
+What survives from the original argument, and is still true: **a component that has not opted into automation still gets no bumps.** Nothing is authored, no PR is opened, no branch is pushed. Decoupling makes a component *evaluable*, not *automated*. That is the reason the reversal is affordable — not the reason it is owed.
+
+### 10.1a The real cost: reads against tenant repositories
+
+"No **write** credential is used" is true. "No credential is used" is false, and that is where the actual cost sits.
+
+Ingestion reads a component's repository through its git-provider binding — a **read** credential, against a tenant's own source, daily, at whatever scale the estate has. Decoupling means SCP begins reading repositories belonging to components **nobody opted in**. Nothing is authored, but the posture changes: more API calls against the tenant's provider, more rate-limit surface there, and a materially broader answer to *"whose source does SCP touch?"*
+
+This is not disqualifying, and the owner has decided it. It is stated here because an earlier draft framed the cost as egress-to-public-indexes, and the larger cost is reads-against-tenant-repos. A reviewer weighing D7 should weigh that one.
+
+### 10.2 What must not change
+
+- **No component acquires an automation behaviour it did not opt into.** The cleanest expression is a **second, separate predicate** — rather than widening what `resolveComponentIngestionGate` returns. Widening the existing gate's meaning would silently re-point every current caller, which is the same "retroactive custody change" objection that got an adjacent relaxation rejected on 2026-08-17. **Name the new predicate for what it authorises (evaluability), never for what it is not** — a name like "weakly enabled" invites reading it as a lesser form of the opt-in rather than a different question.
+- **Air-gap posture.** `version-poll.ts:47`'s care that air-gapped sites never dial registries on a timer is preserved by ADR-0032 §7d (commander-only), and must remain explicit rather than incidental.
+- **Repo reads are still reads of someone's repository.** Ingestion needs a source mapping and a readable repo; a component with neither is `not_addressable` and stays so. Decoupling widens *who is eligible*, not *what SCP may reach*.
+- **`dependencyManagement: {managedHere, reason}`** still answers "is this data expected here?" — on an outpost the answer is structurally empty by design, and a scan gate reading it must fail closed rather than treat empty as clean.
+
+### 10.3 Cost (measured)
+
+Index plugin instances are capped at **five per org**, started on demand and torn down per tick, so widening adds **no** subprocesses. Decision volume is already bounded by `insertDecisionIfChanged`.
+
+**Rate-limit exposure is not uniform, and bounding by the obvious axis does not help.** The four language registries are generous — there the ceiling really is just sequential HTTP, one query per distinct line, one tick per day. **`oci` is the throttle-sensitive one**, Docker Hub especially. So a widening bounded to "lines belonging to scan-gated components" mixes the cheap and expensive cases and still throttles.
+
+**Preferred shape: widen to all lines, and make the widening observable and bounded per tick** — a cap, with a *stated skip reason* on every line it did not reach. A partially-covered estate must say so rather than silently answering NULL and manufacturing override requests out of its own incompleteness. This is the same honesty rule as the ingestion stamp: **an absent answer must carry why.** If Docker Hub proves binding in practice, a per-ecosystem knob is a small follow-up rather than a design to be locked into now.
+
+### 10.4 Ownership
+
+Both levels live in `apps/server/src/dependencies/` — `resolveComponentIngestionGate` / `ingestComponentManifests` and `version-poll.ts`'s work-list — which is the Continuous Dependency Upgrades session's active surface, with three unmerged branches on it. **This section is a statement of the decision and its constraints, not a licence to edit those files.** Sequencing and implementation are being agreed with that session.
+
+### 10.5 The problem this solves
+
+*(Retained as the rationale of record.)*
 
 D1 says a vendor dependency is accepted only when we are on the latest of its major line, with no exception but an approved override. That rule can only be *evaluated* where `latest_version` is known. It is NULL for two independent reasons:
 
@@ -140,9 +182,7 @@ D1 says a vendor dependency is accepted only when we are on the latest of its ma
 
 Both fail closed. Under "no exceptions unless an override", that means an override request per unevaluable dependency — on a sparsely-enabled estate, potentially an override queue on day one, which would make the feature unusable at rollout. This is an implementation problem *with* the rule, not an argument against it.
 
-Measured cost of widening (contributed by the CDU session): index plugin instances are capped at five per org, started on demand and torn down per tick, so widening adds **no** subprocesses; the real ceilings are sequential HTTP (one registry query per line, one tick a day) and registry rate limits — Docker Hub first. Decision volume is already bounded by `insertDecisionIfChanged`. Structurally cheap, operationally bounded.
-
-**The question for the owner:** should ingestion and polling coverage be decoupled from *automation* enablement — same mechanism, different trigger — so the rule is evaluable everywhere it is enforced?
+This is why D7 was taken: without it, D1 is only enforceable where someone already opted into dependency automation, which is not a security posture — it is an accident of who happened to want bump PRs.
 
 ## 11. Charter check
 
