@@ -47,31 +47,38 @@ const {
   OptOutDialogBody,
   buildEnablePolicyRequest,
   buildOptOutPolicyRequest,
-  policyWriteRefusal
+  policyWriteRefusal,
+  DIALOG_COPY
 } = await import("./component-dependencies");
+type ReadState<T> = import("./component-dependencies").ReadState<T>;
 
 const noWrite = {
   onWrite: () => {},
   writeState: { busy: false, error: null, reset: () => {}, lastSuccess: null }
 };
 
+type BumpsResponse = {
+  component: typeof COMPONENT;
+  rows: ReturnType<typeof bumpFixture>[];
+  nextCursor: null;
+};
+
 function renderView(
   over: {
     inventory?: ReturnType<typeof inventoryFixture>;
-    unlock?: ReturnType<typeof unlockFixture> | undefined;
+    /** A response = a successful read; a ReadState = that state verbatim. */
+    unlock?: ReturnType<typeof unlockFixture> | ReadState<ReturnType<typeof unlockFixture>>;
     instanceRole?: "commander" | "outpost" | "retrans" | undefined;
-    bumps?: {
-      component: typeof COMPONENT;
-      rows: ReturnType<typeof bumpFixture>[];
-      nextCursor: null;
-    };
+    bumps?: BumpsResponse | ReadState<BumpsResponse>;
   } = {}
 ): string {
+  const unlock = over.unlock ?? unlockFixture();
+  const bumps = over.bumps ?? { component: COMPONENT, rows: [], nextCursor: null };
   return renderToStaticMarkup(
     <DependenciesView
-      unlock={"unlock" in over ? over.unlock : unlockFixture()}
+      unlock={"status" in unlock ? unlock : { status: "ok", data: unlock }}
       inventory={over.inventory ?? inventoryFixture()}
-      bumps={over.bumps ?? { component: COMPONENT, rows: [], nextCursor: null }}
+      bumps={"status" in bumps ? bumps : { status: "ok", data: bumps }}
       instanceRole={"instanceRole" in over ? over.instanceRole : "commander"}
       {...noWrite}
     />
@@ -452,6 +459,21 @@ describe("the header strip", () => {
     }
   });
 
+  it("instance unlock read PENDING → a skeleton, never `could not be read`; FAILED → `—` titled could not be read + the diagnosis", () => {
+    const pending = renderView({ unlock: { status: "pending" } });
+    expect(pending).toContain('data-testid="instance-unlock-pending"');
+    expect(pending).not.toContain("could not be read");
+    expect(pending).not.toContain('data-testid="instance-unlock"');
+    const failed = renderView({
+      unlock: { status: "error", error: new Error("getDependencySubscriptionUnlock: 502") }
+    });
+    expect(failed).toContain('data-testid="instance-unlock-unreadable"');
+    expect(failed).toContain(
+      "The instance unlock could not be read: getDependencySubscriptionUnlock: 502"
+    );
+    expect(failed).not.toContain('data-testid="instance-unlock-pending"');
+  });
+
   it("component gate: switches on componentGate.reason (its own vocabulary), naming the enabler's source and tier", () => {
     const enabled = renderToStaticMarkup(
       <ComponentGateLine gate={inventoryFixture().componentGate} onWhy={() => {}} />
@@ -489,7 +511,7 @@ describe("the header strip", () => {
 });
 
 describe("the two policy documents — exact wire shapes", () => {
-  it("enable: objectRef scope, enforcement present, effect enabled:true with granularity/delivery, domainId = the containment domain", () => {
+  it("enable: objectRef scope, enforcement present, effect enabled:true with granularity/delivery, domainId = THE COMPONENT ITSELF", () => {
     expect(
       buildEnablePolicyRequest({
         component: COMPONENT,
@@ -498,7 +520,7 @@ describe("the two policy documents — exact wire shapes", () => {
       })
     ).toEqual({
       name: "dependency subscription: checkout-api",
-      domainId: COMPONENT.domainId,
+      domainId: COMPONENT.id,
       properties: {
         enforcement: "advisory",
         scope: { objectRef: COMPONENT.id },
@@ -515,20 +537,31 @@ describe("the two policy documents — exact wire shapes", () => {
     });
   });
 
-  it("enable: NO domainId key at all when the component has no containment domain (org-root)", () => {
+  it("enable: domainId is the component's own id even when it has NO containment domain (org-root) — never the containment domain, never omitted", () => {
+    // POST /policies authorizes policy:write at `domainId ?? org` and RBAC expands upward from
+    // there: the containment domain would refuse a component-bound team; omitting it would refuse
+    // everyone below the org root. The component itself admits component-, domain- and org-bound
+    // administrators alike, and the policy lands contained by the component.
     const req = buildEnablePolicyRequest({
       component: { ...COMPONENT, domainId: null },
       granularity: "patch",
       delivery: "pull_request"
     });
-    expect("domainId" in req).toBe(false);
+    expect(req.domainId).toBe(COMPONENT.id);
+    const contained = buildEnablePolicyRequest({
+      component: COMPONENT,
+      granularity: "patch",
+      delivery: "pull_request"
+    });
+    expect(contained.domainId).toBe(COMPONENT.id);
+    expect(contained.domainId).not.toBe(COMPONENT.domainId);
   });
 
   it("opt out: SAME objectRef scope, the line at the EFFECT level (coordinate verbatim, major as a string), enabled:false", () => {
     const req = buildOptOutPolicyRequest({ component: COMPONENT, line: rowFixture().line });
     expect(req).toEqual({
       name: "dependency opt-out: @acme/lib 1 for checkout-api",
-      domainId: COMPONENT.domainId,
+      domainId: COMPONENT.id,
       properties: {
         enforcement: "advisory",
         scope: { objectRef: COMPONENT.id },
@@ -566,7 +599,7 @@ describe("the two policy documents — exact wire shapes", () => {
 });
 
 describe("refusals are rendered, with the decision_id when the server sent one", () => {
-  it("403 → names policy:write at this component's domain (or the org) + the server's detail", () => {
+  it("403 → names policy:write at this component (or above) + the server's detail", () => {
     const r = policyWriteRefusal(
       new ScpApiError("Forbidden", {
         status: 403,
@@ -578,7 +611,7 @@ describe("refusals are rendered, with the decision_id when the server sent one",
         }
       })
     );
-    expect(r.message).toContain("policy:write at this component's domain (or the org)");
+    expect(r.message).toContain("policy:write at this component (or above)");
     expect(r.message).toContain("policy:write is required at org");
     expect(r.decisionId).toBeUndefined();
   });
@@ -702,16 +735,73 @@ describe("the bumps section", () => {
     expect(html.match(/data-testid="bump-row"/g)).toHaveLength(2);
     expect(html).toContain("#42");
     expect(html).not.toMatch(/<a[^>]*href="[^"]*42/);
-    expect(html).toContain("open");
+    expect(html).toContain("not merged");
     expect(html).toContain("merged ");
     expect(html).toContain('data-testid="bump-merge-why"');
     expect(html).toContain("1.2.3 → 1.2.4");
     expect(html).not.toContain('data-testid="bumps-not-commander"');
   });
 
-  it("commander with no bumps → `No bumps yet.`", () => {
+  it("commander with a SUCCESSFUL read of zero bumps → `No bumps yet.`", () => {
     const html = renderView();
     expect(html).toContain("No bumps yet.");
+    expect(html).toContain('data-testid="bumps-empty"');
+  });
+
+  it("commander while the bumps read is PENDING → a skeleton, never `No bumps yet.`", () => {
+    const html = renderView({ bumps: { status: "pending" } });
+    expect(html).toContain('data-testid="bumps-pending"');
+    expect(html).not.toContain("No bumps yet.");
+    expect(html).not.toContain('data-testid="bumps-empty"');
+  });
+
+  it("commander when the bumps read FAILED → the amber unknown pill with the diagnosis, never `No bumps yet.`", () => {
+    const html = renderView({
+      bumps: { status: "error", error: new Error("listComponentDependencyBumps: 503") }
+    });
+    expect(html).toContain('data-testid="bumps-unreadable"');
+    expect(html).toContain("Bumps could not be read");
+    expect(html).toContain("listComponentDependencyBumps: 503");
+    expect(html).not.toContain("No bumps yet.");
+    expect(html).not.toContain('data-testid="bump-row"');
+  });
+
+  it("the Merge cell is READ, never inferred: no pull request reported → `—` (not `open`); a PR number with no merge record → `not merged`", () => {
+    const noPr = renderToStaticMarkup(
+      <BumpsSection
+        bumps={{
+          status: "ok",
+          data: {
+            component: COMPONENT,
+            rows: [bumpFixture({ pullRequestNumber: null, mergedAt: null, merge: null })],
+            nextCursor: null
+          }
+        }}
+        instanceRole="commander"
+      />
+    );
+    const mergeCell = noPr.match(/data-testid="bump-merge"[^>]*>(.*?)<\/td>/)?.[1] ?? "";
+    expect(mergeCell).toContain("—");
+    expect(mergeCell).not.toMatch(/\bopen\b/);
+    expect(mergeCell).not.toContain("not merged");
+    expect(mergeCell).toContain("no pull request has been reported");
+
+    const withPr = renderToStaticMarkup(
+      <BumpsSection
+        bumps={{
+          status: "ok",
+          data: {
+            component: COMPONENT,
+            rows: [bumpFixture({ pullRequestNumber: 42, mergedAt: null, merge: null })],
+            nextCursor: null
+          }
+        }}
+        instanceRole="commander"
+      />
+    );
+    const withPrCell = withPr.match(/data-testid="bump-merge"[^>]*>(.*?)<\/td>/)?.[1] ?? "";
+    expect(withPrCell).toContain("not merged");
+    expect(withPrCell).not.toMatch(/\bopen\b/);
   });
 
   it.each(["outpost", "retrans", undefined] as const)(
@@ -719,7 +809,10 @@ describe("the bumps section", () => {
     (role) => {
       const html = renderToStaticMarkup(
         <BumpsSection
-          bumps={{ component: COMPONENT, rows: [bumpFixture()], nextCursor: null }}
+          bumps={{
+            status: "ok",
+            data: { component: COMPONENT, rows: [bumpFixture()], nextCursor: null }
+          }}
           instanceRole={role}
         />
       );
@@ -732,7 +825,26 @@ describe("the bumps section", () => {
 });
 
 describe("vocabulary and copy rules over the whole rendered tab", () => {
-  const html = renderView({
+  const rows = [
+    rowFixture(),
+    rowFixture({
+      line: {
+        id: "019f0000-0000-7000-8000-00000000aaa2",
+        ecosystem: "oci",
+        coordinate: "alpine",
+        major: "3.18",
+        tagPattern: "3.18.*"
+      },
+      subscription: {
+        enabled: false,
+        reason: "disabled",
+        granularity: "patch",
+        delivery: "pull_request",
+        contributions: []
+      }
+    })
+  ];
+  const tab = renderView({
     inventory: inventoryFixture({
       rows: [
         rowFixture(),
@@ -756,10 +868,51 @@ describe("vocabulary and copy rules over the whole rendered tab", () => {
     }),
     bumps: { component: COMPONENT, rows: [bumpFixture()], nextCursor: null }
   });
-  const text = html.replace(/<[^>]+>/g, " ");
+  // The dialogs portal nothing under a static render, so their bodies (and the empty states the
+  // tab above does not show because it has rows) are rendered into the same sweep, and the dialog
+  // DESCRIPTIONS are swept as the strings the JSX reads.
+  const bodies = [
+    <EnableDialogBody
+      key="enable"
+      component={COMPONENT}
+      busy={false}
+      error={null}
+      onConfirm={() => {}}
+      onCancel={() => {}}
+    />,
+    <OptOutDialogBody
+      key="opt-out"
+      component={COMPONENT}
+      line={rows[0]!.line}
+      busy={false}
+      error={null}
+      onConfirm={() => {}}
+      onCancel={() => {}}
+    />,
+    <ContributionsBody
+      key="why"
+      heading="Row contributions"
+      contributions={rows[0]!.subscription.contributions}
+    />,
+    <InventoryEmptyState key="empty" inventory={inventoryFixture()} />
+  ].map((el) => renderToStaticMarkup(el));
+  const html = [tab, ...bodies].join("\n");
+  // Every `title="…"` attribute value is swept TOO — a tooltip is rendered copy; stripping tags
+  // first would silently exempt it (the badge title once said "subscribed" and passed).
+  const titles = [...html.matchAll(/\btitle="([^"]*)"/g)].map((m) => m[1]!).join("\n");
+  const text = [html.replace(/<[^>]+>/g, " "), titles, ...Object.values(DIALOG_COPY)].join("\n");
 
-  it("never a bare `subscribe`, and every `subscription` is spelled in full as `dependency subscription`", () => {
-    expect(text).not.toMatch(/\bsubscribe\b/i);
+  it("sweeps title attributes (a control: the badge title IS in the swept text)", () => {
+    expect(titles).toContain(
+      "the instance is unlocked, a policy enables it and nothing opts it out."
+    );
+    expect(text).toContain(
+      "the instance is unlocked, a policy enables it and nothing opts it out."
+    );
+  });
+
+  it("never a bare `subscribe`/`subscribed`, and every `subscription` is spelled in full as `dependency subscription`", () => {
+    expect(text).not.toMatch(/\bsubscribe[ds]?\b/i);
     const bare = text.match(/(?<!dependency[- ])\bsubscriptions?\b/gi) ?? [];
     expect(bare).toEqual([]);
   });

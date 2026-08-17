@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { router } from "./router";
+import { ComponentDependenciesPage } from "./routes/component-dependencies";
 
 /**
  * THE ROUTE TABLE STILL RESOLVES THE URLS OTHER THINGS DEPEND ON.
@@ -34,6 +35,7 @@ import { router } from "./router";
  * | remove `componentSettingsRoute` | the component-settings case FAILS |
  * | make the walk return every path as `/` | the anti-vacuity test FAILS (an unknown path would "resolve") |
  * | point `serviceBoardLegacyRoute` at a different component | "the SAME view" FAILS — the path surviving while its content moved is the same bug from outside |
+ * | `component: ComponentDependenciesPage` -> `RegistryDetailPage` on the /dependencies child | "renders ComponentDependenciesPage" FAILS — the URL registered but pointed at the wrong view |
  */
 
 /** Every registered path pattern, walked from the real tree — not from source text, so a literal
@@ -89,9 +91,8 @@ describe("router: URLs other code depends on still resolve", () => {
     expect(resolves(`/services/${ID}/definitely-not-a-tab`)).toBe(false);
   });
 
-  it("`/services/{id}` and `/services/{id}/board` render the SAME view", () => {
-    // The old URL must not merely resolve — it must still show the board. A path that survived while
-    // its content moved elsewhere is the same bug as far as anyone following the link is concerned.
+  /** Every registered path with the component it renders — for the "same/right view" pins below. */
+  function registeredComponents(): { path: string; component: unknown }[] {
     const kids = (router.routeTree as unknown as { children?: unknown[] }).children ?? [];
     const flat: { path: string; component: unknown }[] = [];
     const walk = (route: unknown, prefix = "") => {
@@ -104,11 +105,26 @@ describe("router: URLs other code depends on still resolve", () => {
       for (const k of Array.isArray(r.children) ? r.children : []) walk(k, full);
     };
     for (const k of kids) walk(k);
+    return flat;
+  }
+
+  it("`/services/{id}` and `/services/{id}/board` render the SAME view", () => {
+    // The old URL must not merely resolve — it must still show the board. A path that survived while
+    // its content moved elsewhere is the same bug as far as anyone following the link is concerned.
+    const flat = registeredComponents();
 
     const index = flat.find((r) => r.path === "/services/$idOrUrn/");
     const legacy = flat.find((r) => r.path === "/services/$idOrUrn/board");
     expect(index?.component, "the index child must exist").toBeDefined();
     expect(legacy?.component, "the legacy /board child must exist").toBeDefined();
     expect(legacy?.component).toBe(index?.component);
+  });
+
+  it("`/components/{id}/dependencies` renders ComponentDependenciesPage (the URL AND the view — a registered path pointed at another page is the same break)", () => {
+    const dependencies = registeredComponents().find(
+      (r) => r.path === "/components/$idOrUrn/dependencies"
+    );
+    expect(dependencies?.component, "the /dependencies child must exist").toBeDefined();
+    expect(dependencies?.component).toBe(ComponentDependenciesPage);
   });
 });

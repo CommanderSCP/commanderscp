@@ -97,6 +97,16 @@ import { decisionIdOf } from "../components/decision/decision-format";
  * instead of drawing an empty table that would look up to date.
  */
 
+/**
+ * One PARALLEL read as the view sees it. The page renders as soon as the inventory resolves; the
+ * unlock and the bumps are separate queries that may still be pending or may have failed. The
+ * view is told WHICH, so a read that has not finished is never painted as "could not be read", and
+ * a read that failed is never painted as "none" — the same honesty rule the inventory's empty
+ * states follow ("never No <noun> for an unknown").
+ */
+export type ReadState<T> =
+  { status: "pending" } | { status: "error"; error: unknown } | { status: "ok"; data: T };
+
 // -------------------------------------------------------------------------------------------
 // The two policy documents this tab authors — pure builders, exported so the exact wire shape is
 // pinned by a unit test independent of the dialogs that collect their inputs.
@@ -106,10 +116,13 @@ import { decisionIdOf } from "../components/decision/decision-format";
  * The enabling policy for one component: `scope.objectRef` = the component, one
  * `dependencySubscription` effect `enabled: true` with the chosen granularity/delivery,
  * `enforcement: "advisory"` (the policy document requires an enforcement; the resolver never reads
- * it). `domainId` is the component's CONTAINMENT domain when it has one — `POST /policies`
- * authorizes `policy:write` at `domainId ?? org` before it looks at the scope, so an administrator
- * bound at that domain can author this only when the body names it. Omitted (not `null`) when the
- * component sits at the org root, so the org gate is the one that runs.
+ * it). `domainId` is THE COMPONENT ITSELF (its own object id): `objects.domain_id` is a general
+ * containment-parent pointer (any org object is accepted), `POST /policies` authorizes
+ * `policy:write` at `domainId ?? org` and RBAC expands UPWARD from there — so a principal bound at
+ * the component, at its containment domain, or at the org all pass, and the written policy is
+ * contained by the component, where its team can later PATCH/DELETE it (those routes authorize at
+ * the policy's own id). Sending the containment domain instead would refuse the component-bound
+ * team; omitting it would refuse everyone below the org root.
  */
 export function buildEnablePolicyRequest(input: {
   component: ComponentDependencyReadSubject;
@@ -119,7 +132,7 @@ export function buildEnablePolicyRequest(input: {
   const { component, granularity, delivery } = input;
   return {
     name: `dependency subscription: ${component.name}`,
-    ...(component.domainId ? { domainId: component.domainId } : {}),
+    domainId: component.id,
     properties: {
       enforcement: "advisory",
       scope: { objectRef: component.id },
@@ -133,6 +146,7 @@ export function buildEnablePolicyRequest(input: {
  * component — never a line selector in the scope, which has no such thing) and the line named at
  * the EFFECT level (`ecosystem`, `coordinate` VERBATIM, `major` as the ecosystem spells it), with
  * `enabled: false`. A disable at any tier wins, so this opts the line out whatever enabled it.
+ * `domainId` = the component itself, for the reasons on `buildEnablePolicyRequest`.
  */
 export function buildOptOutPolicyRequest(input: {
   component: ComponentDependencyReadSubject;
@@ -141,7 +155,7 @@ export function buildOptOutPolicyRequest(input: {
   const { component, line } = input;
   return {
     name: `dependency opt-out: ${line.coordinate} ${line.major} for ${component.name}`,
-    ...(component.domainId ? { domainId: component.domainId } : {}),
+    domainId: component.id,
     properties: {
       enforcement: "advisory",
       scope: { objectRef: component.id },
@@ -161,9 +175,10 @@ export function buildOptOutPolicyRequest(input: {
 
 /**
  * How a policy write's refusal is rendered (charter principle 6: every blocked response is
- * explained). 403 → the permission and where it is needed (the FIRST gate on `POST /policies` is
- * `policy:write` at the body's `domainId` or the org; the scope-authority check comes after) plus
- * the server's own detail; 409 → the server's detail (a standing delegation names the file/tool
+ * explained). 403 → the permission and where it is needed (`POST /policies` authorizes
+ * `policy:write` at the body's `domainId` — this component — and RBAC expands upward, so a binding
+ * at the component or anywhere above it passes) plus the server's own detail; 409 → the server's
+ * detail (a standing delegation names the file/tool
  * that owns this repo's updates) plus the `decision_id` for a Why link; anything else → the
  * message as received. Never a fabricated Why link: `decisionId` is set only when the problem
  * body carried one.
@@ -173,7 +188,7 @@ export function policyWriteRefusal(error: unknown): { message: string; decisionI
     const detail = error.problem?.detail ?? error.message;
     if (error.status === 403) {
       return {
-        message: `Refused: this needs policy:write at this component's domain (or the org). ${detail}`
+        message: `Refused: this needs policy:write at this component (or above). ${detail}`
       };
     }
     const decisionId = decisionIdOf(error);
@@ -199,7 +214,7 @@ const ROW_REASON_BADGE: Record<
     label: "enabled",
     tone: "success",
     title:
-      "This component is subscribed to this major line: the instance is unlocked, a policy enables it and nothing opts it out."
+      "This component follows this major line under an enabled dependency subscription: the instance is unlocked, a policy enables it and nothing opts it out."
   },
   disabled: {
     label: "opted out",
@@ -835,20 +850,43 @@ function InventoryRowView({
 // Bumps section.
 // -------------------------------------------------------------------------------------------
 
+/**
+ * The Merge cell — READ off what is stored, never inferred: `mergedAt` (a confirmed merge) → "merged
+ * <date>"; else the newest merge Decision's verdict; else, when a pull request NUMBER is on record,
+ * "not merged" (the stated absence — the server never observes a close-without-merge, so "open" would
+ * be a claim it cannot make); else `—`, because with no pull request reported there is nothing whose
+ * merge state could be described.
+ */
 function bumpProgress(bump: ComponentDependencyBump): React.JSX.Element {
   if (bump.mergedAt) return <>merged {formatWhen(bump.mergedAt)}</>;
   if (bump.merge) return <>{bump.merge.verdict}</>;
-  return <>open</>;
+  if (bump.pullRequestNumber === null) {
+    return (
+      <span
+        className="text-slate-400"
+        title="Dispatched — no pull request has been reported for this bump yet, so there is no merge to describe."
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <span title="No merge has been recorded for this pull request. A close without a merge is not observed here.">
+      not merged
+    </span>
+  );
 }
 
 /** The bumps section — a table on the commander; on any other role a sentence, because third-party
  *  polls and bump dispatch run only on a declared commander and an empty table there would look
- *  up to date. */
+ *  up to date. On the commander the read's STATE decides: pending → a skeleton row; failed → an
+ *  amber `unknown` line (the page's error notice carries the diagnosis); only a SUCCESSFUL read
+ *  with zero rows says "No bumps yet." */
 export function BumpsSection({
   bumps,
   instanceRole
 }: {
-  bumps: ComponentDependencyBumpsResponse | undefined;
+  bumps: ReadState<ComponentDependencyBumpsResponse>;
   instanceRole: InstanceRole | undefined;
 }): React.JSX.Element {
   return (
@@ -861,7 +899,18 @@ export function BumpsSection({
           <p className="text-sm text-slate-600" data-testid="bumps-not-commander">
             Bumps are dispatched by the commander.
           </p>
-        ) : !bumps || bumps.rows.length === 0 ? (
+        ) : bumps.status === "pending" ? (
+          <Skeleton className="h-6 w-full" data-testid="bumps-pending" />
+        ) : bumps.status === "error" ? (
+          <Badge
+            variant="unknown"
+            icon={CircleHelp}
+            title={`The bumps could not be read: ${queryErrorMessage(bumps.error)}`}
+            data-testid="bumps-unreadable"
+          >
+            Bumps could not be read
+          </Badge>
+        ) : bumps.data.rows.length === 0 ? (
           <EmptyState icon={Package} message="No bumps yet." data-testid="bumps-empty" />
         ) : (
           <Table>
@@ -877,7 +926,7 @@ export function BumpsSection({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {bumps.rows.map((b) => (
+              {bumps.data.rows.map((b) => (
                 <TableRow key={`${b.changeId}:${b.manifestPath}`} data-testid="bump-row">
                   <TableCell className="font-mono text-xs text-slate-900">
                     {b.line.coordinate}{" "}
@@ -967,6 +1016,15 @@ type WhyTarget =
   | { kind: "gate"; contributions: readonly DependencySubscriptionContribution[] }
   | { kind: "row"; row: ComponentDependencyInventoryRow };
 
+/** The dialog descriptions — Radix portals them away from a static render, so they are exported
+ *  as strings and swept by the vocabulary test alongside the rendered markup and its titles. */
+export const DIALOG_COPY = {
+  whyRow: "every contribution the merge saw, as recorded.",
+  whyGate: "Every contribution the gate merge saw, as recorded.",
+  enable: "Writes an ordinary policy at this component with a dependency-subscription effect.",
+  optOut: "Writes an ordinary policy at this component with an opt-out effect naming the line."
+} as const;
+
 /**
  * The tab's whole rendering off already-loaded data. `onEnable`/`onOptOut` receive the EXACT policy
  * document to write; `writeState` is the page's mutation state so the open dialog can render the
@@ -980,9 +1038,9 @@ export function DependenciesView({
   onWrite,
   writeState
 }: {
-  unlock: DependencySubscriptionUnlock | undefined;
+  unlock: ReadState<DependencySubscriptionUnlock>;
   inventory: ComponentDependencyInventoryResponse;
-  bumps: ComponentDependencyBumpsResponse | undefined;
+  bumps: ReadState<ComponentDependencyBumpsResponse>;
   instanceRole: InstanceRole | undefined;
   onWrite: (request: CreateObjectRequest, done: () => void) => void;
   writeState: { busy: boolean; error: unknown; reset: () => void; lastSuccess: string | null };
@@ -1010,13 +1068,20 @@ export function DependenciesView({
             items={[
               {
                 label: "Instance",
-                value: unlock ? (
-                  <InstanceUnlockLine unlock={unlock} />
-                ) : (
-                  <span className="text-slate-400" title="The instance unlock could not be read.">
-                    —
-                  </span>
-                )
+                value:
+                  unlock.status === "ok" ? (
+                    <InstanceUnlockLine unlock={unlock.data} />
+                  ) : unlock.status === "pending" ? (
+                    <Skeleton className="h-5 w-40" data-testid="instance-unlock-pending" />
+                  ) : (
+                    <span
+                      className="text-slate-400"
+                      title={`The instance unlock could not be read: ${queryErrorMessage(unlock.error)}`}
+                      data-testid="instance-unlock-unreadable"
+                    >
+                      —
+                    </span>
+                  )
               },
               {
                 label: "This component",
@@ -1122,8 +1187,8 @@ export function DependenciesView({
             </DialogTitle>
             <DialogDescription>
               {why?.kind === "row"
-                ? `Resolved ${why.row.subscription.reason.replaceAll("_", " ")} — every contribution the merge saw, as recorded.`
-                : "Every contribution the gate merge saw, as recorded."}
+                ? `Resolved ${why.row.subscription.reason.replaceAll("_", " ")} — ${DIALOG_COPY.whyRow}`
+                : DIALOG_COPY.whyGate}
             </DialogDescription>
           </DialogHeader>
           {why ? (
@@ -1141,9 +1206,7 @@ export function DependenciesView({
         <DialogContent data-testid="enable-dialog">
           <DialogHeader>
             <DialogTitle>Enable dependency subscriptions for {component.name}</DialogTitle>
-            <DialogDescription>
-              Writes an ordinary policy at this component with a dependency-subscription effect.
-            </DialogDescription>
+            <DialogDescription>{DIALOG_COPY.enable}</DialogDescription>
           </DialogHeader>
           <EnableDialogBody
             component={component}
@@ -1163,9 +1226,7 @@ export function DependenciesView({
         <DialogContent data-testid="opt-out-dialog">
           <DialogHeader>
             <DialogTitle>Opt out of a major line</DialogTitle>
-            <DialogDescription>
-              Writes an ordinary policy at this component with an opt-out effect naming the line.
-            </DialogDescription>
+            <DialogDescription>{DIALOG_COPY.optOut}</DialogDescription>
           </DialogHeader>
           {optOut ? (
             <OptOutDialogBody
@@ -1238,6 +1299,17 @@ export function ComponentDependenciesPage(): React.JSX.Element {
   const inventory = inventoryQuery.data;
   if (!inventory) return <p className="text-sm text-slate-500">No dependency inventory yet.</p>;
 
+  const unlock: ReadState<DependencySubscriptionUnlock> = unlockQuery.error
+    ? { status: "error", error: unlockQuery.error }
+    : unlockQuery.data
+      ? { status: "ok", data: unlockQuery.data }
+      : { status: "pending" };
+  const bumps: ReadState<ComponentDependencyBumpsResponse> = bumpsQuery.error
+    ? { status: "error", error: bumpsQuery.error }
+    : bumpsQuery.data
+      ? { status: "ok", data: bumpsQuery.data }
+      : { status: "pending" };
+
   return (
     <>
       {unlockQuery.error ? (
@@ -1255,9 +1327,9 @@ export function ComponentDependenciesPage(): React.JSX.Element {
         />
       ) : null}
       <DependenciesView
-        unlock={unlockQuery.data}
+        unlock={unlock}
         inventory={inventory}
-        bumps={bumpsQuery.data}
+        bumps={bumps}
         instanceRole={instanceRole}
         onWrite={(request, done) => {
           setLastSuccess(null);

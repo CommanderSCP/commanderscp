@@ -33,6 +33,11 @@ let createImpl: (req: CreateObjectRequest) => Promise<unknown> = async (req) => 
   name: req.name
 });
 let inventoryImpl = () => inventoryFixture({ rows: [rowFixture()] });
+let bumpsImpl: () => Promise<unknown> = async () => ({
+  component: COMPONENT,
+  rows: [bumpFixture()],
+  nextCursor: null
+});
 const readCalls: string[] = [];
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
@@ -67,7 +72,7 @@ vi.mock("../lib/client", () => ({
       },
       bumps: async (idOrUrn: string) => {
         readCalls.push(`bumps:${idOrUrn}`);
-        return { component: COMPONENT, rows: [bumpFixture()], nextCursor: null };
+        return bumpsImpl();
       }
     },
     policies: {
@@ -142,7 +147,7 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
     view.unmount();
   });
 
-  it("ENABLE: confirm sends the objectRef-scoped enabling policy with the CHOSEN granularity/delivery, enforcement present, domainId = the containment domain", async () => {
+  it("ENABLE: confirm sends the objectRef-scoped enabling policy with the CHOSEN granularity/delivery, enforcement present, domainId = the component itself", async () => {
     const view = await renderPage();
     clickInDocument("enable-open");
     await waitUntil(() => inDocument("enable-confirm") !== null, "the enable dialog to open");
@@ -154,7 +159,7 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
     expect(createCalls).toEqual([
       {
         name: "dependency subscription: checkout-api",
-        domainId: COMPONENT.domainId,
+        domainId: COMPONENT.id,
         properties: {
           enforcement: "advisory",
           scope: { objectRef: COMPONENT.id },
@@ -199,7 +204,7 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
     expect(createCalls).toEqual([
       {
         name: "dependency opt-out: @acme/lib 1 for checkout-api",
-        domainId: COMPONENT.domainId,
+        domainId: COMPONENT.id,
         properties: {
           enforcement: "advisory",
           scope: { objectRef: COMPONENT.id },
@@ -251,7 +256,7 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
     }
   });
 
-  it("a 403 refusal names policy:write at this component's domain (or the org)", async () => {
+  it("a 403 refusal names policy:write at this component (or above)", async () => {
     createImpl = async () => {
       throw new ScpApiError("Forbidden", {
         status: 403,
@@ -270,7 +275,7 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
       clickInDocument("opt-out-confirm");
       await waitUntil(() => inDocument("opt-out-error") !== null, "the refusal to render");
       const text = inDocument("opt-out-error")!.textContent ?? "";
-      expect(text).toContain("policy:write at this component's domain (or the org)");
+      expect(text).toContain("policy:write at this component (or above)");
       expect(text).toContain("policy:write is required");
       expect(inDocument("opt-out-error-why")).toBeNull();
       view.unmount();
@@ -288,6 +293,25 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
       "instance:dependency_subscription_unlock"
     );
     view.unmount();
+  });
+
+  it("a FAILED bumps read renders as `could not be read` through the page — never `No bumps yet.` beside the error notice", async () => {
+    bumpsImpl = async () => {
+      throw new Error("listComponentDependencyBumps: 503");
+    };
+    try {
+      const view = await renderPage();
+      await waitUntil(
+        () => inDocument("dependency-bumps-error") !== null,
+        "the bumps error notice"
+      );
+      expect(inDocument("bumps-unreadable")).not.toBeNull();
+      expect(inDocument("bumps-empty")).toBeNull();
+      expect(document.body.textContent).not.toContain("No bumps yet.");
+      view.unmount();
+    } finally {
+      bumpsImpl = async () => ({ component: COMPONENT, rows: [bumpFixture()], nextCursor: null });
+    }
   });
 
   it("the not-recorded empty state renders through the page too (no rows, no stamp, no decision)", async () => {
