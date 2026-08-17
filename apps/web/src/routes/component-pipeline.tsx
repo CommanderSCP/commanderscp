@@ -50,7 +50,7 @@ import {
 } from "@scp/schemas";
 import { client } from "../lib/client";
 import { useAuth } from "../lib/auth-context";
-import { componentPipelineKey } from "../lib/query-client";
+import { componentPipelineKey, federationSelfKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
 import { cn, focusRing } from "../lib/utils";
 import { Card, CardContent, CardHeader } from "../components/ui/card";
@@ -439,6 +439,37 @@ interface JourneyWave {
   waveIndex: number | null;
   name: string | null;
   entries: JourneyEntry[];
+}
+
+/**
+ * SITE SCOPE (owner rule, 2026-08-17): "the global pipeline should have all things global; the
+ * outpost pipeline should only have things managed by that outpost — exceptions being
+ * domain-specific sources, along with the other source being the commander."
+ *
+ * So on any NON-commander site the journey keeps only the stages whose target is part of THIS
+ * instance's own outpost — read off the wire's `stage.outpost` (the trust-domain rule, §10.2/§10.5:
+ * the outpost object naming the target's origin domain), matched against this instance's own
+ * trust domain (`GET /federation/self`.domainId): the target's `outpost.peerDomainId` equals it,
+ * or `outpost.state === "self"` when no record is declared for it yet. Commander-domain targets
+ * (their tile already reads `Outpost hq-outpost`) drop out here. Sources are untouched: the
+ * server already gives an outpost only its own mappings plus the opaque commander input, which
+ * are exactly the two exceptions the owner named. The COMMANDER site is never scoped — it shows
+ * every target it coordinates promotion to, each labelled with its outpost.
+ *
+ * `instanceRole` and `selfDomainId` are PARAMETERS (read by the page off `useAuth()` and the self
+ * query) so the function stays pure and testable; nothing is inferred from names.
+ */
+export function scopePipelineToSite<
+  T extends { stages: ComponentPipelineStage[]; unplacedStages: ComponentPipelineUnplacedStage[] }
+>(data: T, instanceRole: InstanceRole | undefined, selfDomainId: string | null): T {
+  if (instanceRole === "commander") return data;
+  const mine = (o: ComponentPipelineStage["outpost"]): boolean =>
+    o.state === "self" || (selfDomainId !== null && o.peerDomainId === selfDomainId);
+  return {
+    ...data,
+    stages: data.stages.filter((s) => mine(s.outpost)),
+    unplacedStages: data.unplacedStages.filter((s) => mine(s.outpost))
+  };
 }
 
 /**
@@ -4348,8 +4379,27 @@ export function ComponentPipelinePage({
     queryFn: () => client.components.pipeline(idOrUrn!),
     enabled: Boolean(idOrUrn)
   });
+  // Non-commander sites scope the journey to THIS instance's own outpost (scopePipelineToSite);
+  // that needs this instance's trust domain, which only `GET /federation/self` states.
+  const scopeToSelf = instanceRole !== undefined && instanceRole !== "commander";
+  const selfQuery = useQuery({
+    queryKey: federationSelfKey(),
+    queryFn: () => client.federation.self(),
+    enabled: scopeToSelf
+  });
 
-  if (query.isLoading) return <Skeleton className="h-24 w-full" />;
+  if (query.isLoading || (scopeToSelf && selfQuery.isLoading)) {
+    return <Skeleton className="h-24 w-full" />;
+  }
+  if (scopeToSelf && selfQuery.error) {
+    return (
+      <QueryErrorNotice
+        error={selfQuery.error}
+        what="this instance's own trust domain (needed to scope the pipeline to this outpost)"
+        testId="pipeline-self-error"
+      />
+    );
+  }
   if (query.error) {
     return (
       <QueryErrorNotice
@@ -4359,12 +4409,20 @@ export function ComponentPipelinePage({
       />
     );
   }
-  const data = query.data;
-  if (!data) return <p className="text-sm text-slate-500">No pipeline yet.</p>;
+  const unscoped = query.data;
+  if (!unscoped) return <p className="text-sm text-slate-500">No pipeline yet.</p>;
+  const data = scopePipelineToSite(unscoped, instanceRole, selfQuery.data?.domainId ?? null);
+  const hiddenByScope =
+    unscoped.stages.length +
+    unscoped.unplacedStages.length -
+    (data.stages.length + data.unplacedStages.length);
 
   const waves = buildJourney(data);
-  const reaches = data.stages.filter((s) => s.wave !== null).length;
-  const declared = reaches + data.unplacedStages.length;
+  // The topology's reach is a GLOBAL fact (how many of its declared stages the journey reaches),
+  // so it is counted over the unscoped journey even on an outpost, where the tiles below are the
+  // outpost's slice; the scope note beside it says how many stages live elsewhere.
+  const reaches = unscoped.stages.filter((s) => s.wave !== null).length;
+  const declared = reaches + unscoped.unplacedStages.length;
 
   return (
     <div className="flex flex-col gap-4">
@@ -4421,6 +4479,15 @@ export function ComponentPipelinePage({
                 no release topology attached — no wave order; releases go to every placement at once
               </span>
             )}
+            {scopeToSelf ? (
+              <span
+                data-testid="pipeline-scope-note"
+                title={`This is the outpost's slice of the pipeline: only the stages this outpost manages are shown here${hiddenByScope > 0 ? ` (${hiddenByScope} other declared stage${hiddenByScope === 1 ? "" : "s"} belong to other outposts)` : ""}; the whole journey is on the commander.`}
+              >
+                this outpost's stages only
+                {hiddenByScope > 0 ? ` · ${hiddenByScope} elsewhere` : ""}
+              </span>
+            ) : null}
           </span>
         }
       />

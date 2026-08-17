@@ -92,6 +92,7 @@ const {
   ScanSignNodeForTest,
   ScanSignReviewBody,
   buildJourney,
+  scopePipelineToSite,
   laneNodes,
   sourceProvenance,
   sharedConnectorVisible,
@@ -3494,5 +3495,84 @@ describe("the SCAN & SIGN review dialog body (portal-free) — the full tables, 
     expect(beside.split('data-testid="scan-review-export-row"').length - 1).toBe(1);
     expect(beside).toContain('data-testid="scan-review-exports-unparseable"');
     expect(beside).toContain("some export stamps could not be read");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// SITE SCOPE — owner rule 2026-08-17: "the global pipeline should have all things global; the
+// outpost pipeline should only have things managed by that outpost". Read off `stage.outpost`
+// against this instance's own trust domain — never a name, never `maintainedBy`.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+describe("scopePipelineToSite — an outpost sees only the stages its own outpost manages; the commander sees all", () => {
+  const SELF = "01a0032d-b479-714c-83c3-5a8a8a911d7a"; // this outpost's trust domain
+  const HQ = "019fece9-92b3-77f2-ba05-6ddb3aaf0791"; // the commander's
+  const outpostOf = (peerDomainId: string, name: string) => ({
+    state: "outpost" as const,
+    id: "019f0000-0000-7000-8000-0000000000aa",
+    name,
+    trustTier: "il5",
+    peerDomainId,
+    peerRole: "outpost" as const
+  });
+  const data = {
+    stages: [
+      stage({
+        order: 0,
+        deploymentTarget: { ...stage().deploymentTarget, name: "gamma-cluster" },
+        outpost: outpostOf(HQ, "hq-outpost")
+      }),
+      stage({
+        order: 1,
+        deploymentTarget: { ...stage().deploymentTarget, name: "field-cluster" },
+        outpost: outpostOf(SELF, "field-outpost")
+      }),
+      stage({
+        order: 2,
+        deploymentTarget: { ...stage().deploymentTarget, name: "field-edge" },
+        outpost: {
+          ...outpostOf(SELF, "x"),
+          state: "self" as const,
+          id: null,
+          name: "field-outpost",
+          trustTier: null,
+          peerDomainId: null,
+          peerRole: null
+        }
+      })
+    ],
+    unplacedStages: [
+      unplaced({
+        order: 3,
+        deploymentTarget: { ...unplaced().deploymentTarget, name: "us-west-1-prod" },
+        outpost: outpostOf(HQ, "hq-outpost")
+      })
+    ]
+  };
+
+  it("on the COMMANDER nothing is filtered — the global journey keeps every target it coordinates", () => {
+    const out = scopePipelineToSite(data, "commander", HQ);
+    expect(out).toBe(data);
+  });
+
+  it.each(["outpost", "retrans"] as const)(
+    "on a %s site only targets whose outpost is THIS instance's own record (or `self`) remain",
+    (role) => {
+      const out = scopePipelineToSite(data, role, SELF);
+      expect(out.stages.map((s) => s.deploymentTarget.name)).toEqual([
+        "field-cluster",
+        "field-edge"
+      ]);
+      expect(out.unplacedStages).toEqual([]);
+    }
+  );
+
+  it("with the own trust domain not yet known, only `self`-state targets survive — nothing is guessed from names", () => {
+    const out = scopePipelineToSite(data, "outpost", null);
+    expect(out.stages.map((s) => s.deploymentTarget.name)).toEqual(["field-edge"]);
+  });
+
+  it("an undefined role (auth not loaded) is treated as not-the-commander — the conservative side", () => {
+    const out = scopePipelineToSite(data, undefined, SELF);
+    expect(out.stages.map((s) => s.deploymentTarget.name)).toEqual(["field-cluster", "field-edge"]);
   });
 });
