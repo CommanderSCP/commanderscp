@@ -381,6 +381,11 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
   //      A LOOSE `service` FLOOR IS AUTHORED ALONGSIDE so the assertion also rules out the other
   //      plausible mislabel (reporting the assembly at its parent's tier): three contributors, three
   //      distinct labels, one of which can only come from the new switch case.
+  //
+  //      MUTATION-PROVEN (measured 2026-08-17): reverting `case "assembly"` in `tierForObjectType`
+  //      fails ONLY the label arm — `expected 'component' to be 'assembly'` — while the enforcement
+  //      arm above it stays green and the run still fails at maxHigh 0. That contrast is the result,
+  //      not a side effect of it.
   // -----------------------------------------------------------------------------------------
 
   it("(a2) an ASSEMBLY-anchored ceiling is reported at tier 'assembly' — and still BINDS, which is the half that was never broken", async () => {

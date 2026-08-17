@@ -64,9 +64,16 @@ import { mergeScanThresholds } from "./scan-requirements.js";
  * make D1's exhaustive tier assertion pass or fail for reasons that have nothing to do with it.
  *
  * ---------------------------------------------------------------------------------------------
- * MUTATION LOG — each applied ALONE against this file, watched fail, then reverted.
- * (Results recorded in the PR body; the mutations themselves are named on each test.)
+ * MUTATION LOG — each applied ALONE, run, watched fail, then reverted. Measured 2026-08-17.
  * ---------------------------------------------------------------------------------------------
+ *
+ * | Mutation | Result |
+ * |---|---|
+ * | drop `assembly: "assembly"` from `APPROVAL_SCOPE_KEYWORDS` | **A1 FAILS** at the request count (`expected [] to have a length of 1`) — the pre-M22.0 defect exactly: no request row, so no vote was ever possible. A2/D1/D2 stay green |
+ * | make the keyword lookup TOTAL (`… ?? "organization"`) | **A2 FAILS** (`expected [ {…} ] to have a length of 0`) while A1 stays green — the negative control does its job: naming one more rung must not make every string a keyword |
+ * | delete the `scanThresholdForDecision(...)` spread from `inputContext` | **D1 FAILS** (`expected undefined to be defined`); D2's precondition fails with it. A1/A2 stay green |
+ * | remove the `.sort(...)` from `scanThresholdForDecision` | **D2 (b) FAILS** — persisted order came out `org, containment_domain, service, assembly, component`, i.e. verbatim authoring order. **D2 (a) did NOT fail**, exactly as this test's header predicts: the order was stably unsorted, so the rows still collapsed to one. That is why (b) exists |
+ * | `insertDecisionIfChanged` -> `insertDecision` at reconcile.ts's wave gate | **D2 (a) FAILS** — 9 new rows over 9 ticks, one per tick: the 1.44 GB/day flood, reproduced |
  */
 
 /** The blocking policy's condition. Real — and, because a contributor `condition` is what makes
