@@ -3,7 +3,7 @@
 **Status:** **BUILT (2026-08-17), M21.7.** Proposed and built the same day; D1–D5 were all adopted as
 recommended. The rule, the derivation, the runner operands, the allowlist opening and the PR-only
 delivery are in the tree, and the clause recording them is
-[ADR-0032 §8g](../adr/0032-dependency-subscriptions.md). §10 below marks what landed.
+[ADR-0032 §8h](../adr/0032-dependency-subscriptions.md). §10 below marks what landed.
 **Owner ask:** split-shape Helm image declarations must be BUMPABLE, not merely detected.
 `image: {repository, tag}` is the most common Helm convention; today SCP can see that a newer version
 exists and cannot apply it.
