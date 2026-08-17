@@ -14,6 +14,8 @@ import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagin
 // Value import back into relationships-repo. Not a runtime cycle: relationships-repo imports only a
 // TYPE from here (`FederationImportContext`), which erases at compile time.
 import { deleteRelationship } from "./relationships-repo.js";
+// No runtime cycle: containment.ts imports only drizzle, the tenant tx type and errors.
+import { assertRootedContainmentParent } from "./containment.js";
 import { computeObjectContentHash } from "./content-hash.js";
 import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
@@ -218,10 +220,28 @@ export async function resolveContainmentParent(
   }
   // The org root itself (bootstrap): no parent, so nothing to inherit.
   if (domainId === null) return { id: null, urn: null, domainLocal: false };
+  // A SOFT-DELETED PARENT IS NOT A PARENT, and this filter is the difference between a contained
+  // row and an unreachable one. `authz/resolve.ts`'s `scopeExpandCte` joins
+  // `parent_o.deleted_at IS NULL` on every hop, so an object parented under a tombstone has its
+  // scope expansion terminate at itself — exactly the state `domain_id IS NULL` produced, reached
+  // through a different value. Measured before this filter existed: `DELETE /domains/{d}` then
+  // `PATCH /services/{s} {domainId: d}` returned 200, and the org-root admin's own next GET of that
+  // service 403'd with "lacks 'object:read'", permanently. Policy still governs the row either way
+  // (matching reads `properties.scope`, never placement), so the outcome is a governed object
+  // nobody can read, edit, move back or delete.
+  //
+  // Applied here rather than at the doors on purpose: it needs no subject and gives the same answer
+  // for every caller, which is this codebase's test for an INVARIANT (see
+  // `federation/domain-local.ts`'s "authorization at the door, invariant at the repo"). The
+  // federation import path is unaffected — `resolveImportDomainId` already filters `deleted_at` and
+  // falls back to `undefined`, so a replica whose parent is locally tombstoned lands at the org root
+  // rather than being refused.
   const parent = await tx.query.objects.findFirst({
-    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId))
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
   });
-  if (!parent) throw badRequest(`domainId '${domainId}' does not reference an object in this org`);
+  if (!parent)
+    throw badRequest(`domainId '${domainId}' does not reference a live object in this org`);
   return { id: domainId, urn: parent.urn, domainLocal: parent.domainLocal };
 }
 
@@ -254,6 +274,80 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   }
 
   const id = input.id ?? uuidv7();
+
+  // THE ROOT-REACHABILITY INVARIANT, on the CREATE half of the same choke point `updateObject`
+  // carries it on (see the long comment there, and `graph/containment.ts` for the three refusals).
+  //
+  // It was installed on the MOVE path only, and the reasoning that left creates out was "a fresh id
+  // cannot already be an ancestor of the parent". That is true, and it covers exactly the refusals
+  // that ASK about the child's id — the CYCLE, and the truncation refusal that exists only to make
+  // the cycle answer sound. It says nothing about the third, which is a property of the PARENT's
+  // chain: the parent does not itself reach the org root, because an ancestor was soft-deleted.
+  // Hence `childIsNew` — refusal 3 alone, and see `containment.ts` for why running the other two on
+  // a create would be a new refusal rather than an invariant (it lowers a documented nesting limit).
+  //
+  // MEASURED on the real doors before this call existed, not reasoned about: soft-delete a domain,
+  // then `POST /services {domainId: <a service still inside it>}` answered **201**, and the ORG-ROOT
+  // ADMIN's own GET, PATCH and DELETE of the new row all answered **403 — permanently**, while the
+  // principal bound inside the stranded subtree could see it and had nowhere to move it to. That is
+  // byte-for-byte the unreachable row the move path refuses, produced through a different verb.
+  //
+  // AT THE REPO, for the same reason the update half is: `iac/plans-repo.ts`'s `executePlanDiff`
+  // calls `createObject` DIRECTLY through its own drained check list and never touches
+  // `graph/containment-parent-authz.ts`, so a fix at the door helper alone ships INERT for IaC apply
+  // — which is a second, independent create door and was measured writing the unreachable row
+  // happily. It needs no subject, and gives every caller the same answer, which is this codebase's
+  // test for an invariant (`federation/domain-local.ts`: authorization at the door, invariant at the
+  // repo).
+  //
+  // `domainId === null` is the org root's OWN create (bootstrap) — it has no parent whose chain
+  // could be broken.
+  //
+  // `domainId === input.orgId` — the ORG ROOT as the parent — is skipped because the call is a
+  // PROVABLE no-op there, not because it is cheap enough to be worth risking. All three refusals are
+  // decided before the query returns:
+  //
+  //   - refusals 1 and 2 (cycle, and the truncation that backs it) do not run at all on a create:
+  //     `childIsNew` is true, which is the whole point of that flag (see `containment.ts`).
+  //   - refusal 3 asks `ids.has(orgId)` over `containmentChain(orgId, orgId)`, and that walk seeds
+  //     itself with the target row at depth 0. The org root IS the target, so it is in the set no
+  //     matter what the recursive term finds — the answer cannot be anything but "rooted", however
+  //     the graph above it is shaped.
+  //
+  // That is why the guard is `!== orgId` and not a broader "shallow parents are fine": for any OTHER
+  // parent the walk is load-bearing (it is what caught the soft-deleted-ancestor create measured
+  // below), and the moment the org root is not seeded at depth 0 this reasoning stops holding.
+  //
+  // It is not a micro-optimisation on a cold path either. `createObject` defaults an unnamed
+  // `domainId` to the org root, so this is the MAJORITY create shape, and the M1 DoD drives 5,000
+  // sequential creates against a 180s budget. MEASURED on this machine (500 iterations, warmed,
+  // inside one transaction against the Testcontainers PostgreSQL):
+  //
+  //   isolated `assertRootedContainmentParent(parent = org root)`   0.93-1.04 ms/call
+  //   end-to-end default `createObject`, before                          11.35 ms/create
+  //   end-to-end default `createObject`, after (3 runs)          8.04 / 9.10 / 9.30 ms/create
+  //
+  // — a ~1 ms round trip removed from an ~11 ms create, for an answer that was fixed in advance.
+  // The isolated figure is the honest one: it is the query that stops being issued. The end-to-end
+  // spread is wider than 1 ms in both directions, so read it as corroboration, not as the measurement.
+  //
+  // Every other create still pays one bounded recursive-CTE round trip; unlike the update
+  // half there is no "unchanged re-apply" to guard against, because a create always writes a parent.
+  //
+  // `federationImport` is exempt, exactly as it is on the update half and for the same reason: an
+  // imported row's parent comes from `resolveImportDomainId`, which already filters tombstones and
+  // falls back to the org root, and `federation/import-repo.ts`'s `object_upsert` branch has no
+  // try/catch — one refusal here would abort a whole signed bundle and wedge that channel over a row
+  // this domain does not own. The receiving domain also has no standing to referee the containment
+  // its authoring domain chose.
+  if (!input.federationImport && domainId !== null && domainId !== input.orgId) {
+    await assertRootedContainmentParent(tx, {
+      orgId: input.orgId,
+      childId: id,
+      parentId: domainId,
+      childIsNew: true
+    });
+  }
 
   // M16.2 phase A (E1) — clause (4) of the authority-split rule, at the ONE choke point every LOCAL
   // write door funnels through (see `federation/outpost-binding.ts` for the rule and for why it is
@@ -747,6 +841,31 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
 
   const nextName = input.name ?? existing.name;
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
+
+  // THE ROOT-REACHABILITY INVARIANT, at the one place an EXISTING row's containment parent is
+  // written. `upsertObjectByUrn`'s update branch delegates here; its only other `domain_id` write is
+  // the federation hand-fill id replacement, which is `federationImport`-only and exempt below.
+  //
+  // At the REPO rather than at the doors on purpose — the doctrine `containment-parent-authz.ts`
+  // states and `federation/domain-local.ts` argues: authorization at the door, invariant at the
+  // repo. It needs no subject and gives every caller the same answer, and — decisively —
+  // `iac/plans-repo.ts` reaches this function through its own drained check list without ever
+  // calling that helper. A door-only cycle refusal ships INERT for IaC apply, which is the second
+  // copy of this decision and was measured writing the cycle happily
+  // (`routes/containment-move-cycle-and-source-authz.integration.test.ts` pins both doors).
+  //
+  // Guarded on an actual CHANGE, so an unchanged re-apply pays no recursive-CTE round trip, and
+  // exempt for `federationImport`: an imported row's parent comes from `resolveImportDomainId`,
+  // which already falls back to the org root, and a refusal here would abort a whole peer bundle
+  // over a row this domain does not own.
+  if (!input.federationImport && nextDomainId !== null && nextDomainId !== existing.domainId) {
+    await assertRootedContainmentParent(tx, {
+      orgId: input.orgId,
+      childId: existing.id,
+      parentId: nextDomainId
+    });
+  }
+
   const nextVersion = existing.version + 1;
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   const nextProvenance = input.federationImport

@@ -733,10 +733,15 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
     // The child must have INHERITED provenance for this to mean anything. Bolting the assertion onto
     // the ordering test above would have been VACUOUS: that child is created with `domainLocal: true`
     // explicitly, so its provenance is null from the start and "cleared" would pass trivially.
+    // `domainId` is OMITTED, not `null`. At the REPO layer (unlike on the wire, where the doors
+    // coerce it) a literal `null` means "I AM the org root" and writes a DETACHED row — so this
+    // container would have had no route to the org root, and the child created inside it below would
+    // have been unreachable by every principal. `createObject`'s root-reachability invariant refuses
+    // that child now, which is how this fixture was found. Omitting the field asks for the org root
+    // as the parent, which is what "a top-level partition" was always meant to say.
     const container = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       createObject(tx, {
         orgId: outpost.orgId,
-        domainId: null,
         typeId: "domain",
         actorObjectId: outpost.orgId,
         requestId: "m207-container",
@@ -793,10 +798,11 @@ describe("M20.2 (ADR-0031): a domain-local object never reaches the commander (t
   it("PUBLISH (M20.6): the `domain_id` route blocks too — both containment routes, not just `contains`", async () => {
     // §6b mirrors §6a/§4's either-route rule. Testing only the `contains` route would leave an object
     // grouped under a domain-local containment DOMAIN publishable straight out of it.
+    // `domainId` OMITTED rather than `null` — see the M20.7 case above: at the repo layer a literal
+    // `null` writes a DETACHED container, and the child below would be unreachable by anyone.
     const containingDomain = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
       createObject(tx, {
         orgId: outpost.orgId,
-        domainId: null,
         typeId: "domain",
         actorObjectId: outpost.orgId,
         requestId: "m206-domain",

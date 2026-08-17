@@ -14,6 +14,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { withIdempotency } from "../idempotency.js";
 import { getObjectByIdOrUrn, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import { createPlacement, listPlacements, withdrawPlacement } from "../graph/placements-repo.js";
 
@@ -68,7 +69,17 @@ export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): vo
       const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
         // `object:write` at the target domain gates creating the placement object;
         // `createPlacement` additionally requires `relationship:write` over BOTH endpoints.
-        const scopeObjectId = request.body.domainId ?? auth.orgId;
+        // The declared parent, resolved ONCE and used for both the permission scope and the write
+        // (`graph/containment-parent-authz.ts` — a wire `null` means the org root, never "detach").
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+          declared: containmentDomainIdFromWire(request.body.domainId),
+          current: undefined
+        });
+        const scopeObjectId = declaredParent ?? auth.orgId;
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
@@ -92,7 +103,7 @@ export function registerPlacementRoutes(app: FastifyInstance, deps: AppDeps): vo
               id: request.body.id,
               urn: request.body.urn,
               name: request.body.name,
-              domainId: containmentDomainIdFromWire(request.body.domainId),
+              domainId: declaredParent,
               labels: request.body.labels,
               componentIdOrUrn: request.body.component,
               deploymentTargetIdOrUrn: request.body.deploymentTarget

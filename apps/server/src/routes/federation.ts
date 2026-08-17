@@ -1120,6 +1120,9 @@ export function registerFederationRoutes(app: FastifyInstance, deps: AppDeps): v
         });
         return handFillObject(tx, {
           orgId: auth.orgId,
+          // Authorization only — the ROW is still authored by `FEDERATION_IMPORT_ACTOR_ID`, which is
+          // what makes a later signed bundle reconcile over it (see `handfill-repo.ts`'s module doc).
+          actorObjectId: auth.subjectObjectId,
           peerIdOrName: request.body.peer,
           typeId: request.body.typeId,
           urn: request.body.urn,
