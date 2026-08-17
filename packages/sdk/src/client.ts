@@ -211,6 +211,9 @@ import {
   getComponentDependencySubscription as getComponentDependencySubscriptionRequest,
   // M21.2 (ADR-0032 §4) — the inventory backfill.
   backfillDependencyInventory as backfillDependencyInventoryRequest,
+  // M21.6 — the component-scoped dependency READ surface (inventory + bumps).
+  listComponentDependencyInventory as listComponentDependencyInventoryRequest,
+  listComponentDependencyBumps as listComponentDependencyBumpsRequest,
   pairPeer as pairPeerRequest,
   // M16.2 phase A — E4's narrow peer read/PATCH and E1's `outpost` config object.
   getFederationPeer as getFederationPeerRequest,
@@ -357,6 +360,9 @@ import type {
   // M21.2 (ADR-0032 §4) — the inventory backfill.
   BackfillDependencyInventoryRequest,
   BackfillDependencyInventoryResponse,
+  // M21.6 — the component-scoped dependency READ surface.
+  ComponentDependencyInventoryResponse,
+  ComponentDependencyBumpsResponse,
   PairPeerRequest,
   // M16.2 phase A — the narrow peer PATCH (E4) + the `outpost` config object (E1).
   UpdateFederationPeerRequest,
@@ -1861,6 +1867,47 @@ export class ScpClient {
       req: BackfillDependencyInventoryRequest = {}
     ): Promise<BackfillDependencyInventoryResponse> => {
       const result = await backfillDependencyInventoryRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /**
+     * M21.6 — a component's dependency INVENTORY: one row per (major line × dependency manifest)
+     * with the line's last-observed head, its DECLARED producer and its resolved dependency
+     * subscription, plus the component-level ingestion gate.
+     *
+     * Every `rows[].subscription` is resolved AS THE CALLER — the acting subject is the requesting
+     * principal, exactly as `resolve()` threads it — so it is byte-equal to `resolve()` for the same
+     * caller and line, and a `scope.group` policy can make one human's answer differ from another's.
+     * `ingestion: null` and `lastIngestionDecision: null` mean NOT RECORDED; an empty `rows` beside
+     * them is UNKNOWN, never "no dependencies". `object:read` at the component; paged (limit ≤ 200,
+     * default 100).
+     */
+    inventory: async (
+      componentIdOrUrn: string,
+      query: ListQuery = {}
+    ): Promise<ComponentDependencyInventoryResponse> => {
+      const result = await listComponentDependencyInventoryRequest({
+        client: this.client,
+        path: { idOrUrn: componentIdOrUrn },
+        query
+      });
+      return unwrap(result);
+    },
+    /**
+     * M21.6 — the bumps SCP AUTHORED for a component, newest dispatch first: each authorship row
+     * joined to its change's name and to the newest dispatch (`delivery`) and merge (`merge`)
+     * Decisions. `pullRequestUrl` is `null` until the server persists one — a consumer links only
+     * when it is non-null and never composes a URL from `repo` + `pullRequestNumber`. Same
+     * authorization and paging as `inventory`.
+     */
+    bumps: async (
+      componentIdOrUrn: string,
+      query: ListQuery = {}
+    ): Promise<ComponentDependencyBumpsResponse> => {
+      const result = await listComponentDependencyBumpsRequest({
+        client: this.client,
+        path: { idOrUrn: componentIdOrUrn },
+        query
+      });
       return unwrap(result);
     }
   };
