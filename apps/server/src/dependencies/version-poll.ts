@@ -111,16 +111,25 @@ export interface DependencyVersionPollRoleVerdict {
  * federation API, and advisory (config.ts's own doc comment, and M15.4's helm-verify note). A
  * background job that decided whether to reach the internet from tenant-writable data would be
  * exactly the runtime/install-time fork M15.4 declined to create.
+ *
+ * THE BRANCH ORDER IS PART OF THE CONTRACT, NOT A DETAIL OF THIS COPY (M21.7 follow-up, LOW 5).
+ * This body is hand-written rather than delegating to {@link commanderOnlyJobVerdict} because its
+ * refusal TEXT carries a fact a shared string cannot ("dials package registries from an air-gapped
+ * site") — but the VERDICT and the ORDER the axes are tested in are shared. It used to test
+ * federation first, so a deployment misconfigured on more than one axis was sent to a DIFFERENT
+ * setting depending on which job complained: the poll said "federationRole is 'outpost'", the
+ * dispatcher said "SCP_ROLE is 'api'", for one and the same deployment. Process axis FIRST, then
+ * the undeclared case, then the declared non-commander — the order `commanderOnlyJobVerdict`
+ * documents and `commander-only.test.ts` pins across every copy by comparing each multi-axis
+ * refusal against the single-axis refusal it must be identical to.
  */
 export function dependencyVersionPollRoleGuard(
   config: Pick<ServerConfig, "role" | "federationRole" | "federationRoleDeclared">
 ): DependencyVersionPollRoleVerdict {
-  if (config.federationRole !== "commander") {
+  if (config.role !== "all" && config.role !== "worker") {
     return {
       allowed: false,
-      reason:
-        `federationRole is '${config.federationRole}' — the third-party version poll runs on a ` +
-        `commander only. An outpost is frequently air-gapped and must not dial registries on a timer`
+      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
     };
   }
   if (!config.federationRoleDeclared) {
@@ -145,10 +154,12 @@ export function dependencyVersionPollRoleGuard(
         "explicitly (Helm: `federationRole`) to turn it on"
     };
   }
-  if (config.role !== "all" && config.role !== "worker") {
+  if (config.federationRole !== "commander") {
     return {
       allowed: false,
-      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
+      reason:
+        `federationRole is '${config.federationRole}' — the third-party version poll runs on a ` +
+        `commander only. An outpost is frequently air-gapped and must not dial registries on a timer`
     };
   }
   return {

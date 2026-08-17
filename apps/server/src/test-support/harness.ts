@@ -84,7 +84,11 @@ export interface TestServer {
  * role, exactly like production (main.ts phase 2) — never as the container's superuser.
  */
 export async function buildTestServer(
-  opts: { operatorToken?: string; federationRole?: "commander" | "outpost" | "retrans" } = {}
+  opts: {
+    operatorToken?: string;
+    federationRole?: "commander" | "outpost" | "retrans";
+    role?: "all" | "api" | "worker";
+  } = {}
 ): Promise<TestServer> {
   const config = loadConfig({
     DATABASE_URL: testDatabaseUrl(),
@@ -97,7 +101,14 @@ export async function buildTestServer(
     ...(opts.operatorToken ? { SCP_OPERATOR_TOKEN: opts.operatorToken } : {}),
     // M16.3 P3: the install-time federation-role axis (config.ts's `federationRole` doc comment).
     // Unset by default so every existing test keeps the pre-M16.3 default (`commander`, SPA served).
-    ...(opts.federationRole ? { SCP_FEDERATION_ROLE: opts.federationRole } : {})
+    ...(opts.federationRole ? { SCP_FEDERATION_ROLE: opts.federationRole } : {}),
+    // M21.7 follow-up: the PROCESS axis (`SCP_ROLE`). Unset ⇒ `all`, which is what every existing
+    // test has always got and is also the shape that HIDES a route guard carrying the process axis:
+    // an `all` process satisfies it. A test about the split topology — an api process in front of a
+    // worker, which is how the Helm chart deploys — has to be able to boot the api half. `buildApp`
+    // reads nothing from `config.role` (only `main.ts`'s `runsBackgroundWork` and the dependency
+    // guards do), so this changes what the ROUTES see and nothing else.
+    ...(opts.role ? { SCP_ROLE: opts.role } : {})
   });
   const pool = createPool(config.runtimeDatabaseUrl);
   const db = createDb(pool);
@@ -188,11 +199,17 @@ export async function listenTestServer(
     /** M16.3 P3: sets `SCP_FEDERATION_ROLE` on the server under test (config.ts's `federationRole`
      *  doc comment). Unset ⇒ `commander` (SPA served — the pre-M16.3 default for every deployment). */
     federationRole?: "commander" | "outpost" | "retrans";
+    /** Sets `SCP_ROLE` — the PROCESS axis. Unset ⇒ `all`. Set it to `api` to boot the request-serving
+     *  half of the split topology, which is the only deployment shape under which a route that
+     *  wrongly carries the process axis misbehaves. Note this does NOT stop the caller starting the
+     *  loops below: the flags here are independent, exactly as `main.ts`'s are. */
+    role?: "all" | "api" | "worker";
   } = {}
 ): Promise<ListeningTestServer> {
   const server = await buildTestServer({
     ...(opts.operatorToken ? { operatorToken: opts.operatorToken } : {}),
-    ...(opts.federationRole ? { federationRole: opts.federationRole } : {})
+    ...(opts.federationRole ? { federationRole: opts.federationRole } : {}),
+    ...(opts.role ? { role: opts.role } : {})
   });
   const address = await server.app.listen({ port: 0, host: "127.0.0.1" });
 

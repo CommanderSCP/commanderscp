@@ -757,6 +757,85 @@ describe("(6) POST /dependencies/inventory/backfill is COMMANDER-ONLY (ADR-0032 
       expect(detail).not.toMatch(/plugin-host-capable/);
     });
   });
+
+  /**
+   * ==============================================================================================
+   * THE ROUTE TAKES THE FEDERATION AXIS AND *NOT* THE PROCESS AXIS — AND THAT IS NOW PINNED
+   * ==============================================================================================
+   * The handler calls `commanderOnlyFederationVerdict`, not `commanderOnlyJobVerdict`, deliberately:
+   * in the split topology the chart deploys — `SCP_ROLE=api` serving HTTP in front of
+   * `SCP_ROLE=worker` draining queues — EVERY HTTP request lands on an api process, so a route
+   * carrying the process axis would 409 every caller on a perfectly correct commander.
+   *
+   * That reasoning was right and NOTHING PINNED IT. Swapping in the job verdict left `tsc` clean,
+   * every unit test green and all 22 backfill integration tests green, because every other server in
+   * this file boots at the harness default `SCP_ROLE=all` — which satisfies the process axis and so
+   * cannot tell the two verdicts apart. The one deployment shape that distinguishes them is an api
+   * process, and until this block nothing in the repo booted one.
+   */
+  describe("an api-only process on a declared commander — the split topology", () => {
+    let apiOnly: ListeningTestServer;
+    let apiOnlyOrg: TestOrg;
+    let outpostApi: ListeningTestServer;
+    let outpostApiOrg: TestOrg;
+
+    beforeAll(async () => {
+      apiOnly = await listenTestServer({
+        withPluginHost: true,
+        federationRole: "commander",
+        role: "api"
+      });
+      apiOnlyOrg = await createTestOrg(apiOnly, "dep-backfill-api-only");
+      // The negative control's deployment: the SAME process axis, a different federation role, so
+      // the only thing that can explain the two different answers is the axis the route reads.
+      outpostApi = await listenTestServer({
+        withPluginHost: true,
+        federationRole: "outpost",
+        role: "api"
+      });
+      outpostApiOrg = await createTestOrg(outpostApi, "dep-backfill-outpost-api");
+    }, 120_000);
+
+    afterAll(async () => {
+      await apiOnly?.close();
+      await outpostApi?.close();
+    });
+
+    it("ACCEPTS the backfill — the process axis belongs to the jobs, never to this route", async () => {
+      // The fixture's own guard first: an `all` process would satisfy a job-shaped guard too, so a
+      // `role` option that silently failed to apply would make everything below vacuous — which is
+      // exactly how this gap survived the previous round.
+      expect(apiOnly.deps.config.role).toBe("api");
+      expect(apiOnly.deps.config.federationRole).toBe("commander");
+      expect(apiOnly.deps.config.federationRoleDeclared).toBe(true);
+
+      const response = await fetch(`${apiOnly.baseUrl}/dependencies/inventory/backfill`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiOnlyOrg.adminToken}`,
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({})
+      });
+      const body = (await response.json()) as { ref?: string; detail?: string };
+      // Asserted as the SPECIFIC violation rather than "not 409": a job-shaped guard here answers
+      // 409 with "SCP_ROLE is 'api'", and that string is what a swap would put in front of an
+      // operator whose deployment is correct.
+      expect(`${response.status} ${body.detail ?? ""}`.trim()).toBe("200");
+      expect(body.ref).toBe("HEAD");
+    });
+
+    it("NEGATIVE CONTROL — the same api process on an OUTPOST is still refused", async () => {
+      // Without this, "an api process is accepted" would be satisfied just as well by a route with
+      // no commander guard at all — which is the door the whole of block (6) exists to close.
+      const { status, detail } = await backfill(outpostApi, outpostApiOrg.adminToken);
+      expect(status).toBe(409);
+      expect(detail).toMatch(/COMMANDER-ONLY/);
+      // …and the refusal names the FEDERATION axis, never the process one, even though this process
+      // would also fail a job guard. An operator on an outpost must not be sent to find a worker.
+      expect(detail).not.toMatch(/SCP_ROLE/);
+    });
+  });
 });
 
 /**

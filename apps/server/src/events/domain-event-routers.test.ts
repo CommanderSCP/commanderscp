@@ -1,7 +1,13 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
+import {
+  exportedDeclarations,
+  matchingParen,
+  productionSourceFiles,
+  readStripped
+} from "../test-support/source-census.js";
 import {
   DOMAIN_EVENT_ROUTERS,
   domainEventRouters,
@@ -71,70 +77,13 @@ const MAIN_TS = join(SRC_DIR, "main.ts");
 // -------------------------------------------------------------------------------------------
 // Discovery: what routers EXIST?
 // -------------------------------------------------------------------------------------------
-
-/** Production sources only — a `*.test.ts` file may define a fixture router, which nothing should
- *  register in the composition root. NOTHING ELSE IS FILTERED, deliberately: `test-support/*.ts` is
- *  included, so a fixture router parked there fails this census loudly rather than teaching the
- *  filter to hide the next real one. */
-function productionSourceFiles(dir: string): string[] {
-  const out: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "node_modules" || entry.name === "dist") continue;
-      out.push(...productionSourceFiles(full));
-    } else if (
-      entry.name.endsWith(".ts") &&
-      !entry.name.endsWith(".test.ts") &&
-      !entry.name.endsWith(".d.ts")
-    ) {
-      out.push(full);
-    }
-  }
-  return out;
-}
-
-/**
- * The start of an exported function declaration, up to and including its opening parenthesis.
- *
- * DECLARATION FORMS THIS HAS TO SURVIVE — censused across `apps/server/src` rather than assumed,
- * because the first version of this regex used `\([^)]*\)` and therefore recognised exactly one
- * form. Forms in use in this tree today:
- *   - `export function name(…): T` on one line, and split across lines (399 of them);
- *   - a parameter that is ITSELF a function — `rand: () => number` (`load-test/stats.ts`), a
- *     dependency-injected clock, `fn: () => Promise<T>` — which `[^)]*` cannot cross, so a router
- *     factory written `export function subscriptionDriftRouter(clock: () => Date): DomainEventRouter`
- *     was invisible to the old census;
- *   - a default value that calls something: `now: Date = new Date()` (`federation/crl-parse.ts`);
- *   - a generic: `export function sampleDistinct<T>(…)` (`load-test/stats.ts`).
- * `export const name = (…) =>` is NOT used for exported functions anywhere in this tree; it is
- * matched anyway, because the point of a census is to find the instance that does not look like
- * the others. `export async function` is matched too, though such a factory would return
- * `Promise<DomainEventRouter>` and so would not satisfy the return-type test below.
- *
- * The parameter list is not matched by this regex at all — {@link matchingParen} walks it — which
- * is what makes the nested-paren forms work.
- */
-const DECLARATION_START = new RegExp(
-  [
-    String.raw`export\s+(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*(?:<[^(]*?>\s*)?\(`,
-    String.raw`export\s+const\s+([A-Za-z_$][\w$]*)\s*(?::[^=;]*)?=\s*(?:async\s+)?(?:<[^(]*?>\s*)?\(`
-  ].join("|"),
-  "g"
-);
-
-/** Index of the `)` closing the `(` at `open`, or -1. */
-function matchingParen(source: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    if (source[i] === "(") depth++;
-    else if (source[i] === ")") {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
+//
+// The scanner itself — the production-source walk, the declaration-start regex and the
+// balanced-paren parameter skip — lives in `test-support/source-census.ts`, shared with the
+// dependency-loop census in `dependencies/commander-only.test.ts`. It was written here first and
+// moved out the moment there were two consumers: a scanner in two copies is exactly the property
+// CLAUDE.md's census rule names, and the next fix to it would have landed in one of them. Read
+// that module for the declaration forms it has to survive and why.
 
 /** The return type must be ONE router — `: DomainEventRouter` followed by a function body (`{`) or
  *  an arrow's `=>`. Anchoring on what FOLLOWS the type is what keeps `DomainEventRouter[]` (the
@@ -148,16 +97,9 @@ interface DiscoveredRouter {
 }
 
 function routerFactoriesIn(source: string): string[] {
-  const found: string[] = [];
-  for (const match of source.matchAll(DECLARATION_START)) {
-    const name = match[1] ?? match[2];
-    if (name === undefined) continue;
-    const open = match.index + match[0].length - 1;
-    const close = matchingParen(source, open);
-    if (close === -1) continue;
-    if (RETURNS_ROUTER.test(source.slice(close + 1))) found.push(name);
-  }
-  return found;
+  return exportedDeclarations(source)
+    .filter((declaration) => RETURNS_ROUTER.test(declaration.tail))
+    .map((declaration) => declaration.name);
 }
 
 const declaredRouters: DiscoveredRouter[] = productionSourceFiles(SRC_DIR).flatMap((file) =>
@@ -184,54 +126,6 @@ const discovered = await Promise.all(
 // -------------------------------------------------------------------------------------------
 
 /**
- * Source with COMMENTS REMOVED — both `//` and `/* … *\/`, and neither inside a string or template
- * literal, where those character pairs are data. The predecessor of this function handled `//`
- * only while its own comment claimed a commented-out registration would not count: a registration
- * inside a block comment still counted as registered, which is precisely the "comment asserting a
- * protection that does not exist" this milestone is cleaning up.
- *
- * NOT TRACKED: regular-expression literals, so `/\/\* /` would start a spurious comment. `main.ts`
- * contains none, and the failure direction is a false RED (text removed, checks below fail loudly),
- * never a silent pass on the `startPgBoss` link.
- */
-function stripComments(source: string): string {
-  let out = "";
-  let i = 0;
-  while (i < source.length) {
-    const two = source.slice(i, i + 2);
-    if (two === "//") {
-      while (i < source.length && source[i] !== "\n") i++;
-      continue;
-    }
-    if (two === "/*") {
-      const end = source.indexOf("*/", i + 2);
-      i = end === -1 ? source.length : end + 2;
-      continue;
-    }
-    const ch = source[i]!;
-    if (ch === '"' || ch === "'" || ch === "`") {
-      out += ch;
-      i++;
-      while (i < source.length && source[i] !== ch) {
-        if (source[i] === "\\") {
-          out += source.slice(i, i + 2);
-          i += 2;
-          continue;
-        }
-        out += source[i];
-        i++;
-      }
-      out += source[i] ?? "";
-      i++;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
-
-/**
  * The text between `startPgBoss(` and its matching `)`, by balanced-paren scan rather than a
  * non-greedy regex — the argument list contains nested calls, and a `[\s\S]*?\)` would stop at the
  * first of them the moment anyone reformats the call.
@@ -254,7 +148,7 @@ function startPgBossArgumentList(code: string): string {
   return code.slice(open + 1, close);
 }
 
-const mainCode = stripComments(readFileSync(MAIN_TS, "utf8"));
+const mainCode = readStripped(MAIN_TS);
 
 // -------------------------------------------------------------------------------------------
 

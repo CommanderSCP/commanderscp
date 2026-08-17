@@ -327,6 +327,14 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
   // `SCP_ROLE=api` process by design — carrying the process axis here would refuse every caller on
   // a perfectly correct commander. See `commanderOnlyFederationVerdict`'s own doc.
   //
+  // THAT OMISSION IS PINNED, which it was not when it was written (M21.7 follow-up, MEDIUM 1):
+  // swapping in `commanderOnlyJobVerdict` left tsc clean, every unit test green and all 22 backfill
+  // integration tests green, because every test server in the repo booted at the harness default
+  // `SCP_ROLE=all` — and an `all` process satisfies the process axis, so no fixture could tell the
+  // two verdicts apart. `dependency-subscriptions.integration.test.ts`'s "an api-only process on a
+  // declared commander" block now boots the api half of the split topology and requires a 200, with
+  // an OUTPOST on the same process axis as its negative control.
+  //
   // WHY 409 AND NOT 400/403/404. This is "right request, wrong place": the body is valid, the
   // caller may be entirely entitled, and the resource is not hidden — what is wrong is the
   // DEPLOYMENT the request arrived at. 403 would say the principal lacks permission, which is a

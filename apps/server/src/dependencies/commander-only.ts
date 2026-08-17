@@ -32,10 +32,20 @@ import type { ServerConfig } from "../config.js";
  *
  * `version-poll.ts` and `bump-dispatch.ts` keep their own bodies deliberately: their refusal TEXT
  * carries capability-specific facts a shared string cannot ("dials package registries from an
- * air-gapped site", "writes to a source repository with a credential"). The DECISION must still be
- * identical across all five, and that is asserted directly rather than assumed —
- * `commander-only.test.ts` runs every guard over the full 3x3x2 config matrix and requires the same
- * verdict from each. A divergence introduced anywhere fails there.
+ * air-gapped site", "writes to a source repository with a credential"). TWO things must still be
+ * identical across all three copies, and `commander-only.test.ts` asserts both rather than assuming
+ * them, over the full 3x3x2 config matrix:
+ *
+ *   1. THE VERDICT. A divergence introduced in any copy fails there.
+ *   2. THE ORDER THE AXES ARE TESTED IN — added in M21.7's follow-up round, because the order is
+ *      what an OPERATOR acts on. A deployment wrong on two axes gets exactly ONE sentence, and it
+ *      used to be a different sentence per job: the poll tested federation first and said
+ *      "federationRole is 'outpost'"; the dispatcher tested the process split first and said
+ *      "SCP_ROLE is 'api'". Same deployment, two different settings to go change, and which one an
+ *      operator saw decided by which job happened to log. The test pins the order WITHOUT pinning
+ *      any wording — for each guard it compares a multi-axis refusal against that same guard's
+ *      refusal for each axis violated ALONE — so a reordered branch fails and a rewritten sentence
+ *      does not.
  *
  * ============================================================================================
  * TWO AXES — AND A ROUTE DOES NOT GET BOTH

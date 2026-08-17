@@ -1763,8 +1763,10 @@ export const scanRequirementFloors = pgTable(
  * to say "per-domain … each domain derives its own", quoting §3; that half is reversed. All
  * dependency automation is commander-only — an outpost never ORIGINATES a bump, it receives the
  * resulting change down the global pipeline the commander manages — so these rows exist in exactly
- * one place. `drizzle/0061`'s `COMMENT ON` still carries the old wording and is not editable in
- * place; a future migration should restate it.
+ * one place, and an EMPTY `dependency_lines` on an outpost is correct rather than a sync failure.
+ * `drizzle/0061`'s `COMMENT ON` carried the old wording, which is what an operator actually meets
+ * in `\d+ dependency_lines`; 0061 is merged and not editable in place, so `drizzle/0066` restates
+ * it there. The two are meant to be read as one statement — keep them saying the same thing.
  *
  * THE COORDINATE IS NOT A URN, and that is why this is a table. `graph/urn.ts`'s `slugify`
  * lowercases and hyphenate-collapses every non-alphanumeric run, so `@acme/lib`, `acme/lib` and
