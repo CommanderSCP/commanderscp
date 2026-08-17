@@ -1016,19 +1016,38 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
 
   /** Insert a `trivy` scan control run for `changeId`. Defaults to the PASSING, digest-bound outcome
    *  the M17.3 E6 export gate re-checks (status pass + digestMatch + scanned digest == promoted); the
-   *  overrides let a test seed a FAILED or digest-mismatched outcome to exercise the fail-closed path. */
+   *  overrides let a test seed a FAILED or digest-mismatched outcome to exercise the fail-closed path.
+   *
+   *  `pluginModule` NAMES THE PRODUCER, and is not fixture decoration. E6 admits a scan outcome by
+   *  which control produced it (`scan-evidence.ts`), so a row with no module — which is what this
+   *  helper used to write — is no longer evidence about anything. The honest fixture for
+   *  "org-pipeline evidence" is the module that actually produces it. The gate's REFUSAL of the
+   *  no-module and wrong-module shapes is pinned in `scan-evidence.test.ts` and by the
+   *  "webhook-control cannot manufacture a crossing" case below. */
   async function seedScanOutcome(
     changeId: string,
     ociDigest: string,
-    over: { status?: ControlOutcomeStatus; digestMatch?: boolean; scannedDigest?: string } = {}
+    over: {
+      status?: ControlOutcomeStatus;
+      digestMatch?: boolean;
+      scannedDigest?: string;
+      pluginModule?: string | undefined;
+      controlObjectId?: string;
+      severityCounts?: { critical: number; high: number; medium: number; low: number };
+      /** The ceiling the PRODUCING control applied. A tenant-authored per-binding
+       *  `config.threshold` lives here, which is why a `pass` under it is not the boundary's
+       *  verdict — see the instance-floor case. */
+      threshold?: Record<string, number>;
+    } = {}
   ): Promise<void> {
     await withTenantTx(domainA.db, domainA.orgId, (tx) =>
       insertControlRun(tx, {
         orgId: domainA.orgId,
-        controlObjectId: randomUUID(),
+        controlObjectId: over.controlObjectId ?? randomUUID(),
         changeObjectId: changeId,
         gateKind: "lifecycle_edge",
         gateRef: { fromState: "validating", toState: "accepted" },
+        pluginModule: "pluginModule" in over ? over.pluginModule : ("scan-result-control" as const),
         status: over.status ?? "pass",
         evidence: {
           scanner: "trivy",
@@ -1036,8 +1055,8 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
           artifactDigest: over.scannedDigest ?? ociDigest,
           expectedDigest: ociDigest,
           digestMatch: over.digestMatch ?? true,
-          severityCounts: { critical: 0, high: 0, medium: 0, low: 0 },
-          threshold: { maxCritical: 0, maxHigh: 0 }
+          severityCounts: over.severityCounts ?? { critical: 0, high: 0, medium: 0, low: 0 },
+          threshold: over.threshold ?? { maxCritical: 0, maxHigh: 0 }
         }
       })
     );
@@ -1711,6 +1730,85 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(outcome.refused).toBe(true);
   });
 
+  it("E6 PRODUCER IDENTITY: a webhook-control row carrying BYTE-PERFECT scan evidence does NOT authorize a crossing — the SAME evidence from scan-result-control does", async () => {
+    // THE BYPASS THIS CASE EXISTS TO CLOSE, end to end against a real database.
+    //
+    // `control_runs.evidence` is persisted VERBATIM from whatever a bound ControlPlugin returns
+    // (`governance/control-runner.ts`: `evidence = outcome.evidence ?? {}`), and
+    // `@scp/plugin-webhook-control` returns `body.status` and `body.evidence` verbatim from an
+    // operator-configured URL. So a `webhook-control` binding pointed at an endpoint answering
+    // `{"status":"pass","evidence":{…digestMatch:true, artifactDigest:<the promoted digest>…}}`
+    // deposits exactly the row below — and while E6 identified a scan outcome by the SHAPE of its
+    // evidence, that row satisfied the boundary gate in full. A control binding is authored at
+    // `policy:write` SCOPED AT A CONTROL OBJECT (routes/governance.ts), which is strictly weaker
+    // than the operator authority that sets the instance floors ADR-0016 §3 makes tenant-unwritable
+    // precisely so a tenant cannot loosen them.
+    //
+    // THE TWO HALVES DIFFER IN ONE FIELD. Same change shape, same digest, byte-identical evidence —
+    // only `plugin_module` differs. That is what makes this a test of the admission rule and not of
+    // something incidental about the fixture.
+    const forged = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    await seedScanOutcome(forged.changeId, OCI_DIGEST, { pluginModule: "webhook-control" });
+    const refusal = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: forged.changeId,
+      scanRunner: null // the legacy org-pipeline-only path: nothing may manufacture evidence but the row above
+    });
+    expect(refusal.refused).toBe(true);
+    if (!refusal.refused) throw new Error("expected refusal");
+    expect(refusal.reason).toContain(OCI_DIGEST);
+
+    // The refusal is EXPLAINABLE as this specific narrowing, not merely as "no scan" (principle 6):
+    // an operator must be able to tell "nothing scanned it" from "something did, and was not a
+    // scanner".
+    const decision = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      getDecision(tx, domainA.orgId, refusal.decisionId)
+    );
+    expect(decision.kind).toBe("promotion-export-scan-gate");
+    const ctx = decision.inputContext as Record<string, unknown>;
+    expect(ctx.refusalCode).toBe("no_scan_outcome");
+    expect(ctx.producersSeen).toEqual(["webhook-control"]);
+
+    // ...and the SAME evidence from the admitted org-pipeline ingress exports cleanly.
+    const genuine = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    await seedScanOutcome(genuine.changeId, OCI_DIGEST, { pluginModule: "scan-result-control" });
+    const bundle = await exportBundleA(genuine.changeId);
+    expect(bundle.artifacts).toEqual(expect.arrayContaining([{ type: "oci", digest: OCI_DIGEST }]));
+  });
+
+  it("E6 RECENCY: a LATER failing scan supersedes an earlier pass (refused) — and a later PASS clears an earlier fail (exports)", async () => {
+    // The gate used to accept ANY historical passing row, forever: `controlOutcomes.some(...)` with
+    // no ordering. A re-scan that FAILED — new CVEs, a tightened ceiling, an expired ADR-0033 grant
+    // — did not supersede it, so an artifact stayed authorized to cross on a verdict that no longer
+    // held. Both directions are asserted, because only the pair pins "latest wins": objecting-only
+    // supersession would make every re-evaluation a one-way ratchet and leave a fixed artifact
+    // permanently blocked.
+    const control = randomUUID();
+
+    const stale = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    await seedScanOutcome(stale.changeId, OCI_DIGEST, { controlObjectId: control });
+    await seedScanOutcome(stale.changeId, OCI_DIGEST, { controlObjectId: control, status: "fail" });
+    const refusal = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: stale.changeId,
+      scanRunner: null
+    });
+    expect(refusal.refused).toBe(true);
+    if (!refusal.refused) throw new Error("expected refusal");
+    const decision = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+      getDecision(tx, domainA.orgId, refusal.decisionId)
+    );
+    expect((decision.inputContext as Record<string, unknown>).refusalCode).toBe("not_passing");
+
+    const fixed = await proposeApprovedChangeInA(sourceRefWithArtifacts, { seedScan: false });
+    await seedScanOutcome(fixed.changeId, OCI_DIGEST, { controlObjectId: control, status: "fail" });
+    await seedScanOutcome(fixed.changeId, OCI_DIGEST, { controlObjectId: control });
+    const bundle = await exportBundleA(fixed.changeId);
+    expect(bundle.artifacts).toEqual(expect.arrayContaining([{ type: "oci", digest: OCI_DIGEST }]));
+  });
+
   it("E6 SIGN: a passing digest-bound scan EXPORTS and carries a cosign-signed SELF-BINDING manifest", async () => {
     const { changeId } = await proposeApprovedChangeInA(sourceRefWithArtifacts); // auto-seeds passing scan
     const bundle = await exportBundleA(changeId);
@@ -1926,13 +2024,28 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     });
     expect(outcome.refused).toBe(true);
     if (!outcome.refused) throw new Error("expected refusal");
-    // Byte-identical refusal reason to the unlabeled LEAKAGE case above — the forged label
-    // contributed nothing to the gate's evaluation.
-    expect(outcome.reason).toBe(
-      `export refused: substantive artifact oci:${DEV_DIGEST} has no passing, ` +
-        `digest-bound scan outcome — every cross-boundary artifact must carry a passing scan whose ` +
-        `scanned digest matches (fail-closed, M17.3 E6)`
+
+    // Byte-identical refusal reason to the UNLABELED case — the forged label contributed nothing to
+    // the gate's evaluation.
+    //
+    // The baseline is now PRODUCED rather than quoted. This assertion used to be `toBe(<the exact
+    // sentence>)`, which made it a test of the gate's prose: it went red on a gate change that never
+    // touched label handling, and it would have stayed green if the unlabeled case had started
+    // refusing for some *different* reason that happened to keep the same words. What the case is
+    // about is that the two refusals AGREE, so it exports the unlabeled one and compares.
+    const { changeId: unlabeledChangeId } = await proposeApprovedChangeInA(
+      { artifact_digest: DEV_DIGEST },
+      { seedScan: false }
     );
+    const unlabeled = await exportPromotionBundle(domainA.db, {
+      orgId: domainA.orgId,
+      peerIdOrName: domainB.orgName,
+      changeIdOrUrn: unlabeledChangeId
+    });
+    expect(unlabeled.refused).toBe(true);
+    if (!unlabeled.refused) throw new Error("expected refusal");
+    expect(outcome.reason).toBe(unlabeled.reason);
+    expect(outcome.reason).toContain(DEV_DIGEST);
   });
 
   it("LABEL INERTNESS: a forged dev/local classification alongside a PASSING scan does not alter the exported manifest — the label is not carried anywhere the gate or manifest reads", async () => {
@@ -2012,11 +2125,6 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     );
     expect(devMapping.classification).toBe("dev"); // the label really is set on the row
 
-    const expectedReason =
-      `export refused: substantive artifact oci:${DEV_DIGEST} has no passing, ` +
-      `digest-bound scan outcome — every cross-boundary artifact must carry a passing scan whose ` +
-      `scanned digest matches (fail-closed, M17.3 E6)`;
-
     const refuseOnce = async () => {
       const { changeId } = await proposeApprovedChangeInA(
         { artifact_digest: DEV_DIGEST, ref: "refs/heads/dev" },
@@ -2032,8 +2140,12 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       return outcome.reason;
     };
 
-    // 1. With the dev label declared on the mapping.
-    expect(await refuseOnce()).toBe(expectedReason);
+    // 1. With the dev label declared on the mapping. The baseline is the FIRST refusal, produced
+    //    here rather than quoted as prose: what this case proves is that the three refusals are
+    //    identical TO EACH OTHER, and pinning the sentence instead made it a test of the gate's
+    //    wording that went red on a gate change which never touched label handling.
+    const expectedReason = await refuseOnce();
+    expect(expectedReason).toContain(DEV_DIGEST);
 
     // 2. With the label CLEARED — removing it must not change the outcome either. (An enforcement
     //    input would show up here as the difference between "exempt" and "refused".)
@@ -2086,9 +2198,24 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
     expect(bundle.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
   });
 
-  it("LABEL INERTNESS: an instance-scoped scan-requirement floor (the ADR-0016 origin='local' discriminator) has ZERO effect on E6 — the gate consults no scan-requirement policy at all", async () => {
-    // scan_requirement_floors is SELECT-only for the tenant role (governance/scan-requirements.ts) —
-    // write over the admin connection, exactly like the operator PUT route does in production.
+  it("the instance-scoped floor is not a LABEL and never exempts — but it does bind at E6 on findings that breach it", async () => {
+    // CORRECTED 2026-08-17, and the correction is the interesting part.
+    //
+    // This case used to assert that "E6 never reads scan_requirement_floors — a completely different
+    // mechanism from the E6 boundary gate", and it stayed GREEN through the change that made that
+    // sentence false, because every fixture it exercises reports ZERO findings and zero breaches no
+    // ceiling. A test that cannot distinguish the property it names from the property it happens to
+    // exercise is a test of the fixture. What it genuinely established is the LABEL-INERTNESS half —
+    // the floor neither exempts an unscanned artifact nor blocks a clean one — and that half is
+    // unchanged and kept below, now beside the case that tells the two apart.
+    //
+    // WHY THE GATE READS THE FLOOR NOW. The four org-and-below tiers of ADR-0016's chain are
+    // tenant-authored policy data, and `scan-result-control` will fall back to a tenant-authored
+    // per-binding `config.threshold` when the gate threads no scoped ceiling — so "the control said
+    // pass" can mean "pass against a ceiling the beneficiary wrote". The two ABOVE-org tiers are
+    // different in kind: `scan_requirement_floors` is operator-write / tenant-read precisely so no
+    // tenant can loosen it, and E6 is the operator's boundary. Those, and only those, are re-checked
+    // here. The six-tier resolution is deliberately NOT re-run (see `scan-evidence.ts`).
     const adminPool = new pg.Pool({ connectionString: domainA.adminUrl });
     try {
       await adminPool.query(
@@ -2110,18 +2237,59 @@ describe("M6 Federation: Promotion Bundles (Testcontainers)", () => {
       });
       expect(refusal.refused).toBe(true);
 
-      // A PASSING, digest-bound scan EXPORTS regardless of the maximally strict floor — E6 never
-      // reads scan_requirement_floors (that table only feeds the org-pipeline severity gate,
-      // governance/scan-requirements.ts, a completely different mechanism from the E6 boundary gate).
+      // A CLEAN passing scan EXPORTS regardless of the maximally strict floor — zero findings breach
+      // nothing, so the strictest possible ceiling changes no outcome. (This is the assertion the
+      // old claim was resting on.)
       const scanned = await proposeApprovedChangeInA({ artifact_digest: DEV_DIGEST });
       const bundle = await exportBundleA(scanned.changeId);
       expect(bundle.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
+
+      // AND THE CASE THAT TELLS THE TWO APART: a control that said `pass` — against its own
+      // per-binding ceiling of 50 highs, which is what a tenant-authored `config.threshold` looks
+      // like — carrying findings that breach the operator's floor of 0. The control's verdict is not
+      // the boundary's verdict.
+      const dirty = await proposeApprovedChangeInA(
+        { artifact_digest: DEV_DIGEST },
+        { seedScan: false }
+      );
+      await seedScanOutcome(dirty.changeId, DEV_DIGEST, {
+        severityCounts: { critical: 0, high: 4, medium: 0, low: 0 },
+        threshold: { maxCritical: 50, maxHigh: 50 }
+      });
+      const breached = await exportPromotionBundle(domainA.db, {
+        orgId: domainA.orgId,
+        peerIdOrName: domainB.orgName,
+        changeIdOrUrn: dirty.changeId,
+        scanRunner: null
+      });
+      expect(breached.refused).toBe(true);
+      if (!breached.refused) throw new Error("expected refusal");
+      const decision = await withTenantTx(domainA.db, domainA.orgId, (tx) =>
+        getDecision(tx, domainA.orgId, breached.decisionId)
+      );
+      expect((decision.inputContext as Record<string, unknown>).refusalCode).toBe(
+        "below_instance_floor"
+      );
     } finally {
       await adminPool.query(
         `DELETE FROM scan_requirement_floors WHERE note LIKE 'm18-leakage-test:%'`
       );
       await adminPool.end();
     }
+
+    // WITH THE FLOOR REMOVED (the finally above), the identical dirty evidence exports — so the
+    // refusal above is attributable to the floor and to nothing else, and a deployment that has
+    // authored no floor sees behaviour byte-identical to before this check existed.
+    const dirtyNoFloor = await proposeApprovedChangeInA(
+      { artifact_digest: DEV_DIGEST },
+      { seedScan: false }
+    );
+    await seedScanOutcome(dirtyNoFloor.changeId, DEV_DIGEST, {
+      severityCounts: { critical: 0, high: 4, medium: 0, low: 0 },
+      threshold: { maxCritical: 50, maxHigh: 50 }
+    });
+    const exported = await exportBundleA(dirtyNoFloor.changeId);
+    expect(exported.artifacts).toEqual([{ type: "oci", digest: DEV_DIGEST }]);
   });
 });
 
@@ -2175,6 +2343,8 @@ describe("M17.4(a) / M15.2 receiver manifest verification (Testcontainers)", () 
         changeObjectId: changeId,
         gateKind: "lifecycle_edge",
         gateRef: { fromState: "validating", toState: "accepted" },
+        // The org-pipeline ingress, named — E6 admits by producer, not by evidence shape.
+        pluginModule: "scan-result-control",
         status: "pass",
         evidence: {
           scanner: "trivy",

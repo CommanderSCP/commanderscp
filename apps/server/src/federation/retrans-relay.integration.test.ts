@@ -542,6 +542,8 @@ describe("M15.5(c) retrans validate-then-relay (Testcontainers: 3 domains + 2 re
         changeObjectId: change.id,
         gateKind: "lifecycle_edge",
         gateRef: { fromState: "validating", toState: "accepted" },
+        // The org-pipeline ingress, named — E6 admits by producer, not by evidence shape.
+        pluginModule: "scan-result-control",
         status: "pass",
         evidence: {
           scanner: "trivy",
