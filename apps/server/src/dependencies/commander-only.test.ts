@@ -255,10 +255,11 @@ const discoveredLoopExports = await Promise.all(
  * another directory would be silently exempt under a path filter; here it is an unclassified loop
  * and it fails.
  *
- * Every entry is a COORDINATION or FEDERATION loop, and every one of them runs on an outpost BY
- * DESIGN: an outpost reconciles its own domain, watches its own timeouts, drains its own inbox and
- * relays its own journals. That is the opposite posture from ADR-0032 §7d's, which is exactly why
- * the two sets have to be kept apart on purpose rather than by a wildcard.
+ * Every entry but the last is a COORDINATION or FEDERATION loop, and every one of those runs on an
+ * outpost BY DESIGN: an outpost reconciles its own domain, watches its own timeouts, drains its own
+ * inbox and relays its own journals. That is the opposite posture from ADR-0032 §7d's, which is
+ * exactly why the two sets have to be kept apart on purpose rather than by a wildcard. The last
+ * entry is exempt for a STRUCTURAL reason instead, and says so.
  */
 const NOT_DEPENDENCY_AUTOMATION: readonly { at: string; why: string }[] = [
   {
@@ -275,6 +276,15 @@ const NOT_DEPENDENCY_AUTOMATION: readonly { at: string; why: string }[] = [
   {
     at: "federation/auto-relay.ts:startAutoRelayLoop",
     why: "a retrans node relays across the CDS boundary"
+  },
+  {
+    // NOT a loop at all — the only entry exempt for a structural reason rather than a federation
+    // posture. It is the composition root's RUNNER (`background-work.ts`): it starts whatever
+    // `BACKGROUND_LOOPS` holds, and has no guard of its own DELIBERATELY, because the guard belongs
+    // to each job — giving the runner one would put a second, coarser answer in front of the four
+    // this file checks. Discovered by the return-type arm (`Promise<BackgroundLoopHandle>`).
+    at: "background-work.ts:startBackgroundLoops",
+    why: "the loop runner, not a job — every job it starts brings its own guard"
   }
 ];
 
