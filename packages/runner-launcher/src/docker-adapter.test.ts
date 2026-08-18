@@ -119,6 +119,63 @@ const createdIds: string[] = [];
  */
 const nameToId = new Map<string, string>();
 
+// ==================================================================================================
+// M23.1 PHASE 4 — THE REAPER'S OWN SIDE CHANNEL.
+// ==================================================================================================
+// `reap()` now runs at the top of every `run()`, which means every test in this file that calls
+// `run()` ALSO issues one more `execFile` — `docker ps -a --filter label=scp.launcher.owner` — and
+// `create` now always carries two more `--label` pairs. Every existing assertion in this file pins
+// `calls` as the LITERAL create/cp/start/rm sequence, so both of those would break every one of them
+// for a reason unrelated to what each test is actually about. Both are therefore diverted into their
+// OWN side channels here, verified by their OWN dedicated describe block below, and kept out of
+// `calls` entirely — the same reasoning as `envFileSnapshots` above for the transient `--env-file`
+// path: asserting on the stripped-out value in place would be asserting on nothing, so it is
+// captured where it can still be seen and checked on its own terms.
+
+/** `docker ps -a --filter label=...` calls issued by `reap()` — one per `run()`, none of them in
+ *  `calls`. */
+const reapListCalls: { args: string[]; opts: unknown }[] = [];
+/** EVERY `execFile` subcommand issued, `ps` included, in ISSUE order — unlike `calls`/`reapListCalls`
+ *  which each drop the other's kind, this is the one place that can show `reap()`'s `ps` truly
+ *  precedes `create` rather than merely having happened at some point. */
+const issueOrder: string[] = [];
+/** What `docker ps -a` reports back to `reap()`. Empty by default (nothing to reap), so an ordinary
+ *  test's `run()` triggers zero follow-on `rm` calls from `reap()` and `calls` stays exactly what it
+ *  always was. One `id\towner\tdeadline` line per container, matching the `--format` string `reap()`
+ *  actually requests — set this to drive the predicate tests below. */
+let reapPsStdout = "";
+/** When set, `reap()`'s OWN `docker ps -a` call rejects with this instead of succeeding — the
+ *  failure-injection arm for `reap()`'s listing step, undefined (succeeds) everywhere else. */
+let reapPsFailure: Error | undefined;
+/** `create`'s two `scp.launcher.*` labels, popped off the recorded argv before it reaches `calls` —
+ *  one entry per `create` call, in issue order. */
+const createLauncherLabels: { owner?: string; deadline?: string }[] = [];
+
+/** Finds one `--label key=value` pair and returns its value plus the argv with that pair removed —
+ *  or `undefined` if `key` is not present, leaving `args` untouched. */
+function extractLabel(args: string[], key: string): { value: string; rest: string[] } | undefined {
+  const flagIndex = args.findIndex(
+    (a, i) => a === "--label" && (args[i + 1] ?? "").startsWith(`${key}=`)
+  );
+  if (flagIndex === -1) return undefined;
+  const value = (args[flagIndex + 1] ?? "").slice(key.length + 1);
+  return { value, rest: [...args.slice(0, flagIndex), ...args.slice(flagIndex + 2)] };
+}
+
+/** Pops both `scp.launcher.*` labels off a `create` call's argv, recording what was popped into
+ *  {@link createLauncherLabels}, and returns the argv every OTHER test in this file still expects. */
+function popLauncherLabelsForRecording(rawArgs: string[]): string[] {
+  let rest = rawArgs;
+  const owner = extractLabel(rest, RUNNER_LAUNCHER_OWNER_LABEL);
+  if (owner) rest = owner.rest;
+  const deadline = extractLabel(rest, RUNNER_LAUNCHER_DEADLINE_LABEL);
+  if (deadline) rest = deadline.rest;
+  if (owner || deadline) {
+    createLauncherLabels.push({ owner: owner?.value, deadline: deadline?.value });
+  }
+  return rest;
+}
+
 /**
  * PER-STEP FAILURE INJECTION — the very object `execFile`'s callback is handed for that step, or
  * absent for a step that succeeds.
@@ -235,7 +292,23 @@ vi.mock("node:child_process", () => {
       opts: unknown,
       cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
     ) => {
-      calls.push({ file, args, opts });
+      // `reap()`'s own list call — diverted to its side channel, never `calls`. See the block
+      // comment above `reapListCalls`.
+      issueOrder.push(String(args[0]));
+      if (args[0] === "ps") {
+        reapListCalls.push({ args, opts });
+        const failure = reapPsFailure;
+        setImmediate(() =>
+          failure ? cb(failure) : cb(null, { stdout: reapPsStdout, stderr: "" })
+        );
+        return;
+      }
+
+      calls.push({
+        file,
+        args: args[0] === "create" ? popLauncherLabelsForRecording(args) : args,
+        opts
+      });
       const envFileIndex = args.indexOf("--env-file");
       if (envFileIndex !== -1) {
         const path = String(args[envFileIndex + 1]);
@@ -281,6 +354,9 @@ vi.mock("node:child_process", () => {
 const {
   DEFAULT_DOCKER_BINARY,
   RUNNER_CONTAINER_NAME_PREFIX,
+  RUNNER_LAUNCHER_DEADLINE_LABEL,
+  RUNNER_LAUNCHER_OWNER_LABEL,
+  RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
   RUNNER_RUN_ID_PATTERN,
   RunnerLaunchError,
@@ -336,6 +412,11 @@ function reset(): void {
   envFileSnapshots.length = 0;
   startBehaviourOk = undefined;
   for (const kind of Object.keys(stepFails) as RunnerStepKind[]) delete stepFails[kind];
+  reapListCalls.length = 0;
+  reapPsStdout = "";
+  reapPsFailure = undefined;
+  createLauncherLabels.length = 0;
+  issueOrder.length = 0;
 }
 
 beforeEach(reset);
@@ -1638,3 +1719,166 @@ runLaunchOrderingConformanceSuite(
   "M23.1 conformance — the Docker adapter",
   dockerOrderingSubstrate
 );
+
+// ====================================================================================================
+// M23.1 PHASE 4 — THE REAPER. See `RunnerLauncher.reap`'s own doc in index.ts for the defect this
+// closes, and `reaper.integration.test.ts` for why THIS suite (mocked `execFile`, no real Docker
+// daemon) cannot be the proof: it cannot show that a killed process leaves a container behind, that a
+// label survives on it, or that a real `docker ps --filter` actually finds it. What it CAN prove,
+// cheaply and on every PR, is the shape of what `reap()` sends and the LOGIC of its predicate —
+// exactly the two things a real-Docker test would be slow and awkward to drive through every branch
+// of.
+// ====================================================================================================
+
+describe("M23.1 phase 4: every `create` stamps the reaper's own two labels", () => {
+  it("the owner is a UUID; the deadline is RFC3339 `now + timeoutMs + RUNNER_REAP_GRACE_MS`", async () => {
+    const before = Date.now();
+    await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: 123_000 }));
+    const after = Date.now();
+
+    expect(createLauncherLabels).toHaveLength(1);
+    const { owner, deadline } = createLauncherLabels[0]!;
+    expect(owner).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+    expect(deadline).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    const deadlineMs = Date.parse(deadline!);
+    expect(deadlineMs).toBeGreaterThanOrEqual(before + 123_000 + RUNNER_REAP_GRACE_MS);
+    expect(deadlineMs).toBeLessThanOrEqual(after + 123_000 + RUNNER_REAP_GRACE_MS);
+  });
+
+  it("THE SAME owner id is used across every run this PROCESS performs, from a fresh factory call each time", async () => {
+    // `resolveDockerRunnerLauncher` — and therefore `createDockerRunnerLauncher` — is called AFRESH
+    // per `trigger()` (see `ResolveRunnerLauncher`'s own doc). If the owner id were minted inside the
+    // factory rather than once at module load, this one long-lived subprocess would mint a new
+    // "owner" per run and could never recognise a run of its own that outlived a respawn as its own.
+    await createDockerRunnerLauncher("docker").run(spec({ runId: "owner-check-1" }));
+    await createDockerRunnerLauncher("docker").run(spec({ runId: "owner-check-2" }));
+
+    expect(createLauncherLabels).toHaveLength(2);
+    expect(createLauncherLabels[0]!.owner).toBeTruthy();
+    expect(createLauncherLabels[1]!.owner).toBe(createLauncherLabels[0]!.owner);
+  });
+});
+
+describe("M23.1 phase 4: `run()` calls `reap()` at its own top, before `create`", () => {
+  it("issues exactly one `docker ps -a --filter label=scp.launcher.owner`, before `create`", async () => {
+    await createDockerRunnerLauncher("docker").run(spec());
+
+    expect(reapListCalls).toStrictEqual([
+      {
+        args: [
+          "ps",
+          "-a",
+          "--filter",
+          `label=${RUNNER_LAUNCHER_OWNER_LABEL}`,
+          "--format",
+          `{{.ID}}\t{{.Label "${RUNNER_LAUNCHER_OWNER_LABEL}"}}\t{{.Label "${RUNNER_LAUNCHER_DEADLINE_LABEL}"}}`
+        ],
+        opts: { timeout: RUNNER_REMOVE_TIMEOUT_MS }
+      }
+    ]);
+    // THE DELETE-THE-WIRING CHECK THIS UNIT CAN DO: `issueOrder` sees every subcommand, `ps`
+    // included, in true issue order. Remove `await reap()` from the top of `run()` and this list
+    // loses its leading `"ps"` — the ONLY thing in this file that would notice.
+    expect(issueOrder[0], "reap's own list call must be issued before anything else").toBe("ps");
+    expect(issueOrder.slice(1)).toStrictEqual(["create", "start", "rm"]);
+  });
+
+  it("a run that finds NOTHING to reap issues no `rm` beyond its own teardown", async () => {
+    reapPsStdout = "";
+    await createDockerRunnerLauncher("docker").run(spec());
+    expect(calls.map((c) => c.args[0])).toStrictEqual(["create", "start", "rm"]);
+  });
+});
+
+describe("M23.1 phase 4: `reap()`'s predicate — never a peer, never the future, never a guess", () => {
+  const FOREIGN_OWNER = "22222222-2222-4222-8222-222222222222";
+  const PAST = new Date(Date.now() - 60_000).toISOString();
+  const FUTURE = new Date(Date.now() + 60_000).toISOString();
+
+  it("removes a container owned by SOMEONE ELSE whose deadline has PASSED", async () => {
+    reapPsStdout = `abc123\t${FOREIGN_OWNER}\t${PAST}\n`;
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    expect(removed).toStrictEqual(["abc123"]);
+    expect(calls).toStrictEqual([
+      { file: "docker", args: ["rm", "-f", "abc123"], opts: { timeout: RUNNER_REMOVE_TIMEOUT_MS } }
+    ]);
+  });
+
+  it("SPARES a container owned by SOMEONE ELSE whose deadline is still in the FUTURE", async () => {
+    // Without this arm a reaper that ignored the deadline entirely — `docker container prune`
+    // wearing a filter's name — would pass the case above.
+    reapPsStdout = `future1\t${FOREIGN_OWNER}\t${FUTURE}\n`;
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    expect(removed).toStrictEqual([]);
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("SPARES its OWN container even PAST deadline — never touches what this process itself owns", async () => {
+    // First: a real `create` from THIS launcher, to learn the real owner id rather than guess it.
+    await createDockerRunnerLauncher("docker").run(spec({ runId: "own-past" }));
+    const myOwner = createLauncherLabels[0]!.owner!;
+    reset();
+
+    reapPsStdout = `own1\t${myOwner}\t${PAST}\n`;
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    expect(removed).toStrictEqual([]);
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("SPARES a container with NO deadline label at all (malformed/absent -> never read as safe)", async () => {
+    reapPsStdout = `nolabel1\t${FOREIGN_OWNER}\t\n`;
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    expect(removed).toStrictEqual([]);
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("SPARES a container whose deadline label is GARBLED (unparsable -> never read as safe)", async () => {
+    reapPsStdout = `garbled1\t${FOREIGN_OWNER}\tnot-a-date\n`;
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    expect(removed).toStrictEqual([]);
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("removes only the matching rows out of a mixed listing, in the order `docker ps` returned them", async () => {
+    reapPsStdout = [
+      `remove-1\t${FOREIGN_OWNER}\t${PAST}`,
+      `keep-future\t${FOREIGN_OWNER}\t${FUTURE}`,
+      `keep-nolabel\t${FOREIGN_OWNER}\t`,
+      `remove-2\t${FOREIGN_OWNER}\t${PAST}`
+    ].join("\n");
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    expect(removed).toStrictEqual(["remove-1", "remove-2"]);
+  });
+
+  it("a `docker ps` failure is swallowed — reap() resolves to [] rather than blocking the run it precedes", async () => {
+    reapPsFailure = new Error("docker: Cannot connect to the Docker daemon");
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    expect(removed).toStrictEqual([]);
+    expect(calls, "no rm was even attempted — the listing itself is what failed").toStrictEqual([]);
+  });
+
+  it("a `docker rm -f` failure for ONE target is swallowed and does not stop the others", async () => {
+    reapPsStdout = [
+      `fails-to-remove\t${FOREIGN_OWNER}\t${PAST}`,
+      `removes-fine\t${FOREIGN_OWNER}\t${PAST}`
+    ].join("\n");
+    fail("teardown", new Error("docker: no such container"));
+    const removed = await createDockerRunnerLauncher("docker").reap();
+
+    // `fail("teardown", …)` makes EVERY `rm` in this test fail (the seam has no per-id failure
+    // knob), which is still the case that matters: reap() must not let one rejection abort the loop
+    // and skip trying the rest.
+    expect(removed).toStrictEqual([]);
+    expect(calls.map((c) => c.args)).toStrictEqual([
+      ["rm", "-f", "fails-to-remove"],
+      ["rm", "-f", "removes-fine"]
+    ]);
+  });
+});

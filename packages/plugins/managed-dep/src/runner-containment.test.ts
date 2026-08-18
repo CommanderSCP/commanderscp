@@ -13,6 +13,7 @@ import {
   githubHandler,
   recordingCtx
 } from "./write-test-support.js";
+import { RUNNER_LAUNCHER_DEADLINE_LABEL, RUNNER_LAUNCHER_OWNER_LABEL } from "@scp/runner-launcher";
 
 /**
  * ================================================================================================
@@ -70,6 +71,27 @@ let editedOutput: string | undefined = PACKAGE_JSON_BUMPED;
  */
 let copiedInDir: string | undefined;
 
+/**
+ * M23.1 PHASE 4 — the reaper. `reap()` now runs at the top of every `run()`, issuing a `docker ps -a
+ * --filter label=...` before `create` and stamping two more `--label` pairs onto every `create` it
+ * issues. Neither is this file's subject, so both are kept out of `dockerCalls` entirely: the `ps`
+ * call is answered with an empty listing and never recorded, and the two labels are stripped off
+ * `create`'s argv before it is recorded — the "EVERY container it launches is NAMED AND LABELLED"
+ * test below still needs to see the PLUGIN's own two labels untouched.
+ */
+function stripLauncherLabel(args: string[], key: string): string[] {
+  const flagIndex = args.findIndex(
+    (a, i) => a === "--label" && (args[i + 1] ?? "").startsWith(`${key}=`)
+  );
+  return flagIndex === -1 ? args : [...args.slice(0, flagIndex), ...args.slice(flagIndex + 2)];
+}
+function stripLauncherLabels(args: string[]): string[] {
+  return stripLauncherLabel(
+    stripLauncherLabel(args, RUNNER_LAUNCHER_OWNER_LABEL),
+    RUNNER_LAUNCHER_DEADLINE_LABEL
+  );
+}
+
 vi.mock("node:child_process", () => {
   return {
     execFile: (
@@ -78,7 +100,11 @@ vi.mock("node:child_process", () => {
       _opts: unknown,
       cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
     ) => {
-      dockerCalls.push({ file, args });
+      if (args[0] === "ps") {
+        setImmediate(() => cb(null, { stdout: "", stderr: "" }));
+        return;
+      }
+      dockerCalls.push({ file, args: args[0] === "create" ? stripLauncherLabels(args) : args });
       const sub = args[0];
       if (sub === "create") {
         cb(null, { stdout: "dep-container-abc\n", stderr: "" });

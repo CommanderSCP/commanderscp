@@ -2,9 +2,14 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { debuglog, promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+/** `NODE_DEBUG=scp-runner-launcher` to see swallowed teardown/reap failures. Both are best-effort
+ *  by design (see {@link RunnerLauncher.reap} and the teardown `.catch`), so this is the only trace
+ *  of them that exists — a swallow with nowhere for the reason to go is invisible, not handled. */
+const debug = debuglog("scp-runner-launcher");
 
 /**
  * `@scp/runner-launcher` — THE ONE PLACE A MANAGED RUNNER IS LAUNCHED (BUILD_AND_TEST.md §8 M23.1).
@@ -234,6 +239,34 @@ export interface RunnerResult {
  */
 export interface RunnerLauncher {
   run(spec: RunnerSpec): Promise<RunnerResult>;
+  /**
+   * M23.1 PHASE 4 — CONTAINMENT HYGIENE FOR THE WINDOW PHASES 1–3 CANNOT CLOSE. When the JS
+   * process that owns a run is SIGKILLed (or dies for any other reason) mid-`run()`, NO `finally`
+   * executes — not the adapter's own teardown, nothing. The container the daemon already started
+   * keeps running, `state=running`, doing whatever its workload does (for managed-iac, a `tofu
+   * apply` still mutating live infrastructure) with nothing left supervising it. Phases 1–3 made
+   * every container NAMED and LABELLED and made the SIGKILL itself rarer (the host's own hang
+   * detector no longer fires at 10s against a legitimate multi-minute run) — neither closes this
+   * window, because a label nobody reads is not a cleanup mechanism.
+   *
+   * Removes every OTHER launcher's container whose {@link RUNNER_LAUNCHER_DEADLINE_LABEL} has
+   * passed. Two things this must NEVER do, and both are the actual hard part:
+   *   - touch a container this SAME process is still supervising (it is not orphaned — checked by
+   *     {@link RUNNER_LAUNCHER_OWNER_LABEL}, not by the container's state);
+   *   - touch a LIVE PEER's container before that peer's own run has had a chance to finish and
+   *     tear it down itself (checked by the deadline, not by "does it look idle").
+   *
+   * Best-effort: a `docker ps`/`docker rm` failure here is logged (`NODE_DEBUG=scp-runner-launcher`)
+   * and swallowed rather than thrown, because a reap that cannot even list containers must not
+   * block the run it precedes.
+   *
+   * Called by the Docker adapter at the top of every {@link RunnerLauncher.run}, before `create` —
+   * see `reaper.integration.test.ts` for why the mock recording seam
+   * (`docker-adapter.test.ts`) cannot prove any of this: it cannot show that a killed process
+   * leaves a container, that a label survives on it, or that a real `docker ps --filter` finds it.
+   * Returns the ids actually removed.
+   */
+  reap(): Promise<string[]>;
 }
 
 /**
@@ -445,6 +478,55 @@ export const RUNNER_REMOVE_TIMEOUT_MS = 30_000;
 /** The Docker adapter's default CLI. Server-injected in production; this is the unit-test fallback. */
 export const DEFAULT_DOCKER_BINARY = "docker";
 
+// ==================================================================================================
+// THE REAPER'S LABELS AND IDENTITY — M23.1 PHASE 4. See {@link RunnerLauncher.reap} for the defect.
+// ==================================================================================================
+
+/** Presence of this label is what `reap()` filters `docker ps -a` on — every container this
+ *  package ever creates carries it, so a container with no `scp.launcher.*` labels at all (created
+ *  by something else entirely — a stray `docker run`, a Testcontainers fixture, an operator's own
+ *  manual container) is excluded at the DAEMON'S OWN filter, before a single byte of its state
+ *  reaches this process. Reap is a targeted sweep of what this package made, never `docker
+ *  container prune`. */
+export const RUNNER_LAUNCHER_OWNER_LABEL = "scp.launcher.owner";
+/** RFC3339. See {@link RUNNER_REAP_GRACE_MS} for how the value is computed. */
+export const RUNNER_LAUNCHER_DEADLINE_LABEL = "scp.launcher.deadline";
+
+/**
+ * How far past a run's own `timeoutMs` its container's `{@link RUNNER_LAUNCHER_DEADLINE_LABEL}`
+ * is set — i.e. the deadline stamped at `create` time is `now + spec.timeoutMs + this`. Everything
+ * about `reap()`'s safety turns on this being generous enough that a container a PEER replica is
+ * still legitimately supervising is never touched: a process that is still ALIVE always tears its
+ * own container down via `run()`'s own `finally`, whatever `timeoutMs` said, because that `finally`
+ * runs regardless of whether the per-call `exec()` timeout fired — it is only the SURROUNDING
+ * PROCESS dying (a SIGKILL, a crash) that leaves an orphan at all. The earliest that can happen in
+ * this product today is `apps/server/src/plugin-host/call-policy.ts`'s host-level hang detector for
+ * a managed `trigger`, which fires `MANAGED_TRIGGER_GRACE_MS` (30s there) after `timeoutMs` elapses.
+ * This package cannot IMPORT that constant — `@scp/runner-launcher` is a dependency of
+ * `apps/server`, never the reverse — so the number is re-derived here rather than shared, and
+ * padded well past it: double the host's own grace, plus room for `RUNNER_REMOVE_TIMEOUT_MS`'s own
+ * 30s teardown call and ordinary `create`/`copy-in` overhead before a run's `start` step even
+ * begins. If `MANAGED_TRIGGER_GRACE_MS` ever grows, this should be re-checked against it — nothing
+ * enforces the relationship automatically, precisely because nothing CAN import across that
+ * boundary.
+ */
+export const RUNNER_REAP_GRACE_MS = 2 * 60_000;
+
+/**
+ * This PROCESS's own identity, for the lifetime of the process — minted ONCE, at module load, and
+ * NOT inside {@link createDockerRunnerLauncher}. That distinction is the whole mechanism: a plugin
+ * resolves a fresh launcher on every `trigger()` ({@link ResolveRunnerLauncher}'s own doc explains
+ * why), so if the id were minted inside the factory, this SAME long-lived subprocess would mint a
+ * new "owner" for every run and could never recognise its own prior container as its own. One id
+ * per Node process — which is exactly one id per managed-executor plugin INSTANCE, since
+ * `plugin-host/host.ts` spawns one subprocess per configured instance and keeps it alive (with
+ * respawn-on-crash) across every call — is what makes "owned by me" mean the same thing for every
+ * run this process ever performs, and mean something DIFFERENT the moment a respawn happens: the
+ * successor process mints its own id, so it correctly treats its dead predecessor's leftover
+ * container as foreign and reapable once that container's deadline has passed.
+ */
+const LAUNCHER_OWNER_ID = randomUUID();
+
 /**
  * THE DOCKER ADAPTER — `create` / `cp` in / `start -a` / `cp` out / `rm -f`, reproducing what the
  * three plugins each did, byte for byte. Every argv string and every options object below is what
@@ -457,8 +539,68 @@ export const DEFAULT_DOCKER_BINARY = "docker";
 export function createDockerRunnerLauncher(
   dockerBinary: string = DEFAULT_DOCKER_BINARY
 ): RunnerLauncher {
+  /**
+   * See {@link RunnerLauncher.reap}. Lists every container THIS PACKAGE labelled (any owner), then
+   * removes exactly the ones that are BOTH foreign (owner != {@link LAUNCHER_OWNER_ID}) AND past
+   * their deadline. A container with a missing or unparsable deadline is left alone — the same
+   * fail-closed direction as everything else in this file: an ambiguous label must never read as
+   * "safe to destroy".
+   */
+  const reap = async (): Promise<string[]> => {
+    let listing: string;
+    try {
+      listing = (
+        await execFileAsync(
+          dockerBinary,
+          [
+            "ps",
+            "-a",
+            "--filter",
+            `label=${RUNNER_LAUNCHER_OWNER_LABEL}`,
+            "--format",
+            `{{.ID}}\t{{.Label "${RUNNER_LAUNCHER_OWNER_LABEL}"}}\t{{.Label "${RUNNER_LAUNCHER_DEADLINE_LABEL}"}}`
+          ],
+          { timeout: RUNNER_REMOVE_TIMEOUT_MS }
+        )
+      ).stdout;
+    } catch (cause) {
+      debug("reap: listing launcher-owned containers failed, skipping this pass: %O", cause);
+      return [];
+    }
+
+    const now = Date.now();
+    const targets: string[] = [];
+    for (const line of listing.split("\n")) {
+      if (line.trim().length === 0) continue;
+      const [id, owner, deadline] = line.split("\t");
+      if (!id || owner === LAUNCHER_OWNER_ID) continue; // never my own — live or not yet torn down
+      const deadlineMs = deadline ? Date.parse(deadline) : NaN;
+      if (!Number.isFinite(deadlineMs) || deadlineMs > now) continue; // missing/garbled/future -> leave it
+      targets.push(id);
+    }
+
+    const removed: string[] = [];
+    for (const id of targets) {
+      try {
+        await execFileAsync(dockerBinary, ["rm", "-f", id], { timeout: RUNNER_REMOVE_TIMEOUT_MS });
+        removed.push(id);
+      } catch (cause) {
+        debug("reap: rm -f %s failed, leaving it for the next pass: %O", id, cause);
+      }
+    }
+    return removed;
+  };
+
   return {
+    reap,
     async run(spec: RunnerSpec): Promise<RunnerResult> {
+      // AT THE TOP, BEFORE `create` — M23.1 PHASE 4. One place, guaranteed to run before the next
+      // container this process makes, and — because the host restarts a SIGKILLed subprocess with
+      // backoff — within one retry of the very event that orphans a container. See {@link
+      // RunnerLauncher.reap}. Best-effort by construction (`reap` never rejects), so this can never
+      // be the reason a real run fails to start.
+      await reap();
+
       const timeout = spec.timeoutMs;
       const maxBuffer = spec.maxBuffer;
       const envArgs = spec.env.flatMap((entry) => ["-e", entry]);
@@ -468,6 +610,11 @@ export function createDockerRunnerLauncher(
       // never answered. See {@link runnerContainerName} for why "move the await inside the try" —
       // this file's own former advice — repairs nothing.
       const containerName = runnerContainerName(spec.runId);
+      /** {@link RUNNER_LAUNCHER_DEADLINE_LABEL}'s value for the container THIS run is about to
+       *  create — computed once, from THIS spec's own `timeoutMs`, before `create` is issued. */
+      const reapDeadline = new Date(
+        Date.now() + spec.timeoutMs + RUNNER_REAP_GRACE_MS
+      ).toISOString();
 
       // THE REDACTION SET, and it is complete by construction rather than by inspection: the secret
       // VALUES the caller declared, plus the `--env-file` path once there is one. Read through a
@@ -565,6 +712,12 @@ export function createDockerRunnerLauncher(
                 "--name",
                 containerName,
                 ...Object.entries(spec.labels).flatMap(([k, v]) => ["--label", `${k}=${v}`]),
+                // THE REAPER'S OWN TWO LABELS (M23.1 phase 4) — always present, on every container
+                // this adapter ever creates, never conditional on the caller's own `spec.labels`.
+                "--label",
+                `${RUNNER_LAUNCHER_OWNER_LABEL}=${LAUNCHER_OWNER_ID}`,
+                "--label",
+                `${RUNNER_LAUNCHER_DEADLINE_LABEL}=${reapDeadline}`,
                 ...(envFilePath ? ["--env-file", envFilePath] : []),
                 ...envArgs,
                 spec.image,
@@ -633,9 +786,15 @@ export function createDockerRunnerLauncher(
         // 6. Destroy the container unconditionally — BY NAME, which is the identity that exists even
         //    when `create` is what failed. `docker rm -f` on a name that never existed exits ZERO
         //    (measured, Docker 29.5.2), so the no-container case costs one harmless daemon call.
+        // SWALLOWED, but not SILENT: a failed teardown here means a container may be about to
+        // orphan — `reap()` is the backstop, but the reason THIS teardown failed had nowhere to go
+        // before this line, which is a defect the same shape as the one this whole phase exists to
+        // close (a hazard with no reader). `NODE_DEBUG=scp-runner-launcher` surfaces it.
         await exec("teardown", ["rm", "-f", containerName], {
           timeout: RUNNER_REMOVE_TIMEOUT_MS
-        }).catch(() => undefined);
+        }).catch((cause) => {
+          debug("teardown: rm -f %s failed: %O", containerName, cause);
+        });
       }
     }
   };

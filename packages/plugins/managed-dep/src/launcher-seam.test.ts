@@ -31,11 +31,15 @@ import { __resetManagedDepOutcomes, createManagedDepExecutorPlugin } from "./ind
  * request behind, and the run credential must still be revoked.
  */
 
+// `reap` is stubbed on every fake below to satisfy the port — it is never called by a plugin
+// directly, only by the Docker adapter's own `run()` (see `@scp/runner-launcher`'s
+// `reaper.integration.test.ts`), so nothing here exercises it.
 function throwingLauncher(): RunnerLauncher {
   return {
     run(): Promise<never> {
       throw new Error("managed-dep test: the injected RunnerLauncher was reached");
-    }
+    },
+    reap: async () => []
   };
 }
 
@@ -50,7 +54,8 @@ function recordingLauncher(seen: RunnerSpec[], outDirBox: { path?: string }): Ru
         await writeFile(join(spec.copyOut.hostDir, "manifest"), PACKAGE_JSON_BUMPED, "utf8");
       }
       return { succeeded: true, stdout: "", stderr: "" };
-    }
+    },
+    reap: async () => []
   };
 }
 

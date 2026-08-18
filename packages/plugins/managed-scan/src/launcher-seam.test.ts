@@ -32,11 +32,15 @@ import { createManagedScanExecutorPlugin } from "./index.js";
  * been invented alongside it — M23.1 adds NO new key to the server-injected class.
  */
 
+// `reap` is stubbed on every fake below to satisfy the port — it is never called by a plugin
+// directly, only by the Docker adapter's own `run()` (see `@scp/runner-launcher`'s
+// `reaper.integration.test.ts`), so nothing here exercises it.
 function throwingLauncher(): RunnerLauncher {
   return {
     run(): Promise<never> {
       throw new Error("managed-scan test: the injected RunnerLauncher was reached");
-    }
+    },
+    reap: async () => []
   };
 }
 
@@ -45,7 +49,8 @@ function recordingLauncher(seen: RunnerSpec[]): RunnerLauncher {
     async run(spec) {
       seen.push(spec);
       return { succeeded: true, stdout: "recorded", stderr: "" };
-    }
+    },
+    reap: async () => []
   };
 }
 

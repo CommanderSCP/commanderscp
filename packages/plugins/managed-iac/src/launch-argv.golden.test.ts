@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
+import { RUNNER_LAUNCHER_DEADLINE_LABEL, RUNNER_LAUNCHER_OWNER_LABEL } from "@scp/runner-launcher";
 
 /**
  * ================================================================================================
@@ -94,6 +95,28 @@ let cpOutOk = true;
  *  other test in this file leaves it `true`. */
 let createOk = true;
 
+/**
+ * M23.1 PHASE 4 — the reaper. `reap()` now runs at the top of every `run()`, issuing a `docker ps -a
+ * --filter label=...` before `create` and stamping two more `--label` pairs onto every `create` it
+ * issues. Neither is this file's subject (its own dedicated coverage is
+ * `@scp/runner-launcher`'s `docker-adapter.test.ts` and `reaper.integration.test.ts`), so both are
+ * kept out of the golden entirely: the `ps` call is answered with an empty listing and never
+ * recorded, and the two labels are stripped off `create`'s argv before it reaches `calls` — the same
+ * "divert what this file isn't about" technique already used for the transient `--env-file` path.
+ */
+function stripLauncherLabel(args: string[], key: string): string[] {
+  const flagIndex = args.findIndex(
+    (a, i) => a === "--label" && (args[i + 1] ?? "").startsWith(`${key}=`)
+  );
+  return flagIndex === -1 ? args : [...args.slice(0, flagIndex), ...args.slice(flagIndex + 2)];
+}
+function stripLauncherLabels(args: string[]): string[] {
+  return stripLauncherLabel(
+    stripLauncherLabel(args, RUNNER_LAUNCHER_OWNER_LABEL),
+    RUNNER_LAUNCHER_DEADLINE_LABEL
+  );
+}
+
 vi.mock("node:child_process", () => {
   return {
     execFile: (
@@ -102,7 +125,11 @@ vi.mock("node:child_process", () => {
       opts: unknown,
       cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
     ) => {
-      calls.push({ file, args, opts });
+      if (args[0] === "ps") {
+        setImmediate(() => cb(null, { stdout: "", stderr: "" }));
+        return;
+      }
+      calls.push({ file, args: args[0] === "create" ? stripLauncherLabels(args) : args, opts });
       const envFileIndex = args.indexOf("--env-file");
       if (envFileIndex !== -1) {
         const path = String(args[envFileIndex + 1]);

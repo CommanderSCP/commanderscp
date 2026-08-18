@@ -34,12 +34,16 @@ import { createManagedIacExecutorPlugin } from "./index.js";
  * missed nicety.
  */
 
-/** No Docker, no argv — the point is that this object is reached at all. */
+/** No Docker, no argv — the point is that this object is reached at all. `reap` is never called by
+ *  a plugin directly (only the Docker adapter's own `run()` calls its own `reap` — see
+ *  `@scp/runner-launcher`'s `reaper.integration.test.ts`), so every fake in this file stubs it to
+ *  satisfy the port and nothing here exercises it. */
 function throwingLauncher(): RunnerLauncher {
   return {
     run(): Promise<never> {
       throw new Error("managed-iac test: the injected RunnerLauncher was reached");
-    }
+    },
+    reap: async () => []
   };
 }
 
@@ -48,7 +52,8 @@ function recordingLauncher(seen: RunnerSpec[]): RunnerLauncher {
     async run(spec) {
       seen.push(spec);
       return { succeeded: true, stdout: "recorded", stderr: "" };
-    }
+    },
+    reap: async () => []
   };
 }
 
@@ -120,7 +125,8 @@ describe("M23.1: managed-iac launches through the injected RunnerLauncher", () =
         throw new Error(
           `Command failed: docker create --network none -e AWS_SECRET_ACCESS_KEY=${SEEDED_SECRET} scp-runner-iac:vetted plan`
         );
-      }
+      },
+      reap: async () => []
     };
     const plugin = createManagedIacExecutorPlugin(() => leaking);
     const c = ctx({ infraCredsSecretKeys: { AWS_SECRET_ACCESS_KEY: "aws-secret" } }, async (key) =>
