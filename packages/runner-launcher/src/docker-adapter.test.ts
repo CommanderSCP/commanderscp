@@ -50,6 +50,13 @@ import {
  *  4. THE FAILURE PATHS — a rejected `start` (captured, not rethrown), a rejected `cp` in, a
  *     rejected `rm` (swallowed), and the RECORDED PRE-EXISTING DEFECT that a rejected `create`
  *     issues no `rm` at all because its `await` sits outside the `try`.
+ *  5. WHAT HAPPENS WHEN THE LEVERS FIRE — the four shapes `promisify(execFile)` actually rejects
+ *     with (timeout-kill, maxBuffer, spawn ENOENT, exit 125), on every step that can produce them.
+ *     Points 2 and 4 assert that `timeout` and `maxBuffer` are PASSED; this is the only thing here
+ *     that asserts what the adapter does when one of them goes off, and the shapes are measured
+ *     against the running Node rather than imagined.
+ *  6. THAT TWO RUNS IN FLIGHT NEVER ADDRESS EACH OTHER'S CONTAINER — in the parameterised ordering
+ *     suite rather than in this file, so the M23.2 Kubernetes adapter inherits it.
  *
  * THE RECORDING SEAM is the one the three goldens use — `vi.mock("node:child_process")` with a
  * hand-written `execFile`. No Docker is required, so this runs on every PR under `pnpm test`.
@@ -659,6 +666,38 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
 // `succeeded = (err as { killed?: boolean }).killed === true` and all thirty tests still passed —
 // a build in which every runner WE killed on timeout is reported to the plugin as a SUCCESS, with a
 // truncated or empty plan.json cached as evidence.
+//
+// MEASURED, each mutation applied to a clean tree and the whole file re-run:
+//
+//   succeeded = false -> `.killed === true`          CAUGHT (1/52) by the TIMEOUT-KILL `start` arm
+//                                                    — and by that arm ALONE, because the measured
+//                                                    maxBuffer error has no `killed` property.
+//   succeeded = false -> `.code === MAXBUFFER_CODE`  CAUGHT (1/52) by the MAXBUFFER `start` arm.
+//   stdout  = e.stdout ?? "" -> ""                   CAUGHT (3/52)
+//   stderr  = e.stderr ?? e.message -> e.message     CAUGHT (5/52) — all four `start` arms.
+//   `create` swallows a `killed` failure             CAUGHT (1/52) by the TIMEOUT-KILL `create` arm
+//   copy-IN swallows an ENOENT failure               CAUGHT (1/52) by the ENOENT copy-IN arm
+//   swallowed copy-OUT rethrows on ENOENT            CAUGHT (1/52) by the ENOENT copy-OUT arm
+//   teardown rethrows a `killed` failure             CAUGHT (1/52) by the TIMEOUT-KILL teardown arm
+//   NODE_FAILURE_SHAPES timeout row: killed -> false CAUGHT (1/52) by THE TABLE IS NOT FICTION —
+//                                                    the fixture itself is mutated, because a table
+//                                                    nothing checks is a fixture that never applied.
+//
+// WHAT THESE ARMS STILL CANNOT PROVE, STATED RATHER THAN IMPLIED.
+//  - That `timeout` or `maxBuffer` ever actually fires. The options object is asserted elsewhere and
+//    the CONSEQUENCE is asserted here, but nothing in this file lets a real 10-minute limit elapse;
+//    only a real Docker run can join the two halves. The seam injects the shape Node WOULD produce.
+//  - That the numbers are the right numbers. 16/32/8 MiB and 10/10/5 min are pinned as the callers'
+//    values, and no test here says whether a real `terraform plan` output fits in 16 MiB.
+//  - Anything about the runner-side truncation itself. The MAXBUFFER arms assert what the adapter
+//    reports; they do not assert that a truncated `plan.json` is REJECTED downstream — nothing in
+//    this package parses evidence, and `succeeded: false` is all the adapter offers a caller to go on.
+//  - That an operator can tell these four apart afterwards. They cannot, today: `run()` returns the
+//    same `{ succeeded: false, stdout, stderr }` shape for all of them and drops `killed`, `signal`
+//    and `code` on the floor, so a runner we SIGTERM'd at the timeout is indistinguishable in the
+//    Decision record from one that exited non-zero — with an EMPTY stderr, which is what the ENOENT
+//    and TIMEOUT-KILL arms record. That is a behaviour question for the port, not a test gap, and it
+//    is pinned here as it stands rather than quietly improved.
 
 /** `code` on a maxBuffer overflow. Node's own constant name, spelled out so the table below reads. */
 const MAXBUFFER_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
@@ -962,33 +1001,45 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
 // adapter inherits them by supplying a substrate rather than by re-deriving the race.
 //
 // THE MEASURED TABLE — EVERY `await` in `packages/runner-launcher/src/index.ts` (there are six),
-// dropped in turn and the suite re-run. "pre-existing" = the 20 tests above, selected with
-// `vitest run -t "M23.1 conformance:"`; "with ordering" = the whole file.
+// dropped in turn and the suite re-run. RE-MEASURED against today's 52-test file; the counts and the
+// selector both moved when the LEVERS FIRE arms landed, because those arms share the "M23.1
+// conformance:" prefix the old selector used. "argv-only" is now the four pre-ordering describes,
+// selected with `-t "what the Docker adapter puts|the per-call timeout|copyOut.when|the failure
+// paths"` (20 tests); "whole file" is all 52.
 //
 //   index.ts:195  create, `const { stdout } = await execFileAsync(…)`
-//                 pre-existing: CAUGHT (all 20)   with ordering: CAUGHT (30)
+//                 argv-only: CAUGHT (20/20)   whole file: CAUGHT (51/52)
 //                 Dropping it destroys the value flow too — `createOut` becomes a Promise and
 //                 `.trim()` throws — so this await cannot be dropped in an ordering-only way. The
 //                 named ordering case is "`create` IS AWAITED".
 //   index.ts:205  copy-in loop, `await execFileAsync(…)` -> `void`
-//                 pre-existing: CAUGHT (1)        with ordering: CAUGHT (2)
-//                 "A REJECTED COPY-IN REJECTS the run" catches the un-awaited rejection; only
-//                 "THE COPY-INS ARE SEQUENTIAL" catches the ORDER (two copies racing into one
-//                 container, and `start` racing both).
+//                 argv-only: CAUGHT (1)       whole file: CAUGHT (7)
+//                 "A REJECTED COPY-IN REJECTS the run" and the four copy-IN shape arms catch the
+//                 un-awaited rejection; "THE COPY-INS ARE SEQUENTIAL" catches the ORDER (two copies
+//                 racing into one container, and `start` racing both), and "TWO RUNS AT ONCE"
+//                 catches it as a cross-run identity error.
 //   index.ts:218  start, `const r = await execFileAsync(…)`
-//                 pre-existing: CAUGHT (8)        with ordering: CAUGHT (9)
+//                 argv-only: CAUGHT (7)       whole file: CAUGHT (21)
 //                 Value flow again (`r.stdout` undefined), plus "`start` IS AWAITED".
 //   index.ts:242  copy-out swallow arm, `await pending.catch(…)` -> `void pending.catch(…)`
-//                 pre-existing: **SURVIVED**      with ordering: CAUGHT (2)
-//                 THE managed-iac plan.json RACE. Measured, not assumed: with `-t "M23.1
-//                 conformance:"` the run is "20 passed | 10 skipped" and exit 0.
+//                 argv-only: **SURVIVED**     whole file: CAUGHT (2)
+//                 THE managed-iac plan.json RACE. Measured, not assumed: against the argv-only
+//                 selection the run is "20 passed | 32 skipped" and exit 0. Caught only by "THE
+//                 SWALLOWED COPY-OUT IS AWAITED" and "A FAILING SWALLOWED COPY-OUT IS STILL
+//                 AWAITED" — the twenty LEVERS FIRE arms do NOT catch it either, because a shape
+//                 changes what the failure IS and not when it is waited for.
 //   index.ts:244  copy-out propagate arm, `await pending;` -> `void pending;`
-//                 pre-existing: CAUGHT (1)        with ordering: CAUGHT (2)
-//                 The pre-existing catch is incidental — the rejection stops escaping `run()`.
+//                 argv-only: CAUGHT (1)       whole file: CAUGHT (6)
+//                 The argv-only catch is incidental — the rejection stops escaping `run()`.
 //                 "THE PROPAGATING COPY-OUT IS AWAITED" is what names the teardown race.
 //   index.ts:251  teardown, `await execFileAsync(… "rm","-f" …).catch(…)` -> `void …`
-//                 pre-existing: **SURVIVED**      with ordering: CAUGHT (2)
-//                 Also measured at exit 0 against the pre-existing tests alone.
+//                 argv-only: **SURVIVED**     whole file: CAUGHT (2)
+//                 Also measured at exit 0 against the argv-only selection alone.
+//
+// AND THE MUTATION NO SINGLE-RUN TEST CAN SEE. Hoisting `const containerId` (index.ts:200) out of
+// the `run()` body to module scope typechecks clean and is caught by exactly ONE case in this file,
+// "TWO RUNS AT ONCE": measured at 1 failed | 51 passed, and the failure prints `container-1` having
+// been addressed by ten steps and `container-2` by two.
 //
 // NOT OBSERVABLE HERE, STATED RATHER THAN GLOSSED. The suite proves each step is awaited BEFORE THE
 // NEXT ONE IS ISSUED. It does NOT prove that the process the adapter waited on is the one that
@@ -996,7 +1047,10 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
 // only `managed-iac.integration.test.ts` (real Docker) can speak to that. It also says nothing
 // about the plugins' own awaits AROUND `run()` (writing the workspace, reading the evidence back),
 // which live in each plugin's suites, nor about `create`'s await being outside the `try` — that is
-// a deliberate recorded defect with its own named test above, not an ordering property.
+// a deliberate recorded defect with its own named test above, not an ordering property. And the
+// concurrency case runs TWO runs, not N: it would not notice a limit, a pool or a lock that only
+// misbehaves at higher concurrency, and it interleaves them at the points a test chooses rather
+// than at the points a scheduler would.
 
 /**
  * WHICH CONTAINER AN argv ADDRESSES — the Docker spelling of the port's per-run identity. Read off

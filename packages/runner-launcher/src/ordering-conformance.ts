@@ -33,6 +33,16 @@ import type { RunnerCopyIn, RunnerCopyOut, RunnerLauncher, RunnerSpec } from "./
  * must NOT SETTLE. A substrate that delayed the ISSUE instead of the settle would make every held
  * case below pass vacuously — which is why the first case is the UNHELD CONTROL: with nothing held
  * the full sequence must appear, in order, and `run()` must resolve with the runner's own output.
+ *
+ * THE SECOND DESCRIBE IS ABOUT IDENTITY, NOT ORDER, and it is here for the same inheritance reason.
+ * Every case above — and every case in `docker-adapter.test.ts` — has exactly ONE `run()` in flight,
+ * so one run's steps are the only steps there are and nothing can catch a per-run value kept
+ * somewhere shared. Hoisting `const containerId` (index.ts:200) to module scope typechecks clean and
+ * passed all thirty tests of the M23.1 suite; with two runs in flight it makes one run's `rm -f`
+ * destroy the OTHER run's container, orphaning the first with its resolved credentials still in its
+ * environment and tearing the second down twice. That is not a Docker property either: a Job adapter
+ * that kept the Job name in a module binding loses exactly the same way, so the case is expressed
+ * over identities and inherited by writing a substrate.
  */
 
 /** The port's lifecycle steps, named independently of how any adapter performs them. */
