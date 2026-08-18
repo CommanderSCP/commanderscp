@@ -576,7 +576,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     // Read together with O7/O8: a grant below the bar is refused and a grant at-or-above it applies.
     // The floor's effect is that "at-or-above" now starts at `org` even when nothing set a ceiling,
     // because the gate is still enforcing one the contributors cannot see.
-    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7101",
       tierObjectId: org.orgId,
@@ -647,7 +649,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await exclusionPolicy(admin, "clause-expired", org.orgId, {
       exclude: { class: "approved_override" }
     });
-    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7201",
       tierObjectId: service.id,
@@ -695,7 +699,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await exclusionPolicy(admin, "clause-revoked", org.orgId, {
       exclude: { class: "approved_override" }
     });
-    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7301",
       tierObjectId: service.id,
@@ -769,7 +775,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const { service, component } = await buildChain(admin, "grant-audit");
 
-    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7501",
       tierObjectId: service.id,
@@ -898,7 +906,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
 
     // The grant names the SERVICE — an object genuinely on the component's chain, and one the
     // requester could plausibly hold `policy:write` at. Under the old code this was enough.
-    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7301",
       tierObjectId: service.id,
@@ -947,7 +957,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     });
     await orgCeilingAndControl(admin, "ceiling-at", org.orgId, control.id);
 
-    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7301",
       tierObjectId: org.orgId, // the org ROOT object — `local-auth.ts` gives it the org's own id
@@ -996,7 +1008,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await requireScanControl(admin, "gate-floor", component.id, control.id);
 
     // Approved while nothing outranks the service — this is O1's configuration, which PASSES.
-    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7401",
       tierObjectId: service.id,
@@ -1136,7 +1150,10 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     const afterRefusal = await admin.scanOverrideGrants.listForComponent(component.id);
     expect(afterRefusal).toHaveLength(1);
     expect(afterRefusal[0]?.status).toBe("requested");
-    expect(afterRefusal[0]?.expiresAt, "a refused approval must not have opened a window").toBeNull();
+    expect(
+      afterRefusal[0]?.expiresAt,
+      "a refused approval must not have opened a window"
+    ).toBeNull();
     expect(afterRefusal[0]?.decidedByActorId).toBeNull();
 
     // THE NEGATIVE CONTROL, and the reason this case cannot pass for the wrong reason: the identical

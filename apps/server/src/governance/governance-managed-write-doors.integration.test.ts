@@ -1003,9 +1003,7 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
   it("LAYER 0: the governance-managed set is non-empty and still holds the three known types", () => {
     const typeIds = [...GOVERNANCE_MANAGED_OBJECT_TYPE_IDS];
     expect(typeIds.length).toBeGreaterThanOrEqual(3);
-    expect(typeIds).toEqual(
-      expect.arrayContaining(["policy", "control", "scan_override_grant"])
-    );
+    expect(typeIds).toEqual(expect.arrayContaining(["policy", "control", "scan_override_grant"]));
   });
 
   /**

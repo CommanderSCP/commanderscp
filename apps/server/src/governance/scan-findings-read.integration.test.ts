@@ -564,10 +564,7 @@ describe("M22.9: GET /control-runs/{id}/findings, over real HTTP", () => {
     // excluded". Asserting it here is what stops the wrapper being narrowed to a bare array later.
     expect(viaSdk.findingsRecord).toBe("full");
     expect(viaSdk.nextCursor).toBeNull();
-    expect(viaSdk.items.map((f) => f.vulnerabilityId)).toEqual([
-      "CVE-2026-8401",
-      "CVE-2026-8402"
-    ]);
+    expect(viaSdk.items.map((f) => f.vulnerabilityId)).toEqual(["CVE-2026-8401", "CVE-2026-8402"]);
 
     // ...and it is the SAME answer the raw route gives. Two readings that disagreed would mean the
     // wrapper had acquired semantics of its own, which is precisely what principle 3 forbids.

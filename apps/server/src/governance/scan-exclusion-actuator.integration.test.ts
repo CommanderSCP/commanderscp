@@ -394,7 +394,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "act-grant-after");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-after");
+    const { component } = await buildChain(admin, "grant-after");
 
     await overrideClause(admin, "clause-after", org.orgId);
     const control = await scanControl(admin, org, {
@@ -448,7 +448,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "act-wave");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "wave");
+    const { component } = await buildChain(admin, "wave");
 
     await overrideClause(admin, "clause-wave", org.orgId);
     const control = await scanControl(admin, org, {
@@ -485,7 +485,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "act-stable");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "stable");
+    const { component } = await buildChain(admin, "stable");
 
     await overrideClause(admin, "clause-stable", org.orgId);
     // A LIVE GRANT with a real expiry is in force throughout — the case most likely to leak a clock
@@ -554,7 +554,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "act-nonscan");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "nonscan");
+    const { component } = await buildChain(admin, "nonscan");
 
     await overrideClause(admin, "clause-nonscan", org.orgId);
     await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9801");
@@ -605,7 +605,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "act-expired");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "expired");
+    const { component } = await buildChain(admin, "expired");
 
     await overrideClause(admin, "clause-expired", org.orgId);
     const grant = await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9501");
@@ -666,7 +666,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "act-revoke");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "revoke");
+    const { component } = await buildChain(admin, "revoke");
 
     await overrideClause(admin, "clause-revoke", org.orgId);
     const grant = await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9601");
@@ -705,7 +705,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "act-hash");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "hash-a");
+    const { component } = await buildChain(admin, "hash-a");
     const other = await buildChain(admin, "hash-b");
 
     // ONE org-scoped clause covers both components, and neither has a grant — so the two targets

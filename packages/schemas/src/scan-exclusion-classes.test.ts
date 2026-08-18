@@ -312,9 +312,9 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
       // The declared line is major 4 and it is at head; the fix is in 5.x.
       fixedVersion: "5.0.1"
     });
-    expect(
-      applyScanExclusions([lang], withFacts(VENDOR, atHead), "full").excludedOrdinals
-    ).toEqual([0]);
+    expect(applyScanExclusions([lang], withFacts(VENDOR, atHead), "full").excludedOrdinals).toEqual(
+      [0]
+    );
   });
 
   it("a fix in the SAME major is still refused — by the version join, not by a backstop", () => {
@@ -330,9 +330,9 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
       installedVersion: "4.17.20",
       fixedVersion: "4.17.21"
     });
-    expect(
-      applyScanExclusions([lang], withFacts(VENDOR, atHead), "full").excludedOrdinals
-    ).toEqual([]);
+    expect(applyScanExclusions([lang], withFacts(VENDOR, atHead), "full").excludedOrdinals).toEqual(
+      []
+    );
   });
 
   it("a lang-pkgs finding with NO INSTALLED VERSION cannot be shown to be the one at head", () => {

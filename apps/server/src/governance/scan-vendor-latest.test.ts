@@ -264,11 +264,7 @@ describe("foldVendorLatestFacts — ALL, never ANY", () => {
     ];
     const keys = foldVendorLatestFacts(rows, OPTS).packageKeys;
     expect(keys).toEqual([...keys].sort());
-    expect(keys).toEqual([
-      "npm|axios|4.17.21",
-      "npm|zod|4.17.21",
-      "python|zope-interface|4.17.21"
-    ]);
+    expect(keys).toEqual(["npm|axios|4.17.21", "npm|zod|4.17.21", "python|zope-interface|4.17.21"]);
   });
 });
 
