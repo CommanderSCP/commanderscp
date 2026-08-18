@@ -763,11 +763,7 @@ export async function prewarmGovernanceForChange(
       matches,
       // FIRED ONLY, and never the ceiling's key set: an unevaluable condition must yield NO
       // exclusion (ADR-0033 §4 — the opposite sign from `ceilingContributorKeys`).
-      firedPolicies: fired,
-      // M22.6 (D3) — the ceiling resolved one statement above, so an override grant is measured
-      // against the tier that actually SET the rule it waives rather than against a tier the
-      // requester named. Required (not optional) so a fourth gate site cannot inherit "no bar".
-      ceiling: scanThreshold
+      firedPolicies: fired
     });
     // M22.7 (ADR-0033 §10) — THE ACTUATOR, at the site whose run is CACHED and later read by the
     // host-less accept edge. Without it a grant approved after this change's controls first ran is
@@ -967,10 +963,7 @@ export async function evaluateGovernanceGate(
     targetObjectIds: ctx.targetObjectIds,
     actorObjectId: ctx.actorObjectId,
     matches,
-    firedPolicies: fired,
-    // M22.6 (D3) — the ceiling resolved immediately above is the rule an override grant waives, so
-    // it is what the grant's derived tier is measured against.
-    ceiling: effectiveScanThreshold
+    firedPolicies: fired
   });
 
   // M22.7 — the actuator at the EVALUATE site. This is a SECOND call site, not a duplicate: the

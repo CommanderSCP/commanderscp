@@ -694,4 +694,80 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     expect(runsB, "B's set did not move, so B did not re-run").toHaveLength(1);
     expect(evidenceOf(runsA[1]!).exclusionSetHash).not.toBe(hashA);
   });
+
+  // ===========================================================================================
+  // A9 / A10 — D3'S AUTHORITY BAR AT *THIS* CALL SITE (M22.6 review round)
+  //
+  // WHY HERE AND NOT ONLY IN `scan-declared-override-exclusions.integration.test.ts`: measured, not
+  // assumed. Threading the resolved ceiling into the exclusion resolver is a TWO-CALL-SITE wiring,
+  // and the first mutation run against the bar found that setting the PREWARM site's `ceiling` to
+  // `undefined` left every case in that file green — the reconcile-loop tests there are driven
+  // through the EVALUATE site. That is the identical shape M-1/M-2 above record for `force`, one
+  // increment later, and it is why this pair exists: the prewarm's run is the one that gets CACHED
+  // and later read by the host-less accept edge, so an unbarred grant here authorises the edge a
+  // human actually clicks.
+  // ===========================================================================================
+
+  /** An org-anchored policy that requires the REAL scan control and sets the ceiling in the same
+   *  document — `scan-rule-authoring-guard.ts` refuses a `scanThreshold` that requires no scan
+   *  control, and one document makes the contributing tier unambiguous (`org`). */
+  async function orgCeiling(admin: ScpClient, name: string, orgRootId: string, controlId: string) {
+    return admin.policies.create({
+      name,
+      properties: {
+        scope: { objectRef: orgRootId },
+        enforcement: "required",
+        effects: [{ requireControls: [controlId] }, { scanThreshold: { maxHigh: 0 } }]
+      }
+    });
+  }
+
+  /** A9/A10 share every step but one: WHICH object the grant names as its tier. Extracted so the
+   *  pair cannot drift on anything else, which is the only way the contrast means something. */
+  async function prewarmWithGrantAt(
+    label: string,
+    tierOf: (chain: { service: { id: string }; component: { id: string } }, orgId: string) => string
+  ) {
+    await admitAtInstance("approved_override");
+    const org = await createTestOrg(server, `act-bar-${label}`);
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const chain = await buildChain(admin, `bar-${label}`);
+
+    await overrideClause(admin, `clause-bar-${label}`, org.orgId);
+    const control = await scanControl(admin, org, {
+      suffix: `act-bar-${label}`,
+      cve: ["CVE-2026-9801"],
+      pkg: ["openssl"]
+    });
+    // THE CEILING IS SET AT ORG — the rule the grant would be waiving.
+    await orgCeiling(admin, `ceiling-bar-${label}`, org.orgId, control.id);
+    const grant = await approvedGrant(
+      admin,
+      chain.component.id,
+      tierOf(chain, org.orgId),
+      "CVE-2026-9801"
+    );
+
+    const change = await proposeStaticChange(org, chain.component.id, `act-bar-${label}`);
+    await prewarmTick(org, change.id, chain.component.id);
+    const runs = await runsFor(org, change.id);
+    expect(runs).toHaveLength(1);
+    return { run: runs[0]!, evidence: evidenceOf(runs[0]!), grant };
+  }
+
+  it("A9: at the PREWARM site, a grant approved BELOW the tier that set the ceiling excludes nothing", async () => {
+    const { run, evidence } = await prewarmWithGrantAt("below", (chain) => chain.service.id);
+    expect(run.status).toBe("fail");
+    expect(evidence.severityCounts.high).toBe(1);
+    expect(evidence.effectiveSeverityCounts?.high).toBe(1);
+    expect(evidence.exclusions?.appliedCount).toBe(0);
+  });
+
+  it("A10: the SAME grant approved AT that tier does exclude — the pair that makes A9 able to fail for the right reason", async () => {
+    const { run, evidence, grant } = await prewarmWithGrantAt("at", (_chain, orgId) => orgId);
+    expect(run.status).toBe("pass");
+    expect(evidence.effectiveSeverityCounts?.high).toBe(0);
+    expect(evidence.exclusions?.appliedCount).toBe(1);
+    expect(evidence.exclusions?.applied[0]?.grantObjectId).toBe(grant.id);
+  });
 });

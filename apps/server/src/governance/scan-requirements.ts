@@ -749,19 +749,6 @@ export function requiredOverrideApprovalTier(
   return best;
 }
 
-export interface ResolveScanExclusionsForTargetsInput extends ResolveScanExclusionsInput {
-  /**
-   * The effective ceiling for the SAME targets, already resolved by the caller.
-   *
-   * REQUIRED — declared as `T | undefined` rather than `?:` on purpose, so TypeScript forces every
-   * call site to state it and a fourth gate site cannot inherit an unguarded default. `undefined`
-   * means "no tier set a ceiling", which {@link requiredOverrideApprovalTier} reads as "no bar"; it
-   * must never mean "the caller forgot", because that reading would silently restore the hole D3's
-   * enforcement closes.
-   */
-  ceiling: EffectiveScanThreshold | undefined;
-}
-
 /**
  * Resolves the effective exclusion set for a change's targets across all seven rungs.
  *
@@ -772,7 +759,7 @@ export interface ResolveScanExclusionsForTargetsInput extends ResolveScanExclusi
  */
 export async function resolveEffectiveScanExclusionsForTargets(
   tx: TenantTx,
-  input: ResolveScanExclusionsForTargetsInput
+  input: ResolveScanExclusionsInput
 ): Promise<EffectiveScanExclusions | undefined> {
   if (input.targetObjectIds.length === 0) return undefined;
 
@@ -780,14 +767,7 @@ export async function resolveEffectiveScanExclusionsForTargets(
   const resolved = resolveEffectiveScanExclusions(targets);
   const withVendor = await attachVendorLatestFacts(tx, input.orgId, targets, resolved, input.now);
   const withDeclared = await attachDeclaredFacts(tx, input.orgId, targets, withVendor);
-  return attachApprovedOverrides(
-    tx,
-    input.orgId,
-    targets,
-    withDeclared,
-    input.now,
-    requiredOverrideApprovalTier(input.ceiling)
-  );
+  return attachApprovedOverrides(tx, input, targets, withDeclared);
 }
 
 /**
@@ -878,15 +858,42 @@ async function attachDeclaredFacts(
  */
 async function attachApprovedOverrides(
   tx: TenantTx,
-  orgId: string,
+  input: ResolveScanExclusionsInput,
   targets: ScanExclusionTargetInput[],
-  resolved: EffectiveScanExclusions | undefined,
-  now: Date | undefined,
-  requiredTier: ScanRequirementTier
+  resolved: EffectiveScanExclusions | undefined
 ): Promise<EffectiveScanExclusions | undefined> {
   if (!resolved) return undefined;
   if (!resolved.clauses.some((c) => c.clause.class === "approved_override")) return resolved;
-  const at = now ?? new Date();
+  const orgId = input.orgId;
+  const at = input.now ?? new Date();
+  // THE BAR IS RESOLVED HERE, NOT THREADED IN FROM THE CALLER — measured, not preferred.
+  //
+  // The first version of this fix took the ceiling as a REQUIRED input field so TypeScript would
+  // force every gate site to supply it. Three sites supplied it, and the mutation run said what a
+  // type cannot: setting the commander producer's (`federation/promotion-scan-step.ts`) to
+  // `undefined` left the WHOLE suite green, because that producer has no override-grant coverage at
+  // all. A fourth site would inherit the same silence. So the resolver asks for itself, from the SAME
+  // `matches` and `firedPolicies` the exclusion dimension already resolved against — there is no
+  // longer a call site that can get this wrong, and `applyOverrideAuthorityBar` is reached by every
+  // caller of this function by construction. One deletion (this resolution) now kills a named test at
+  // every producer instead of one test per site.
+  //
+  // IT COSTS NOTHING ON THE PATH THAT MATTERS. This runs only AFTER an `approved_override` clause has
+  // survived the AND — the same two-phase shape the vendor and declared facts use, for the same
+  // measured reason. A deployment that authored no override clause (the overwhelming majority, and
+  // every deployment before M22) pays not one extra query, and M22.2's promise that its behaviour is
+  // byte-identical to pre-M22 is kept. Where it does run, it repeats one indexed resolution the gate
+  // already did in the same transaction against identical inputs — deterministic by construction,
+  // because `matches` and `firedPolicies` are the caller's own.
+  const requiredTier = requiredOverrideApprovalTier(
+    await resolveEffectiveScanThreshold(tx, {
+      orgId,
+      targetObjectIds: input.targetObjectIds,
+      actorObjectId: input.actorObjectId,
+      ...(input.matches ? { matches: input.matches } : {}),
+      firedPolicies: input.firedPolicies
+    })
+  );
   const perTarget: ScanApprovedOverrides[] = [];
   const refusedById = new Map<string, RefusedScanOverrideGrant>();
   for (const target of targets) {
