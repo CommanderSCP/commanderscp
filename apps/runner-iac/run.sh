@@ -14,8 +14,12 @@
 #
 # Contract with the orchestrator (packages/plugins/managed-iac): `/workspace` is populated via
 # `docker cp` before the container starts, holding the org's `.tf` configuration (no bind-mount).
-# The container is run with `-e <vaulted creds>` and the RUNNER_LAUNCHER interface is `docker
-# create ... scp-runner-iac <action>` followed by `docker cp <in> <container>:/workspace`,
+# The container's non-secret env (PRIOR_STATE_FILE etc.) still arrives as `-e KEY=VALUE`; the
+# infrastructure CREDENTIALS arrive via a mode-0600 `--env-file` the launcher stages under its own
+# governed state dir and unlinks the instant `create` returns (`@scp/runner-launcher`'s
+# `RunnerSpec.secretEnv`, M23.1a) — never `-e`, which is readable from the host process table by
+# any local process. The RUNNER_LAUNCHER interface is `docker create ... scp-runner-iac <action>`
+# followed by `docker cp <in> <container>:/workspace`,
 # `docker start`, `docker cp <container>:/workspace <out>`, then `docker rm`. Every action writes
 # its evidence back into `/workspace` (plan.json, state-history/*.tfstate) so the ORCHESTRATOR —
 # not this container, which is destroyed the moment it exits — is what persists that evidence as
