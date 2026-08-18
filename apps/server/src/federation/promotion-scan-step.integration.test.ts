@@ -86,12 +86,29 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCAN_CONTEXT = resolve(__dirname, "../../../../apps/runner-scan");
 const RUNNER_IMAGE_TAG = "scp-runner-scan:m13-3b-integration-test";
 
+/**
+ * Where the subject fixtures below are PULLED FROM (charter principle 5: "Everything, CI included,
+ * must run offline"; working convention: "Tests never touch the internet").
+ *
+ * These subjects reach the registry through `skopeo copy`, and skopeo talks to the registry
+ * directly — it never consults the local Docker image store — so the local re-tag that keeps
+ * Testcontainers off Docker Hub is invisible to it. Left as a literal `docker.io/library`, the
+ * `beforeAll` below was a live, unauthenticated Docker Hub pull on the REQUIRED integration gate:
+ * on 2026-08-15 it answered 502 and the whole suite aborted with ZERO individual test failures,
+ * which reads as a mystery rather than an outage.
+ *
+ * CI exports this (see `scripts/ci-mirror.sh seed`) pointing at the GHCR mirror of exactly the
+ * digests `tools/ci-mirror/images.list` pins. Unset — a developer's machine — it is upstream Docker
+ * Hub, which is what keeps this suite runnable from a fresh clone with no GHCR credentials.
+ */
+const SUBJECT_REGISTRY = process.env.SCP_TEST_SUBJECT_REGISTRY ?? "docker.io/library";
+
 /** A real, deterministically CLEAN subject (calibrated against the pinned Trivy DB: 0 findings). */
-const CLEAN_SRC = "docker://docker.io/library/alpine:3.20";
+const CLEAN_SRC = `docker://${SUBJECT_REGISTRY}/alpine:3.20`;
 /** A real, deterministically VULNERABLE subject (calibrated: 6 CRITICAL / 19 HIGH — well over the
  *  fail-closed 0/0 default threshold). `debian:11` (bullseye) is old enough to carry advisories yet
  *  recent enough that they are NOT pruned from the DB the way EOL alpine's are. */
-const DIRTY_SRC = "docker://docker.io/library/debian:11";
+const DIRTY_SRC = `docker://${SUBJECT_REGISTRY}/debian:11`;
 
 // --- OpenSCAP subjects (M13.3b — the second managed-scan method) ---------------------------------
 // Calibrated against the runner image's PINNED, content-addressed SSG content (oscap 1.4.0 /
@@ -106,8 +123,8 @@ const DIRTY_SRC = "docker://docker.io/library/debian:11";
 //                 the lightest baseline the pinned datastream ships — which is high-clean.)
 //   OSCAP DIRTY — oraclelinux:8 vs ssg-ol8 `standard`: ≥1 HIGH-severity fail (rpm-DB-checkable package
 //                 rules evaluate offline) → breaches maxHigh=0 → FAIL.
-const OSCAP_CLEAN_SRC = "docker://docker.io/library/debian:11";
-const OSCAP_DIRTY_SRC = "docker://docker.io/library/oraclelinux:8";
+const OSCAP_CLEAN_SRC = `docker://${SUBJECT_REGISTRY}/debian:11`;
+const OSCAP_DIRTY_SRC = `docker://${SUBJECT_REGISTRY}/oraclelinux:8`;
 const SSG = "/usr/share/xml/scap/ssg/content";
 // The clean case uses the lightest baseline (high-clean under the pinned SSG); the dirty case uses
 // the heavier `standard` profile (which does carry a high-severity fail on ol8).
@@ -130,6 +147,12 @@ const OSCAP_DIRTY_PROFILE = "xccdf_org.ssgproject.content_profile_standard";
 // `Metadata` carries NO image digest and whose `ArtifactName` is a file path, so a parser that
 // quietly found nothing would report all-zero counts and masquerade as clean. A subject with KNOWN
 // non-zero findings is what makes the clean case's zeros meaningful.
+//
+// These three stay BARE TAGS, unlike the skopeo sources above, and deliberately: they are consumed
+// by `docker create`, which resolves a tag against the local image store first. CI pre-seeds those
+// exact tags from the GHCR mirror (`scripts/ci-mirror.sh seed`), so the daemon finds them locally
+// and never pulls — a registry prefix here would defeat that, not improve it. Both forms are pinned
+// by the same digests in `tools/ci-mirror/images.list`.
 const MACHINE_IMAGE_CLEAN_BASE = "alpine:3.20";
 const MACHINE_IMAGE_DIRTY_BASE = "debian:11";
 /** Collect the files `trivy vm` needs into `/r`, per OS family (release files + the package DB). */

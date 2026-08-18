@@ -46,7 +46,15 @@ const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER_SCAN_CONTEXT = resolve(__dirname, "../../../../apps/runner-scan");
 const RUNNER_IMAGE_TAG = "scp-runner-scan:m13-3b-ii-integration-test";
-const CLEAN_SRC = "docker://docker.io/library/alpine:3.20";
+/**
+ * Same seam, and for the same reason, as `promotion-scan-step.integration.test.ts` (read the long
+ * note there): this subject reaches the registry through `skopeo copy`, which never consults the
+ * local Docker image store, so the local re-tag that keeps Testcontainers off Docker Hub cannot
+ * cover it. CI exports `SCP_TEST_SUBJECT_REGISTRY` pointing at the GHCR mirror of the digest
+ * `tools/ci-mirror/images.list` pins; unset (a developer's machine) it is upstream Docker Hub.
+ */
+const SUBJECT_REGISTRY = process.env.SCP_TEST_SUBJECT_REGISTRY ?? "docker.io/library";
+const CLEAN_SRC = `docker://${SUBJECT_REGISTRY}/alpine:3.20`;
 
 const HUGE = 100_000_000; // hours — far larger than any real DB age ⇒ classified fresh
 const TINY = 1; // hour — smaller than any real baked DB age ⇒ trips the bound

@@ -1,0 +1,116 @@
+# ================================================================================================
+# THE CI IMAGE MIRROR MANIFEST — every third-party container image CI touches at TEST time
+# ================================================================================================
+#
+# Charter principle 5: "Air-gap and self-hosting are first-class … Everything (CI included) must run
+# offline", and the working convention "Tests never touch the internet". Every image listed here is
+# copied ONCE into `ghcr.io/commanderscp/mirror/*` (workflow job 4d) and served from there on every
+# subsequent run, so no CI job ever depends on Docker Hub or quay.io being up, un-rate-limited, or
+# still serving the same bytes.
+#
+# ------------------------------------------------------------------------------------------------
+# WHY THIS FILE EXISTS RATHER THAN A LIST INLINE IN ci.yml
+# ------------------------------------------------------------------------------------------------
+# The list was inline, and in TWO places: job 4d mirrored a set of tags, and job 5 re-tagged a set of
+# tags, with nothing forcing the two to agree. MinIO was already missed once by exactly that split
+# (see 4d's own comment: "it was missed when this job was written, so the REQUIRED integration gate
+# still had one live Docker Hub pull on its path"). One file, read by one script, run by both jobs,
+# removes the divergence rather than documenting it.
+#
+# ------------------------------------------------------------------------------------------------
+# FORMAT — two whitespace-separated fields per line
+# ------------------------------------------------------------------------------------------------
+#   <upstream-ref>   <alias>
+#
+#   upstream-ref  Fully qualified, INCLUDING the registry host, and DIGEST-PINNED. This is what job
+#                 4d pulls on a cache miss. `${NAME}` is expanded from the `tools/*/pin.env` files
+#                 `scripts/ci-mirror.sh` sources, so a pin that already has a single source of truth
+#                 is REFERENCED here, never re-typed.
+#   alias         The exact string the consumer names the image by:
+#                   - the literal a test passes to `new GenericContainer(...)` /
+#                     `new PostgreSqlContainer(...)`, or that a test's `docker create/run` uses —
+#                     job 5 `docker tag`s the mirrored bytes back to this, and Testcontainers/Docker
+#                     then find it locally and never pull; or
+#                   - for an image consumed through a ref rather than a local tag (a skopeo
+#                     `docker://` source, a `docker create repo@sha256:…`), the alias is still what
+#                     names the mirror repo — see "HOW EACH CONSUMER REACHES THE MIRROR" below.
+#
+# Mirror refs are DERIVED, never written down. Each entry lands in
+# `ghcr.io/commanderscp/mirror/<repo>` — <repo> being the alias with any leading registry host
+# stripped — under two tags:
+#
+#   :sha256-<hex>       the IDENTITY tag, <hex> being the upstream digest's hex. This is the mirror
+#                       cache key: bump a digest here and the key changes, so job 4d re-mirrors.
+#                       Keying the cache on the upstream TAG (as it did before) made a bumped pin a
+#                       permanent cache HIT that kept serving the old bytes under the new pin's
+#                       name — the failure this repo already refuses elsewhere ("a tag is not an
+#                       identity": tools/busybox/pin.env, tools/cosign/pin.env).
+#   :<alias-tag>        a POINTER, re-pushed on every mirror run. Safe to consume by tag precisely
+#                       because it is ours: it cannot move except by a digest bump in this file, and
+#                       the digest is what selects the bytes it points at. It exists because a
+#                       skopeo `docker://` source (consumer form 2 below) reads a ref, and a
+#                       human-legible one keeps the test fixtures readable.
+#
+# Neither mirror tag carries the upstream digest as its OWN digest, and cannot: job 4d mirrors
+# through `docker pull`/`tag`/`push`, which re-creates the manifest and flattens the multi-arch index
+# to the runner's architecture. The digest above is the identity of what was pulled FROM UPSTREAM,
+# which is the fact worth pinning; the mirror is content-addressed only within our own registry.
+#
+# ------------------------------------------------------------------------------------------------
+# HOW EACH CONSUMER REACHES THE MIRROR
+# ------------------------------------------------------------------------------------------------
+# (1) Testcontainers, and any `docker create/run <tag>` in a test — LOCAL RE-TAG. `ci-mirror.sh
+#     seed` pulls the mirror ref and `docker tag`s it to the alias. Both only pull an image they
+#     cannot already find locally, so their own pull becomes a no-op. Nothing in the test changes.
+# (2) A skopeo `docker://` SOURCE — skopeo talks to the registry directly and never consults the
+#     local Docker image store, so a re-tag is invisible to it. Those tests read
+#     `SCP_TEST_SUBJECT_REGISTRY` (exported by `ci-mirror.sh seed`) as the registry+namespace prefix
+#     for their subject images; unset (local dev) it defaults to `docker.io/library`.
+# (3) `scripts/install-pinned-{skopeo,cosign}.sh`, which `docker create` a DIGEST ref — a digest ref
+#     cannot be aliased (`docker tag` only makes tags), so those scripts take the image from
+#     `SCP_SKOPEO_IMAGE_REF` / `SCP_COSIGN_IMAGE_REF`, defaulting to the pin. `ci-mirror.sh seed`
+#     exports the mirror ref into those. The scripts' pre-existing FAIL-CLOSED version assertion is
+#     what makes the override safe: a mirror serving anything other than the pinned binary aborts
+#     the job rather than validating an unvetted tool.
+#
+# ------------------------------------------------------------------------------------------------
+# CAVEAT (inherited, unchanged): job 4d mirrors whatever single-arch manifest the amd64
+# `ubuntu-latest` runner resolves the index digest to, not the upstream multi-arch index. Fine while
+# every job in the workflow is amd64; an arm64 self-hosted runner would need its own mirror pass.
+# ------------------------------------------------------------------------------------------------
+#
+# UPDATING A PIN: resolve the new digest against the upstream registry, replace it here, and let job
+# 4d re-mirror on the next run. For the two SCAN-SUBJECT images the digest is not cosmetic — the
+# expected finding counts in `promotion-scan-step.integration.test.ts` are CALIBRATED against those
+# exact bytes versus the runner image's pinned Trivy/SSG content, so a bump can legitimately change a
+# clean case into a dirty one. Bump it deliberately and read the suite's own calibration comments.
+
+# --- Testcontainers backends (started by GenericContainer/PostgreSqlContainer) --------------------
+docker.io/library/postgres@sha256:e17e86066e5ef83e0952a9347f5c792b7ece00972e2aa787a6986f471b3dd3d5   postgres:16
+docker.io/library/nats@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f       nats:2.10
+docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373   registry:2
+docker.io/minio/minio@sha256:a1ea29fa28355559ef137d71fc570e508a214ec84ff8083e39bc5428980b015e        minio/minio:RELEASE.2025-04-22T22-12-26Z
+# Keycloak is the M2 DoD's OIDC fixture (`auth/oidc.integration.test.ts`). It is on the REQUIRED
+# integration gate's path and was the one Testcontainers image job 4d never covered — and it is not
+# even a Docker Hub pull, which is how it stayed invisible to a sweep that looked only for docker.io.
+quay.io/keycloak/keycloak@sha256:09a381c715ab0b111835b70f2905955274843a219c6f27efb348e4d9f4086858    quay.io/keycloak/keycloak:26.0
+
+# --- Managed-scan SUBJECT fixtures ----------------------------------------------------------------
+# Pushed into the test's own local registry:2 by `skopeo copy` (consumer form 2), and — for the
+# machine-image arm — also run directly as `docker create` rootfs/disk builders (consumer form 1),
+# which is why they need both the alias re-tag and the SCP_TEST_SUBJECT_REGISTRY prefix.
+#   alpine:3.20    CLEAN subject   (0 findings against the pinned Trivy DB)
+#   debian:11      DIRTY subject   (6 CRITICAL / 19 HIGH) and the OpenSCAP CLEAN subject, and the
+#                                  `mke2fs` disk builder for the trivy-vm arm
+#   oraclelinux:8  OpenSCAP DIRTY subject (>=1 HIGH-severity failed rule)
+docker.io/library/alpine@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc      alpine:3.20
+docker.io/library/debian@sha256:99cdf7792e25416bd801861ccd8e2fb27fb527b25e8d9a8704ebc3ead2015675      debian:11
+docker.io/library/oraclelinux@sha256:0e34a24d2cf0bcc03ee12dfa288ed6e598ea3c273d7bc20be174705c25ec4237 oraclelinux:8
+
+# --- Pinned CLI tools CI installs before the integration suite --------------------------------------
+# `${…}` is expanded from tools/skopeo/pin.env and tools/cosign/pin.env — the declared single source
+# of truth for both pins — so this file cannot drift from them. The quay.io skopeo pull is the one
+# that actually took `main` red on 2026-07-25 (run 30165351157: `Get "https://quay.io/v2/":
+# net/http: request canceled … Client.Timeout exceeded`), five steps before a single test ran.
+${SKOPEO_PINNED_IMAGE}   skopeo/stable:${SKOPEO_PINNED_VERSION}
+${COSIGN_PINNED_IMAGE}   sigstore/cosign:${COSIGN_PINNED_VERSION}

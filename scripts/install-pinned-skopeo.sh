@@ -37,14 +37,27 @@ prefix="${1:-/opt/scp}"
 libexec_dir="${prefix}/libexec/skopeo"
 bin_dir="${prefix}/bin"
 
+# WHERE THE PINNED IMAGE IS PULLED FROM (charter principle 5). The default is the upstream pin, and
+# on 2026-07-25 that quay.io pull is what took `main` red (CI run 30165351157: `Get
+# "https://quay.io/v2/": net/http: request canceled … Client.Timeout exceeded`) — five steps before
+# a test could run. CI therefore points this at the GHCR mirror of EXACTLY `SKOPEO_PINNED_IMAGE`
+# (tools/ci-mirror/images.list, mirrored by digest in workflow job 4d), because a `docker create` of
+# a `repo@sha256:…` ref cannot be served by a locally re-tagged image the way a tag can.
+#
+# WHY AN OVERRIDE IS NOT A HOLE IN THE PIN: the fail-closed `skopeo --version` assertion at the
+# bottom of this script still runs against whatever was installed. A mirror serving anything other
+# than the pinned binary aborts the job rather than quietly validating an unvetted tool. What the
+# override can change is WHERE the bytes come from, not WHICH bytes are accepted.
+skopeo_image="${SCP_SKOPEO_IMAGE_REF:-${SKOPEO_PINNED_IMAGE}}"
+
 sudo_if_needed() {
   if "$@" 2>/dev/null; then return 0; fi
   sudo "$@"
 }
 
-echo "installing pinned skopeo ${SKOPEO_PINNED_VERSION} from ${SKOPEO_PINNED_IMAGE} -> ${bin_dir}/skopeo"
+echo "installing pinned skopeo ${SKOPEO_PINNED_VERSION} from ${skopeo_image} -> ${bin_dir}/skopeo"
 
-cid="$(docker create "${SKOPEO_PINNED_IMAGE}")"
+cid="$(docker create "${skopeo_image}")"
 trap 'docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT
 
 tmp="$(mktemp -d)"
@@ -55,10 +68,10 @@ chmod 0755 "${tmp}/skopeo"
 # The shared-library closure + ELF loader, computed with the image's own ldd — the same closed
 # list the Dockerfile's COPY block pins (each lib's own deps are already in ldd's output; the
 # loader line has no "=>"). linux-vdso is kernel-provided, never a file — skip it.
-closure="$(docker run --rm --entrypoint /usr/bin/ldd "${SKOPEO_PINNED_IMAGE}" "${SKOPEO_UPSTREAM_PATH}" \
+closure="$(docker run --rm --entrypoint /usr/bin/ldd "${skopeo_image}" "${SKOPEO_UPSTREAM_PATH}" \
   | awk '/=>/ { print $3 } !/=>/ && $1 ~ /^\// { print $1 }')"
 if [ -z "${closure}" ]; then
-  echo "FATAL: could not compute the pinned skopeo's library closure from ${SKOPEO_PINNED_IMAGE}" >&2
+  echo "FATAL: could not compute the pinned skopeo's library closure from ${skopeo_image}" >&2
   exit 1
 fi
 for lib in ${closure}; do
