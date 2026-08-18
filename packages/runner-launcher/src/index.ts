@@ -614,3 +614,58 @@ export function createDockerRunnerLauncher(
  */
 export const resolveDockerRunnerLauncher: ResolveRunnerLauncher = (config) =>
   createDockerRunnerLauncher(config.dockerBinary ?? DEFAULT_DOCKER_BINARY);
+
+// ==================================================================================================
+// RECORDED OUTCOMES — every path out of a plugin's `trigger()` records something, redacted (M23.1
+// phase 2). NOT a port concept: this holds no state and knows nothing about Docker. It exists here
+// only because three plugins would otherwise duplicate it three times.
+// ==================================================================================================
+
+/**
+ * How a plugin writes ONE terminal outcome to whatever store it already keeps — an in-memory `Map`
+ * for managed-scan/managed-dep, a durable JSON file for managed-iac. May be async (a file write);
+ * {@link withRecordedOutcome} awaits it either way.
+ */
+export type RecordOutcome = (succeeded: boolean, detail: string) => void | Promise<void>;
+
+/**
+ * THE FIX FOR "A PATH OUT OF `trigger()` THAT RECORDS NO OUTCOME" (BUILD_AND_TEST.md §4.4, CLAUDE.md
+ * incomplete-call-site-census). Before this, managed-scan and managed-iac each had a `trigger()`
+ * whose success path recorded an outcome but whose THROW path did not — a launcher failure, a
+ * `writeSourceFiles` refusal, a disk error, anything — escaped `trigger()` as a rejection instead,
+ * and left the run's own store with nothing keyed to it. `status()` then reports `pending` forever,
+ * indistinguishable from "still running". managed-dep's `trigger()` never had this hole (its whole
+ * body already sits in one big try/catch); this helper is that same shape, factored out so the other
+ * two stop being three hand-written copies of "wrap it in try/catch" that a fourth plugin would make
+ * four.
+ *
+ * SUCCESS RECORDING IS UNCHANGED, DELIBERATELY. This only catches what `fn` THROWS. Each plugin
+ * still records its own success outcome from inside `fn`, in its own shape (managed-iac's carries a
+ * `stateRef`, managed-dep's a `result`/`merge`) — a shape this package has no business inventing a
+ * common ancestor for.
+ *
+ * `redact` IS NOT OPTIONAL AND IS NOT COSMETIC. A thrown `Error`'s `.message` is freeform text a
+ * plugin did not construct and cannot trust — for managed-iac specifically, a `docker create`
+ * rejection's message is `Command failed: docker create … -e AWS_SECRET_ACCESS_KEY=<value> …` before
+ * anything strips it, and whatever `record` does with the resulting `detail` (managed-iac's goes to
+ * a durable, replicated, backed-up JSON file and from there into a `Decision`'s `inputContext`) is
+ * exactly the channel CLAUDE.md's "a claim about a tool cannot be verified with that tool" warns
+ * about: {@link RunnerLaunchError} already redacts what IT knows to redact, but a plugin whose
+ * injected launcher throws something else entirely — a stub in a test, a future adapter, a bug —
+ * must not depend on that already having happened. `redact` is the plugin's OWN, independent
+ * knowledge of which values in its world are secret; managed-scan and managed-dep hold no
+ * credential, so theirs is the identity function, and that is a fact about THEM, not a default this
+ * package chose for them.
+ */
+export async function withRecordedOutcome<T>(
+  opts: { record: RecordOutcome; redact: (text: string) => string },
+  fn: () => Promise<T>
+): Promise<T | undefined> {
+  try {
+    return await fn();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await opts.record(false, opts.redact(message));
+    return undefined;
+  }
+}
