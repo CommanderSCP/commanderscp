@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { debuglog, promisify } from "node:util";
 
@@ -206,6 +206,26 @@ export interface RunnerSpec {
    * managed-iac puts `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` here and leaves
    * `PRIOR_STATE_FILE` in {@link RunnerSpec.env}; managed-scan's `SCP_SCAN_*_DIR` are container
    * paths and stay in `env`; managed-dep holds no credential and passes both empty.
+   *
+   * THE REAL BOUND ON THE `--env-file` (MEDIUM-4, corrected — it used to claim less than it now
+   * guarantees). ON THE ORDINARY PATH the file lives for the duration of one `create` and no
+   * longer: it is unlinked from the SAME process, in the `finally` right after `create` settles,
+   * on the success path and the failure path alike. THAT PROMISE IS ONLY AS GOOD AS THE PROCESS
+   * KEEPING IT, and a SIGKILL between {@link writeSecretEnvFile} and that `finally` — the exact
+   * shape `plugin-host/host.ts`'s hang detector produces — leaves the file behind with nothing
+   * left to unlink it: no `finally` runs, no signal handler fires. Measured: a killed create leaves
+   * a mode-0600 file carrying the plaintext credential in the caller's own durable, governed
+   * `secretEnvDir` indefinitely, with nothing sweeping it.
+   *
+   * SWEPT BY THE SAME MECHANISM THAT SWEEPS AN ORPHANED CONTAINER, on purpose — ONE cleanup concept
+   * rather than two. {@link RunnerLauncher.reap} removes any `scp-secret-env-*` file under the
+   * CURRENT run's `secretEnvDir` whose age exceeds {@link RUNNER_SECRET_ENV_MAX_AGE_MS} — a bound
+   * no run still inside its own budget can reach, so a live run's file is never a candidate. THE
+   * ACTUAL BOUND ON EXPOSURE IS THEREFORE: instantly, on the ordinary path; otherwise, at most
+   * {@link RUNNER_SECRET_ENV_MAX_AGE_MS} after the run that wrote it, once ANY later run against
+   * the same `secretEnvDir` (this process's successor after a respawn, in production) schedules a
+   * pass — never "for the duration of one `create`" unconditionally, which was true only when
+   * nothing killed the process mid-flight.
    */
   secretEnv: string[];
   /**
@@ -312,8 +332,29 @@ export interface RunnerLauncher {
    * — see `reaper.integration.test.ts` for why the mock recording seam (`docker-adapter.test.ts`)
    * cannot prove any of this: it cannot show that a killed process leaves a container, that a label
    * survives on it, or that a real `docker ps --filter` finds it. Returns the ids actually removed.
+   *
+   * ALSO SWEEPS THE TRANSIENT `--env-file` (MEDIUM-4) — the SAME hazard, one level down. A SIGKILL
+   * between {@link writeSecretEnvFile} and the `finally` that unlinks it leaves a plaintext
+   * credential on disk with nothing left to remove it, for exactly the reason a killed `run()`
+   * leaves an orphaned container: no `finally` executes. ONE cleanup concept, not two — this is the
+   * SAME method, not a second one, because a reaper that only knew about containers would leave the
+   * higher-value target (a live credential, not a stopped process) uncovered.
+   *
+   * `secretEnvDir`, WHEN GIVEN, is swept for `scp-secret-env-*` files older than
+   * {@link RUNNER_SECRET_ENV_MAX_AGE_MS} — mtime-based, deliberately, rather than a registry: a
+   * registry lives in the SAME process memory a SIGKILL erases, so it could never identify what a
+   * DEAD process left behind. mtime survives the kill because it is a property of the file itself.
+   * The age bound is conservative in the same direction the container deadline is: no run still
+   * inside its own {@link MANAGED_RUN_TIMEOUT_MAX_MS}-bounded budget can make its own file look
+   * stale, so a live run's file is never a candidate — the same "ambiguous must never read as safe"
+   * rule as a missing/garbled container deadline label.
+   *
+   * Called by the Docker adapter with the CURRENT run's own `spec.secretEnvDir` every time — never
+   * a directory this method chooses, for the same reason `writeSecretEnvFile` refuses to choose
+   * one. Absent (the caller's own `reap()` calls in tests, and any run whose spec carries no
+   * `secretEnvDir`) simply skips the file sweep; the container sweep is unaffected either way.
    */
-  reap(): Promise<string[]>;
+  reap(secretEnvDir?: string): Promise<string[]>;
 }
 
 /**
@@ -555,8 +596,16 @@ export function isContainerNameConflict(err: unknown): boolean {
 }
 
 /**
+ * Every `--env-file` this package ever writes carries this prefix and nothing else does — it is
+ * what lets {@link RunnerLauncher.reap}'s sweep (MEDIUM-4) recognise its own leftovers in a
+ * directory it does not otherwise own without touching a single byte it did not create.
+ */
+const SECRET_ENV_FILE_PREFIX = "scp-secret-env-";
+
+/**
  * The transient `--env-file`. Mode 0600, under the CALLER's own governed state dir, and unlinked the
- * instant `create` returns — see {@link RunnerSpec.secretEnv} for exactly how partial a fix this is.
+ * instant `create` returns — see {@link RunnerSpec.secretEnv} for exactly how partial a fix this is,
+ * and for what happens when the process is killed before that unlink runs.
  *
  * `wx` refuses an existing file rather than truncating one: the path carries a fresh UUID, so an
  * existing file at it means something is very wrong and writing a credential into it is the last
@@ -568,7 +617,7 @@ async function writeSecretEnvFile(
   entries: readonly string[]
 ): Promise<string> {
   await mkdir(dir, { recursive: true });
-  const path = join(dir, `scp-secret-env-${runId}-${randomUUID()}`);
+  const path = join(dir, `${SECRET_ENV_FILE_PREFIX}${runId}-${randomUUID()}`);
   await writeFile(path, `${entries.join("\n")}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
   return path;
 }
@@ -647,6 +696,26 @@ export const RUNNER_REAP_GRACE_MS = 2 * 60_000;
  * life of the process.
  */
 export const RUNNER_REAP_BUDGET_MS = 2 * 60_000;
+
+/**
+ * THE HARD BOUND ON A `--env-file`'s AGE BEFORE `reap()` TREATS IT AS ORPHANED (MEDIUM-4). Purely
+ * mtime-based — see {@link RunnerLauncher.reap} for why a registry cannot do this job: it lives in
+ * the same process memory a SIGKILL erases, so the one process that could tell reap() "this file is
+ * still mine" is exactly the one that is gone.
+ *
+ * SIZED SO NO LIVE RUN CAN EVER LOOK STALE, the same direction every other bound in this file leans.
+ * A run's `--env-file` is written once, at the very top of {@link RunnerLauncher.run}, before a
+ * single `execFile` is issued — so the OLDEST a live run's file can legitimately be, at any later
+ * instant of that same run, is bounded by that run's OWN whole-run budget: at most
+ * {@link MANAGED_RUN_TIMEOUT_MAX_MS}, the ceiling every tenant-settable `timeoutMs` in the product
+ * is clamped to. Add {@link RUNNER_REAP_GRACE_MS} — the same margin the container's own deadline
+ * label carries, for the same reason (a run that is past its deadline but still inside one teardown
+ * is not yet fair game) — and a file cannot be BOTH this old AND still belong to a run inside its
+ * own budget. A false positive would delete a live run's credential mid-`create`; this bound is
+ * chosen so that never happens, at the cost of a leaked file surviving for a while rather than
+ * being swept the instant it could safely be.
+ */
+export const RUNNER_SECRET_ENV_MAX_AGE_MS = MANAGED_RUN_TIMEOUT_MAX_MS + RUNNER_REAP_GRACE_MS;
 
 /**
  * This PROCESS's own identity, for the lifetime of the process — minted ONCE, at module load, and
@@ -768,12 +837,70 @@ export function createDockerRunnerLauncher(
     return removed;
   };
 
+  /**
+   * MEDIUM-4 — the half of `reap()` that sweeps a leaked `--env-file` rather than an orphaned
+   * container. See {@link RunnerLauncher.reap} and {@link RUNNER_SECRET_ENV_MAX_AGE_MS} for the
+   * mechanism and the age bound; this function is the sweep itself.
+   *
+   * NEVER TOUCHES A FILE THIS PACKAGE DID NOT NAME — the `SECRET_ENV_FILE_PREFIX` check is not an
+   * optimisation, it is the entire safety argument for being handed an arbitrary directory: a
+   * plugin's `secretEnvDir` is its OWN governed state dir, and for managed-iac that is the very
+   * directory the dedup-cache `statePath` lives in. A sweep that matched on age alone would delete
+   * that file the moment it happened to be old enough.
+   *
+   * BEST-EFFORT, exactly like the container half: a `readdir`/`stat`/`unlink` failure here is
+   * logged and swallowed rather than thrown, because a sweep that cannot even list a directory
+   * must not block the run it precedes, and a file that is merely a little late to be swept costs
+   * nothing — the same idempotent-sweep argument {@link RUNNER_REAP_BUDGET_MS} makes.
+   */
+  const sweepStaleSecretEnvFiles = async (dir: string): Promise<void> => {
+    let entries: string[];
+    try {
+      entries = await readdir(dir);
+    } catch (cause) {
+      debug("reap: listing secret-env dir %s failed, skipping this pass: %O", dir, cause);
+      return;
+    }
+    const now = Date.now();
+    for (const name of entries) {
+      if (!name.startsWith(SECRET_ENV_FILE_PREFIX)) continue; // not ours — never a candidate
+      const path = join(dir, name);
+      try {
+        const info = await stat(path);
+        // A LIVE run's file is NEVER this old — see {@link RUNNER_SECRET_ENV_MAX_AGE_MS}. An
+        // ambiguous or just-created file is left alone, the same fail-closed direction as a
+        // missing/garbled container deadline label.
+        if (now - info.mtimeMs < RUNNER_SECRET_ENV_MAX_AGE_MS) continue;
+        await unlink(path);
+        debug("reap: swept stale secret-env file %s (age %dms)", path, now - info.mtimeMs);
+      } catch (cause) {
+        debug("reap: could not sweep secret-env file %s: %O", path, cause);
+      }
+    }
+  };
+
   /** {@link reapOnce}, single-flighted per binary through {@link reapInFlight} — see that map's
-   *  own doc for why a per-launcher guard would guard nothing. */
-  const reap = async (): Promise<string[]> => {
+   *  own doc for why a per-launcher guard would guard nothing. The `--env-file` sweep
+   *  ({@link sweepStaleSecretEnvFiles}, MEDIUM-4) is DELIBERATELY OUTSIDE that single-flight: it
+   *  touches no daemon, is keyed by DIRECTORY rather than by `dockerBinary`, and joining a peer's
+   *  in-flight container pass must never silently skip sweeping THIS run's own `secretEnvDir`. */
+  const reap = async (secretEnvDir?: string): Promise<string[]> => {
+    const fileSweep = secretEnvDir
+      ? sweepStaleSecretEnvFiles(secretEnvDir).catch((cause) =>
+          debug("reap: secret-env sweep of %s rejected: %O", secretEnvDir, cause)
+        )
+      : undefined;
+
     const joined = reapInFlight.get(dockerBinary);
-    if (joined) return joined;
-    const pass = reapOnce().finally(() => {
+    if (joined) {
+      if (fileSweep) await fileSweep;
+      return joined;
+    }
+    const pass = (async () => {
+      const removed = await reapOnce();
+      if (fileSweep) await fileSweep;
+      return removed;
+    })().finally(() => {
       if (reapInFlight.get(dockerBinary) === pass) reapInFlight.delete(dockerBinary);
     });
     reapInFlight.set(dockerBinary, pass);
@@ -793,7 +920,14 @@ export function createDockerRunnerLauncher(
       // now delay `create` by no ticks at all. `reap()` never rejects; the `.catch` is for the case
       // where some future edit makes it able to, so an unhandled rejection can never take the
       // subprocess down over a cleanup pass.
-      void reap().catch((cause) => debug("reap: background pass rejected: %O", cause));
+      //
+      // `spec.secretEnvDir` PASSED THROUGH (MEDIUM-4): this is the CURRENT run's own governed
+      // directory, so a stale `--env-file` a SIGKILLed predecessor left here — the one place this
+      // run is about to write its own — is swept before this run adds another. See
+      // {@link RunnerLauncher.reap}.
+      void reap(spec.secretEnvDir).catch((cause) =>
+        debug("reap: background pass rejected: %O", cause)
+      );
 
       /**
        * THE WHOLE-RUN DEADLINE — the one clock in this function, read once and never recomputed.

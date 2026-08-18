@@ -1,12 +1,16 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { dirname, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { chmod, mkdtemp, readFile, readdir, rm, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   RUNNER_LAUNCHER_DEADLINE_LABEL,
   RUNNER_LAUNCHER_OWNER_LABEL,
+  RUNNER_SECRET_ENV_MAX_AGE_MS,
   createDockerRunnerLauncher,
   runnerContainerName,
   whenReapSettled
@@ -55,6 +59,7 @@ import {
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CHILD_ENTRY = resolve(__dirname, "reaper-integration-child.ts");
+const SECRET_ENV_CHILD_ENTRY = resolve(__dirname, "secret-env-leak-integration-child.ts");
 
 const TEST_IMAGE = "alpine:3.20";
 /** The known pre-existing orphan this milestone's instructions say to verify, not touch. */
@@ -359,3 +364,137 @@ describe.runIf(await dockerAvailable())(
     );
   }
 );
+
+// ====================================================================================================
+// MEDIUM-4 — A REAL SIGKILL MID-`create` GENUINELY LEAVES THE `--env-file`, AND `reap()` SWEEPS IT.
+// ====================================================================================================
+// Deliberately its own top-level `describe`, NOT nested inside `describe.runIf(dockerAvailable())`
+// above: what is under test is `@scp/runner-launcher`'s OWN file lifecycle (write, then unlink in a
+// `finally`), not Docker's, so a real daemon buys nothing here and would only make the suite
+// Docker-dependent for no reason. The `dockerBinary` this block hands the adapter is a stub shell
+// script that sleeps on `create` — the same "give the parent a wide, deterministic window instead of
+// racing a real sub-hundred-millisecond call" technique `apps/server/src/plugin-host/managed-trigger-
+// budget.test.ts` already uses for a different budget-shaped hazard. See
+// `secret-env-leak-integration-child.ts` for what the killed process actually runs.
+// ====================================================================================================
+
+describe("MEDIUM-4: a real SIGKILL mid-`create` leaks the `--env-file`, and reap() sweeps it", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    for (const dir of tempDirs.splice(0)) {
+      await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
+
+  /** A `docker` stub whose `create` sleeps for `sleepSeconds` before printing a fake id — every
+   *  other subcommand exits 0 immediately. Long enough that a poll-for-the-file loop reliably wins
+   *  the race against the kill, short enough to keep the suite fast. */
+  async function makeSleepyDockerStub(sleepSeconds: number): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "scp-secret-env-leak-stub-docker-"));
+    tempDirs.push(dir);
+    const binary = join(dir, "docker");
+    const script = [
+      "#!/bin/sh",
+      'sub="$1"',
+      'case "$sub" in',
+      "  create)",
+      `    sleep ${sleepSeconds}`,
+      "    echo fake-container-id",
+      "    ;;",
+      "  *)",
+      "    exit 0",
+      "    ;;",
+      "esac"
+    ].join("\n");
+    await writeFile(binary, script, "utf8");
+    await chmod(binary, 0o755);
+    return binary;
+  }
+
+  /** Polls `dir` for a file carrying `prefix` — the same "observe the real adapter's real state"
+   *  technique `reaper.integration.test.ts`'s own `waitUntil` uses for a container's `docker
+   *  inspect` state, applied to a filename instead. */
+  async function waitForFile(dir: string, prefix: string, timeoutMs: number): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const found = (await readdir(dir).catch(() => [])).find((name) => name.startsWith(prefix));
+      if (found) return join(dir, found);
+      if (Date.now() >= deadline) {
+        throw new Error(`waitForFile: no '${prefix}*' ever appeared in ${dir}`);
+      }
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  it(
+    "MEASURED: the credential file exists while `create` is in flight, SURVIVES a real SIGKILL, " +
+      "and a later reap() sweeps it — while sparing a concurrent LIVE run's file in the SAME directory",
+    async () => {
+      const secretEnvDir = await mkdtemp(join(tmpdir(), "scp-secret-env-leak-dir-"));
+      tempDirs.push(secretEnvDir);
+      const stubDocker = await makeSleepyDockerStub(3);
+      const runId = `leak-${randomUUID().slice(0, 8)}`;
+
+      const child = spawn(
+        process.execPath,
+        ["--import", "tsx", SECRET_ENV_CHILD_ENTRY, stubDocker, runId, secretEnvDir],
+        { stdio: "ignore" }
+      );
+
+      let leakedPath: string;
+      try {
+        // WAIT FOR THE REAL ADAPTER, IN THE REAL CHILD PROCESS, TO HAVE ACTUALLY WRITTEN THE FILE —
+        // not merely for the process to have started. `create`'s stub sleeps 3s, so this window is
+        // wide open the entire time the file legitimately exists.
+        leakedPath = await waitForFile(secretEnvDir, "scp-secret-env-", 5_000);
+
+        // MEASURED, not assumed: the file really does carry the credential, unredacted, on disk.
+        const content = await readFile(leakedPath, "utf8");
+        expect(content).toBe("AWS_SECRET_ACCESS_KEY=CANARY-LEAKED-ON-DISK-7X\n");
+
+        // THE KILL. No SIGTERM, no grace — `plugin-host/host.ts`'s own hang-detector signal, mid the
+        // ONE `execFile` (`create`) that had a `finally { unlink }` waiting for it to settle.
+        child.kill("SIGKILL");
+        await new Promise((r) => setTimeout(r, 300)); // let the kill land before asserting
+
+        expect(
+          existsSync(leakedPath),
+          "the credential file must still exist — nothing was left to unlink it"
+        ).toBe(true);
+      } finally {
+        child.kill("SIGKILL"); // idempotent if already dead — belt and braces
+      }
+
+      // A CONCURRENT LIVE RUN'S FILE, IN THE SAME DIRECTORY — crafted directly (bypassing the
+      // port), the same "fabricate the case a real wait cannot afford" technique the container
+      // suite above uses for a future deadline. Its mtime is `now`, well inside
+      // RUNNER_SECRET_ENV_MAX_AGE_MS, so the sweep below must NOT touch it — the negative arm.
+      const livePath = join(
+        secretEnvDir,
+        `scp-secret-env-${runId}-live-00000000-0000-4000-8000-000000000000`
+      );
+      await writeFile(livePath, "AWS_SECRET_ACCESS_KEY=STILL-IN-FLIGHT\n", { mode: 0o600 });
+
+      // BACKDATE THE LEAKED FILE'S mtime, THE SAME "craft an already-expired record" technique the
+      // module doc above explains for the container deadline — waiting RUNNER_SECRET_ENV_MAX_AGE_MS
+      // (over an hour) in real time is not a suite this repository can afford to run.
+      const ancient = new Date(Date.now() - (RUNNER_SECRET_ENV_MAX_AGE_MS + 60_000));
+      await utimes(leakedPath, ancient, ancient);
+
+      // A FRESH LAUNCHER — a different in-process instance, same stub binary — calls reap()
+      // DIRECTLY against this run's own secretEnvDir, exactly as `run()` does at its own top.
+      await createDockerRunnerLauncher(stubDocker).reap(secretEnvDir);
+
+      expect(
+        existsSync(leakedPath),
+        "the stale leaked credential file must be gone after reap()"
+      ).toBe(false);
+      expect(
+        existsSync(livePath),
+        "a concurrent LIVE run's file, well inside its safety window, must survive the same reap() call"
+      ).toBe(true);
+    },
+    15_000
+  );
+});

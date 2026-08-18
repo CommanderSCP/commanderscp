@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,9 +29,11 @@ import {
  * same change, so an empty package now FAILS instead of reporting success.
  *
  * WHAT IT PROVES, AND WHAT IT DELIBERATELY DOES NOT.
- * It drives {@link createDockerRunnerLauncher} **directly**, over the same spec shapes the fifteen
- * plugin goldens cover (4 iac + 6 scan + 5 dep — this file and BUILD_AND_TEST.md both said
- * "fourteen", and both were stale), and asserts the **recorded argv ARRAY** of every `execFile` — never a call
+ * It drives {@link createDockerRunnerLauncher} **directly**, over the same spec shapes the plugin
+ * goldens cover (6 iac + 6 scan + 5 dep = 17 as of this writing; this comment and BUILD_AND_TEST.md
+ * have each gone stale on this exact number more than once, which is why the count now lives in a
+ * gate — `packages/source-census/src/golden-count-gate.test.ts` — rather than in a THIRD place prose
+ * has to remember to update), and asserts the **recorded argv ARRAY** of every `execFile` — never a call
  * count, never `expect.arrayContaining`. A renamed binary, a reordered flag, a dropped operand or a
  * `cp` that lost its trailing `/.` must fail here, and must fail by printing the actual argv next to
  * the expected one.
@@ -359,11 +361,13 @@ const {
   RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
   RUNNER_RUN_ID_PATTERN,
+  RUNNER_SECRET_ENV_MAX_AGE_MS,
   RunnerLaunchError,
   createDockerRunnerLauncher,
   resolveDockerRunnerLauncher,
   runnerContainerName,
-  toRunnerRunId
+  toRunnerRunId,
+  whenReapSettled
 } = await import("./index.js");
 
 /**
@@ -1919,5 +1923,137 @@ describe("M23.1 phase 4: `reap()`'s predicate — never a peer, never the future
       ["rm", "-f", "fails-to-remove"],
       ["rm", "-f", "removes-fine"]
     ]);
+  });
+});
+
+// ====================================================================================================
+// MEDIUM-4 — `reap()` ALSO SWEEPS A LEAKED `--env-file`, mtime-based, in the caller's OWN
+// `secretEnvDir`. This describe block is the fs-level proof of the sweep's PREDICATE (mirrors the
+// container predicate suite above, at the same altitude — no real process, no real SIGKILL). The
+// real-process proof — a genuine kill mid-`create` that really does leave the file, really does get
+// swept by a later real run() — is `reaper.integration.test.ts`'s job, for the same reason a real
+// SIGKILL cannot be produced inside this file's single-threaded mocked-`execFile` world.
+// ====================================================================================================
+
+describe("MEDIUM-4: reap()'s `--env-file` sweep — never a live run's file, never anything it did not name", () => {
+  let secretEnvDir: string;
+
+  beforeEach(() => {
+    secretEnvDir = mkdtempSync(join(tmpdir(), "runner-launcher-secret-env-sweep-"));
+  });
+
+  /** Writes a fixture file directly — bypassing `writeSecretEnvFile` entirely, exactly as a
+   *  SIGKILLed run would have left it: the file exists, nothing is left to unlink it. `ageMs`
+   *  backdates its mtime the same way `reaper.integration.test.ts` crafts an already-expired
+   *  container deadline, rather than waiting {@link RUNNER_SECRET_ENV_MAX_AGE_MS} in real time. */
+  function leakedFile(name: string, ageMs: number): string {
+    const path = join(secretEnvDir, name);
+    writeFileSync(path, "AWS_SECRET_ACCESS_KEY=CANARY-LEAKED-ON-DISK-7X\n", { mode: 0o600 });
+    const then = new Date(Date.now() - ageMs);
+    utimesSync(path, then, then);
+    return path;
+  }
+
+  it("SWEEPS a `scp-secret-env-*` file older than RUNNER_SECRET_ENV_MAX_AGE_MS — the SIGKILL leak, cleaned up", async () => {
+    const path = leakedFile(
+      "scp-secret-env-leaked-run-11111111-1111-4111-8111-111111111111",
+      RUNNER_SECRET_ENV_MAX_AGE_MS + 60_000
+    );
+    expect(existsSync(path), "the fixture must exist before reap() runs").toBe(true);
+
+    await createDockerRunnerLauncher("docker").reap(secretEnvDir);
+
+    expect(existsSync(path), "a stale leaked credential file must be gone after reap()").toBe(
+      false
+    );
+  });
+
+  it("NEGATIVE ARM — SPARES a `scp-secret-env-*` file younger than the bound: a LIVE run's file must survive", async () => {
+    // No run still inside its own whole-run budget can make its own file look this old — see
+    // RUNNER_SECRET_ENV_MAX_AGE_MS's own doc. A sweep that ignored age (`rm -rf` wearing a
+    // sweeper's name — the exact objection the owner weighed for the container reaper) would fail
+    // this arm and pass the one above identically.
+    const path = leakedFile("scp-secret-env-live-run-22222222-2222-4222-8222-222222222222", 1_000);
+
+    await createDockerRunnerLauncher("docker").reap(secretEnvDir);
+
+    expect(existsSync(path), "a file well inside its safety window must NOT be swept").toBe(true);
+  });
+
+  it("a brand-new file (age ~0) is spared, not read as safe", async () => {
+    const path = join(
+      secretEnvDir,
+      "scp-secret-env-fresh-run-33333333-3333-4333-8333-333333333333"
+    );
+    writeFileSync(path, "AWS_SECRET_ACCESS_KEY=CANARY\n", { mode: 0o600 });
+
+    await createDockerRunnerLauncher("docker").reap(secretEnvDir);
+
+    expect(existsSync(path), "a file written moments ago must survive").toBe(true);
+  });
+
+  it("NEVER touches a file that does not carry the `scp-secret-env-` prefix, however old", async () => {
+    // The prefix check is the entire safety argument for being handed an arbitrary directory — for
+    // managed-iac, `secretEnvDir` IS `dirname(statePath)`, the SAME directory the durable dedup
+    // cache lives in. A sweep that matched on age alone would delete that file the moment it
+    // happened to be old enough.
+    const dedupStatePath = join(secretEnvDir, "state.json");
+    writeFileSync(dedupStatePath, '{"keys":{}}', "utf8");
+    const ancient = new Date(Date.now() - (RUNNER_SECRET_ENV_MAX_AGE_MS + 60_000));
+    utimesSync(dedupStatePath, ancient, ancient);
+
+    await createDockerRunnerLauncher("docker").reap(secretEnvDir);
+
+    expect(
+      existsSync(dedupStatePath),
+      "a file this package did not name must never be a sweep candidate, no matter its age"
+    ).toBe(true);
+  });
+
+  it("with NO secretEnvDir, reap() performs no file sweep at all and still resolves normally", async () => {
+    // The container half of reap() is unaffected by the absence — this is the same call every
+    // pre-M23.1e test in this file already makes.
+    const removed = await createDockerRunnerLauncher("docker").reap();
+    expect(removed).toStrictEqual([]);
+  });
+
+  it("a `readdir` failure on secretEnvDir is swallowed — reap() still returns the containers it found", async () => {
+    reapPsStdout = `abc123\t22222222-2222-4222-8222-222222222222\t${new Date(
+      Date.now() - 60_000
+    ).toISOString()}\n`;
+    const missingDir = join(secretEnvDir, "does-not-exist", "nested");
+
+    const removed = await createDockerRunnerLauncher("docker").reap(missingDir);
+
+    // The container sweep is independent of the file sweep failing — neither blocks the other.
+    expect(removed).toStrictEqual(["abc123"]);
+  });
+
+  it("THE DELETE-THE-WIRING GATE — run() passes its OWN spec.secretEnvDir into reap(), so an ordinary run sweeps a stale leftover as a side effect", async () => {
+    const leaked = leakedFile(
+      "scp-secret-env-prior-run-44444444-4444-4444-8444-444444444444",
+      RUNNER_SECRET_ENV_MAX_AGE_MS + 60_000
+    );
+
+    // An ORDINARY run, with its OWN fresh secretEnv — nothing about this spec asks for a sweep. If
+    // `spec.secretEnvDir` is ever dropped from the `reap(...)` call at the top of `run()` (falling
+    // back to no sweep at all, or to `reap()` with no argument), this leftover survives the call
+    // and the assertion below goes red.
+    await createDockerRunnerLauncher("docker").run(
+      spec({
+        secretEnv: ["AWS_SECRET_ACCESS_KEY=fresh-run-value"],
+        secretEnvDir
+      })
+    );
+    // THE SWEEP IS NOT AWAITED BY `run()`, SINCE M23.1e (index.ts's own `void reap(...)`) — the same
+    // reason the container wiring gate awaits `whenReapSettled()` instead of racing it. It resolves
+    // here only because `reap()`'s file sweep is folded into the SAME single-flighted pass promise
+    // the container listing uses, not a second, untracked one.
+    await whenReapSettled();
+
+    expect(
+      existsSync(leaked),
+      "run()'s own top-of-function reap() must have swept this leftover as a side effect"
+    ).toBe(false);
   });
 });
