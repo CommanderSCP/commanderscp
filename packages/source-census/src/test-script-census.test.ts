@@ -98,10 +98,19 @@ function census(): Pkg[] {
 
   for (const manifest of manifests) {
     const dir = manifest === "package.json" ? "" : manifest.slice(0, -"/package.json".length);
-    const parsed = JSON.parse(readFileSync(resolve(REPO_ROOT, manifest), "utf8")) as {
-      name?: string;
-      scripts?: Record<string, string>;
-    };
+    // TOLERANT, for the same reason `scanner-containment.test.ts`'s sweep is: `git ls-files` lists
+    // the INDEX, and a manifest `rm`'d but not yet `git rm`'d would otherwise kill this gate with a
+    // bare ENOENT that says nothing about test scripts. Skipping is bounded by the census floor
+    // asserted below, which is over the manifests ACTUALLY READ.
+    let parsed: { name?: string; scripts?: Record<string, string> };
+    try {
+      parsed = JSON.parse(readFileSync(resolve(REPO_ROOT, manifest), "utf8")) as {
+        name?: string;
+        scripts?: Record<string, string>;
+      };
+    } catch {
+      continue;
+    }
     const scripts = parsed.scripts ?? {};
     if (scripts["test"] === undefined && scripts["test:integration"] === undefined) continue;
 

@@ -60,8 +60,33 @@ function trackedFiles(): string[] {
   return out.split("\0").filter((p) => p.length > 0);
 }
 
+/** A file this gate NAMES. Missing means the repo lost something it must have — throw. */
 function read(path: string): string {
   return readFileSync(resolve(REPO_ROOT, path), "utf8");
+}
+
+/**
+ * A file this gate SWEEPS, read tolerantly. `git ls-files` lists the INDEX, and the index and the
+ * WORKTREE disagree routinely — a file `rm`'d but not yet `git rm`'d, a half-applied patch, an
+ * interrupted rebase. Feeding that straight into {@link read} made this file die with a bare
+ * `ENOENT ... launch-argv.golden.test.ts` at the "NO product code outside apps/runner-scan EXECUTES
+ * a scanner binary" test — a repo-wide SECURITY gate going red with a message about a test file and
+ * nothing about scanners. The cheap fix under time pressure is the one this file's header warns
+ * against: narrowing the sweep until it passes. So the candidate set is UNCHANGED and unreadable
+ * candidates are skipped instead — and every caller then asserts its non-vacuity floor over the
+ * files ACTUALLY READ, so a worktree full of missing files cannot masquerade as a clean sweep
+ * either.
+ */
+function sweep(paths: string[]): { path: string; text: string }[] {
+  const read: { path: string; text: string }[] = [];
+  for (const path of paths) {
+    try {
+      read.push({ path, text: readFileSync(resolve(REPO_ROOT, path), "utf8") });
+    } catch {
+      // Tracked but not in the worktree right now. Skipped, and therefore not counted below.
+    }
+  }
+  return read;
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -135,8 +160,18 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
       "Dockerfile"
     );
 
-    const offenders = dockerfiles
-      .map((p) => ({ path: p, hits: dockerfileScannerHits(read(p)) }))
+    // READ tolerantly, then assert over what was READ — same property as the invocation sweep
+    // below, and the same reason. The root image must be among the files actually read, not merely
+    // among the paths listed: `toContain` on `dockerfiles` alone would still pass if every one of
+    // them had vanished from the worktree.
+    const swept = sweep(dockerfiles);
+    expect(
+      swept.map((f) => f.path),
+      "the scpd runtime image must have been READ, not merely listed"
+    ).toContain("Dockerfile");
+
+    const offenders = swept
+      .map((f) => ({ path: f.path, hits: dockerfileScannerHits(f.text) }))
       .filter((f) => f.hits.length > 0);
     expect(
       offenders.map((o) => `${o.path}: ${o.hits[0]!.trim()}`),
@@ -162,13 +197,18 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
         // This file defines the detector patterns; matching itself proves nothing.
         !p.endsWith("scanner-containment.test.ts")
     );
+    // THE FLOOR IS OVER THE FILES ACTUALLY READ, not over the candidate list. Those two numbers are
+    // the same on a clean worktree and differ exactly when the index and the worktree do — which is
+    // the case that used to kill this test with a bare ENOENT. Asserting the read count keeps the
+    // tolerance from becoming a vacuous pass: skipping is allowed, skipping EVERYTHING is not.
+    const swept = sweep(candidates);
     expect(
-      candidates.length,
-      "the invocation sweep must actually have files to read"
+      swept.length,
+      `the invocation sweep must actually have files to read (${candidates.length} tracked candidates, ${swept.length} readable)`
     ).toBeGreaterThan(50);
 
-    const offenders = candidates
-      .map((p) => ({ path: p, hits: invocationHits(read(p)) }))
+    const offenders = swept
+      .map((f) => ({ path: f.path, hits: invocationHits(f.text) }))
       .filter((f) => f.hits.length > 0);
     expect(
       offenders.map((o) => `${o.path}: ${o.hits[0]!.trim()}`),
