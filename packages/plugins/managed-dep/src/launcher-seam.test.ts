@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { RunnerLauncher, RunnerSpec } from "@scp/runner-launcher";
 import {
@@ -138,10 +138,47 @@ describe("M23.1: managed-dep launches through the injected RunnerLauncher", () =
     // injects `SCP_MANAGED_RUNNER_DOCKER_BINARY` and the fallback is never reached.
     expect(resolverSaw).toStrictEqual([{ dockerBinary: "docker" }]);
     expect(seen).toHaveLength(1);
-    // The two charter properties this class states unconditionally, restated at the port boundary:
-    // no environment at all, and `--network none` as a literal that no context can move.
-    expect(seen[0]!.env).toStrictEqual([]);
-    expect(seen[0]!.networkMode).toBe("none");
+
+    // THE RUN DIRECTORY IS A `mkdtemp`, so its suffix is the one thing here that cannot be a
+    // literal. It is pinned STRUCTURALLY instead — inside the server-governed workspaceRoot, named
+    // `scp-dep-*`, with `in`/`out` as siblings — and then used to express the whole-spec equality
+    // below, so the only self-derived component is the random suffix.
+    const outDir = seen[0]!.copyOut!.hostDir;
+    const runDir = dirname(outDir);
+    expect(dirname(runDir)).toBe(workspaceRoot);
+    expect(basename(runDir).startsWith("scp-dep-")).toBe(true);
+
+    // THE WHOLE SPEC, `toStrictEqual`. See `@scp/plugin-managed-iac`'s file of the same name for the
+    // measurement that forced it: with the three goldens deleted, three load-bearing fields could be
+    // flipped at once and the whole repo stayed green. Asserting two of eight fields here was the
+    // reason a deletion could take the rest to zero.
+    expect(seen[0], "managed-dep's RunnerSpec changed").toStrictEqual({
+      image: "scp-runner-dep:vetted",
+      // FIVE operands for npm — the edit is described entirely on argv. The anchor pair is appended
+      // only for the SPLIT shapes (M21.7); npm's parser reports no line, so it is absent here, and
+      // a five-operand invocation is byte-for-byte what every previously-shipped image understands.
+      operands: ["npm", "package.json", "@acme/lib", "^1.2.3", "^1.4.0"],
+      // THE LITERAL, never a config read — this class's charter clause carries no operator
+      // qualifier, so `--network none` must not become an operator-settable default (ADR-0032 §8d).
+      // The port takes the resolved value; the decision stays at this call site.
+      networkMode: "none",
+      // NO ENVIRONMENT AT ALL. The runner holds no credential; there is nothing to pass it.
+      env: [],
+      copyIn: [{ hostDir: join(runDir, "in"), containerPath: "/work/in" }],
+      // ONLY ON SUCCESS and NOT guarded — copying out a partial manifest would put unverified bytes
+      // where the verifiers read from. `trigger()`'s outer catch is what turns the resulting
+      // rejection into a `failed` run, which is this plugin's own answer of the three.
+      copyOut: {
+        containerPath: "/work/out",
+        hostDir: outDir,
+        when: "on-success",
+        onFailure: "propagate"
+      },
+      // 5 minutes and 8 MiB — the SMALLEST of the three on both counts, because this runner edits
+      // one manifest and prints nothing.
+      timeoutMs: 5 * 60_000,
+      maxBuffer: 8 * 1024 * 1024
+    });
     expect((await plugin.status(ctx, ref)).phase).toBe("succeeded");
   });
 });

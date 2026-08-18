@@ -105,7 +105,39 @@ describe("M23.1: managed-scan launches through the injected RunnerLauncher", () 
     // change. M23.2 is where that happens; M23.1 must not smuggle one in early.
     expect(resolverSaw).toStrictEqual([{ dockerBinary: "/usr/local/bin/docker" }]);
     expect(seen).toHaveLength(1);
-    expect(seen[0]!.image).toBe("scp-runner-scan:vetted");
+
+    // THE WHOLE SPEC, `toStrictEqual`. See `@scp/plugin-managed-iac`'s file of the same name for the
+    // measurement that forced it: with the three goldens deleted, three load-bearing fields could be
+    // flipped at once and the whole repo stayed green. The goldens still own the Docker BYTES and
+    // the four preload combinations; these six fields now also live in a file that carries no
+    // deletion hazard in its header.
+    expect(seen[0], "managed-scan's RunnerSpec changed").toStrictEqual({
+      image: "scp-runner-scan:vetted",
+      // trivy takes no extra run.sh args; only `openscap` appends the two positional ones (and
+      // appends them EVEN WHEN EMPTY, which is the golden's business).
+      operands: ["trivy"],
+      // A CONFIG READ (server-injected, default "none") — this class's charter clause is qualified
+      // ("excepting operator-allowlisted registry pulls"), so the operator setting is legitimate.
+      networkMode: "none",
+      // No preload dirs in this intent, so NEITHER `-e` pair fires. The two are INDEPENDENTLY
+      // conditional; that independence is the golden's four-combination matrix.
+      env: [],
+      // The server-pulled OCI layout, always, and alone when no cache is preloaded.
+      copyIn: [{ hostDir: join(scratch, "oci"), containerPath: "/work/image" }],
+      // THE OPPOSITE OF managed-iac ON BOTH AXES, and fail-closed on purpose: a failed scan must
+      // produce NO evidence (the commander writes none and E6 then refuses), and a failed copy-out
+      // ESCAPES rather than being swallowed.
+      copyOut: {
+        containerPath: "/work/out",
+        hostDir: join(scratch, "out"),
+        when: "on-success",
+        onFailure: "propagate"
+      },
+      // 10 minutes, and 32 MiB — the LARGEST of the three, because a Trivy report is the biggest
+      // thing any of these runners writes to stdout.
+      timeoutMs: 10 * 60_000,
+      maxBuffer: 32 * 1024 * 1024
+    });
     expect((await plugin.status(c, ref)).phase).toBe("succeeded");
   });
 });

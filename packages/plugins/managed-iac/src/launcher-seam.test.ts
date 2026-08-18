@@ -106,10 +106,53 @@ describe("M23.1: managed-iac launches through the injected RunnerLauncher", () =
 
     expect(resolverSaw).toStrictEqual(["/usr/local/bin/docker"]);
     expect(seen).toHaveLength(1);
-    // Not a re-assertion of the golden's full argv — just enough that a launcher wired to the wrong
-    // plugin, or handed an empty spec, cannot pass.
-    expect(seen[0]!.image).toBe("scp-runner-iac:vetted");
-    expect(seen[0]!.operands).toStrictEqual(["apply"]);
+
+    // THE WHOLE SPEC, `toStrictEqual`, AND THAT IS THE POINT OF THIS ASSERTION.
+    //
+    // This test used to capture the entire `RunnerSpec` and then assert only `image` and
+    // `operands`, with a comment declining the rest as "the golden's job". It was measured and it
+    // was not true: `git rm` the three `launch-argv.golden.test.ts` files AND flip three
+    // load-bearing fields in `runRunnerContainer` at once — `when: "always"` -> `"on-success"`,
+    // `onFailure: "swallow"` -> `"propagate"`, `maxBuffer: 16 MiB` -> `32 MiB` — and the repo ran
+    // "Tasks: 14 successful, 14 total". A file that carries a deletion hazard in its header cannot
+    // be the only thing asserting a field; this file carries no such instruction and is named for
+    // the wiring it guards, so the fields live here TOO. The goldens are not redundant — they pin
+    // the Docker BYTES for four managed-scan preload combinations and the rollback arm, which
+    // nothing here reaches — but no single deletion can now take these six fields to zero.
+    //
+    // EVERY FIELD IS A LITERAL, not re-derived from `index.ts`. The workspace path is the one
+    // deterministic thing about this run and is spelled out rather than read back from the spec:
+    // `workspaceDirFor` sanitises orgId and targetRef into `<workspaceRoot>/<org>/<target>`, and a
+    // change to that layout must fail here.
+    const workspaceDir = join(workspaceRoot, "org-1", "t1");
+    expect(seen[0], "managed-iac's RunnerSpec changed").toStrictEqual({
+      image: "scp-runner-iac:vetted",
+      operands: ["apply"],
+      // A CONFIG READ for this plugin (server-injected, default "none") — unlike managed-dep, whose
+      // charter clause carries no operator qualifier and passes a literal.
+      networkMode: "none",
+      // No `infraCredsSecretKeys` in this ctx and no rollback extras, so no credentials are
+      // materialised. The ORDER when they are (config keys first, action extras last) is the
+      // golden's.
+      env: [],
+      // COPIED, never bind-mounted: nothing on the host becomes a container mount.
+      copyIn: [{ hostDir: workspaceDir, containerPath: "/workspace" }],
+      // THE ASYMMETRY THAT IS THIS PLUGIN'S ALONE, on both axes. A failed `apply` may still have
+      // produced a partial plan.json worth persisting (`when: "always"`), and a copy-out that
+      // itself fails does NOT fail the run (`onFailure: "swallow"`). managed-scan and managed-dep
+      // are the opposite on both. This is the pair a "unify the three launchers" refactor
+      // normalises away by accident.
+      copyOut: {
+        containerPath: "/workspace",
+        hostDir: workspaceDir,
+        when: "always",
+        onFailure: "swallow"
+      },
+      // 10 minutes (the default; tenant-settable via config.timeoutMs) and 16 MiB — the SMALLEST
+      // stdout budget of the three, and not a shared default.
+      timeoutMs: 10 * 60_000,
+      maxBuffer: 16 * 1024 * 1024
+    });
     expect((await plugin.status(c, ref)).phase).toBe("succeeded");
   });
 });
