@@ -604,6 +604,45 @@ export const ScanExclusionClassSchema = z.enum([
 ]);
 export type ScanExclusionClass = z.infer<typeof ScanExclusionClassSchema>;
 
+// -------------------------------------------------------------------------------------------
+// M22.5 (owner decision D2) — THE COMPONENT-DECLARED FACT's vocabulary.
+//
+// The owner chose DIRECT ENCODING: component info encodes the override, rather than SecOps
+// authoring a mapping from a declaration to an exemption (recommended, declined). The escalation
+// seam that follows is real and settled — a component's `properties` are writable at plain
+// `object:write` SCOPED AT THAT COMPONENT, so the beneficiary of a declaration is also its author,
+// at a weaker permission than the `policy:write` that set the constraint.
+//
+// What D2 does NOT require is that the declaration be UNBOUNDED, and these two schemas are where
+// that bound is drawn:
+//
+//  1. A declared value lands VERBATIM in `control_runs.evidence` and in the gate Decision's
+//     `inputContext` (ADR-0033 §6 guard 2 — an auditor reads *"passed because component X asserted
+//     `egress: none` under admission Y"*, never just *"passed"*). Both of those are read by humans
+//     and one of them is a row this project has already measured flooding at 1.44 GB/day, so an
+//     unbounded blob is not an option: keys and values are short, single-line, and countable.
+//  2. NEVER `labels`. They are tenant-writable, unvalidated (no schema, no reserved namespace) and
+//     are already a live evasion path for selector-scoped policies (PR #247). A declaration lives in
+//     a TYPED `property_schema` instead.
+// -------------------------------------------------------------------------------------------
+
+/** A declared fact's KEY — `egress`, `data.classification`, `internet_facing`. Lower-case, bounded,
+ *  and single-line so it can be rendered in a Decision and in an audit trail without escaping. */
+export const ScanDeclarationKeySchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9_.-]*$/, "declaration key must match /^[a-z][a-z0-9_.-]*$/");
+
+/** A declared fact's VALUE — `none`, `internal-only`, `pci`. Deliberately a STRING and not a union:
+ *  the vocabulary is the org's, not this project's, and a closed value enum here would be the
+ *  SecOps-authored mapping D2 declined. Bounded and single-line for the same reason the key is. */
+export const ScanDeclarationValueSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[^\r\n\t]+$/, "declaration value must be a single line");
+
 /**
  * ONE exclusion clause — what a `scanExclusion` policy effect's `exclude` key carries.
  *
@@ -632,6 +671,13 @@ export const ScanExclusionClauseSchema = z.strictObject({
    *  `findingClass` because `class` is already taken by the clause's own admission class, and one
    *  key meaning two different things is how a provenance label goes quietly false. */
   findingClass: z.string().min(1).optional(),
+  /** M22.5 (owner decision D2) — WHICH component-declared fact this clause relies on, and WHAT the
+   *  component must have declared for it. BOTH are required for a `declared_fact` clause to resolve
+   *  at all: a clause naming a key but no value would exclude on the mere PRESENCE of a declaration,
+   *  which is a component writing its own exemption with a one-word property. See
+   *  {@link declaredFactPredicate}. Ignored by every other class. */
+  declaredFact: ScanDeclarationKeySchema.optional(),
+  declaredValue: ScanDeclarationValueSchema.optional(),
   /** Free text recorded verbatim in evidence and in the Decision (charter principle 6 — an auditor
    *  reads WHY a finding was tolerated, never just that it was). */
   reason: z.string().max(500).optional()
@@ -783,6 +829,183 @@ export const ScanVendorLatestFactsSchema = z.object({
 });
 export type ScanVendorLatestFacts = z.infer<typeof ScanVendorLatestFactsSchema>;
 
+// ===========================================================================================
+// M22.5 (owner decision D2) — WHAT THE COMPONENT DECLARED, and the write door that bounds it.
+// ===========================================================================================
+
+/** The `component.properties` key the declarations live under. ONE constant, because the migration's
+ *  JSON Schema, the request-body validator and the gate-time reader must name the same key — three
+ *  string literals is how one of them silently stops being read. */
+export const COMPONENT_SECURITY_PROPERTY_KEY = "security";
+
+/** How many declarations one component may carry. They all reach the gate Decision's `inputContext`
+ *  verbatim, so the set is countable by construction rather than by hoping nobody writes a thousand. */
+export const COMPONENT_SECURITY_DECLARATIONS_CAP = 32;
+
+/**
+ * THE REQUEST-BODY VALIDATOR — `z.strictObject`, and this is the guard ADR-0033 §6 names explicitly.
+ *
+ * WHY STRICT HERE AND OPEN IN THE MIGRATION, which is not an inconsistency but the whole design.
+ * `import-repo.ts`'s `object_upsert` branch Ajv-validates an incoming object against the registered
+ * `property_schema` with NO `try/catch`, so ONE rejection aborts a peer's ENTIRE signed bundle and
+ * wedges the channel. A closed schema in the registry would therefore make every future property
+ * addition a fail-closed version-skew hazard — 0043's rule, and 0051's header restates it. So the
+ * registry stays OPEN and the strictness moves to the LOCAL author's door, where a refusal costs one
+ * 400 and nobody's bundle.
+ *
+ * The strictness is load-bearing rather than tidy: `{"declarationz": {...}}` or
+ * `{"declarations": {...}, "egress": "none"}` would otherwise be stored, read as NO declarations, and
+ * the component owner would believe they had declared something. For a LOOSENING that mistake is
+ * only ever fail-closed — but it is silent, and the author has no way to discover it.
+ */
+export const ComponentSecurityPropertySchema = z.strictObject({
+  declarations: z
+    .record(ScanDeclarationKeySchema, ScanDeclarationValueSchema)
+    .refine((d) => Object.keys(d).length <= COMPONENT_SECURITY_DECLARATIONS_CAP, {
+      message: `at most ${COMPONENT_SECURITY_DECLARATIONS_CAP} declarations`
+    })
+});
+export type ComponentSecurityProperty = z.infer<typeof ComponentSecurityPropertySchema>;
+
+/**
+ * WHAT THE TARGETS DECLARED, as the gate resolved it — the only input the `declared_fact` predicate
+ * has, for the same reason the vendor facts are data: the matcher runs inside a plugin with no
+ * database.
+ *
+ * A SORTED ARRAY OF PAIRS rather than a record, so the serialization is order-stable by construction
+ * on the way into the Decision's `inputContext`. (`restatesDecision` canonicalises object key order,
+ * so a record would in fact also be safe — but `packageKeys` next door is an array, and one shape for
+ * one job means nobody has to remember which of the two rules applies where.)
+ */
+export const ScanDeclaredFactsSchema = z.object({
+  declarations: z.array(
+    z.object({ key: ScanDeclarationKeySchema, value: ScanDeclarationValueSchema })
+  )
+});
+export type ScanDeclaredFacts = z.infer<typeof ScanDeclaredFactsSchema>;
+
+// ===========================================================================================
+// M22.6 (owner decisions D3/D4) — THE APPROVED OVERRIDE, as the gate resolved it.
+// ===========================================================================================
+
+/**
+ * ONE standing grant, already filtered to `approved` and already inside its expiry window by the
+ * resolver's read-time SQL comparison (ADR-0033 §6a: "expiry is a read-time SQL window, never a
+ * status column a job flips" — there is no sweeper in this tree and no `boss.schedule` to build one
+ * on).
+ *
+ * `expiresAt` travels anyway, and NOT as a second enforcement point: it is the "until when" ADR-0033
+ * §11 requires every applied exclusion to name. It is a STORED value, so two identical evaluations
+ * still serialize identically and write suppression holds.
+ */
+export const ScanOverrideGrantFactSchema = z.object({
+  /** The grant's graph object id — what an auditor resolves to read the whole act. */
+  grantObjectId: z.string(),
+  /** REQUIRED. D4's unit is (component × finding), and a grant naming no finding would be a blanket
+   *  waiver on a component — precisely the coarse shape ADR-0033 §2 rejected. */
+  vulnerabilityId: z.string(),
+  /** Optional NARROWING: the same CVE in a different package is a different exposure. */
+  pkgName: z.string().optional(),
+  /** The object naming the tier that set the rule — the authority this grant was approved under
+   *  (D3). */
+  tierObjectId: z.string(),
+  expiresAt: z.string()
+});
+export type ScanOverrideGrantFact = z.infer<typeof ScanOverrideGrantFactSchema>;
+
+export const ScanApprovedOverridesSchema = z.object({
+  grants: z.array(ScanOverrideGrantFactSchema)
+});
+export type ScanApprovedOverrides = z.infer<typeof ScanApprovedOverridesSchema>;
+
+// -------------------------------------------------------------------------------------------
+// The override request as a GRAPH OBJECT (charter principle 2) and its API surface.
+// -------------------------------------------------------------------------------------------
+
+/** The registered `object_types.id`. ONE constant: the migration, the governance-managed set, the
+ *  repo and the resolver must all name the same type, and four string literals is how one of them
+ *  quietly stops being reached. */
+export const SCAN_OVERRIDE_GRANT_TYPE_ID = "scan_override_grant";
+
+/**
+ * A grant's lifecycle, held in `properties.status`.
+ *
+ * FOUR STATES, and `expired` is deliberately NOT one of them. Expiry is a READ-TIME SQL WINDOW
+ * (ADR-0033 §6a) — `expiresAt > now()` evaluated by the resolver on every read — never a status a
+ * background job flips, because there is no sweeper anywhere in this tree and no `boss.schedule`
+ * usage to build one on. A fifth `expired` value would be a promise that something transitions rows
+ * into it, and nothing would.
+ *
+ * `denied` and `revoked` are distinct on purpose: one is "this was never granted", the other is
+ * "this was granted and has been taken back", and an auditor reading a Decision that cites a grant
+ * needs to be able to tell those apart.
+ */
+export const ScanOverrideGrantStatusSchema = z.enum(["requested", "approved", "denied", "revoked"]);
+export type ScanOverrideGrantStatus = z.infer<typeof ScanOverrideGrantStatusSchema>;
+
+/** The API projection of one grant object. */
+export const ScanOverrideGrantSchema = z.object({
+  id: z.string(),
+  urn: z.string(),
+  name: z.string(),
+  status: ScanOverrideGrantStatusSchema,
+  componentId: z.string(),
+  vulnerabilityId: z.string(),
+  pkgName: z.string().nullable(),
+  tierObjectId: z.string(),
+  reason: z.string(),
+  expiresAt: z.string().nullable(),
+  decidedByActorId: z.string().nullable(),
+  decidedAt: z.string().nullable(),
+  decisionReason: z.string().nullable(),
+  requestedByActorId: z.string(),
+  createdAt: z.string()
+});
+export type ScanOverrideGrant = z.infer<typeof ScanOverrideGrantSchema>;
+
+export const ScanOverrideGrantListResponseSchema = z.object({
+  items: z.array(ScanOverrideGrantSchema)
+});
+
+export const ScanOverrideGrantIdParamSchema = z.object({ id: z.string() });
+
+/** Listing is COMPONENT-SCOPED and the component is REQUIRED. An unscoped list of "every accepted
+ *  risk in this org" is a map of deliberately-tolerated weaknesses, and handing one out to any holder
+ *  of `object:read` at the org root is a wider disclosure than the read that authorized it. */
+export const ScanOverrideGrantListQuerySchema = z.object({
+  component: z.string().min(1)
+});
+
+/** RAISING a request. `tierObjectId` is named by the REQUESTER and is the object whose tier set the
+ *  rule they want waived — it is what decides WHO may approve (D3), so it is constitutive of the
+ *  request rather than something the approver supplies later. Naming a tier confers nothing: the
+ *  approval check runs against the named object at approve time. */
+export const CreateScanOverrideGrantRequestSchema = z.strictObject({
+  componentId: z.string().min(1),
+  vulnerabilityId: z.string().min(1).max(200),
+  pkgName: z.string().min(1).max(200).optional(),
+  tierObjectId: z.string().min(1),
+  /** MANDATORY and non-empty — the `freeze.override` shape (DESIGN §10.3), never the approvals
+   *  shape. */
+  reason: z.string().min(1).max(500)
+});
+export type CreateScanOverrideGrantRequest = z.infer<typeof CreateScanOverrideGrantRequestSchema>;
+
+/** APPROVING. `expiresAt` is REQUIRED: D4's grant is standing *with an expiry*, and a grant with no
+ *  expiry is the permanent blanket waiver the decision explicitly did not take. */
+export const ApproveScanOverrideGrantRequestSchema = z.strictObject({
+  expiresAt: z.string().datetime(),
+  reason: z.string().min(1).max(500)
+});
+export type ApproveScanOverrideGrantRequest = z.infer<typeof ApproveScanOverrideGrantRequestSchema>;
+
+/** DENYING or REVOKING — one shape, because both are the same act on the authority side and both
+ *  need the same mandatory reason. */
+export const DecideScanOverrideGrantRequestSchema = z.strictObject({
+  reason: z.string().min(1).max(500)
+});
+export type DecideScanOverrideGrantRequest = z.infer<typeof DecideScanOverrideGrantRequestSchema>;
+
 /** The gate-resolved exclusion set, threaded to `scan-result-control` on the control-run CONTEXT
  *  (`context.scanExclusions`) — the SAME conditional-context mechanism that already carries
  *  `artifactDigest` and `scanThreshold`. A plugin has no database and no lookup ability, so every
@@ -791,7 +1014,11 @@ export const EffectiveScanExclusionsSchema = z.object({
   clauses: z.array(AdmittedScanExclusionClauseSchema),
   /** M22.4 — resolved ONLY when a `vendor_latest` clause actually survived the AND, so a deployment
    *  that authored no such clause pays no inventory query and writes no extra key. */
-  vendorLatest: ScanVendorLatestFactsSchema.optional()
+  vendorLatest: ScanVendorLatestFactsSchema.optional(),
+  /** M22.5 — same conditional resolution, same reason: no `declared_fact` clause, no property read. */
+  declaredFacts: ScanDeclaredFactsSchema.optional(),
+  /** M22.6 — same again: no `approved_override` clause, no grant query. */
+  approvedOverrides: ScanApprovedOverridesSchema.optional()
 });
 export type EffectiveScanExclusions = z.infer<typeof EffectiveScanExclusionsSchema>;
 
@@ -828,7 +1055,17 @@ export const AppliedScanExclusionSchema = z.object({
   source: z.string(),
   vulnerabilityId: z.string().optional(),
   pkgName: z.string().optional(),
-  reason: z.string().optional()
+  reason: z.string().optional(),
+  /** M22.5 (ADR-0033 §6 guard 2) — the declaration this exclusion rested on, VERBATIM. An auditor
+   *  reads *"passed because component X asserted `egress: none` under admission Y"*; a Decision that
+   *  said only "declared_fact" would be the coarse waiver §2 rejected wearing a class name. */
+  declaredFact: z.string().optional(),
+  declaredValue: z.string().optional(),
+  /** M22.6 (ADR-0033 §11) — the grant, its authority and its expiry: "under whose authority, until
+   *  when". */
+  grantObjectId: z.string().optional(),
+  grantTierObjectId: z.string().optional(),
+  grantExpiresAt: z.string().optional()
 });
 export type AppliedScanExclusion = z.infer<typeof AppliedScanExclusionSchema>;
 
@@ -851,23 +1088,24 @@ export type ScanExclusionEvidence = z.infer<typeof ScanExclusionEvidenceSchema>;
  * fix would make the Decision misdescribe its own inputs (charter principle 6), so the class is
  * enforced as a conjunct, not trusted as a name.
  *
- * `undefined` means THIS CLASS CANNOT YET BE RESOLVED, and a clause of such a class yields NO
- * exclusion. That is the safe sign and it is deliberate: three of the four classes need machinery
- * that later increments build (`vendor_latest` an ADR-0032 inventory join, `declared_fact` a typed
- * component property, `approved_override` a standing grant with a read-time expiry window), and a
- * class whose predicate is missing must fail CLOSED rather than degrade into "the matchers alone".
+ * `undefined` means THIS CLAUSE CANNOT BE RESOLVED, and it then yields NO exclusion. All four classes
+ * are now built (`vendor_latest` an ADR-0032 inventory join, `declared_fact` a typed component
+ * property, `approved_override` a standing grant with a read-time expiry window), so `undefined` no
+ * longer means "not written yet" — it means THE FACTS THIS CLAUSE NEEDS WERE NOT RESOLVED, which is
+ * the ordinary shape of every one of ADR-0033's fail-closed cases: no inventory, no declaration, no
+ * live grant. That the two states share a return value is deliberate and the reason is unchanged: a
+ * clause whose input is missing must fail CLOSED rather than degrade into "the matchers alone".
  * Degrading would mean `{"class": "approved_override", "pkgName": "openssl"}` excluded every openssl
- * finding today and a strictly smaller set the day the grants land — a silent semantic change to an
- * already-authored clause.
+ * finding — a blanket waiver written as an exception.
  *
  * EXHAUSTIVE over `ScanExclusionClass` on purpose: a fifth class added later is a compile error
  * here, forcing a decision, rather than silently inheriting either arm.
  */
 function scanExclusionClassPredicate(
-  cls: ScanExclusionClass,
+  clause: ScanExclusionClause,
   facts: ScanExclusionFacts | undefined
 ): ((finding: ScanFinding) => boolean) | undefined {
-  switch (cls) {
+  switch (clause.class) {
     case "no_fix_available":
       // M22.3 — PURE DATA OVER THE RETAINED FIELDS, no join of any kind. `fixedVersion` is absent
       // exactly when Trivy reported no `FixedVersion` — read as the signal, never inferred from
@@ -884,9 +1122,90 @@ function scanExclusionClassPredicate(
     case "vendor_latest":
       return vendorLatestPredicate(facts?.vendorLatest);
     case "declared_fact":
+      return declaredFactPredicate(clause, facts?.declaredFacts);
     case "approved_override":
-      return undefined;
+      return approvedOverridePredicate(facts?.approvedOverrides);
   }
+}
+
+/**
+ * M22.5 (D2) — "the component declared a fact that makes this finding inapplicable".
+ *
+ * TWO CONDITIONS, both required, and the second is what keeps D2's accepted escalation seam bounded
+ * rather than unbounded:
+ *
+ *  1. The CLAUSE must name BOTH the fact and the value it relies on. A clause naming only
+ *     `declaredFact: "egress"` would fire on any value at all — including `egress: "internet"` —
+ *     which is a component excusing itself by writing a property whose CONTENT nobody constrained.
+ *     Absent either key the predicate is `undefined` and the clause excludes nothing.
+ *  2. The TARGETS must actually have declared that exact pair. The comparison is a plain string
+ *     equality on values that were bounded at the write door; there is no case-folding and no
+ *     truthiness reading, because `"None"` and `"none"` being the same fact is the org's decision to
+ *     make in its own vocabulary, not one this file may invent. An invented equality is a false
+ *     positive, and for a loosening that is the one direction this feature may not fail in.
+ *
+ * NOTE WHAT THIS DELIBERATELY IS NOT: the declaration does not describe the FINDING, so the predicate
+ * is finding-INDEPENDENT once the fact holds. The narrowing to the findings the fact actually
+ * excuses is the CLAUSE's other matchers (`findingClass`, `pkgName`, `vulnerabilityId`), authored at
+ * `policy:write` by whoever admitted the class — never by the component. That split is the whole of
+ * ADR-0033 §6 guard 1: the component authors the override, it does not author its own admission.
+ */
+function declaredFactPredicate(
+  clause: ScanExclusionClause,
+  facts: ScanDeclaredFacts | undefined
+): ((finding: ScanFinding) => boolean) | undefined {
+  if (clause.declaredFact === undefined || clause.declaredValue === undefined) return undefined;
+  if (!facts) return undefined;
+  const declared = facts.declarations.some(
+    (d) => d.key === clause.declaredFact && d.value === clause.declaredValue
+  );
+  if (!declared) return undefined;
+  return () => true;
+}
+
+/**
+ * M22.6 (D3/D4) — "an owner raised an override request, it was approved at the tier that set the
+ * rule, and it has not expired".
+ *
+ * Every one of those three words is decided BEFORE this predicate: the resolver reads only grants
+ * whose status is `approved` and whose expiry is still in the future at the moment of the read (the
+ * read-time SQL window), and approval itself required `policy:write` at the object naming the tier
+ * that set the rule. What is left here is the per-finding join, and it is deliberately EXACT:
+ * `vulnerabilityId` must be equal, and a grant that also names a `pkgName` must match that too.
+ *
+ * NO grants resolved yields `undefined` — no exclusion — rather than a predicate that is always
+ * false, so a clause of this class with nothing granted behaves identically to a class whose
+ * machinery does not exist. Both are "excludes nothing"; keeping them the same shape means a
+ * later reader cannot mistake one for the other.
+ */
+function approvedOverridePredicate(
+  facts: ScanApprovedOverrides | undefined
+): ((finding: ScanFinding) => boolean) | undefined {
+  if (!facts || facts.grants.length === 0) return undefined;
+  return (finding) => scanOverrideGrantFor(facts, finding) !== undefined;
+}
+
+/**
+ * WHICH grant excuses this finding — the SINGLE definition, shared by the predicate above and by the
+ * evidence projection in {@link applyScanExclusions}.
+ *
+ * Two functions answering "does a grant match?" and "which grant matched?" is exactly the shape where
+ * the evidence names one grant and the verdict was decided by another. The first grant in the
+ * resolver's own deterministic order wins, so two identical evaluations attribute identically.
+ */
+export function scanOverrideGrantFor(
+  facts: ScanApprovedOverrides | undefined,
+  finding: ScanFinding
+): ScanOverrideGrantFact | undefined {
+  if (!facts) return undefined;
+  return facts.grants.find((g) => {
+    // A finding with NO `VulnerabilityID` can never be excused: a grant is per (component × finding)
+    // and an unidentifiable finding is not a finding anyone approved. `undefined !== "CVE-…"` already
+    // says so; it is spelled out because this is the one comparison whose failure would be silent.
+    if (finding.vulnerabilityId !== g.vulnerabilityId) return false;
+    if (g.pkgName !== undefined && finding.pkgName !== g.pkgName) return false;
+    return true;
+  });
 }
 
 /**
@@ -934,7 +1253,10 @@ function vendorLatestPredicate(
 /** The server-resolved facts a class predicate may consult. Structurally the exclusion set minus its
  *  clauses, so `applyScanExclusions` can hand the whole resolved object down without the pure
  *  matcher needing to know how it was assembled. */
-export type ScanExclusionFacts = Pick<EffectiveScanExclusions, "vendorLatest">;
+export type ScanExclusionFacts = Pick<
+  EffectiveScanExclusions,
+  "vendorLatest" | "declaredFacts" | "approvedOverrides"
+>;
 
 /** Whether a clause reaches a finding: the class's own predicate AND every present matcher. A
  *  finding lacking a field the clause names never matches — `undefined !== "openssl"`. */
@@ -943,7 +1265,7 @@ export function scanExclusionClauseMatches(
   finding: ScanFinding,
   facts?: ScanExclusionFacts
 ): boolean {
-  const predicate = scanExclusionClassPredicate(clause.class, facts);
+  const predicate = scanExclusionClassPredicate(clause, facts);
   if (!predicate) return false; // class not yet resolvable — NO exclusion
   if (!predicate(finding)) return false;
   if (clause.vulnerabilityId !== undefined && finding.vulnerabilityId !== clause.vulnerabilityId)
@@ -1019,6 +1341,12 @@ export function applyScanExclusions(
     }
     excludedOrdinals.push(ordinal);
     if (applied.length < SCAN_EXCLUSION_EVIDENCE_CAP) {
+      // M22.6 — resolved through the SAME function the predicate used, so evidence can never name a
+      // grant other than the one that actually decided this finding.
+      const grant =
+        hit.clause.class === "approved_override"
+          ? scanOverrideGrantFor(effective?.approvedOverrides, finding)
+          : undefined;
       applied.push({
         ordinal,
         severity: finding.severity,
@@ -1027,7 +1355,23 @@ export function applyScanExclusions(
         source: hit.source,
         ...(finding.vulnerabilityId ? { vulnerabilityId: finding.vulnerabilityId } : {}),
         ...(finding.pkgName ? { pkgName: finding.pkgName } : {}),
-        ...(hit.clause.reason ? { reason: hit.clause.reason } : {})
+        ...(hit.clause.reason ? { reason: hit.clause.reason } : {}),
+        // M22.5 — the declared pair, verbatim. Taken from the CLAUSE rather than re-read from the
+        // facts because the predicate already proved the two equal; the whole declared set travels
+        // separately into the gate Decision's `inputContext`.
+        ...(hit.clause.class === "declared_fact" && hit.clause.declaredFact !== undefined
+          ? { declaredFact: hit.clause.declaredFact }
+          : {}),
+        ...(hit.clause.class === "declared_fact" && hit.clause.declaredValue !== undefined
+          ? { declaredValue: hit.clause.declaredValue }
+          : {}),
+        ...(grant
+          ? {
+              grantObjectId: grant.grantObjectId,
+              grantTierObjectId: grant.tierObjectId,
+              grantExpiresAt: grant.expiresAt
+            }
+          : {})
       });
     }
   }

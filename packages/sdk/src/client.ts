@@ -198,6 +198,12 @@ import {
   // M17.5 (ADR-0016) — instance-scoped scan-requirement floors.
   listInstanceScanFloors as listInstanceScanFloorsRequest,
   putInstanceScanFloor as putInstanceScanFloorRequest,
+  // M22.6 (ADR-0033 §6a) — standing, expiring scan override grants.
+  createScanOverrideGrant as createScanOverrideGrantRequest,
+  listScanOverrideGrants as listScanOverrideGrantsRequest,
+  approveScanOverrideGrant as approveScanOverrideGrantRequest,
+  denyScanOverrideGrant as denyScanOverrideGrantRequest,
+  revokeScanOverrideGrant as revokeScanOverrideGrantRequest,
   // M13.3a (ADR-0020) — instance-scoped scanner assignments.
   listScannerAssignments as listScannerAssignmentsRequest,
   putScannerAssignment as putScannerAssignmentRequest,
@@ -350,6 +356,10 @@ import type {
   InitFederationRequest,
   FederationPeer,
   InstanceScanFloor,
+  ScanOverrideGrant,
+  CreateScanOverrideGrantRequest,
+  ApproveScanOverrideGrantRequest,
+  DecideScanOverrideGrantRequest,
   PutInstanceScanFloorRequest,
   ScannerAssignment,
   PutScannerAssignmentRequest,
@@ -1710,6 +1720,58 @@ export class ScpClient {
   // EVERY org on the deployment, so `put` is an OPERATOR action: it carries the deployment's
   // `x-scp-operator-token`, never a tenant role. `list` is an ordinary authenticated read.
   // -----------------------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------------------
+  // M22.6 (ADR-0033 §6a) — the override request: a STANDING grant per (component x finding) with an
+  // EXPIRY. `create` raises one (`object:write` at the component); `approve`/`deny`/`revoke` are the
+  // authority acts and each needs `policy:write` at the object naming the tier that SET the rule
+  // (D3). Every act writes a Decision AND a high-severity hash-chained audit event, copying
+  // `freeze.override` — never the approvals path, where a vote writes no audit event today.
+  // -----------------------------------------------------------------------------------------
+  readonly scanOverrideGrants = {
+    create: async (req: CreateScanOverrideGrantRequest): Promise<ScanOverrideGrant> => {
+      const result = await createScanOverrideGrantRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /** COMPONENT-SCOPED and the component is required — an unscoped list of every accepted risk in
+     *  the org is a wider disclosure than the read that authorized it. Includes expired, denied and
+     *  revoked grants: an operator asking "what has been granted here" must see the ones that no
+     *  longer apply. */
+    listForComponent: async (componentIdOrUrn: string): Promise<ScanOverrideGrant[]> => {
+      const result = await listScanOverrideGrantsRequest({
+        client: this.client,
+        query: { component: componentIdOrUrn }
+      });
+      return unwrap(result).items;
+    },
+    approve: async (
+      id: string,
+      req: ApproveScanOverrideGrantRequest
+    ): Promise<ScanOverrideGrant> => {
+      const result = await approveScanOverrideGrantRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
+    },
+    deny: async (id: string, req: DecideScanOverrideGrantRequest): Promise<ScanOverrideGrant> => {
+      const result = await denyScanOverrideGrantRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
+    },
+    revoke: async (id: string, req: DecideScanOverrideGrantRequest): Promise<ScanOverrideGrant> => {
+      const result = await revokeScanOverrideGrantRequest({
+        client: this.client,
+        path: { id },
+        body: req
+      });
+      return unwrap(result);
+    }
+  };
+
   readonly instanceScanFloors = {
     list: async (): Promise<InstanceScanFloor[]> => {
       const result = await listInstanceScanFloorsRequest({ client: this.client });

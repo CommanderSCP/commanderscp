@@ -298,9 +298,12 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
     expect(applied.excludedOrdinals).toEqual([0]);
   });
 
-  it("facts DO NOT leak across classes: they cannot resurrect declared_fact or approved_override", () => {
-    // Both remain unbuilt, and a class whose predicate is missing must fail CLOSED rather than
-    // degrade into "the matchers alone". Handing the resolver's facts to them must not change that.
+  it("facts DO NOT leak across classes: the VENDOR facts cannot satisfy declared_fact or approved_override", () => {
+    // Both of those classes are now BUILT (M22.5/M22.6) and read their own facts, so this is no
+    // longer "unbuilt classes stay inert" — it is the stronger property that each class consults
+    // ONLY its own resolved fact. A `vendor_latest` resolution reaching a `declared_fact` clause
+    // would mean a component at the head of its dependency lines silently satisfied a declaration it
+    // never made.
     for (const cls of ["declared_fact", "approved_override"] as const) {
       const applied = applyScanExclusions(
         [finding({ class: "os-pkgs", pkgName: "openssl" })],

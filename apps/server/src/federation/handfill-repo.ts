@@ -16,6 +16,7 @@ import {
   assertMayWriteGovernanceLabels,
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
+import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
 
 /**
  * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
@@ -186,6 +187,19 @@ async function assertGovernanceAuthorityForHandFill(
  */
 export async function handFillObject(tx: TenantTx, input: HandFillInput): Promise<GraphObject> {
   await assertHandFillableType(tx, input);
+  // M22.5 (ADR-0033 §6) — the component-declaration guard is in the SAME position as the two below:
+  // hand-fill wears the `federationImport` flag that exempts the choke point, but it is a LOCAL
+  // operator action with no bundle to wedge, so the exemption does not apply to it and the guard is
+  // called here explicitly. Skipping it would hand every `federation:write` holder a door that writes
+  // an unvalidated `security` bag onto any component.
+  //
+  // ORDERED AHEAD of `assertGovernanceAuthorityForHandFill` on purpose (the #249/#251 pattern): this
+  // refusal is synchronous and reads only the request, while the authority check walks containment in
+  // the database. A malformed declaration is rejected without paying for the walk.
+  assertValidComponentSecurityDeclarations({
+    typeId: input.typeId,
+    properties: input.properties ?? {}
+  });
   await assertGovernanceAuthorityForHandFill(tx, input);
   assertEnforceableDependencySubscriptionScope({
     typeId: input.typeId,

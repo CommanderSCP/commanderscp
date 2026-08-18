@@ -34,6 +34,7 @@ import {
   assertMayWriteGovernanceLabels,
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
+import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 import {
@@ -412,6 +413,12 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // calls the guard itself, before its upsert. That is the identical shape M16.2 clause (4) uses two
   // blocks above, for the identical reason, against the identical two-module census.
   if (!input.federationImport) {
+    // M22.5 (ADR-0033 §6 guard 3) — the component's security DECLARATIONS, strict at the local
+    // author's door and open on the wire. Installed HERE rather than at the component routes for
+    // exactly the reason the two guards below are: a filterless census of doors reaching this
+    // function with free-form `properties` found four, and a per-route install would have missed
+    // three of them (`governance/component-declaration-guard.ts` names them).
+    assertValidComponentSecurityDeclarations({ typeId: input.typeId, properties });
     assertEnforceableDependencySubscriptionScope({ typeId: input.typeId, properties });
     // M21.5 — the SECOND dependency-subscription authoring refusal, installed at this same choke
     // point for the same reasons and under the same `federationImport` exemption (see above and
@@ -853,6 +860,12 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   // un-editable until its scope is fixed — which is the remedy the error already names, and is the
   // fail-closed direction.
   if (!input.federationImport) {
+    // M22.5 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the two below are.
+    assertValidComponentSecurityDeclarations({
+      typeId: input.typeId,
+      properties: nextProperties
+    });
     assertEnforceableDependencySubscriptionScope({
       typeId: input.typeId,
       properties: nextProperties

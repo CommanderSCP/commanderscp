@@ -452,6 +452,36 @@ function scanExclusionsForDecision(
               packageKeys: resolved.vendorLatest.packageKeys
             }
           }
+        : {}),
+      // M22.5 (ADR-0033 §6 guard 2) — THE DECLARED VALUE, VERBATIM. This is the guard that makes
+      // D2's accepted escalation seam auditable: a reader of this Decision sees "component X
+      // asserted `egress: none`", not merely that a `declared_fact` clause was in force. It is also
+      // the only defence available against the residual hazard D2 cannot remove — the declaration is
+      // read live from a tenant-writable bag and can be flipped for the duration of one gate — since
+      // pinning the value here makes the flip visible after the fact.
+      ...(resolved.declaredFacts && resolved.declaredFacts.declarations.length > 0
+        ? {
+            declaredFacts: resolved.declaredFacts.declarations.map((d) => ({
+              key: d.key,
+              value: d.value
+            }))
+          }
+        : {}),
+      // M22.6 (ADR-0033 §11) — every applied exclusion must name "its clause, admitting tier,
+      // AUTHORITY and EXPIRY". The clause and the admitting tier are above; the authority and the
+      // expiry are here, and they are facts about the grant rather than about the policy that
+      // admitted its class. `expiresAt` is a STORED value, so two identical evaluations still
+      // compare equal and write suppression holds.
+      ...(resolved.approvedOverrides && resolved.approvedOverrides.grants.length > 0
+        ? {
+            approvedOverrides: resolved.approvedOverrides.grants.map((g) => ({
+              grantObjectId: g.grantObjectId,
+              vulnerabilityId: g.vulnerabilityId,
+              ...(g.pkgName ? { pkgName: g.pkgName } : {}),
+              tierObjectId: g.tierObjectId,
+              expiresAt: g.expiresAt
+            }))
+          }
         : {})
     }
   };

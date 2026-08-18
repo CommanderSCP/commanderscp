@@ -701,6 +701,27 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
  */
 describe("policy:write door census: the CENSUS is complete (source scan, no DB)", () => {
   /**
+   * LAYER 0 — A GUARD ON THE GUARD (M22.6, carried in on the rebase).
+   *
+   * Two cases above (`DOOR 3` and `PROPERTY`) are loops over `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`.
+   * A loop over an accidentally-empty — or accidentally-shrunk — set passes every one of its
+   * assertions VACUOUSLY, which is this repo's second most reliable defect class (a test green for
+   * the wrong reason). Pinning the membership means the set cannot quietly lose a member without a
+   * red test.
+   *
+   * Naming the known members also makes an ADDITION visible in review. A fourth type is driven
+   * against every door above automatically, which is the point of the loop — but a reader still
+   * sees it arrive here rather than inferring it from a passing suite.
+   */
+  it("LAYER 0: the governance-managed set is non-empty and still holds the three known types", () => {
+    const typeIds = [...GOVERNANCE_MANAGED_OBJECT_TYPE_IDS];
+    expect(typeIds.length).toBeGreaterThanOrEqual(3);
+    expect(typeIds).toEqual(
+      expect.arrayContaining(["policy", "control", "scan_override_grant"])
+    );
+  });
+
+  /**
    * LAYER 1's reviewed table: every exported callable of `graph/objects-repo.ts`, classified.
    *
    * `WRITE` entries become layer 3's scan pattern. Add an export to that module and this test names

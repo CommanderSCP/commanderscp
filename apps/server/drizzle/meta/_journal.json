@@ -526,6 +526,13 @@
       "when": 1788109137000,
       "tag": "0066_scan_exclusion_admissions",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1788119137000,
+      "tag": "0067_scan_declarations_and_override_grants",
+      "breakpoints": true
     }
   ]
 }

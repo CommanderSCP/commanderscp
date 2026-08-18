@@ -9,6 +9,8 @@ import {
   type PartialScanThreshold,
   type ScanExclusionClass,
   type ScanExclusionClause,
+  type ScanApprovedOverrides,
+  type ScanDeclaredFacts,
   type ScanRequirementTier,
   type ScanThresholdContribution,
   type ScanVendorLatestFacts
@@ -18,6 +20,11 @@ import {
   intersectVendorLatestFacts,
   resolveVendorLatestFactsForTarget
 } from "./scan-vendor-latest.js";
+import { intersectDeclaredFacts, resolveDeclaredFactsForTarget } from "./scan-declared-facts.js";
+import {
+  intersectApprovedOverrides,
+  resolveApprovedOverridesForTarget
+} from "./scan-override-grants.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import type { MatchedPolicy } from "./policy-model.js";
 import type { FiredPolicy } from "./evaluate.js";
@@ -660,7 +667,9 @@ export async function resolveEffectiveScanExclusionsForTargets(
   }
 
   const resolved = resolveEffectiveScanExclusions(targets);
-  return attachVendorLatestFacts(tx, input.orgId, targets, resolved, input.now);
+  const withVendor = await attachVendorLatestFacts(tx, input.orgId, targets, resolved, input.now);
+  const withDeclared = await attachDeclaredFacts(tx, input.orgId, targets, withVendor);
+  return attachApprovedOverrides(tx, input.orgId, targets, withDeclared, input.now);
 }
 
 /**
@@ -700,4 +709,62 @@ async function attachVendorLatestFacts(
   // `undefined` for an empty target set and we returned above). Carried anyway rather than asserted
   // away: an absent fact must remain "no vendor-pass", never a thrown gate.
   return vendorLatest ? { ...resolved, vendorLatest } : resolved;
+}
+
+/**
+ * M22.5 (owner decision D2) — resolve WHAT THE COMPONENT DECLARED, but only if a `declared_fact`
+ * clause actually survived the AND.
+ *
+ * SAME TWO-PHASE SHAPE AS THE VENDOR FACTS, and for the same measured reason: the admission algebra
+ * is pure and cheap, a property read per target is not, and the overwhelming majority of deployments
+ * have authored no exclusion at all. M22.2's promise to them is that behaviour is byte-identical to
+ * pre-M22, and that promise is kept by not asking the question.
+ *
+ * The facts are INTERSECTED across targets (ADR-0033 §3): a declaration is as much a loosening as a
+ * clause is, and one component's assertion must never excuse a sibling's findings.
+ */
+async function attachDeclaredFacts(
+  tx: TenantTx,
+  orgId: string,
+  targets: ScanExclusionTargetInput[],
+  resolved: EffectiveScanExclusions | undefined
+): Promise<EffectiveScanExclusions | undefined> {
+  if (!resolved) return undefined;
+  if (!resolved.clauses.some((c) => c.clause.class === "declared_fact")) return resolved;
+  const perTarget: ScanDeclaredFacts[] = [];
+  for (const target of targets) {
+    perTarget.push(await resolveDeclaredFactsForTarget(tx, orgId, target.targetObjectId));
+  }
+  const declaredFacts = intersectDeclaredFacts(perTarget);
+  return declaredFacts ? { ...resolved, declaredFacts } : resolved;
+}
+
+/**
+ * M22.6 (owner decisions D3/D4) — resolve the LIVE override grants, but only if an
+ * `approved_override` clause actually survived the AND.
+ *
+ * THE EXPIRY IS APPLIED HERE, AT READ TIME, and this is the only place it is applied. `at` is the
+ * gate's own instant, so a grant that expired one second ago is simply not in the result — there is
+ * no status to have been flipped and no sweeper to have failed to run.
+ *
+ * The gate-evaluation instant is deliberately the SAME `now` the vendor rule's freshness bound uses
+ * (injectable for tests, `new Date()` in production): two loosening dimensions reading two different
+ * clocks within one evaluation is a difference nobody would ever look for.
+ */
+async function attachApprovedOverrides(
+  tx: TenantTx,
+  orgId: string,
+  targets: ScanExclusionTargetInput[],
+  resolved: EffectiveScanExclusions | undefined,
+  now: Date | undefined
+): Promise<EffectiveScanExclusions | undefined> {
+  if (!resolved) return undefined;
+  if (!resolved.clauses.some((c) => c.clause.class === "approved_override")) return resolved;
+  const at = now ?? new Date();
+  const perTarget: ScanApprovedOverrides[] = [];
+  for (const target of targets) {
+    perTarget.push(await resolveApprovedOverridesForTarget(tx, orgId, target.targetObjectId, at));
+  }
+  const approvedOverrides = intersectApprovedOverrides(perTarget);
+  return approvedOverrides ? { ...resolved, approvedOverrides } : resolved;
 }
