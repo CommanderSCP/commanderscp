@@ -125,7 +125,7 @@ async function isMemberOf(
     SELECT subject_id AS id, depth FROM subject_expand
     WHERE subject_id = ${groupObjectId}::uuid OR depth >= ${WALK_TRUNCATION_PROBE_DEPTH}
   `);
-  // ADR-0035 asymmetry: a match found within the bound is valid regardless of what else the
+  // ADR-0037 asymmetry: a match found within the bound is valid regardless of what else the
   // frontier was doing — membership is a reachability fact. Only NON-membership can be fabricated
   // by a cut walk, and a fabricated "not a member" here makes a group-scoped REQUIRED policy
   // silently not apply: fail-open, the worst direction this repo knows (ADR-0026). So: match wins;

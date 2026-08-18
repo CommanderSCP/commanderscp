@@ -102,7 +102,7 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
   // pre-fix tree through the HTTP API: `POST /federation/hand-fill {typeId: "placement",
   // properties: {componentId: <a component at hop ten>, deploymentTargetId: <root target>}}` answered
   // 201 where `POST /placements` of the same pair answered the door's 400, and `containmentChain` of
-  // the hand-filled row then threw ADR-0035's 409 — a live placement no policy, freeze or gate could
+  // the hand-filled row then threw ADR-0037's 409 — a live placement no policy, freeze or gate could
   // scope, readable through its one-hop `domain_id` route (hand-fill passes no `domainId`, so
   // `createObject`'s org-root shortcut skips D1 too).
   //
@@ -117,7 +117,7 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
     throw forbidden(
       `object type '${input.typeId}' is identified by a pair of objects and cannot be hand-filled — ` +
         `use /api/v1/${input.typeId}s, which requires both endpoints, writes the derived edges ` +
-        `atomically and enforces the containment depth bound for both (ADR-0035)`
+        `atomically and enforces the containment depth bound for both (ADR-0037)`
     );
   }
   if (!isPeerBoundObjectType(input.typeId)) return;

@@ -16,13 +16,13 @@ import {
 } from "../test-support/harness.js";
 
 /**
- * THE DOOR INVARIANT (owner ruling 2026-08-18; ADR-0035 Consequences): after every write, every live
+ * THE DOOR INVARIANT (owner ruling 2026-08-18; ADR-0037 Consequences): after every write, every live
  * row's LONGEST containment route to the org root — over all four routes, the placement pair counted
  * — is at most `CONTAINMENT_WALK_MAX_DEPTH` (10) hops. A write that would leave ANY live row past it
  * is refused at the door with ONE message shape (400, "would exceed the supported containment depth
- * (10 hops, ADR-0035)"), the resulting depth named, the subtree named when the subtree is the reason.
+ * (10 hops, ADR-0037)"), the resulting depth named, the subtree named when the subtree is the reason.
  *
- * WHY. Since ADR-0035 every recursive walk refuses LOUDLY when a row exists past the bound. That made
+ * WHY. Since ADR-0037 every recursive walk refuses LOUDLY when a row exists past the bound. That made
  * a row AT hop eleven a row nobody could govern (`containmentChain` throws for it — policy matching,
  * freeze scoping, gate evaluation, ADR-0032 enablement) and, when the eleven-hop route was its ONLY
  * route, a row nobody could read, rename or move back either (RBAC's nothing-found becomes the loud
@@ -30,7 +30,7 @@ import {
  * at hop ten>}` answered 201, and the org-root admin's own next `GET` of the row and the `PATCH` that
  * would have moved it back both answered **409**. The doors were letting the walks' ceiling be
  * crossed by exactly one row, because the create-side check had been carved out against the
- * PRE-ADR-0035 silently-truncating walk (`graph/containment.ts`'s retired `childIsNew` reasoning).
+ * PRE-ADR-0037 silently-truncating walk (`graph/containment.ts`'s retired `childIsNew` reasoning).
  *
  * THE FOUR DOORS, and what each case here pins (see `assertContainmentDepthAdmits` for the shared
  * arithmetic `hops(parent) + 1 + height(child) > bound`):
@@ -71,7 +71,7 @@ import {
  *     npx vitest run --config vitest.integration.config.ts \
  *       src/graph/containment-depth-doors.integration.test.ts
  */
-describe("containment depth doors — no write may leave a live row past the bound (ADR-0035, 2026-08-18)", () => {
+describe("containment depth doors — no write may leave a live row past the bound (ADR-0037, 2026-08-18)", () => {
   let server: TestServer;
 
   beforeAll(async () => {
@@ -133,7 +133,7 @@ describe("containment depth doors — no write may leave a live row past the bou
   ): void {
     expect(res.status, res.body).toBe(400);
     expect(res.body).toContain(CONTAINMENT_DEPTH_DOOR_PHRASE);
-    expect(res.body).toContain(`(${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0035)`);
+    expect(res.body).toContain(`(${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0037)`);
     expect(res.body).toContain(parent);
     expect(res.body).toMatch(child);
     expect(res.body).toContain(`depth ${depth}`);
@@ -381,7 +381,7 @@ describe("containment depth doors — no write may leave a live row past the bou
 
     // Under d8: S at 9 (fits), A at 10 (fits), C at 11. Only the `contains` subtree makes this
     // refuse. Before the arm was pinned, neutering it turned this PATCH into a 200 and
-    // `containmentChain(C)` into ADR-0035's 409.
+    // `containmentChain(C)` into ADR-0037's 409.
     const refused = await call(org.adminToken, "PATCH", `/api/v1/services/${svcId}`, {
       domainId: d8
     });
@@ -736,7 +736,7 @@ describe("containment depth doors — no write may leave a live row past the bou
     // MEASURED before the fix: this answered 201 (D4 lives in `createPlacement`, which hand-fill
     // never reaches; hand-fill passes no `domainId`, so `createObject`'s org-root shortcut skipped
     // D1 too), `POST /placements` of the SAME pair answered the door's 400, and `containmentChain`
-    // of the hand-filled row threw ADR-0035's 409 while `GET /placements/{id}` answered 200.
+    // of the hand-filled row threw ADR-0037's 409 while `GET /placements/{id}` answered 200.
     const urn = `urn:scp:${org.orgId}:placement:hf-deep`;
     const refused = await call(org.adminToken, "POST", "/api/v1/federation/hand-fill", {
       peer: peerDomainId,

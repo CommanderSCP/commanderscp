@@ -167,7 +167,7 @@ const SINGULAR_SIDES: Record<string, { from: boolean; to: boolean }> = {
  *
  * A `contains` edge is containment ROUTE 2 (`graph/containment.ts`), so writing one adds a hop to
  * the `to` row's chain exactly as a `domain_id` write does — and to every row UNDER it. The DOOR
- * INVARIANT (owner ruling 2026-08-18, ADR-0035 Consequences: every live row reaches the org root
+ * INVARIANT (owner ruling 2026-08-18, ADR-0037 Consequences: every live row reaches the org root
  * within the bound over its longest route) therefore has to be enforced here as well as at the
  * `domain_id` doors, with the ONE shared arithmetic in `assertContainmentDepthAdmits`:
  * `hops(container) + 1 + height(to) > bound` refuses. RETIRED REASONING, kept so nobody reinstalls

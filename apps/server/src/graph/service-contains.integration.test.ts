@@ -45,7 +45,7 @@ import {
  * | refuse every `contains` edge | the CONTROL inside the mixed-loop test FAILS, plus most of this file |
  *
  * RENAMED 2026-08-18: `assertNoContainmentCycle` is now `assertContainsEdgeAdmissible` — the same
- * cycle question plus the DEPTH-BOUND question (owner ruling, ADR-0035 Consequences: no write may
+ * cycle question plus the DEPTH-BOUND question (owner ruling, ADR-0037 Consequences: no write may
  * leave a live row past `CONTAINMENT_WALK_MAX_DEPTH`). The rows above are kept under the old name as
  * the history they record; the depth half is pinned, per door and with mutation, in
  * `containment-depth-doors.integration.test.ts`, not here.

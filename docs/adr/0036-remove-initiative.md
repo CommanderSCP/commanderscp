@@ -1,6 +1,6 @@
-# ADR-0034 — Remove the `initiative` object type
+# ADR-0036 — Remove the `initiative` object type
 
-**Numbering note (2026-08-16):** written as ADR-0032 on the `claude/ui-review-worktree-efc42b` branch; main took 0032 for dependency subscriptions (#236, 2026-08-15) before this branch merged, so this ADR is **0034** (0033 is the loud depth bound). Every reference on the branch was updated in the same commit.
+**Numbering note (2026-08-16, updated 2026-08-18):** written as ADR-0032 on the `claude/ui-review-worktree-efc42b` branch; main took 0032 (dependency subscriptions, #236) and 0033 (scan exclusions) before this branch merged, so it became 0034 and is now **0036** — main's highest is 0033; **0034 is reserved in prose by `docs/proposals/governance-label-namespace.md`** ("An ADR (0034) follows owner approval", on main); 0035 is M23's (managed-execution credential + orphan protection); this branch holds **0036 remove-initiative, 0037 loud depth bound, 0038 containment governance**. Every in-branch reference was renumbered with anchored patterns only (`ADR-00NN`, `adr/00NN-`, filename — never a bare `00NN`, which collides with migration numbers). Whoever merges still re-reads `docs/adr` AND greps `docs/proposals` for reservations at that moment.
 
 **Status:** Accepted (owner instruction, 2026-08-10 — explicit, given after the charter and API-gate consequences below were put in front of them).
 **Supersedes:** the Initiative Model / Initiative Structure sections of PROJECT_CHARTER.md, and DESIGN.md §9.5's initiative half.

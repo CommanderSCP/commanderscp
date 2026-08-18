@@ -101,7 +101,7 @@ import { containmentChain } from "../graph/containment.js";
  * sentence: which rung is enabled, at which tier and name, and which END the actor lacks the
  * permission at. The out-of-band shape that WOULD persist a Decision on a refusal
  * (`federation/promotion-repo.ts`: record in a fresh committed transaction, then throw) needs a `Db`
- * handle, which no repo-level door has. OWNER RULING 2026-08-18 (ADR-0036 §3): door-level
+ * handle, which no repo-level door has. OWNER RULING 2026-08-18 (ADR-0038 §3): door-level
  * AUTHORIZATION refusals are sentence-only — consistent with every other permission 403 in the
  * system (object:write, policy:write, #244's own move refusals carry none); charter principle 6's
  * `decision_id` is for ENGINE VERDICTS (gates, policies), which these are not. Not an open question
@@ -226,7 +226,7 @@ function toRung(row: {
  *
  * Walks `containmentChain` — the SAME walk the authorization scope expansion and the policy matcher
  * use, so a rung can never describe a containment relationship the rest of the system does not
- * believe in — and joins the rung table onto it. Loud on the depth bound (ADR-0035): a chain that
+ * believe in — and joins the rung table onto it. Loud on the depth bound (ADR-0037): a chain that
  * exceeds the bound throws rather than answering "not enforced", because failing OPEN here would
  * silently un-govern exactly the deep subtrees an org bothered to put a rung on.
  *

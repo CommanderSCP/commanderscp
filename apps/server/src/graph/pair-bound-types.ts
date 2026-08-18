@@ -27,7 +27,7 @@
  *   - federation hand-fill (`federation/handfill-repo.ts`) — added 2026-08-18: it wears
  *     `federationImport`, so it read as an import path, but its `typeId` and `properties` are a local
  *     operator's free-form request; PROVEN to hand-fill an edgeless placement that also sat past the
- *     ADR-0035 depth bound (the pair door lives only in `graph/placements-repo.ts`, which hand-fill
+ *     ADR-0037 depth bound (the pair door lives only in `graph/placements-repo.ts`, which hand-fill
  *     never reaches)
  *
  * BEFORE ADDING A SIXTH DOOR, RE-RUN THE CENSUS: `grep -rna "createObject(" apps/server/src` and ask

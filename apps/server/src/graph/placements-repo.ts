@@ -188,7 +188,7 @@ export async function createPlacement(
     urn = `${baseUrn}-${id}`;
   }
 
-  // CONTAINMENT ROUTES 3 AND 4 — THE PAIR DOOR (owner ruling 2026-08-18, ADR-0035 Consequences).
+  // CONTAINMENT ROUTES 3 AND 4 — THE PAIR DOOR (owner ruling 2026-08-18, ADR-0037 Consequences).
   //
   // A placement is CONTAINED by both endpoints it names (`graph/containment.ts` `placementParentsSql`
   // — read from these very properties), so declaring one adds a hop under the component AND under
@@ -200,7 +200,7 @@ export async function createPlacement(
   // component at hop ten>, deploymentTarget: <root target>}` answered 201, and `containmentChain` of
   // the new placement then threw — a placement no policy, freeze or gate could ever scope.
   //
-  // `authorize` above already 409s (ADR-0035's deny-probe) when an endpoint is itself PAST the bound
+  // `authorize` above already 409s (ADR-0037's deny-probe) when an endpoint is itself PAST the bound
   // and no grant is found before it; it passes at exactly the bound, which is the case this closes.
   // An endpoint past the bound that a short route made readable is the conversion branch's case
   // (`containmentParentChainForDoor` turns the walk's 409 into this door's 400).

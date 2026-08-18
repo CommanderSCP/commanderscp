@@ -237,12 +237,12 @@ export interface ChainEntry {
 export const CONTAINER_TYPES = ["service", "assembly"] as const;
 
 /**
- * THE ONE DEPTH BOUND every recursive graph walk shares (ADR-0035) — and the reason it is loud.
+ * THE ONE DEPTH BOUND every recursive graph walk shares (ADR-0037) — and the reason it is loud.
  *
  * Six sites recurse with this bound (filterless census, 2026-08-13): this file's
  * `containmentChain`, `named-queries.ts`'s `groupByDomain`, `policy-resolve.ts`'s `isMemberOf`,
  * and `authz/resolve.ts`'s three walks (two `member_of` expansions + `scopeExpandCte`, the
- * hand-synced copy this file's header warns about). Before ADR-0035 each carried a literal `10`
+ * hand-synced copy this file's header warns about). Before ADR-0037 each carried a literal `10`
  * and STOPPED EXPANDING silently at it — and `containmentChain`'s depth inversion then presented
  * the outermost SURVIVOR as the org root, so an over-deep chain didn't look broken, it looked
  * like a shallower org whose root was a mid-level domain. Org-scoped required policies silently
@@ -255,10 +255,10 @@ export const CONTAINER_TYPES = ["service", "assembly"] as const;
  * single call site instead is the six-copies bug this constant exists to end.
  *
  * It is a real ceiling, not a formality, and the WRITE DOORS are what keep every live row under it
- * (owner ruling 2026-08-18, ADR-0035 Consequences): `assertRootedContainmentParent`,
+ * (owner ruling 2026-08-18, ADR-0037 Consequences): `assertRootedContainmentParent`,
  * `relationships-repo.ts`'s `contains` door and `placements-repo.ts`'s pair door all refuse any
  * LOCAL write that would leave a live row past the bound — see {@link assertContainmentDepthAdmits}
- * for the arithmetic. The federation-import paths are CARVED OUT (ADR-0035 Consequences: the
+ * for the arithmetic. The federation-import paths are CARVED OUT (ADR-0037 Consequences: the
  * receiver does not referee a peer-authored containment, and one refusal there is a per-CHANNEL
  * failure for a per-row fault), so a replica can still land past the bound; the doors convert the
  * walk's loud refusal into their own 400 for a local write UNDER such a row (legacy or imported)
@@ -285,7 +285,7 @@ export const CONTAINMENT_DEPTH_DOOR_PHRASE = "would exceed the supported contain
  *  operators meet one explanation, not six dialects. */
 export function walkDepthExceeded(what: string, remedy: string): Error {
   return conflict(
-    `${what} ${WALK_DEPTH_EXCEEDED_PHRASE} (${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0035). ` +
+    `${what} ${WALK_DEPTH_EXCEEDED_PHRASE} (${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0037). ` +
       `Rather than answer from a silently truncated walk — which is how org-scoped policies stop ` +
       `matching with no error — this operation refuses. ${remedy}`
   );
@@ -351,7 +351,7 @@ export async function containmentChain(
         --     component, so an assembly-anchored scan ceiling ENFORCES correctly (the merge is an
         --     order-independent MIN that ignores labels) and MISREPORTS its tier, breaking
         --     ADR-0016 section 5's promise that a block can name the tier that bound it.
-        -- Both are fixed in M22 (ADR-0035 section 5). If you add a third container level, grep for
+        -- Both are fixed in M22 (ADR-0037 section 5). If you add a third container level, grep for
         -- every hardcoded list of rungs before trusting this comment's "for free".
         -- The alias stays svc because renaming it is churn, not because the parent must be a service.
         -- (No backticks in this comment: it lives inside a JS template literal.)
@@ -372,7 +372,7 @@ export async function containmentChain(
         JOIN objects parent_o ON parent_o.id = pp.parent_id AND parent_o.org_id = ${orgId}
           AND parent_o.deleted_at IS NULL
       ) parent
-      -- ADR-0035: expand ONE level past the shared bound. A row landing at the probe depth is the
+      -- ADR-0037: expand ONE level past the shared bound. A row landing at the probe depth is the
       -- truncation detector — it can only exist if a row at the bound still had a live parent,
       -- i.e. the chain was about to be cut rather than complete. The throw below is what keeps
       -- the "index 0 = org root" inversion honest: a truncated chain would otherwise present a
@@ -518,14 +518,14 @@ export async function containmentSubtreeExceeds(
 
 /**
  * The parent's chain, AS A DOOR NEEDS IT: the walk plus the number of hops the parent sits from the
- * org root, with the walk's own ADR-0035 refusal converted into the door's 400.
+ * org root, with the walk's own ADR-0037 refusal converted into the door's 400.
  *
  * `containmentChain` INVERTS depth on the way out (0 = topmost ancestor found, max = the target
  * itself, which the recursive walk reached at raw depth 0), so the largest returned depth is exactly
  * how many hops the walk took — the LONGEST route to the root when the chain is a DAG, which is the
  * route the invariant counts.
  *
- * THE CONVERSION BRANCH: since ADR-0035 the walk REFUSES past the bound instead of returning a
+ * THE CONVERSION BRANCH: since ADR-0037 the walk REFUSES past the bound instead of returning a
  * truncated chain. A parent whose own chain is already past it is a row that was planted below the
  * doors (legacy, or imported under the `federationImport` carve-out); the door answers with its own
  * 400 that names the container and what a row under it would cost, rather than let the walk's 409
@@ -554,7 +554,7 @@ export async function containmentParentChainForDoor(
     throw badRequest(
       `object '${childId}' cannot be contained by '${parentId}': that container's own ` +
         `containment chain ${WALK_DEPTH_EXCEEDED_PHRASE} (${CONTAINMENT_WALK_MAX_DEPTH} hops, ` +
-        `ADR-0035), so a row under it would sit past the bound on that route and every walk that ` +
+        `ADR-0037), so a row under it would sit past the bound on that route and every walk that ` +
         `reads it — authority, governance, gates — refuses it. Refused rather than risked. Move ` +
         `the container nearer the root first.`
     );
@@ -564,14 +564,14 @@ export async function containmentParentChainForDoor(
 }
 
 /**
- * THE DOOR INVARIANT'S ARITHMETIC, in one place (owner ruling 2026-08-18; ADR-0035 Consequences):
+ * THE DOOR INVARIANT'S ARITHMETIC, in one place (owner ruling 2026-08-18; ADR-0037 Consequences):
  *
  *     hops(parent) + 1 + height(child) > CONTAINMENT_WALK_MAX_DEPTH   =>   refuse (400)
  *
  * The child would sit at `hops(parent) + 1`; its deepest live descendant (over the inverse of the
  * same routes, {@link containmentSubtreeExceeds}) at `hops(parent) + 1 + height(child)`. Every live
  * row must reach the org root within the bound over its LONGEST route, or the walks that read it
- * refuse loudly (ADR-0035) — so a write that would leave any row past it is refused at the door,
+ * refuse loudly (ADR-0037) — so a write that would leave any row past it is refused at the door,
  * where it is one 400 with a remedy, instead of later, where it is an ungovernable row.
  *
  * Called by all three doors that add a containment hop — `assertRootedContainmentParent` (route 1,
@@ -631,7 +631,7 @@ function containmentDepthRefusal(input: {
   return badRequest(
     `object '${input.childId}' cannot be contained by '${input.parentId}': it would sit at depth ` +
       `${input.rowDepth}${subtree}, which ${CONTAINMENT_DEPTH_DOOR_PHRASE} ` +
-      `(${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0035). Every live row must reach the org root ` +
+      `(${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0037). Every live row must reach the org root ` +
       `within ${CONTAINMENT_WALK_MAX_DEPTH} hops over every containment route, or the walks that ` +
       `read it — authority, governance, gates — refuse it loudly. ${remedy}`
   );
@@ -659,7 +659,7 @@ function containmentDepthRefusal(input: {
  *     (route 2), so `service -> component -> service` is a cycle even though only one hop is a
  *     `domain_id`. Authority expands along exactly these routes, so a loop in any of them is a loop.
  *  2. **the write would put a live row PAST `CONTAINMENT_WALK_MAX_DEPTH`** — the DOOR INVARIANT
- *     (owner ruling 2026-08-18, ADR-0035 Consequences): after every write, every live row's LONGEST
+ *     (owner ruling 2026-08-18, ADR-0037 Consequences): after every write, every live row's LONGEST
  *     containment route to the org root — over all four routes, the pair counted — is at most
  *     `CONTAINMENT_WALK_MAX_DEPTH` hops. The row being parented sits at `hops(parent) + 1`; if it
  *     already has a subtree, that subtree comes with it, so the deepest row after the write sits at
@@ -667,7 +667,7 @@ function containmentDepthRefusal(input: {
  *     {@link assertContainmentDepthAdmits} is the one place the arithmetic lives, and
  *     `relationships-repo.ts` (a `contains` edge) and `placements-repo.ts` (a placement's pair) call
  *     the same function, so the three ways a hop is added share one rule and one message.
- *     Why it is an invariant and not caution: since ADR-0035 EVERY walk of a row past the bound
+ *     Why it is an invariant and not caution: since ADR-0037 EVERY walk of a row past the bound
  *     refuses loudly (RBAC when no grant is found before the bound, policy matching, freeze and gate
  *     scoping, ADR-0032 enablement), so a row planted at hop eleven is a row nobody can govern and —
  *     when the eleven-hop route is its only one — nobody can read, rename or move back, the org
@@ -692,7 +692,7 @@ function containmentDepthRefusal(input: {
  * RETIRED REASONING, kept so nobody reinstalls it: an earlier version of this block skipped refusal
  * 2 on a create too, arguing that it "exists solely because a truncated walk leaves 1's answer
  * unproven" and that running it would "move the documented nesting ceiling from ten levels to
- * nine". Both halves were written against the PRE-ADR-0035 walk, which silently truncated at the
+ * nine". Both halves were written against the PRE-ADR-0037 walk, which silently truncated at the
  * bound; under the loud walk a parent at exactly ten hops has a COMPLETE chain, and the create that
  * skip admitted was precisely the one that planted an ungovernable row at hop eleven. Ten hops
  * remains the ceiling — the org root within ten hops of EVERY live row — the door simply has to

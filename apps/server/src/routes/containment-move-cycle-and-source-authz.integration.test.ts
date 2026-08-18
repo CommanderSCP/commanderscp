@@ -244,7 +244,7 @@ describe("a containment move may not build a cycle, and is authorized at both en
     //   destination --contains---> deepService -...-> movable     (10 hops; the root behind it at 11)
     //
     // So `the org root is missing` does not fire, and yet the move WOULD close a real cycle whose
-    // proof lies at the edge of the bound. Under ADR-0035 the walk does not truncate silently: it
+    // proof lies at the edge of the bound. Under ADR-0037 the walk does not truncate silently: it
     // probes one level PAST the bound and REFUSES when anything is there — and the containment-
     // parent door turns that refusal into its own 400 (`containmentParentChainForDoor`'s conversion
     // branch: "a row under it would sit past the bound on that route"). Delete that conversion —
@@ -263,7 +263,7 @@ describe("a containment move may not build a cycle, and is authorized at both en
     //
     // Nine levels under `movable`: `deep-9`'s own chain is exactly ten hops — the ceiling, complete
     // and readable — so a row under it would sit at hop ELEVEN. Since the owner ruling of 2026-08-18
-    // (ADR-0035 Consequences; `graph/containment-depth-doors.integration.test.ts`) NO door will
+    // (ADR-0037 Consequences; `graph/containment-depth-doors.integration.test.ts`) NO door will
     // write that row: `POST /components {service: deep-9}` — the way this fixture used to be built —
     // now answers 400 from the `contains` door. The hop-eleven shape is therefore PLANTED below the
     // doors, exactly as the refusal-3 case above plants its tombstone: the component is created
@@ -324,7 +324,7 @@ describe("a containment move may not build a cycle, and is authorized at both en
     const res = await patchService(org.adminToken, movable, { domainId: destinationId });
     expect(res.status, res.body).toBe(400);
     // The door's OWN sentence, carrying the walk's: the depth bound and the ADR are named, so an
-    // operator meets one story from either side (ADR-0035 pins the phrase; M22 pins the status).
+    // operator meets one story from either side (ADR-0037 pins the phrase; M22 pins the status).
     // This is the ONE door refusal that carries the WALK's phrase — every other depth refusal at a
     // door says "would exceed" (see `containment.ts` CONTAINMENT_DEPTH_DOOR_PHRASE).
     expect(res.body).toContain("exceeds the supported containment depth");

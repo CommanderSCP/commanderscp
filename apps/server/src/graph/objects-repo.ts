@@ -299,7 +299,7 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // refuses). Hence `childIsNew` — refusal 1 skipped, refusals 2 and 3 run, refusal 2 with height 0
   // and therefore without a downward walk; `containment.ts` carries the arithmetic and the retired
   // "running 2 on a create lowers a documented limit" reasoning, which was written against the
-  // pre-ADR-0035 truncating walk.
+  // pre-ADR-0037 truncating walk.
   //
   // MEASURED on the real doors before this call existed, not reasoned about: soft-delete a domain,
   // then `POST /services {domainId: <a service still inside it>}` answered **201**, and the ORG-ROOT

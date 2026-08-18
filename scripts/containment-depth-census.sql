@@ -1,4 +1,4 @@
--- Containment depth census (ADR-0035 + the door invariant of 2026-08-18).
+-- Containment depth census (ADR-0037 + the door invariant of 2026-08-18).
 --
 -- Answers, for ONE database: how many LIVE rows sit past CONTAINMENT_WALK_MAX_DEPTH (10 hops) on
 -- their longest containment route, and how deep the deepest route is. Since 2026-08-18 no write

@@ -194,9 +194,9 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
   });
 
   // -----------------------------------------------------------------------------------------
-  // AT THE BOUND — the ADR-0035 loudness contract, flipped DELIBERATELY from this test's first
+  // AT THE BOUND — the ADR-0037 loudness contract, flipped DELIBERATELY from this test's first
   // life as a hazard pin (M21 crossover, 2026-08-13). Every recursive walk shares one bound
-  // (CONTAINMENT_WALK_MAX_DEPTH, six census sites), and before ADR-0035 each STOPPED EXPANDING
+  // (CONTAINMENT_WALK_MAX_DEPTH, six census sites), and before ADR-0037 each STOPPED EXPANDING
   // silently: authz refused deep domain creates with a permission-shaped 403 naming neither
   // depth nor bound, while a component created under the deepest allowed domain got a chain
   // whose depth inversion presented a mid-level domain at "org root" — org-scoped required
@@ -205,7 +205,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
   // with the depth named. This test pins that contract from the operator's side.
   // -----------------------------------------------------------------------------------------
 
-  it("AT THE BOUND (ADR-0035): deep creates refuse with the DEPTH named, and a chain that would truncate refuses instead of relabeling", async () => {
+  it("AT THE BOUND (ADR-0037): deep creates refuse with the DEPTH named, and a chain that would truncate refuses instead of relabeling", async () => {
     // CONTROL first — a shallow nesting, well under the bound: the convention holds and the org
     // root genuinely sits at index 0. Without this, the deep case could "pass" against a harness
     // where the convention never held at all (vacuous-test discipline).
@@ -229,7 +229,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     ).toBe("organization");
     expect(control.some((r) => r.id === shallowTop.id)).toBe(true);
 
-    // Nest domains until the API refuses. Pre-ADR-0035 this refusal was a permission-shaped 403
+    // Nest domains until the API refuses. Pre-ADR-0037 this refusal was a permission-shaped 403
     // ("subject … lacks 'object:write' at scope …") naming neither depth nor bound — an operator
     // met it and debugged RBAC. Now the deny-path probe (authz/resolve.ts
     // assertDenyNotTruncated) converts a refusal it cannot vouch for into the loud depth error.
@@ -259,9 +259,9 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
         : String(refusal);
     expect(
       refusalDetail,
-      "ADR-0035: the refusal must NAME the depth bound, not masquerade as a missing role"
+      "ADR-0037: the refusal must NAME the depth bound, not masquerade as a missing role"
     ).toContain("supported containment depth");
-    expect(refusalDetail).toContain("ADR-0035");
+    expect(refusalDetail).toContain("ADR-0037");
     expect(domains.length).toBeGreaterThanOrEqual(8);
 
     // The other half of the old hazard: a component created under the deepest allowed domain used
@@ -270,7 +270,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     // would exceed the bound is refused LOUDLY AT CREATE, naming the depth, and the deepest one
     // whose chain FITS must still produce the honest shape (organization at index 0).
     //
-    // FLIPPED 2026-08-18 (owner ruling; ADR-0035 Consequences; `containment-depth-doors.
+    // FLIPPED 2026-08-18 (owner ruling; ADR-0037 Consequences; `containment-depth-doors.
     // integration.test.ts`). This loop used to tolerate EITHER arm — a create refused loudly, OR a
     // create that succeeded and whose chain read then threw — because before the doors counted the
     // row they were writing, a component under the deepest allowed domain WAS created (201) and

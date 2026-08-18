@@ -1,6 +1,6 @@
 # Governance reach is tenant-writable — recording the move, and the open question of refusing it
 
-**Status:** v0.2 — §5 (detection) shipped by #249; **§4's owner decision is taken and built (§9, 2026-08-18) — [ADR-0036](../adr/0036-containment-governance.md) records it** (governance:move lattice, container-delete guard, sentence-only door refusals).
+**Status:** v0.2 — §5 (detection) shipped by #249; **§4's owner decision is taken and built (§9, 2026-08-18) — [ADR-0038](../adr/0038-containment-governance.md) records it** (governance:move lattice, container-delete guard, sentence-only door refusals).
 
 **Relates to:** [governance-label-namespace.md](governance-label-namespace.md) §7a/§8.8 — this is the task that document filed and said "should be sequenced next"; [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) ("authorization at the door, invariant at the repo" — this lands on the other side of that split, and §6 says why); [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (the placement pair, containment routes 3 and 4); [ADR-0028](../adr/0028-decision-retention.md) (persist-on-change, the constraint §5c is built to satisfy).
 
@@ -182,7 +182,7 @@ The two rulings as relayed (owner's words where they exist):
 
 **Storage (peer-suggested shape, taken):** `governance_move_rungs (org_id, subject_object_id PK, tier text — the literal at write time, org|containment_domain|service|assembly — enabled_by_object_id, enabled_at, decision_id)`; the instance rung is a separate singleton `governance_move_instance_rung (id='default' CHECK, enabled bool, updated_at)` with the unlock table's RLS/grant shape (tenant SELECT-only, FORCE RLS, operator-token `PUT`, raw admin pool). One migration, `0079` (`when` > 1788139911505; renumbered at merge by the second-to-merge rule).
 
-**Resolution (one function, reused by doors, read route, CLI, UI):** `resolveGovernanceMoveEnforcement(tx, orgId, {objectId})` → `{ enforced, instance: {enabled}, rungs: [{tier, subjectObjectId, name, enabledAt, enabledBy}] }` walking `containmentChain` (loud, ADR-0035) and joining the rung table by id; tier labels read from the stored literal (explainability only, never recomputed). Doors call it for source and destination and OR the two.
+**Resolution (one function, reused by doors, read route, CLI, UI):** `resolveGovernanceMoveEnforcement(tx, orgId, {objectId})` → `{ enforced, instance: {enabled}, rungs: [{tier, subjectObjectId, name, enabledAt, enabledBy}] }` walking `containmentChain` (loud, ADR-0037) and joining the rung table by id; tier labels read from the stored literal (explainability only, never recomputed). Doors call it for source and destination and OR the two.
 
 **Doors (authorize at the door — the invariant/authorization split M24 settled):** (a) `resolveDeclaredContainmentParent` — after its `object:write` pair, if enforcement applies, `authorize(governance:move)` at the moved object and at the destination (no exemptions); (b) the **apply-path twin** in `plans-repo.ts` adds the same two `ScopeCheck`s (a door-only fix ships inert on IaC — proven by mutation in #244); (c) `setComponentService` and generic `/relationships` `POST`/`DELETE` of type `contains` — the moved object is the `to` (child), the destination the `from` (container); on `DELETE` the destination is the org root (the child falls back to its `domain_id` route). Federation import / overlay / hand-fill are **carved out and commented** (synthetic or drained subjects; the receiver does not referee). Detection stays where it is.
 
@@ -192,7 +192,7 @@ The two rulings as relayed (owner's words where they exist):
 
 **Refusal shape (one sentence, both doors):** *"moving '<X>' is governed here — governance:move enforcement is enabled at <tier '<name>'> (and above); '<subject>' lacks 'governance:move' at <the object | the destination>. Ask an Administrator to move it, or disable enforcement at that rung (policy:write)."* 403 with `decision_id` (superseded — see the note below).
 
-> **SHIPPED WITHOUT `decision_id` — settled by owner ruling 2026-08-18 ([ADR-0036 §3](../adr/0036-containment-governance.md)).** Every door
+> **SHIPPED WITHOUT `decision_id` — settled by owner ruling 2026-08-18 ([ADR-0038 §3](../adr/0038-containment-governance.md)).** Every door
 > throws from inside the caller's `withTenantTx`, so a Decision written there is rolled back with the
 > refusal it explains and the id would name a row that does not exist. The refusal carries the whole
 > explanation in its sentence (which rung, which tier and name, which END the actor lacks the
