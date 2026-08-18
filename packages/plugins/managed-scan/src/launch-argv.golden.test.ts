@@ -294,6 +294,64 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
   });
 
+  it("THE FOURTH COMBINATION — SCAP content but NO Trivy DB: TWO copies in and the OTHER single `-e`", async () => {
+    // The `-e` pairs and the copy-INs are INDEPENDENTLY conditional, so the two preload flags span
+    // four combinations: neither (test 1), both (test 2), DB-only (test 3) — and this one, which was
+    // the only one left unpinned. Without it, a launcher that emitted `SCP_SCAN_DB_DIR` whenever ANY
+    // preload was present, or that copied `/work/db` from `scanScapDir`, passes all three others: no
+    // test above ever exercises `scanScapDir` WITHOUT `scanDbDir`, so the second condition is only
+    // ever observed while the first is also true. Rare in production (SSG has no OCI upstream to
+    // refresh, §13.3b's documented asymmetry) but reachable — an air-gapped site that seeded SSG
+    // content by hand and lets Trivy use the image's own bundled DB is exactly this shape.
+    //
+    // It also pins the `""` positional arm: openscap with neither `profile` nor `datastream` puts
+    // TWO EMPTY STRING OPERANDS on the command line, which is what lets run.sh's `${2:-default}`
+    // form apply its own defaults. A launcher that dropped empty operands instead of passing them
+    // would shift `datastream` into `profile`'s position and nothing else would notice.
+    const inputDir = join(scratch, "oci");
+    const outputDir = join(scratch, "out");
+    const scanScapDir = join(scratch, "ssg");
+    const plugin = createManagedScanExecutorPlugin();
+    const ref = await plugin.trigger(ctx(), {
+      kind: "custom",
+      idempotencyKey: "k3b",
+      parameters: { method: "openscap", inputDir, outputDir, scanScapDir }
+    });
+
+    expect(calls, "the managed-scan SCAP-only Docker launch argv changed").toStrictEqual([
+      {
+        file: "docker",
+        args: [
+          "create",
+          "--network",
+          "none",
+          "-e",
+          "SCP_SCAN_SCAP_DIR=/work/scap",
+          "scp-runner-scan:vetted",
+          "openscap",
+          "",
+          ""
+        ],
+        opts: RUN_OPTS
+      },
+      {
+        file: "docker",
+        args: ["cp", `${inputDir}/.`, "scan-container-abc:/work/image"],
+        opts: RUN_OPTS
+      },
+      {
+        file: "docker",
+        args: ["cp", `${scanScapDir}/.`, "scan-container-abc:/work/scap"],
+        opts: RUN_OPTS
+      },
+      { file: "docker", args: ["start", "-a", "scan-container-abc"], opts: RUN_OPTS },
+      { file: "docker", args: ["cp", "scan-container-abc:/work/out/.", outputDir], opts: RUN_OPTS },
+      { file: "docker", args: ["rm", "-f", "scan-container-abc"], opts: RM_OPTS }
+    ]);
+
+    expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
+  });
+
   it("FAILURE — `start` rejects, and NO evidence is copied out; only `rm` follows", async () => {
     // THE ASYMMETRY, MEASURED. managed-iac copies its workspace out even after a failed `start`;
     // managed-scan does not, because a failed scan must produce NO evidence (fail-closed — E6 then
