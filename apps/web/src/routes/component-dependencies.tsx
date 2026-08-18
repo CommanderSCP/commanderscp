@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CircleHelp, Package } from "lucide-react";
 import type {
@@ -12,6 +13,7 @@ import type {
   DependencySubscriptionDelivery,
   DependencySubscriptionGranularity,
   DependencySubscriptionUnlock,
+  DependencyLineProducerView,
   CreateObjectRequest,
   GraphObject,
   InstanceRole
@@ -23,6 +25,7 @@ import { useIdOrUrnParam } from "../lib/use-route-params";
 import {
   componentDependencyBumpsKey,
   componentDependencyInventoryKey,
+  dependencyProducersKey,
   dependencySubscriptionUnlockKey
 } from "../lib/query-client";
 import { cn, focusRing } from "../lib/utils";
@@ -1072,6 +1075,61 @@ export function BumpsSection({
 }
 
 // -------------------------------------------------------------------------------------------
+// The "Produces" strip (dependency-subscription-ui.md §12.4, owner decision 2026-08-18 Q2).
+// -------------------------------------------------------------------------------------------
+
+/**
+ * "This component is the declared producer of `npm @acme/lib`, … — Admin › Dependencies." Rendered
+ * ONLY when the org's producer list (`GET /dependencies/producers`, filtered by the page to
+ * `producerObjectId === component.id`) is non-empty for this component: it is the one place a TEAM
+ * sees that their component's releases now drive other teams' bumps without visiting Admin. Nothing
+ * is rendered while the read is pending or when it holds no row for this component — the strip
+ * asserts a fact, and its absence asserts nothing. A FAILED read is stated (an amber `unknown`
+ * pill), never painted as "not a producer".
+ */
+export function ProducesStrip({
+  produces
+}: {
+  produces: ReadState<readonly DependencyLineProducerView[]>;
+}): React.JSX.Element | null {
+  if (produces.status === "pending") return null;
+  if (produces.status === "error") {
+    return (
+      <Badge
+        variant="unknown"
+        icon={CircleHelp}
+        title={`Whether this component is a declared producer could not be read: ${queryErrorMessage(produces.error)}`}
+        data-testid="produces-unreadable"
+      >
+        Producer declarations could not be read
+      </Badge>
+    );
+  }
+  if (produces.data.length === 0) return null;
+  return (
+    <p className="text-sm text-slate-700" data-testid="produces-strip">
+      This component is the declared producer of{" "}
+      {produces.data.map((p, i) => (
+        <span key={`${p.ecosystem} ${p.coordinate}`}>
+          {i > 0 ? ", " : ""}
+          <span className="font-mono text-xs text-slate-900" data-testid="produces-coordinate">
+            {p.ecosystem} {p.coordinate}
+          </span>
+        </span>
+      ))}{" "}
+      —{" "}
+      <Link
+        to="/admin/dependencies"
+        className={cn("rounded text-slate-900 underline", focusRing)}
+        data-testid="produces-admin-link"
+      >
+        Admin › Dependencies
+      </Link>
+    </p>
+  );
+}
+
+// -------------------------------------------------------------------------------------------
 // The view (provider-free) and the page (hooks).
 // -------------------------------------------------------------------------------------------
 
@@ -1097,6 +1155,7 @@ export function DependenciesView({
   unlock,
   inventory,
   bumps,
+  produces,
   instanceRole,
   onWrite,
   writeState
@@ -1104,6 +1163,9 @@ export function DependenciesView({
   unlock: ReadState<DependencySubscriptionUnlock>;
   inventory: ComponentDependencyInventoryResponse;
   bumps: ReadState<ComponentDependencyBumpsResponse>;
+  /** The org's producer declarations FOR THIS COMPONENT (§12.4) — filtered by the page; absent
+   *  (older call sites, tests) renders no strip. */
+  produces?: ReadState<readonly DependencyLineProducerView[]>;
   instanceRole: InstanceRole | undefined;
   onWrite: (request: CreateObjectRequest, done: () => void) => void;
   writeState: { busy: boolean; error: unknown; reset: () => void; lastSuccess: string | null };
@@ -1120,6 +1182,8 @@ export function DependenciesView({
         title={<span data-testid="component-name">{component.name}</span>}
         description="Dependencies — declared major lines, their heads, and this component's dependency subscriptions."
       />
+
+      {produces ? <ProducesStrip produces={produces} /> : null}
 
       <Card size="compact">
         <CardHeader>
@@ -1335,6 +1399,13 @@ export function ComponentDependenciesPage(): React.JSX.Element {
     queryFn: () => client.dependencySubscriptions.bumps(idOrUrn!, { limit: 100 }),
     enabled: Boolean(idOrUrn) && instanceRole === "commander"
   });
+  // The org's producer declarations (§12.4) — ONE unpaged org list, filtered below to this
+  // component; the same role gate as every other read here (an outpost issues NO calls).
+  const producersQuery = useQuery({
+    queryKey: dependencyProducersKey(),
+    queryFn: () => client.dependencyProducers.list(),
+    enabled: instanceRole === "commander"
+  });
 
   const write = useMutation({
     mutationFn: (request: CreateObjectRequest): Promise<GraphObject> =>
@@ -1384,6 +1455,16 @@ export function ComponentDependenciesPage(): React.JSX.Element {
     : bumpsQuery.data
       ? { status: "ok", data: bumpsQuery.data }
       : { status: "pending" };
+  const produces: ReadState<readonly DependencyLineProducerView[]> = producersQuery.error
+    ? { status: "error", error: producersQuery.error }
+    : producersQuery.data
+      ? {
+          status: "ok",
+          data: producersQuery.data.producers.filter(
+            (p) => p.producerObjectId === inventory.component.id
+          )
+        }
+      : { status: "pending" };
 
   return (
     <>
@@ -1405,6 +1486,7 @@ export function ComponentDependenciesPage(): React.JSX.Element {
         unlock={unlock}
         inventory={inventory}
         bumps={bumps}
+        produces={produces}
         instanceRole={instanceRole}
         onWrite={(request, done) => {
           setLastSuccess(null);

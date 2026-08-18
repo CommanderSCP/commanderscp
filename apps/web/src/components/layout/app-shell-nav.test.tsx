@@ -104,6 +104,15 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     }
   });
 
+  /** Admin › Dependencies (dependency-subscription-ui.md §12.2) — the org's dependency PRODUCER
+   *  declarations. Under Admin on the COMMANDER table (the outpost half of this pin is below). */
+  it("links to Admin › Dependencies (/admin/dependencies), under the Admin section", () => {
+    expect(navHrefs(html)).toContain("/admin/dependencies");
+    expect(html).toContain(">Dependencies</a>");
+    const adminSection = COMMANDER_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/dependencies");
+  });
+
   /** G5 (outpost-ui.md §4 close) — "Setup" lives under the pre-existing FEDERATION section
    *  (with Outposts and Federation status), not a new heading; both survive alongside it. */
   it("links to the setup landing, under the pre-existing Federation section", () => {
@@ -172,6 +181,17 @@ describe("app nav: the OUTPOST site is the small one (outpost-ui.md §9)", () =>
     }
   });
 
+  /** Dependency automation is COMMANDER-ONLY (owner rule 2026-08-17): the outpost site never
+   *  links to the producer declarations page (a direct URL there renders the "managed at the
+   *  commander" pointer and issues no reads — routes/admin-dependencies.tsx). */
+  it("does NOT carry Admin › Dependencies (commander-only dependency automation)", () => {
+    expect(hrefs).not.toContain("/admin/dependencies");
+    expect(html).not.toContain(">Dependencies</a>");
+    expect(OUTPOST_NAV.flatMap((s) => s.entries.map((e) => e.to))).not.toContain(
+      "/admin/dependencies"
+    );
+  });
+
   it("keeps the outpost's OWN sync status, relabelled and moved under Admin", () => {
     // Same destination the commander calls "Federation status" — a bookmark survives — but on the
     // outpost it is an admin fact about THIS instance, not a federation-management page.
@@ -220,6 +240,10 @@ describe("app router: every nav destination this milestone adds actually resolve
 
   it("registers the setup landing the new nav link points at (G5)", () => {
     expect(routePaths()).toContain("/setup");
+  });
+
+  it("registers the Admin › Dependencies page the commander nav link points at", () => {
+    expect(routePaths()).toContain("/admin/dependencies");
   });
 
   /** The Changes LIST route is gone; the DETAIL route must not have gone with it — it holds the

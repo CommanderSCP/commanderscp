@@ -2,6 +2,9 @@ import type {
   ComponentDependencyBump,
   ComponentDependencyInventoryResponse,
   ComponentDependencyInventoryRow,
+  DependencyLineProducerVerbResponse,
+  DependencyLineProducerView,
+  DependencyProducerLineImpact,
   DependencySubscriptionContribution,
   DependencySubscriptionUnlock
 } from "@scp/schemas";
@@ -116,6 +119,71 @@ export function bumpFixture(over: Partial<ComponentDependencyBump> = {}): Compon
     delivery: "pull_request",
     deliveryReason: "first look is always a pull request",
     merge: null,
+    ...over
+  };
+}
+
+// ---- Producer declarations (dependency-subscription-ui.md §12) --------------------------------
+
+export const DECLARER = {
+  id: "019f0000-0000-7000-8000-00000000ad31",
+  name: "admin"
+};
+
+/** One row of `GET /dependencies/producers` — the WIRE VIEW (names enriched server-side, §12.6 Q1). */
+export function producerFixture(
+  over: Partial<DependencyLineProducerView> = {}
+): DependencyLineProducerView {
+  return {
+    orgId: "019f0000-0000-7000-8000-00000000009f",
+    ecosystem: "npm",
+    coordinate: "@acme/lib",
+    producerObjectId: COMPONENT.id,
+    declaredAt: "2026-08-15T00:00:00.000Z",
+    declaredByObjectId: DECLARER.id,
+    producer: { objectId: COMPONENT.id, name: COMPONENT.name },
+    declaredBy: { objectId: DECLARER.id, name: DECLARER.name },
+    ...over
+  };
+}
+
+/** One covered line in a declare/retract report. */
+export function lineImpactFixture(
+  over: Partial<DependencyProducerLineImpact> = {}
+): DependencyProducerLineImpact {
+  return {
+    lineId: "019f0000-0000-7000-8000-00000000aaa1",
+    major: "1",
+    tagPattern: null,
+    headBefore: {
+      latestVersion: "1.4.2",
+      latestDigest: null,
+      latestObservedAt: "2026-08-14T00:00:00.000Z"
+    },
+    headCleared: true,
+    subscribedComponentObjectIds: ["019f0000-0000-7000-8000-00000000c0d1"],
+    subscribedComponents: [
+      { objectId: "019f0000-0000-7000-8000-00000000c0d1", name: "ledger-api" }
+    ],
+    ...over
+  };
+}
+
+/** A declare / retract verb response. `dryRun` responses carry `decisionId: null` and
+ *  `declaration: null`, as the server does. */
+export function verbResponseFixture(
+  over: Partial<DependencyLineProducerVerbResponse> = {}
+): DependencyLineProducerVerbResponse {
+  return {
+    ecosystem: "npm",
+    coordinate: "@acme/lib",
+    action: "declare",
+    dryRun: false,
+    declaration: producerFixture(),
+    lines: [lineImpactFixture()],
+    openBumpAuthorships: [],
+    decisionId: "019f0000-0000-7000-8000-00000000d3c1",
+    dependencyManagement: { managedHere: true, reason: "commander" },
     ...over
   };
 }

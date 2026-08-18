@@ -1063,6 +1063,31 @@ async function main() {
     }
   }
 
+  // ------------------------------------------ dependency PRODUCER declaration (dependency-subscription-ui.md §12.5)
+  // ONE declared producer, so Admin › Dependencies at :8080 shows a real row (and a real retract
+  // preview — with an EMPTY `lines[]`, honestly, since no manifest is ingested on the laptop):
+  // checkout-api produces `npm @review/shared-lib`. Through the PUBLIC API as the Owner admin (the
+  // write needs `policy:write` at the org root — the fixture's admin holds it); the server stamps
+  // `declaredBy` from the session. Declaring is an UPSERT (idempotent by (org, ecosystem,
+  // coordinate)), so a re-run converges: 200 both times. On a non-commander site the server 409s
+  // (commander-only on the federation axis) — recorded as failed, not retried: this is the
+  // commander half of the review pair.
+  if (components["checkout-api"]) {
+    try {
+      const out = await api("POST", "/dependencies/producers", {
+        ecosystem: "npm",
+        coordinate: "@review/shared-lib",
+        producerIdOrUrn: components["checkout-api"]
+      });
+      const lines = Array.isArray(out?.lines) ? out.lines.length : 0;
+      created.push(
+        `/dependencies/producers: npm @review/shared-lib → checkout-api (declared; ${lines} covered line${lines === 1 ? "" : "s"}; decision ${out?.decisionId ?? "n/a"})`
+      );
+    } catch (e) {
+      failed.push(`dependency producer npm @review/shared-lib → checkout-api: ${e.message}`);
+    }
+  }
+
   console.log(`\n=== created/upserted (${created.length}) ===`);
   for (const c of created) console.log("  +", c);
   if (failed.length) {

@@ -9,6 +9,7 @@ import {
   COMPONENT,
   bumpFixture,
   inventoryFixture,
+  producerFixture,
   rowFixture,
   unlockFixture
 } from "../test-support/dependency-fixtures";
@@ -40,6 +41,12 @@ let bumpsImpl: () => Promise<unknown> = async () => ({
   nextCursor: null
 });
 const readCalls: string[] = [];
+// The org's producer declarations (§12.4 Produces strip) — default: this component produces one
+// coordinate; individual cases override.
+let producersImpl: () => Promise<unknown> = async () => ({
+  producers: [producerFixture()],
+  dependencyManagement: { managedHere: true, reason: "commander" }
+});
 
 vi.mock("@tanstack/react-router", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-router")>()),
@@ -86,6 +93,12 @@ vi.mock("../lib/client", () => ({
       create: async (req: CreateObjectRequest) => {
         createCalls.push(req);
         return createImpl(req);
+      }
+    },
+    dependencyProducers: {
+      list: async () => {
+        readCalls.push("producers");
+        return producersImpl();
       }
     }
   }
@@ -176,7 +189,10 @@ describe("the wired-up Dependencies tab is a COMMANDER-site page", () => {
         expect(document.body.textContent).not.toContain("this outpost");
       }
       expect(inDocument("enable-open")).toBeNull();
+      // ZERO reads of any kind — the four SDK wrappers (unlock, inventory, bumps, and the org's
+      // producer list behind the §12.4 Produces strip) all sit behind the same role gate.
       expect(readCalls).toEqual([]);
+      expect(inDocument("produces-strip")).toBeNull();
       view.unmount();
       authState.instanceRole = "commander";
     }
@@ -194,6 +210,86 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
     expect(inDocument("bump-row")).not.toBeNull();
     expect(inDocument("instance-unlock")?.getAttribute("data-state")).toBe("unlocked");
     view.unmount();
+  });
+
+  it("PRODUCES STRIP (§12.4): on the commander the org's producer list is read (the FOURTH SDK read) and, filtered to THIS component, renders 'declared producer of <ecosystem coordinate>' with the Admin › Dependencies link", async () => {
+    producersImpl = async () => ({
+      producers: [
+        producerFixture(),
+        producerFixture({ ecosystem: "oci", coordinate: "ghcr.io/acme/base" }),
+        // Another component's declaration: NOT this component's — filtered out client-side.
+        producerFixture({
+          coordinate: "@acme/other",
+          producerObjectId: "019f0000-0000-7000-8000-00000000c0d1",
+          producer: { objectId: "019f0000-0000-7000-8000-00000000c0d1", name: "ledger-api" }
+        })
+      ],
+      dependencyManagement: { managedHere: true, reason: "commander" }
+    });
+    try {
+      const view = await renderPage();
+      await waitUntil(() => inDocument("produces-strip") !== null, "the Produces strip");
+      expect(readCalls).toContain("producers");
+      const coords = [...document.querySelectorAll('[data-testid="produces-coordinate"]')].map(
+        (n) => n.textContent
+      );
+      expect(coords).toEqual(["npm @acme/lib", "oci ghcr.io/acme/base"]);
+      expect(inDocument("produces-strip")!.textContent).toContain(
+        "This component is the declared producer of"
+      );
+      expect(inDocument("produces-strip")!.textContent).not.toContain("@acme/other");
+      expect(inDocument("produces-admin-link")?.textContent).toBe("Admin › Dependencies");
+      view.unmount();
+    } finally {
+      producersImpl = async () => ({
+        producers: [producerFixture()],
+        dependencyManagement: { managedHere: true, reason: "commander" }
+      });
+    }
+  });
+
+  it("PRODUCES STRIP: NOTHING renders when the org list holds no row for this component (its absence asserts nothing)", async () => {
+    producersImpl = async () => ({
+      producers: [
+        producerFixture({
+          producerObjectId: "019f0000-0000-7000-8000-00000000c0d1",
+          producer: { objectId: "019f0000-0000-7000-8000-00000000c0d1", name: "ledger-api" }
+        })
+      ],
+      dependencyManagement: { managedHere: true, reason: "commander" }
+    });
+    try {
+      const view = await renderPage();
+      // Let the producers read land, then assert the strip is absent (not merely not-yet).
+      await waitUntil(() => readCalls.includes("producers"), "the producers read");
+      await settle();
+      await settle();
+      expect(inDocument("produces-strip")).toBeNull();
+      expect(document.body.textContent).not.toContain("declared producer of");
+      view.unmount();
+    } finally {
+      producersImpl = async () => ({
+        producers: [producerFixture()],
+        dependencyManagement: { managedHere: true, reason: "commander" }
+      });
+    }
+  });
+
+  it("PRODUCES STRIP: a FAILED producers read is stated as unreadable — never painted as 'not a producer', never as the strip", async () => {
+    producersImpl = async () => {
+      throw new Error("listDependencyLineProducers: 503");
+    };
+    try {
+      const view = await renderPage();
+      await waitUntil(() => inDocument("produces-unreadable") !== null, "the unreadable pill");
+      expect(inDocument("produces-strip")).toBeNull();
+      view.unmount();
+    } finally {
+      producersImpl = async () => ({
+        producers: [producerFixture()],
+        dependencyManagement: { managedHere: true, reason: "commander" }
+      });
+    }
   });
 
   it("ENABLE: confirm sends the objectRef-scoped enabling policy with the CHOSEN granularity/delivery, enforcement present, domainId = the component itself", async () => {

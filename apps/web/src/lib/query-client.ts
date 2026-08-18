@@ -138,3 +138,11 @@ export function componentDependencyInventoryKey(idOrUrn: string): unknown[] {
 export function componentDependencyBumpsKey(idOrUrn: string): unknown[] {
   return ["component", "dependency-bumps", idOrUrn];
 }
+
+/** Query key for the org's dependency PRODUCER declarations (`GET /dependencies/producers`) — one
+ *  unpaged, org-level list (ADR-0032 §7e); NOT parameterized by producer: the Admin › Dependencies
+ *  page shows all of it and a component's "Produces" strip filters it client-side. Invalidated after
+ *  a declare / retract authored from the Admin page. */
+export function dependencyProducersKey(): unknown[] {
+  return ["dependency-producers"];
+}

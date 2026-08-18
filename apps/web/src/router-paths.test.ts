@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { router } from "./router";
 import { ComponentDependenciesPage } from "./routes/component-dependencies";
+import { AdminDependenciesPage } from "./routes/admin-dependencies";
 
 /**
  * THE ROUTE TABLE STILL RESOLVES THE URLS OTHER THINGS DEPEND ON.
@@ -82,7 +83,11 @@ describe("router: URLs other code depends on still resolve", () => {
     ["/services", "e2e/browse.spec.ts + e2e/seeded-demo.spec.ts"],
     ["/assemblies", "the Assemblies registry (migration 0055)"],
     [`/assemblies/${ID}`, "the assembly link on a service board"],
-    ["/connect/argocd", "e2e/connect-argocd.spec.ts + the launch button on /plugins (M19.1)"]
+    ["/connect/argocd", "e2e/connect-argocd.spec.ts + the launch button on /plugins (M19.1)"],
+    [
+      "/admin/dependencies",
+      "the commander nav's Admin › Dependencies entry + the Produces strip's link on a component's Dependencies tab (dependency-subscription-ui.md §12)"
+    ]
   ])("resolves %s — needed by %s", (url) => {
     expect(resolves(url)).toBe(true);
   });
@@ -118,6 +123,12 @@ describe("router: URLs other code depends on still resolve", () => {
     expect(index?.component, "the index child must exist").toBeDefined();
     expect(legacy?.component, "the legacy /board child must exist").toBeDefined();
     expect(legacy?.component).toBe(index?.component);
+  });
+
+  it("`/admin/dependencies` renders AdminDependenciesPage (the URL AND the view)", () => {
+    const admin = registeredComponents().find((r) => r.path === "/admin/dependencies");
+    expect(admin?.component, "the /admin/dependencies route must exist").toBeDefined();
+    expect(admin?.component).toBe(AdminDependenciesPage);
   });
 
   it("`/components/{id}/dependencies` renders ComponentDependenciesPage (the URL AND the view — a registered path pointed at another page is the same break)", () => {

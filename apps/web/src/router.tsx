@@ -31,6 +31,7 @@ import { IdentityPage } from "./routes/identity";
 import { ConnectArgoCdPage } from "./routes/connect-argocd";
 import { ConnectKindPage } from "./routes/connect";
 import { SetupPage } from "./routes/setup";
+import { AdminDependenciesPage } from "./routes/admin-dependencies";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -316,6 +317,18 @@ const setupRoute = createRoute({
   component: SetupPage
 });
 
+// Admin › Dependencies (dependency-subscription-ui.md §12, ADR-0032 §7e) — the org's dependency
+// PRODUCER declarations: declare / retract with a dry-run blast radius first. A static 2-segment
+// path, so it out-ranks the dynamic `/$basePath/$idOrUrn` registry-detail route below exactly as
+// `/connect/argocd` and `/federation/outposts` do. Linked from the COMMANDER nav only (owner rule
+// 2026-08-17: dependency automation is commander-only); the page itself renders the
+// "managed at the commander" pointer and issues no reads on any other install-time role.
+const adminDependenciesRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/dependencies",
+  component: AdminDependenciesPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -366,6 +379,7 @@ const routeTree = rootRoute.addChildren([
     connectArgoCdRoute,
     connectKindRoute,
     setupRoute,
+    adminDependenciesRoute,
     registryListRoute,
     registryDetailRoute
   ])

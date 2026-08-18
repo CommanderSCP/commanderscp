@@ -1,7 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleUser, Flag, Globe, KeyRound, LayoutDashboard, ListChecks, Puzzle, Users, Waypoints, type LucideIcon } from "lucide-react";
+import { CircleUser, Flag, Globe, KeyRound, LayoutDashboard, ListChecks, Package, Puzzle, Users, Waypoints, type LucideIcon } from "lucide-react";
 import { client } from "../../lib/client";
 import { useAuth } from "../../lib/auth-context";
 import { cn, focusRing } from "../../lib/utils";
@@ -119,7 +119,11 @@ export const COMMANDER_NAV: NavSection[] = [
     entries: [
       { to: "/identity", label: "Identity", icon: Users },
       { to: "/plugins", label: "Plugins", icon: Puzzle },
-      { to: "/pats", label: "Access Tokens", icon: KeyRound }
+      { to: "/pats", label: "Access Tokens", icon: KeyRound },
+      // Dependency PRODUCER declarations (dependency-subscription-ui.md §12) — COMMANDER ONLY
+      // (owner rule 2026-08-17: dependency automation happens only at the commander), so the
+      // OUTPOST table below does not carry it; pinned by app-shell-nav.test.tsx.
+      { to: "/admin/dependencies", label: "Dependencies", icon: Package }
     ]
   }
 ];
