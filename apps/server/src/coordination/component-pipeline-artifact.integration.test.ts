@@ -52,6 +52,9 @@ import {
  *     with `method` falling back to the scanner.
  *   - a TWO-digest change: a passing digest-bound row for one digest reads `fail` (E6 needs one per
  *     substantive artifact); covering the second flips it to `pass`.
+ *   - the INSTANCE FLOOR: an admitted `pass` whose counts breach an operator-authored trust_domain
+ *     floor reads `fail` (the export refuses it `below_instance_floor`; the tile is E6's own
+ *     predicate, floor included); the floor reset to all-NULL (inert) flips the SAME row to `pass`.
  *   - `POST /changes` 400s a sourceRef planting `promotionExports`/`boundaryBundleChecksums`.
  *
  * MUTATION LOG (each applied ALONE, then reverted)
@@ -68,6 +71,7 @@ import {
  * | `managed: gateRef?.promotionScanStep === true` | the managed-flag test FAILS (impostor reads managed) |
  * | `exportGate = any pass+digestMatch row ? pass : fail` | the two-digest test FAILS (`pass` where `fail`) |
  * | drop the reserved-key check in `routes/changes.ts` | the planted-stamp test FAILS (201) |
+ * | `evaluateScanCoverage({ …, instanceFloor: {} })` (compute the floor, pass an empty one) | the instance-floor test FAILS (`pass` where `fail`) |
  */
 describe("component pipeline: the artifact and its change-scoped facts (§9.3)", () => {
   let server: ListeningTestServer;
@@ -78,8 +82,29 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   const uniq = (p: string) => `${p}-${uuidv7()}`;
   const digestOf = (seed: string) => `sha256:${seed.repeat(64).slice(0, 64)}`;
 
+  /** The deployment's operator token — opens the operator-only instance-scan-floor write surface
+   *  (M17.5) so the floor case below can author a floor THROUGH THE API, not by admin-pool surgery. */
+  const OPERATOR_TOKEN = `pipeline-artifact-operator-${uuidv7()}`;
+
+  /** `scan_requirement_floors` is INSTANCE-GLOBAL and the integration suite runs `singleFork`
+   *  against ONE shared Postgres — a floor left behind here would silently tighten every later
+   *  suite's gates. Both rows are reset to all-NULL (inert) by the floor case's `finally` AND once
+   *  more at teardown, so this file is self-contained wherever it fails. */
+  async function clearInstanceFloors(): Promise<void> {
+    if (!admin) return;
+    const inert = {
+      origin: "local" as const,
+      maxCritical: null,
+      maxHigh: null,
+      maxMedium: null,
+      maxLow: null
+    };
+    await admin.instanceScanFloors.put("platform", inert, OPERATOR_TOKEN);
+    await admin.instanceScanFloors.put("trust_domain", inert, OPERATOR_TOKEN);
+  }
+
   beforeAll(async () => {
-    server = await listenTestServer();
+    server = await listenTestServer({ operatorToken: OPERATOR_TOKEN });
     org = await createTestOrg(server, "pipeline-artifact");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     gamma = await admin.deploymentTargets.create({
@@ -89,6 +114,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
   });
 
   afterAll(async () => {
+    await clearInstanceFloors();
     await server?.close();
   });
 
@@ -123,6 +149,10 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     scannedDigest?: string;
     managed?: boolean;
     counts?: { critical: number; high: number; medium: number; low: number };
+    /** The ceiling the control says it applied — a TENANT-authored number by default (the
+     *  per-binding `config.threshold` fallback), which is exactly why E6 re-checks the counts against
+     *  the operator's instance floor rather than trusting `status: pass` alone. */
+    threshold?: { maxCritical: number; maxHigh: number; maxMedium?: number; maxLow?: number };
     /** The control the row answers for. Two rows under ONE control are two answers to ONE question
      *  (the newer supersedes); under two controls they are two questions that must BOTH pass. */
     controlObjectId?: string;
@@ -154,7 +184,7 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
           expectedDigest: digest,
           digestMatch: over.digestMatch ?? true,
           severityCounts: over.counts ?? { critical: 0, high: 2, medium: 5, low: 9 },
-          threshold: { maxCritical: 0, maxHigh: 2 }
+          threshold: over.threshold ?? { maxCritical: 0, maxHigh: 2 }
         }
       })
     );
@@ -494,6 +524,44 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
       "one row per (scanner, digest) — two digests, two rows"
     ).toHaveLength(2);
     expect(covered.artifact!.exportGate).toBe("pass");
+  });
+
+  it("E6 reads the INSTANCE FLOOR (ADR-0016 §3): an admitted `pass` whose findings breach an operator-set trust_domain floor reads `fail`; with the floor cleared the same row reads `pass`", async () => {
+    // The whole point of the pipeline tile's `exportGate` being E6's OWN predicate rather than a
+    // copy: `promotion-repo.ts` refuses this crossing `below_instance_floor`, so the tile must not
+    // say `pass`. The control itself PASSED — against a tenant-loose ceiling (maxHigh 50) — which is
+    // precisely the case the operator-write/tenant-read floor exists for.
+    const component = await createOrphanComponent(admin, uniq("floor"));
+    const digest = digestOf("5");
+    const change = await proposeWith(component.id, { artifactDigest: digest });
+    await seedScan(change.id, digest, {
+      status: "pass",
+      counts: { critical: 0, high: 4, medium: 0, low: 0 },
+      threshold: { maxCritical: 0, maxHigh: 50 }
+    });
+
+    try {
+      await admin.instanceScanFloors.put(
+        "trust_domain",
+        { origin: "local", maxHigh: 0 },
+        OPERATOR_TOKEN
+      );
+      const floored = await pipelineOf(component.id);
+      expect(floored.artifact!.scans, "the row is on the change and shown").toHaveLength(1);
+      expect(floored.artifact!.scans[0]!.status).toBe("pass");
+      expect(
+        floored.artifact!.exportGate,
+        "high=4 > the operator's trust_domain floor of 0 — the export would refuse `below_instance_floor`, so the tile reads `fail`"
+      ).toBe("fail");
+    } finally {
+      await clearInstanceFloors();
+    }
+
+    const unfloored = await pipelineOf(component.id);
+    expect(
+      unfloored.artifact!.exportGate,
+      "an all-NULL floor is INERT (absent never means zero) — the same row now covers the digest"
+    ).toBe("pass");
   });
 
   it("`POST /changes` REFUSES a sourceRef that plants a server-owned stamp (`promotionExports`, `boundaryBundleChecksums`) — 400, nothing stored", async () => {
