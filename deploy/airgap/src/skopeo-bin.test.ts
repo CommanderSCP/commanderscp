@@ -88,6 +88,49 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
     );
   });
 
+  it("the image BUILD can be served by the mirror — the fourth consumer form, which had no guard", () => {
+    // ADDED 2026-08-18, after the pinned skopeo digest was DELETED from quay.io (404) and took every
+    // E2E job red at image build, five steps before a test ran. The second quay.io outage to do so.
+    //
+    // `tools/ci-mirror/images.list` mirrors every third-party image to GHCR so CI never pulls live,
+    // and enumerated three consumer forms. A DIGEST-PINNED `FROM` is a fourth, and neither mechanism
+    // reaches it: a `FROM …@sha256:…` resolves AT THE REGISTRY, so a local re-tag is invisible to it,
+    // and the `SCP_*_IMAGE_REF` vars are read by the installer scripts rather than by BuildKit. The
+    // census that produced forms 1-3 was a census of TEST consumers, and an image build is not a test.
+    //
+    // THIS ASSERTS THE THREE HALVES TOGETHER, because any one of them alone is silently inert: the
+    // Dockerfile must take the image from an ARG, compose must pass that ARG through, and the mirror
+    // must export it under that exact name.
+    const dockerfile = readRepoFile("Dockerfile");
+    expect(dockerfile).toMatch(atLineStart("FROM ${SKOPEO_IMAGE} AS skopeo"));
+
+    // PASS-THROUGH FORM, and the shape is the assertion. `- SKOPEO_IMAGE` with no value means
+    // "take it from the environment, and omit the arg entirely when unset", so a developer running
+    // `docker compose up` with no mirror still gets the Dockerfile's pinned default. Writing
+    // `SKOPEO_IMAGE=${SCP_SKOPEO_IMAGE_REF}` would pass an EMPTY string when unset and break `FROM`
+    // for everyone outside CI — which is why this pins the form and not merely the presence.
+    const compose = readRepoFile("deploy/compose/docker-compose.yml");
+    expect(compose).toMatch(atLineStart("        - SKOPEO_IMAGE"));
+    expect(compose).toMatch(atLineStart("        - COSIGN_IMAGE"));
+    // COMMENTS STRIPPED FIRST, and that is not fussiness — the un-stripped version of this
+    // assertion FAILED on its own explanatory comment, which spells out the broken form in order to
+    // warn against it. That is the repo's documented hazard in miniature: prose describing a hazard
+    // satisfied a check meant to detect the hazard. The guard must read the YAML, not the essay.
+    const composeYaml = compose
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(composeYaml).not.toMatch(/SKOPEO_IMAGE=\$\{/);
+    expect(composeYaml).not.toMatch(/COSIGN_IMAGE=\$\{/);
+
+    // ...and the mirror exports it under the Dockerfile's own ARG name. Exporting only the
+    // `SCP_`-prefixed ref — which is what shipped — leaves the build pulling upstream while every
+    // other consumer is served from the mirror, which is exactly how this survived one outage.
+    const mirror = readRepoFile("scripts/ci-mirror.sh");
+    expect(mirror).toContain('echo "SKOPEO_IMAGE=${skopeo_ref}"');
+    expect(mirror).toContain('echo "COSIGN_IMAGE=${cosign_ref}"');
+  });
+
   it("the wrapper runs the vendored binary against the vendored loader, from the libexec dir", () => {
     // The wrapper's header comment describes both of these lines in prose, so raw `.toContain`
     // here was satisfied by the documentation of the wrapper rather than the wrapper.

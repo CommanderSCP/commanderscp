@@ -72,6 +72,20 @@
 #     exports the mirror ref into those. The scripts' pre-existing FAIL-CLOSED version assertion is
 #     what makes the override safe: a mirror serving anything other than the pinned binary aborts
 #     the job rather than validating an unvetted tool.
+# (4) THE ROOT `Dockerfile`'s DIGEST-PINNED `FROM` — added 2026-08-18, and it is the form this list
+#     originally MISSED. `FROM ${SKOPEO_IMAGE}` / `FROM ${COSIGN_IMAGE}` resolve AT THE REGISTRY, so
+#     form (1)'s re-tag cannot serve them (a `FROM …@sha256:…` never consults a local tag) and form
+#     (3)'s env vars are read by the installer scripts, not by BuildKit. Nothing passed a build arg,
+#     so this one build kept pulling quay.io LIVE — the exact dependency this whole file exists to
+#     remove. `ci-mirror.sh seed` now also exports `SKOPEO_IMAGE`/`COSIGN_IMAGE` (the Dockerfile's own
+#     ARG names) and `deploy/compose/docker-compose.yml` declares them in pass-through form, so an
+#     unset value falls back to the Dockerfile's pinned default instead of an empty string.
+#
+#     WHY IT WAS MISSED IS THE PART WORTH KEEPING: the census that produced forms (1)-(3) was a census
+#     of TEST consumers, and the image BUILD is not a test. The property is "anything that resolves a
+#     third-party image ref at run time", and a `FROM` is the oldest instance of it in the repo. It
+#     cost a second outage to find — quay.io timed out on 2026-07-25, and on 2026-08-18 the pinned
+#     skopeo digest was DELETED upstream (404), taking every E2E job red at image build.
 #
 # ------------------------------------------------------------------------------------------------
 # CAVEAT (inherited, unchanged): job 4d mirrors whatever single-arch manifest the amd64
