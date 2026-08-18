@@ -126,15 +126,27 @@ describe("M23.1: managed-iac launches through the injected RunnerLauncher", () =
     // change to that layout must fail here.
     const workspaceDir = join(workspaceRoot, "org-1", "t1");
     expect(seen[0], "managed-iac's RunnerSpec changed").toStrictEqual({
+      // THE RUN'S OWN IDENTITY, DERIVED FROM THE IDEMPOTENCY KEY — caller-supplied, never
+      // adapter-minted, so a retry addresses the same container name and M23.3's Kubernetes arm can
+      // put the same string in `metadata.name`. `toRunnerRunId("seam-2")` is a lossless slug, hence
+      // the bare key; a key needing sanitisation gets a digest appended instead of colliding.
+      runId: "seam-2",
+      labels: { "scp.executor": "scp-managed-iac", "scp.run-id": "seam-2" },
       image: "scp-runner-iac:vetted",
       operands: ["apply"],
       // A CONFIG READ for this plugin (server-injected, default "none") — unlike managed-dep, whose
       // charter clause carries no operator qualifier and passes a literal.
       networkMode: "none",
-      // No `infraCredsSecretKeys` in this ctx and no rollback extras, so no credentials are
-      // materialised. The ORDER when they are (config keys first, action extras last) is the
-      // golden's.
+      // No rollback extras in this intent, so nothing non-secret to pass.
       env: [],
+      // No `infraCredsSecretKeys` in this ctx, so no credentials are materialised. When they ARE,
+      // they go HERE and not into `env` — the Docker adapter delivers `secretEnv` through a
+      // mode-0600 `--env-file` instead of `-e`, and the Kubernetes adapter must deliver it as a
+      // per-run Secret. The golden owns the populated case and the env-file's contents.
+      secretEnv: [],
+      // The plugin's OWN state dir — `dirname(statePath)` — never the workspace (which is copied
+      // INTO the container) and never `os.tmpdir()` (which is shared with every other local user).
+      secretEnvDir: workspaceRoot,
       // COPIED, never bind-mounted: nothing on the host becomes a container mount.
       copyIn: [{ hostDir: workspaceDir, containerPath: "/workspace" }],
       // THE ASYMMETRY THAT IS THIS PLUGIN'S ALONE, on both axes. A failed `apply` may still have

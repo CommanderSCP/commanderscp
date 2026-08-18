@@ -191,10 +191,17 @@ function depCtx(configOverrides: Record<string, unknown> = {}, base?: string) {
   };
 }
 
-function npmIntent(overrides: Record<string, unknown> = {}) {
+/**
+ * THE KEYS ARE FIXED NOW, AND THEY HAVE TO BE. They used to be `golden-npm-${Math.random()}` — free,
+ * because nothing on the command line depended on them. Since the run's `--name` is derived from the
+ * idempotency key, a random key would put a random string in the argv this file exists to record
+ * literally. `__resetManagedDepOutcomes()` in `beforeEach` is what makes fixed keys safe: the outcome
+ * cache that dedup reads is cleared between cases, so a repeated key is a fresh run.
+ */
+function npmIntent(key: string, overrides: Record<string, unknown> = {}) {
   return {
     kind: "custom" as const,
-    idempotencyKey: `golden-npm-${Math.random()}`,
+    idempotencyKey: key,
     parameters: {
       ecosystem: BUMP_SPEC.ecosystem,
       coordinate: BUMP_SPEC.coordinate,
@@ -211,10 +218,10 @@ function npmIntent(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function valuesIntent() {
+function valuesIntent(key: string) {
   return {
     kind: "custom" as const,
-    idempotencyKey: `golden-values-${Math.random()}`,
+    idempotencyKey: key,
     parameters: {
       ecosystem: VALUES_BUMP_SPEC.ecosystem,
       coordinate: VALUES_BUMP_SPEC.coordinate,
@@ -262,7 +269,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
     // command line is the five descriptor strings every previously-shipped image understands.
     const plugin = createManagedDepExecutorPlugin();
     const { ctx } = depCtx();
-    const ref = await plugin.trigger(ctx, npmIntent());
+    const ref = await plugin.trigger(ctx, npmIntent("g1"));
 
     expect(normalise(calls), "the managed-dep Docker launch argv changed").toStrictEqual([
       {
@@ -271,6 +278,13 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
           "create",
           "--network",
           "none",
+          "--name",
+          "scp-runner-g1",
+          "--label",
+          "scp.executor=scp-managed-dep",
+          "--label",
+          "scp.run-id=g1",
+
           "scp-runner-dep:vetted",
           "npm",
           "package.json",
@@ -283,7 +297,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
       { file: "docker", args: ["cp", "<IN>/.", "dep-container-abc:/work/in"], opts: RUN_OPTS },
       { file: "docker", args: ["start", "-a", "dep-container-abc"], opts: RUN_OPTS },
       { file: "docker", args: ["cp", "dep-container-abc:/work/out/.", "<OUT>"], opts: RUN_OPTS },
-      { file: "docker", args: ["rm", "-f", "dep-container-abc"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-g1"], opts: RM_OPTS }
     ]);
 
     // ...and the run really completed, so none of the above passed by nothing having happened.
@@ -297,7 +311,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
     producedOutput = VALUES_YAML_BASE.replace("    tag: 1.2.3", "    tag: 1.2.4");
     const plugin = createManagedDepExecutorPlugin();
     const { ctx } = depCtx({}, VALUES_YAML_BASE);
-    const ref = await plugin.trigger(ctx, valuesIntent());
+    const ref = await plugin.trigger(ctx, valuesIntent("g2"));
 
     expect(normalise(calls), "the managed-dep anchored Docker launch argv changed").toStrictEqual([
       {
@@ -306,6 +320,13 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
           "create",
           "--network",
           "none",
+          "--name",
+          "scp-runner-g2",
+          "--label",
+          "scp.executor=scp-managed-dep",
+          "--label",
+          "scp.run-id=g2",
+
           "scp-runner-dep:vetted",
           "oci",
           "chart/values.yaml",
@@ -320,7 +341,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
       { file: "docker", args: ["cp", "<IN>/.", "dep-container-abc:/work/in"], opts: RUN_OPTS },
       { file: "docker", args: ["start", "-a", "dep-container-abc"], opts: RUN_OPTS },
       { file: "docker", args: ["cp", "dep-container-abc:/work/out/.", "<OUT>"], opts: RUN_OPTS },
-      { file: "docker", args: ["rm", "-f", "dep-container-abc"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-g2"], opts: RM_OPTS }
     ]);
 
     expect((await plugin.status(ctx, ref)).phase).toBe("succeeded");
@@ -340,7 +361,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
       },
       VALUES_YAML_BASE
     );
-    const ref = await plugin.trigger(ctx, valuesIntent());
+    const ref = await plugin.trigger(ctx, valuesIntent("g3"));
 
     const opts = { timeout: 123_456, maxBuffer: 8 * 1024 * 1024 };
     expect(normalise(calls), "the managed-dep maximal Docker launch argv changed").toStrictEqual([
@@ -350,6 +371,13 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
           "create",
           "--network",
           "none",
+          "--name",
+          "scp-runner-g3",
+          "--label",
+          "scp.executor=scp-managed-dep",
+          "--label",
+          "scp.run-id=g3",
+
           "scp-runner-dep:vetted",
           "oci",
           "chart/values.yaml",
@@ -370,7 +398,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
       },
       // THE TEARDOWN TIMEOUT IS NOT THE RUN TIMEOUT. A `timeoutMs` of 123456 does not reach `rm`,
       // which keeps its own literal 30 s and still carries no `maxBuffer`.
-      { file: "/usr/local/bin/docker", args: ["rm", "-f", "dep-container-abc"], opts: RM_OPTS }
+      { file: "/usr/local/bin/docker", args: ["rm", "-f", "scp-runner-g3"], opts: RM_OPTS }
     ]);
 
     expect((await plugin.status(ctx, ref)).phase).toBe("succeeded");
@@ -385,7 +413,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
     startOk = false;
     const plugin = createManagedDepExecutorPlugin();
     const { ctx, httpCalls } = depCtx();
-    const ref = await plugin.trigger(ctx, npmIntent());
+    const ref = await plugin.trigger(ctx, npmIntent("g4"));
 
     expect(normalise(calls), "the managed-dep FAILED-run Docker sequence changed").toStrictEqual([
       {
@@ -394,6 +422,13 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
           "create",
           "--network",
           "none",
+          "--name",
+          "scp-runner-g4",
+          "--label",
+          "scp.executor=scp-managed-dep",
+          "--label",
+          "scp.run-id=g4",
+
           "scp-runner-dep:vetted",
           "npm",
           "package.json",
@@ -405,7 +440,7 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
       },
       { file: "docker", args: ["cp", "<IN>/.", "dep-container-abc:/work/in"], opts: RUN_OPTS },
       { file: "docker", args: ["start", "-a", "dep-container-abc"], opts: RUN_OPTS },
-      { file: "docker", args: ["rm", "-f", "dep-container-abc"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-g4"], opts: RM_OPTS }
     ]);
 
     const status = await plugin.status(ctx, ref);
@@ -428,12 +463,14 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
     cpOutOk = false;
     const plugin = createManagedDepExecutorPlugin();
     const { ctx } = depCtx();
-    const ref = await plugin.trigger(ctx, npmIntent());
+    const ref = await plugin.trigger(ctx, npmIntent("g5"));
 
     expect(calls.map((c) => c.args[0])).toStrictEqual(["create", "cp", "start", "cp", "rm"]);
     expect(calls.at(-1)).toStrictEqual({
       file: "docker",
-      args: ["rm", "-f", "dep-container-abc"],
+      // BY NAME, not by the id `create` printed — the only identity that also exists on the path
+      // where `create` itself is what failed (M23.0 defect 1).
+      args: ["rm", "-f", "scp-runner-g5"],
       opts: RM_OPTS
     });
     const status = await plugin.status(ctx, ref);

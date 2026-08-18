@@ -57,6 +57,17 @@ import type { PluginContext } from "@scp/plugin-api";
  *     managed-iac, which copies out unconditionally. And this plugin's copy-out is **not**
  *     catch-guarded, so a failed copy-out escapes `trigger()` rather than being swallowed. Both
  *     halves of that asymmetry are measured below.
+ *  5. THAT THE SECRECY SPLIT DID NOT TOUCH THIS PLUGIN'S ENVIRONMENT. When `RunnerSpec.env` was
+ *     split into `env` and `secretEnv`, the five `create` lines below moved by EXACTLY the `--name`
+ *     and the two `--label` pairs and by nothing else: `SCP_SCAN_DB_DIR` and `SCP_SCAN_SCAP_DIR`
+ *     are container PATHS, not credentials, so they stay `-e` and NO `--env-file` is written for a
+ *     scan at all. Asserted rather than assumed — a reflex to route "the environment" through an
+ *     env-file would have cost a Kubernetes Secret per scan for nothing, and all four preload
+ *     combinations below would have had to be re-recorded.
+ *  6. THE PER-RUN NAME AND LABELS (M23.0 defect 1). `--name scp-runner-<idempotencyKey>` and the
+ *     two `scp.*` labels, immediately after `--network` and before any `-e`; and teardown
+ *     addressing that NAME rather than the id `create` printed, because the name is the only
+ *     identity that also exists on the path where `create` itself is what failed.
  *
  * THE RECORDING SEAM is the one this package already uses — `vi.mock("node:child_process")` with a
  * hand-written `execFile`, the same shape as `index.test.ts` here and `runner-containment.test.ts`
@@ -168,7 +179,19 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
     expect(calls, "the managed-scan Docker launch argv changed").toStrictEqual([
       {
         file: "docker",
-        args: ["create", "--network", "none", "scp-runner-scan:vetted", "trivy"],
+        args: [
+          "create",
+          "--network",
+          "none",
+          "--name",
+          "scp-runner-k1",
+          "--label",
+          "scp.executor=scp-managed-scan",
+          "--label",
+          "scp.run-id=k1",
+          "scp-runner-scan:vetted",
+          "trivy"
+        ],
         opts: RUN_OPTS
       },
       {
@@ -182,7 +205,7 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
         args: ["cp", "scan-container-abc:/work/out/.", outputDir],
         opts: RUN_OPTS
       },
-      { file: "docker", args: ["rm", "-f", "scan-container-abc"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-k1"], opts: RM_OPTS }
     ]);
 
     // ...and the run really completed, so none of the above passed by nothing having happened.
@@ -225,6 +248,13 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
           "create",
           "--network",
           "scp-scan-egress",
+          "--name",
+          "scp-runner-k2",
+          "--label",
+          "scp.executor=scp-managed-scan",
+          "--label",
+          "scp.run-id=k2",
+
           "-e",
           "SCP_SCAN_DB_DIR=/work/db",
           "-e",
@@ -259,7 +289,7 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
       },
       // THE TEARDOWN TIMEOUT IS NOT THE RUN TIMEOUT. A tenant `timeoutMs` of 123456 does not reach
       // `rm`, which keeps its own literal 30 s and still carries no `maxBuffer`.
-      { file: "/usr/local/bin/docker", args: ["rm", "-f", "scan-container-abc"], opts: RM_OPTS }
+      { file: "/usr/local/bin/docker", args: ["rm", "-f", "scp-runner-k2"], opts: RM_OPTS }
     ]);
 
     expect((await plugin.status(c, ref)).phase).toBe("succeeded");
@@ -287,6 +317,13 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
           "create",
           "--network",
           "none",
+          "--name",
+          "scp-runner-k3",
+          "--label",
+          "scp.executor=scp-managed-scan",
+          "--label",
+          "scp.run-id=k3",
+
           "-e",
           "SCP_SCAN_DB_DIR=/work/db",
           "scp-runner-scan:vetted",
@@ -306,7 +343,7 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
       },
       { file: "docker", args: ["start", "-a", "scan-container-abc"], opts: RUN_OPTS },
       { file: "docker", args: ["cp", "scan-container-abc:/work/out/.", outputDir], opts: RUN_OPTS },
-      { file: "docker", args: ["rm", "-f", "scan-container-abc"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-k3"], opts: RM_OPTS }
     ]);
 
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
@@ -362,6 +399,13 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
           "create",
           "--network",
           "none",
+          "--name",
+          "scp-runner-k3b",
+          "--label",
+          "scp.executor=scp-managed-scan",
+          "--label",
+          "scp.run-id=k3b",
+
           "-e",
           "SCP_SCAN_SCAP_DIR=/work/scap",
           "scp-runner-scan:vetted",
@@ -383,7 +427,7 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
       },
       { file: "docker", args: ["start", "-a", "scan-container-abc"], opts: RUN_OPTS },
       { file: "docker", args: ["cp", "scan-container-abc:/work/out/.", outputDir], opts: RUN_OPTS },
-      { file: "docker", args: ["rm", "-f", "scan-container-abc"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-k3b"], opts: RM_OPTS }
     ]);
 
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
@@ -407,7 +451,19 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
     expect(calls, "the managed-scan FAILED-run Docker sequence changed").toStrictEqual([
       {
         file: "docker",
-        args: ["create", "--network", "none", "scp-runner-scan:vetted", "trivy"],
+        args: [
+          "create",
+          "--network",
+          "none",
+          "--name",
+          "scp-runner-k4",
+          "--label",
+          "scp.executor=scp-managed-scan",
+          "--label",
+          "scp.run-id=k4",
+          "scp-runner-scan:vetted",
+          "trivy"
+        ],
         opts: RUN_OPTS
       },
       {
@@ -416,7 +472,7 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
         opts: RUN_OPTS
       },
       { file: "docker", args: ["start", "-a", "scan-container-abc"], opts: RUN_OPTS },
-      { file: "docker", args: ["rm", "-f", "scan-container-abc"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-k4"], opts: RM_OPTS }
     ]);
 
     const status = await plugin.status(ctx(), ref);
@@ -445,7 +501,9 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
     expect(calls.map((c) => c.args[0])).toStrictEqual(["create", "cp", "start", "cp", "rm"]);
     expect(calls.at(-1)).toStrictEqual({
       file: "docker",
-      args: ["rm", "-f", "scan-container-abc"],
+      // BY NAME, not by the id `create` printed — see managed-iac's golden for why the two
+      // identities differ and which one teardown must use.
+      args: ["rm", "-f", "scp-runner-k5"],
       opts: RM_OPTS
     });
     expect((await plugin.status(ctx(), { externalId: "managed-scan::k5" })).phase).toBe("pending");

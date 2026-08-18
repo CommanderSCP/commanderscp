@@ -125,8 +125,10 @@ describe("@scp/plugin-managed-iac: container isolation (CRITICAL #1)", () => {
     const cpCalls = dockerCalls.filter((c) => c.args[0] === "cp");
     expect(cpCalls.length).toBeGreaterThanOrEqual(2);
     expect(cpCalls.some((c) => c.args[2] === "container-abc123:/workspace")).toBe(true);
-    // The container is always removed afterward.
-    expect(dockerCalls.some((c) => c.args[0] === "rm" && c.args.includes("container-abc123"))).toBe(
+    // The container is always removed afterward — BY THE NAME the plugin chose, not by the id
+    // `create` printed. That is M23.0's defect 1: the name is the only identity that also exists on
+    // the path where `create` itself is what failed, so it is the only one teardown can rely on.
+    expect(dockerCalls.some((c) => c.args[0] === "rm" && c.args.includes("scp-runner-k1"))).toBe(
       true
     );
   });
@@ -250,8 +252,36 @@ describe("@scp/plugin-managed-iac: idempotency + secret redaction", () => {
     expect(status.phase).toBe("succeeded");
     expect(status.detail).not.toContain("super-secret-value");
     expect(status.detail).toContain("***");
-    // The secret WAS injected into the container env (as -e PROVIDER_TOKEN=...), just redacted from evidence.
-    const createArgs = createCall()!.args.join(" ");
-    expect(createArgs).toContain("PROVIDER_TOKEN=super-secret-value");
+
+    // ================================================================================================
+    // THIS ASSERTION IS THE INVERSE OF WHAT IT USED TO BE, AND THE REVERSAL IS THE FIX.
+    // ================================================================================================
+    // It read:
+    //
+    //     // The secret WAS injected into the container env (as -e PROVIDER_TOKEN=...), just
+    //     // redacted from evidence.
+    //     expect(createArgs).toContain("PROVIDER_TOKEN=super-secret-value");
+    //
+    // — an accurate record of M23.0's defect 3, and a test that PINNED it. The credential was on the
+    // `create` argv, readable in the host process table by any local process, and reproduced
+    // verbatim inside `err.message` on every failed `create` (`Command failed: docker create …
+    // -e PROVIDER_TOKEN=super-secret-value …`), which `subprocess-entry.ts` serialises across the
+    // plugin-host RPC boundary and into a server log. "Redacted from the evidence" was true and was
+    // never the channel that mattered.
+    //
+    // The credential now travels as `secretEnv` — a mode-0600 `--env-file` the adapter unlinks the
+    // instant `create` returns. THE POSITIVE HALF (that it still reaches the runner at all) is
+    // pinned in `launch-argv.golden.test.ts`, which snapshots the file's contents while `create` is
+    // in flight; here the claim is only the negative, over EVERY element of EVERY call.
+    for (const call of dockerCalls) {
+      for (const arg of call.args) {
+        expect(arg, `a docker argv carried the credential VALUE: ${arg}`).not.toContain(
+          "super-secret-value"
+        );
+      }
+    }
+    expect(createCall()!.args, "the credential is delivered by env-file, not by -e").toContain(
+      "--env-file"
+    );
   });
 });

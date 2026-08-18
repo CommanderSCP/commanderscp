@@ -1,6 +1,7 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 
@@ -73,6 +74,18 @@ interface ExecFileCall {
 /** Every `execFile` of the run, in the order the plugin issued them. */
 const calls: ExecFileCall[] = [];
 
+/**
+ * WHAT THE TRANSIENT `--env-file` HELD WHILE `create` WAS IN FLIGHT, read by the seam because that
+ * is the only moment it can be read — the adapter unlinks it as soon as `create` returns.
+ *
+ * WITHOUT THIS THE GOLDEN WOULD BE SATISFIED BY A PLUGIN THAT STOPPED PASSING CREDENTIALS AT ALL.
+ * "No `-e AWS_*` on the command line" is exactly what a plugin that dropped `infraCredsSecretKeys`
+ * on the floor also produces, and every assertion here would go green while `tofu apply` silently
+ * lost its provider auth. The positive half — these two values, in this order, actually reached the
+ * runner — has to be measured somewhere, and this is the only place standing at the right moment.
+ */
+const envFiles: { path: string; content: string; mode: number }[] = [];
+
 /** `start` outcome — the failure arm is a rejection carrying stdout/stderr, as `execFile` does. */
 let startOk = true;
 /** Copy-OUT outcome. Only managed-iac swallows a failure here; that is what test 4 measures. */
@@ -87,6 +100,15 @@ vi.mock("node:child_process", () => {
       cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
     ) => {
       calls.push({ file, args, opts });
+      const envFileIndex = args.indexOf("--env-file");
+      if (envFileIndex !== -1) {
+        const path = String(args[envFileIndex + 1]);
+        envFiles.push({
+          path,
+          content: readFileSync(path, "utf8"),
+          mode: statSync(path).mode & 0o777
+        });
+      }
       const sub = args[0];
       if (sub === "create") {
         cb(null, { stdout: "container-abc123\n", stderr: "" });
@@ -129,6 +151,7 @@ let workspaceRoot: string;
 
 beforeEach(async () => {
   calls.length = 0;
+  envFiles.length = 0;
   startOk = true;
   cpOutOk = true;
   workspaceRoot = await mkdtemp(join(tmpdir(), "managed-iac-golden-"));
@@ -167,6 +190,27 @@ function workspaceDir(targetRef = "t1"): string {
   return join(workspaceRoot, "org-1", targetRef);
 }
 
+/**
+ * The ONE argv element here that cannot be a literal: the transient `--env-file` carries a fresh
+ * UUID per run. Its SHAPE is asserted — inside the plugin's own state dir (`dirname(statePath)`,
+ * which is `workspaceRoot` for these contexts), named for the run — and only then is it substituted,
+ * so every other byte of the argv stays a literal. Same technique, and the same reason, as
+ * `@scp/plugin-managed-dep`'s `normalise()` for its per-run `mkdtemp`.
+ */
+function normaliseEnvFile(recorded: ExecFileCall[], runId: string): ExecFileCall[] {
+  const create = recorded.find((c) => c.args[0] === "create");
+  const index = create?.args.indexOf("--env-file") ?? -1;
+  if (index === -1) return recorded;
+  const path = String(create!.args[index + 1]);
+  expect(dirname(path), "the credential file was staged outside the plugin's own state dir").toBe(
+    workspaceRoot
+  );
+  expect(basename(path), `the credential file's name: ${basename(path)}`).toMatch(
+    new RegExp(`^scp-secret-env-${runId}-[0-9a-f-]{36}$`)
+  );
+  return recorded.map((c) => ({ ...c, args: c.args.map((a) => (a === path ? "<ENV-FILE>" : a)) }));
+}
+
 describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () => {
   it("DEFAULT — plan, no credentials: create / cp in / start / cp out / rm", async () => {
     const plugin = createManagedIacExecutorPlugin();
@@ -181,7 +225,22 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     expect(calls, "the managed-iac Docker launch argv changed").toStrictEqual([
       {
         file: "docker",
-        args: ["create", "--network", "none", "scp-runner-iac:vetted", "plan"],
+        args: [
+          "create",
+          "--network",
+          "none",
+          // THE NAME AND THE LABELS (M23.0 defect 1). The name is derived from the idempotency key,
+          // so a retry of `k1` addresses the same container; the labels are what makes an orphan
+          // findable with `docker ps -a --filter label=scp.executor=scp-managed-iac`.
+          "--name",
+          "scp-runner-k1",
+          "--label",
+          "scp.executor=scp-managed-iac",
+          "--label",
+          "scp.run-id=k1",
+          "scp-runner-iac:vetted",
+          "plan"
+        ],
         opts: RUN_OPTS
       },
       {
@@ -195,8 +254,12 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
         args: ["cp", "container-abc123:/workspace/.", w],
         opts: RUN_OPTS
       },
-      { file: "docker", args: ["rm", "-f", "container-abc123"], opts: RM_OPTS }
+      // TEARDOWN ADDRESSES THE NAME, not the id `create` printed — the only identity that also
+      // exists on the path where `create` is the thing that failed.
+      { file: "docker", args: ["rm", "-f", "scp-runner-k1"], opts: RM_OPTS }
     ]);
+    // No credentials in this context, so no `--env-file` was written at all.
+    expect(envFiles).toStrictEqual([]);
 
     // ...and the run really completed, so none of the above passed by nothing having happened.
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
@@ -204,9 +267,24 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
 
   it("EVERY OPTIONAL INPUT PRESENT — custom binary, network, timeout, two creds, and a rollback env", async () => {
     // The maximal shape: a server-injected `dockerBinary` and `networkMode`, a tenant `timeoutMs`,
-    // two resolved infra credentials, and the `PRIOR_STATE_FILE` a rollback appends. The ORDER of
-    // the `-e` pairs is `Object.entries({...infraCreds, ...extraEnv})` — the config's own key order
-    // first, the rollback's env last — and that order is part of the record.
+    // two resolved infra credentials, and the `PRIOR_STATE_FILE` a rollback appends.
+    //
+    // THE TWO `-e AWS_*` PAIRS THIS GOLDEN USED TO RECORD ARE GONE, AND THAT IS THE POINT. M23.0
+    // recorded them as defect 3: resolved credentials on the `create` argv, readable from the host
+    // process table by any local process, and — worse, because it crosses a machine boundary —
+    // reproduced verbatim in `err.message` when `create` fails, which `subprocess-entry.ts` ships
+    // across the plugin-host RPC boundary into a server log. They now travel as `secretEnv`, which
+    // the Docker adapter delivers through a mode-0600 `--env-file` unlinked the instant `create`
+    // returns.
+    //
+    // `PRIOR_STATE_FILE` STAYS ON THE COMMAND LINE, and the difference is the whole design: it is a
+    // path inside the container, not a secret. The split is along the SECRECY axis because that is
+    // the axis the Kubernetes adapter must branch on (Secret + `envFrom` vs `env[].value`) — not a
+    // reflex to hide every environment variable.
+    //
+    // WHAT IS STILL PINNED: the env-file's CONTENTS and their ORDER (the config's own key order),
+    // asserted below from a snapshot the seam takes while `create` is in flight. Without that, this
+    // test would be equally green for a plugin that stopped resolving credentials altogether.
     const plugin = createManagedIacExecutorPlugin();
     const secrets: Record<string, string> = {
       "aws/id": "AKIAEXAMPLE",
@@ -234,17 +312,27 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     // `workspaceDirFor` replaces every character outside [A-Za-z0-9._-] with `_`.
     const w = workspaceDir("prod_eu-west-1");
     const opts = { timeout: 123_456, maxBuffer: 16 * 1024 * 1024 };
-    expect(calls, "the managed-iac maximal Docker launch argv changed").toStrictEqual([
+    expect(
+      normaliseEnvFile(calls, "k2"),
+      "the managed-iac maximal Docker launch argv changed"
+    ).toStrictEqual([
       {
         file: "/usr/local/bin/docker",
         args: [
           "create",
           "--network",
           "bridge",
-          "-e",
-          "AWS_ACCESS_KEY_ID=AKIAEXAMPLE",
-          "-e",
-          "AWS_SECRET_ACCESS_KEY=s3cr3t-value",
+          "--name",
+          "scp-runner-k2",
+          "--label",
+          "scp.executor=scp-managed-iac",
+          "--label",
+          "scp.run-id=k2",
+          // WHERE THE TWO `-e AWS_*` PAIRS USED TO BE — and before the surviving non-secret `-e`, so
+          // an explicit `-e` still wins over an env-file entry of the same name (docker's own
+          // precedence rule).
+          "--env-file",
+          "<ENV-FILE>",
           "-e",
           "PRIOR_STATE_FILE=state-history/2026-08-17.tfstate",
           "scp-runner-iac:vetted",
@@ -261,8 +349,31 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
       { file: "/usr/local/bin/docker", args: ["cp", "container-abc123:/workspace/.", w], opts },
       // THE TEARDOWN TIMEOUT IS NOT THE RUN TIMEOUT. A tenant `timeoutMs` of 123456 does not reach
       // `rm`, which keeps its own literal 30 s and still carries no `maxBuffer`.
-      { file: "/usr/local/bin/docker", args: ["rm", "-f", "container-abc123"], opts: RM_OPTS }
+      { file: "/usr/local/bin/docker", args: ["rm", "-f", "scp-runner-k2"], opts: RM_OPTS }
     ]);
+
+    // THE CREDENTIALS REALLY REACHED THE RUNNER — the positive half, which "no `-e AWS_*`" alone
+    // cannot distinguish from "the plugin stopped passing credentials".
+    expect(envFiles, "the resolved credentials did not reach the runner at all").toHaveLength(1);
+    expect(envFiles[0]!.content).toBe(
+      "AWS_ACCESS_KEY_ID=AKIAEXAMPLE\nAWS_SECRET_ACCESS_KEY=s3cr3t-value\n"
+    );
+    // Owner-only while it existed, and gone by the time `create` had returned.
+    expect(envFiles[0]!.mode, "the credential file was readable by other local users").toBe(0o600);
+    expect(existsSync(envFiles[0]!.path), "the credential file outlived its `create`").toBe(false);
+
+    // AND NOT ON ANY COMMAND LINE, ANYWHERE — asserted over every element of every call, so a step
+    // other than `create` that started echoing the spec is caught here too.
+    for (const call of calls) {
+      for (const arg of call.args) {
+        expect(arg, `a docker argv carried a credential VALUE: ${arg}`).not.toContain(
+          "s3cr3t-value"
+        );
+        expect(arg, `a docker argv carried a credential VALUE: ${arg}`).not.toContain(
+          "AKIAEXAMPLE"
+        );
+      }
+    }
 
     expect((await plugin.status(c, ref)).phase).toBe("succeeded");
   });
@@ -285,13 +396,25 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     expect(calls, "the managed-iac FAILED-run Docker sequence changed").toStrictEqual([
       {
         file: "docker",
-        args: ["create", "--network", "none", "scp-runner-iac:vetted", "apply"],
+        args: [
+          "create",
+          "--network",
+          "none",
+          "--name",
+          "scp-runner-k3",
+          "--label",
+          "scp.executor=scp-managed-iac",
+          "--label",
+          "scp.run-id=k3",
+          "scp-runner-iac:vetted",
+          "apply"
+        ],
         opts: RUN_OPTS
       },
       { file: "docker", args: ["cp", `${w}/.`, "container-abc123:/workspace"], opts: RUN_OPTS },
       { file: "docker", args: ["start", "-a", "container-abc123"], opts: RUN_OPTS },
       { file: "docker", args: ["cp", "container-abc123:/workspace/.", w], opts: RUN_OPTS },
-      { file: "docker", args: ["rm", "-f", "container-abc123"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-k3"], opts: RM_OPTS }
     ]);
 
     const status = await plugin.status(ctx(), ref);
@@ -317,7 +440,7 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     expect(calls.map((c) => c.args[0])).toStrictEqual(["create", "cp", "start", "cp", "rm"]);
     expect(calls.at(-1)).toStrictEqual({
       file: "docker",
-      args: ["rm", "-f", "container-abc123"],
+      args: ["rm", "-f", "scp-runner-k4"],
       opts: RM_OPTS
     });
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");

@@ -13,6 +13,7 @@ import type {
 } from "@scp/plugin-api";
 import {
   resolveDockerRunnerLauncher,
+  toRunnerRunId,
   type ResolveRunnerLauncher,
   type RunnerCopyIn
 } from "@scp/runner-launcher";
@@ -157,6 +158,8 @@ interface RunResult {
 async function runScanContainer(
   config: ManagedScanConfig,
   resolveLauncher: ResolveRunnerLauncher,
+  /** This run's own key — see `RunnerSpec.runId` on why the CALLER supplies the identity. */
+  runKey: string,
   method: string,
   inputDir: string,
   outputDir: string,
@@ -181,6 +184,12 @@ async function runScanContainer(
   }
 
   return resolveLauncher({ dockerBinary: config.dockerBinary }).run({
+    // The same key `externalId` is built from, so a container found orphaned can be matched to the
+    // run the commander is waiting on.
+    runId: toRunnerRunId(runKey),
+    // ATTRIBUTION FOR AN ORPHAN (M23.0 defect 1): `docker ps -a --filter
+    // label=scp.executor=scp-managed-scan` finds every container this executor ever left behind.
+    labels: { "scp.executor": "scp-managed-scan", "scp.run-id": toRunnerRunId(runKey) },
     image: config.runnerImage,
     // The method + any method-specific run.sh args (openscap: profile, datastream) are the
     // ENTRYPOINT argv — server-resolved, never a mount and never a network toggle.
@@ -189,7 +198,14 @@ async function runScanContainer(
     // operator-allowlisted registry pulls"), so the operator setting is legitimate. Server-injected
     // (default "none"), never tenant.
     networkMode: config.networkMode,
+    // BOTH `SCP_SCAN_*_DIR` ARE CONTAINER PATHS, NOT SECRETS, so they stay on the command line as
+    // `-e` and this plugin's five golden `create` lines do not move by a byte beyond the name and
+    // labels. The secrecy split is not a "hide the environment" reflex; it is the axis the
+    // Kubernetes adapter must branch on, and mislabelling a path as a secret would cost a Secret
+    // object per run for nothing.
     env,
+    // NO CREDENTIAL AT ALL. A scan reads bytes the server already pulled; the runner holds nothing.
+    secretEnv: [],
     copyIn,
     // ONLY ON SUCCESS, AND NOT GUARDED — the opposite of managed-iac on both axes. A failed scan
     // must produce NO evidence (fail-closed: the commander writes none and E6 then refuses), and a
@@ -230,7 +246,12 @@ async function trigger(
   const config = asConfig(ctx.config);
   const params = (intent.parameters ?? {}) as Partial<ManagedScanIntentParameters>;
   const method = params.method ?? "";
-  const externalId = `managed-scan::${intent.idempotencyKey ?? `${method}:${Date.now()}`}`;
+  // THE RUN KEY AND THE EXTERNAL ID ARE THE SAME FACT, SPELLED FOR TWO AUDIENCES. `externalId` is
+  // namespaced because the server stores refs from every executor in one column; `runKey` is the
+  // bare key, because it becomes a container NAME and `scp-runner-managed-scan--k1` would carry the
+  // plugin twice — the `scp.executor` label already says which executor this is.
+  const runKey = intent.idempotencyKey ?? `${method}:${Date.now()}`;
+  const externalId = `managed-scan::${runKey}`;
 
   if (!SUPPORTED_METHODS.has(method)) {
     const detail = `managed-scan: unsupported method '${method}' (this runner image ships 'trivy', 'trivy-vm' and 'openscap')`;
@@ -254,6 +275,7 @@ async function trigger(
   const result = await runScanContainer(
     config,
     resolveLauncher,
+    runKey,
     method,
     params.inputDir,
     params.outputDir,

@@ -153,6 +153,12 @@ describe("M23.1: managed-dep launches through the injected RunnerLauncher", () =
     // flipped at once and the whole repo stayed green. Asserting two of eight fields here was the
     // reason a deletion could take the rest to zero.
     expect(seen[0], "managed-dep's RunnerSpec changed").toStrictEqual({
+      // THE INTENT'S OWN IDEMPOTENCY KEY, as a LITERAL — not `toRunnerRunId("seam-2")`, because an
+      // expectation re-derived from the code it guards cannot detect a change to that code. It is
+      // the bare key and not the namespaced `externalId`: this becomes a container NAME, and the
+      // `scp.executor` label already says which executor made it.
+      runId: "seam-2",
+      labels: { "scp.executor": "scp-managed-dep", "scp.run-id": "seam-2" },
       image: "scp-runner-dep:vetted",
       // FIVE operands for npm — the edit is described entirely on argv. The anchor pair is appended
       // only for the SPLIT shapes (M21.7); npm's parser reports no line, so it is absent here, and
@@ -162,8 +168,11 @@ describe("M23.1: managed-dep launches through the injected RunnerLauncher", () =
       // qualifier, so `--network none` must not become an operator-settable default (ADR-0032 §8d).
       // The port takes the resolved value; the decision stays at this call site.
       networkMode: "none",
-      // NO ENVIRONMENT AT ALL. The runner holds no credential; there is nothing to pass it.
+      // NO ENVIRONMENT AT ALL, SECRET OR OTHERWISE. The runner holds no credential — the
+      // orchestrator does, on this side of the boundary — so both lists are empty and no
+      // `--env-file` is ever written for this plugin.
       env: [],
+      secretEnv: [],
       copyIn: [{ hostDir: join(runDir, "in"), containerPath: "/work/in" }],
       // ONLY ON SUCCESS and NOT guarded — copying out a partial manifest would put unverified bytes
       // where the verifiers read from. `trigger()`'s outer catch is what turns the resulting

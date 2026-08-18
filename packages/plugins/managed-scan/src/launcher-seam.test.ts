@@ -112,6 +112,10 @@ describe("M23.1: managed-scan launches through the injected RunnerLauncher", () 
     // the four preload combinations; these six fields now also live in a file that carries no
     // deletion hazard in its header.
     expect(seen[0], "managed-scan's RunnerSpec changed").toStrictEqual({
+      // Derived from the same key `externalId` is built from, so an orphaned container is traceable
+      // to the run the commander is waiting on. Caller-supplied, never adapter-minted.
+      runId: "seam-2",
+      labels: { "scp.executor": "scp-managed-scan", "scp.run-id": "seam-2" },
       image: "scp-runner-scan:vetted",
       // trivy takes no extra run.sh args; only `openscap` appends the two positional ones (and
       // appends them EVEN WHEN EMPTY, which is the golden's business).
@@ -120,8 +124,14 @@ describe("M23.1: managed-scan launches through the injected RunnerLauncher", () 
       // ("excepting operator-allowlisted registry pulls"), so the operator setting is legitimate.
       networkMode: "none",
       // No preload dirs in this intent, so NEITHER `-e` pair fires. The two are INDEPENDENTLY
-      // conditional; that independence is the golden's four-combination matrix.
+      // conditional; that independence is the golden's four-combination matrix. They stay in `env`
+      // even when they DO fire: `SCP_SCAN_DB_DIR`/`SCP_SCAN_SCAP_DIR` are container PATHS, not
+      // secrets, which is why this plugin's five golden `create` lines did not move when the
+      // secrecy split landed.
       env: [],
+      // NO CREDENTIAL AT ALL. A scan reads bytes the server already pulled; the runner holds
+      // nothing, so no `--env-file` is ever written for this plugin.
+      secretEnv: [],
       // The server-pulled OCI layout, always, and alone when no cache is preloaded.
       copyIn: [{ hostDir: join(scratch, "oci"), containerPath: "/work/image" }],
       // THE OPPOSITE OF managed-iac ON BOTH AXES, and fail-closed on purpose: a failed scan must

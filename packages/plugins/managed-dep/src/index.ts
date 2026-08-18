@@ -12,7 +12,11 @@ import type {
   PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
-import { resolveDockerRunnerLauncher, type ResolveRunnerLauncher } from "@scp/runner-launcher";
+import {
+  resolveDockerRunnerLauncher,
+  toRunnerRunId,
+  type ResolveRunnerLauncher
+} from "@scp/runner-launcher";
 import {
   coordinateRuleCandidates,
   isDependencyEcosystem,
@@ -610,11 +614,18 @@ function asConfig(config: unknown): ManagedDepConfig {
 async function runEditorContainer(
   config: ManagedDepConfig,
   resolveLauncher: ResolveRunnerLauncher,
+  /** This run's own key — see `RunnerSpec.runId` on why the CALLER supplies the identity. */
+  runKey: string,
   spec: ManifestBumpSpec,
   inDir: string,
   outDir: string
 ): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
   return resolveLauncher({ dockerBinary: config.dockerBinary }).run({
+    // The same key `externalId` is built from, so an orphan is traceable to the bump it was editing.
+    runId: toRunnerRunId(runKey),
+    // ATTRIBUTION FOR AN ORPHAN (M23.0 defect 1) — the only way an operator finds a container left
+    // behind by a `create` that timed out after the daemon had already made it.
+    labels: { "scp.executor": "scp-managed-dep", "scp.run-id": toRunnerRunId(runKey) },
     image: config.runnerImage,
     // The edit is described ENTIRELY on argv — five strings that name a declaration and a version,
     // plus (M21.7, split shapes only) the two that name WHICH LINE carries it. Nothing here can be a
@@ -635,8 +646,11 @@ async function runEditorContainer(
     ],
     // THE LITERAL, never a config read — see {@link RUNNER_NETWORK_MODE}.
     networkMode: RUNNER_NETWORK_MODE,
-    // NO ENVIRONMENT AT ALL. The runner holds no credential; there is nothing to pass it.
+    // NO ENVIRONMENT AT ALL, SECRET OR OTHERWISE. The runner holds no credential — the orchestrator
+    // does, on this side of the boundary (charter `scp-managed-dep`, amended 2026-08-15) — so both
+    // lists are empty and no `--env-file` is ever written for this plugin.
     env: [],
+    secretEnv: [],
     copyIn: [{ hostDir: inDir, containerPath: "/work/in" }],
     // Only on success — there is nothing to salvage from a runner that did not finish the edit, and
     // copying out a partial manifest would put unverified bytes where the verifiers read from. Not
@@ -763,7 +777,9 @@ async function trigger(
   resolveLauncher: ResolveRunnerLauncher
 ): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
-  const externalId = `managed-dep::${intent.idempotencyKey ?? `${Date.now()}`}`;
+  // THE BARE KEY, because it becomes a container NAME — see managed-scan's note of the same shape.
+  const runKey = intent.idempotencyKey ?? `${Date.now()}`;
+  const externalId = `managed-dep::${runKey}`;
   const cached = outcomes.get(externalId);
   if (cached) return { externalId };
 
@@ -868,7 +884,7 @@ async function trigger(
       await mkdir(inDir, { recursive: true });
       await mkdir(outDir, { recursive: true });
       await writeFile(join(inDir, fileName), original.content, "utf8");
-      const run = await runEditorContainer(config, resolveLauncher, spec, inDir, outDir);
+      const run = await runEditorContainer(config, resolveLauncher, runKey, spec, inDir, outDir);
       if (!run.succeeded) {
         return {
           succeeded: false,

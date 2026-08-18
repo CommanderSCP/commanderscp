@@ -13,7 +13,11 @@ import type {
   PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
-import { resolveDockerRunnerLauncher, type ResolveRunnerLauncher } from "@scp/runner-launcher";
+import {
+  resolveDockerRunnerLauncher,
+  toRunnerRunId,
+  type ResolveRunnerLauncher
+} from "@scp/runner-launcher";
 
 /**
  * `@scp/plugin-managed-iac` — the `scp-managed-iac` executor (DESIGN.md §12 Mode 2, charter's
@@ -115,6 +119,23 @@ function workspaceDirFor(
   return join(config.workspaceRoot, safe(orgId), safe(targetRef ?? "default"));
 }
 
+/**
+ * WHERE THE TRANSIENT `--env-file` IS STAGED — the plugin's OWN server-governed state dir, which is
+ * `dirname(statePath)`: `resolveExecutorPluginInstance` always injects a durable per-instance
+ * `statePath` under `pluginStateDir()` (executor-bindings-repo.ts, "always set"), so in production
+ * this is the same directory the dedup cache already lives in.
+ *
+ * NOT the workspace: the workspace is `docker cp`'d INTO the container, and a credential file must
+ * never be a candidate for that. NOT `os.tmpdir()` either — the port refuses to choose, precisely
+ * because a shared temp dir is not a place a credential belongs. The fallback is for this package's
+ * own unit tests, which are the only callers that leave `statePath` unset.
+ */
+function secretEnvDirFor(config: ManagedIacConfig): string {
+  return config.statePath
+    ? dirname(config.statePath)
+    : join(config.workspaceRoot, ".scp-runner-secret-env");
+}
+
 /** Replaces every occurrence of each resolved secret VALUE with `***` (MINOR — never leak a
  *  credential back to a tenant via `plan.json`/stdout evidence surfaced through `status()`).
  *  Plain split/join, not regex, since secret values may contain regex metacharacters. */
@@ -195,24 +216,45 @@ async function runRunnerContainer(
   resolveLauncher: ResolveRunnerLauncher,
   action: "plan" | "apply" | "rollback",
   workspaceDir: string,
+  /** The dedup cache key for this run — see {@link RunnerSpec.runId} on why the CALLER supplies it. */
+  cacheKey: string,
   extraEnv: Record<string, string> = {}
 ): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
   const infraCreds = await resolveInfraCreds(ctx, config);
   const secretValues = Object.values(infraCreds);
 
   const result = await resolveLauncher({ dockerBinary: config.dockerBinary }).run({
+    // DERIVED FROM THE IDEMPOTENCY KEY, so a retry of the same run addresses the same container
+    // name. That is the whole reason `runId` is caller-supplied rather than adapter-minted: no
+    // adapter could know that two launches are the same run, and this plugin's dedup cache is
+    // exactly the thing that does. `toRunnerRunId` is injective, so two DIFFERENT keys can never
+    // collapse onto one name (which would make one run tear down the other's container).
+    runId: toRunnerRunId(cacheKey),
+    // ATTRIBUTION FOR AN ORPHAN (M23.0 defect 1). A container the daemon made for a `create` that
+    // then timed out is now findable — `docker ps -a --filter label=scp.executor=scp-managed-iac`.
+    labels: { "scp.executor": "scp-managed-iac", "scp.run-id": toRunnerRunId(cacheKey) },
     image: config.runnerImage,
     // The single operand this runner takes: which tofu verb `run.sh` should perform.
     operands: [action],
     // A CONFIG READ HERE, deliberately — unlike managed-dep, whose charter clause carries no
     // operator qualifier. `networkMode` is server-injected (default "none"), never tenant.
     networkMode: config.networkMode,
-    // THE ONE PLACE CREDENTIALS ARE MATERIALIZED, on the child `docker` invocation only. The order
-    // is the config's own key order first, the action's extra env last — pinned by the golden.
-    // M23.0 recorded that this puts them on the host process table; the Kubernetes arm takes
-    // Secret-backed env instead of inheriting the argv shape (M23.2), which is why `env` is a list
-    // of entries rather than an argv fragment.
-    env: Object.entries({ ...infraCreds, ...extraEnv }).map(([k, v]) => `${k}=${v}`),
+    // THE NON-SECRET ENV — `PRIOR_STATE_FILE` and anything else an action appends. Still `-e`, and
+    // rightly so: it is a path inside the container, and hiding it buys nothing while making the
+    // command line harder to read.
+    env: Object.entries(extraEnv).map(([k, v]) => `${k}=${v}`),
+    // THE CREDENTIALS, AND THE ONE PLACE THEY ARE MATERIALIZED. M23.0 recorded that these rode the
+    // `create` argv, readable from the host process table by any local process; they now travel as
+    // `secretEnv`, which the Docker adapter delivers through a mode-0600 `--env-file` it unlinks the
+    // instant `create` returns. STILL PARTIAL, and named as such at `RunnerSpec.secretEnv`: the
+    // value is in `docker inspect` for the container's life and on a disk for one `create`. The
+    // split's real payoff is M23.2 — Kubernetes maps `secretEnv` to a per-run Secret, where an
+    // undifferentiated list would have become `env[].value` and put the credential in etcd.
+    //
+    // THE ORDER IS THE CONFIG'S OWN KEY ORDER, unchanged, and `extraEnv` is no longer merged in
+    // ahead of it — the two lists are now disjoint by construction rather than by spelling.
+    secretEnv: Object.entries(infraCreds).map(([k, v]) => `${k}=${v}`),
+    secretEnvDir: secretEnvDirFor(config),
     // COPIED, never bind-mounted (CRITICAL #1 + the dind-share fix): there is no host path that
     // becomes a container mount, so a `workspaceDir: "/"`-style escape is structurally impossible.
     copyIn: [{ hostDir: workspaceDir, containerPath: "/workspace" }],
@@ -303,6 +345,7 @@ async function trigger(
         resolveLauncher,
         "rollback",
         workspaceDir,
+        cacheKey,
         {
           PRIOR_STATE_FILE: priorStateFile
         }
@@ -318,7 +361,14 @@ async function trigger(
     const sourceFiles = intent.parameters?.sourceFiles as Record<string, string> | undefined;
     if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
     const iacAction = (intent.parameters?.iacAction as "plan" | "apply" | undefined) ?? "plan";
-    const result = await runRunnerContainer(ctx, config, resolveLauncher, iacAction, workspaceDir);
+    const result = await runRunnerContainer(
+      ctx,
+      config,
+      resolveLauncher,
+      iacAction,
+      workspaceDir,
+      cacheKey
+    );
     outcome = {
       externalId,
       succeeded: result.succeeded,
