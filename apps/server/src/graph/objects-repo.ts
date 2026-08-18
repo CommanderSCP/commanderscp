@@ -290,12 +290,16 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // carries it on (see the long comment there, and `graph/containment.ts` for the three refusals).
   //
   // It was installed on the MOVE path only, and the reasoning that left creates out was "a fresh id
-  // cannot already be an ancestor of the parent". That is true, and it covers exactly the refusals
-  // that ASK about the child's id — the CYCLE, and the truncation refusal that exists only to make
-  // the cycle answer sound. It says nothing about the third, which is a property of the PARENT's
-  // chain: the parent does not itself reach the org root, because an ancestor was soft-deleted.
-  // Hence `childIsNew` — refusal 3 alone, and see `containment.ts` for why running the other two on
-  // a create would be a new refusal rather than an invariant (it lowers a documented nesting limit).
+  // cannot already be an ancestor of the parent". That is true, and it covers exactly the ONE
+  // refusal that ASKS about the child's id — the CYCLE. It says nothing about the other two, which
+  // are properties of the PARENT's chain and of the row about to be written: the parent does not
+  // itself reach the org root (an ancestor was soft-deleted), and — since the owner ruling of
+  // 2026-08-18 — the new row would sit PAST `CONTAINMENT_WALK_MAX_DEPTH` (a parent at exactly the
+  // bound has a complete chain, and a child under it is the ungovernable hop-eleven row every walk
+  // refuses). Hence `childIsNew` — refusal 1 skipped, refusals 2 and 3 run, refusal 2 with height 0
+  // and therefore without a downward walk; `containment.ts` carries the arithmetic and the retired
+  // "running 2 on a create lowers a documented limit" reasoning, which was written against the
+  // pre-ADR-0035 truncating walk.
   //
   // MEASURED on the real doors before this call existed, not reasoned about: soft-delete a domain,
   // then `POST /services {domainId: <a service still inside it>}` answered **201**, and the ORG-ROOT
@@ -318,8 +322,10 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   // PROVABLE no-op there, not because it is cheap enough to be worth risking. All three refusals are
   // decided before the query returns:
   //
-  //   - refusals 1 and 2 (cycle, and the truncation that backs it) do not run at all on a create:
-  //     `childIsNew` is true, which is the whole point of that flag (see `containment.ts`).
+  //   - refusal 1 (cycle) does not run at all on a create: `childIsNew` is true, which is the whole
+  //     point of that flag (see `containment.ts`).
+  //   - refusal 2 (the depth bound) is decided in advance: the org root sits at hops 0, the new row
+  //     has no subtree, so `0 + 1 + 0` is under any bound worth having — no walk can change it.
   //   - refusal 3 asks `ids.has(orgId)` over `containmentChain(orgId, orgId)`, and that walk seeds
   //     itself with the target row at depth 0. The org root IS the target, so it is in the set no
   //     matter what the recursive term finds — the answer cannot be anything but "rooted", however
@@ -999,8 +1005,20 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     // wedges that channel over a row this domain does not own and has no standing to referee. If
     // `resolveImportDomainId` ever stops filtering tombstones, IT is the place to fix that — not
     // here, where the blast radius is a peer's entire sync rather than one entry.
+    //
+    // "PROVABLY INERT" is true of the LIVENESS half only. It is NOT true of the DEPTH half of the walk
+    // below: `resolveImportDomainId` checks that the parent is a live in-org row and nothing about
+    // how deep that row sits, so an imported row CAN land past `CONTAINMENT_WALK_MAX_DEPTH` (a
+    // peer-authored nesting this org's tree cannot hold). Accepted, per the owner ruling of
+    // 2026-08-18, for the reason above — the receiver does not referee a peer-authored containment,
+    // and this branch's failure mode is per-CHANNEL, not per-entry — and stated here so "provably
+    // inert" is never read as covering it. `containmentParentChainForDoor`'s conversion branch is
+    // what answers a local write UNDER such a row.
     await resolveContainmentParent(tx, input.orgId, nextDomainId);
 
+    // The MOVE half of the door invariant (owner ruling 2026-08-18): the row's whole live subtree
+    // moves with it, so `assertRootedContainmentParent`'s refusal 2 counts
+    // `hops(parent) + 1 + height(row)` here — `childIsNew` false is what makes it walk downward.
     await assertRootedContainmentParent(tx, {
       orgId: input.orgId,
       childId: existing.id,
@@ -1293,6 +1311,13 @@ export async function upsertObjectByUrn(
     // id, so the actor is the federation import subject rather than a tenant — which is precisely
     // why it is worth recording: a peer's reconciliation can re-parent a local row, and that must be
     // as visible as a local operator doing it.
+    //
+    // This `domain_id` write carries NO containment door — neither the root-reachability walk nor
+    // the depth bound (`assertRootedContainmentParent`). It is `federationImport`-only by the guard
+    // above, so it wears the same carve-out `updateObject` states at its own call: the receiver does
+    // not referee a peer-authored containment, and this branch's failure mode is per-CHANNEL (no
+    // try/catch around `object_upsert`). Named here so the census of `domain_id` write sites reads
+    // "two sites, one door, one deliberate carve-out" and not "one site forgotten".
     const reachBefore =
       nextDomainId !== existing.domainId
         ? await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)

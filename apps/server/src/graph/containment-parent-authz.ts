@@ -85,11 +85,14 @@ import { resolveContainmentParent } from "./objects-repo.js";
  * The CREATE branch of this function deliberately does NOT call it — `createObject` does, and that
  * is the only placement that covers apply. It went in late: the invariant shipped on the move path
  * alone, on the reasoning that "a fresh id cannot already be an ancestor". That covers the CYCLE
- * refusal and the truncation refusal that backs it, and nothing else; root-reachability is a
- * property of the PARENT's chain, so a create under an unrooted parent produced the same unreachable
- * row through a different verb.
+ * refusal and nothing else; root-reachability is a property of the PARENT's chain, so a create under
+ * an unrooted parent produced the same unreachable row through a different verb — and the DEPTH
+ * bound (owner ruling 2026-08-18) is a property of the parent's chain plus the row being written, so
+ * a create under a parent at exactly the bound planted a row past it. `createObject` runs both on a
+ * create (`childIsNew` skips only the cycle question).
  * `routes/containment-move-cycle-and-source-authz.integration.test.ts` pins the move half,
- * `routes/containment-root-source-and-create-rooting.integration.test.ts` the create half.
+ * `routes/containment-root-source-and-create-rooting.integration.test.ts` the create half, and
+ * `graph/containment-depth-doors.integration.test.ts` the depth bound at every door.
  */
 export interface DeclaredContainmentParent {
   orgId: string;
@@ -157,7 +160,10 @@ export async function resolveDeclaredContainmentParent(
   // and `updateObject` calls the SAME function as the repo-side invariant. Called here as well
   // rather than only there because this is the doors' choke point: an operator gets the 400 that
   // names the loop before an authorization round trip, and a door that grows a new create/update
-  // branch inherits the refusal from the helper it already had to call.
+  // branch inherits the refusal from the helper it already had to call. Since the depth-bound half
+  // walks the moved row's SUBTREE too (owner ruling 2026-08-18), a refused-for-depth move pays that
+  // bounded downward walk here and, if it gets that far, again in `updateObject`; a move is rare
+  // enough that the diagnostic-before-authz ordering is worth the second bounded query.
   await assertRootedContainmentParent(tx, {
     orgId: input.orgId,
     childId: current.id,

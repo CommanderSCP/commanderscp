@@ -105,7 +105,9 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
   // -----------------------------------------------------------------------------------------
 
   it("POLICY resolution walks the nesting: a policy scoped at the PARENT domain governs a component whose domain is the CHILD domain", async () => {
-    const parentDomain = await admin.object("domain").create({ name: uniq("policy-parent-domain") });
+    const parentDomain = await admin
+      .object("domain")
+      .create({ name: uniq("policy-parent-domain") });
     const childDomain = await admin
       .object("domain")
       .create({ name: uniq("policy-child-domain"), domainId: parentDomain.id });
@@ -265,14 +267,17 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     // The other half of the old hazard: a component created under the deepest allowed domain used
     // to get a silently truncated chain whose inversion presented a mid-level domain as the org
     // root. Now NOTHING is silent — walk back from the deepest domain: every component whose chain
-    // would exceed the bound is refused LOUDLY, naming the depth, and the deepest one whose chain
-    // FITS must still produce the honest shape (organization at index 0). WHERE the loud refusal
-    // lands moved with M22 (#244): the create of a component under a service writes a `contains`
-    // edge, and M22's governance-reach capture walks the NEW component's chain in that same
-    // transaction — so a component whose chain would exceed the bound is refused AT CREATE (the
-    // walk's own ADR-0035 refusal, before an unreadable row can exist) rather than created and then
-    // refused on read. Either arm is the loudness contract; a SILENT create-then-read (a chain that
-    // comes back shortened) is what this must never see again.
+    // would exceed the bound is refused LOUDLY AT CREATE, naming the depth, and the deepest one
+    // whose chain FITS must still produce the honest shape (organization at index 0).
+    //
+    // FLIPPED 2026-08-18 (owner ruling; ADR-0035 Consequences; `containment-depth-doors.
+    // integration.test.ts`). This loop used to tolerate EITHER arm — a create refused loudly, OR a
+    // create that succeeded and whose chain read then threw — because before the doors counted the
+    // row they were writing, a component under the deepest allowed domain WAS created (201) and
+    // was refused only when something walked it (M22's governance-reach capture, in an org with a
+    // policy; a chain read, otherwise). That second arm is now a FAILURE, not a contract: the door
+    // invariant says no write leaves a live row past the bound, so a successful create MUST yield
+    // a complete chain. A create-then-409-on-read here means a door went quiet.
     const deepSvc = await admin.services.create({ name: uniq("svc-deep") });
     let sawDepthRefusal = false;
     let honestChain: Awaited<ReturnType<typeof containmentChain>> | null = null;
@@ -288,36 +293,32 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
           domainId: candidate.id
         });
       } catch (e) {
-        // The create itself refused at this depth — it must be the LOUD depth refusal (the authz
-        // deny-probe's, or the reach capture's walk), never a permission-shaped 403 or a silent
+        // The create itself refused at this depth — it must be the LOUD depth refusal (the door's
+        // "would exceed", or the authz deny-probe's), never a permission-shaped 403 or a silent
         // success. Step up afterwards.
-        const text =
-          e instanceof ScpApiError ? JSON.stringify(e.problem ?? e.message) : String(e);
+        const text = e instanceof ScpApiError ? JSON.stringify(e.problem ?? e.message) : String(e);
         expect(text, `create under domains[${i}] refused for a reason other than depth`).toContain(
           "supported containment depth"
         );
         sawDepthRefusal = true;
         continue;
       }
-      try {
-        honestChain = await withTenantTx(server.deps.db, org.orgId, (tx) =>
-          containmentChain(tx, org.orgId, component.id)
-        );
-        honestDomain = candidate;
-      } catch (e) {
-        // The loud refusal, where the silent relabel used to be. In-process ProblemError keeps
-        // the text in `detail` (message carries only the RFC title, "Conflict").
-        const text = String((e as { detail?: string; message: string }).detail ?? (e as Error).message);
-        expect(text).toContain("supported containment depth");
-        sawDepthRefusal = true;
-      }
+      // A create that LANDED must be readable in full — the door invariant. No try/catch: a walk
+      // refusal here is the test failing, and it says which domain the door let through.
+      honestChain = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+        containmentChain(tx, org.orgId, component.id)
+      );
+      honestDomain = candidate;
     }
     expect(
       sawDepthRefusal,
-      "at least one deep component must be REFUSED loudly (at create, or on the chain read) — if " +
-        "none was, the bound rose without this test being updated: move all six census sites together"
+      "at least one deep component must be REFUSED loudly at create — if none was, the bound rose " +
+        "without this test being updated: move all six census sites together"
     ).toBe(true);
-    expect(honestChain, "some shallower component must still resolve a complete chain").not.toBeNull();
+    expect(
+      honestChain,
+      "some shallower component must still resolve a complete chain"
+    ).not.toBeNull();
     expect(
       honestChain![0]?.typeId,
       "a chain that FITS the bound presents the organization at index 0 — the convention the " +

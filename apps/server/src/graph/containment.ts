@@ -254,10 +254,15 @@ export const CONTAINER_TYPES = ["service", "assembly"] as const;
  * there. Raising capacity later is a one-line change HERE, and only here; a raise that edits any
  * single call site instead is the six-copies bug this constant exists to end.
  *
- * It is a real ceiling, not a formality, and `assertRootedContainmentParent` below is the one
- * caller that must never shrug at it: it fails CLOSED on a chain the walk cannot prove complete
- * (M22, #244), and since ADR-0035 the walk itself refuses rather than truncating, so that caller
- * converts the walk's loud refusal into its own 400 rather than ever seeing a shortened ancestry.
+ * It is a real ceiling, not a formality, and the WRITE DOORS are what keep every live row under it
+ * (owner ruling 2026-08-18, ADR-0035 Consequences): `assertRootedContainmentParent`,
+ * `relationships-repo.ts`'s `contains` door and `placements-repo.ts`'s pair door all refuse any
+ * LOCAL write that would leave a live row past the bound — see {@link assertContainmentDepthAdmits}
+ * for the arithmetic. The federation-import paths are CARVED OUT (ADR-0035 Consequences: the
+ * receiver does not referee a peer-authored containment, and one refusal there is a per-CHANNEL
+ * failure for a per-row fault), so a replica can still land past the bound; the doors convert the
+ * walk's loud refusal into their own 400 for a local write UNDER such a row (legacy or imported)
+ * rather than ever seeing a shortened ancestry — {@link containmentParentChainForDoor}.
  */
 export const CONTAINMENT_WALK_MAX_DEPTH = 10;
 /** One past the bound: a row AT this depth proves the walk was cut, not complete. */
@@ -266,6 +271,15 @@ export const WALK_TRUNCATION_PROBE_DEPTH = CONTAINMENT_WALK_MAX_DEPTH + 1;
 /** The phrase every depth refusal carries — the sentence operators (and tests) recognise it by,
  *  and the marker {@link isWalkDepthExceeded} reads. */
 const WALK_DEPTH_EXCEEDED_PHRASE = "exceeds the supported containment depth";
+
+/**
+ * The phrase every DOOR refusal carries — a write that WOULD put a live row past the bound. It is
+ * deliberately NOT a substring match for {@link WALK_DEPTH_EXCEEDED_PHRASE} ("would exceed" vs
+ * "exceeds"): {@link isWalkDepthExceeded} reads the walk's phrase, and a door 400 must never be
+ * mistaken for a walk 409 by that marker or by an operator. The bound and the ADR are still named,
+ * so both refusals tell one story.
+ */
+export const CONTAINMENT_DEPTH_DOOR_PHRASE = "would exceed the supported containment depth";
 
 /** The uniform refusal for a walk that hit the bound — one message shape for all six sites, so
  *  operators meet one explanation, not six dialects. */
@@ -405,14 +419,224 @@ export async function containmentScopeIds(
 }
 
 /**
- * The NEAREST ancestor of `chain` carrying `typeId` (the target itself counts), or null.
+ * THE DOWNWARD WALK — "how deep is the subtree under this row?" — the exact INVERSE of the four
+ * routes `containmentChain` walks up, bounded, live rows only.
  *
- * "Nearest" = greatest `depth` (most specific). Comparing depth is only sound here because every
- * candidate has the SAME kind — the documented domain/service tie is a cross-KIND phenomenon and
- * cannot arise between two ancestors of one kind. Ties among same-kind candidates (not reachable
- * today: `contains` is one_to_many, so a component has at most one service, and `domain_id` is a
- * single column) break deterministically by id so the answer is never order-dependent.
+ * Exists for ONE caller, {@link assertContainmentDepthAdmits}: a MOVE takes the moved row's whole
+ * subtree with it, so the door has to know how far below the row the deepest live descendant sits.
+ * The routes are the same three writes read backwards, and they MUST stay the mirror of the upward
+ * walk — a route present in one and not the other is exactly how routes 1 and 2 drifted apart in
+ * this module's history:
+ *
+ *   inverse of route 1 — rows whose `domain_id` is this row (any type: `objects.domain_id` carries
+ *                        no type constraint, so a component or a placement can have `domain_id`
+ *                        children too, and this arm is not optional for any type);
+ *   inverse of route 2 — `contains` edges FROM this row, read FORWARDS (the edge is registered
+ *                        container -> member, so the child is `to_id`);
+ *   inverse of routes 3+4 — live placements NAMING this row as their component or their
+ *                        deployment-target, read from the PROPERTIES exactly as
+ *                        `placementParentsSql` does, with the SAME CASE guard, so a malformed value
+ *                        matches nothing here just as it yields no parent there and the two walks
+ *                        agree on which values count.
+ *
+ * Every CHILD is filtered `deleted_at IS NULL` (as every PARENT is upward): a tombstoned descendant
+ * is on no walk and costs no depth. The seed is filtered live too — the callers pass a row they
+ * have just loaded live, and a deleted seed has no subtree worth counting.
+ *
+ * BOUNDED at `budget + 1` levels and answers a yes/no question, on purpose: the caller only needs to
+ * know whether the subtree is TALLER than the budget it has left, and a row found at depth
+ * `budget + 1` proves that without walking the rest. The bound literal is `sql.raw` for the reason
+ * `authz/resolve.ts` gives at its own walk (an untyped `$n` against a recursive CTE's depth column).
+ * `UNION` (not `UNION ALL`) because the subtree is a DAG — a component reachable via its domain AND
+ * its service is one node — and `MAX(depth)` keeps the LONGEST route per row, which is what the
+ * invariant counts. `budget` is never negative here: the ONE caller, {@link assertContainmentDepthAdmits},
+ * refuses `rowDepth > MAX` BEFORE computing `budget = MAX - rowDepth`, so a parent at the bound
+ * never reaches this walk (a "negative budget" branch used to sit here as a `return true` — dead
+ * by that ordering, and a verifier measured that inverting it left the whole suite green; a claim
+ * no test can hold to is not kept as behaviour).
+ *
+ * Index note, so nobody "fixes" the CASE form for speed: migration 0051's pair index is on the TEXT
+ * expression `(properties ->> 'componentId')`, which the cast form cannot use; a text comparison
+ * could, but would be a STRICTER match than the upward walk (upper-case hex would be a parent going
+ * up and not a child coming down). The mirror is worth more than the index — the placement
+ * population is small (61 on the live estate, per this module's header) and the walk is bounded.
  */
+export async function containmentSubtreeExceeds(
+  tx: TenantTx,
+  orgId: string,
+  rootId: string,
+  budget: number
+): Promise<boolean> {
+  const probeDepth = budget + 1;
+  const result = await tx.execute<{ depth: number }>(sql`
+    WITH RECURSIVE down AS (
+      SELECT o.id, 0 AS depth
+      FROM objects o
+      WHERE o.id = ${rootId}::uuid AND o.org_id = ${orgId} AND o.deleted_at IS NULL
+      UNION
+      SELECT child.id, d.depth + 1
+      FROM down d
+      CROSS JOIN LATERAL (
+        -- inverse of route 1: rows whose domain_id is this row
+        SELECT child_o.id
+        FROM objects child_o
+        WHERE child_o.domain_id = d.id
+          AND child_o.org_id = ${orgId}
+          AND child_o.deleted_at IS NULL
+        UNION ALL
+        -- inverse of route 2: contains edges FROM this row, read forwards
+        SELECT child_o.id
+        FROM relationships r
+        JOIN objects child_o ON child_o.id = r.to_id AND child_o.org_id = ${orgId}
+          AND child_o.deleted_at IS NULL
+        WHERE r.from_id = d.id
+          AND r.org_id = ${orgId}
+          AND r.type_id = 'contains'
+          AND r.deleted_at IS NULL
+        UNION ALL
+        -- inverse of routes 3 + 4: live placements naming this row as component or target
+        SELECT pl.id
+        FROM objects pl
+        WHERE pl.org_id = ${orgId}
+          AND pl.type_id = 'placement'
+          AND pl.deleted_at IS NULL
+          AND (
+            (CASE WHEN pl.properties ->> 'componentId' ~ ${UUID_TEXT_PATTERN}
+                  THEN (pl.properties ->> 'componentId')::uuid END) = d.id
+            OR
+            (CASE WHEN pl.properties ->> 'deploymentTargetId' ~ ${UUID_TEXT_PATTERN}
+                  THEN (pl.properties ->> 'deploymentTargetId')::uuid END) = d.id
+          )
+      ) child
+      WHERE d.depth < ${sql.raw(String(probeDepth))}
+    )
+    SELECT COALESCE(MAX(depth), 0)::int AS depth FROM down
+  `);
+  const deepest = Number(result.rows[0]?.depth ?? 0);
+  return deepest >= probeDepth;
+}
+
+/**
+ * The parent's chain, AS A DOOR NEEDS IT: the walk plus the number of hops the parent sits from the
+ * org root, with the walk's own ADR-0035 refusal converted into the door's 400.
+ *
+ * `containmentChain` INVERTS depth on the way out (0 = topmost ancestor found, max = the target
+ * itself, which the recursive walk reached at raw depth 0), so the largest returned depth is exactly
+ * how many hops the walk took — the LONGEST route to the root when the chain is a DAG, which is the
+ * route the invariant counts.
+ *
+ * THE CONVERSION BRANCH: since ADR-0035 the walk REFUSES past the bound instead of returning a
+ * truncated chain. A parent whose own chain is already past it is a row that was planted below the
+ * doors (legacy, or imported under the `federationImport` carve-out); the door answers with its own
+ * 400 that names the container and what a row under it would cost, rather than let the walk's 409
+ * speak for a write it does not know about. The depth bound and the ADR are still named, so an
+ * operator meets one story from either side. This message keeps the WALK's phrase on purpose — it is
+ * the one door refusal that IS the walk refusing — where every other door refusal carries
+ * {@link CONTAINMENT_DEPTH_DOOR_PHRASE}.
+ */
+export async function containmentParentChainForDoor(
+  tx: TenantTx,
+  orgId: string,
+  childId: string,
+  parentId: string
+): Promise<{ chain: ChainEntry[]; hops: number }> {
+  let chain: ChainEntry[];
+  try {
+    chain = await containmentChain(tx, orgId, parentId);
+  } catch (error) {
+    if (!isWalkDepthExceeded(error)) throw error;
+    // THE MESSAGE STATES THIS BRANCH'S OWN CONDITION — the container is ALREADY past the bound (a
+    // legacy or imported row the doors never saw), so a row under it would be past the bound on
+    // that route and every walk that reads it refuses. It does NOT talk about cycles (this helper
+    // now serves the CREATE doors too, where the cycle question is deliberately not asked) and it
+    // does not claim the org root is missing (refusal 3's condition, not this one's) — an earlier
+    // wording did both, lifted verbatim from the move-only era.
+    throw badRequest(
+      `object '${childId}' cannot be contained by '${parentId}': that container's own ` +
+        `containment chain ${WALK_DEPTH_EXCEEDED_PHRASE} (${CONTAINMENT_WALK_MAX_DEPTH} hops, ` +
+        `ADR-0035), so a row under it would sit past the bound on that route and every walk that ` +
+        `reads it — authority, governance, gates — refuses it. Refused rather than risked. Move ` +
+        `the container nearer the root first.`
+    );
+  }
+  const hops = Math.max(0, ...chain.map((entry) => entry.depth));
+  return { chain, hops };
+}
+
+/**
+ * THE DOOR INVARIANT'S ARITHMETIC, in one place (owner ruling 2026-08-18; ADR-0035 Consequences):
+ *
+ *     hops(parent) + 1 + height(child) > CONTAINMENT_WALK_MAX_DEPTH   =>   refuse (400)
+ *
+ * The child would sit at `hops(parent) + 1`; its deepest live descendant (over the inverse of the
+ * same routes, {@link containmentSubtreeExceeds}) at `hops(parent) + 1 + height(child)`. Every live
+ * row must reach the org root within the bound over its LONGEST route, or the walks that read it
+ * refuse loudly (ADR-0035) — so a write that would leave any row past it is refused at the door,
+ * where it is one 400 with a remedy, instead of later, where it is an ungovernable row.
+ *
+ * Called by all three doors that add a containment hop — `assertRootedContainmentParent` (route 1,
+ * create and move), `relationships-repo.ts`'s `contains` door (route 2) and `placements-repo.ts`'s
+ * pair door (routes 3 and 4) — so the rule and the message cannot drift between them.
+ *
+ * COST, in the order the ruling asked for it: no query at all when the parent is the org root
+ * (`createObject`'s existing shortcut never calls this); the row's own depth is decided from the
+ * chain the door already walked, so `hops + 1 > bound` refuses before any downward walk; the
+ * downward walk is skipped for a CREATE (height 0 by definition) and, on a move, runs bounded at
+ * `budget + 1` levels where `budget = bound - hops - 1` is the room left under the parent.
+ *
+ * ONE message shape: names the child, the parent, the depth the row would sit at, the subtree when
+ * the subtree is the reason, the bound and the ADR, and the remedy.
+ */
+export async function assertContainmentDepthAdmits(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    childId: string;
+    parentId: string;
+    /** `hops(parent)` as {@link containmentParentChainForDoor} returns it. */
+    hops: number;
+    /** True for a row that does not exist yet: height is 0 and no downward walk is issued. */
+    childIsNew: boolean;
+  }
+): Promise<void> {
+  const rowDepth = input.hops + 1;
+  if (rowDepth > CONTAINMENT_WALK_MAX_DEPTH) {
+    throw containmentDepthRefusal({ ...input, rowDepth });
+  }
+  if (input.childIsNew) return;
+  const budget = CONTAINMENT_WALK_MAX_DEPTH - rowDepth;
+  if (await containmentSubtreeExceeds(tx, input.orgId, input.childId, budget)) {
+    throw containmentDepthRefusal({ ...input, rowDepth, subtreeAtLeast: budget + 1 });
+  }
+}
+
+function containmentDepthRefusal(input: {
+  childId: string;
+  parentId: string;
+  rowDepth: number;
+  /** Set when the SUBTREE is the reason: the walk found a live descendant this many levels down
+   *  (bounded, so "at least"). */
+  subtreeAtLeast?: number;
+}): Error {
+  const subtree =
+    input.subtreeAtLeast === undefined
+      ? ""
+      : ` and its own subtree is at least ${input.subtreeAtLeast} deep, so its deepest ` +
+        `descendant would sit at depth ${input.rowDepth + input.subtreeAtLeast} or below`;
+  const remedy =
+    input.subtreeAtLeast === undefined
+      ? `Flatten the nesting above the container, or move it nearer the root first.`
+      : `Flatten the nesting above the container, move it nearer the root first, or flatten the ` +
+        `subtree being moved.`;
+  return badRequest(
+    `object '${input.childId}' cannot be contained by '${input.parentId}': it would sit at depth ` +
+      `${input.rowDepth}${subtree}, which ${CONTAINMENT_DEPTH_DOOR_PHRASE} ` +
+      `(${CONTAINMENT_WALK_MAX_DEPTH} hops, ADR-0035). Every live row must reach the org root ` +
+      `within ${CONTAINMENT_WALK_MAX_DEPTH} hops over every containment route, or the walks that ` +
+      `read it — authority, governance, gates — refuse it loudly. ${remedy}`
+  );
+}
+
 /**
  * THE INVARIANT BEHIND EVERY `domain_id` WRITE: after it, the row must still reach the org root.
  *
@@ -434,33 +658,48 @@ export async function containmentScopeIds(
  *     WHOLE walk, every route, not just `domain_id`: a `contains` edge is a containment route too
  *     (route 2), so `service -> component -> service` is a cycle even though only one hop is a
  *     `domain_id`. Authority expands along exactly these routes, so a loop in any of them is a loop.
- *  2. **the walk hit `CONTAINMENT_WALK_MAX_DEPTH`** — it was truncated, so "the child is not on this
- *     chain" is unproven rather than false. Fails CLOSED: refusing a legitimate move under a
- *     pathologically deep parent is recoverable; writing an unreachable row is not. Such a parent is
- *     already past the depth `authz/resolve.ts` expands to, so its own authority is broken anyway.
+ *  2. **the write would put a live row PAST `CONTAINMENT_WALK_MAX_DEPTH`** — the DOOR INVARIANT
+ *     (owner ruling 2026-08-18, ADR-0035 Consequences): after every write, every live row's LONGEST
+ *     containment route to the org root — over all four routes, the pair counted — is at most
+ *     `CONTAINMENT_WALK_MAX_DEPTH` hops. The row being parented sits at `hops(parent) + 1`; if it
+ *     already has a subtree, that subtree comes with it, so the deepest row after the write sits at
+ *     `hops(parent) + 1 + height(child)`. Refused when that exceeds the bound —
+ *     {@link assertContainmentDepthAdmits} is the one place the arithmetic lives, and
+ *     `relationships-repo.ts` (a `contains` edge) and `placements-repo.ts` (a placement's pair) call
+ *     the same function, so the three ways a hop is added share one rule and one message.
+ *     Why it is an invariant and not caution: since ADR-0035 EVERY walk of a row past the bound
+ *     refuses loudly (RBAC when no grant is found before the bound, policy matching, freeze and gate
+ *     scoping, ADR-0032 enablement), so a row planted at hop eleven is a row nobody can govern and —
+ *     when the eleven-hop route is its only one — nobody can read, rename or move back, the org
+ *     Owner included. Measured on the real doors before this refusal existed: `POST /domains
+ *     {domainId: <a domain at hop ten>}` answered 201, and the org-root admin's own next GET of the
+ *     new row and the PATCH that would have moved it back both answered **409**.
  *  3. **the org root is not on the parent's chain** — the parent is ALREADY detached (a legacy row,
  *     or one planted before the doors were closed), so parenting under it detaches the child too.
  *     This is the soft-deleted-ancestor case one level up: `containmentChain` refuses to walk
  *     through a tombstone, exactly as `scopeExpandCte` does, so a live parent under a dead one has
  *     no route to the root and cannot lend one.
  *
- * ## `childIsNew` — which of the three a CREATE gets, and why it is not all of them
+ * ## `childIsNew` — which of the three a CREATE gets
  *
- * Refusals 1 and 2 are ONE question ("could this close a loop?") asked twice: 2 exists solely because
- * a truncated walk leaves 1's answer unproven, which is what its own wording says. On a CREATE that
- * question is not merely unlikely, it is unaskable — the child is not in the graph yet, so it is on
- * no chain, and the id cannot secretly belong to an existing row either (the insert's primary key
- * would conflict). Refusal 3 is the one that survives: it is a property of the PARENT's chain and
- * has nothing to do with the child's id, which is exactly why the create path needed this function
- * at all.
+ * Refusal 1 asks about the CHILD's id — "is it already on the parent's chain?" — and on a CREATE that
+ * question is unaskable: the child is not in the graph yet, so it is on no chain, and the id cannot
+ * secretly belong to an existing row either (the insert's primary key would conflict). So a create
+ * skips 1. Refusals 2 and 3 are properties of the PARENT's chain and of the row about to be written,
+ * and a create gets BOTH: for 2 the child's height is zero by definition (a fresh row has no
+ * subtree), so the rule collapses to `hops(parent) + 1 <= bound`, and no downward walk is issued.
  *
- * So `childIsNew` runs 3 alone. Running 1 and 2 anyway is not free caution — it is a NEW refusal
- * wearing an invariant's clothes. Measured: it moved the model's documented nesting ceiling from ten
- * levels to nine, because creating a child of a parent whose own chain is exactly at the bound would
- * now fail even though `authz/resolve.ts` still reaches that parent. That ceiling is pinned, on
- * purpose, by `routes/containment-move-cycle-and-source-authz.integration.test.ts`'s truncation case,
- * which builds ten levels and reasons about why ten is the honest maximum. A guard that quietly
- * lowers a documented limit is a behaviour change, not a bug fix.
+ * RETIRED REASONING, kept so nobody reinstalls it: an earlier version of this block skipped refusal
+ * 2 on a create too, arguing that it "exists solely because a truncated walk leaves 1's answer
+ * unproven" and that running it would "move the documented nesting ceiling from ten levels to
+ * nine". Both halves were written against the PRE-ADR-0035 walk, which silently truncated at the
+ * bound; under the loud walk a parent at exactly ten hops has a COMPLETE chain, and the create that
+ * skip admitted was precisely the one that planted an ungovernable row at hop eleven. Ten hops
+ * remains the ceiling — the org root within ten hops of EVERY live row — the door simply has to
+ * count the row it is about to write. The pinned shape that used to argue for the skip
+ * (`routes/containment-move-cycle-and-source-authz.integration.test.ts`'s past-the-bound case) is now
+ * planted below the doors in that test, because it can no longer be built through one; the door
+ * cases live in `graph/containment-depth-doors.integration.test.ts`.
  *
  * It DEFAULTS to false, so a caller that says nothing gets the strict, move-path behaviour.
  *
@@ -480,35 +719,19 @@ export async function assertRootedContainmentParent(
     orgId: string;
     childId: string;
     parentId: string;
-    /** True when `childId` names a row that does not exist yet (a CREATE): refusals 1 and 2 are
-     *  skipped as unaskable, refusal 3 still runs. See the `childIsNew` section above. */
+    /** True when `childId` names a row that does not exist yet (a CREATE): refusal 1 is skipped as
+     *  unaskable, refusal 2 runs with height 0 (no downward walk), refusal 3 runs. See the
+     *  `childIsNew` section above. */
     childIsNew?: boolean;
   }
 ): Promise<void> {
-  let chain: ChainEntry[];
-  try {
-    chain = await containmentChain(tx, input.orgId, input.parentId);
-  } catch (error) {
-    // ADR-0035: the walk REFUSES past the bound instead of returning a truncated chain, so
-    // "hops >= bound" below can no longer be how an over-deep parent is caught — the walk has
-    // already said so. Re-shaped into THIS door's refusal 2 (a 400 that names the container and
-    // what a row under it would cost) rather than let the walk's 409 speak for a write it does not
-    // know about; the depth bound and the ADR are still named, so an operator meets one story.
-    if (!isWalkDepthExceeded(error)) throw error;
-    throw badRequest(
-      `object '${input.childId}' cannot be contained by '${input.parentId}': that container's own ` +
-        `containment chain ${WALK_DEPTH_EXCEEDED_PHRASE} (${CONTAINMENT_WALK_MAX_DEPTH} hops, ` +
-        `ADR-0035), so it cannot be shown to be free of a cycle and anything placed inside it ` +
-        `would be unreachable to every walk. Refused rather than risked — a row whose chain does ` +
-        `not reach the org root cannot be recovered by anyone. Move the container nearer the root ` +
-        `first.`
-    );
-  }
+  const { chain, hops } = await containmentParentChainForDoor(
+    tx,
+    input.orgId,
+    input.childId,
+    input.parentId
+  );
   const ids = new Set(chain.map((entry) => entry.id));
-  // `containmentChain` INVERTS depth on the way out (0 = topmost ancestor found, max = the target
-  // itself, which the recursive walk reached at raw depth 0). The largest returned depth is
-  // therefore exactly how many hops the walk took — the number this needs to compare to the bound.
-  const hops = Math.max(0, ...chain.map((entry) => entry.depth));
 
   if (!input.childIsNew && ids.has(input.childId)) {
     throw badRequest(
@@ -519,15 +742,13 @@ export async function assertRootedContainmentParent(
         `every principal, the org Owner included.`
     );
   }
-  if (!input.childIsNew && hops >= CONTAINMENT_WALK_MAX_DEPTH) {
-    throw badRequest(
-      `object '${input.childId}' cannot be contained by '${input.parentId}': that container's own ` +
-        `containment chain is deeper than the ${CONTAINMENT_WALK_MAX_DEPTH}-hop walk bound, so it ` +
-        `cannot be shown to be free of a cycle. Refused rather than risked — a row whose chain does ` +
-        `not reach the org root cannot be recovered by anyone. Move the container nearer the root ` +
-        `first.`
-    );
-  }
+  await assertContainmentDepthAdmits(tx, {
+    orgId: input.orgId,
+    childId: input.childId,
+    parentId: input.parentId,
+    hops,
+    childIsNew: input.childIsNew ?? false
+  });
   if (!ids.has(input.orgId)) {
     throw badRequest(
       `object '${input.childId}' cannot be contained by '${input.parentId}': that container does ` +
@@ -537,6 +758,15 @@ export async function assertRootedContainmentParent(
   }
 }
 
+/**
+ * The NEAREST ancestor of `chain` carrying `typeId` (the target itself counts), or null.
+ *
+ * "Nearest" = greatest `depth` (most specific). Comparing depth is only sound here because every
+ * candidate has the SAME kind — the documented domain/service tie is a cross-KIND phenomenon and
+ * cannot arise between two ancestors of one kind. Ties among same-kind candidates (not reachable
+ * today: `contains` is one_to_many, so a component has at most one service, and `domain_id` is a
+ * single column) break deterministically by id so the answer is never order-dependent.
+ */
 export function nearestAncestorOfKind(chain: ChainEntry[], typeId: string): ChainEntry | null {
   const candidates = chain.filter((c) => c.typeId === typeId);
   if (candidates.length === 0) return null;
