@@ -69,7 +69,9 @@ import {
  *               containment chain.
  *   - APPROVE — the same check re-derived (a grant can reach the row through IaC or federation
  *               without ever having passed the raise route), plus a refusal while an INSTANCE floor
- *               outranks the derived tier.
+ *               outranks the derived tier, plus SEPARATION OF DUTIES: the subject who raised the
+ *               request may not be the one who approves it (approve only — deny and revoke stay
+ *               open, because withdrawing a waiver must never be harder than granting one).
  *   - THE GATE — `applyOverrideAuthorityBar`, the decisive one: the grant's tier is re-derived from
  *               the target's chain and compared against the most senior tier that contributed to the
  *               effective ceiling (`EffectiveScanThreshold.contributors`).
@@ -298,6 +300,29 @@ export function registerScanOverrideGrantRoutes(app: FastifyInstance, deps: AppD
       if (input.to === "approved" && current.status !== "requested") {
         throw badRequest(
           `only a 'requested' grant can be approved — '${input.id}' is '${current.status}'`
+        );
+      }
+      // SEPARATION OF DUTIES — the raiser may not be the approver (owner decision, 2026-08-18).
+      //
+      // APPROVE ONLY, deliberately, and for the same reason the instance-floor check above is
+      // approve-only: taking a waiver back must never be harder than making one. Denying or revoking
+      // your own request is ordinary withdrawal and stays free.
+      //
+      // WHAT THIS IS AND IS NOT. It is defence in depth for the D3 authority bar, not a replacement
+      // for it: the escalation the bar exists to stop survives this check intact the moment any
+      // SECOND principal holds the same scoped `policy:write`. It closes only the one-actor shape —
+      // raise at a tier you hold, then immediately sign your own waiver — which is also the cheapest
+      // shape to reach and the only one that leaves a single name on both halves of the record.
+      //
+      // IT CANNOT BIND A FEDERATED GRANT, and that is correct rather than a gap. A grant arriving
+      // over the journal was decided at its AUTHORING instance, where this check ran; re-deciding it
+      // here is not a thing this door does. `requestedByActorId` from a peer also names a subject in
+      // that domain's `objects`, so comparing it to a local subject id would be meaningless.
+      if (input.to === "approved" && current.requestedByActorId === auth.subjectObjectId) {
+        throw badRequest(
+          `a scan override grant cannot be approved by the subject who raised it — '${input.id}' ` +
+            `was requested by this actor. An accepted risk needs a second principal holding ` +
+            `'policy:write' at '${current.tierObjectId}' to sign it`
         );
       }
       if (input.to === "revoked" && current.status !== "approved") {

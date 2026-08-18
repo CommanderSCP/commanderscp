@@ -731,16 +731,54 @@ export function scanRequirementTierOrder(): readonly ScanRequirementTier[] {
  * ceiling of 0 that produced the block. Keying on the binding contributor alone would let a junior
  * tier defeat a senior tier's ceiling indirectly, which is the escalation D3 exists to forbid.
  *
- * NO CONTRIBUTORS AT ALL ⇒ `component`, the bottom rung, i.e. NO BAR. That is not a fallback chosen
- * for convenience: with no tier-set ceiling there is no constraint stricter than the requester's own
- * authority to escalate past, and the control falls back to its own per-binding `config.threshold`
- * (the documented M17.1 behaviour). The ordinary `policy:write`-at-or-above check on an ancestor the
- * requester does not choose freely is then the whole of the control.
+ * THERE IS NO SUCH THING AS "NO CEILING", WHICH IS WHY THE BAR NEVER FALLS BELOW `org`.
+ *
+ * This docblock used to say the opposite — that with no contributors the bar is `component`, i.e. no
+ * bar, because "there is no constraint stricter than the requester's own authority to escalate past,
+ * and the control falls back to its own per-binding `config.threshold`". That sentence names the
+ * counter-example in its own final clause and was wrong on both halves:
+ *
+ *   * `config.threshold` IS a constraint. It is authored at the CONTROL object's scope
+ *     (`routes/governance.ts`'s `PUT /controls/:idOrUrn/binding`, guarded by `policy:write` AT THE
+ *     CONTROL), which is nowhere on the component's containment chain. A service- or component-scoped
+ *     principal cannot author it and therefore must not be able to waive it.
+ *   * When neither a policy nor the binding config decides a severity, the plugin does not stop
+ *     enforcing — it applies its historical fail-closed default of `maxCritical`/`maxHigh` = 0
+ *     (`scan-result-control/src/index.ts`, `critical.value ?? 0`, and that module's own docblock says
+ *     so). That is a PLATFORM-SHIPPED rule no tenant can edit at all.
+ *
+ * Exclusions are applied BEFORE the counts are compared, so an approved grant on the only CRITICAL
+ * turns a fail into a pass against whichever of those ceilings is in force. With the bar at
+ * `component`, every candidate that merely sat on the chain cleared it — so a team lead holding a
+ * routine service-scoped `policy:write` could raise and approve a waiver against a ceiling they had
+ * no standing over. That is precisely the escalation D3 exists to forbid.
+ *
+ * THE FLOOR IS `org` (owner decision, 2026-08-18), and it is a floor rather than the fully-derived
+ * answer on purpose. Deriving the true bar — injecting the binding config and the 0/0 default as
+ * synthetic contributors — was costed and REJECTED because it makes every grant inert on any
+ * deployment that authored no `scanThreshold` policy and no `config.threshold`, killing the feature
+ * outright for the common case. `org` is the most senior rung a TENANT can author at, so it is the
+ * strongest bar that still leaves the override usable: a component-, assembly-, service- or
+ * containment-domain-scoped grant can never clear it, while an org-tier grant keeps working.
+ *
+ * WHAT THE FLOOR DOES NOT CLOSE, stated because a partial guard read as a total one is worse than
+ * none: an ORG-tier approver can still waive a `config.threshold` authored at control scope. Closing
+ * that requires the full derivation above and its cost. `platform`/`trust_domain` contributions still
+ * raise the bar past `org` normally — the floor only ever tightens the bottom, never loosens the top.
  */
+
+/**
+ * The lowest tier that may ever approve an override, regardless of what the ceiling says.
+ *
+ * `org` rather than `component`: see `requiredOverrideApprovalTier`. Named rather than inlined so the
+ * test that pins it and the code that applies it cannot drift apart.
+ */
+export const OVERRIDE_APPROVAL_TIER_FLOOR: ScanRequirementTier = "org";
+
 export function requiredOverrideApprovalTier(
   ceiling: EffectiveScanThreshold | undefined
 ): ScanRequirementTier {
-  let best: ScanRequirementTier = "component";
+  let best: ScanRequirementTier = OVERRIDE_APPROVAL_TIER_FLOOR;
   for (const contribution of ceiling?.contributors ?? []) {
     const rank = tierRank(contribution.tier);
     if (rank < 0) continue; // an unrecognized tier label raises no bar

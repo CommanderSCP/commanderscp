@@ -92,6 +92,34 @@ UPDATE object_types
 -- nothing. The accepted cost is recorded in ADR-0033 §8: a list of accepted risks is a map of
 -- deliberately-tolerated weaknesses, and federating it distributes that map into every domain that
 -- receives the journal, including lower-trust ones.
+--
+-- `expiresAt` STAYS AN UNCONSTRAINED STRING, AND THAT IS A DECISION, NOT AN OVERSIGHT.
+--
+-- This field is the one property here whose SHAPE, not merely its meaning, can break something: it
+-- is read back by a `::timestamptz` cast inside the gate's own query
+-- (`governance/scan-override-grants.ts`). A value Postgres cannot cast would throw inside EVERY gate
+-- evaluation for the org — prewarm, wave boundary, `POST /policy-evaluate` and the commander
+-- promotion scan — rather than failing that one grant. Fail-open by way of a crash.
+--
+-- AN ADVERSARIAL REVIEW PROPOSED TIGHTENING THIS FIELD HERE. It was implemented, measured against
+-- the import path, and REVERTED. Adding a `pattern` moves the failure from one grant to the WHOLE
+-- CHANNEL: §1 above is not decoration — `import-repo.ts`'s `object_upsert` branch calls
+-- `upsertObjectByUrn` (import-repo.ts:208) with no try/catch, and that calls `validateProperties`
+-- (objects-repo.ts:269/870), so a registry rejection aborts the peer's entire signed bundle and
+-- wedges federation for that peer until an operator intervenes. Trading a per-grant denial of
+-- service for a per-CHANNEL one is not a fix. The identical argument already governs
+-- `additionalProperties` two sections up; a `pattern` is the same hazard wearing a different keyword.
+--
+-- (For the next person who reaches for it anyway: `"format": "date-time"` would not even be the
+-- lesser evil, it would be nothing at all. `ajv-formats` is not a dependency of this repo and
+-- `graph/property-validation.ts` builds Ajv with `strict: false`, so an unknown `format` is silently
+-- ignored — a constraint that reads as enforcement and enforces nothing.)
+--
+-- THE FIX LIVES AT THE READ, WHERE IT COSTS NOTHING TO GET WRONG: the resolver wraps its cast in a
+-- `CASE ... ~ pattern`, exactly as `graph/containment.ts` wraps its `::uuid`, so a malformed value
+-- yields NULL and the grant is simply NOT LIVE. That is fail-CLOSED, it degrades one grant instead
+-- of one tenant, and it also covers every row written before any future tightening — which a schema
+-- change never could.
 INSERT INTO object_types (id, org_id, display_name, property_schema, is_builtin) VALUES
   (
     'scan_override_grant',

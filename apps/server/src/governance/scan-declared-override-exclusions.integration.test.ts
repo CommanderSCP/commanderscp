@@ -230,6 +230,27 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
   // Fixtures
   // -----------------------------------------------------------------------------------------
 
+  /**
+   * A SECOND PRINCIPAL TO RAISE WITH, because the raiser may not be the approver (ADR-0033 §6a,
+   * owner decision 2026-08-18).
+   *
+   * Every case below used to raise AND approve as `admin`, which the separation-of-duties refusal
+   * now answers 400 to — seven of them went red at once when it landed, which is the measurement
+   * that says the guard reaches the real route rather than only the unit under it.
+   *
+   * `Operator` at the component supplies exactly the `object:write` the raise route asks for and
+   * NOTHING else — deliberately the weakest identity that can raise, so these fixtures keep proving
+   * that raising is open (it authorizes nothing) while approving is not. `Viewer` at the org root
+   * supplies the reads the SDK needs to resolve the component on the way in.
+   */
+  async function raiserFor(org: TestOrg, componentId: string): Promise<ScpClient> {
+    const user = await createTestUser(server, org, [
+      { role: "Viewer", scope: org.orgId },
+      { role: "Operator", scope: componentId }
+    ]);
+    return new ScpClient({ baseUrl: server.baseUrl, token: user.token });
+  }
+
   async function buildChain(admin: ScpClient, label: string) {
     const containmentDomain = await admin.object("domain").create({ name: `dom-${label}` });
     const service = await admin
@@ -518,11 +539,19 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
       exclude: { class: "approved_override" }
     });
 
-    // RAISED at the component, then APPROVED at the object naming the tier that set the rule.
-    const requested = await admin.scanOverrideGrants.create({
+    // RAISED at the component, then APPROVED at the ORG — and the org rather than the service is
+    // the whole of the D3 floor made visible (owner decision, 2026-08-18). This case named
+    // `service.id` until that floor landed and the grant stopped applying, which is correct and is
+    // the behaviour change to know about: NO clause here authors a `scanThreshold`, so the bar has
+    // no tier contributor to derive from and sits on the floor. A service-tier grant is below it.
+    //
+    // Read together with O7/O8: a grant below the bar is refused and a grant at-or-above it applies.
+    // The floor's effect is that "at-or-above" now starts at `org` even when nothing set a ceiling,
+    // because the gate is still enforcing one the contributors cannot see.
+    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7101",
-      tierObjectId: service.id,
+      tierObjectId: org.orgId,
       reason: "no upstream fix; compensating control in place"
     });
     expect(requested.status).toBe("requested");
@@ -552,7 +581,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
       class: "approved_override",
       vulnerabilityId: "CVE-2026-7101",
       grantObjectId: approved.id,
-      grantTierObjectId: service.id
+      grantTierObjectId: org.orgId
     });
     expect(evidence.exclusions?.applied[0]?.grantExpiresAt).toBe(approved.expiresAt);
 
@@ -561,16 +590,19 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
       {
         grantObjectId: approved.id,
         vulnerabilityId: "CVE-2026-7101",
-        tierObjectId: service.id,
-        // M22.6 (D3) — the DERIVED tier of `service.id`, read off this component's containment chain
-        // by the resolver. The id says which object was named; this says what it actually IS.
-        grantTier: "service",
+        tierObjectId: org.orgId,
+        // M22.6 (D3) — the DERIVED tier of the named object, read off this component's containment
+        // chain by the resolver. The id says which object was named; this says what it actually IS.
+        grantTier: "org",
         expiresAt: approved.expiresAt
       }
     ]);
     // ...and the BAR it was measured against. No `scanThreshold` is authored anywhere in this org and
-    // no instance floor is set, so no tier set a ceiling and the bar is the bottom rung.
-    expect(decisionExclusions?.overrideRequiredTier).toBe("component");
+    // no instance floor is set — and the bar is still `org`, NOT the bottom rung. That is the D3
+    // floor (owner decision, 2026-08-18): "no tier contributed a ceiling" is not "no ceiling is
+    // enforced", because the control binding's `config.threshold` and the scan plugin's shipped
+    // fail-closed 0/0 are both in force and neither is authorable below `org`.
+    expect(decisionExclusions?.overrideRequiredTier).toBe("org");
     expect(decisionExclusions?.overridesRefusedForAuthority).toBeUndefined();
   });
 
@@ -587,7 +619,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await exclusionPolicy(admin, "clause-expired", org.orgId, {
       exclude: { class: "approved_override" }
     });
-    const requested = await admin.scanOverrideGrants.create({
+    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7201",
       tierObjectId: service.id,
@@ -635,7 +667,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await exclusionPolicy(admin, "clause-revoked", org.orgId, {
       exclude: { class: "approved_override" }
     });
-    const requested = await admin.scanOverrideGrants.create({
+    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7301",
       tierObjectId: service.id,
@@ -709,7 +741,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const { service, component } = await buildChain(admin, "grant-audit");
 
-    const requested = await admin.scanOverrideGrants.create({
+    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7501",
       tierObjectId: service.id,
@@ -838,7 +870,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
 
     // The grant names the SERVICE — an object genuinely on the component's chain, and one the
     // requester could plausibly hold `policy:write` at. Under the old code this was enough.
-    const requested = await admin.scanOverrideGrants.create({
+    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7301",
       tierObjectId: service.id,
@@ -887,7 +919,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     });
     await orgCeilingAndControl(admin, "ceiling-at", org.orgId, control.id);
 
-    const requested = await admin.scanOverrideGrants.create({
+    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7301",
       tierObjectId: org.orgId, // the org ROOT object — `local-auth.ts` gives it the org's own id
@@ -936,7 +968,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await requireScanControl(admin, "gate-floor", component.id, control.id);
 
     // Approved while nothing outranks the service — this is O1's configuration, which PASSES.
-    const requested = await admin.scanOverrideGrants.create({
+    const requested = await (await raiserFor(org, component.id)).scanOverrideGrants.create({
       componentId: component.id,
       vulnerabilityId: "CVE-2026-7401",
       tierObjectId: service.id,
@@ -1031,5 +1063,68 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     // DENY is NOT refused: taking a waiver back must never be harder than making one.
     const denied = await admin.scanOverrideGrants.deny(requested.id, { reason: "not accepted" });
     expect(denied.status).toBe("denied");
+  });
+  it("O12: the RAISER may not APPROVE their own grant — and deny/revoke stay open to them", async () => {
+    // SEPARATION OF DUTIES (owner decision, 2026-08-18). The escalation D3 exists to stop needs two
+    // things to go wrong: an authority bar that does not bind, and one actor holding both halves of
+    // the act. O7-O9 cover the bar. This covers the actor.
+    //
+    // It is NOT a substitute for the bar and the assertions say so: a SECOND principal with the same
+    // standing approves the very same grant successfully at the end, which is the point — this rule
+    // constrains WHO signs, never WHETHER the waiver is permissible.
+    await admitAtInstance("approved_override");
+    const org = await createTestOrg(server, "grant-sod");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const { service, component } = await buildChain(admin, "grant-sod");
+
+    // ONE identity that can both raise and approve: Operator at the component supplies the
+    // `object:write` the raise route wants, Administrator at the service the `policy:write` the
+    // approve route wants. Without the refusal this actor completes the whole act alone.
+    const both = await createTestUser(server, org, [
+      { role: "Viewer", scope: org.orgId },
+      { role: "Operator", scope: component.id },
+      { role: "Administrator", scope: service.id }
+    ]);
+    const selfDealer = new ScpClient({ baseUrl: server.baseUrl, token: both.token });
+
+    const requested = await selfDealer.scanOverrideGrants.create({
+      componentId: component.id,
+      vulnerabilityId: "CVE-2026-7601",
+      tierObjectId: service.id,
+      reason: "raised by the same hand that will try to sign it"
+    });
+    expect(requested.status).toBe("requested");
+
+    await expect(
+      selfDealer.scanOverrideGrants.approve(requested.id, {
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        reason: "signing my own waiver"
+      })
+    ).rejects.toBeInstanceOf(ScpApiError);
+
+    // ASSERT THE ROW, not just the rejection. A refusal that updated the object anyway would leave a
+    // live waiver behind while returning 400 — the shape `governance-managed-write-doors` had to
+    // learn to check for.
+    const afterRefusal = await admin.scanOverrideGrants.listForComponent(component.id);
+    expect(afterRefusal).toHaveLength(1);
+    expect(afterRefusal[0]?.status).toBe("requested");
+    expect(afterRefusal[0]?.expiresAt, "a refused approval must not have opened a window").toBeNull();
+    expect(afterRefusal[0]?.decidedByActorId).toBeNull();
+
+    // THE NEGATIVE CONTROL, and the reason this case cannot pass for the wrong reason: the identical
+    // grant, the identical tier, approved by a DIFFERENT subject, goes through. Without this the
+    // test above is equally satisfied by an approve route that is simply broken.
+    const approved = await admin.scanOverrideGrants.approve(requested.id, {
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      reason: "accepted by a second principal"
+    });
+    expect(approved.status).toBe("approved");
+
+    // ...and REVOKE is open to the raiser, deliberately. Withdrawing a waiver must never be harder
+    // than granting one, so the refusal is approve-only.
+    const revoked = await selfDealer.scanOverrideGrants.revoke(approved.id, {
+      reason: "withdrawn by the requester"
+    });
+    expect(revoked.status).toBe("revoked");
   });
 });

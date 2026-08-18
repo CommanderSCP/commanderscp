@@ -46,13 +46,49 @@ const ceiling = (
 ): EffectiveScanThreshold => ({ threshold: { maxHigh: 0 }, contributors });
 
 describe("requiredOverrideApprovalTier — the bar is read off the RULE, never off the request", () => {
-  it("NO ceiling at all means NO bar: the bottom rung", () => {
-    // The shipped default. With no tier-set ceiling there is nothing stricter than the requester's
-    // own authority to escalate past, and the control falls back to its per-binding
-    // `config.threshold` (M17.1). Getting this wrong in the strict direction would make the whole
-    // override feature dead on every deployment that authored no `scanThreshold`.
-    expect(requiredOverrideApprovalTier(undefined)).toBe("component");
-    expect(requiredOverrideApprovalTier(ceiling())).toBe("component");
+  it("NO tier-set ceiling still means a bar, and it is `org` — there is no such thing as no ceiling", () => {
+    // THIS CASE INVERTED (owner decision, 2026-08-18). It used to assert `component`, i.e. no bar,
+    // on the reading that with no `scanThreshold` policy and no instance floor nothing constrains the
+    // requester. That reading was wrong, and an adversarial pass measured the escalation it allowed:
+    // the gate still enforces a ceiling from the control binding's `config.threshold` (authored at
+    // CONTROL scope, which is nowhere on the component's containment chain) or, failing that, from
+    // the plugin's shipped fail-closed `maxCritical`/`maxHigh` = 0. Exclusions are applied BEFORE the
+    // comparison, so with the bar at `component` a service-scoped `policy:write` holder could raise
+    // and self-approve a waiver against a ceiling they had no standing to author.
+    //
+    // `org` and not the fully-derived tier: deriving the true bar makes every grant inert wherever
+    // nothing was authored, which kills the feature. `org` is the most senior rung a TENANT can
+    // author at — the strongest floor that leaves the override usable. See
+    // `requiredOverrideApprovalTier`'s docblock for what this deliberately does NOT close.
+    expect(requiredOverrideApprovalTier(undefined)).toBe("org");
+    expect(requiredOverrideApprovalTier(ceiling())).toBe("org");
+  });
+
+  it("the floor only ever tightens the bottom — a contributor BELOW `org` does not lower it", () => {
+    // The half that makes the floor a floor rather than a default. A junior contributor must not be
+    // able to pull the bar back down to its own rung: that would restore the exact escalation above
+    // by simply authoring a service-scoped `scanThreshold` alongside the grant.
+    for (const tier of ["containment_domain", "service", "assembly", "component"] as const) {
+      expect(
+        requiredOverrideApprovalTier(
+          ceiling({ tier, source: `policy:junior@${tier}`, threshold: { maxHigh: 0 } })
+        ),
+        `a ${tier}-tier contributor must not lower the bar below the floor`
+      ).toBe("org");
+    }
+  });
+
+  it("a contributor ABOVE `org` still raises the bar past it — the floor is not a ceiling", () => {
+    // The complementary half. If the floor were applied as a clamp in both directions it would
+    // silently DOWNGRADE a platform-set ceiling to `org`, which is the same escalation one rung up.
+    for (const tier of ["platform", "trust_domain"] as const) {
+      expect(
+        requiredOverrideApprovalTier(
+          ceiling({ tier, source: `instance:${tier}:local`, threshold: { maxCritical: 0 } })
+        ),
+        `a ${tier}-tier contributor must raise the bar above the floor`
+      ).toBe(tier);
+    }
   });
 
   it("the MOST SENIOR contributor sets the bar, whatever order they arrive in", () => {
@@ -81,13 +117,18 @@ describe("requiredOverrideApprovalTier — the bar is read off the RULE, never o
     expect(requiredOverrideApprovalTier(mixed)).toBe("platform");
   });
 
-  it("an UNRECOGNISED tier label raises no bar and does not crash the gate", () => {
+  it("an UNRECOGNISED tier label raises no bar, does not crash the gate, and does not sink below the floor", () => {
+    // A label the tier vocabulary does not know contributes nothing — `tierRank` returns -1 and the
+    // loop skips it — so the answer is whatever the floor is. This used to read `component`; it now
+    // reads `org` for the same reason every other no-contribution case does, and that is the safe
+    // direction: an unparseable contributor must never be the thing that LOWERS a bar. A federated
+    // row from a peer running a newer tier vocabulary is exactly how such a label arrives.
     const rogue = ceiling({
       tier: "nonsense" as never,
       source: "policy:x@1",
       threshold: { maxHigh: 0 }
     });
-    expect(requiredOverrideApprovalTier(rogue)).toBe("component");
+    expect(requiredOverrideApprovalTier(rogue)).toBe("org");
   });
 });
 

@@ -1116,7 +1116,9 @@ export const ScanApprovedOverridesSchema = z.object({
   grants: z.array(ScanOverrideGrantFactSchema),
   /**
    * THE DERIVED BAR (D3). The most senior tier that set any part of the ceiling this exclusion would
-   * loosen; `component` when no tier set one at all. Present whenever the override dimension was
+   * loosen, and never below `org` — a bar of `component` used to mean "no tier set one", which was
+   * false: the control binding's `config.threshold` and the plugin's shipped fail-closed 0/0 are
+   * ceilings no tenant below `org` can author. See `requiredOverrideApprovalTier`. Present whenever the override dimension was
    * resolved — it is the rule the grants above were measured against, and a Decision that named the
    * grants without naming the bar would explain half of the verdict.
    */

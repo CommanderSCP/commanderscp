@@ -212,7 +212,43 @@ export async function listScanOverrideGrantsForComponent(
  * pass the gate's own instant. The comparison is a timestamptz cast in SQL — a text comparison on an
  * ISO string would be *almost* right and would silently mis-order the moment a peer wrote an offset
  * other than `Z`.
+ *
+ * THE CAST IS GUARDED, AND THAT IS NOT DECORATION — it is the second instance of a class this repo
+ * has already paid for once. `graph/containment.ts` wraps its `::uuid` in a `CASE ... ~ pattern` for
+ * exactly this reason, and the sweep for that property did not reach this cast when it was written.
+ *
+ * `expiresAt` is a FREE-FORM STRING on this path. The registered `property_schema` types it only as
+ * `{"type": "string"}`, and the M22.6 authoring guard — which refuses the field outright at every
+ * local door — deliberately EXEMPTS `federationImport`, because a throw there aborts a peer's whole
+ * signed bundle. D9 federates grants fully, so an approved grant for this component legitimately
+ * arrives over the journal, and `import-repo.ts` writes its properties verbatim after an Ajv check
+ * that a bare `type: string` passes. One peer row carrying `expiresAt: "never"` would make a BARE
+ * cast throw inside every gate evaluation for that org — prewarm, wave boundary, `POST
+ * /policy-evaluate` and the commander promotion scan all die, so no change in the org can be
+ * validated or advanced until an operator finds the row. Fail-open by way of a crash, from across a
+ * trust boundary.
+ *
+ * With the `CASE`, a malformed value yields NULL, `NULL > $at` is NULL, and the row is simply not
+ * returned — the grant is NOT live. That is the fail-CLOSED direction and it agrees with condition 2
+ * above: a grant that lost a usable expiry authorizes nothing.
+ *
+ * `CASE` rather than a sibling `WHERE` conjunct, for the reason containment.ts records: only `CASE`
+ * guarantees the ordering. Postgres may evaluate two same-cost-class jsonb quals in either order, so
+ * a guard sitting beside the cast is not a guard.
  */
+
+/**
+ * ISO-8601 instants, as TEXT, before Postgres is asked to read one.
+ *
+ * DELIBERATELY WIDER THAN `toISOString()`. Narrowing this to the `Z` shape Node emits would reject
+ * legitimate federated grants from a peer that wrote a numeric offset — and the docblock above
+ * anticipates exactly that peer. A fail-closed wrong answer is still a wrong answer: it would drop a
+ * valid waiver silently. So offsets are accepted, and Postgres remains the thing that decides what
+ * the instant MEANS; this pattern only decides whether it is safe to ask.
+ */
+const ISO_TIMESTAMP_TEXT_PATTERN =
+  "^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt ][0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?([Zz]|[+-][0-9]{2}(:?[0-9]{2})?)$";
+
 export async function resolveApprovedOverridesForTarget(
   tx: TenantTx,
   orgId: string,
@@ -231,7 +267,13 @@ export async function resolveApprovedOverridesForTarget(
         sql`${objects.properties}->>'status' = 'approved'`,
         // THE READ-TIME WINDOW. `freezes-repo.ts`'s pattern, and the reason ADR-0033 §6a forbids a
         // status column a job flips: nothing in this tree would ever flip it.
-        sql`(${objects.properties}->>'expiresAt')::timestamptz > ${at.toISOString()}::timestamptz`
+        //
+        // Guarded exactly as `graph/containment.ts` guards its `::uuid` — see the docblock above for
+        // why an unguarded cast here is a tenant-wide denial of service reachable from a peer.
+        sql`CASE
+              WHEN ${objects.properties}->>'expiresAt' ~ ${ISO_TIMESTAMP_TEXT_PATTERN}
+              THEN (${objects.properties}->>'expiresAt')::timestamptz
+            END > ${at.toISOString()}::timestamptz`
       )
     );
   const grants: ScanOverrideGrantCandidate[] = [];
@@ -244,6 +286,12 @@ export async function resolveApprovedOverridesForTarget(
     // these, but a federated row from a peer running an older migration would not have been
     // validated against THIS deployment's registry, so the check is here too.
     if (!vulnerabilityId || !tierObjectId || !expiresAt) continue;
+    // THE SAME REFUSAL, IN JS, and not redundant with the SQL `CASE` above. The window decides which
+    // ROWS come back; this decides what a `ScanOverrideGrantCandidate` is allowed to CARRY. A future
+    // caller reading `.expiresAt` off a candidate — to render it, to compare it, to put it in a
+    // Decision — must not receive a string that is not an instant, and it should not have to know
+    // that a SQL predicate two dozen lines up was the only thing keeping it honest.
+    if (Number.isNaN(Date.parse(expiresAt))) continue;
     grants.push({
       grantObjectId: row.id,
       vulnerabilityId,
@@ -304,9 +352,17 @@ export async function resolveApprovedOverridesForTarget(
  *     instance floor is set, no grant can clear the bar. That is D3 read literally ("a platform-set
  *     floor is waivable only at platform") and it is why the approve route refuses up front rather
  *     than letting an operator believe they granted something.
- *   - WITH NO CEILING AT ALL THE BAR IS `component`. No tier set a rule, so there is no constraint
- *     stricter than the requester's own authority to escalate past; the ordinary `policy:write`
- *     at-or-above check on the named ancestor is then the whole of the control, exactly as shipped.
+ *   - WITH NO TIER-SET CEILING THE BAR IS `org`, AND IT IS NEVER `component`. This bullet used to
+ *     claim the opposite — "no constraint stricter than the requester's own authority to escalate
+ *     past" — which was false, and measurably so: the gate still enforces a ceiling from the control
+ *     binding's `config.threshold` (authored at CONTROL scope, off the component's chain) or, when
+ *     nothing else decides a severity, from the scan plugin's shipped fail-closed 0/0. Exclusions
+ *     are subtracted from the counts BEFORE they are compared, so a bar of `component` let a
+ *     service-scoped `policy:write` holder waive a ceiling they had no standing to author. The floor
+ *     is `org` — the most senior rung a tenant can author at — and it only ever tightens the bottom:
+ *     `platform`/`trust_domain` contributions still raise the bar past it. See
+ *     `requiredOverrideApprovalTier` in `scan-requirements.ts` for the full argument, the rejected
+ *     alternative, and what the floor deliberately does NOT close.
  */
 export function applyOverrideAuthorityBar(input: {
   candidates: readonly ScanOverrideGrantCandidate[];
