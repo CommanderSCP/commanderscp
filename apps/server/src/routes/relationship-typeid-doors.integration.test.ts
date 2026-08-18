@@ -87,20 +87,30 @@ import { getMergedOverlayView } from "../federation/overlay-repo.js";
  * a list.
  *
  * ================================================================================================
- * A SEPARATE DEFECT THIS FILE MEASURED AND DOES NOT FIX: `part_of` IS NOT A REGISTERED TYPE
+ * A SEPARATE DEFECT THIS FILE MEASURED AND DID NOT FIX — SINCE FIXED, AND THE ANSWER WAS `contains`
  * ================================================================================================
  * The controls below were first written against `part_of`, on the reasoning above that it is the
  * one edge every DiscoveryPlugin emits. They failed 404: `relationship type 'part_of' is not
  * registered`. No migration in `apps/server/drizzle/` defines it — the seeded set is `owns`,
  * `consumes`, `depends_on`, `communicates_with`, `hosted_on`, `governed_by`, `deploys_to`,
  * `coordinates`, `synchronizes_with`, `member_of`, `approves`, `annotates` (0002) plus `contains`
- * (0021). So `discovery accept` of a github/gitea/gitlab proposal's relationships has never worked
- * at all, and every end-to-end discovery test in the tree passes `relationships: []` at the accept
- * step, which is why nothing went red. It is a real defect in a different subsystem (either the
- * plugins should emit `contains`, or `part_of` should be registered as its inverse), and this file
- * fixes an authorization hole rather than quietly changing what an import produces. The controls
- * therefore use `contains` — the edge a component actually gets — which is also the stronger
- * control, since it is the SAME type as the refusal case one section up.
+ * (0021). So `discovery accept` of a github/gitea/gitlab proposal's relationships had never worked
+ * at all, and every end-to-end discovery test in the tree passed `relationships: []` at the accept
+ * step, which is why nothing went red.
+ *
+ * RESOLVED by making the plugins emit `contains`, NOT by registering `part_of` — the two options
+ * this header left open. `docs/proposals/service-component-model.md` §2 had already considered
+ * `component --part_of--> service` and rejected it, the owner accepted `contains`, and it landed as
+ * migration 0021; the plugins had simply never been moved to the decision. Registering the second
+ * spelling would have created a membership edge that `graph/containment.ts` does not walk — an
+ * import returning 201 and leaving the component governed by nothing — plus a second parent channel
+ * neither 0022's unique index nor `assertCardinality` can see. A second defect surfaced underneath
+ * (a proposal's relationships could not name the proposal's own objects at all), so the fix is both
+ * halves. See `routes/discovery-relationship-import.integration.test.ts`.
+ *
+ * The controls below still use `contains` and are unaffected — it was already the edge a component
+ * actually gets, and is the stronger control anyway, being the SAME type as the refusal case one
+ * section up.
  */
 describe("relationship typeId door census: POST /discovery/accept (Testcontainers)", () => {
   let server: ListeningTestServer;

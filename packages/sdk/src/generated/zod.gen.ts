@@ -6539,7 +6539,8 @@ export const zRunDiscoveryResponse = z.object({
     objects: z.array(z.object({
         typeId: z.string(),
         name: z.string(),
-        properties: z.record(z.string(), z.unknown()).optional()
+        properties: z.record(z.string(), z.unknown()).optional(),
+        urn: z.string().min(1).optional()
     })),
     relationships: z.array(z.object({
         typeId: z.string(),

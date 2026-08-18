@@ -797,6 +797,9 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
     {
       typeId: "service",
       name: config.repo,
+      // The alias the membership edge below names this object by — accept cannot resolve an
+      // endpoint to a proposed object without it (see `DiscoveryProposal` in `@scp/plugin-api`).
+      urn: serviceUrn,
       properties: { discoveredFrom: `gitea:${config.owner}/${config.repo}` }
     }
   ];
@@ -829,6 +832,7 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
       objects.push({
         typeId: "component",
         name: entry.name,
+        urn: componentUrn,
         properties: {
           discoveredFrom: `gitea:${config.owner}/${config.repo}`,
           sourceMapping: {
@@ -840,7 +844,9 @@ async function discover(ctx: PluginContext): Promise<DiscoveryProposal> {
           }
         }
       });
-      relationships.push({ typeId: "part_of", fromUrn: componentUrn, toUrn: serviceUrn });
+      // `contains`, SERVICE -> COMPONENT. Not `part_of` and not reversed — see `DiscoveryProposal`
+      // in `@scp/plugin-api` for why the name and the direction are both forced.
+      relationships.push({ typeId: "contains", fromUrn: serviceUrn, toUrn: componentUrn });
     }
   }
 

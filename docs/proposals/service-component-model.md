@@ -41,6 +41,30 @@ The intuitive modelling — `component --part_of--> service`, cardinality `many_
 1. `many_to_one` is not a legal value. `CardinalitySchema = z.enum(["one_to_one","one_to_many","many_to_many"])` (`packages/schemas/src/graph.ts:19`), so the API rejects it.
 2. `assertCardinality` (`graph/relationships-repo.ts:51-70`) implements only `many_to_many` (no-op), `one_to_one`, and `one_to_many`. There is **no `many_to_one` branch and no default** — force-insert it via SQL and every check falls through. It would be silently unenforced.
 
+> **CORRECTION (2026-08-17): reasons 1 and 2 above are now STALE, and the conclusion is unaffected.**
+> `many_to_one` was since added to `CardinalitySchema` and given a real enforcement branch
+> (`SINGULAR_SIDES`, which now fails CLOSED on an unenforceable value); `releases_via`, `places` and
+> `placed_at` all ship with it. So the two mechanical objections that killed `part_of` no longer hold,
+> and this section on its own now reads as an argument that has expired — which is exactly how a
+> settled decision gets quietly re-opened.
+>
+> **`contains` remains correct, for a reason that has only grown stronger since.** It is not merely
+> the registered name; it is the edge the engine WALKS. `graph/containment.ts` route 2 walks
+> `contains` backwards to put a service on a component's containment chain, and every policy scope,
+> RBAC scope expansion, domain inheritance and pipeline-resolution walk is derived from that chain.
+> Migration `0022` enforces one-parent-per-component with a partial unique index on `contains`
+> specifically, and `0055` widened `contains` (not some other edge) to carry the `assembly` rung.
+> A registered `part_of` today would be a SECOND membership spelling that none of that machinery
+> recognizes: an import that returns 201 and leaves the component governed by nothing, plus a second
+> parent channel that neither the unique index nor `assertCardinality` can see.
+>
+> This is not hypothetical. All three git discovery plugins emitted `part_of` from the day they were
+> written — the decision below was taken and the plugins were never moved to it — so
+> `POST /discovery/accept` answered every real proposal's relationships with
+> `404 relationship type 'part_of' is not registered`, and the discovery relationship channel had
+> never once worked. Fixed by moving the plugins to `contains`; see
+> `apps/server/src/routes/discovery-relationship-import.integration.test.ts`.
+
 **Proposal:** register `contains` as `from_types: [service]`, `to_types: [component]`, `cardinality: one_to_many`. `one_to_many` restricts the **`to`** side to one live incoming edge — i.e. *each component has at most one service; a service has many components*. Exactly the required semantics, using enforcement code that already exists.
 
 This is pure registry data — one `INSERT` into `relationship_types`, no DDL, no engine change — following the precedent of `0007` (`coordinated-change`/`correlates`) and `0019` (`execution-system`). Charter principle 2 holds.

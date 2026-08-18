@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import {
@@ -11,7 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeSourceEvents } from "../db/schema.js";
+import { changeSourceEvents, objects, relationships } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 
 /**
@@ -196,22 +196,47 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
     expect(sourceMapping?.pathPattern).toBe("service-a/**");
     expect(proposal.relationships).toEqual([
       {
-        typeId: "part_of",
-        fromUrn: `urn:scp:component:gitea:${OWNER_REPO}/service-a`,
-        toUrn: `urn:scp:service:gitea:${OWNER_REPO}`
+        typeId: "contains",
+        fromUrn: `urn:scp:service:gitea:${OWNER_REPO}`,
+        toUrn: `urn:scp:component:gitea:${OWNER_REPO}/service-a`
       }
     ]);
 
-    // 2) ACCEPT — the only path that writes. Carry the proposal's objects/relationships through, and
-    //    turn the component's carried sourceMapping into a `sourceMappings[]` entry (the shape accept
-    //    persists) so the import self-reports. This is exactly the transform a UI/CLI review does.
+    // 2) ACCEPT — the only path that writes. Carry the proposal's objects AND ITS RELATIONSHIPS
+    //    through, and turn the component's carried sourceMapping into a `sourceMappings[]` entry (the
+    //    shape accept persists) so the import self-reports. This is exactly the transform a UI/CLI
+    //    review does.
+    //
+    //    THIS STEP USED TO SEND `relationships: []`, and that one token is why the discovery
+    //    relationship channel could be dead in every deployment with this file green. It asserted
+    //    one screen up that the proposal CONTAINS an edge, then imported a proposal containing none
+    //    — so the step between those two facts, the only one that writes, was never crossed here.
+    //    Both `part_of` (unregistered) and the unresolvable endpoint URNs sat in that gap.
+    //    See `routes/discovery-relationship-import.integration.test.ts` for the dedicated census.
+    //
+    //    The RENAME is kept deliberately, and now proves something: both objects are renamed at
+    //    review time (as a real reviewer does, and as this file must, to stay unique across runs),
+    //    while `relationships` is passed VERBATIM. That only works because an endpoint names the
+    //    object's proposal-local `urn` ALIAS rather than anything derived from its name.
     const uniqueName = `${component.name}-${randomUUID().slice(0, 8)}`;
+    const uniqueServiceName = `${services[0]!.name}-${randomUUID().slice(0, 8)}`;
     const accept = await admin.discovery.accept({
       proposal: {
         objects: [
-          { typeId: "component", name: uniqueName, properties: component.properties ?? {} }
+          {
+            typeId: "service",
+            name: uniqueServiceName,
+            urn: services[0]!.urn,
+            properties: services[0]!.properties ?? {}
+          },
+          {
+            typeId: "component",
+            name: uniqueName,
+            urn: component.urn,
+            properties: component.properties ?? {}
+          }
         ],
-        relationships: [],
+        relationships: proposal.relationships,
         sourceMappings: [
           {
             objectName: uniqueName,
@@ -222,9 +247,41 @@ describe("M15.3a: gitea-discovery import loop (BYO Gitea → proposal → accept
         ]
       }
     });
-    expect(accept.createdObjectIds).toHaveLength(1);
+    expect(accept.createdObjectIds).toHaveLength(2);
     expect(accept.createdSourceMappingIds).toHaveLength(1);
-    const componentId = accept.createdObjectIds[0]!;
+    expect(accept.createdRelationshipIds).toHaveLength(1);
+
+    // The ROW ITSELF, read from the TABLE (never `GET /relationships`, which a type filter could
+    // make vacuous) — a returned id is not a row, and this is the assertion the old
+    // `relationships: []` made unreachable. Direction is asserted too: `contains` is
+    // service -> component, and `graph/containment.ts` walks it backwards on that assumption.
+    const edges = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({
+          typeId: relationships.typeId,
+          fromId: relationships.fromId,
+          toId: relationships.toId
+        })
+        .from(relationships)
+        .where(eq(relationships.id, accept.createdRelationshipIds[0]!))
+    );
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.typeId).toBe("contains");
+
+    const importedObjects = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ id: objects.id, typeId: objects.typeId, name: objects.name })
+        .from(objects)
+        .where(inArray(objects.id, accept.createdObjectIds))
+    );
+    const importedService = importedObjects.find((o) => o.typeId === "service")!;
+    const importedComponent = importedObjects.find((o) => o.typeId === "component")!;
+    expect(importedService.name).toBe(uniqueServiceName);
+    expect(importedComponent.name).toBe(uniqueName);
+    expect(edges[0]!.fromId).toBe(importedService.id);
+    expect(edges[0]!.toId).toBe(importedComponent.id);
+
+    const componentId = importedComponent.id;
 
     // 3) The imported component's gitea source_mapping exists and is listable under 'gitea'.
     const mappings = await admin.changeSources.listMappings("gitea");
