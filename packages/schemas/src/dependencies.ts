@@ -97,28 +97,23 @@ export const DependencyLineSchema = z.object({
    */
   tagPattern: z.string().nullable(),
   /**
-   * The component/service this org DECLARES produces this line. `null` = third-party.
+   * THE PRODUCER LINK IS NOT ON THIS ROW ANY MORE (ADR-0032 §7e, proposal §12.1).
    *
-   * DECLARED, NEVER INFERRED (ADR-0032 §7, ADR-0030 §2). Nothing reads a coordinate, a repo name or
-   * a registry host and concludes "this one is ours". A label named after WHAT MATCHED goes false
-   * the moment the matcher covers a second case — already shipped once in this repo, in a Decision
-   * where it had been wrong since before the level that exposed it (charter principle 6). Discovery
-   * may PROPOSE the link; an operator accepts it.
+   * It used to be `producedByObjectId` + its two companions here, which made the declaration PER
+   * MAJOR LINE. "Component X publishes `@acme/lib`" is a fact about the COORDINATE, true across
+   * every major X ever cut, and the mismatch was not cosmetic: lines are minted only by a
+   * CONSUMER's manifest, so every new major minted a fresh row with a NULL producer, honestly
+   * third-party by default, and `buildLineWorkList` then handed the org's own coordinate to a
+   * PUBLIC INDEX — ADR-0032 §7b clause 1's dependency-confusion catastrophe, re-armed silently at
+   * each major bump. The declaration now lives in `dependency_line_producers`, keyed
+   * `(orgId, ecosystem, coordinate)`, so a new major of a declared coordinate is internal FROM THE
+   * INSTANT IT IS MINTED because there is no per-major field left to populate.
    *
-   * What keeps inference out is that `UpsertDependencyLineInputSchema` HAS NO PRODUCER FIELD — the
-   * capability is absent from the ingestion verb rather than guarded on it. The database's
-   * `dependency_lines_internal_is_declared` CHECK is the weaker complement: it ties this column,
-   * `producedByDeclaredAt` and `producedByDeclaredByObjectId` together so none of the three can be
-   * written without the other two, which refuses a raw-SQL half-write. It does NOT make the declarer
-   * a human — that is `DeclareLineProducerInput`'s call sites and the route's authz (0060 header).
+   * DO NOT ADD IT BACK AS A CACHE. Stamping it at mint time from the declaration table closes the
+   * same hole, but it puts a producer write back inside the ingestion verb and so deletes
+   * "declared, never inferred" — the property this whole feature exists to protect. Read
+   * {@link isInternalDependencyLine} with a `DependencyLineProducer | null` obtained by joining.
    */
-  producedByObjectId: z.string().uuid().nullable(),
-  producedByDeclaredAt: z.string().nullable(),
-  /** Which principal declared the producer link — principle 6: "who asserted this line is internal?"
-   *  must be answerable. `null` when no producer is declared, and NEVER null beside a non-null
-   *  `producedByObjectId`: the CHECK above binds all three, and the column carries a foreign key, so
-   *  the answer can be neither absent nor a uuid that names nothing. */
-  producedByDeclaredByObjectId: z.string().uuid().nullable(),
   /**
    * The head of the line as last OBSERVED (written by M21.4 detection, never by manifest ingestion —
    * a component declaring `1.2.0` says nothing about what the line's head is).
@@ -138,13 +133,41 @@ export const DependencyLineSchema = z.object({
 });
 export type DependencyLine = z.infer<typeof DependencyLineSchema>;
 
-/** True iff the line has a DECLARED producer. The one place "internal" is decided — read from the
- *  declared link, never derived from `coordinate`. Kept as a function so no call site is tempted to
- *  re-derive it from a name (ADR-0032 §7). */
-export function isInternalDependencyLine(
-  line: Pick<DependencyLine, "producedByObjectId">
-): boolean {
-  return line.producedByObjectId !== null;
+/**
+ * The DECLARATION that an org produces one COORDINATE — the row of `dependency_line_producers`
+ * (ADR-0032 §7e, proposal §12.1). Identity is `(orgId, ecosystem, coordinate)`; the row's EXISTENCE
+ * is the declaration, so a half-written one is unrepresentable rather than refused by a CHECK.
+ *
+ * It is a PROJECTION TABLE ROW AND NOT A GRAPH OBJECT, and that is a FEDERATION decision, not a
+ * storage-convenience one (§12.4). A `produces` relationship or a `producedBy` policy effect would
+ * federate, and a field outpost would then hold a declaration with no inventory behind it — a
+ * visible assertion nothing can act on, the exact "true elsewhere, inert here" shape
+ * `dependencyManagement` exists to close.
+ */
+export const DependencyLineProducerSchema = z.object({
+  orgId: z.string().uuid(),
+  ecosystem: DependencyEcosystemSchema,
+  coordinate: DependencyCoordinateSchema,
+  /** The producing COMPONENT's graph object id. A `service` is refused in the first cut — see
+   *  {@link DeclareDependencyLineProducerRequestSchema}. */
+  producerObjectId: z.string().uuid(),
+  declaredAt: z.string(),
+  /** Which principal asserted this coordinate is ours — principle 6. Taken from the AUTHENTICATED
+   *  SUBJECT at the route, never from the request body: a caller-supplied field here is a forgeable
+   *  provenance label, which is the failure charter principle 6 already caught once in this repo. */
+  declaredByObjectId: z.string().uuid()
+});
+export type DependencyLineProducer = z.infer<typeof DependencyLineProducerSchema>;
+
+/** True iff the coordinate has a DECLARED producer. The one place "internal" is decided — read from
+ *  the declared row, never derived from `coordinate`. Kept as a function so no call site is tempted
+ *  to re-derive it from a name (ADR-0032 §7).
+ *
+ *  It takes the DECLARATION, not the line, since M22's regrain: internal-ness is a property of the
+ *  coordinate and a line row carries no producer field at all. A caller that has only a line must
+ *  join, which is what makes a brand-new major of a declared coordinate internal immediately. */
+export function isInternalDependencyLine(declaration: DependencyLineProducer | null): boolean {
+  return declaration !== null;
 }
 
 /**
@@ -210,22 +233,6 @@ export const UpsertDependencyLineInputSchema = DependencyLineKeySchema.extend({
   tagPattern: z.string().max(256).optional()
 });
 export type UpsertDependencyLineInput = z.infer<typeof UpsertDependencyLineInputSchema>;
-
-/**
- * The separate, operator-driven verb that makes a line INTERNAL. Kept apart from
- * `UpsertDependencyLineInput` on purpose: if ingestion could pass a producer alongside a coordinate
- * it observed, "declared, never inferred" would survive only as long as every ingestion call site
- * remembered to leave it unset. Splitting the verb removes the capability instead of guarding it.
- */
-export const DeclareLineProducerInputSchema = z.object({
-  lineId: z.string().uuid(),
-  /** The producing component/service graph object, or `null` to retract the declaration and return
-   *  the line to third-party. */
-  producedByObjectId: z.string().uuid().nullable(),
-  /** The principal making the declaration (principle 6). */
-  declaredByObjectId: z.string().uuid()
-});
-export type DeclareLineProducerInput = z.infer<typeof DeclareLineProducerInputSchema>;
 
 /** Upsert input for one declaration read out of one dependency manifest. */
 export const UpsertComponentDependencyInputSchema = z.object({
@@ -809,3 +816,160 @@ export const BackfillDependencyInventoryResponseSchema = z.object({
 export type BackfillDependencyInventoryResponse = z.infer<
   typeof BackfillDependencyInventoryResponseSchema
 >;
+
+/**
+ * The COORDINATE half of a producer declaration — the natural key of `dependency_line_producers`,
+ * and the query shape of the read.
+ *
+ * The coordinate travels in the BODY or the QUERY, never a path segment: coordinates contain `/`,
+ * `@` and `:` (`github.com/acme/lib`, `@acme/lib`, `docker.io/library/alpine`), so path-segmenting
+ * one is a trap. `GET /components/:idOrUrn/dependency-subscription` already makes this choice.
+ */
+export const DependencyLineProducerKeySchema = z.object({
+  ecosystem: DependencyEcosystemSchema,
+  coordinate: DependencyCoordinateSchema
+});
+export type DependencyLineProducerKey = z.infer<typeof DependencyLineProducerKeySchema>;
+
+/**
+ * The separate, operator-driven verb that makes a COORDINATE internal. Kept apart from
+ * `UpsertDependencyLineInput` on purpose: if ingestion could pass a producer alongside a coordinate
+ * it observed, "declared, never inferred" would survive only as long as every ingestion call site
+ * remembered to leave it unset. Splitting the verb removes the capability instead of guarding it.
+ *
+ * THERE IS NO `declaredByObjectId` HERE, AND THERE MUST NOT BE. Principle 6 asks WHO asserted this,
+ * and an answer the asserter typed is not an answer. The route stamps the authenticated subject.
+ */
+export const DeclareDependencyLineProducerRequestSchema = DependencyLineProducerKeySchema.extend({
+  /**
+   * The producing COMPONENT's graph object id or URN.
+   *
+   * A `service` IS REFUSED IN THE FIRST CUT (ADR-0032 §7e, proposal §12.2), and the refusal is not
+   * pedantry: `listProducedLines` derives a head only from the COMPONENT a prod placement names, so
+   * a service-valued declaration derives no head at all while still removing the coordinate from
+   * third-party polling — it does the harmful half silently and not the useful half.
+   */
+  producerIdOrUrn: z.string().min(1).max(512),
+  /** Compute and return the blast radius, write NOTHING. Not a nicety: it is the only way a
+   *  declarer sees WHOSE repositories they are about to affect before they affect them. */
+  dryRun: z.boolean().optional()
+});
+export type DeclareDependencyLineProducerRequest = z.infer<
+  typeof DeclareDependencyLineProducerRequestSchema
+>;
+
+/** Retract a declaration and return the coordinate to third-party polling. Same blast-radius report
+ *  and the same `dryRun`, because a retraction changes exactly as much as a declaration does. */
+export const RetractDependencyLineProducerRequestSchema = DependencyLineProducerKeySchema.extend({
+  dryRun: z.boolean().optional()
+});
+export type RetractDependencyLineProducerRequest = z.infer<
+  typeof RetractDependencyLineProducerRequestSchema
+>;
+
+/**
+ * One line the declaration (or retraction) covers, and what it did to that line's head.
+ *
+ * THE HEAD IS CLEARED BY BOTH VERBS, and the reason is a security one rather than a tidiness one
+ * (§12.3.2, and stronger since M22). `latest_version` is not only the poll's backward-movement
+ * floor: the M22 vendor rule grants a scan PASS when a component sits on the latest of its major
+ * line. A head left over from the internal era, on a coordinate that is third-party again, can
+ * therefore grant a vendor-pass against a version no registry ever published. In the other
+ * direction a poisoned public head (the stranger's `9.9.9`) would survive the very declaration that
+ * exists to undo it, and internal detection could never move the head back down to the org's real
+ * `2.1.0` — `recordDependencyLineHead` refuses backward movement.
+ */
+export const DependencyProducerLineImpactSchema = z.object({
+  lineId: z.string().uuid(),
+  major: DependencyMajorLineSchema,
+  tagPattern: z.string().nullable(),
+  /** The head as it stood BEFORE this verb ran — the value that was cleared, so an operator can see
+   *  what was discarded rather than only that something was. */
+  headBefore: z.object({
+    latestVersion: z.string().nullable(),
+    latestDigest: z.string().nullable(),
+    latestObservedAt: z.string().nullable()
+  }),
+  /** False when the line had no observed head to clear — an honest no-op, not a silent skip. */
+  headCleared: z.boolean(),
+  /** WHOSE REPOSITORIES THIS REACHES. The declarer names one coordinate and affects a set of
+   *  components they cannot see from the request; this list is that set. Sorted. */
+  subscribedComponentObjectIds: z.array(z.string().uuid())
+});
+export type DependencyProducerLineImpact = z.infer<typeof DependencyProducerLineImpactSchema>;
+
+/**
+ * A bump SCP already authored that is still open at the moment of a retraction.
+ *
+ * IT IS REPORTED AND NEVER TOUCHED. A dispatched bump has left SCP: it is a pull request in another
+ * team's repository, or — under `auto_merge` — a commit on their branch. Closing or rewriting these
+ * rows would assert SCP closed a PR it did not close. Retraction stops FUTURE triggers only, and
+ * this list is what an operator takes away to go and close them (§12.3.2).
+ */
+export const DependencyProducerOpenBumpSchema = z.object({
+  changeObjectId: z.string().uuid(),
+  componentObjectId: z.string().uuid(),
+  repo: z.string(),
+  manifestPath: z.string(),
+  fromVersion: z.string(),
+  toVersion: z.string(),
+  /** As the provider returned it. Absent means SCP recorded no link — never "compose one". */
+  pullRequestUrl: z.string().optional()
+});
+export type DependencyProducerOpenBump = z.infer<typeof DependencyProducerOpenBumpSchema>;
+
+/**
+ * What a declare or a retract reports back — THE BLAST RADIUS, which is why this is a verb and not
+ * a field write (§12.3, ADR-0031 §6's grounds 1 and 3; ground 2, one-way-ness, does not transfer).
+ */
+export const DependencyLineProducerVerbResponseSchema = z.object({
+  ecosystem: DependencyEcosystemSchema,
+  coordinate: DependencyCoordinateSchema,
+  /** `declare` | `retract`. Echoed so a stored response stands alone. */
+  action: z.enum(["declare", "retract"]),
+  /** True when nothing was written. */
+  dryRun: z.boolean(),
+  /** The declaration as it now stands — `null` after a retraction, and `null` on a `dryRun` retract
+   *  because the report describes the state the caller ASKED FOR. */
+  declaration: DependencyLineProducerSchema.nullable(),
+  /** Every major line of this coordinate the verb covers, with what happened to its head. EMPTY is
+   *  a legitimate and common answer: a producer may be declared before any consumer's manifest has
+   *  minted a line, which is exactly what per-coordinate grain makes representable. */
+  lines: z.array(DependencyProducerLineImpactSchema),
+  /** Open bumps in flight at this moment (retract only, and only when not a dry run). */
+  openBumpAuthorships: z.array(DependencyProducerOpenBumpSchema),
+  /** The Decision this verb recorded, or `null` on a dry run — principle 6's `decision_id`. */
+  decisionId: z.string().uuid().nullable(),
+  dependencyManagement: DependencyManagementSchema
+});
+export type DependencyLineProducerVerbResponse = z.infer<
+  typeof DependencyLineProducerVerbResponseSchema
+>;
+
+/** The read. Optionally narrowed to one ecosystem, or to one exact coordinate. */
+export const ListDependencyLineProducersQuerySchema = z.object({
+  ecosystem: DependencyEcosystemSchema.optional(),
+  /** VERBATIM byte equality, never a prefix or a slug — `@acme/lib` and `acme-lib` are two
+   *  coordinates that share a URN slug and must not share an answer. */
+  coordinate: DependencyCoordinateSchema.optional()
+});
+export type ListDependencyLineProducersQuery = z.infer<
+  typeof ListDependencyLineProducersQuerySchema
+>;
+
+export const ListDependencyLineProducersResponseSchema = z.object({
+  producers: z.array(DependencyLineProducerSchema),
+  dependencyManagement: DependencyManagementSchema
+});
+export type ListDependencyLineProducersResponse = z.infer<
+  typeof ListDependencyLineProducersResponseSchema
+>;
+
+/** What the repo verb takes. `declaredByObjectId` is present HERE and absent from the request
+ *  schema above — the route supplies it from the authenticated subject. */
+export interface DeclareLineProducerInput {
+  ecosystem: DependencyEcosystem;
+  coordinate: string;
+  producerObjectId: string;
+  declaredByObjectId: string;
+}

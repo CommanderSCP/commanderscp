@@ -49,6 +49,7 @@ import { registerInstanceScanFloorRoutes } from "./routes/instance-scan-floors.j
 import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js";
 import { registerScanDbRoutes } from "./routes/scan-db.js";
 import { registerDependencySubscriptionRoutes } from "./routes/dependency-subscriptions.js";
+import { registerDependencyProducerRoutes } from "./routes/dependency-producers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -234,6 +235,13 @@ export async function buildApp(
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)
   registerDependencySubscriptionRoutes(app, deps); // M21.3 instance unlock + (component, line) enablement resolution (ADR-0032 §6)
+  // THE PRODUCER DECLARATION'S AUTHORING SURFACE (ADR-0032 §7e). Without this line
+  // `declareDependencyLineProducer` has no non-test caller, `dependency_line_producers` stays
+  // empty, and the INTERNAL half of dependency subscriptions cannot fire in production at all —
+  // that is the defect the route exists to close, so deleting this registration must turn
+  // `dependency-producers.integration.test.ts`'s "WIRING" case red rather than merely removing a
+  // convenience.
+  registerDependencyProducerRoutes(app, deps);
   // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — coordinate many
   // Changes over the same M3/M4 machinery; no new engine, see coordination/campaign-status.ts.
   registerCampaignRoutes(app, deps);

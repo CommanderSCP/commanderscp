@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { JsonRecordSchema, UrnSchema } from "./graph.js";
 import { ExecutorTypeSchema, PipelineClassificationSchema } from "./executors.js";
+import { DependencyCoordinateSchema, DependencyEcosystemSchema } from "./dependencies.js";
 
 /**
  * `@scp/iac` desired-state manifest contract (DESIGN.md §15, BUILD_AND_TEST.md §8 M2 item 4).
@@ -229,6 +230,41 @@ export const ManifestPlacementSchema = z.object({
 });
 export type ManifestPlacement = z.infer<typeof ManifestPlacementSchema>;
 
+/**
+ * A `dependency_line_producers` row (ADR-0032 §7e): "this component's production releases are where
+ * this coordinate's versions come from". The IaC form of `POST /dependencies/producers`.
+ *
+ * IDENTITY IS `(ecosystem, coordinate)` — the table's natural key — and the PRODUCER IS THE VALUE.
+ * That is why this collection has an `update` action where `sourceMappings` and `placements` do not:
+ * re-pointing `@acme/lib` from component P to component Q is one row changing, not a delete and a
+ * create, and the table's own `ON CONFLICT (org_id, ecosystem, coordinate) DO UPDATE` says so.
+ *
+ * OWNERSHIP is the PRODUCER COMPONENT's stack, the same inheritance rule `sourceMappings` uses (this
+ * table has no `labels` column either). Two refusals follow, both at `POST /plans` and again at
+ * apply:
+ *   1. a declaration whose producer this stack does not own; and
+ *   2. a declaration that would DISPLACE a live one whose current producer this stack does not own.
+ * (2) is not symmetry for its own sake. Without it, stack A could take `@acme/lib` from stack B's
+ * component: B's ownership pool is keyed on B's own components, so after the theft the coordinate is
+ * invisible to B — B can neither prune it nor restore it, and nothing in B's plan output ever says
+ * it left. That is the same "a stack never touches another stack's rows" rule the projection tables
+ * already have, applied to the one collection where a row can change hands without being deleted.
+ *
+ * THE PRODUCER MUST BE A `component`. A `service` is refused with the reason
+ * `DeclareDependencyLineProducerRequestSchema` gives: internal head derivation reads the COMPONENT a
+ * production placement names, so a service-valued declaration removes the coordinate from
+ * third-party polling and derives no head at all — the harmful half without the useful one.
+ */
+export const ManifestDependencyProducerSchema = z.object({
+  /** URN of the producing COMPONENT. Must be an object THIS stack owns, and must be a `component`. */
+  producerUrn: UrnSchema,
+  ecosystem: DependencyEcosystemSchema,
+  /** Carried VERBATIM — never slugified, never lowercased. `@acme/lib`, `github.com/acme/lib` and
+   *  `docker.io/library/alpine` are three coordinates that share nothing but a URN slug. */
+  coordinate: DependencyCoordinateSchema
+});
+export type ManifestDependencyProducer = z.infer<typeof ManifestDependencyProducerSchema>;
+
 export const DesiredStateManifestSchema = z.object({
   /** Deployable-unit label — becomes the row's server-written `managed_by_stack` (drizzle/0068),
    *  which is what scopes pruning. It is ALSO mirrored into `labels` as `scp:stack` for humans; that
@@ -251,7 +287,77 @@ export const DesiredStateManifestSchema = z.object({
    *  components this stack owns — removing an entry deletes that placement (decision Q3), which is
    *  safe only because a placement still carrying an executor binding is REFUSED rather than
    *  cascaded (decision Q2). Those two rulings are load-bearing together. */
-  placements: z.array(ManifestPlacementSchema).optional()
+  placements: z
+    .array(ManifestPlacementSchema)
+    .optional()
+    .describe(
+      "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is " +
+        "the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that " +
+        "'producers' deliberately does NOT follow this rule — read its own description."
+    ),
+  /**
+   * ===========================================================================================
+   * ABSENT MEANS **UNMANAGED**, AND THIS DELIBERATELY DIVERGES FROM THE THREE COLLECTIONS ABOVE
+   * ===========================================================================================
+   * For `sourceMappings`, `executorBindings` and `placements`, an absent key and an empty array are
+   * the same thing and both PRUNE — `apps/server/src/iac/plan-diff.ts` says so at length and records
+   * that changing it broke three `plans.integration` tests. DO NOT "fix" this collection to match
+   * them. The asymmetry is the ruling (owner, 2026-08-17), and the reason is the blast radius, not
+   * consistency:
+   *
+   *   - Pruning a mapping, a binding or a placement costs a route or a pipeline an operator notices
+   *     the same day.
+   *   - Pruning a producer declaration returns a coordinate the org PUBLISHES to a PUBLIC INDEX on a
+   *     daily poll timer. The symptom is an ABSENCE of dependency updates, and the failure mode is
+   *     dependency confusion (ADR-0032 §7b clause 1) re-armed by a stack that merely FORGOT A KEY.
+   *
+   * So: key absent  -> this stack manages no producer declarations. NOTHING is pruned, ever.
+   *     key present -> this stack is authoritative over the declarations it names, AND over any
+   *                    declaration whose producer is a component this stack owns. Removing an entry
+   *                    from a present collection DOES prune it (see below).
+   *
+   * ===========================================================================================
+   * IS A PRESENT COLLECTION AUTHORITATIVE OVER ITS OWN MEMBERS? YES — AND HERE IS THE ALGORITHM
+   * ===========================================================================================
+   * Removing entry B from `[A, B]` DOES prune B. `computePlanDiff`'s prune step is the same one every
+   * other collection gets — `pool.filter(row => !manifestKeys.has(key(row)))`, where `pool` is the
+   * declarations whose producer this stack owns. The ONLY thing the absent case changes is that the
+   * prune step is SKIPPED ENTIRELY; nothing else in the algorithm distinguishes one member from
+   * another. So the catastrophic case ("the whole key vanished") manages nothing, and the ordinary
+   * case ("I removed one of my three") is real, reviewable management.
+   *
+   * ===========================================================================================
+   * THE CONSEQUENCE: IaC CANNOT RETRACT THE **LAST** DECLARATION THROUGH `@scp/iac`
+   * ===========================================================================================
+   * `Stack.synth()` OMITS a collection when it is empty, so a program that declares no producers and
+   * a program that declares none ANY MORE synthesize byte-identical manifests. Under the rule above
+   * both mean "unmanaged", so deleting your only `producesDependency(...)` call leaves the
+   * declaration standing. That is an ACCEPTED COST, not an oversight — the alternative is a forgotten
+   * key silently re-arming dependency confusion.
+   *
+   * To retract, in order of preference:
+   *   1. `POST /dependencies/producers/retract` (`scp dependency producer retract`). Preferred even
+   *      when IaC could do it: only the verb reports the bumps SCP has already authored and cannot
+   *      recall.
+   *   2. Remove the entry while OTHER entries remain — the key stays present, so the prune fires.
+   *   3. Hand-author `"producers": []` and POST it to `/plans`. Present-and-empty is a deliberate
+   *      statement ("I manage producers, and I declare none"), so it prunes every declaration on a
+   *      component this stack owns. `@scp/iac` cannot emit this; a hand-written manifest can.
+   */
+  producers: z
+    .array(ManifestDependencyProducerSchema)
+    .optional()
+    .describe(
+      "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT " +
+        "'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the " +
+        "org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency " +
+        "confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that " +
+        "declaration, and a present-but-empty array prunes every declaration on a component this stack owns. " +
+        "Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use " +
+        "POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author " +
+        '"producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a ' +
+        "producer this stack does not own is refused."
+    )
 });
 export type DesiredStateManifest = z.infer<typeof DesiredStateManifestSchema>;
 
@@ -363,6 +469,34 @@ export const PlanExecutorBindingDiffEntrySchema = z.object({
 });
 export type PlanExecutorBindingDiffEntry = z.infer<typeof PlanExecutorBindingDiffEntrySchema>;
 
+/**
+ * One `dependency_line_producers` row's verdict, keyed on `(ecosystem, coordinate)` — the table's own
+ * natural key, which is why this is the one projection collection with an `update`: the producer is
+ * the row's VALUE, so re-pointing a coordinate is an in-place change, not a delete plus a create.
+ *
+ * READ `action: "create"` CAREFULLY. It means "no producer is declared for this coordinate at all".
+ * A coordinate that already has one and is being re-pointed is an `update` carrying
+ * {@link displacedProducerUrn}, whether or not the displaced producer belongs to this stack — the
+ * diff states what is true about the coordinate, and the ownership guard is what refuses the
+ * cross-stack case. A plan that silently reported `create` for a transfer would be a plan whose most
+ * consequential fact is missing from the thing the operator reviews.
+ */
+export const PlanDependencyProducerDiffEntrySchema = z.object({
+  kind: z.literal("dependency-producer"),
+  action: PlanActionSchema,
+  ecosystem: DependencyEcosystemSchema,
+  coordinate: DependencyCoordinateSchema,
+  /** The producing component. On a `delete` this is the producer being retracted, resolved from the
+   *  live row — so the reviewed prune names WHO is losing the coordinate, not only which coordinate. */
+  producerUrn: UrnSchema,
+  /** Present iff a DIFFERENT producer holds this coordinate right now. This is the transfer, spelled
+   *  out: the declarer names one coordinate and takes it from a component the request never mentions
+   *  (charter principle 6, and the same field the verb records as `displacedProducerObjectId`). */
+  displacedProducerUrn: UrnSchema.optional(),
+  reason: z.string()
+});
+export type PlanDependencyProducerDiffEntry = z.infer<typeof PlanDependencyProducerDiffEntrySchema>;
+
 export const PlanDiffSummarySchema = z.object({
   creates: z.number().int(),
   updates: z.number().int(),
@@ -382,6 +516,15 @@ export const PlanDiffSchema = z.object({
   placements: z.array(PlanPlacementDiffEntrySchema).optional(),
   /** C1 — see `sourceMappings` for why this is optional. */
   executorBindings: z.array(PlanExecutorBindingDiffEntrySchema).optional(),
+  /**
+   * Producer declarations (ADR-0032 §7e). OPTIONAL FOR A SECOND REASON ON TOP OF THE PRE-C1 ONE, and
+   * the second reason is load-bearing: this key is ABSENT — not `[]` — whenever the manifest omitted
+   * its own `producers` collection, because absent there means UNMANAGED
+   * (`DesiredStateManifestSchema.producers`). So the stored plan itself records "this stack manages
+   * no producer declarations", and an operator reading the plan can tell that apart from "this stack
+   * manages them and has nothing to change". An empty array means the latter.
+   */
+  producers: z.array(PlanDependencyProducerDiffEntrySchema).optional(),
   summary: PlanDiffSummarySchema
 });
 export type PlanDiff = z.infer<typeof PlanDiffSchema>;

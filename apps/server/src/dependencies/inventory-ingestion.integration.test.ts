@@ -22,6 +22,7 @@ import {
 } from "../test-support/harness.js";
 import {
   listComponentDependencies,
+  listDependencyLineProducers,
   listDependencyLinesByIds
 } from "./dependency-inventory-repo.js";
 import {
@@ -374,9 +375,12 @@ require (
       expect(lines.filter((l) => l.ecosystem === "go").every((l) => l.tagPattern === null)).toBe(
         true
       );
-      // NOTHING declared a producer. `produced_by_object_id` is a separate verb precisely so
-      // ingestion cannot set it as a side effect of observing a manifest.
-      expect(lines.every((l) => l.producedByObjectId === null)).toBe(true);
+      // NOTHING DECLARED A PRODUCER. Since drizzle/0068 the declaration is not even on the line
+      // row — it is a row of `dependency_line_producers`, keyed by COORDINATE, and this ingestion
+      // pass must have written none. Asserting the table is empty is strictly stronger than the
+      // old `producedByObjectId === null`: that could pass merely because the column defaulted.
+      const declared = await inOrg((tx) => listDependencyLineProducers(tx, org.orgId));
+      expect(declared, "ingestion must never declare a producer as a side effect").toEqual([]);
     });
 
     it("drives from the change: a change targeting no component ingests nothing", async () => {

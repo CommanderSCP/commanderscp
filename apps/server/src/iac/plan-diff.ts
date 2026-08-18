@@ -1,5 +1,7 @@
 import type {
+  DependencyEcosystem,
   ExecutorType,
+  PlanDependencyProducerDiffEntry,
   PlanDiff,
   PlanExecutorBindingDiffEntry,
   PlanExecutorBindingTarget,
@@ -132,6 +134,15 @@ export interface ResolvedManifestPlacement {
   deploymentTargetUrn: string;
 }
 
+/** A declared `dependency_line_producers` row (ADR-0032 §7e). Identity is `(ecosystem, coordinate)`;
+ *  `producerUrn` is the VALUE, which is why this collection has an `update`. Nothing to normalize —
+ *  the coordinate is carried verbatim by contract and there are no optional fields. */
+export interface ResolvedManifestDependencyProducer {
+  producerUrn: string;
+  ecosystem: DependencyEcosystem;
+  coordinate: string;
+}
+
 export interface ResolvedManifest {
   stackName: string;
   objects: ResolvedManifestObject[];
@@ -151,6 +162,30 @@ export interface ResolvedManifest {
   sourceMappings: ResolvedManifestSourceMapping[];
   executorBindings: ResolvedManifestExecutorBinding[];
   placements: ResolvedManifestPlacement[];
+  /** HERE, AND ONLY HERE, ABSENT AND EMPTY ARE DIFFERENT — `null` vs `[]`. The type is the ruling.
+   *
+   *  Read the comment on `sourceMappings` above first: for those three collections absent and empty
+   *  are the same thing on purpose, and someone already tried to change that and broke three
+   *  `plans.integration` tests. THIS ONE DIVERGES, by owner ruling (2026-08-17), and the divergence
+   *  is expressed as `| null` rather than as a boolean flag beside an array precisely so a caller
+   *  cannot forget to consult it: `computePlanDiff` cannot read the collection without deciding what
+   *  `null` means.
+   *
+   *  `null`  = the manifest had NO `producers` key = this stack manages no producer declarations.
+   *            The prune step is skipped ENTIRELY and no diff entries are emitted at all.
+   *  `[]`    = the key was present and empty = "I manage producers and declare none" -> prune all.
+   *
+   *  WHY THE ASYMMETRY IS CORRECT AND MUST SURVIVE THE NEXT SWEEP. For the three above, a
+   *  prune-on-absent costs a route or a binding that an operator notices immediately. Here it
+   *  returns a coordinate the org PUBLISHES to a public index on a daily poll timer, and the symptom
+   *  is an ABSENCE of dependency updates: dependency confusion (ADR-0032 §7b clause 1) re-armed by a
+   *  stack that merely forgot a key. The consistency argument is real and it loses to that.
+   *
+   *  THE ACCEPTED COST, stated where it bites: `Stack.synth()` omits an empty collection, so
+   *  "unmanaged" and "I declare none" are indistinguishable in a SYNTHESIZED manifest, and `@scp/iac`
+   *  therefore cannot retract a stack's LAST declaration. Use the retract verb (which also reports
+   *  the bumps already in flight), or hand-author `"producers": []`. */
+  producers: ResolvedManifestDependencyProducer[] | null;
 }
 
 export interface ExistingObjectSnapshot {
@@ -211,6 +246,29 @@ export interface PlanDiffSnapshot {
    *  rationale. Ownership follows the component, not the deployment-target, so a placement at a
    *  target owned by another stack is still this stack's to converge. */
   managedPlacements: ResolvedManifestPlacement[];
+  /**
+   * Live `dependency_line_producers` rows whose PRODUCER COMPONENT this stack owns — the PRUNE
+   * pool, and the only one of the three producer inputs that is ownership-scoped.
+   */
+  managedDependencyProducers: ResolvedManifestDependencyProducer[];
+  /**
+   * Live declarations for the coordinates THIS MANIFEST NAMES, regardless of who owns the producer —
+   * the "does this coordinate already have a producer" pool, exactly parallel to
+   * `existingRelationships` sitting beside `managedRelationships`.
+   *
+   * TWO POOLS, NOT ONE, AND THE SECOND IS WHAT MAKES A TRANSFER VISIBLE. `dependency_line_producers`
+   * is keyed on the COORDINATE, so a declaration can change hands without any row being deleted:
+   * `ON CONFLICT (org_id, ecosystem, coordinate) DO UPDATE` silently re-points it. With only the
+   * ownership-scoped pool, a manifest claiming a coordinate another stack currently produces would
+   * diff as a plain `create` and apply would perform the steal without a word — and the victim stack
+   * could never see it, because after the transfer the row is outside ITS pool too. This pool is how
+   * the diff learns to say `update` + `displacedProducerUrn`, which is in turn what lets the
+   * ownership guard refuse the cross-stack case from the STORED diff at apply time.
+   *
+   * A coordinate the manifest does not name may be absent here; the diff only ever asks about keys
+   * it is converging.
+   */
+  existingDependencyProducers: ResolvedManifestDependencyProducer[];
 }
 
 function relKey(t: ExistingRelationshipTriple): string {
@@ -239,6 +297,61 @@ function placementKey(p: ResolvedManifestPlacement): string {
  * The classification is a descriptive label. Keying on it would turn "relabel this pipeline `dev`"
  * into a delete-plus-create of a LIVE route, which is a real interruption for a cosmetic edit.
  */
+/**
+ * A producer declaration's identity — `(ecosystem, coordinate)`, mirroring the table's
+ * `PRIMARY KEY (org_id, ecosystem, coordinate)`. The PRODUCER IS DELIBERATELY OUT OF THE KEY: it is
+ * the row's value, so re-pointing a coordinate is an `update` of one row. Putting the producer in
+ * would turn every transfer into a delete-plus-create of the same primary key — two entries whose
+ * apply order decides the outcome, for a table that can only hold one of them.
+ */
+function producerKey(p: { ecosystem: DependencyEcosystem; coordinate: string }): string {
+  return canonicalJson({ ecosystem: p.ecosystem, coordinate: p.coordinate });
+}
+
+/** How a producer declaration reads in an error message — the coordinate, never the URN slug of it. */
+function describeProducerCoordinate(p: {
+  ecosystem: DependencyEcosystem;
+  coordinate: string;
+}): string {
+  return `${p.ecosystem} '${p.coordinate}'`;
+}
+
+/**
+ * THE STAND-IN URN FOR A LIVE DECLARATION WHOSE PRODUCER OBJECT CANNOT BE NAMED — a tombstoned (or
+ * hard-deleted) component, which `plans-repo.ts` cannot resolve to a URN because every object read
+ * there filters `deleted_at IS NULL`.
+ *
+ * WHY A SENTINEL AND NOT A DROP. `dependency_line_producers` has no `deleted_at` of its own and
+ * `deleteObject` is a SOFT delete, so tombstoning a producer component leaves the declaration
+ * STANDING: the coordinate still has a holder, and the next declaration of it is an `ON CONFLICT DO
+ * UPDATE` that overwrites that holder. Dropping the row from the existence pool made the diff say
+ * `create` — whose reason sentence is literally "no producer is declared for this coordinate — it is
+ * polled as third-party today" — for a coordinate that IS declared. The plan an operator reviews
+ * would then be false about the single fact that decides whether the apply is a first declaration or
+ * a silent overwrite.
+ *
+ * WHY IT IS NOT THE TOMBSTONED OBJECT'S REAL URN. `invalidProducerDeclarations` refuses a
+ * displacement whose URN is not in `diff.objects`; a real URN can legitimately BE there (a manifest
+ * still naming the deleted component diffs it as a `create`), which would let the overwrite through
+ * on exactly the plan that should be refused. A sentinel is refused by its own named branch instead
+ * of by set membership, so no manifest can construct a passing case.
+ *
+ * NOT a valid address for anything: nothing resolves it, `executePlanDiff` never passes it to
+ * `endpointId`, and it appears only in `displacedProducerUrn`, which is read by the guard and by the
+ * operator. It satisfies `UrnSchema` because the diff is validated on the way into `plans.diff`.
+ */
+const UNRESOLVED_PRODUCER_URN_PREFIX = "urn:scp:unresolvable:producer-object:";
+
+/** @see UNRESOLVED_PRODUCER_URN_PREFIX */
+export function unresolvedProducerUrn(producerObjectId: string): string {
+  return `${UNRESOLVED_PRODUCER_URN_PREFIX}${producerObjectId}`;
+}
+
+/** @see UNRESOLVED_PRODUCER_URN_PREFIX */
+export function isUnresolvedProducerUrn(urn: string): boolean {
+  return urn.startsWith(UNRESOLVED_PRODUCER_URN_PREFIX);
+}
+
 function sourceMappingKey(m: ResolvedManifestSourceMapping): string {
   return canonicalJson({
     componentUrn: m.componentUrn,
@@ -649,12 +762,104 @@ export function computePlanDiff(manifest: ResolvedManifest, snapshot: PlanDiffSn
     deletes++;
   }
 
+  // -----------------------------------------------------------------------------------------
+  // DEPENDENCY-LINE PRODUCERS (ADR-0032 §7e). Converge-then-prune like the three above, with ONE
+  // divergence and one addition:
+  //
+  //  - THE DIVERGENCE: `manifest.producers === null` (the manifest had no `producers` key) means
+  //    UNMANAGED. The whole block is skipped — no entries, no prune, and the diff carries no
+  //    `producers` key at all, so the stored plan itself records that this stack manages none.
+  //    Every other collection treats absent as empty; read `ResolvedManifest.producers` for why
+  //    this one must not, and do not "fix" the inconsistency.
+  //  - THE ADDITION: identity is the COORDINATE, so a declaration changes hands without a delete.
+  //    A live declaration by ANOTHER producer is an `update` naming the displaced one, not a
+  //    `create` — see `existingDependencyProducers`.
+  // -----------------------------------------------------------------------------------------
+  let producerEntries: PlanDependencyProducerDiffEntry[] | undefined;
+  if (manifest.producers !== null) {
+    const entries: PlanDependencyProducerDiffEntry[] = [];
+    const existingProducerByKey = new Map(
+      snapshot.existingDependencyProducers.map((p) => [producerKey(p), p] as const)
+    );
+    const manifestProducerKeys = new Set<string>();
+
+    for (const declaration of manifest.producers) {
+      const key = producerKey(declaration);
+      // Two declarations of one coordinate would race through the SAME primary-key row and the last
+      // would silently win — the shape `duplicateProjectionDeclarations` rejects for bindings, for
+      // the same reason. Collapsing here only keeps the diff well-formed; the rejection is the
+      // caller's, before this output is used.
+      if (manifestProducerKeys.has(key)) continue;
+      manifestProducerKeys.add(key);
+
+      const existing = existingProducerByKey.get(key);
+      if (!existing) {
+        entries.push({
+          kind: "dependency-producer",
+          action: "create",
+          ecosystem: declaration.ecosystem,
+          coordinate: declaration.coordinate,
+          producerUrn: declaration.producerUrn,
+          reason: `no producer is declared for ${describeProducerCoordinate(declaration)} — it is polled as third-party today`
+        });
+        creates++;
+        continue;
+      }
+      if (existing.producerUrn === declaration.producerUrn) {
+        entries.push({
+          kind: "dependency-producer",
+          action: "noop",
+          ecosystem: declaration.ecosystem,
+          coordinate: declaration.coordinate,
+          producerUrn: declaration.producerUrn,
+          reason: "matches current state"
+        });
+        noops++;
+        continue;
+      }
+      entries.push({
+        kind: "dependency-producer",
+        action: "update",
+        ecosystem: declaration.ecosystem,
+        coordinate: declaration.coordinate,
+        producerUrn: declaration.producerUrn,
+        // THE TRANSFER, ON THE ENTRY THE OPERATOR REVIEWS. Also the input the ownership guard needs
+        // to refuse a cross-stack steal from the STORED diff at apply time, without re-reading.
+        displacedProducerUrn: existing.producerUrn,
+        reason: `${describeProducerCoordinate(declaration)} is currently produced by '${existing.producerUrn}' — this plan TRANSFERS it`
+      });
+      updates++;
+    }
+
+    // THE PRUNE, reached only because the key was present. Sorted by identity so the reviewed diff
+    // is stable regardless of row order from the DB, exactly like the mapping/placement prunes.
+    const producerPrunes = [...snapshot.managedDependencyProducers]
+      .filter((p) => !manifestProducerKeys.has(producerKey(p)))
+      .sort((a, b) => producerKey(a).localeCompare(producerKey(b)));
+    for (const managed of producerPrunes) {
+      entries.push({
+        kind: "dependency-producer",
+        action: "delete",
+        ecosystem: managed.ecosystem,
+        coordinate: managed.coordinate,
+        producerUrn: managed.producerUrn,
+        reason:
+          "declared on a component this stack owns, no longer present in the desired manifest's " +
+          "producers — the coordinate RETURNS TO THIRD-PARTY POLLING"
+      });
+      deletes++;
+    }
+    producerEntries = entries;
+  }
+
   return {
     objects: objectEntries,
     relationships: relationshipEntries,
     sourceMappings: sourceMappingEntries,
     executorBindings: executorBindingEntries,
     placements: placementEntries,
+    // OMITTED, not `[]`, when the stack manages no producers — the absent key IS the statement.
+    ...(producerEntries !== undefined ? { producers: producerEntries } : {}),
     summary: { creates, updates, deletes, noops }
   };
 }
@@ -707,6 +912,126 @@ export function duplicateProjectionDeclarations(manifest: ResolvedManifest): str
       continue;
     }
     seenBindings.add(key);
+  }
+  // A coordinate declared twice — to the SAME producer or to two different ones. Both are rejected,
+  // and the second is the one that matters: the table holds one row per coordinate, so the two
+  // declarations are not two rows but two opinions, and `ON CONFLICT DO UPDATE` would silently keep
+  // whichever the array happened to end on. "Declared, never inferred" is worth nothing if WHICH
+  // component was declared depends on array order.
+  const seenProducers = new Set<string>();
+  for (const declaration of manifest.producers ?? []) {
+    const key = producerKey(declaration);
+    if (seenProducers.has(key)) {
+      offenders.push(
+        `producer ${describeProducerCoordinate(declaration)} (-> ${declaration.producerUrn})`
+      );
+      continue;
+    }
+    seenProducers.add(key);
+  }
+  return offenders;
+}
+
+/** The object type a producer declaration must name — mirrored from `assertDeclarableProducer`. */
+const PRODUCER_TYPE_ID = "component";
+
+/**
+ * Human-readable descriptions of every producer declaration this plan may not make — the IaC twin of
+ * the two refusals `routes/dependency-producers.ts` performs, re-expressed so they can be re-derived
+ * from the STORED DIFF at apply time (exactly like `unownedProjectionDeclarations`, and for the same
+ * fail-closed reason: a plan computed by an older build must not be trusted).
+ *
+ * THREE REFUSALS.
+ *
+ *  1. THE PRODUCER IS NOT AN OBJECT THIS STACK OWNS. `dependency_line_producers` carries no labels,
+ *     so ownership is inherited from the producing component — the same rule the projection tables
+ *     use. Without this, stack A writes a declaration onto stack B's component: a row A can never
+ *     see again (it is outside A's prune pool) and B's next apply prunes one it never declared.
+ *
+ *  2. THE DISPLACED PRODUCER IS NOT THIS STACK'S EITHER. This one has no analogue in the other
+ *     collections and it is the reason `displacedProducerUrn` exists. A producer declaration changes
+ *     hands WITHOUT A DELETE — the key is the coordinate, and the table upserts — so refusal (1)
+ *     alone lets stack A take `@acme/lib` from stack B's component P by declaring it on A's own
+ *     component Q. Refusal (1) passes (Q is A's). The row is then outside B's pool forever: B cannot
+ *     prune it, cannot restore it, and no plan of B's ever mentions it again. The coordinate the org
+ *     publishes silently changed hands. Transfers are legitimate — through the VERB, which reports
+ *     the blast radius and the bumps in flight, or within one stack — but not as a side effect of a
+ *     manifest that never names the component it takes from.
+ *
+ *     AND THE HOLDER MAY BE UNNAMEABLE. A tombstoned producer component leaves its declaration
+ *     standing (soft delete; the table has no `deleted_at`), and no object read resolves it to a
+ *     URN — so the displacement carries {@link unresolvedProducerUrn} and gets its own refusal
+ *     branch. Same act, same reason; only the remedy differs, because there is no stack to hand the
+ *     coordinate back to.
+ *
+ *     "This stack's" here means "appears in `diff.objects` AT ALL", `delete` entries included. A
+ *     delete entry can only have come from the label-scoped prune pool, so its presence PROVES
+ *     ownership; excluding it would refuse the ordinary "component P is being replaced by Q, and the
+ *     coordinate moves with it" manifest, which is a legitimate one-stack transfer.
+ *
+ *  3. THE PRODUCER IS NOT A `component`. `listProducedLines` derives a head only from the component
+ *     a production placement names, so a `service`-valued declaration removes the coordinate from
+ *     third-party polling and derives no head at all — the harmful half without the useful one
+ *     (ADR-0032 §7e). The typed verb refuses it; this door must too, or IaC is the way around it.
+ *
+ * `delete` entries are exempt from (1) and (3): a prune entry can only have come from the
+ * ownership-scoped pool, and its producer component may legitimately be being deleted by this same
+ * plan.
+ */
+export function invalidProducerDeclarations(diff: PlanDiff): string[] {
+  const ownedUrns = new Set<string>();
+  const typeByUrn = new Map<string, string>();
+  /** Every URN this stack owns OR owned — see refusal (2) on why a `delete` entry counts. */
+  const stackUrns = new Set<string>();
+  for (const obj of diff.objects) {
+    stackUrns.add(obj.urn);
+    if (obj.action !== "delete") {
+      ownedUrns.add(obj.urn);
+      typeByUrn.set(obj.urn, obj.typeId);
+    }
+  }
+
+  const offenders: string[] = [];
+  for (const entry of diff.producers ?? []) {
+    const coordinate = `${entry.ecosystem} '${entry.coordinate}'`;
+    if (entry.action !== "delete") {
+      if (!ownedUrns.has(entry.producerUrn)) {
+        offenders.push(
+          `producer ${coordinate} -> ${entry.producerUrn}, which this stack does not manage`
+        );
+        continue;
+      }
+      const typeId = typeByUrn.get(entry.producerUrn);
+      if (typeId !== PRODUCER_TYPE_ID) {
+        offenders.push(
+          typeId === "service"
+            ? `producer ${coordinate} -> ${entry.producerUrn}, which is a SERVICE — a service-valued ` +
+                `declaration is refused in the first cut (ADR-0032 §7e): it would remove the coordinate ` +
+                `from third-party polling and derive no head at all. Declare the component that ` +
+                `publishes the artifact`
+            : `producer ${coordinate} -> ${entry.producerUrn}, which is a ${typeId ?? "non-object"}, not a component`
+        );
+        continue;
+      }
+    }
+    if (entry.displacedProducerUrn && isUnresolvedProducerUrn(entry.displacedProducerUrn)) {
+      // REFUSAL (2b) — the same displacement, with the holder unnameable. Its own branch rather than
+      // set membership: see {@link UNRESOLVED_PRODUCER_URN_PREFIX} for why a real URN here could be
+      // made to pass the membership test on precisely the plan that must be refused.
+      offenders.push(
+        `producer ${coordinate} is currently declared on a producer object that no longer resolves ` +
+          `(${entry.displacedProducerUrn}) — the component was deleted and the declaration outlived ` +
+          `it, so this plan would OVERWRITE a standing declaration rather than make a first one. ` +
+          `Retract it through POST /dependencies/producers/retract, which reports the bumps already ` +
+          `in flight, and then declare`
+      );
+    } else if (entry.displacedProducerUrn && !stackUrns.has(entry.displacedProducerUrn)) {
+      offenders.push(
+        `producer ${coordinate} is currently produced by ${entry.displacedProducerUrn}, which this ` +
+          `stack does not manage — a transfer away from another stack's component must go through ` +
+          `POST /dependencies/producers, which reports the blast radius and the bumps in flight`
+      );
+    }
   }
   return offenders;
 }

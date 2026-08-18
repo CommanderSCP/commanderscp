@@ -279,6 +279,75 @@ export async function buildLineWorkList(db: Db, orgId: string): Promise<LineWork
  * A REFUSAL is carried, because it is a statement about the world (this index is behind this line's
  * head) that stays true, and therefore compares equal, for as long as it holds.
  */
+/**
+ * THE PLAIN-ENGLISH "WHY NOTHING WAS RECORDED", IN THE TERMS OF THE RULE THAT ACTUALLY REFUSED.
+ *
+ * This used to be one fixed sentence — "a head never moves backwards and never leaves the line it
+ * names" — appended to every refusal. That sentence is TRUE of the version rules and simply not the
+ * rule that fired for an OWNERSHIP refusal: `line_is_internal` is not a statement about the version
+ * at all, and the index's answer may be perfectly ahead of the standing head. A Decision that
+ * explains the wrong rule is worse than one that says nothing, because it is read as the answer
+ * (charter principle 6): an operator reading it would go looking for a version-ordering problem on a
+ * line whose actual problem is that a producer was declared for it.
+ *
+ * THE SWITCH IS EXHAUSTIVE AND HAS NO `default`, which is the standing gate rather than a style: with
+ * `noImplicitReturns`, a new {@link HeadRefusalReason} that nobody explains here does not compile.
+ * MEASURED rather than assumed — adding one reason to that union yields exactly
+ * `version-poll.ts: error TS2366: Function lacks ending return statement`. A `default` arm would
+ * silence that gate and hand the next reason the same wrong explanation this function exists to fix.
+ *
+ * `reasonTree.reason` and `reasonTree.detail` carry the machine-readable name and the door's own
+ * specific text beside this; the three are not redundant — the door's `detail` names the fact (which
+ * producer, which version), this names the RULE.
+ *
+ * EXPORTED for `version-poll.test.ts`, and only because there is no other way in: the refusal that
+ * exposed the defect (`line_is_internal`) needs a declaration to land BETWEEN `buildLineWorkList`
+ * and the write, and `pollOrgDependencyVersions` owns both ends of that window. The rule is pure, so
+ * it is pinned pure — the same split as `evaluateIngressAuthority` (unit) and the race replay
+ * (integration).
+ *
+ * AND THE CALL SITE IS PINNED SEPARATELY, because the pure test is NOT sufficient: restoring the old
+ * fixed sentence at `decisionFor`'s `not_recorded` arm leaves all 16 of that file's cases green
+ * (measured) — a rule proven in isolation while its only consumer is free to ignore it. The pin is
+ * `version-poll.integration.test.ts`'s "the PERSISTED Decision for a line_is_internal refusal
+ * explains OWNERSHIP", which declares a producer from INSIDE the index round trip and reads the
+ * stored text back out of `decisions`.
+ */
+export function norecordFor(reason: HeadRefusalReason): string {
+  switch (reason) {
+    case "line_is_internal":
+      return (
+        "a producer is declared for this coordinate, so its head is derived from the org's own " +
+        "production releases and a public index may not write it — the columns were left alone. " +
+        "This is NOT a statement about the version offered (ADR-0032 §7: dependency confusion)"
+      );
+    case "line_is_third_party":
+    case "line_transferred":
+      // Unreachable from THIS ingress — both are refusals of an `internal` write, and this module
+      // only ever writes as `third_party`. Explained rather than asserted away, because
+      // `HeadRefusalReason` is one type shared by both ingresses and a future third one: an
+      // ownership refusal must never fall through to a version explanation, which is the defect
+      // this function exists to have fixed once.
+      return (
+        "the ingress that offered this head does not own this line, so the columns were left " +
+        "alone — WHO may write a head is decided before WHAT the version is (ADR-0032 §7)"
+      );
+    case "behind_head":
+      return (
+        "the index's answer is BEHIND this line's head, so the columns were left alone — a head " +
+        "never moves backwards (ADR-0032 §7)"
+      );
+    case "different_major_line":
+    case "different_tag_variant":
+    case "major_line_not_comparable":
+    case "version_not_comparable":
+      return (
+        "the index's answer is not a version on this line as it is defined now, so the columns " +
+        "were left alone — a head never leaves the line it names (ADR-0032 §7)"
+      );
+  }
+}
+
 function decisionFor(
   item: LineWorkItem,
   outcome: LineHeadOutcome,
@@ -315,9 +384,7 @@ function decisionFor(
         reason: refusal.reason,
         detail: refusal.detail,
         standingHead: refusal.head,
-        norecord:
-          "the index's answer does not move this line's head, so the columns were left alone — a " +
-          "head never moves backwards and never leaves the line it names (ADR-0032 §7)"
+        norecord: norecordFor(refusal.reason)
       }
     };
   }
@@ -437,11 +504,24 @@ async function pollWork(
           // and its digest move together (an unresolved digest is an explicit `null`, never the
           // previous version's bytes left standing beside a new tag), the head never moves backwards
           // and never leaves the line it names. Whatever it refuses is reported, not swallowed.
-          const head = await recordDependencyLineHead(tx, orgId, {
-            lineId: item.line.id,
-            latestVersion: outcome.head.version,
-            latestDigest: outcome.head.digest
-          });
+          //
+          // `"third_party"` IS NOT DECORATION, AND THE `ThirdPartyLine` BRAND DOES NOT COVER IT.
+          // The brand was minted in `buildLineWorkList`'s transaction, before the registry round
+          // trip above; a `POST /dependencies/producers` landing in that window makes this line
+          // internal, and writing a public head onto it was measured to be PERMANENT (the poll
+          // stops visiting the line and the real internal head is then refused as `behind_head`).
+          // The door re-reads the declaration under its own `FOR UPDATE` and refuses with
+          // `line_is_internal`, which lands in this line's Decision like any other refusal.
+          const head = await recordDependencyLineHead(
+            tx,
+            orgId,
+            {
+              lineId: item.line.id,
+              latestVersion: outcome.head.version,
+              latestDigest: outcome.head.digest
+            },
+            { kind: "third_party" }
+          );
           if (!head.recorded) {
             refusal = {
               reason: head.reason,

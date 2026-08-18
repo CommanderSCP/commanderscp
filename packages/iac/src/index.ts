@@ -29,7 +29,8 @@ export type {
   ReleaseTopologyProps,
   ReleaseTopologyWaveSpec,
   SourceMappingSpec,
-  ExecutorBindingSpec
+  ExecutorBindingSpec,
+  DependencyProducerSpec
 } from "./construct.js";
 export { deriveConstructUrn, slugify } from "./urn.js";
 export { canonicalJson } from "./canonical.js";

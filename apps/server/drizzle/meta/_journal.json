@@ -498,6 +498,20 @@
       "when": 1788131000000,
       "tag": "0070_bundle_transfers_confirmed_nulls_last",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1788132000000,
+      "tag": "0071_dependency_line_producers",
+      "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1788133000000,
+      "tag": "0072_drop_dependency_lines_produced_by",
+      "breakpoints": true
     }
   ]
 }

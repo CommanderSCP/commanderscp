@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { DependencyEcosystem } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
@@ -9,6 +9,7 @@ import { SYSTEM_ACTOR_ID } from "../coordination/system-actor.js";
 import {
   listComponentDependencies,
   listComponentsDeclaringLine,
+  listDependencyLineProducersForComponents,
   recordDependencyLineHead
 } from "./dependency-inventory-repo.js";
 import type { HeadRefusalReason } from "./line-head.js";
@@ -514,11 +515,32 @@ export async function detectInternalReleases(
       // the same function, that the third-party poll is subject to. This module deliberately holds
       // no second copy of any of them, which is why a `1.9.9` hotfix landing after `1.10.0` is
       // refused here rather than silently walking the head backwards.
-      const head = await recordDependencyLineHead(tx, orgId, {
-        lineId: item.group.line.id,
-        latestVersion: item.agreed.version,
-        latestDigest: item.agreed.digest
-      });
+      //
+      // AND IT DECIDES WHETHER THIS INGRESS STILL OWNS THE LINE. Phase 1 read the declaration; the
+      // manifest fetch in phase 2 happens with NO transaction open, so a `POST
+      // /dependencies/producers/retract` can land in between and this phase-3 write would otherwise
+      // put the org's own version onto a coordinate that is third-party again — the direction
+      // `resetLineHead`'s header calls a security fix rather than a wedge fix, because
+      // `latest_version` is an M22 vendor-rule input. The `internal` ingress is what lets the door
+      // refuse it (`line_is_third_party`), and the refusal is reported as a skip like every other.
+      //
+      // AND IT NAMES THE PRODUCER THIS RELEASE WAS DERIVED FROM. `producerComponentObjectId` is
+      // phase 1's own answer — the component `listProducedLines` matched this line's declaration to
+      // — carried down here rather than recomputed. Without it the door could only ask "is this
+      // coordinate internal?", which a TRANSFER (`POST /dependencies/producers` over an existing
+      // declaration) leaves true while making this component the WRONG writer: its version would
+      // become the head, fan bump PRs into every subscriber's repo, and wedge the new producer's
+      // genuine release behind `behind_head` with no way back.
+      const head = await recordDependencyLineHead(
+        tx,
+        orgId,
+        {
+          lineId: item.group.line.id,
+          latestVersion: item.agreed.version,
+          latestDigest: item.agreed.digest
+        },
+        { kind: "internal", producerObjectId: item.identity.producerComponentObjectId }
+      );
       if (!head.recorded) {
         item.skipped.push({ ...item.identity, reason: head.reason, detail: head.detail });
         continue;
@@ -743,19 +765,33 @@ function observedImagesOf(observed: unknown): string[] {
 }
 
 /**
- * The lines each released component is the DECLARED producer of — one indexed read over
- * `dependency_lines.produced_by_object_id`.
+ * The lines each released component is the DECLARED producer of — TWO indexed reads since
+ * drizzle/0068, because the declaration moved off the line row and onto the COORDINATE.
+ *
+ * Hop 1 is `dependency_line_producers_org_producer` ("which coordinates does component X
+ * produce?"), replacing the partial index the old column carried. Hop 2 narrows
+ * `dependency_lines` by `(org_id, ecosystem, coordinate)` — a PREFIX of the existing
+ * `dependency_lines_identity` — so no index was added to make this work.
+ *
+ * THE REGRAIN IS WHY THIS IS RIGHT NOW AND WAS NOT BEFORE. Under the per-line column, a component
+ * that had declared `@acme/lib` and then cut a `3.0.0` derived NO head for the freshly minted `3`
+ * line: that row's producer was NULL because nobody had re-declared it, and the version poll
+ * cheerfully fetched the org's own coordinate from a public index. Keyed by coordinate, every major
+ * is here from the instant a consumer's manifest mints it.
  *
  * DECLARED, NEVER INFERRED (ADR-0032 §7, ADR-0030 §2). Nothing here looks at the component's name,
- * its repo, or the registry a coordinate points at. `produced_by_object_id` is written only by
- * `declareDependencyLineProducer`, which is a separate verb from ingestion precisely so that this
- * link cannot arrive as a side effect of observing a manifest.
+ * its repo, or the registry a coordinate points at. `dependency_line_producers` is written only by
+ * the two verbs in `routes/dependency-producers.ts`, and `inventory-ingestion.ts` does not import
+ * the table at all — that absence is the enforcement, not this comment.
  *
- * SINGLE HOP, AND ONLY THE COMPONENT. The producer link may name a component OR a service, and this
- * derivation asks only about the component the placement names — it does not walk up to that
- * component's service or down to a service's components. ADR-0032 §3's "nothing in the dependency
- * path may expose a transitive traversal" is what justifies the whole projection-table
- * representation; a containment walk here would spend it.
+ * SINGLE HOP THROUGH THE GRAPH, AND ONLY THE COMPONENT. This derivation asks only about the
+ * component the placement names; it does not walk up to that component's service or down to a
+ * service's components. A SERVICE-VALUED declaration would therefore derive no head at all, which
+ * is exactly why the declare verb REFUSES a service in the first cut (ADR-0032 §7e) instead of
+ * accepting one that silently does only the harmful half — removing the coordinate from the
+ * third-party poll — and none of the useful half. ADR-0032 §3's "nothing in the dependency path may
+ * expose a transitive traversal" is what justifies the projection-table representation at all; a
+ * containment walk here would spend it.
  */
 async function listProducedLines(
   tx: TenantTx,
@@ -765,30 +801,56 @@ async function listProducedLines(
   const componentObjectIds = [...new Set(releases.map((r) => r.componentObjectId))];
   if (componentObjectIds.length === 0) return [];
 
+  const declarations = await listDependencyLineProducersForComponents(
+    tx,
+    orgId,
+    componentObjectIds
+  );
+  if (declarations.length === 0) return [];
+
+  // MATCHED AS A PAIR, deliberately. The coordinate is compared VERBATIM and carries no ecosystem
+  // in itself, so narrowing on `coordinate IN (...)` alone would let an `npm` declaration claim an
+  // `oci` line that happens to spell the same string.
   const rows = await tx
     .select({
       id: dependencyLines.id,
       ecosystem: dependencyLines.ecosystem,
       coordinate: dependencyLines.coordinate,
-      major: dependencyLines.major,
-      producedByObjectId: dependencyLines.producedByObjectId
+      major: dependencyLines.major
     })
     .from(dependencyLines)
     .where(
       and(
         eq(dependencyLines.orgId, orgId),
-        inArray(dependencyLines.producedByObjectId, componentObjectIds)
+        or(
+          ...declarations.map((d) =>
+            and(
+              eq(dependencyLines.ecosystem, d.ecosystem),
+              eq(dependencyLines.coordinate, d.coordinate)
+            )
+          )
+        )
       )
     )
     .orderBy(dependencyLines.id);
 
+  // ` ` as the joiner, not a space or a colon: an ecosystem is one of five literals and a
+  // coordinate is arbitrary user bytes, so any separator that can appear IN a coordinate could make
+  // two different pairs share a key.
+  const keyOf = (ecosystem: string, coordinate: string) => `${ecosystem} ${coordinate}`;
+  const producerOf = new Map(
+    declarations.map((d) => [keyOf(d.ecosystem, d.coordinate), d.producerObjectId])
+  );
+
   const out: ProducedLineGroup[] = [];
   for (const row of rows) {
+    const producerObjectId = producerOf.get(keyOf(row.ecosystem, row.coordinate));
+    if (producerObjectId === undefined) continue;
     // ONE GROUP PER LINE, carrying every place that released it — never one entry per (line, place).
     // A line has one head, so the places are evidence to be weighed together; a flat pair list made
     // each place write the head in turn and let the last one, ordered by UUID, win.
     const forThisLine = releases
-      .filter((release) => release.componentObjectId === row.producedByObjectId)
+      .filter((release) => release.componentObjectId === producerObjectId)
       .sort((a, b) => (a.deploymentTargetObjectId < b.deploymentTargetObjectId ? -1 : 1));
     if (forThisLine.length === 0) continue;
     out.push({

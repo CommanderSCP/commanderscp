@@ -54,6 +54,11 @@ import type {
   DependencySubscriptionContribution,
   DependencySubscriptionResolutionResponse,
   DependencySubscriptionUnlock,
+  // ADR-0032 §7e — the producer declaration's authoring surface.
+  DependencyLineProducer,
+  DependencyLineProducerVerbResponse,
+  DependencyProducerLineImpact,
+  DependencyProducerOpenBump,
   // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
   OutpostConfig,
   OutpostConfigReconcileResult,
@@ -691,6 +696,145 @@ export function dependencyInventoryBackfillRow(
     reads: String(c.reads),
     detail: c.detail
   };
+}
+
+/**
+ * One LINE of a producer declaration's blast radius (`scp dependency-producers declare|retract`,
+ * ADR-0032 §7e).
+ *
+ * THE THREE COLUMNS THAT ARE NOT DECORATION:
+ *
+ *  - `subscribers` is the number of components whose repositories this act reaches. It is the whole
+ *    reason declaring is a VERB with a report rather than a field write: the operator names one
+ *    coordinate and affects a set of repositories the request never mentions.
+ *  - `headWas` is what the observed head WAS. Both verbs clear it, and an operator needs to see the
+ *    value that was discarded rather than only that something was — a wrong declaration is undone
+ *    by re-observing, and knowing `2.7.0` was thrown away is how you know what to look for.
+ *  - `headCleared` distinguishes "there was a head and it is gone" from "there was nothing to
+ *    clear". Printing only `headWas` would render both as a blank.
+ *
+ * Exported and unit-tested DIRECTLY, for the reason `cli-absent-formatters.test.ts` records: a
+ * mapper written inline in a Commander `.action()` closure is unreachable by any test.
+ */
+export function dependencyProducerLineRow(
+  line: DependencyProducerLineImpact
+): Record<string, string> {
+  const head = line.headBefore ?? {
+    latestVersion: null,
+    latestDigest: null,
+    latestObservedAt: null
+  };
+  return {
+    major: line.major,
+    // `-` and NEVER a blank or "none": absent means NOT OBSERVED, which is not the same claim as
+    // "no newer version exists" (ADR-0032 §7's reading of the nullable head).
+    headWas: head.latestVersion ?? "-",
+    headCleared: String(line.headCleared === true),
+    subscribers: String(line.subscribedComponentObjectIds?.length ?? 0),
+    lineId: line.lineId
+  };
+}
+
+/**
+ * One OPEN bump at the moment of a retraction — a pull request SCP already opened in someone else's
+ * repository.
+ *
+ * IT IS PRINTED BECAUSE SCP WILL NOT CLOSE IT. Retraction stops future triggers only; a dispatched
+ * bump has left SCP, and closing it from here would make SCP assert it closed a PR it did not
+ * close. This table is the operator's only list of what to go and close by hand, so the URL column
+ * prints `-` rather than composing one: `repo` + number is a github.com convention and the row does
+ * not record which provider authored the bump.
+ */
+export function dependencyProducerOpenBumpRow(
+  bump: DependencyProducerOpenBump
+): Record<string, string> {
+  return {
+    repo: bump.repo,
+    manifest: bump.manifestPath,
+    bump: `${bump.fromVersion} -> ${bump.toVersion}`,
+    url: bump.pullRequestUrl ?? "-",
+    change: bump.changeObjectId
+  };
+}
+
+/**
+ * The sentence a caller must read before believing an empty producer list, and after a write.
+ *
+ * BOTH ARMS ARE LOAD-BEARING AND BOTH ARE TESTED. On a field outpost `dependency_line_producers` is
+ * empty BY DESIGN (declarations live at the commander, ADR-0032 §7d), so an unqualified empty table
+ * reads as "nothing is declared" when the truth is "you asked the wrong deployment". On a declared
+ * commander the note must be SILENT — a caveat printed on every invocation is one nobody reads,
+ * which is how the M21.7 inversion (`dependencyManagementNote`) went green while warning the wrong
+ * deployment.
+ */
+export function dependencyProducerManagementNote(
+  managed: { managedHere: boolean; reason: string } | undefined
+): string | undefined {
+  // `=== false`, never falsy: a server that predates the envelope claims no posture, and asserting
+  // one it never claimed is the same fabrication the `-` columns exist to avoid.
+  if (managed?.managedHere !== false) return undefined;
+  return (
+    `NOTE: dependency management does NOT run on this deployment (${managed.reason}), so producer ` +
+    `declarations live at the COMMANDER. An empty list here is not evidence that nothing is declared.`
+  );
+}
+
+/**
+ * The whole receipt of a declare or a retract — the table, the note, and the in-flight bumps.
+ *
+ * IT IS A FUNCTION, NOT INLINE IN TWO `.action()` CLOSURES, for two reasons. The tested one: a
+ * printer written inside a Commander action is unreachable by any test, and this one carries the
+ * `dryRun` banner and the open-bump table, both of which are conditional and therefore both of
+ * which have a silent-wrong arm. The other: declare and retract must print the SAME receipt, and
+ * two copies of a receipt are two receipts that drift.
+ */
+export function printProducerVerbResult(
+  response: DependencyLineProducerVerbResponse,
+  output: string | undefined
+): void {
+  if (output === "json") {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+  // FIRST LINE, NOT A FOOTER. An operator who scrolls away after the table must not be able to
+  // mistake a dry run for a write, and the blast-radius table below looks identical either way.
+  console.log(
+    response.dryRun
+      ? `DRY RUN — nothing was written. ${response.action} ${response.ecosystem} ${response.coordinate}`
+      : `${response.action}d: ${response.ecosystem} ${response.coordinate}` +
+          (response.declaration ? ` -> producer ${response.declaration.producerObjectId}` : "")
+  );
+  console.log("");
+  if (response.lines.length === 0) {
+    // AN EMPTY BLAST RADIUS IS ORDINARY AND MUST SAY WHY. A producer can be declared before any
+    // consumer's manifest has minted a line — that is precisely what per-coordinate grain makes
+    // representable — and a bare empty table reads as "the command did nothing".
+    console.log(
+      "No dependency line exists for this coordinate yet, so the declaration covers zero lines " +
+        "today. It applies to every major line minted for the coordinate from now on, which is why " +
+        "the declaration is per COORDINATE and not per line."
+    );
+  } else {
+    console.log("BLAST RADIUS (every major line this coordinate covers):");
+    printResult(response.lines, "table", (raw) =>
+      dependencyProducerLineRow(raw as DependencyProducerLineImpact)
+    );
+  }
+  if (response.openBumpAuthorships.length > 0) {
+    console.log("");
+    console.log(
+      "BUMPS ALREADY IN FLIGHT — SCP does NOT close these. Retraction stops future triggers only; " +
+        "an open pull request is another team's to close."
+    );
+    printResult(response.openBumpAuthorships, "table", (raw) =>
+      dependencyProducerOpenBumpRow(raw as DependencyProducerOpenBump)
+    );
+  }
+  const note = dependencyProducerManagementNote(response.dependencyManagement);
+  if (note !== undefined) {
+    console.log("");
+    console.log(note);
+  }
 }
 
 /**
@@ -3765,6 +3909,139 @@ export function buildProgram(): Command {
         printResult(response.components, "table", (raw) =>
           dependencyInventoryBackfillRow(raw as DependencyInventoryBackfillComponent)
         );
+      }
+    );
+
+  // -------------------------------------------------------------------------------------
+  // dependency-producers (ADR-0032 §7e) — WHICH COORDINATES THIS ORG PUBLISHES.
+  //
+  // This is the switch between two entirely different head ingresses. A DECLARED coordinate's
+  // versions come from the org's own production releases; an undeclared one's are fetched from a
+  // public index. Getting it wrong fails in both directions and both are silent:
+  //
+  //   - declare a coordinate you do NOT publish -> it leaves the third-party poll permanently, and
+  //     every subscriber stops receiving upstream versions INCLUDING SECURITY RELEASES. There is no
+  //     error, because the failure is an absence.
+  //   - fail to declare one you DO publish -> the coordinate is polled against a public index, and
+  //     a stranger's package answering `9.9.9` bumps every subscriber onto it, on a daily timer.
+  //
+  // SO `--dry-run` IS ON BOTH WRITE VERBS AND IS THE FIRST THING TO REACH FOR. It prints the same
+  // blast radius and writes nothing.
+  //
+  // THERE IS NO `--producer none`. Retraction is its own subcommand: a flag that switches a verb
+  // between declaring and undeclaring is how an omitted value becomes a destructive default.
+  //
+  // POINT IT AT THE COMMANDER. The writes are commander-only (ADR-0032 §7d) and answer 409
+  // elsewhere; the read works anywhere but is empty by design on a field outpost.
+  // -------------------------------------------------------------------------------------
+  const depProducersCmd = program
+    .command("dependency-producers")
+    .description(
+      "Declared dependency-line producers (ADR-0032 §7e) — which COMPONENT this org publishes which coordinate from. A declared coordinate is INTERNAL: its versions are derived from the org's own production releases instead of a public index. Requires 'policy:write' at the ORG ROOT, because the declaration changes behaviour for every component in the org that depends on the coordinate"
+    );
+
+  depProducersCmd
+    .command("list")
+    .description(
+      "List this org's declared producers. Narrowable by ecosystem or to one exact coordinate (compared VERBATIM). On a field outpost the list is EMPTY BY DESIGN — declarations live at the commander"
+    )
+    .option("--ecosystem <ecosystem>", "npm|go|maven|python|oci")
+    .option(
+      "--coordinate <coordinate>",
+      "one exact coordinate, VERBATIM — never slugified, so case and punctuation matter"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { ecosystem?: string; coordinate?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response = await client.dependencyProducers.list({
+        ...(opts.ecosystem !== undefined
+          ? { ecosystem: opts.ecosystem as DependencyEcosystem }
+          : {}),
+        ...(opts.coordinate !== undefined ? { coordinate: opts.coordinate } : {})
+      });
+      if (opts.output === "json") {
+        console.log(JSON.stringify(response, null, 2));
+        return;
+      }
+      printResult(response.producers, "table", (raw) => {
+        const p = raw as DependencyLineProducer;
+        return {
+          ecosystem: p.ecosystem,
+          coordinate: p.coordinate,
+          producer: p.producerObjectId,
+          declaredBy: p.declaredByObjectId,
+          declaredAt: p.declaredAt
+        };
+      });
+      // The condition and the sentence live in `dependencyProducerManagementNote`, OUTSIDE this
+      // closure, so both arms are reachable by a test — the M21.7 lesson: an inline caveat whose
+      // condition is inverted warns the wrong deployment and leaves the suite green.
+      const note = dependencyProducerManagementNote(response.dependencyManagement);
+      if (note !== undefined) {
+        console.log("");
+        console.log(note);
+      }
+    });
+
+  depProducersCmd
+    .command("declare")
+    .description(
+      "Declare that a component produces a coordinate. Prints the BLAST RADIUS — every major line covered, its observed head, and how many components are subscribed. CLEARS each line's observed head, so a poisoned public head does not survive the declaration that exists to undo it. A service is refused: head derivation reads the COMPONENT a production placement names"
+    )
+    .requiredOption("--ecosystem <ecosystem>", "npm|go|maven|python|oci")
+    .requiredOption(
+      "--coordinate <coordinate>",
+      "the ecosystem-native coordinate, VERBATIM (`@acme/lib`, `github.com/acme/lib`, `com.acme:lib`, `docker.io/library/alpine`)"
+    )
+    .requiredOption("--producer <idOrUrn>", "the producing COMPONENT's id or URN")
+    // Argument-LESS, and with no default: a `--dry-run <bool>` is how "the operator said nothing"
+    // silently becomes a value, and here the two values are "look" and "change every subscriber's
+    // upstream".
+    .option("--dry-run", "compute and print the blast radius; write nothing")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          ecosystem: string;
+          coordinate: string;
+          producer: string;
+          dryRun?: boolean;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencyProducers.declare({
+          // Validated server-side by the shared `DependencyEcosystemSchema` (a bad value is a 400
+          // naming the enum); cast rather than duplicate the list here.
+          ecosystem: opts.ecosystem as DependencyEcosystem,
+          coordinate: opts.coordinate,
+          producerIdOrUrn: opts.producer,
+          ...(opts.dryRun === true ? { dryRun: true } : {})
+        });
+        printProducerVerbResult(response, opts.output);
+      }
+    );
+
+  depProducersCmd
+    .command("retract")
+    .description(
+      "Retract a producer declaration and return the coordinate to third-party polling. CLEARS each covered line's observed head — a head the org's own releases put there would otherwise wedge the line, and it is an input to the M22 vendor scan rule. Prints the bumps still in flight, which SCP does NOT close"
+    )
+    .requiredOption("--ecosystem <ecosystem>", "npm|go|maven|python|oci")
+    .requiredOption("--coordinate <coordinate>", "the coordinate, VERBATIM")
+    .option("--dry-run", "compute and print the blast radius; write nothing")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (opts: BaseCliOpts & { ecosystem: string; coordinate: string; dryRun?: boolean }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencyProducers.retract({
+          ecosystem: opts.ecosystem as DependencyEcosystem,
+          coordinate: opts.coordinate,
+          ...(opts.dryRun === true ? { dryRun: true } : {})
+        });
+        printProducerVerbResult(response, opts.output);
       }
     );
 

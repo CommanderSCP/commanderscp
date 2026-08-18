@@ -26,6 +26,10 @@ import { join } from "node:path";
 // deliberate act — see the remedy text below for what each change means.
 const EXPECTED = [
   "apps/server/src/dependencies/ingestion-stamp-repo.ts",
+  // `${ecosystem}\0${coordinate}` keys the producer-declaration lookup in
+  // `detectInternalReleases`. NUL because a coordinate may contain any printable byte —
+  // `@acme/lib`, `com.acme:lib`, `ghcr.io/acme/api` — so every printable joiner can collide.
+  "apps/server/src/dependencies/internal-release-detection.ts",
   "apps/server/src/iac/plan-diff.ts",
   "packages/iac/src/construct.ts",
   "packages/sdk/src/response-validation.ts",

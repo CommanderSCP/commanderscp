@@ -30,6 +30,7 @@ import {
 import {
   declareDependencyLineProducer,
   getDependencyLineById,
+  getDependencyLineProducer,
   upsertComponentDependency,
   upsertDependencyLine
 } from "./dependency-inventory-repo.js";
@@ -173,18 +174,27 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   ): Promise<string> {
     const lineId = await inOrg(async (tx) => {
       const line = await upsertDependencyLine(tx, org.orgId, key);
+      // The declaration is per COORDINATE since drizzle/0068, so it names no line id — which is
+      // also why it would still be true of a `3` line this fixture never mints.
       await declareDependencyLineProducer(tx, org.orgId, {
-        lineId: line.id,
-        producedByObjectId: producerComponentObjectId,
+        ecosystem: key.ecosystem,
+        coordinate: key.coordinate,
+        producerObjectId: producerComponentObjectId,
         declaredByObjectId: producerComponentObjectId
       });
       return line.id;
     });
 
-    // READ BACK: the producer link is what makes this line internal at all, and a silently-absent
-    // one would make every "nothing was recorded" assertion below pass for the wrong reason.
-    const stored = await inOrg((tx) => getDependencyLineById(tx, org.orgId, lineId));
-    expect(stored?.producedByObjectId, "the DECLARED producer link must have landed").toBe(
+    // READ BACK: the producer declaration is what makes this coordinate internal at all, and a
+    // silently-absent one would make every "nothing was recorded" assertion below pass for the
+    // wrong reason.
+    const stored = await inOrg((tx) =>
+      getDependencyLineProducer(tx, org.orgId, {
+        ecosystem: key.ecosystem,
+        coordinate: key.coordinate
+      })
+    );
+    expect(stored?.producerObjectId, "the DECLARED producer link must have landed").toBe(
       producerComponentObjectId
     );
 
