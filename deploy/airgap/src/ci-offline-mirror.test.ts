@@ -272,3 +272,77 @@ describe("the mirror is actually wired into CI and the installers", () => {
     expect(doctor).not.toContain("SCP_COSIGN_IMAGE_REF");
   });
 });
+
+/**
+ * ------------------------------------------------------------------------------------------------
+ * THE VAR MUST ARRIVE, NOT MERELY BE EXPORTED — the gap that took both shards red
+ * ------------------------------------------------------------------------------------------------
+ * `ci-mirror.sh seed` wrote `SCP_TEST_SUBJECT_REGISTRY` into $GITHUB_ENV, the workflow log showed it
+ * set on every later step, and the two subject suites read it with a `docker.io/library` fallback —
+ * and the suites still went to Docker Hub, because the suites do not run in the job's shell. They
+ * run under `turbo run test:integration`, and turbo's env mode is STRICT: a task receives only the
+ * vars named in its `env`/`passThroughEnv` plus a small system set. An undeclared var is not passed
+ * through empty, it is ABSENT — so `?? "docker.io/library"` took the fallback and the blackhole,
+ * working exactly as designed, denied it.
+ *
+ * The existing assertion above ("the subject suites read the same env var ci-mirror.sh exports")
+ * passed throughout. It checked the producer and it checked the consumer; nothing checked the pipe
+ * between them. That is the shape this block exists to make impossible for the NEXT var: the repo
+ * had already paid for this lesson once — `SCP_RUNNER_*_IMAGE_REF` are in `passThroughEnv` for the
+ * same reason — and paying twice is what a census is supposed to prevent.
+ */
+describe("every var the seed step exports actually reaches the process that reads it", () => {
+  const TURBO_JSON = "turbo.json";
+  const turbo = JSON.parse(readFileSync(path.join(REPO_ROOT, TURBO_JSON), "utf8")) as {
+    tasks: Record<string, { passThroughEnv?: string[] }>;
+  };
+  const passThrough = new Set(turbo.tasks["test:integration"]?.passThroughEnv ?? []);
+
+  /**
+   * The ONLY seeded vars whose consumer is a workflow step that runs directly, outside turbo: the
+   * two pinned-CLI installers, which are their own `run:` steps. Every other seeded var is read
+   * inside the test process, which turbo starts. An entry here is a claim that gets checked below,
+   * not an exemption — and a NEW seeded var is required to pass by default.
+   */
+  const CONSUMED_OUTSIDE_TURBO = new Set(["SCP_SKOPEO_IMAGE_REF", "SCP_COSIGN_IMAGE_REF"]);
+
+  /** Every `KEY=` the script exports, read out of the script rather than re-typed here. */
+  const seeded = [
+    ...readHashStripped(path.join(REPO_ROOT, MIRROR_SCRIPT)).matchAll(
+      /^\s*echo "([A-Z_][A-Z0-9_]*)=/gm
+    )
+  ].map((m) => m[1]!);
+
+  it("the seed step exports something, including the subject registry", () => {
+    // Anchors the regex against the script silently changing shape (a `printf`, a heredoc): an
+    // empty `seeded` would make every assertion below vacuously true.
+    expect(seeded.length).toBeGreaterThan(1);
+    expect(seeded).toContain(SUBJECT_REGISTRY_ENV);
+  });
+
+  it("each one is declared in turbo's passThroughEnv, or is consumed outside turbo", () => {
+    for (const name of seeded) {
+      if (CONSUMED_OUTSIDE_TURBO.has(name)) continue;
+      expect(
+        passThrough.has(name),
+        `${MIRROR_SCRIPT} seed exports ${name}, but ${TURBO_JSON}'s test:integration task does not ` +
+          `list it in passThroughEnv — turbo runs strict, so the test process will NOT see it and ` +
+          `whatever default the reader falls back to is what CI actually gets`
+      ).toBe(true);
+    }
+  });
+
+  it("nothing claimed to be consumed outside turbo is read inside a test process", () => {
+    // Keeps the allowlist honest: the day a suite starts reading one of these, the claim that it
+    // never needs to cross turbo's boundary is false, and this fails instead of the suite silently
+    // taking a fallback.
+    for (const name of CONSUMED_OUTSIDE_TURBO) {
+      const readers = SOURCES.filter((s) => s.source.includes(`process.env.${name}`));
+      expect(
+        readers.map((r) => r.rel),
+        `${name} is listed as consumed only by a direct workflow step, but TypeScript reads it — ` +
+          `either add it to ${TURBO_JSON}'s passThroughEnv or stop claiming it stays outside turbo`
+      ).toEqual([]);
+    }
+  });
+});
