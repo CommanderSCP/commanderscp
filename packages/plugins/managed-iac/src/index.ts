@@ -16,6 +16,7 @@ import type {
 import {
   resolveDockerRunnerLauncher,
   toRunnerRunId,
+  withRecordedOutcome,
   type ResolveRunnerLauncher
 } from "@scp/runner-launcher";
 
@@ -211,16 +212,22 @@ async function resolveInfraCreds(
 }
 
 async function runRunnerContainer(
-  ctx: PluginContext,
   config: ManagedIacConfig,
   resolveLauncher: ResolveRunnerLauncher,
   action: "plan" | "apply" | "rollback",
   workspaceDir: string,
   /** The dedup cache key for this run — see {@link RunnerSpec.runId} on why the CALLER supplies it. */
   cacheKey: string,
+  /**
+   * RESOLVED ONCE, by the caller — `trigger()` resolves these before this function is called (M23.1
+   * phase 2), rather than this function resolving them itself, because `trigger()` also needs the
+   * secret VALUES to build the `redact` closure {@link withRecordedOutcome} uses on the FAILURE path,
+   * and resolving twice would mean the credential fetch and the credential the failure-path redactor
+   * knows about could, in principle, diverge.
+   */
+  infraCreds: Record<string, string>,
   extraEnv: Record<string, string> = {}
 ): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
-  const infraCreds = await resolveInfraCreds(ctx, config);
   const secretValues = Object.values(infraCreds);
 
   const result = await resolveLauncher({ dockerBinary: config.dockerBinary }).run({
@@ -319,62 +326,94 @@ async function trigger(
 
   const externalId = `managed-iac::${cacheKey}`;
   const workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
-  await mkdir(workspaceDir, { recursive: true });
-  let outcome: RunOutcome;
+  let outcome: RunOutcome = { externalId, succeeded: false, detail: "" };
 
-  if (intent.kind === "rollback") {
-    const priorStateFile =
-      typeof intent.priorStateRef === "string" ? intent.priorStateRef : undefined;
-    // Jail PRIOR_STATE_FILE to `state-history/` (MINOR) — never let a rollback ref point outside
-    // the workspace's own snapshot dir (run.sh enforces the same, defence in depth).
-    if (
-      !priorStateFile ||
-      !priorStateFile.startsWith("state-history/") ||
-      priorStateFile.includes("..")
-    ) {
-      outcome = {
-        externalId,
-        succeeded: false,
-        detail:
-          "managed-iac rollback: FAILED CLOSED — priorStateRef missing or not a state-history/*.tfstate path"
-      };
-    } else {
-      const result = await runRunnerContainer(
-        ctx,
-        config,
-        resolveLauncher,
-        "rollback",
-        workspaceDir,
-        cacheKey,
-        {
-          PRIOR_STATE_FILE: priorStateFile
+  // THE REDACTION SET FOR THE FAILURE PATH (M23.1 phase 2), populated the moment credentials are
+  // actually resolved inside the guarded body below. Starts empty, so a throw BEFORE that point
+  // redacts against nothing (safe: no credential has been fetched yet) and a throw AFTER it redacts
+  // against exactly what THIS run fetched. NOT the identity function, unlike managed-scan's: a raw
+  // `docker create` rejection's message carries `-e KEY=<value>` before `RunnerLaunchError`'s own
+  // redaction ever runs, and this catch must not assume that redaction already happened — an
+  // injected test launcher, or a future adapter, can throw something `RunnerLaunchError` never
+  // touched. THE STAKES ARE HIGHER HERE THAN IN managed-scan: this plugin's `record` writes to a
+  // durable, replicated, backed-up JSON file (`saveState`), and `reconcile.ts` copies that `detail`
+  // into an `insertDecision` `inputContext` from there — an identity redactor would turn one
+  // ephemeral log line into a permanent database row carrying a credential.
+  let secretValues: string[] = [];
+  const redact = (text: string): string => redactSecrets(text, secretValues);
+
+  // EVERY PATH OUT OF THE REST OF THIS FUNCTION RECORDS AN OUTCOME. Before this, `trigger()` had no
+  // outer catch at all — a `create`/`copy-in` failure, a `writeSourceFiles` refusal, or a `mkdir`
+  // error propagated straight out as a rejection, `state.keys[cacheKey]` was never written, and
+  // `status()` reported `pending` forever (indistinguishable from "still running"): the SAME
+  // property managed-scan had, fixed here with the SAME helper but a genuinely redacting closure.
+  await withRecordedOutcome(
+    {
+      record: (succeeded, detail) => {
+        outcome = { externalId, succeeded, detail };
+      },
+      redact
+    },
+    async () => {
+      await mkdir(workspaceDir, { recursive: true });
+      const infraCreds = await resolveInfraCreds(ctx, config);
+      secretValues = Object.values(infraCreds);
+
+      if (intent.kind === "rollback") {
+        const priorStateFile =
+          typeof intent.priorStateRef === "string" ? intent.priorStateRef : undefined;
+        // Jail PRIOR_STATE_FILE to `state-history/` (MINOR) — never let a rollback ref point outside
+        // the workspace's own snapshot dir (run.sh enforces the same, defence in depth).
+        if (
+          !priorStateFile ||
+          !priorStateFile.startsWith("state-history/") ||
+          priorStateFile.includes("..")
+        ) {
+          outcome = {
+            externalId,
+            succeeded: false,
+            detail:
+              "managed-iac rollback: FAILED CLOSED — priorStateRef missing or not a state-history/*.tfstate path"
+          };
+        } else {
+          const result = await runRunnerContainer(
+            config,
+            resolveLauncher,
+            "rollback",
+            workspaceDir,
+            cacheKey,
+            infraCreds,
+            {
+              PRIOR_STATE_FILE: priorStateFile
+            }
+          );
+          outcome = {
+            externalId,
+            succeeded: result.succeeded,
+            detail: result.succeeded ? result.stdout : result.stderr,
+            stateRef: priorStateFile
+          };
         }
-      );
-      outcome = {
-        externalId,
-        succeeded: result.succeeded,
-        detail: result.succeeded ? result.stdout : result.stderr,
-        stateRef: priorStateFile
-      };
+      } else {
+        const sourceFiles = intent.parameters?.sourceFiles as Record<string, string> | undefined;
+        if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
+        const iacAction = (intent.parameters?.iacAction as "plan" | "apply" | undefined) ?? "plan";
+        const result = await runRunnerContainer(
+          config,
+          resolveLauncher,
+          iacAction,
+          workspaceDir,
+          cacheKey,
+          infraCreds
+        );
+        outcome = {
+          externalId,
+          succeeded: result.succeeded,
+          detail: result.succeeded ? result.stdout : result.stderr
+        };
+      }
     }
-  } else {
-    const sourceFiles = intent.parameters?.sourceFiles as Record<string, string> | undefined;
-    if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
-    const iacAction = (intent.parameters?.iacAction as "plan" | "apply" | undefined) ?? "plan";
-    const result = await runRunnerContainer(
-      ctx,
-      config,
-      resolveLauncher,
-      iacAction,
-      workspaceDir,
-      cacheKey
-    );
-    outcome = {
-      externalId,
-      succeeded: result.succeeded,
-      detail: result.succeeded ? result.stdout : result.stderr
-    };
-  }
+  );
 
   state.keys[cacheKey] = outcome;
   await saveState(config.statePath, state);

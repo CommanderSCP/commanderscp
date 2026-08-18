@@ -21,9 +21,17 @@ import { createManagedIacExecutorPlugin } from "./index.js";
  * A grep for `resolveLauncher(` would not do: a commented-out call still matches the raw text, and a
  * call inside dead code still matches the stripped text.
  *
- * IT ALSO PINS WHERE THE FAILURE LANDS, which differs across the three managed executors and is the
- * asymmetry M23.0 recorded: managed-iac's `trigger()` has no outer catch, so a launcher failure
- * REJECTS out of `trigger()` and nothing is cached — `status()` then reports `pending`, not `failed`.
+ * M23.1 PHASE 2 CHANGED WHERE THE FAILURE LANDS. The paragraph that used to sit here said
+ * managed-iac's `trigger()` had no outer catch, so a launcher failure REJECTED out of `trigger()`
+ * and nothing was cached — `status()` then reported `pending`, not `failed`. That was true and is
+ * now the defect phase 2 fixes: `trigger()` RESOLVES, the failure is recorded via
+ * `@scp/runner-launcher`'s `withRecordedOutcome`, and `status()` reports `failed` with the injected
+ * launcher's own message. The first test below was rewritten to that stricter shape — a plugin that
+ * kept a second, private launch path would still resolve, but would report `succeeded` — rather than
+ * deleted, because deleting it would take this file's whole reason for existing to zero along with
+ * it. The second new test below (credential redaction) exists BECAUSE this plugin's failure path now
+ * writes to a durable store: see its own comment for why an identity redactor here is not merely a
+ * missed nicety.
  */
 
 /** No Docker, no argv — the point is that this object is reached at all. */
@@ -54,12 +62,15 @@ afterEach(async () => {
   await rm(workspaceRoot, { recursive: true, force: true });
 });
 
-function ctx(): PluginContext {
+function ctx(
+  overrides: Record<string, unknown> = {},
+  secretGet?: (key: string) => Promise<string | undefined>
+): PluginContext {
   return {
     orgId: "org-1",
     scopeKey: "domain-1",
     logger: { debug() {}, info() {}, warn() {}, error() {} },
-    secrets: { get: async () => undefined },
+    secrets: { get: secretGet ?? (async () => undefined) },
     http: {
       request: async () => {
         throw new Error("managed-iac: never calls ctx.http");
@@ -69,22 +80,64 @@ function ctx(): PluginContext {
       runnerImage: "scp-runner-iac:vetted",
       workspaceRoot,
       networkMode: "none",
-      statePath: join(workspaceRoot, "dedup.json")
+      statePath: join(workspaceRoot, "dedup.json"),
+      ...overrides
     }
   };
 }
 
 describe("M23.1: managed-iac launches through the injected RunnerLauncher", () => {
-  it("a launcher that throws breaks trigger() — the plugin has no second, private launch path", async () => {
+  it("a launcher failure is RECORDED as failed, never left pending — the plugin has no second, private launch path", async () => {
     const plugin = createManagedIacExecutorPlugin(() => throwingLauncher());
-    await expect(
-      plugin.trigger(ctx(), {
-        kind: "sync",
-        targetRef: "t1",
-        parameters: { iacAction: "plan" },
-        idempotencyKey: "seam-1"
-      })
-    ).rejects.toThrow(/the injected RunnerLauncher was reached/);
+    const c = ctx();
+    const ref = await plugin.trigger(c, {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "seam-1"
+    });
+    // trigger() RESOLVES (phase 2) — a plugin with a private second launch path that never touched
+    // the injected launcher would resolve too, but status() would then report "succeeded" instead.
+    const status = await plugin.status(c, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/the injected RunnerLauncher was reached/);
+  });
+
+  it("a create failure's recorded detail carries NO credential value", async () => {
+    // THE COUPLING PHASE 2 NAMED: this plugin's failure path now writes `detail` to a durable JSON
+    // file (`saveState`), and `reconcile.ts` copies it from there into a persisted `Decision`'s
+    // `inputContext`. A raw `docker create` rejection's real message is
+    // `Command failed: docker create … -e AWS_SECRET_ACCESS_KEY=<value> …` — this test does not go
+    // through the real Docker adapter (whose own `RunnerLaunchError` already redacts what IT knows
+    // to redact); it injects a launcher that throws that shape DIRECTLY, so the assertion is on
+    // `trigger()`'s OWN redaction, independent of whatever the adapter would have already done.
+    // Replacing that redactor with the identity function is exactly the mutation this test exists to
+    // catch — see @scp/runner-launcher's `withRecordedOutcome` doc for why `redact` is a required,
+    // load-bearing parameter rather than decoration.
+    const SEEDED_SECRET = "zzz9-do-not-leak-zzz9";
+    const leaking: RunnerLauncher = {
+      run(): Promise<never> {
+        throw new Error(
+          `Command failed: docker create --network none -e AWS_SECRET_ACCESS_KEY=${SEEDED_SECRET} scp-runner-iac:vetted plan`
+        );
+      }
+    };
+    const plugin = createManagedIacExecutorPlugin(() => leaking);
+    const c = ctx({ infraCredsSecretKeys: { AWS_SECRET_ACCESS_KEY: "aws-secret" } }, async (key) =>
+      key === "aws-secret" ? SEEDED_SECRET : undefined
+    );
+    const ref = await plugin.trigger(c, {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "seam-3"
+    });
+
+    const status = await plugin.status(c, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).not.toContain(SEEDED_SECRET);
+    // The failure is still legible — redaction removed the VALUE, not the fact that it failed.
+    expect(status.detail).toContain("docker create");
   });
 
   it("the resolver receives the server-injected dockerBinary, and the run reaches the port once", async () => {

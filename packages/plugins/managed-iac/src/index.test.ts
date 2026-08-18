@@ -147,17 +147,21 @@ describe("@scp/plugin-managed-iac: container isolation (CRITICAL #1)", () => {
 
   it("rejects a source filename containing a path separator or '..' (path-traversal defense)", async () => {
     const plugin = createManagedIacExecutorPlugin();
-    // The write is rejected BEFORE docker is ever invoked; trigger surfaces the error (the
-    // reconcile loop treats it as a retryable failure) — crucially, no container was created.
-    await expect(
-      plugin.trigger(ctx(), {
-        kind: "sync",
-        targetRef: "t1",
-        parameters: { iacAction: "plan", sourceFiles: { "../escape.tf": "# evil" } },
-        idempotencyKey: "k1"
-      })
-    ).rejects.toThrow(/illegal source filename/);
+    const c = ctx();
+    // The write is rejected BEFORE docker is ever invoked — crucially, no container was created.
+    // M23.1 PHASE 2: `trigger()` now RESOLVES (this refusal, like a launcher failure, is recorded
+    // via `withRecordedOutcome` rather than left to escape as a rejection) — the reconcile loop
+    // reads the failure through `status()`, not through a caught rejection.
+    const ref = await plugin.trigger(c, {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan", sourceFiles: { "../escape.tf": "# evil" } },
+      idempotencyKey: "k1"
+    });
     expect(createCall()).toBeUndefined();
+    const status = await plugin.status(c, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/illegal source filename/);
   }, 10_000);
 });
 

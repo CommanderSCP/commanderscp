@@ -90,6 +90,9 @@ const envFiles: { path: string; content: string; mode: number }[] = [];
 let startOk = true;
 /** Copy-OUT outcome. Only managed-iac swallows a failure here; that is what test 4 measures. */
 let cpOutOk = true;
+/** `create` outcome — the new test below is the ONLY failure-injection arm for this step; every
+ *  other test in this file leaves it `true`. */
+let createOk = true;
 
 vi.mock("node:child_process", () => {
   return {
@@ -111,7 +114,16 @@ vi.mock("node:child_process", () => {
       }
       const sub = args[0];
       if (sub === "create") {
-        cb(null, { stdout: "container-abc123\n", stderr: "" });
+        if (createOk) {
+          cb(null, { stdout: "container-abc123\n", stderr: "" });
+        } else {
+          cb(
+            Object.assign(new Error("docker: Error response from daemon: name already in use"), {
+              stdout: "",
+              stderr: "create: name already in use"
+            })
+          );
+        }
         return;
       }
       if (sub === "start") {
@@ -154,6 +166,7 @@ beforeEach(async () => {
   envFiles.length = 0;
   startOk = true;
   cpOutOk = true;
+  createOk = true;
   workspaceRoot = await mkdtemp(join(tmpdir(), "managed-iac-golden-"));
 });
 
@@ -444,5 +457,40 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
       opts: RM_OPTS
     });
     expect((await plugin.status(ctx(), ref)).phase).toBe("succeeded");
+  });
+
+  it("FAILURE — `create` itself rejects: no cp/start/cp-out at all, only `rm` follows, and the run is recorded FAILED, never left pending (M23.1 phase 2)", async () => {
+    // A NEW TEST, not an edit of an existing one — none of the four cases above inject a `create`
+    // failure, only a `start` failure, so there is no existing golden line for this arm to move.
+    //
+    // BEFORE M23.1 PHASE 2, this would have been unobservable through `status()` at all: `create`
+    // rejecting propagated straight out of `trigger()` as a rejection (managed-iac's `trigger()` had
+    // no outer catch), nothing was ever written to the dedup cache, and `status()` reported
+    // "pending" forever — indistinguishable from "still running". `trigger()` now RESOLVES and the
+    // failure is recorded via `withRecordedOutcome`.
+    createOk = false;
+    const plugin = createManagedIacExecutorPlugin();
+    const ref = await plugin.trigger(ctx(), {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "k6"
+    });
+
+    // No cp-in, no start, no cp-out — `create` is what failed. Teardown STILL runs, unconditionally,
+    // BY NAME — the identity that exists even when `create` itself never answered (M23.0 defect 1).
+    expect(
+      calls.map((c) => c.args[0]),
+      "the managed-iac create-failure Docker sequence changed"
+    ).toStrictEqual(["create", "rm"]);
+    expect(calls.at(-1)).toStrictEqual({
+      file: "docker",
+      args: ["rm", "-f", "scp-runner-k6"],
+      opts: RM_OPTS
+    });
+
+    const status = await plugin.status(ctx(), ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toContain("docker: Error response from daemon: name already in use");
   });
 });
