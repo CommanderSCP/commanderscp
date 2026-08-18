@@ -1,7 +1,9 @@
 import {
   DesiredStateManifestSchema,
+  type DependencyEcosystem,
   type DesiredStateManifest,
   type ExecutorType,
+  type ManifestDependencyProducer,
   type ManifestExecutorBinding,
   type ManifestObject,
   type ManifestRelationship,
@@ -118,6 +120,22 @@ export interface ExecutorBindingSpec {
  * server-written `managed_by_stack` (drizzle/0068), which is what scopes pruning, and the "org"
  * segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has no real
  * org id to key off). It is also mirrored into `labels` as `scp:stack`, for humans only.
+ * A `dependency_line_producers` declaration minus the component that produces it (which the fluent
+ * method supplies) — see `ManifestDependencyProducerSchema`.
+ */
+export interface DependencyProducerSpec {
+  ecosystem: DependencyEcosystem;
+  /** The ECOSYSTEM-NATIVE coordinate, VERBATIM — `@acme/lib`, `github.com/acme/lib`,
+   *  `com.acme:lib`, `docker.io/library/alpine`. Never a URN and never slugified: `@acme/lib` and
+   *  `acme-lib` share a URN slug and are two different packages. */
+  coordinate: string;
+}
+
+/**
+ * A named deployable unit (`new Stack(app, 'billing-platform')`) — this name becomes the
+ * `scp:stack` managed-by marker (`apps/server/src/iac/plan-diff.ts`) that scopes pruning, and the
+ * "org" segment of every URN this stack's constructs derive (`urn.ts` — synth is offline and has
+ * no real org id to key off).
  */
 export class Stack extends Construct {
   readonly stackName: string;
@@ -126,6 +144,7 @@ export class Stack extends Construct {
   private readonly sourceMappingDecls: ManifestSourceMapping[] = [];
   private readonly placementDecls: ManifestPlacement[] = [];
   private readonly executorBindingDecls: ManifestExecutorBinding[] = [];
+  private readonly dependencyProducerDecls: ManifestDependencyProducer[] = [];
 
   constructor(app: App, stackName: string) {
     super(app, stackName);
@@ -230,6 +249,52 @@ export class Stack extends Construct {
   }
 
   /**
+   * Declares that `component` PRODUCES one dependency coordinate (ADR-0032 §7e) — the IaC form of
+   * `POST /dependencies/producers`. Prefer `component.producesDependency(...)`; this stack-level
+   * form exists for a component referenced by URN from outside this program, the same escape hatch
+   * mappings, placements and relationships already have.
+   *
+   * WHAT THE DECLARATION DOES, so it is not mistaken for a label: it makes the coordinate INTERNAL.
+   * Every major line of it stops being polled against its public index, and its versions start being
+   * derived from `component`'s own production releases instead. Every other component in the org
+   * that depends on the coordinate is affected. That is why it takes `policy:write` AT THE ORG ROOT
+   * rather than write authority on `component`, and why the API verb — not this — is the surface
+   * that reports the blast radius before you commit to it (`--dry-run`).
+   *
+   * The component must be one this stack owns AND must be a `component` (a `service` is refused).
+   * `POST /plans` rejects anything else with a 400, including a plan that would take the coordinate
+   * away from a producer belonging to ANOTHER stack.
+   *
+   * ==========================================================================================
+   * READ THIS BEFORE YOU DELETE A CALL TO IT: REMOVING YOUR LAST ONE RETRACTS NOTHING
+   * ==========================================================================================
+   * `producers` is the ONE manifest collection where an ABSENT key does not prune. It means
+   * UNMANAGED, deliberately and unlike `sourceMappings`/`executorBindings`/`placements`: retracting
+   * a declaration hands a coordinate the org PUBLISHES back to a public index on a daily poll timer,
+   * and the symptom is an ABSENCE of dependency updates — dependency confusion re-armed by a stack
+   * that merely forgot a key. So:
+   *
+   *   - Removing ONE of several calls DOES retract that coordinate. The collection is still present,
+   *     so it is authoritative over its own members and the plan shows a `delete` entry.
+   *   - Removing your ONLY call retracts NOTHING. `synth()` omits an empty collection, so the
+   *     manifest becomes indistinguishable from one that never managed producers at all. This is an
+   *     ACCEPTED COST of the rule above, not a bug to work around.
+   *
+   * To retract a final declaration, use `scp dependency producer retract`
+   * (`POST /dependencies/producers/retract`) — which is the better path anyway, because only the
+   * verb reports the bumps SCP has already authored and cannot recall. A hand-authored manifest
+   * carrying `"producers": []` also works; `@scp/iac` cannot emit one.
+   */
+  addDependencyProducer(component: ResourceConstruct | string, spec: DependencyProducerSpec): this {
+    this.dependencyProducerDecls.push({
+      producerUrn: resolveUrn(component),
+      ecosystem: spec.ecosystem,
+      coordinate: spec.coordinate
+    });
+    return this;
+  }
+
+  /**
    * Pure synth: no `Date.now()`, no `Math.random()`, no `crypto.randomUUID()`, no network/
    * filesystem I/O — everything comes from the construct tree's own props. Objects are sorted by
    * URN and relationships by `(typeId, fromUrn, toUrn)` so re-ordering how constructs were added
@@ -267,6 +332,12 @@ export class Stack extends Construct {
         `${b.componentUrn}\u0000${b.deploymentTargetUrn}`
       )
     );
+    // Sorted on `(ecosystem, coordinate)` — the declaration's identity, and NOT the producer, which
+    // is the row's value. Two programs that declare the same coordinate from differently-ordered
+    // code synthesize the same bytes; one that re-points it does not, which is correct.
+    const producers: ManifestDependencyProducer[] = [...this.dependencyProducerDecls].sort((a, b) =>
+      `${a.ecosystem}\u0000${a.coordinate}`.localeCompare(`${b.ecosystem}\u0000${b.coordinate}`)
+    );
 
     return DesiredStateManifestSchema.parse({
       stackName: this.stackName,
@@ -274,7 +345,13 @@ export class Stack extends Construct {
       relationships,
       ...(sourceMappings.length > 0 ? { sourceMappings } : {}),
       ...(executorBindings.length > 0 ? { executorBindings } : {}),
-      ...(placements.length > 0 ? { placements } : {})
+      ...(placements.length > 0 ? { placements } : {}),
+      // OMITTED WHEN EMPTY, like the three above — but here that omission MEANS SOMETHING DIFFERENT
+      // server-side. For the others, absent and empty both prune. For this one, absent means
+      // UNMANAGED and prunes nothing, which is why a stack that drops its last
+      // `producesDependency(...)` call does not retract it. See `addDependencyProducer` for the
+      // whole rule and for how to retract a final declaration.
+      ...(producers.length > 0 ? { producers } : {})
     });
   }
 }
@@ -457,6 +534,28 @@ export class Component extends ResourceConstruct {
    */
   mapsSource(spec: SourceMappingSpec): this {
     this.stack.addSourceMapping(this, spec);
+    return this;
+  }
+
+  /**
+   * Declares that this component PRODUCES a dependency coordinate (ADR-0032 §7e) — "this component's
+   * production releases are where `@acme/lib`'s versions come from". Sugar over
+   * `stack.addDependencyProducer(this, spec)`, which carries the full rule.
+   *
+   * Declared on `Component` and not on `ResourceConstruct` for the same reason `mapsSource` is:
+   * `dependency_line_producers.producer_object_id` must be a component, and a `service`-valued
+   * declaration is REFUSED at `POST /plans` — internal head derivation reads the component a
+   * production placement names, so a service declaration would stop the coordinate being polled and
+   * derive no head at all. Offering the method on every resource type would invite exactly that.
+   *
+   * TWO THINGS THIS SURFACE CANNOT DO, both by design:
+   *   1. Retract the stack's LAST declaration — deleting the call leaves it standing, because an
+   *      absent `producers` collection means UNMANAGED (`addDependencyProducer`).
+   *   2. Show you the blast radius first. The API verb's `--dry-run` lists the components whose
+   *      repositories this reaches; a manifest cannot, so run it before you commit the code.
+   */
+  producesDependency(spec: DependencyProducerSpec): this {
+    this.stack.addDependencyProducer(this, spec);
     return this;
   }
 

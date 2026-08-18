@@ -34,18 +34,29 @@ import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-s
 import {
   computePlanDiff,
   duplicateProjectionDeclarations,
+  invalidProducerDeclarations,
   managedLabels,
   uncontainedComponentCreates,
   unownedProjectionDeclarations,
   type ExistingObjectSnapshot,
   type ExistingRelationshipTriple,
   type ResolvedManifest,
+  type ResolvedManifestDependencyProducer,
   type ResolvedManifestExecutorBinding,
   type ResolvedManifestObject,
   type ResolvedManifestPlacement,
   type ResolvedManifestSourceMapping
 } from "./plan-diff.js";
 import { stampObjectStackOwnership, stampRelationshipStackOwnership } from "./stack-ownership.js";
+import {
+  getDependencyLineProducer,
+  listDependencyLineProducersForComponents
+} from "../dependencies/dependency-inventory-repo.js";
+import {
+  declareProducerWithEffects,
+  dependencyProducerScopeCheck,
+  retractProducerWithEffects
+} from "../dependencies/producer-declaration.js";
 import {
   DEFAULT_BINDING_TYPE,
   EXECUTION_SYSTEM_INSTANCE_PREFIX,
@@ -106,6 +117,28 @@ function assertProjectionsOwned(diff: PlanDiff): void {
       `${unowned.join(", ")}. Neither table carries an owner of its own, so ownership is inherited ` +
       `from the object the row hangs off — declare that object in this stack's manifest (which ` +
       `adopts it), or configure it from the stack that already manages it.`
+  );
+}
+
+/**
+ * Rejects (400) a plan whose producer declarations this stack may not make — the producer it does
+ * not own, the CURRENT producer it would displace and does not own, or a producer that is not a
+ * `component` (ADR-0032 §7e). Run at BOTH plan-compute and apply, from the DIFF alone, exactly like
+ * `assertProjectionsOwned` and for the same fail-closed reason.
+ *
+ * The displacement half has no analogue in the other collections and is the one worth pausing on: a
+ * producer declaration is keyed on the COORDINATE and upserted, so it can change hands with NO row
+ * deleted anywhere. Owning the destination component is therefore not sufficient to make a transfer
+ * this stack's business — `invalidProducerDeclarations` carries the full argument.
+ */
+function assertProducerDeclarationsValid(diff: PlanDiff): void {
+  const invalid = invalidProducerDeclarations(diff);
+  if (invalid.length === 0) return;
+  throw badRequest(
+    `plan declares dependency-line producer(s) it may not: ${invalid.join("; ")}. ` +
+      `'dependency_line_producers' carries no stack labels, so ownership is inherited from the ` +
+      `producing COMPONENT — declare that component in this stack's manifest, or use ` +
+      `POST /dependencies/producers.`
   );
 }
 
@@ -297,6 +330,9 @@ export async function computeDiffForManifest(
     referencedUrns.add(placement.componentUrn);
     referencedUrns.add(placement.deploymentTargetUrn);
   }
+  // A producer declaration's owning object is its PRODUCER COMPONENT — the row hangs off it and
+  // inherits its ownership, the same rule a source mapping's component gets.
+  for (const declaration of manifest.producers ?? []) referencedUrns.add(declaration.producerUrn);
   for (const binding of manifest.executorBindings ?? []) {
     referencedUrns.add(binding.targetUrn);
     // A placement-targeted binding resolves BOTH halves at apply, never the placement itself —
@@ -459,6 +495,71 @@ export async function computeDiffForManifest(
     });
   }
 
+  // ---------------------------------------------------------------------------------------
+  // PRODUCER DECLARATIONS (ADR-0032 §7e) — TWO pools, mirroring `managedRelationships` vs
+  // `existingRelationships` rather than the projection tables' one-pool shape.
+  //
+  // The prune pool is ownership-scoped: declarations whose PRODUCER is a component this stack owns.
+  // The existence pool is NOT, and must not be — a declaration is keyed on the coordinate and
+  // upserted, so `@acme/lib` can move from stack B's component to stack A's with nothing deleted.
+  // Reading only the scoped pool would make that transfer look like a `create` and let apply perform
+  // it silently; reading the live row for each DECLARED coordinate is what turns it into an `update`
+  // naming the displaced producer, which `invalidProducerDeclarations` then refuses when the
+  // displaced producer is not this stack's.
+  //
+  // Skipped entirely when the manifest has no `producers` key: that means UNMANAGED (see
+  // `ResolvedManifest.producers`), so there is nothing to converge and nothing to prune, and reading
+  // a prune pool we must never act on would only invite a later edit to act on it.
+  // ---------------------------------------------------------------------------------------
+  let managedDependencyProducers: ResolvedManifestDependencyProducer[] = [];
+  let existingDependencyProducers: ResolvedManifestDependencyProducer[] = [];
+  if (manifest.producers !== undefined) {
+    const producerRows = await listDependencyLineProducersForComponents(tx, orgId, ownedIdList);
+    const declaredRows = [];
+    for (const declaration of manifest.producers) {
+      const live = await getDependencyLineProducer(tx, orgId, {
+        ecosystem: declaration.ecosystem,
+        coordinate: declaration.coordinate
+      });
+      if (live) declaredRows.push(live);
+    }
+    // The displaced producer may belong to ANOTHER stack and therefore be absent from every map
+    // built above. Resolve those ids so the diff can NAME it — an unnamed displacement is a
+    // displacement an operator cannot check, and the guard downstream keys on the URN.
+    const unresolvedProducerIds = new Set<string>();
+    for (const row of [...producerRows, ...declaredRows]) {
+      if (!objectsById.has(row.producerObjectId)) unresolvedProducerIds.add(row.producerObjectId);
+    }
+    if (unresolvedProducerIds.size > 0) {
+      for (const row of await fetchObjectsByIds(tx, orgId, [...unresolvedProducerIds])) {
+        objectsByUrn.set(row.urn, row);
+        objectsById.set(row.id, row);
+      }
+    }
+    const toResolved = (row: {
+      ecosystem: string;
+      coordinate: string;
+      producerObjectId: string;
+    }): ResolvedManifestDependencyProducer | null => {
+      const producerUrn = objectsById.get(row.producerObjectId)?.urn;
+      // Defensive, and CONSERVATIVE IN THE SAFE DIRECTION: a producer object that cannot be resolved
+      // to a URN (a hard-deleted row) drops out of BOTH pools, so the declaration is invisible to
+      // prune and to displacement-detection alike — never mis-attributed to another component.
+      if (!producerUrn) return null;
+      return {
+        producerUrn,
+        ecosystem: row.ecosystem as ResolvedManifestDependencyProducer["ecosystem"],
+        coordinate: row.coordinate
+      };
+    };
+    managedDependencyProducers = producerRows
+      .map(toResolved)
+      .filter((p): p is ResolvedManifestDependencyProducer => p !== null);
+    existingDependencyProducers = declaredRows
+      .map(toResolved)
+      .filter((p): p is ResolvedManifestDependencyProducer => p !== null);
+  }
+
   // A manifest may name its execution-system by id OR URN (`CreateExecutorBindingRequest` semantics,
   // and a URN is the only stable reference an offline-authored manifest has). The table stores a real
   // object id, so resolve here — a DB read, hence not in the pure diff engine. Without it a
@@ -502,6 +603,16 @@ export async function computeDiffForManifest(
       componentUrn: pl.componentUrn,
       deploymentTargetUrn: pl.deploymentTargetUrn
     })),
+    // `undefined` -> `null` — ABSENT MEANS UNMANAGED HERE, unlike every collection around it. The
+    // mapping is written out rather than `?? []` precisely so this line reads as a decision.
+    producers:
+      manifest.producers === undefined
+        ? null
+        : manifest.producers.map((declaration) => ({
+            producerUrn: declaration.producerUrn,
+            ecosystem: declaration.ecosystem,
+            coordinate: declaration.coordinate
+          })),
     executorBindings: (manifest.executorBindings ?? []).map((b) => ({
       targetUrn: b.targetUrn,
       deploymentTargetUrn: b.deploymentTargetUrn ?? null,
@@ -528,13 +639,16 @@ export async function computeDiffForManifest(
     existingRelationships,
     managedSourceMappings,
     managedExecutorBindings,
-    managedPlacements
+    managedPlacements,
+    managedDependencyProducers,
+    existingDependencyProducers
   });
   // Strict create-in-service, IaC path (M12 P5a): reject at plan-compute so the invalid manifest
   // never becomes a stored plan and the human reviews only a valid diff. C1's two guards run at the
   // same point, for the same reason.
   assertComponentsContained(diff);
   assertProjectionsOwned(diff);
+  assertProducerDeclarationsValid(diff);
   assertInlineBindingsValid(diff);
   return diff;
 }
@@ -709,6 +823,7 @@ export async function prepareApplyChecks(
   // stack owns, and to carry only inline bindings whose module/config clear the same bar the
   // typed route requires.
   assertProjectionsOwned(diff);
+  assertProducerDeclarationsValid(diff);
   assertInlineBindingsValid(diff);
 
   for (const entry of diff.objects) {
@@ -906,6 +1021,30 @@ export async function prepareApplyChecks(
     // `object:write` is pushed for it deliberately: ownership follows the COMPONENT (decision Q4),
     // and demanding write on the target would hand every deployment-target owner a veto.
     await resolveEndpoint(entry.deploymentTargetUrn);
+  }
+
+  // PRODUCER DECLARATIONS — `policy:write` AT THE ORG ROOT, and deliberately NOT the per-object
+  // `object:write` every other collection in this function uses.
+  //
+  // The rule is `dependencyProducerScopeCheck`'s, imported rather than restated so this door and
+  // `POST /dependencies/producers` cannot come to require different things. The reason it is not
+  // per-object is the reason the verb's is not: declaring "X produces @acme/lib" changes behaviour
+  // for every OTHER component in the org that depends on that coordinate, and RBAC scope expands
+  // strictly UPWARD — so `object:write` at X reaches none of the siblings it affects. One check for
+  // the whole plan, because the permission and scope do not vary per entry.
+  //
+  // `noop` entries are exempt, matching every other loop here: a re-apply that changes nothing must
+  // not demand authority the first apply already exercised.
+  const producerEntries = (diff.producers ?? []).filter((entry) => entry.action !== "noop");
+  if (producerEntries.length > 0) {
+    checks.push(dependencyProducerScopeCheck(orgId));
+    // Resolved so `executePlanDiff`'s `endpointId` can name the producer object. A `create` entry
+    // whose producer this same plan creates resolves to the pending entry (no id yet) — filled in by
+    // the object-create loop, which runs first. A `delete` needs nothing: a retraction is keyed on
+    // the coordinate alone.
+    for (const entry of producerEntries) {
+      if (entry.action !== "delete") await resolveEndpoint(entry.producerUrn);
+    }
   }
 
   for (const entry of diff.executorBindings ?? []) {
@@ -1295,6 +1434,56 @@ export async function executePlanDiff(
       componentIdOrUrn: endpointId(entry.componentUrn),
       type: entry.type,
       ...(entry.classification !== null ? { classification: entry.classification } : {})
+    });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  // PRODUCER DECLARATIONS (ADR-0032 §7e). AFTER object creates (a declaration needs its producer
+  // component to exist) and BEFORE object deletes, for the same reason the projection rows above
+  // run there: `deleteObject` is a SOFT delete and `dependency_line_producers` has no `deleted_at`
+  // of its own, so a declaration left behind a tombstoned component is unreachable garbage —
+  // invisible to the poll's internal/third-party join and outside every future plan's ownership
+  // pool, which is built from LIVE labelled objects.
+  //
+  // EACH ENTRY GOES THROUGH THE SAME FUNCTION THE VERB CALLS. A declaration is not a row write: the
+  // covered lines' observed heads must be cleared (a poisoned public head would otherwise survive
+  // the declaration meant to undo it; a stale internal head is an M22 vendor-scan-rule input on a
+  // coordinate that is third-party again), a Decision must be recorded, and an audit event
+  // appended. `dependencies/producer-declaration.ts` owns all four so this door cannot perform a
+  // fraction of the verb.
+  //
+  // Deletes before creates/updates, mirroring every other collection here — though for this one it
+  // cannot matter: identity is the coordinate, so a single plan can never both prune and declare the
+  // same key.
+  // -----------------------------------------------------------------------------------------
+  for (const entry of diff.producers ?? []) {
+    if (entry.action !== "delete") continue;
+    const key = { ecosystem: entry.ecosystem, coordinate: entry.coordinate };
+    const existing = await getDependencyLineProducer(tx, orgId, key);
+    if (!existing) {
+      // The same shape as every other apply-time prune miss: the row went away between plan and
+      // apply. Refusing beats silently reporting a delete that removed nothing.
+      throw notFound(
+        `no declared producer for ${entry.ecosystem} '${entry.coordinate}' to retract (apply-time prune)`
+      );
+    }
+    await retractProducerWithEffects(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      key,
+      existing
+    });
+  }
+
+  for (const entry of diff.producers ?? []) {
+    if (entry.action !== "create" && entry.action !== "update") continue;
+    await declareProducerWithEffects(tx, {
+      orgId,
+      actorObjectId,
+      requestId,
+      key: { ecosystem: entry.ecosystem, coordinate: entry.coordinate },
+      producerObjectId: endpointId(entry.producerUrn)
     });
   }
 

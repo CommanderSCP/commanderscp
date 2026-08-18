@@ -12,6 +12,8 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
+import { conflict } from "../errors.js";
+import { commanderOnlyFederationVerdict } from "../dependencies/commander-only.js";
 import {
   computeDiffForManifest,
   executePlanDiff,
@@ -165,6 +167,28 @@ export function registerPlanRoutes(app: FastifyInstance, deps: AppDeps): void {
         // background staleness sweep yet — 'stale'). Locks the row for the transaction's
         // duration so two concurrent applies of the same plan can't both succeed.
         const pending = await lockPendingPlan(tx, auth.orgId, request.params.id);
+
+        // COMMANDER-ONLY, BUT ONLY FOR THE ONE COLLECTION THAT IS (ADR-0032 §7d, §7e). A plan that
+        // touches no producer declarations applies anywhere, as it always has; a plan that writes
+        // one is refused on a field outpost exactly as `POST /dependencies/producers` is. IaC apply
+        // is a SECOND DOOR into `dependency_line_producers`, and a commander-only capability guarded
+        // at one door is not guarded — the row would land where no dependency job runs and no
+        // inventory exists to act on it, which is the "true elsewhere, inert here" shape
+        // `dependencyManagement` exists to close.
+        //
+        // The FEDERATION axis only, never the process axis: every HTTP request lands on an
+        // `SCP_ROLE=api` process in the split topology, so a route carrying the process axis would
+        // refuse every caller on a correct commander (`commander-only.ts`'s "a route does not get
+        // both"). Checked at APPLY and not at `POST /plans`: computing a diff writes nothing, and
+        // the plan an outpost operator computes is a legitimate way to see what the commander would
+        // do.
+        if ((pending.diff.producers ?? []).some((entry) => entry.action !== "noop")) {
+          const commander = commanderOnlyFederationVerdict(
+            deps.config,
+            "applying a plan that declares or retracts a dependency-line producer"
+          );
+          if (!commander.allowed) throw conflict(commander.reason);
+        }
 
         const { checks, objectResolutions } = await prepareApplyChecks(
           tx,

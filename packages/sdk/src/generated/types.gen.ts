@@ -10661,9 +10661,20 @@ export type CreatePlanData = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            /**
+             * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+             */
             placements?: Array<{
                 componentUrn: string;
                 deploymentTargetUrn: string;
+            }>;
+            /**
+             * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+             */
+            producers?: Array<{
+                producerUrn: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
             }>;
         };
     };
@@ -10769,9 +10780,20 @@ export type CreatePlanResponses = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            /**
+             * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+             */
             placements?: Array<{
                 componentUrn: string;
                 deploymentTargetUrn: string;
+            }>;
+            /**
+             * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+             */
+            producers?: Array<{
+                producerUrn: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
             }>;
         };
         diff: {
@@ -10841,6 +10863,15 @@ export type CreatePlanResponses = {
                     externalRef: string | null;
                     executionSystemId: string | null;
                 };
+            }>;
+            producers?: Array<{
+                kind: 'dependency-producer';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                producerUrn: string;
+                displacedProducerUrn?: string;
+                reason: string;
             }>;
             summary: {
                 creates: number;
@@ -10963,9 +10994,20 @@ export type GetPlanResponses = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            /**
+             * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+             */
             placements?: Array<{
                 componentUrn: string;
                 deploymentTargetUrn: string;
+            }>;
+            /**
+             * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+             */
+            producers?: Array<{
+                producerUrn: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
             }>;
         };
         diff: {
@@ -11035,6 +11077,15 @@ export type GetPlanResponses = {
                     externalRef: string | null;
                     executionSystemId: string | null;
                 };
+            }>;
+            producers?: Array<{
+                kind: 'dependency-producer';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                producerUrn: string;
+                displacedProducerUrn?: string;
+                reason: string;
             }>;
             summary: {
                 creates: number;
@@ -11169,9 +11220,20 @@ export type ApplyPlanResponses = {
                     externalRef?: string;
                     executionSystemId?: string;
                 }>;
+                /**
+                 * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+                 */
                 placements?: Array<{
                     componentUrn: string;
                     deploymentTargetUrn: string;
+                }>;
+                /**
+                 * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+                 */
+                producers?: Array<{
+                    producerUrn: string;
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
                 }>;
             };
             diff: {
@@ -11241,6 +11303,15 @@ export type ApplyPlanResponses = {
                         externalRef: string | null;
                         executionSystemId: string | null;
                     };
+                }>;
+                producers?: Array<{
+                    kind: 'dependency-producer';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
+                    producerUrn: string;
+                    displacedProducerUrn?: string;
+                    reason: string;
                 }>;
                 summary: {
                     creates: number;

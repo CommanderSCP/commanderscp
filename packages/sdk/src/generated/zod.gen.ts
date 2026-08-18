@@ -3389,6 +3389,17 @@ export const zCreatePlanResponse = z.object({
         placements: z.array(z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+        })).optional(),
+        producers: z.array(z.object({
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3486,6 +3497,26 @@ export const zCreatePlanResponse = z.object({
                 externalRef: z.string().nullable(),
                 executionSystemId: z.string().nullable()
             }).optional()
+        })).optional(),
+        producers: z.array(z.object({
+            kind: z.literal('dependency-producer'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
         })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -3565,6 +3596,17 @@ export const zGetPlanResponse = z.object({
         placements: z.array(z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+        })).optional(),
+        producers: z.array(z.object({
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3662,6 +3704,26 @@ export const zGetPlanResponse = z.object({
                 externalRef: z.string().nullable(),
                 executionSystemId: z.string().nullable()
             }).optional()
+        })).optional(),
+        producers: z.array(z.object({
+            kind: z.literal('dependency-producer'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
         })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -3742,6 +3804,17 @@ export const zApplyPlanResponse = z.object({
             placements: z.array(z.object({
                 componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+            })).optional(),
+            producers: z.array(z.object({
+                producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                ecosystem: z.enum([
+                    'npm',
+                    'go',
+                    'maven',
+                    'python',
+                    'oci'
+                ]),
+                coordinate: z.string().min(1).max(512)
             })).optional()
         }),
         diff: z.object({
@@ -3839,6 +3912,26 @@ export const zApplyPlanResponse = z.object({
                     externalRef: z.string().nullable(),
                     executionSystemId: z.string().nullable()
                 }).optional()
+            })).optional(),
+            producers: z.array(z.object({
+                kind: z.literal('dependency-producer'),
+                action: z.enum([
+                    'create',
+                    'update',
+                    'delete',
+                    'noop'
+                ]),
+                ecosystem: z.enum([
+                    'npm',
+                    'go',
+                    'maven',
+                    'python',
+                    'oci'
+                ]),
+                coordinate: z.string().min(1).max(512),
+                producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+                reason: z.string()
             })).optional(),
             summary: z.object({
                 creates: z.int().gte(-9007199254740991).lte(9007199254740991),

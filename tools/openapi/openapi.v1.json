@@ -41928,6 +41928,7 @@
                         }
                       },
                       "placements": {
+                        "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -41944,6 +41945,40 @@
                           "required": [
                             "componentUrn",
                             "deploymentTargetUrn"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "producers": {
+                        "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "producerUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "ecosystem": {
+                              "type": "string",
+                              "enum": [
+                                "npm",
+                                "go",
+                                "maven",
+                                "python",
+                                "oci"
+                              ]
+                            },
+                            "coordinate": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            }
+                          },
+                          "required": [
+                            "producerUrn",
+                            "ecosystem",
+                            "coordinate"
                           ],
                           "additionalProperties": false
                         }
@@ -42207,6 +42242,7 @@
                           }
                         },
                         "placements": {
+                          "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                           "type": "array",
                           "items": {
                             "type": "object",
@@ -42223,6 +42259,40 @@
                             "required": [
                               "componentUrn",
                               "deploymentTargetUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              }
+                            },
+                            "required": [
+                              "producerUrn",
+                              "ecosystem",
+                              "coordinate"
                             ],
                             "additionalProperties": false
                           }
@@ -42630,6 +42700,62 @@
                               "action",
                               "targetUrn",
                               "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "dependency-producer"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "displacedProducerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "ecosystem",
+                              "coordinate",
+                              "producerUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -43113,6 +43239,7 @@
                           }
                         },
                         "placements": {
+                          "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                           "type": "array",
                           "items": {
                             "type": "object",
@@ -43129,6 +43256,40 @@
                             "required": [
                               "componentUrn",
                               "deploymentTargetUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              }
+                            },
+                            "required": [
+                              "producerUrn",
+                              "ecosystem",
+                              "coordinate"
                             ],
                             "additionalProperties": false
                           }
@@ -43536,6 +43697,62 @@
                               "action",
                               "targetUrn",
                               "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "dependency-producer"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "displacedProducerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "ecosystem",
+                              "coordinate",
+                              "producerUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -44022,6 +44239,7 @@
                               }
                             },
                             "placements": {
+                              "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                               "type": "array",
                               "items": {
                                 "type": "object",
@@ -44038,6 +44256,40 @@
                                 "required": [
                                   "componentUrn",
                                   "deploymentTargetUrn"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "producers": {
+                              "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "producerUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "ecosystem": {
+                                    "type": "string",
+                                    "enum": [
+                                      "npm",
+                                      "go",
+                                      "maven",
+                                      "python",
+                                      "oci"
+                                    ]
+                                  },
+                                  "coordinate": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 512
+                                  }
+                                },
+                                "required": [
+                                  "producerUrn",
+                                  "ecosystem",
+                                  "coordinate"
                                 ],
                                 "additionalProperties": false
                               }
@@ -44445,6 +44697,62 @@
                                   "action",
                                   "targetUrn",
                                   "type",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "producers": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "dependency-producer"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "update",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "ecosystem": {
+                                    "type": "string",
+                                    "enum": [
+                                      "npm",
+                                      "go",
+                                      "maven",
+                                      "python",
+                                      "oci"
+                                    ]
+                                  },
+                                  "coordinate": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 512
+                                  },
+                                  "producerUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "displacedProducerUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "ecosystem",
+                                  "coordinate",
+                                  "producerUrn",
                                   "reason"
                                 ],
                                 "additionalProperties": false
