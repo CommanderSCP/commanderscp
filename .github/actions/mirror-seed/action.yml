@@ -1,0 +1,28 @@
+name: Seed the CI image mirror
+description: >
+  Logs into GHCR and runs `scripts/ci-mirror.sh seed`, so every image pull/build later in the
+  calling job is served from ghcr.io/commanderscp/mirror instead of a live Docker Hub / quay.io
+  pull (charter principle 5 — CI runs offline; see tools/ci-mirror/images.list for the manifest and
+  scripts/ci-mirror.sh's header for the four consumer forms). `seed` appends its exports
+  (SCP_TEST_SUBJECT_REGISTRY, SCP_SKOPEO_IMAGE_REF, SCP_COSIGN_IMAGE_REF, the root Dockerfile's own
+  SKOPEO_IMAGE/COSIGN_IMAGE build ARGs, REGISTRY_AUTH_FILE) to $GITHUB_ENV, so they reach every
+  later step of the SAME job for free — including a `docker compose build` step. A job whose build
+  happens INSIDE a nested `docker run` (this repo has one: e2e-web/"9") still has to forward them
+  explicitly with `-e SKOPEO_IMAGE -e COSIGN_IMAGE`, because $GITHUB_ENV only reaches the runner's
+  own step shells, not a container's — see that job's own comment.
+
+  Call this AFTER checkout (and, where the job has one, the toolchain setup step) and BEFORE
+  anything that pulls or builds an image. The calling job must declare `permissions: packages:
+  read` and put the job that populates the mirror in its `needs:` (job key `testcontainer-images`,
+  "4d. Mirror every third-party test image to GHCR") — otherwise this can race an empty mirror.
+
+runs:
+  using: composite
+  steps:
+    - name: Log in to GHCR
+      shell: bash
+      run: echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+    - name: Seed every mirrored image and point the non-taggable consumers at the mirror
+      shell: bash
+      run: scripts/ci-mirror.sh seed
