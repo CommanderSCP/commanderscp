@@ -29,8 +29,9 @@ import {
  * same change, so an empty package now FAILS instead of reporting success.
  *
  * WHAT IT PROVES, AND WHAT IT DELIBERATELY DOES NOT.
- * It drives {@link createDockerRunnerLauncher} **directly**, over the same spec shapes the fourteen
- * plugin goldens cover, and asserts the **recorded argv ARRAY** of every `execFile` — never a call
+ * It drives {@link createDockerRunnerLauncher} **directly**, over the same spec shapes the fifteen
+ * plugin goldens cover (4 iac + 6 scan + 5 dep — this file and BUILD_AND_TEST.md both said
+ * "fourteen", and both were stale), and asserts the **recorded argv ARRAY** of every `execFile` — never a call
  * count, never `expect.arrayContaining`. A renamed binary, a reordered flag, a dropped operand or a
  * `cp` that lost its trailing `/.` must fail here, and must fail by printing the actual argv next to
  * the expected one.
@@ -52,8 +53,10 @@ import {
  *  3. BOTH AXES OF THE COPY-OUT, independently: `when` (`always` vs `on-success`) and `onFailure`
  *     (`swallow` vs `propagate`). All four combinations the three callers span are exercised.
  *  4. THE FAILURE PATHS — a rejected `start` (captured, not rethrown), a rejected `cp` in, a
- *     rejected `rm` (swallowed), and the RECORDED PRE-EXISTING DEFECT that a rejected `create`
- *     issues no `rm` at all because its `await` sits outside the `try`.
+ *     rejected `rm` (swallowed), and — since M23.0's defect 1 was fixed — that a rejected `create`
+ *     STILL tears down the NAME the caller chose. That last one was the opposite assertion until
+ *     this milestone; it is INVERTED and renamed rather than deleted, so the invariant cannot
+ *     regress in either direction unnoticed.
  *  5. WHAT HAPPENS WHEN THE LEVERS FIRE — the four shapes `promisify(execFile)` actually rejects
  *     with (timeout-kill, maxBuffer, spawn ENOENT, exit 125), on every step that can produce them.
  *     Points 2 and 4 assert that `timeout` and `maxBuffer` are PASSED; this is the only thing here
@@ -61,6 +64,11 @@ import {
  *     against the running Node rather than imagined.
  *  6. THAT TWO RUNS IN FLIGHT NEVER ADDRESS EACH OTHER'S CONTAINER — in the parameterised ordering
  *     suite rather than in this file, so the M23.2 Kubernetes adapter inherits it.
+ *  7. THAT NOTHING CARRYING A `secretEnv` VALUE LEAVES THIS PACKAGE — not on an argv, not in a
+ *     returned `RunnerResult`, and not through any channel of a thrown `RunnerLaunchError`
+ *     (`.message`, `String(err)`, `.stack`, `JSON.stringify`). The port is the only place that can
+ *     assert this exactly rather than heuristically: it knows both the argv it built and which of
+ *     those entries the caller declared secret.
  *
  * THE RECORDING SEAM is the one the three goldens use — `vi.mock("node:child_process")` with a
  * hand-written `execFile`. No Docker is required, so this runs on every PR under `pnpm test`.
@@ -538,8 +546,8 @@ describe("M23.1 conformance: the per-call timeout and maxBuffer are the CALLER's
   );
 
   it("A TENANT `timeoutMs` NEVER REACHES `rm`", async () => {
-    // The tenant-suppliable field on two of the three callers. 123456 is the value all fourteen
-    // goldens use for their maximal case; `rm` must still be the 30 s constant.
+    // The tenant-suppliable field on two of the three callers. 123456 is the value the goldens use
+    // for their maximal case; `rm` must still be the 30 s constant.
     await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: 123_456, maxBuffer: 999 }));
 
     expect(RUNNER_REMOVE_TIMEOUT_MS).toBe(30_000);
@@ -649,7 +657,7 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
   });
 });
 
-describe("M23.1 conformance: the failure paths, including the defect M23.0 recorded and kept", () => {
+describe("M23.1 conformance: the failure paths, and the identity every one of them tears down", () => {
   it("A REJECTED `start` IS CAPTURED, NOT RETHROWN — succeeded:false with the child's stdout/stderr", async () => {
     fail("start", startExitFailure({ stdout: "partial plan", stderr: "tofu: boom" }));
 
@@ -1565,8 +1573,9 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
 // finished — a substrate settles a step when the test says so, not when a container really exits;
 // only `managed-iac.integration.test.ts` (real Docker) can speak to that. It also says nothing
 // about the plugins' own awaits AROUND `run()` (writing the workspace, reading the evidence back),
-// which live in each plugin's suites, nor about `create`'s await being outside the `try` — that is
-// a deliberate recorded defect with its own named test above, not an ordering property. And the
+// which live in each plugin's suites, nor about WHERE `create`'s await sits relative to the `try` —
+// that has its own named test above ("a create that REJECTS after the daemon committed…"), and it is
+// a teardown-reachability property rather than an ordering one. And the
 // concurrency case runs TWO runs, not N: it would not notice a limit, a pool or a lock that only
 // misbehaves at higher concurrency, and it interleaves them at the points a test chooses rather
 // than at the points a scheduler would.

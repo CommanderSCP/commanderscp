@@ -100,9 +100,11 @@ vi.mock("node:child_process", () => {
           // The argv tail after the image name: ecosystem, manifestPath, coordinate, fromVersion,
           // toVersion — and, only for a split shape, anchorLine and anchorText.
           const createArgs = dockerCalls.find((c) => c.args[0] === "create")?.args ?? [];
-          const trailing = createArgs.slice(
-            createArgs.findIndex((a) => a.startsWith("scp-runner-dep")) + 1
-          );
+          // THE EXACT IMAGE, not `startsWith("scp-runner-dep")`. The create line now also carries
+          // `--name scp-runner-<runId>`, and a prefix match would happily pick the NAME out of a run
+          // whose key began with "dep" — silently reading the operands from the wrong offset and
+          // producing a refusal that reads like a parser bug.
+          const trailing = createArgs.slice(createArgs.indexOf("scp-runner-dep:vetted") + 1);
           const [ecosystem, manifestPath, coordinate, fromVersion, toVersion, line, text] =
             trailing;
           const original = await readFile(join(copiedInDir as string, "manifest"), "utf8");
@@ -158,10 +160,11 @@ const privateKeyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toStri
 /** The token the fake provider mints — the string that must appear on NO docker command line. */
 const RUN_TOKEN = "ghs_run_scoped";
 
-function bumpIntent(overrides: Record<string, unknown> = {}) {
+function bumpIntent(overrides: Record<string, unknown> = {}, key?: string) {
   return {
     kind: "custom" as const,
-    idempotencyKey: `run-${Math.random()}`,
+    // Random by default — these cases do not read the argv's name. The one that does passes its own.
+    idempotencyKey: key ?? `run-${Math.random()}`,
     parameters: {
       ecosystem: BUMP_SPEC.ecosystem,
       coordinate: BUMP_SPEC.coordinate,
@@ -249,7 +252,19 @@ describe("the runner half — no network, no credential, no host", () => {
     ]);
   });
 
-  it("passes NO credential to the container — not on argv, not through -e", async () => {
+  it("passes NO credential to the container — not on argv, not through -e, not through --env-file", async () => {
+    // ================================================================================================
+    // THE SWEEP THAT CATCHES A FOURTH MANAGED PLUGIN FOR FREE.
+    // ================================================================================================
+    // This used to check `-e`/`--env` and the joined command line. Since the port grew a `secretEnv`
+    // that Docker delivers through `--env-file`, "no `-e`" is no longer the whole of "no credential
+    // reaches the runner": a plugin could pass a credential with no `-e` anywhere in sight. Both
+    // delivery mechanisms are named here, and the value sweep runs over every ELEMENT of every argv
+    // rather than over the joined line — a joined line cannot say WHICH argument carried the secret,
+    // and its failure message is a wall of text nobody reads.
+    //
+    // IT IS ALSO THE ONLY ASSERTION HERE THAT DOES NOT NEED UPDATING WHEN A NEW SECRET APPEARS: it
+    // iterates the credentials this test knows the orchestrator actually resolved.
     const plugin = createManagedDepExecutorPlugin();
     const { ctx, calls } = runCtx();
     await plugin.trigger(ctx, bumpIntent());
@@ -257,13 +272,43 @@ describe("the runner half — no network, no credential, no host", () => {
     // The orchestrator really did mint the token, so this is a live negative, not a vacuous one.
     expect(calls.some((c) => c.url.endsWith("/access_tokens"))).toBe(true);
 
+    /** Every secret value that existed during this run — the run-scoped token and the app key. */
+    const resolvedSecrets = [RUN_TOKEN, privateKeyPem, privateKeyPem.slice(0, 40)];
     for (const call of dockerCalls) {
-      const line = call.args.join(" ");
-      expect(line, `a docker command line carried the run token: ${line}`).not.toContain(RUN_TOKEN);
+      for (const arg of call.args) {
+        for (const secret of resolvedSecrets) {
+          expect(arg, `a docker argv element carried a resolved secret: ${arg}`).not.toContain(
+            secret
+          );
+        }
+      }
       expect(call.args, "the runner is given no environment").not.toContain("-e");
       expect(call.args, "the runner is given no environment").not.toContain("--env");
-      expect(line).not.toContain(privateKeyPem.slice(0, 40));
+      // THE SECOND DELIVERY MECHANISM. `scp-managed-dep` holds no credential at all, so the port
+      // must never stage an env-file for it — an env-file here would mean a credential on disk for
+      // a runner whose charter clause says it holds none (amended 2026-08-15).
+      expect(call.args, "a credential file was staged for a runner that holds none").not.toContain(
+        "--env-file"
+      );
     }
+  });
+
+  it("EVERY container it launches is NAMED AND LABELLED — an orphan is attributable", async () => {
+    // M23.0's defect 1, from the plugin's side. The port proves that a `--name` on the spec reaches
+    // the argv; only this proves that THIS plugin puts one there, and that the labels name the right
+    // executor. Without it, a plugin that passed `labels: {}` would leave containers no operator
+    // could sweep for and every port test would still be green.
+    const plugin = createManagedDepExecutorPlugin();
+    const { ctx } = runCtx();
+    await plugin.trigger(ctx, bumpIntent({}, "attributable-1"));
+
+    const args = createCall()!.args;
+    expect(args[args.indexOf("--name") + 1]).toBe("scp-runner-attributable-1");
+    expect(args[args.indexOf("--label") + 1]).toBe("scp.executor=scp-managed-dep");
+    expect(args.filter((a) => a === "--label")).toHaveLength(2);
+    // ...and the container is torn down by that NAME, which is the identity that survives a `create`
+    // that never answered.
+    expect(dockerCalls.at(-1)!.args).toStrictEqual(["rm", "-f", "scp-runner-attributable-1"]);
   });
 
   it("launches `--network none` UNCONDITIONALLY — a config naming another mode changes nothing", async () => {

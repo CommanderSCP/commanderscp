@@ -431,9 +431,17 @@ export function runLaunchOrderingConformanceSuite(
       // typechecks clean and passes every other test in this package, because no other test has two
       // `run()` calls in flight — one run's steps are always the only ones there are. Under that
       // mutation the second run's later steps address the FIRST run's container and both teardowns
-      // `rm -f` the same id: one container is orphaned still carrying its resolved credentials
-      // (`RunnerSpec.env`, managed-iac's recorded defect 3), and the other is destroyed twice, the
-      // second time out from under a live run.
+      // `rm -f` the same id: one container is orphaned still holding whatever the run gave it, and
+      // the other is destroyed twice, the second time out from under a live run.
+      //
+      // PER-RUN IDENTITY IS NOW TWO THINGS, NOT ONE, and both are covered by the same partition: the
+      // container id `create` returns, and the `--name` the CALLER chose (`RunnerSpec.runId`), which
+      // is what teardown addresses. A substrate reports them under one identity — see the Docker
+      // substrate's `stepIdentity` — so a teardown aimed at the OTHER run's name fails here exactly
+      // as a copy aimed at the other run's id does. That is why the substrate must hand out a
+      // distinct `runId` per run: two runs sharing one name is the same bug wearing new clothes,
+      // and with managed-iac deriving `runId` from `intent.idempotencyKey` it is reachable in
+      // production by two concurrent triggers of one key.
       //
       // It is not a live bug today — `index.ts` holds no module-level mutable state — and that is
       // the reason to pin it rather than to skip it: the three managed plugins are three pg-boss
