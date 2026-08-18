@@ -509,7 +509,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         { lineId, latestVersion: version, latestDigest: null },
         // No producer is declared for these fixtures' coordinates, so the third-party ingress is
         // the one that owns them — the same argument `version-poll.ts` passes.
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(outcome.recorded, `the head should have moved to ${version}`).toBe(true);
@@ -563,7 +563,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
         tx,
         org.orgId,
         { lineId: fixture.lineId, latestVersion: "1.4.0", latestDigest: null },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect((await outboxRowsFor(fixture.lineId)).length).toBe(afterAdvance.length);

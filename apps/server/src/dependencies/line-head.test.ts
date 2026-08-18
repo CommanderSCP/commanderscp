@@ -5,7 +5,8 @@ import {
   eligibleSuffixFor,
   evaluateHeadMovement,
   evaluateIngressAuthority,
-  lineAcceptsVersion
+  lineAcceptsVersion,
+  type HeadWriteIngress
 } from "./line-head.js";
 
 /**
@@ -261,18 +262,22 @@ describe("evaluateIngressAuthority — the ingress split survives the transactio
    *
    * This is the runtime half, re-checked at the write door inside the writing transaction. The
    * end-to-end replay of the race is `version-poll.integration.test.ts` (6); this pins the rule
-   * itself, both directions, without a database.
+   * itself, all three directions, without a database.
    *
    * MUTATION LOG — applied, watched fail, reverted, watched pass:
    * | Mutation | Result |
    * |---|---|
-   * | `return { authorized: true }` unconditionally | three of the four cases below FAIL |
-   * | keep only the `third_party` branch (guard the confusion direction alone) | "an INTERNAL write onto a RETRACTED coordinate is refused" FAILS |
-   * | keep only the `internal` branch | "a THIRD-PARTY write onto a DECLARED coordinate is refused" FAILS |
+   * | `return { authorized: true }` unconditionally | the three refusal cases FAIL (3 of 6) |
+   * | drop the `line_is_third_party` arm (guard the confusion direction alone) | ONE failure — "an INTERNAL write onto a RETRACTED coordinate is refused", and note WHY only one: a null declaration then falls into the transfer arm and is refused as `line_transferred`, which is the wrong REASON rather than a wrong verdict. Two arms that both refuse are still two facts, and the audit record has to carry the right one |
+   * | drop the transfer arm — i.e. restore the pre-2026-08-17 rule, which is exactly what `{ hasDeclaredProducer: boolean }` could express | ONE failure, and it is "a TRANSFER refuses the FORMER producer". THE OTHER FIVE STAY GREEN, which is the whole reason that case had to be written rather than assumed covered |
+   * | keep the transfer arm but report it as `line_is_third_party` | same one failure, on the reason alone — the write is refused and the Decision then says the coordinate is third-party when it is internal and owned by Q |
    */
 
+  const P = "aaaaaaaa-0000-0000-0000-000000000001";
+  const Q = "bbbbbbbb-0000-0000-0000-000000000002";
+
   it("a THIRD-PARTY write onto a DECLARED coordinate is refused, and says which fact refused it", () => {
-    const verdict = evaluateIngressAuthority("third_party", { hasDeclaredProducer: true });
+    const verdict = evaluateIngressAuthority({ kind: "third_party" }, { producerObjectId: P });
     expect(verdict.authorized).toBe(false);
     if (verdict.authorized) throw new Error("unreachable");
     expect(verdict.reason).toBe("line_is_internal");
@@ -285,20 +290,50 @@ describe("evaluateIngressAuthority — the ingress split survives the transactio
     // The direction `resetLineHead`'s header calls a SECURITY fix rather than a wedge fix: a stale
     // internal head on a coordinate that is third-party again is an M22 vendor-rule input, so it
     // can grant a scan pass against a version no registry ever published.
-    const verdict = evaluateIngressAuthority("internal", { hasDeclaredProducer: false });
+    const verdict = evaluateIngressAuthority(
+      { kind: "internal", producerObjectId: P },
+      { producerObjectId: null }
+    );
     expect(verdict.authorized).toBe(false);
     if (verdict.authorized) throw new Error("unreachable");
     expect(verdict.reason).toBe("line_is_third_party");
     expect(verdict.detail).toMatch(/no producer is declared/);
   });
 
-  it("each ingress writes the lines it owns — the negative control for both refusals above", () => {
-    expect(evaluateIngressAuthority("third_party", { hasDeclaredProducer: false })).toEqual({
+  it("a TRANSFER refuses the FORMER producer's in-flight write — the case a boolean could not see", () => {
+    // THE BUG THIS ARM EXISTS FOR, measured. `POST /dependencies/producers` UPSERTS, so declaring a
+    // coordinate that already has a producer TRANSFERS it (the route records
+    // `displacedProducerObjectId` precisely because that happens). Under the previous shape this
+    // rule was handed `hasDeclaredProducer: true` in exactly this situation and authorized P's
+    // write: P's version became the head, `line_head_advanced` fanned bump PRs into every
+    // subscriber's repo, and Q's genuine release was then refused `behind_head` FOREVER — the poll
+    // never visits a declared line, backward movement is refused, and no API resets the column.
+    const verdict = evaluateIngressAuthority(
+      { kind: "internal", producerObjectId: P },
+      { producerObjectId: Q }
+    );
+    expect(verdict.authorized).toBe(false);
+    if (verdict.authorized) throw new Error("unreachable");
+    expect(verdict.reason).toBe("line_transferred");
+    // It is a DISTINCT reason from the two above, not `line_is_third_party` reused: the coordinate
+    // IS internal, so saying it is third-party would be a false statement in an audit record.
+    expect(verdict.reason).not.toBe("line_is_third_party");
+    // BOTH identities are named, because "you may not write here" is unactionable without them —
+    // the operator needs to know which component holds the coordinate now (principle 6).
+    expect(verdict.detail).toContain(P);
+    expect(verdict.detail).toContain(Q);
+  });
+
+  it("each ingress writes the lines it owns — the negative control for all three refusals above", () => {
+    expect(evaluateIngressAuthority({ kind: "third_party" }, { producerObjectId: null })).toEqual({
       authorized: true
     });
-    expect(evaluateIngressAuthority("internal", { hasDeclaredProducer: true })).toEqual({
-      authorized: true
-    });
+    // THE SUCCESS DIRECTION OF THE TRANSFER RULE, stated explicitly: P writing to a line still
+    // declared to P must still record. Without this the transfer refusal above is satisfied by a
+    // rule that refuses every internal write.
+    expect(
+      evaluateIngressAuthority({ kind: "internal", producerObjectId: P }, { producerObjectId: P })
+    ).toEqual({ authorized: true });
   });
 
   it("THE INGRESS IS AN ARGUMENT — neither caller can omit it and get a default", () => {
@@ -307,5 +342,17 @@ describe("evaluateIngressAuthority — the ingress split survives the transactio
     // other test in this file still green. `recordDependencyLineHead` takes it as its REQUIRED
     // fourth parameter; here the pure rule takes it as its required first.
     expect(evaluateIngressAuthority.length).toBe(2);
+  });
+
+  it("THE PRODUCER IDENTITY IS NOT OPTIONAL ON THE `internal` ARM — a type-level assertion", () => {
+    // The guarantee is compile-time, so this asserts the SHAPE the compiler enforces rather than a
+    // runtime behaviour: `{ kind: "internal" }` with no `producerObjectId` must not be assignable to
+    // `HeadWriteIngress`. If someone widens the field to optional, THIS line stops erroring and the
+    // `@ts-expect-error` directive itself becomes the failure — which is the point: the hole this
+    // fix closed was "the caller did not have to say", one level down from "the caller did not have
+    // to pass an ingress at all".
+    // @ts-expect-error producerObjectId is required on the internal arm
+    const incomplete: HeadWriteIngress = { kind: "internal" };
+    expect(incomplete.kind).toBe("internal");
   });
 });

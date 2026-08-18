@@ -521,8 +521,16 @@ export async function detectInternalReleases(
       // /dependencies/producers/retract` can land in between and this phase-3 write would otherwise
       // put the org's own version onto a coordinate that is third-party again — the direction
       // `resetLineHead`'s header calls a security fix rather than a wedge fix, because
-      // `latest_version` is an M22 vendor-rule input. `"internal"` is what lets the door refuse it
-      // (`line_is_third_party`), and the refusal is reported as a skip like every other.
+      // `latest_version` is an M22 vendor-rule input. The `internal` ingress is what lets the door
+      // refuse it (`line_is_third_party`), and the refusal is reported as a skip like every other.
+      //
+      // AND IT NAMES THE PRODUCER THIS RELEASE WAS DERIVED FROM. `producerComponentObjectId` is
+      // phase 1's own answer — the component `listProducedLines` matched this line's declaration to
+      // — carried down here rather than recomputed. Without it the door could only ask "is this
+      // coordinate internal?", which a TRANSFER (`POST /dependencies/producers` over an existing
+      // declaration) leaves true while making this component the WRONG writer: its version would
+      // become the head, fan bump PRs into every subscriber's repo, and wedge the new producer's
+      // genuine release behind `behind_head` with no way back.
       const head = await recordDependencyLineHead(
         tx,
         orgId,
@@ -531,7 +539,7 @@ export async function detectInternalReleases(
           latestVersion: item.agreed.version,
           latestDigest: item.agreed.digest
         },
-        "internal"
+        { kind: "internal", producerObjectId: item.identity.producerComponentObjectId }
       );
       if (!head.recorded) {
         item.skipped.push({ ...item.identity, reason: head.reason, detail: head.detail });

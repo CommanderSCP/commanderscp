@@ -422,11 +422,12 @@ export type RecordDependencyLineHeadOutcome =
  * the two callers demonstrably meant different things by them. `line-head.ts` states the meaning in
  * full; the FOUR rules enforced here are:
  *
- *  0. THE INGRESS MUST OWN THE LINE. A `third_party` write is refused while a producer is declared
- *     for the coordinate, and an `internal` write is refused while none is. See `ingress` below —
- *     this is the only one of the four that is about WHO is writing rather than about the version,
- *     and it is therefore decided FIRST: "you may not write here" dominates "that version is behind
- *     the head".
+ *  0. THE INGRESS MUST OWN THE LINE — THIS ONE, not a line of its category. A `third_party` write is
+ *     refused while any producer is declared for the coordinate; an `internal` write is refused
+ *     while none is, AND refused while the standing declaration names a DIFFERENT component than the
+ *     one the release was derived from (`line_transferred`). See `ingress` below — this is the only
+ *     one of the four that is about WHO is writing rather than about the version, and it is
+ *     therefore decided FIRST: "you may not write here" dominates "that version is behind the head".
  *  1. THE VERSION MUST BE ON THIS LINE — the same major line at the line's own precision, and for
  *     `oci` the same variant `tag_pattern` names. A `1.9.9` on the `2` line, or a plain tag on an
  *     `-alpine` line, is refused rather than written.
@@ -475,6 +476,12 @@ export async function recordDependencyLineHead(
    * transaction, so it carries a compile-time fact about a world that may have changed by the time
    * this transaction opens. {@link HeadWriteIngress} carries the caller's claim; the declaration
    * read below carries the world; the disagreement between them is the refusal.
+   *
+   * AND THE `internal` ARM MUST NAME ITS PRODUCER (a required field of that arm, so it cannot be
+   * omitted any more than the argument itself can). The claim being checked is "this component's
+   * production release owns this line", and a claim with no subject can only be checked against the
+   * coordinate's category — which is how a TRANSFERRED coordinate's former producer went on writing
+   * heads and fanning bumps out of them.
    */
   ingress: HeadWriteIngress
 ): Promise<RecordDependencyLineHeadOutcome> {
@@ -496,8 +503,11 @@ export async function recordDependencyLineHead(
     ecosystem: before.ecosystem,
     coordinate: before.coordinate
   });
+  // THE IDENTITY IS HANDED OVER, NOT A BOOLEAN. `declaration !== null` used to be what this passed,
+  // which asked "is a producer declared?" and never "is THIS one?" — so a coordinate TRANSFERRED
+  // from P to Q left P's in-flight derivation free to write the head and fan bumps out from it.
   const authority = evaluateIngressAuthority(ingress, {
-    hasDeclaredProducer: declaration !== null
+    producerObjectId: declaration?.producerObjectId ?? null
   });
   if (!authority.authorized) {
     return {

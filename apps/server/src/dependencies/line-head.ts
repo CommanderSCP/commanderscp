@@ -118,6 +118,18 @@ export type ThirdPartyLine = PollableLineKey & { readonly [THIRD_PARTY_LINE]: "t
  *
  * "Declared, never inferred" is why the declaration is the test: nothing here looks at the
  * coordinate for the org's name, or at a registry host.
+ *
+ * A BOOLEAN IS THE RIGHT SHAPE *HERE*, unlike in {@link evaluateIngressAuthority} — said out loud
+ * because the two now differ and the difference is a decision, not an oversight. This function
+ * answers for the THIRD-PARTY ingress, which speaks for no component and makes no claim of its own:
+ * ANY declaration, to anybody, makes the line somebody else's, so WHICH component holds it cannot
+ * change the answer. The internal ingress DOES make a claim, about a named component, which is
+ * exactly why its rule needs the identity and why a boolean there was a bug.
+ *
+ * Those are the only two places in the tree that ask this question. Census taken 2026-08-17 with no
+ * grep filters: `listThirdPartyDependencyLinesByIds` passes `false` after an SQL anti-join has
+ * already excluded every declared coordinate, and `@scp/schemas`' `isInternalDependencyLine` — which
+ * is the same `declaration !== null` reduction — has NO call sites anywhere, only mentions in prose.
  */
 export function asThirdPartyLine(
   line: PollableLineKey,
@@ -164,14 +176,51 @@ export function asThirdPartyLine(
  * this argument is what the door compares it against. It lives HERE, beside the three head rules,
  * for the reason this module's opening states: a rule applied by each caller has one place per
  * caller to regress.
+ *
+ * ============================================================================================
+ * AND THE INTERNAL ARM NAMES *WHICH* PRODUCER — because "is a producer declared?" is the wrong
+ * QUESTION, not merely a coarse answer (measured 2026-08-17)
+ * ============================================================================================
+ * The first cut of this type was the two bare strings `"third_party" | "internal"`, and the
+ * declaration it was compared against was a `boolean`. That asked whether the coordinate HAS a
+ * producer and never whether it has THIS one — so the whole rule was blind to the one act that
+ * changes a producer without removing it. A TRANSFER is ordinary and supported: `POST
+ * /dependencies/producers` upserts, and `routes/dependency-producers.ts` records
+ * `displacedProducerObjectId` precisely because coordinates move between components.
+ *
+ * Replayed at the same seam as the two races above — declare to P, transfer to Q, then P's own
+ * in-flight phase-3 write:
+ *
+ *     { "recorded": true, "movement": "advanced", "detail": "'2.9.9' is the first head observed …" }
+ *     outbox: line_head_advanced -> bump PRs authored into every subscriber's repo, onto P's version
+ *
+ * and Q's genuine `2.4.0` is then refused `behind_head` FOREVER: the third-party poll never visits a
+ * declared line, backward movement is refused, and no API resets `latest_version`. That is the same
+ * permanence rule 0 was written to end, one level finer.
+ *
+ * WHY THE IDENTITY RIDES ON THE INGRESS AND NOT ON {@link ObserveDependencyLineHeadInput}. That
+ * input is the OBSERVATION — the `latest_*` trio and nothing else — and it is a Zod schema in
+ * `@scp/schemas`, i.e. a shared contract shape. The producer id is not something observed about the
+ * line; it is the CLAIM the writer is making about its own standing, which is exactly what this type
+ * already is. Putting it on the input would also have to make it optional (the poll has none), and
+ * an optional field is a field an internal caller can omit — restoring, one level down, the same
+ * "I did not look" hole that made `ingress` a required argument in the first place. As the required
+ * member of the `internal` arm, an internal write that cannot name its producer DOES NOT COMPILE.
  */
 export type HeadWriteIngress =
   /** `version-poll.ts` — an answer from a public ecosystem index. Legitimate ONLY while the
-   *  coordinate has no declared producer. */
-  | "third_party"
-  /** `internal-release-detection.ts` — derived from the org's own accepted prod release. Legitimate
-   *  ONLY while the coordinate HAS a declared producer. */
-  | "internal";
+   *  coordinate has NO declared producer at all. It carries no identity and needs none: the poll
+   *  speaks for no component, so ANY declaration makes the line somebody else's. */
+  | { readonly kind: "third_party" }
+  /**
+   * `internal-release-detection.ts` — derived from the org's own accepted prod release, BY A NAMED
+   * COMPONENT. Legitimate only while the declaration standing at write time names THAT component.
+   *
+   * `producerObjectId` is the component whose prod placement this derivation read — the identity
+   * phase 1 already established via `listProducedLines` and which used to be thrown away between
+   * `internal-release-detection.ts:526`'s call site and this rule.
+   */
+  | { readonly kind: "internal"; readonly producerObjectId: string };
 
 /** Why an ingress may not write this line's head at all — a statement about WHO owns the line,
  *  decided before any statement about the version. */
@@ -183,7 +232,20 @@ export type IngressRefusalReason =
    *  symmetric direction: the org's own `2.7.0` landing on a line that is third-party again, where
    *  it wedges the poll and — since `latest_version` is an M22 vendor-rule input — can grant a scan
    *  pass against a version no registry ever published. */
-  | "line_is_third_party";
+  | "line_is_third_party"
+  /**
+   * An INTERNAL-release answer from a component that is NO LONGER this coordinate's declared
+   * producer — the declaration stands, and it names SOMEBODY ELSE.
+   *
+   * The two reasons above are about whether the coordinate is internal; this one is about WHOSE it
+   * is, and it is the only one of the three a boolean view of the declaration cannot see. The act it
+   * guards is a supported one (a declare over an existing declaration TRANSFERS the coordinate —
+   * `routes/dependency-producers.ts`'s `displacedProducerObjectId`), so the losing component's
+   * in-flight derivation is an ordinary event rather than an exotic interleaving: it would otherwise
+   * put the OLD producer's version on the line, fan bump PRs out from it, and wedge the NEW
+   * producer's genuine release behind `behind_head` permanently.
+   */
+  | "line_transferred";
 
 export type IngressAuthority =
   | { readonly authorized: true }
@@ -193,10 +255,18 @@ export type IngressAuthority =
  * MAY THIS INGRESS MOVE THIS LINE'S HEAD? Pure, so the rule is testable without a database; called
  * by `recordDependencyLineHead` with a declaration read in the SAME transaction as the write.
  *
- * BOTH DIRECTIONS ARE REFUSALS, not one guard and one convenience. A retraction landing mid-flight
- * of an internal-detection pass is the same race with the arrow reversed, and its outcome is the
- * worse-reading of the two (`resetLineHead`'s header: a stale internal head on a coordinate that is
- * third-party again is a security-gate input, not merely a stalled poll).
+ * ALL THREE DIRECTIONS ARE REFUSALS, not one guard and two conveniences. A retraction landing
+ * mid-flight of an internal-detection pass is the first race with the arrow reversed, and its
+ * outcome is the worse-reading of the two (`resetLineHead`'s header: a stale internal head on a
+ * coordinate that is third-party again is a security-gate input, not merely a stalled poll). A
+ * TRANSFER landing in the same window is the third, and it is the one the boolean form of this
+ * function could not express at all — see {@link HeadWriteIngress}.
+ *
+ * THE DECLARATION IS PASSED AS AN IDENTITY-OR-NULL, NEVER AS A BOOLEAN, and that shape is the fix
+ * rather than a consequence of it. While the parameter was `{ hasDeclaredProducer: boolean }` the
+ * caller had to answer a question the caller could not get wrong — and the rule could not ask the
+ * question that mattered. `null` still means "no declaration"; anything else is the component that
+ * holds the coordinate right now.
  *
  * It is a REFUSAL AND NOT A THROW because both callers already have a refusal path that records the
  * reason in their Decision (`version-poll.ts`'s `not_recorded` verdict,
@@ -206,12 +276,19 @@ export type IngressAuthority =
 export function evaluateIngressAuthority(
   ingress: HeadWriteIngress,
   declaration: {
-    /** True iff `dependency_line_producers` holds a row for this line's `(org, ecosystem,
-     *  coordinate)` AS READ INSIDE THE WRITING TRANSACTION. */
-    hasDeclaredProducer: boolean;
+    /**
+     * The component `dependency_line_producers` names for this line's `(org, ecosystem,
+     * coordinate)` AS READ INSIDE THE WRITING TRANSACTION, or `null` when the coordinate carries no
+     * declaration at all.
+     *
+     * THE IDENTITY, NOT `hasDeclaredProducer`. A boolean here is what let a transferred coordinate's
+     * former producer keep writing its head.
+     */
+    readonly producerObjectId: string | null;
   }
 ): IngressAuthority {
-  if (ingress === "third_party" && declaration.hasDeclaredProducer) {
+  if (ingress.kind === "third_party") {
+    if (declaration.producerObjectId === null) return { authorized: true };
     return {
       authorized: false,
       reason: "line_is_internal",
@@ -221,7 +298,7 @@ export function evaluateIngressAuthority(
         "third-party when this poll started (ADR-0032 §7: dependency confusion)"
     };
   }
-  if (ingress === "internal" && !declaration.hasDeclaredProducer) {
+  if (declaration.producerObjectId === null) {
     return {
       authorized: false,
       reason: "line_is_third_party",
@@ -229,6 +306,18 @@ export function evaluateIngressAuthority(
         "no producer is declared for this coordinate any more, so its head is polled from a public " +
         "index — an internal release's version is refused here even though the declaration stood " +
         "when this derivation started (a stale internal head is an M22 vendor-rule input)"
+    };
+  }
+  if (declaration.producerObjectId !== ingress.producerObjectId) {
+    return {
+      authorized: false,
+      reason: "line_transferred",
+      detail:
+        `this coordinate's declared producer is ${declaration.producerObjectId}, and this release ` +
+        `was derived from ${ingress.producerObjectId} — the coordinate was TRANSFERRED after this ` +
+        `derivation started, so the former producer's version is refused here (recording it would ` +
+        `fan bumps out from a component that no longer publishes this coordinate, and wedge the ` +
+        `new producer's own release behind it)`
     };
   }
   return { authorized: true };

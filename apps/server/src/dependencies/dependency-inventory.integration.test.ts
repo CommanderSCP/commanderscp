@@ -558,7 +558,9 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "22.6.0-alpine",
           latestDigest: "sha256:" + "b".repeat(64)
         },
-        "internal"
+        // The ingress names the SAME component the declaration above names — the success direction
+        // of `line_transferred`. Point it at any other component and this write is refused.
+        { kind: "internal", producerObjectId: producer }
       )
     );
     expect(
@@ -624,7 +626,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "22.7.0",
           latestDigest: digest
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(written.recorded).toBe(true);
@@ -708,7 +710,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "3.20.0",
           latestDigest: digest
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(withDigest.recorded).toBe(true);
@@ -726,7 +728,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "3.20.0",
           latestDigest: null
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(restated.recorded).toBe(true);
@@ -745,7 +747,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "3.20.1",
           latestDigest: null
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(advanced.recorded).toBe(true);
@@ -766,7 +768,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "3.20.2",
           latestDigest: next
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(advancedWithDigest.recorded).toBe(true);
@@ -794,7 +796,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "1.10.0",
           latestDigest: null
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(head.recorded).toBe(true);
@@ -809,7 +811,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "1.9.10",
           latestDigest: null
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(behind.recorded).toBe(false);
@@ -827,7 +829,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "2.0.0",
           latestDigest: null
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(offLine.recorded).toBe(false);
@@ -845,7 +847,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "1.11.0",
           latestDigest: null
         },
-        "third_party"
+        { kind: "third_party" }
       )
     );
     expect(ahead.recorded).toBe(true);
@@ -885,7 +887,7 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
           latestVersion: "3.20.1",
           latestDigest: "sha256:" + "c".repeat(64)
         },
-        "internal"
+        { kind: "internal", producerObjectId: producer }
       )
     );
     expect(written.recorded).toBe(true);

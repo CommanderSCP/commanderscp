@@ -447,7 +447,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
             latestVersion: "1.4.0",
             latestDigest: null
           },
-          "third_party"
+          { kind: "third_party" }
         )
       );
 
@@ -522,7 +522,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
             latestVersion: "9.9.9",
             latestDigest: null
           },
-          "third_party"
+          { kind: "third_party" }
         )
       );
       // FIXTURE READ-BACK: without a head actually stored, "the head was cleared" passes for the
@@ -697,7 +697,7 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
             latestVersion: "2.7.0",
             latestDigest: null
           },
-          "internal"
+          { kind: "internal", producerObjectId: producer.id }
         )
       );
       expect(internalHead.recorded, "the fixture head must have landed").toBe(true);
