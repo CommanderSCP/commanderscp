@@ -1,7 +1,20 @@
 import { useEffect, type ReactNode } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
-import { CircleUser, Flag, Globe, KeyRound, LayoutDashboard, ListChecks, Package, Puzzle, Users, Waypoints, type LucideIcon } from "lucide-react";
+import {
+  CircleUser,
+  Flag,
+  Globe,
+  KeyRound,
+  LayoutDashboard,
+  ListChecks,
+  Package,
+  Puzzle,
+  Scale,
+  Users,
+  Waypoints,
+  type LucideIcon
+} from "lucide-react";
 import { client } from "../../lib/client";
 import { useAuth } from "../../lib/auth-context";
 import { cn, focusRing } from "../../lib/utils";
@@ -123,7 +136,12 @@ export const COMMANDER_NAV: NavSection[] = [
       // Dependency PRODUCER declarations (dependency-subscription-ui.md §12) — COMMANDER ONLY
       // (owner rule 2026-08-17: dependency automation happens only at the commander), so the
       // OUTPOST table below does not carry it; pinned by app-shell-nav.test.tsx.
-      { to: "/admin/dependencies", label: "Dependencies", icon: Package }
+      { to: "/admin/dependencies", label: "Dependencies", icon: Package },
+      // The governance:move lattice (governance-reach-on-containment-move.md §9.4) — BOTH sites
+      // carry this one: enforcement is PER-INSTANCE, and an outpost's own local containment moves
+      // are real moves that the lattice can govern just as a commander's can. Pinned in both
+      // COMMANDER_NAV and OUTPOST_NAV by app-shell-nav.test.tsx.
+      { to: "/admin/governance", label: "Governance", icon: Scale }
     ]
   }
 ];
@@ -147,7 +165,10 @@ export const OUTPOST_NAV: NavSection[] = [
       { to: "/federation", label: "Sync status", icon: Globe, exact: true },
       { to: "/identity", label: "Identity", icon: Users },
       { to: "/plugins", label: "Plugins", icon: Puzzle },
-      { to: "/pats", label: "Access Tokens", icon: KeyRound }
+      { to: "/pats", label: "Access Tokens", icon: KeyRound },
+      // Same rule as the commander table above: enforcement is per-instance, so the outpost
+      // carries this too — its own local moves are real moves the lattice can govern.
+      { to: "/admin/governance", label: "Governance", icon: Scale }
     ]
   }
 ];
@@ -238,10 +259,17 @@ export function AppShell({ children }: { children: ReactNode }): React.JSX.Eleme
         {/* §3.3: the header bar is the ONLY home of account chrome — `current-org` testid stays on
             the same span it has always been on. */}
         <header className="flex items-center justify-between border-b border-army-200 bg-white px-6 py-3">
-          <span className="flex items-center gap-2 text-sm text-slate-500" data-testid="current-org">
+          <span
+            className="flex items-center gap-2 text-sm text-slate-500"
+            data-testid="current-org"
+          >
             {user ? (
               <>
-                <CircleUser className="size-4 shrink-0 text-slate-400" strokeWidth={2} aria-hidden="true" />
+                <CircleUser
+                  className="size-4 shrink-0 text-slate-400"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                />
                 {`${user.orgName} · ${user.username}`}
               </>
             ) : null}
@@ -273,7 +301,8 @@ function InstanceRoleChip(): React.JSX.Element | null {
   });
   const role = selfQuery.data?.role;
   if (!role || role === "unset") return null;
-  const Icon = role === "commander" ? CommanderStar : role === "outpost" ? OutpostFort : RetransMast;
+  const Icon =
+    role === "commander" ? CommanderStar : role === "outpost" ? OutpostFort : RetransMast;
   return (
     <span
       className="mb-4 -mt-4 flex items-center gap-1.5 pl-9 text-xs capitalize text-army-300"

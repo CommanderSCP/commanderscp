@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { router } from "./router";
 import { ComponentDependenciesPage } from "./routes/component-dependencies";
 import { AdminDependenciesPage } from "./routes/admin-dependencies";
+import { AdminGovernancePage } from "./routes/admin-governance";
 
 /**
  * THE ROUTE TABLE STILL RESOLVES THE URLS OTHER THINGS DEPEND ON.
@@ -87,6 +88,10 @@ describe("router: URLs other code depends on still resolve", () => {
     [
       "/admin/dependencies",
       "the commander nav's Admin › Dependencies entry + the Produces strip's link on a component's Dependencies tab (dependency-subscription-ui.md §12)"
+    ],
+    [
+      "/admin/governance",
+      "both nav tables' Admin › Governance entry — the governance:move enforcement lattice (governance-reach-on-containment-move.md §9.4)"
     ]
   ])("resolves %s — needed by %s", (url) => {
     expect(resolves(url)).toBe(true);
@@ -129,6 +134,12 @@ describe("router: URLs other code depends on still resolve", () => {
     const admin = registeredComponents().find((r) => r.path === "/admin/dependencies");
     expect(admin?.component, "the /admin/dependencies route must exist").toBeDefined();
     expect(admin?.component).toBe(AdminDependenciesPage);
+  });
+
+  it("`/admin/governance` renders AdminGovernancePage (the URL AND the view)", () => {
+    const governance = registeredComponents().find((r) => r.path === "/admin/governance");
+    expect(governance?.component, "the /admin/governance route must exist").toBeDefined();
+    expect(governance?.component).toBe(AdminGovernancePage);
   });
 
   it("`/components/{id}/dependencies` renders ComponentDependenciesPage (the URL AND the view — a registered path pointed at another page is the same break)", () => {

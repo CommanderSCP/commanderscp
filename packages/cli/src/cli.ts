@@ -75,7 +75,12 @@ import type {
   StageDependency,
   ChangeStageDependencyStatus,
   ChangeStageDependencyTarget,
-  ChangeStageDependencyVerdict
+  ChangeStageDependencyVerdict,
+  // governance:move lattice (governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18).
+  GovernanceMoveEnforcement,
+  GovernanceMoveInstanceRung,
+  GovernanceMoveRung,
+  GovernanceMoveRungWriteResponse
 } from "@scp/schemas";
 import {
   DesiredStateManifestSchema,
@@ -697,6 +702,71 @@ export function dependencyInventoryBackfillRow(
     // column is the operator-visible receipt for "a disabled component is never fetched".
     reads: String(c.reads),
     detail: c.detail
+  };
+}
+
+/**
+ * ONE governance:move rung as a table row — `scp governance move-enforcement rungs`, and the
+ * per-object chain a `status`/`enable`/`disable` response carries. `depth` is present only on the
+ * per-object explain read (0 = org root, increasing toward the object); the org-wide `rungs` list
+ * walks no chain, so it prints `-` there rather than fabricating a position.
+ */
+export function governanceMoveRungRow(rung: GovernanceMoveRung): Record<string, string> {
+  return {
+    tier: rung.tier,
+    subject: rung.name,
+    subjectObjectId: rung.subjectObjectId,
+    depth: isAbsent(rung.depth) ? "-" : String(rung.depth),
+    enabledAt: rung.enabledAt,
+    enabledByObjectId: rung.enabledByObjectId
+  };
+}
+
+/**
+ * The verdict line of `scp governance move-enforcement status` — `enforced` is an OR across the
+ * instance rung and every rung on the queried object's OWN containment chain. It answers about ONE
+ * end of a move; the rungs table printed beside it (`governanceMoveRungRow`) is where "which rung"
+ * lives, because the verdict alone cannot say that.
+ */
+export function governanceMoveEnforcementRow(
+  enforcement: GovernanceMoveEnforcement
+): Record<string, string> {
+  return {
+    enforced: String(enforcement.enforced),
+    instanceRung: enforcement.instance.enabled ? "enabled" : "disabled",
+    rungsOnChain: String(enforcement.rungs.length)
+  };
+}
+
+/**
+ * The instance (commander) rung as a table row (`scp governance move-enforcement instance get|set`)
+ * — mirrors `dependencySubscriptionUnlockRow`'s "never set" distinction: `updatedAt: null` is the
+ * shipped default (never configured), not "disabled just now".
+ */
+export function governanceMoveInstanceRow(
+  instance: GovernanceMoveInstanceRung
+): Record<string, string> {
+  return {
+    enabled: String(instance.enabled),
+    updatedAt: isAbsent(instance.updatedAt) ? "(never set)" : instance.updatedAt
+  };
+}
+
+/**
+ * The response to a rung write (`enable`/`disable`) — the subject, the tier it was recorded at, the
+ * resulting enabled state, and the Decision id every governance write carries (charter principle
+ * 6). `enforcement` (the resolved state AT THE SUBJECT after the write) is available on the response
+ * but not printed here — the caller already knows what it just did; `status` is where the full
+ * chain belongs.
+ */
+export function governanceMoveRungWriteRow(
+  response: GovernanceMoveRungWriteResponse
+): Record<string, string> {
+  return {
+    subjectObjectId: response.subjectObjectId,
+    tier: response.tier,
+    enabled: String(response.enabled),
+    decisionId: response.decisionId
   };
 }
 
@@ -4186,6 +4256,164 @@ export function buildProgram(): Command {
     });
 
   // -------------------------------------------------------------------------------------
+  // governance move-enforcement (governance-reach-on-containment-move.md §9.2, owner ruling
+  // 2026-08-18) — the `governance:move` LATTICE: a top-down monotone OR of enabled RUNGS (the
+  // instance, or one container object — org root, containment domain, service, assembly) that
+  // decides whether a containment move ALSO requires `governance:move`, at-or-above BOTH the moved
+  // object and the destination. Nothing is enforced until a rung is enabled — every deployment
+  // ships with none, and `status`/`rungs` say so honestly.
+  //
+  // AN UPPER RUNG CANNOT BE UNDONE BELOW IT. `disable` answers 409 while an ancestor's rung (or the
+  // instance rung) is still enabled, naming it — see `governanceMoveRungWriteRow`'s note on why a
+  // "successful" disable that left the subtree enforced anyway would be worse than refusing.
+  //
+  // THE INSTANCE RUNG IS OPERATOR-ONLY (SCP_OPERATOR_TOKEN) — never a tenant role — because it
+  // ACTIVATES enforcement for every org on the deployment (owner ruling Q1-A; contrast the
+  // dependency-subscription unlock, which only PERMITS). `rungs`/`status`/`instance get` are
+  // ordinary tenant reads; `enable`/`disable` need `policy:write` at-or-above the subject.
+  // -------------------------------------------------------------------------------------
+  const governanceCmd = program
+    .command("governance")
+    .description(
+      "The governance:move enforcement lattice (governance-reach-on-containment-move.md §9.2) — an opt-in second permission bar on containment moves"
+    );
+
+  const moveEnforcementCmd = governanceCmd
+    .command("move-enforcement")
+    .description(
+      "A top-down monotone OR of enabled rungs (instance, org root, containment domain, service, assembly) that decides whether a containment move additionally requires governance:move at both ends. Enforced iff the instance rung is enabled or the moved object's OR the destination's containment chain carries a rung"
+    );
+
+  moveEnforcementCmd
+    .command("status <type> <idOrUrn>")
+    .description(
+      "Explain whether moves of ONE object are governed, and by which rung(s) — a move has TWO ends, so `enforced: false` here is not a promise that a particular move is ungoverned; the destination's own chain is ORed in at the door"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (type: string, idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const enforcement = await client.governanceMove.enforcement(type, idOrUrn);
+      if (opts.output === "json") {
+        console.log(JSON.stringify(enforcement, null, 2));
+        return;
+      }
+      printResult(enforcement, "table", (raw) =>
+        governanceMoveEnforcementRow(raw as GovernanceMoveEnforcement)
+      );
+      console.log("");
+      console.log("RUNGS ON THIS OBJECT'S CONTAINMENT CHAIN (org-root-first):");
+      printResult(enforcement.rungs, "table", (raw) =>
+        governanceMoveRungRow(raw as GovernanceMoveRung)
+      );
+    });
+
+  moveEnforcementCmd
+    .command("rungs")
+    .description(
+      "List every governance:move rung enabled in this org, plus the instance rung's state — the whole lattice this org can act on, in one call"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const list = await client.governanceMove.rungs();
+      if (opts.output === "json") {
+        console.log(JSON.stringify(list, null, 2));
+        return;
+      }
+      console.log(
+        `instance rung: ${
+          list.instance.enabled
+            ? "enabled — ACTIVATES governance:move enforcement for every org on this deployment"
+            : "disabled"
+        }`
+      );
+      console.log("");
+      printResult(list.rungs, "table", (raw) => governanceMoveRungRow(raw as GovernanceMoveRung));
+    });
+
+  moveEnforcementCmd
+    .command("enable <idOrUrn>")
+    .description(
+      "Enable governance:move enforcement at one container (org root, containment domain, service or assembly) — every containment move of an object under it then requires governance:move at-or-above the object AND at-or-above the destination. Idempotent. Requires policy:write at-or-above the subject"
+    )
+    .option("--note <text>", "why the rung was enabled — recorded with the enable Decision")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts & { note?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response = await client.governanceMove.enable(idOrUrn, {
+        ...(opts.note !== undefined ? { note: opts.note } : {})
+      });
+      printResult(response, opts.output, (raw) =>
+        governanceMoveRungWriteRow(raw as GovernanceMoveRungWriteResponse)
+      );
+    });
+
+  moveEnforcementCmd
+    .command("disable <idOrUrn>")
+    .description(
+      "Disable governance:move enforcement at one container. Refused 409 while an upper rung (an ancestor's, or the instance rung) is enabled, naming it — an enablement above cannot be undone below. Requires policy:write at-or-above the subject"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response = await client.governanceMove.disable(idOrUrn);
+      printResult(response, opts.output, (raw) =>
+        governanceMoveRungWriteRow(raw as GovernanceMoveRungWriteResponse)
+      );
+    });
+
+  const governanceMoveInstanceCmd = moveEnforcementCmd
+    .command("instance")
+    .description(
+      "The instance (commander) rung — the deployment-wide top of the lattice. It ACTIVATES (owner ruling Q1-A): enabled here means every org on this deployment enforces governance:move on containment moves, and no org may disable it"
+    );
+
+  governanceMoveInstanceCmd
+    .command("get")
+    .description("Show the instance rung — an ordinary tenant read")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const instance = await client.governanceMove.instance();
+      printResult(instance, opts.output, (raw) =>
+        governanceMoveInstanceRow(raw as GovernanceMoveInstanceRung)
+      );
+    });
+
+  governanceMoveInstanceCmd
+    .command("set")
+    .description(
+      "Set the instance rung (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; it activates governance:move enforcement for every org on the deployment, and no org may disable it)"
+    )
+    .requiredOption("--enabled <bool>", "true|false")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { enabled: string }) => {
+      const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+      if (!operatorToken) {
+        throw new Error(
+          "SCP_OPERATOR_TOKEN is not set — the instance governance:move rung binds every org on the deployment, so setting it requires the deployment operator token, not your tenant login."
+        );
+      }
+      if (opts.enabled !== "true" && opts.enabled !== "false") {
+        throw new Error("--enabled must be exactly 'true' or 'false'");
+      }
+      const client = await clientFromStoredCredentials(opts);
+      const instance = await client.governanceMove.setInstance(
+        { enabled: opts.enabled === "true" },
+        operatorToken
+      );
+      printResult(instance, opts.output, (raw) =>
+        governanceMoveInstanceRow(raw as GovernanceMoveInstanceRung)
+      );
+    });
+
+  // -------------------------------------------------------------------------------------
   // dependency-producers (ADR-0032 §7e) — WHICH COORDINATES THIS ORG PUBLISHES.
   //
   // This is the switch between two entirely different head ingresses. A DECLARED coordinate's
@@ -4237,7 +4465,9 @@ export function buildProgram(): Command {
         console.log(JSON.stringify(response, null, 2));
         return;
       }
-      printResult(response.producers, "table", (raw) => dependencyProducerListRow(raw as DependencyLineProducerView));
+      printResult(response.producers, "table", (raw) =>
+        dependencyProducerListRow(raw as DependencyLineProducerView)
+      );
       // The condition and the sentence live in `dependencyProducerManagementNote`, OUTSIDE this
       // closure, so both arms are reachable by a test — the M21.7 lesson: an inline caveat whose
       // condition is inverted warns the wrong deployment and leaves the suite green.

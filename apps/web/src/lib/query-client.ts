@@ -146,3 +146,18 @@ export function componentDependencyBumpsKey(idOrUrn: string): unknown[] {
 export function dependencyProducersKey(): unknown[] {
   return ["dependency-producers"];
 }
+
+/** Query key for the whole governance:move lattice this org can act on — `GET
+ *  /governance/move-enforcement/rungs` (rungs + the instance rung's state, one unpaged org-level
+ *  list, governance-reach-on-containment-move.md §9.4). Invalidated after an enable/disable
+ *  authored from the Admin › Governance page. */
+export function governanceMoveRungsKey(): unknown[] {
+  return ["governance-move", "rungs"];
+}
+
+/** Query key for the instance (commander) rung of the governance:move lattice (`GET
+ *  /instance/governance-move-enforcement`) — one singleton row per deployment, not
+ *  parameterized. Read-only in the tenant UI: the write is operator-token only (CLI/API). */
+export function governanceMoveInstanceKey(): unknown[] {
+  return ["governance-move", "instance"];
+}

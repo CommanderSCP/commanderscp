@@ -32,6 +32,7 @@ import { ConnectArgoCdPage } from "./routes/connect-argocd";
 import { ConnectKindPage } from "./routes/connect";
 import { SetupPage } from "./routes/setup";
 import { AdminDependenciesPage } from "./routes/admin-dependencies";
+import { AdminGovernancePage } from "./routes/admin-governance";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -329,6 +330,17 @@ const adminDependenciesRoute = createRoute({
   component: AdminDependenciesPage
 });
 
+// Admin › Governance (governance-reach-on-containment-move.md §9.4) — the governance:move
+// enforcement lattice: instance rung (read-only), the org rung switch, and the enabled-rungs
+// table with Enable at… / Disable. A static 2-segment path, out-ranking the dynamic
+// `/$basePath/$idOrUrn` registry-detail route below exactly as `/admin/dependencies` does.
+// Linked from BOTH the commander and outpost nav tables (enforcement is per-instance).
+const adminGovernanceRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/governance",
+  component: AdminGovernancePage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -380,6 +392,7 @@ const routeTree = rootRoute.addChildren([
     connectKindRoute,
     setupRoute,
     adminDependenciesRoute,
+    adminGovernanceRoute,
     registryListRoute,
     registryDetailRoute
   ])

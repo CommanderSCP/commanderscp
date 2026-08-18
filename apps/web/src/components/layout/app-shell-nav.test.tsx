@@ -113,6 +113,16 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/dependencies");
   });
 
+  /** Admin › Governance (governance-reach-on-containment-move.md §9.4) — the governance:move
+   *  lattice. Unlike Dependencies, this one is NOT commander-only (the outpost half is pinned
+   *  below): enforcement is per-instance, and an outpost's own local moves are real moves. */
+  it("links to Admin › Governance (/admin/governance), under the Admin section", () => {
+    expect(navHrefs(html)).toContain("/admin/governance");
+    expect(html).toContain(">Governance</a>");
+    const adminSection = COMMANDER_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/governance");
+  });
+
   /** G5 (outpost-ui.md §4 close) — "Setup" lives under the pre-existing FEDERATION section
    *  (with Outposts and Federation status), not a new heading; both survive alongside it. */
   it("links to the setup landing, under the pre-existing Federation section", () => {
@@ -132,7 +142,9 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     for (const path of ["/services", "/assemblies", "/components"]) {
       expect(hrefs).toContain(path);
     }
-    expect(hrefs.filter((h) => ["/services", "/assemblies", "/components"].includes(h))).toHaveLength(3);
+    expect(
+      hrefs.filter((h) => ["/services", "/assemblies", "/components"].includes(h))
+    ).toHaveLength(3);
   });
 
   /** Removed from the nav on purpose. `/changes` no longer has a LIST route at all, so a link to it
@@ -167,7 +179,16 @@ describe("app nav: the OUTPOST site is the small one (outpost-ui.md §9)", () =>
   const hrefs = navHrefs(html);
 
   it("keeps home, the catalog, setup, and admin", () => {
-    for (const path of ["/", "/services", "/assemblies", "/components", "/setup", "/identity", "/plugins", "/pats"]) {
+    for (const path of [
+      "/",
+      "/services",
+      "/assemblies",
+      "/components",
+      "/setup",
+      "/identity",
+      "/plugins",
+      "/pats"
+    ]) {
       expect(hrefs).toContain(path);
     }
   });
@@ -199,6 +220,15 @@ describe("app nav: the OUTPOST site is the small one (outpost-ui.md §9)", () =>
     expect(html).toContain(">Sync status</a>");
     const adminSection = OUTPOST_NAV.find((s) => s.label === "Admin");
     expect(adminSection?.entries.map((e) => e.to)).toContain("/federation");
+  });
+
+  /** Admin › Governance IS carried here, unlike Dependencies — enforcement is per-instance, and
+   *  an outpost's own local containment moves are real moves the lattice can govern. */
+  it("carries Admin › Governance (enforcement is per-instance, not commander-only)", () => {
+    expect(hrefs).toContain("/admin/governance");
+    expect(html).toContain(">Governance</a>");
+    const adminSection = OUTPOST_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/governance");
   });
 
   it("is a strict SUBSET of the commander site's destinations (plus nothing new)", () => {
@@ -269,7 +299,9 @@ describe("app router: every nav destination this milestone adds actually resolve
 describe("brand mark: one insignia per site, star before auth", () => {
   it("wears the fort on the outpost site and the star on the commander site", () => {
     expect(renderToStaticMarkup(<BrandMark role="outpost" />)).toContain('data-insignia="outpost"');
-    expect(renderToStaticMarkup(<BrandMark role="commander" />)).toContain('data-insignia="commander"');
+    expect(renderToStaticMarkup(<BrandMark role="commander" />)).toContain(
+      'data-insignia="commander"'
+    );
   });
 
   it("wears the STAR when no role is known — the login page's case — never leaking the role pre-auth", () => {

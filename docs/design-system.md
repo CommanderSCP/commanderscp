@@ -155,6 +155,7 @@ Nav **structure, order, labels, and hrefs unchanged** (test-pinned owner decisio
 | Plugins | `Puzzle` |
 | Access Tokens | `KeyRound` |
 | Dependencies (Admin › dependency producers; commander nav only) | `Package` |
+| Governance (Admin › governance:move enforcement; both sites) | `Scale` |
 
 Catalog entries come from `REGISTRIES`; add an `icon` field to the registry config so the allow-list mapping stays data-driven.
 
