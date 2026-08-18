@@ -742,8 +742,8 @@ export function dependencyInventoryHeaderLines(
 ): string[] {
   const lines: string[] = [];
   lines.push(`component: ${response.component.name} (${response.component.id})`);
-  lines.push(dependencyIngestionStampLine(response.ingestion));
   const decision = response.lastIngestionDecision;
+  lines.push(dependencyIngestionStampLine(response.ingestion, decision));
   if (isAbsent(decision)) {
     lines.push("last ingestion decision: none on record");
   } else {
@@ -765,13 +765,26 @@ export function dependencyInventoryHeaderLines(
 
 /** The ingestion stamp as one line — see {@link dependencyInventoryHeaderLines} for the four
  *  readings. `manifests[]` is listed as `repo:path=outcome (detail)`; on `ok` the list is the
- *  receipt of what was read, on `partial`/`unreadable` it is the work list. */
+ *  receipt of what was read, on `partial`/`unreadable` it is the work list.
+ *
+ *  `lastIngestionDecision` is consulted ONLY when the stamp is absent: the stamp table (migration
+ *  0065) was created without a backfill from the `dependency_inventory_ingestion` Decisions, so a
+ *  component ingested before it has a Decision and no stamp — "never attempted" would contradict
+ *  the Decision line printed right under it. That case is stated as NOT STAMPED and defers to the
+ *  Decision; "never attempted" is printed only when NEITHER is on record. */
 export function dependencyIngestionStampLine(
-  stamp: ComponentDependencyInventoryResponse["ingestion"]
+  stamp: ComponentDependencyInventoryResponse["ingestion"],
+  lastIngestionDecision?: ComponentDependencyInventoryResponse["lastIngestionDecision"]
 ): string {
   // `null` AND `undefined` alike: a server that omits the field (predating the stamp) has recorded
-  // nothing, and "never attempted" is the only reading a missing stamp has.
-  if (isAbsent(stamp)) return "ingestion: never attempted";
+  // nothing in the stamp table. With NO Decision either, "never attempted" is the only reading a
+  // missing stamp has; with one, the pass ran before the stamp existed and the Decision is the
+  // record of it.
+  if (isAbsent(stamp)) {
+    return isAbsent(lastIngestionDecision)
+      ? "ingestion: never attempted"
+      : "ingestion: not stamped (ingested before the stamp existed) — see the last ingestion decision below";
+  }
   const manifests = stamp.manifests ?? [];
   const files =
     manifests.length > 0

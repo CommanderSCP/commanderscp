@@ -556,6 +556,27 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
       }).find((l) => l.startsWith("component gate:"))
     ).toBe("component gate: no_enabling_contribution (enabled=false, 0 contribution(s))");
 
+    // NULL STAMP + a Decision ON RECORD (a component ingested before migration 0065's stamp table,
+    // which was created without a backfill): the header must NOT print "never attempted" one line
+    // above a Decision that says a pass ran — it says NOT STAMPED and defers to the Decision line.
+    const preStamp = dependencyInventoryHeaderLines({
+      ...baseResponse,
+      lastIngestionDecision: {
+        decisionId: "0198f000-0000-7000-8000-000000000015",
+        firstObservedAt: "2026-08-10T00:00:00.000Z",
+        manifestPathsRead: ["package.json"],
+        manifestPathsAbsent: [],
+        skipped: []
+      }
+    });
+    expect(preStamp).toContain(
+      "ingestion: not stamped (ingested before the stamp existed) — see the last ingestion decision below"
+    );
+    expect(preStamp.join("\n")).not.toMatch(/never attempted/);
+    expect(preStamp).toContain(
+      "last ingestion decision: 0198f000-0000-7000-8000-000000000015 first observed 2026-08-10T00:00:00.000Z; read [package.json] absent [] skipped 0"
+    );
+
     // NEGATIVE CONTROL: a present stamp is printed as itself, so "never attempted" reports ABSENCE.
     const stamped = dependencyInventoryHeaderLines({
       ...baseResponse,
