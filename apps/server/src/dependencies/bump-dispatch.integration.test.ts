@@ -503,11 +503,14 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   /** Move the line's head through the ONE write door, exactly as both M21.4 ingresses do. */
   async function advanceHead(lineId: string, version: string): Promise<void> {
     const outcome = await inOrg((tx) =>
-      recordDependencyLineHead(tx, org.orgId, {
-        lineId,
-        latestVersion: version,
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: version, latestDigest: null },
+        // No producer is declared for these fixtures' coordinates, so the third-party ingress is
+        // the one that owns them — the same argument `version-poll.ts` passes.
+        "third_party"
+      )
     );
     expect(outcome.recorded, `the head should have moved to ${version}`).toBe(true);
   }
@@ -556,11 +559,12 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     // third-party line every day, and a job per restatement is a job per dependency per day for
     // work already done.
     await inOrg((tx) =>
-      recordDependencyLineHead(tx, org.orgId, {
-        lineId: fixture.lineId,
-        latestVersion: "1.4.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId: fixture.lineId, latestVersion: "1.4.0", latestDigest: null },
+        "third_party"
+      )
     );
     expect((await outboxRowsFor(fixture.lineId)).length).toBe(afterAdvance.length);
   }, 60_000);

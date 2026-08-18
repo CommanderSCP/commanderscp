@@ -137,6 +137,103 @@ export function asThirdPartyLine(
   } as ThirdPartyLine;
 }
 
+/**
+ * WHICH INGRESS A HEAD WRITE IS COMING FROM — the argument the write door re-checks the world
+ * against, INSIDE the transaction that writes.
+ *
+ * ============================================================================================
+ * WHY A RUNTIME ARGUMENT WHEN {@link ThirdPartyLine} ALREADY EXISTS (measured, not theorised)
+ * ============================================================================================
+ * The brand above is a COMPILE-TIME fact, and it is minted in a DIFFERENT TRANSACTION from the one
+ * that writes. Both ingresses deliberately straddle a transaction boundary, because a registry that
+ * takes 15s must never hold a tenant transaction open:
+ *
+ *   version-poll.ts            buildLineWorkList (tx1) -> queryLineHead (NO tx) -> write (tx2)
+ *   internal-release-detection producer read (tx1)     -> resolution (NO tx)    -> write (tx3)
+ *
+ * A `ThirdPartyLine` therefore says "no declaration existed when tx1 ran", which is not the same
+ * claim as "no declaration exists now". The gap was measured end to end against real Postgres: a
+ * `POST /dependencies/producers` landing between tx1 and tx3 confirmed the head cleared to null,
+ * and the poll's own in-flight write then put a PUBLIC `2.99.0` back on the just-declared internal
+ * line and fanned a bump out from it. The line was then PERMANENTLY WRONG — the poll's work-list
+ * excludes it (it is internal now, so nothing re-visits it) and internal detection's legitimate
+ * `2.1.0` is refused as `behind_head`. That is dependency confusion arriving through the one door
+ * built to end it.
+ *
+ * So the fact is re-read at the write door under the same `FOR UPDATE` that guards the head, and
+ * this argument is what the door compares it against. It lives HERE, beside the three head rules,
+ * for the reason this module's opening states: a rule applied by each caller has one place per
+ * caller to regress.
+ */
+export type HeadWriteIngress =
+  /** `version-poll.ts` — an answer from a public ecosystem index. Legitimate ONLY while the
+   *  coordinate has no declared producer. */
+  | "third_party"
+  /** `internal-release-detection.ts` — derived from the org's own accepted prod release. Legitimate
+   *  ONLY while the coordinate HAS a declared producer. */
+  | "internal";
+
+/** Why an ingress may not write this line's head at all — a statement about WHO owns the line,
+ *  decided before any statement about the version. */
+export type IngressRefusalReason =
+  /** A THIRD-PARTY answer for a coordinate that is now DECLARED INTERNAL. The dependency-confusion
+   *  direction: a public index's `9.9.9` landing on the org's own package. */
+  | "line_is_internal"
+  /** An INTERNAL-release answer for a coordinate whose declaration has been RETRACTED. The
+   *  symmetric direction: the org's own `2.7.0` landing on a line that is third-party again, where
+   *  it wedges the poll and — since `latest_version` is an M22 vendor-rule input — can grant a scan
+   *  pass against a version no registry ever published. */
+  | "line_is_third_party";
+
+export type IngressAuthority =
+  | { readonly authorized: true }
+  | { readonly authorized: false; readonly reason: IngressRefusalReason; readonly detail: string };
+
+/**
+ * MAY THIS INGRESS MOVE THIS LINE'S HEAD? Pure, so the rule is testable without a database; called
+ * by `recordDependencyLineHead` with a declaration read in the SAME transaction as the write.
+ *
+ * BOTH DIRECTIONS ARE REFUSALS, not one guard and one convenience. A retraction landing mid-flight
+ * of an internal-detection pass is the same race with the arrow reversed, and its outcome is the
+ * worse-reading of the two (`resetLineHead`'s header: a stale internal head on a coordinate that is
+ * third-party again is a security-gate input, not merely a stalled poll).
+ *
+ * It is a REFUSAL AND NOT A THROW because both callers already have a refusal path that records the
+ * reason in their Decision (`version-poll.ts`'s `not_recorded` verdict,
+ * `internal-release-detection.ts`'s `SkippedInternalRelease`). A throw would abort a sweep over
+ * other lines for a fact about one, and would put nothing on the record.
+ */
+export function evaluateIngressAuthority(
+  ingress: HeadWriteIngress,
+  declaration: {
+    /** True iff `dependency_line_producers` holds a row for this line's `(org, ecosystem,
+     *  coordinate)` AS READ INSIDE THE WRITING TRANSACTION. */
+    hasDeclaredProducer: boolean;
+  }
+): IngressAuthority {
+  if (ingress === "third_party" && declaration.hasDeclaredProducer) {
+    return {
+      authorized: false,
+      reason: "line_is_internal",
+      detail:
+        "a producer is declared for this coordinate, so its head is derived from the org's own " +
+        "production releases — a public index's answer is refused here even though the line was " +
+        "third-party when this poll started (ADR-0032 §7: dependency confusion)"
+    };
+  }
+  if (ingress === "internal" && !declaration.hasDeclaredProducer) {
+    return {
+      authorized: false,
+      reason: "line_is_third_party",
+      detail:
+        "no producer is declared for this coordinate any more, so its head is polled from a public " +
+        "index — an internal release's version is refused here even though the declaration stood " +
+        "when this derivation started (a stale internal head is an M22 vendor-rule input)"
+    };
+  }
+  return { authorized: true };
+}
+
 // -------------------------------------------------------------------------------------------
 // Reading a version the way THIS line spells versions
 // -------------------------------------------------------------------------------------------
@@ -273,9 +370,10 @@ export function lineAcceptsVersion(line: LineHeadIdentity, version: string): Lin
 // Moving the head
 // -------------------------------------------------------------------------------------------
 
-/** Why an observation does not move the head. The four acceptance reasons plus the one that only
- *  exists once a head is already standing. */
-export type HeadRefusalReason = LineAcceptanceReason | "behind_head";
+/** Why an observation does not move the head. The four acceptance reasons, the one that only exists
+ *  once a head is already standing, and the two that are about WHO may write rather than about the
+ *  version — see {@link IngressRefusalReason}. */
+export type HeadRefusalReason = LineAcceptanceReason | "behind_head" | IngressRefusalReason;
 
 export type HeadMovement =
   | {

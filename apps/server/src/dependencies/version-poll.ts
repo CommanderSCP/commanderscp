@@ -437,11 +437,24 @@ async function pollWork(
           // and its digest move together (an unresolved digest is an explicit `null`, never the
           // previous version's bytes left standing beside a new tag), the head never moves backwards
           // and never leaves the line it names. Whatever it refuses is reported, not swallowed.
-          const head = await recordDependencyLineHead(tx, orgId, {
-            lineId: item.line.id,
-            latestVersion: outcome.head.version,
-            latestDigest: outcome.head.digest
-          });
+          //
+          // `"third_party"` IS NOT DECORATION, AND THE `ThirdPartyLine` BRAND DOES NOT COVER IT.
+          // The brand was minted in `buildLineWorkList`'s transaction, before the registry round
+          // trip above; a `POST /dependencies/producers` landing in that window makes this line
+          // internal, and writing a public head onto it was measured to be PERMANENT (the poll
+          // stops visiting the line and the real internal head is then refused as `behind_head`).
+          // The door re-reads the declaration under its own `FOR UPDATE` and refuses with
+          // `line_is_internal`, which lands in this line's Decision like any other refusal.
+          const head = await recordDependencyLineHead(
+            tx,
+            orgId,
+            {
+              lineId: item.line.id,
+              latestVersion: outcome.head.version,
+              latestDigest: outcome.head.digest
+            },
+            "third_party"
+          );
           if (!head.recorded) {
             refusal = {
               reason: head.reason,

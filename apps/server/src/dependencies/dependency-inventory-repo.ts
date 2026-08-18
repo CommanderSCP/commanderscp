@@ -17,7 +17,9 @@ import { writeOutboxEvent } from "../events/outbox-repo.js";
 import {
   asThirdPartyLine,
   evaluateHeadMovement,
+  evaluateIngressAuthority,
   type HeadRefusalReason,
+  type HeadWriteIngress,
   type ThirdPartyLine
 } from "./line-head.js";
 
@@ -418,8 +420,13 @@ export type RecordDependencyLineHeadOutcome =
  * link. What is new in M21.4 is that it also DECIDES rather than obeying: every rule about what
  * `latest_version`/`latest_digest` MEAN is applied here, once, instead of at each caller — because
  * the two callers demonstrably meant different things by them. `line-head.ts` states the meaning in
- * full; the three rules enforced here are:
+ * full; the FOUR rules enforced here are:
  *
+ *  0. THE INGRESS MUST OWN THE LINE. A `third_party` write is refused while a producer is declared
+ *     for the coordinate, and an `internal` write is refused while none is. See `ingress` below —
+ *     this is the only one of the four that is about WHO is writing rather than about the version,
+ *     and it is therefore decided FIRST: "you may not write here" dominates "that version is behind
+ *     the head".
  *  1. THE VERSION MUST BE ON THIS LINE — the same major line at the line's own precision, and for
  *     `oci` the same variant `tag_pattern` names. A `1.9.9` on the `2` line, or a plain tag on an
  *     `-alpine` line, is refused rather than written.
@@ -435,11 +442,41 @@ export type RecordDependencyLineHeadOutcome =
  * The row is taken FOR UPDATE first, because the decision reads the current head and both ingresses
  * can run at once (a daily tick, an accepted change): reading without the lock would let two
  * transactions each decide "I am ahead" against the same stale value and let the loser land last.
+ *
+ * ============================================================================================
+ * AND THAT SAME LOCK IS WHAT MAKES RULE 0 A RULE RATHER THAN A NARROWER WINDOW
+ * ============================================================================================
+ * The declaration is read AFTER the `FOR UPDATE` succeeds and in a separate statement, which under
+ * READ COMMITTED (the isolation `withTenantTx` runs at) takes a snapshot at statement start — i.e.
+ * after the lock. Both producer verbs call `resetLineHead` on every line of the coordinate in the
+ * SAME transaction as the declaration write, so they take the same row lock. The two orders are
+ * therefore both correct and there is no third:
+ *
+ *   - the verb commits FIRST: this call blocks on `FOR UPDATE`, then reads the committed
+ *     declaration and refuses. Nothing is written and no bump event is emitted.
+ *   - this call gets the lock FIRST: the verb blocks, this head write lands on a line that really
+ *     was third-party at that instant, and the verb's own `resetLineHead` then clears it — which is
+ *     exactly what `resetLineHead` exists to do.
+ *
+ * A coordinate with NO line row yet is covered too: there is nothing for the verb to reset, and
+ * this function refuses on the declaration alone.
  */
 export async function recordDependencyLineHead(
   tx: TenantTx,
   orgId: string,
-  input: ObserveDependencyLineHeadInput
+  input: ObserveDependencyLineHeadInput,
+  /**
+   * WHICH INGRESS IS ASKING — REQUIRED, and there is deliberately no default (an omitted argument
+   * does not compile). A default would mean "whatever the last caller to be written meant", which
+   * is precisely the per-caller divergence `line-head.ts` was created to end; and defaulting to
+   * either value silently authorizes the other ingress's race.
+   *
+   * It cannot be the {@link ThirdPartyLine} brand instead: that brand is minted in an EARLIER
+   * transaction, so it carries a compile-time fact about a world that may have changed by the time
+   * this transaction opens. {@link HeadWriteIngress} carries the caller's claim; the declaration
+   * read below carries the world; the disagreement between them is the refusal.
+   */
+  ingress: HeadWriteIngress
 ): Promise<RecordDependencyLineHeadOutcome> {
   const [current] = await tx
     .select()
@@ -449,6 +486,27 @@ export async function recordDependencyLineHead(
     .for("update");
   if (!current) throw new Error(`dependency line not found: ${input.lineId}`);
   const before = toDependencyLine(current);
+
+  // RULE 0 — re-read the producer state HERE, under the lock taken one statement ago, and compare
+  // it with what the caller claims to be. The point of the whole exercise is that this read happens
+  // inside the writing transaction: every earlier read of the same fact (the poll's work-list SQL,
+  // `asThirdPartyLine`, internal detection's phase-1 producer query) is a read of a world the
+  // network round trip between then and now gave an operator time to change.
+  const declaration = await getDependencyLineProducer(tx, orgId, {
+    ecosystem: before.ecosystem,
+    coordinate: before.coordinate
+  });
+  const authority = evaluateIngressAuthority(ingress, {
+    hasDeclaredProducer: declaration !== null
+  });
+  if (!authority.authorized) {
+    return {
+      recorded: false,
+      reason: authority.reason,
+      detail: authority.detail,
+      line: before
+    };
+  }
 
   const movement = evaluateHeadMovement(before, input.latestVersion);
   if (!movement.moves) {
@@ -562,6 +620,21 @@ export async function recordDependencyLineHead(
  *    detection could never move the head back down to the org's real `2.1.0`, because that is
  *    backward movement and the door refuses it. Clearing is what makes the declaration an actual
  *    remedy rather than a change of ingress with the damage left in place.
+ *
+ * ==========================================================================================
+ * WHAT CLEARING DOES *NOT* DO — AND WHAT DOES IT (corrected 2026-08-17, measured)
+ * ==========================================================================================
+ * This function used to be described as making the remedy DURABLE. It does not, and could not: it
+ * clears the head STANDING AT THIS INSTANT, and both ingresses straddle a transaction boundary, so
+ * an in-flight poll can hold an answer it fetched BEFORE the declaration and write it AFTER. That
+ * was measured end to end: a public `2.99.0` landed on a just-declared internal line, fanned a bump
+ * out, and became unfixable — the poll's work-list no longer visits an internal line, and the
+ * legitimate internal `2.1.0` is refused as `behind_head`.
+ *
+ * DURABILITY IS RULE 0 AT THE WRITE DOOR, not this clearing: `recordDependencyLineHead` takes the
+ * ingress it serves and re-reads the declaration under the same `FOR UPDATE`. The two are
+ * complementary and neither is redundant — this clears what was written BEFORE the declaration,
+ * rule 0 refuses what would be written AFTER it.
  *
  * NO EVENT IS EMITTED. `DEPENDENCY_LINE_HEAD_ADVANCED_EVENT` means "a newer version exists"; a reset
  * means "we no longer know", and dispatching bumps off a clearing would be a fan-out from an absence.

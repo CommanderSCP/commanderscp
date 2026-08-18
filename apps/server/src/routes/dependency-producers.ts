@@ -7,7 +7,6 @@ import {
   ListDependencyLineProducersResponseSchema,
   ProblemSchema,
   RetractDependencyLineProducerRequestSchema,
-  type DependencyLineProducer,
   type DependencyLineProducerKey,
   type DependencyProducerLineImpact,
   type DependencyProducerOpenBump
@@ -18,7 +17,7 @@ import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, conflict } from "../errors.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
-import { insertDecisionIfChanged } from "../coordination/decisions-repo.js";
+import { insertDecision } from "../coordination/decisions-repo.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import {
   declareDependencyLineProducer,
@@ -128,10 +127,42 @@ import {
  * coordinate is not being polled.
  */
 
-/** The Decision kind both verbs write. One kind, so `latestDecisionForSubjectKind`'s
- *  persist-on-change comparison sees a declare and a later retract as two different verdicts about
- *  the same subject rather than as unrelated streams. */
-const PRODUCER_DECISION_KIND = "dependency_line_producer";
+/**
+ * The Decision kind both verbs write. One kind, so `GET /decisions?kind=dependency_line_producer`
+ * answers "every producer declaration ever made in this org" in one index descent.
+ *
+ * ============================================================================================
+ * AND THESE TWO VERBS DO NOT USE PERSIST-ON-CHANGE (corrected 2026-08-17)
+ * ============================================================================================
+ * They used to. `insertDecisionIfChanged` keys on `(subject_id, kind)` and the subject here is the
+ * PRODUCER, so the comparison asked "is this the last thing this component was said to produce?" —
+ * a question about the wrong noun, which SUPPRESSED THE RECORD OF A REAL CHANGE:
+ *
+ *   declare `@acme/lib` -> P     row written
+ *   declare `@acme/lib` -> Q     row written (subject Q; P's declaration is gone — the producers
+ *                                table is keyed on the COORDINATE, so Q displaced P)
+ *   declare `@acme/lib` -> P     byte-identical to P's row above -> SUPPRESSED. The coordinate just
+ *                                moved back to P and the Decision log says nothing happened.
+ *
+ * PUTTING THE COORDINATE IN THE IDENTITY DOES NOT FIX THAT, which is why it is not what was done.
+ * The only identity columns are `subject_id` (a `uuid`, and a coordinate is not one) and `kind` —
+ * and `kind` is documented in `decisions-repo.ts` as "the caller's own constant, never user input",
+ * with an exact-match operator filter and a b-tree behind it; a coordinate string there is
+ * unbounded, request-controlled cardinality in an operator's index. More decisively, an identity of
+ * `(producer, coordinate)` STILL SUPPRESSES the sequence above: P's last row for this coordinate is
+ * still byte-identical to the candidate.
+ *
+ * So the suppression is removed instead of re-keyed, and the reason it was never appropriate is in
+ * `insertDecisionIfChanged`'s own header: it is "the write-side guard for every Decision writer that
+ * re-evaluates on a TIMER rather than on an event". These are neither. Each call is one authenticated
+ * `policy:write` act by a principal at a wall-clock instant — there is no tick, no at-least-once
+ * redelivery, and nothing here re-evaluates. The same header states the pairing rule that made the
+ * mismatch visible: "a caller that pairs the Decision with a hash-chained audit event must suppress
+ * that event on the same condition (`created === false`)". Both verbs append their audit event
+ * UNCONDITIONALLY, and correctly so — the operator really did call the verb. It is the Decision that
+ * was wrong to go missing. Growth is bounded by human action, not by a 2s loop.
+ */
+export const PRODUCER_DECISION_KIND = "dependency_line_producer";
 
 /**
  * Resolve the caller-supplied producer to a LIVE, NON-DELETED, IN-ORG `component`.
@@ -284,21 +315,24 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
         const before = await readBlastRadius(tx, auth.orgId, key, auth.subjectObjectId);
 
         if (dryRun) {
-          const previous = await getDependencyLineProducer(tx, auth.orgId, key);
           return {
-            declaration:
-              // What the caller ASKED FOR, projected — a dry run reports the state it would create,
-              // and stamping a real `declaredAt` would put a timestamp on the wire for a write that
-              // never happened. `previous?.declaredAt` is reused when re-declaring so the shape is
-              // still a valid `DependencyLineProducer`.
-              {
-                orgId: auth.orgId,
-                ecosystem: key.ecosystem,
-                coordinate: key.coordinate,
-                producerObjectId: producer.id,
-                declaredAt: previous?.declaredAt ?? "",
-                declaredByObjectId: auth.subjectObjectId
-              } satisfies DependencyLineProducer,
+            // NO PROJECTED DECLARATION — `null`, the same answer a dry-run RETRACT already gives,
+            // and the reason is `declaredAt` (corrected 2026-08-17). The projection used to fill it
+            // with `previous?.declaredAt ?? ""`, and an EMPTY STRING SAYS NOTHING: it is not a
+            // timestamp, it is not "never", and a client that renders `declaration.declaredAt`
+            // prints blank or throws on a date parse. The two available fixes were to make
+            // `declaredAt` nullable or to drop the projection; dropping it is chosen because
+            // making a REQUIRED response property nullable is an oasdiff-visible weakening of
+            // `DependencyLineProducerSchema` — which is also the READ model of
+            // `GET /dependencies/producers`, where `declaredAt` genuinely is always present. One
+            // dry run must not loosen a type for every reader of the real thing.
+            //
+            // Nothing an operator needs is lost. `ecosystem` and `coordinate` are on the envelope,
+            // `dryRun: true` says why this is null, a `producerIdOrUrn` that did not resolve to a
+            // live in-org component never reaches here (`assertDeclarableProducer` throws 404/400),
+            // so a 200 IS the resolution result — and `lines` is the blast radius the dry run
+            // exists for.
+            declaration: null,
             lines: before.map((l): DependencyProducerLineImpact => ({
               lineId: l.lineId,
               major: l.major,
@@ -318,6 +352,13 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
           };
         }
 
+        // READ BEFORE THE UPSERT, because `declareDependencyLineProducer` overwrites it. Whether
+        // this act TRANSFERS the coordinate from another component is the single most consequential
+        // thing a declare can do that the request does not say, and until it went on the record
+        // nothing distinguished "P is declared" from "the coordinate was taken from Q and given to
+        // P" (charter principle 6). `null` means the coordinate was third-party until now.
+        const displaced = await getDependencyLineProducer(tx, auth.orgId, key);
+
         const declaration = await declareDependencyLineProducer(tx, auth.orgId, {
           ecosystem: key.ecosystem,
           coordinate: key.coordinate,
@@ -332,6 +373,15 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
         // a poisoned public head (the stranger's `9.9.9`) would otherwise survive the declaration
         // that exists to undo it, and internal detection could never move the head back down to the
         // org's real `2.1.0` because that is backward movement and the write door refuses it.
+        //
+        // IT CLEARS WHAT IS STANDING; IT DOES NOT KEEP THE LINE CLEAN (corrected 2026-08-17). This
+        // used to be written as though the clearing were the whole remedy. It is not: a poll that
+        // fetched its answer BEFORE this transaction can commit it AFTER, and that was measured to
+        // put a public `2.99.0` back on this line permanently. What makes the remedy durable is
+        // rule 0 at the write door — `recordDependencyLineHead` takes the ingress it serves and
+        // re-reads this declaration under the same `FOR UPDATE` this loop takes, so an in-flight
+        // poll is refused with `line_is_internal`. The two are complementary: this clears the past,
+        // rule 0 refuses the future, and removing either re-opens the hole in its own direction.
         const lines: DependencyProducerLineImpact[] = [];
         for (const l of before) {
           const reset = await resetLineHead(tx, auth.orgId, l.lineId);
@@ -345,7 +395,9 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
           });
         }
 
-        const decision = await insertDecisionIfChanged(tx, {
+        // ALWAYS PERSISTED — see {@link PRODUCER_DECISION_KIND} for why persist-on-change was the
+        // wrong guard here and why re-keying its identity would not have fixed it.
+        const decision = await insertDecision(tx, {
           orgId: auth.orgId,
           kind: PRODUCER_DECISION_KIND,
           // The PRODUCER is the subject: it is the object whose releases now author other teams'
@@ -356,12 +408,17 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
             ecosystem: key.ecosystem,
             coordinate: key.coordinate,
             producerObjectId: producer.id,
+            // WHAT THIS ACT DISPLACED. `null` when the coordinate had no producer; another
+            // component's id when this declaration TOOK the coordinate from it. Two declarations of
+            // the same coordinate to the same producer are only the same event if nothing happened
+            // in between, and this is the field that says whether anything did.
+            displacedProducerObjectId: displaced?.producerObjectId ?? null,
             declaredByObjectId: auth.subjectObjectId
           },
           reasonTree: {
-            // Sorted and free of wall-clock values so a redelivery or a byte-identical re-declare
-            // collapses under persist-on-change (ADR-0024). The heads that were CLEARED are facts
-            // about this act and stay.
+            // Sorted and free of wall-clock values, so two Decisions about this coordinate can be
+            // diffed against each other by an operator. The heads that were CLEARED are facts about
+            // this act and stay.
             linesCovered: lines.map((l) => l.lineId).sort(),
             headsCleared: lines
               .filter((l) => l.headCleared)
@@ -379,11 +436,11 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
           action: "dependency.producer.declare",
           subjectId: producer.id,
           reason: `${key.ecosystem} ${key.coordinate}`,
-          decisionId: decision.decision.id,
+          decisionId: decision.id,
           requestId: request.id
         });
 
-        return { declaration, lines, decisionId: decision.decision.id };
+        return { declaration, lines, decisionId: decision.id };
       });
 
       reply.status(200).send({
@@ -492,6 +549,11 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
         // rather than a wedge fix — see `resetLineHead`'s header. `latest_version` is an input to
         // the M22 vendor scan rule, so a head left over from the internal era, on a coordinate that
         // is third-party again, can grant a vendor-pass against a version no registry published.
+        //
+        // AND THE SYMMETRIC RACE IS CLOSED AT THE WRITE DOOR, not here: an internal-release
+        // derivation already past its phase-1 producer read can commit its phase-3 head write after
+        // this transaction and re-poison the line. `recordDependencyLineHead`'s rule 0 refuses that
+        // with `line_is_third_party`, because this loop and that write take the same `FOR UPDATE`.
         const lines: DependencyProducerLineImpact[] = [];
         for (const l of before) {
           const reset = await resetLineHead(tx, auth.orgId, l.lineId);
@@ -511,7 +573,11 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
         // triggers only; this list is what an operator takes away to go and close them.
         const openBumps = await listOpenBumpAuthorshipsForCoordinate(tx, auth.orgId, key);
 
-        const decision = await insertDecisionIfChanged(tx, {
+        // ALWAYS PERSISTED, for the reason at {@link PRODUCER_DECISION_KIND}. A retract is even more
+        // clearly one act than a declare: declare/retract/declare/retract of the same coordinate is
+        // four operator decisions with four audit events, and under the old guard the third and
+        // fourth were byte-identical restatements of the first and second.
+        const decision = await insertDecision(tx, {
           orgId: auth.orgId,
           kind: PRODUCER_DECISION_KIND,
           subjectId: existing.producerObjectId,
@@ -547,11 +613,11 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
           action: "dependency.producer.retract",
           subjectId: existing.producerObjectId,
           reason: `${key.ecosystem} ${key.coordinate}`,
-          decisionId: decision.decision.id,
+          decisionId: decision.id,
           requestId: request.id
         });
 
-        return { declaration: null, lines, openBumps, decisionId: decision.decision.id };
+        return { declaration: null, lines, openBumps, decisionId: decision.id };
       });
 
       reply.status(200).send({

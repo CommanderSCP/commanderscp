@@ -515,11 +515,24 @@ export async function detectInternalReleases(
       // the same function, that the third-party poll is subject to. This module deliberately holds
       // no second copy of any of them, which is why a `1.9.9` hotfix landing after `1.10.0` is
       // refused here rather than silently walking the head backwards.
-      const head = await recordDependencyLineHead(tx, orgId, {
-        lineId: item.group.line.id,
-        latestVersion: item.agreed.version,
-        latestDigest: item.agreed.digest
-      });
+      //
+      // AND IT DECIDES WHETHER THIS INGRESS STILL OWNS THE LINE. Phase 1 read the declaration; the
+      // manifest fetch in phase 2 happens with NO transaction open, so a `POST
+      // /dependencies/producers/retract` can land in between and this phase-3 write would otherwise
+      // put the org's own version onto a coordinate that is third-party again — the direction
+      // `resetLineHead`'s header calls a security fix rather than a wedge fix, because
+      // `latest_version` is an M22 vendor-rule input. `"internal"` is what lets the door refuse it
+      // (`line_is_third_party`), and the refusal is reported as a skip like every other.
+      const head = await recordDependencyLineHead(
+        tx,
+        orgId,
+        {
+          lineId: item.group.line.id,
+          latestVersion: item.agreed.version,
+          latestDigest: item.agreed.digest
+        },
+        "internal"
+      );
       if (!head.recorded) {
         item.skipped.push({ ...item.identity, reason: head.reason, detail: head.detail });
         continue;

@@ -4,6 +4,7 @@ import {
   asThirdPartyLine,
   eligibleSuffixFor,
   evaluateHeadMovement,
+  evaluateIngressAuthority,
   lineAcceptsVersion
 } from "./line-head.js";
 
@@ -243,5 +244,68 @@ describe("asThirdPartyLine — the ingress split is structural", () => {
     // argument cannot be omitted, and a one-argument overload would restore the old hole with every
     // other test still green.
     expect(asThirdPartyLine.length).toBe(2);
+  });
+});
+
+describe("evaluateIngressAuthority — the ingress split survives the transaction boundary", () => {
+  /**
+   * WHY THIS EXISTS ALONGSIDE `asThirdPartyLine`, WHICH ALREADY SPLITS THE INGRESSES.
+   *
+   * `asThirdPartyLine` mints a COMPILE-TIME brand, and it is minted in an EARLIER TRANSACTION than
+   * the head write — both ingresses deliberately do their network work with no transaction open
+   * ("a registry that takes 15s must never hold a tenant transaction"). So the brand asserts "no
+   * declaration existed when the work-list was built", which a declare landing in that window makes
+   * false. Measured: a public `2.99.0` landed on a just-declared internal line, fanned a bump out,
+   * and was then unfixable — the poll no longer visits an internal line, and the org's real `2.1.0`
+   * is refused as `behind_head`.
+   *
+   * This is the runtime half, re-checked at the write door inside the writing transaction. The
+   * end-to-end replay of the race is `version-poll.integration.test.ts` (6); this pins the rule
+   * itself, both directions, without a database.
+   *
+   * MUTATION LOG — applied, watched fail, reverted, watched pass:
+   * | Mutation | Result |
+   * |---|---|
+   * | `return { authorized: true }` unconditionally | three of the four cases below FAIL |
+   * | keep only the `third_party` branch (guard the confusion direction alone) | "an INTERNAL write onto a RETRACTED coordinate is refused" FAILS |
+   * | keep only the `internal` branch | "a THIRD-PARTY write onto a DECLARED coordinate is refused" FAILS |
+   */
+
+  it("a THIRD-PARTY write onto a DECLARED coordinate is refused, and says which fact refused it", () => {
+    const verdict = evaluateIngressAuthority("third_party", { hasDeclaredProducer: true });
+    expect(verdict.authorized).toBe(false);
+    if (verdict.authorized) throw new Error("unreachable");
+    expect(verdict.reason).toBe("line_is_internal");
+    // The detail names the DECLARATION, because that is the fact an operator acts on — a refusal
+    // has to be legible without reading this function (charter principle 6).
+    expect(verdict.detail).toMatch(/producer is declared/);
+  });
+
+  it("an INTERNAL write onto a RETRACTED coordinate is refused — the symmetric race, not an afterthought", () => {
+    // The direction `resetLineHead`'s header calls a SECURITY fix rather than a wedge fix: a stale
+    // internal head on a coordinate that is third-party again is an M22 vendor-rule input, so it
+    // can grant a scan pass against a version no registry ever published.
+    const verdict = evaluateIngressAuthority("internal", { hasDeclaredProducer: false });
+    expect(verdict.authorized).toBe(false);
+    if (verdict.authorized) throw new Error("unreachable");
+    expect(verdict.reason).toBe("line_is_third_party");
+    expect(verdict.detail).toMatch(/no producer is declared/);
+  });
+
+  it("each ingress writes the lines it owns — the negative control for both refusals above", () => {
+    expect(evaluateIngressAuthority("third_party", { hasDeclaredProducer: false })).toEqual({
+      authorized: true
+    });
+    expect(evaluateIngressAuthority("internal", { hasDeclaredProducer: true })).toEqual({
+      authorized: true
+    });
+  });
+
+  it("THE INGRESS IS AN ARGUMENT — neither caller can omit it and get a default", () => {
+    // Same shape assertion as `asThirdPartyLine.length === 2` above, and for the same reason: a
+    // default value for `ingress` would silently authorize whichever race it named, with every
+    // other test in this file still green. `recordDependencyLineHead` takes it as its REQUIRED
+    // fourth parameter; here the pure rule takes it as its required first.
+    expect(evaluateIngressAuthority.length).toBe(2);
   });
 });

@@ -4,7 +4,7 @@ import pg from "pg";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { changeWaveTargets, changes, objects } from "../db/schema.js";
+import { auditEvents, changeWaveTargets, changes, decisions, objects } from "../db/schema.js";
 import { compileAndPersistPlan } from "../coordination/plan-service.js";
 import {
   createOrphanComponent,
@@ -28,6 +28,7 @@ import { detectInternalReleases } from "../dependencies/internal-release-detecti
 import { runBumpDispatchJob } from "../dependencies/bump-dispatch.js";
 import { buildLineWorkList } from "../dependencies/version-poll.js";
 import type { PluginHost } from "../plugin-host/contract.js";
+import { PRODUCER_DECISION_KIND } from "./dependency-producers.js";
 
 /**
  * THE PRODUCER DECLARATION'S AUTHORING SURFACE, END TO END (ADR-0032 §7e,
@@ -65,7 +66,7 @@ import type { PluginHost } from "../plugin-host/contract.js";
  * ============================================================================================
  * | Mutation | Result |
  * |---|---|
- * | remove `registerDependencyProducerRoutes` from `app.ts` | 12 of 13 FAIL, "(1) WIRING" first, with a 404 |
+ * | remove `registerDependencyProducerRoutes` from `app.ts` | 13 of 14 FAIL, "(1) WIRING" first, with a 404 (re-measured after the two cases below were added) |
  * | `listThirdPartyDependencyLinesByIds` drops its `NOT EXISTS` anti-join (`sql\`TRUE\``) | "(5) … is NOT handed to a public index" FAILS — the freshly minted major reaches the poll's work-list |
  * | BOTH producer verbs stop calling `resetLineHead` | 3 FAIL: "(3) CLEARS a poisoned public head", "(4) CLEARS the internal head", and "(7) CAPABILITY" — the last because the retraction in its negative control no longer clears `1.1.0` |
  * | `authorize`'s scope becomes the producer component instead of the org root | "(2) REFUSES an author whose `policy:write` is bound to the producing component" FAILS |
@@ -124,6 +125,43 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
   ): Promise<{ status: number; json: Record<string, unknown> }> {
     const response = await fetch(url, { headers: { authorization: `Bearer ${token}` } });
     return { status: response.status, json: (await response.json()) as Record<string, unknown> };
+  }
+
+  /** Every producer Decision about one subject, OLDEST FIRST — the order an operator reads the
+   *  coordinate's history in. `PRODUCER_DECISION_KIND` is imported rather than retyped so the test
+   *  cannot pass against a kind the route no longer writes. */
+  async function decisionsForSubject(subjectId: string) {
+    return inOrg((tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, subjectId),
+            eq(decisions.kind, PRODUCER_DECISION_KIND)
+          )
+        )
+        .orderBy(decisions.createdAt, decisions.id)
+    );
+  }
+
+  /** The hash-chained audit events one verb wrote about one subject. The COUNTERPART of
+   *  `decisionsForSubject`: the two must agree, because a chain that asserts an act the Decision log
+   *  has no row for is charter principle 6 failing quietly. */
+  async function auditEventsForSubject(subjectId: string, action: string) {
+    return inOrg((tx) =>
+      tx
+        .select({ id: auditEvents.id })
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.orgId, org.orgId),
+            eq(auditEvents.subjectId, subjectId),
+            eq(auditEvents.action, action)
+          )
+        )
+    );
   }
 
   /** The instance unlock is operator-written over the ADMIN connection — `scp_app` holds no write
@@ -401,11 +439,16 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
         }
       });
       await inOrg((tx) =>
-        recordDependencyLineHead(tx, org.orgId, {
-          lineId: line.id,
-          latestVersion: "1.4.0",
-          latestDigest: null
-        })
+        recordDependencyLineHead(
+          tx,
+          org.orgId,
+          {
+            lineId: line.id,
+            latestVersion: "1.4.0",
+            latestDigest: null
+          },
+          "third_party"
+        )
       );
 
       const response = await post(declareUrl(), org.adminToken, {
@@ -430,6 +473,13 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       expect(lines[0]?.headBefore.latestVersion).toBe("1.4.0");
       expect(lines[0]?.headCleared).toBe(true);
       expect(response.json.decisionId).toBeNull();
+
+      // NO PROJECTED DECLARATION, and the empty string is the reason it went. The dry run used to
+      // return a `DependencyLineProducer` with `declaredAt: previous?.declaredAt ?? ""` — and `""`
+      // is not a timestamp, not "never", and not a value any client can render or parse as a date.
+      // The whole object is `null` now, exactly as a dry-run RETRACT already answers, so "no
+      // declaration was created" is STATED rather than approximated with an unfillable field.
+      expect(response.json.declaration).toBeNull();
 
       // NOTHING WAS WRITTEN — neither the declaration nor the head clearing it previewed.
       expect(
@@ -464,11 +514,16 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
         upsertDependencyLine(tx, org.orgId, { ecosystem: "npm", coordinate, major: "9" })
       );
       const poisoned = await inOrg((tx) =>
-        recordDependencyLineHead(tx, org.orgId, {
-          lineId: line.id,
-          latestVersion: "9.9.9",
-          latestDigest: null
-        })
+        recordDependencyLineHead(
+          tx,
+          org.orgId,
+          {
+            lineId: line.id,
+            latestVersion: "9.9.9",
+            latestDigest: null
+          },
+          "third_party"
+        )
       );
       // FIXTURE READ-BACK: without a head actually stored, "the head was cleared" passes for the
       // wrong reason on a line that never had one.
@@ -500,6 +555,107 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
 
       // A DECISION AND A `decisionId` accompany the write (principle 6).
       expect(typeof response.json.decisionId).toBe("string");
+    });
+
+    /**
+     * ONE OPERATOR ACT, ONE DECISION, ONE AUDIT EVENT — persist-on-change does not apply to these
+     * verbs, and the audit chain is what proves it must not.
+     *
+     * THE DEFECT. Both verbs used `insertDecisionIfChanged`, which keys on `(subject_id, kind)`, and
+     * the subject here is the PRODUCER — so the comparison asked "is this the last thing this
+     * COMPONENT was said to produce?", a question about the wrong noun. Both verbs also append their
+     * hash-chained audit event UNCONDITIONALLY, and `insertDecisionIfChanged`'s own header states the
+     * rule that makes that combination incoherent: "a caller that pairs the Decision with a
+     * hash-chained audit event must suppress that event on the same condition (`created === false`)".
+     * The audit event is the one that is right — the operator really did call the verb — so the
+     * suppression is what goes, and the counts below are the pairing asserted rather than described.
+     *
+     * WHY NOT "PUT THE COORDINATE IN THE IDENTITY". The only identity columns are `subject_id` (a
+     * `uuid`, and a coordinate is not one) and `kind` — documented in `decisions-repo.ts` as "the
+     * caller's own constant, never user input", with an exact-match operator filter and a b-tree over
+     * it. And it would not have been sufficient: an identity of `(producer, coordinate)` still finds
+     * P's own earlier row for this same coordinate and still compares equal, which is the P -> Q -> P
+     * transfer below.
+     *
+     * MUTATION LOG — each applied, run, reverted:
+     * | Mutation | Result |
+     * |---|---|
+     * | `insertDecision` -> `insertDecisionIfChanged` in both verbs | FAILS at (b): three identical re-declares write 3 audit events and only 2 Decisions ("expected 2 to be 3") |
+     * | drop `displacedProducerObjectId` from the declare's `inputContext` | FAILS at (a): "the first declare displaced nobody: expected undefined to be null". It does NOT restore the suppression on its own while `insertDecision` stands — measured, and recorded because the two changes fix different halves: the field makes a transfer READABLE, the removal makes every act RECORDED |
+     * | BOTH together — the true pre-fix state | FAILS at (a) on the defect verbatim: the third declare's `decisionId` IS the first declare's row id, so a transfer between two teams is reported as the original declaration |
+     */
+    it("every declare and retract records its OWN Decision — one per audit event, transfers included", async () => {
+      const p = await createOrphanComponent(admin, `xfer-p-${uuidv7()}`);
+      const q = await createOrphanComponent(admin, `xfer-q-${uuidv7()}`);
+      const coordinate = `@acme/transfer-${uuidv7()}`;
+      const declareTo = async (producerId: string) => {
+        const r = await post(declareUrl(), org.adminToken, {
+          ecosystem: "npm",
+          coordinate,
+          producerIdOrUrn: producerId
+        });
+        expect(r.status, JSON.stringify(r.json)).toBe(200);
+        return r.json.decisionId as string;
+      };
+
+      const first = await declareTo(p.id);
+      await declareTo(q.id);
+      const third = await declareTo(p.id);
+
+      // (a) THE TRANSFER. The coordinate came back to P from Q; under the old guard the third act
+      // was byte-identical to P's first row and the response handed back that first row's id.
+      expect(
+        third,
+        "a transfer back to P must not be reported as P's original declaration"
+      ).not.toBe(first);
+      const afterTransfer = await decisionsForSubject(p.id);
+      expect(afterTransfer.map((d) => d.id)).toEqual([first, third]);
+
+      // …AND IT IS LEGIBLE AS ONE. Without the displaced producer on the record the two rows differ
+      // only by their timestamps, and "who did this coordinate come from" is unanswerable.
+      expect(
+        (afterTransfer[0]?.inputContext as { displacedProducerObjectId?: unknown })
+          .displacedProducerObjectId,
+        "the first declare displaced nobody"
+      ).toBeNull();
+      expect(
+        (afterTransfer[1]?.inputContext as { displacedProducerObjectId?: unknown })
+          .displacedProducerObjectId,
+        "the third declare took the coordinate back from Q"
+      ).toBe(q.id);
+
+      // (b) THE PAIRING, which is the half the transfer alone does not pin. Three IDENTICAL
+      // re-declares in a row: nothing about the world changes after the first, so this is precisely
+      // the sequence persist-on-change was suppressing — while the audit chain recorded all three.
+      // A Decision log that is missing an act the audit chain asserts happened is principle 6
+      // failing on the quiet side.
+      const idempotent = await createOrphanComponent(admin, `xfer-idem-${uuidv7()}`);
+      const idemCoordinate = `@acme/idempotent-${uuidv7()}`;
+      for (let i = 0; i < 3; i += 1) {
+        const r = await post(declareUrl(), org.adminToken, {
+          ecosystem: "npm",
+          coordinate: idemCoordinate,
+          producerIdOrUrn: idempotent.id
+        });
+        expect(r.status, JSON.stringify(r.json)).toBe(200);
+      }
+      const idemDecisions = await decisionsForSubject(idempotent.id);
+      const idemAudits = await auditEventsForSubject(idempotent.id, "dependency.producer.declare");
+      expect(idemAudits.length, "three calls, three audit events").toBe(3);
+      expect(
+        idemDecisions.length,
+        "…and three Decisions, because the audit chain must not assert an act the Decision log denies"
+      ).toBe(3);
+      expect(new Set(idemDecisions.map((d) => d.id)).size, "three DISTINCT rows").toBe(3);
+
+      // (c) A RETRACT, THEN AN IDENTICAL RE-DECLARE — four operator acts about P, four Decisions.
+      expect(
+        (await post(retractUrl(), org.adminToken, { ecosystem: "npm", coordinate })).status
+      ).toBe(200);
+      const fourth = await declareTo(p.id);
+      const finalForP = await decisionsForSubject(p.id);
+      expect(finalForP.map((d) => d.id)).toEqual([first, third, expect.any(String), fourth]);
+      expect(finalForP[2]?.verdict).toBe("retracted");
     });
   });
 
@@ -533,11 +689,16 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       ).toBe(200);
       // The internal era: a head derived from the org's own release, ahead of anything public.
       const internalHead = await inOrg((tx) =>
-        recordDependencyLineHead(tx, org.orgId, {
-          lineId: line.id,
-          latestVersion: "2.7.0",
-          latestDigest: null
-        })
+        recordDependencyLineHead(
+          tx,
+          org.orgId,
+          {
+            lineId: line.id,
+            latestVersion: "2.7.0",
+            latestDigest: null
+          },
+          "internal"
+        )
       );
       expect(internalHead.recorded, "the fixture head must have landed").toBe(true);
 

@@ -550,11 +550,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(declared.producerObjectId).toBe(producer);
 
     const observed = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "22.6.0-alpine",
-        latestDigest: "sha256:" + "b".repeat(64)
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "22.6.0-alpine",
+          latestDigest: "sha256:" + "b".repeat(64)
+        },
+        "internal"
+      )
     );
     expect(
       observed.recorded,
@@ -611,11 +616,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
 
     // OBSERVATION FIRST — this is the state the declaration must leave alone.
     const written = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "22.7.0",
-        latestDigest: digest
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "22.7.0",
+          latestDigest: digest
+        },
+        "third_party"
+      )
     );
     expect(written.recorded).toBe(true);
     if (!written.recorded) throw new Error("unreachable");
@@ -690,11 +700,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       })
     );
     const withDigest = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.0",
-        latestDigest: digest
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.0",
+          latestDigest: digest
+        },
+        "third_party"
+      )
     );
     expect(withDigest.recorded).toBe(true);
     if (!withDigest.recorded) throw new Error("unreachable");
@@ -703,11 +718,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // RE-OBSERVING THE SAME VERSION with no digest keeps the one already resolved FOR THAT VERSION —
     // it is still true, and discarding it would lose a fact for nothing.
     const restated = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.0",
+          latestDigest: null
+        },
+        "third_party"
+      )
     );
     expect(restated.recorded).toBe(true);
     if (!restated.recorded) throw new Error("unreachable");
@@ -717,11 +737,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // ADVANCING with no digest CLEARS it. This is the whole defect: `3.20.1` is not those bytes, and
     // a row saying it is, is a false statement in an audit record.
     const advanced = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.1",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.1",
+          latestDigest: null
+        },
+        "third_party"
+      )
     );
     expect(advanced.recorded).toBe(true);
     if (!advanced.recorded) throw new Error("unreachable");
@@ -733,11 +758,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // observation having none rather than about advances losing digests.
     const next = "sha256:" + "e".repeat(64);
     const advancedWithDigest = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.2",
-        latestDigest: next
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.2",
+          latestDigest: next
+        },
+        "third_party"
+      )
     );
     expect(advancedWithDigest.recorded).toBe(true);
     if (!advancedWithDigest.recorded) throw new Error("unreachable");
@@ -756,21 +786,31 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       })
     );
     const head = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "1.10.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "1.10.0",
+          latestDigest: null
+        },
+        "third_party"
+      )
     );
     expect(head.recorded).toBe(true);
 
     // A HOTFIX ON AN OLDER MINOR of the same line. A real release, and not this line's head.
     const behind = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "1.9.10",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "1.9.10",
+          latestDigest: null
+        },
+        "third_party"
+      )
     );
     expect(behind.recorded).toBe(false);
     if (behind.recorded) throw new Error("unreachable");
@@ -779,11 +819,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
 
     // A RELEASE FROM ANOTHER LINE, refused for its own reason.
     const offLine = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "2.0.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "2.0.0",
+          latestDigest: null
+        },
+        "third_party"
+      )
     );
     expect(offLine.recorded).toBe(false);
     if (offLine.recorded) throw new Error("unreachable");
@@ -792,11 +837,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // POSITIVE CONTROL: a genuinely newer release on the line still lands, so the two refusals are
     // about the versions and not about a door that refuses everything.
     const ahead = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "1.11.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "1.11.0",
+          latestDigest: null
+        },
+        "third_party"
+      )
     );
     expect(ahead.recorded).toBe(true);
     if (!ahead.recorded) throw new Error("unreachable");
@@ -827,11 +877,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       })
     );
     const written = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.1",
-        latestDigest: "sha256:" + "c".repeat(64)
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.1",
+          latestDigest: "sha256:" + "c".repeat(64)
+        },
+        "internal"
+      )
     );
     expect(written.recorded).toBe(true);
     if (!written.recorded) throw new Error("unreachable");
