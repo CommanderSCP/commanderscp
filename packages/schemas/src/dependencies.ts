@@ -159,6 +159,38 @@ export const DependencyLineProducerSchema = z.object({
 });
 export type DependencyLineProducer = z.infer<typeof DependencyLineProducerSchema>;
 
+/**
+ * `{objectId, name}` — the shape every dependency read uses to name a graph object beside its id
+ * (the inventory row's `producer` had it first). `name` is the object's CURRENT name as stored; a
+ * soft-deleted object still names (the row is a stored fact and the name is what it was) — a client
+ * that needs liveness reads the object.
+ */
+export const DependencyObjectRefSchema = z.object({
+  objectId: z.string().uuid(),
+  name: z.string()
+});
+export type DependencyObjectRef = z.infer<typeof DependencyObjectRefSchema>;
+
+/**
+ * THE WIRE VIEW of a declaration — the stored row PLUS the two names a reader needs and cannot
+ * derive: the producing component's and the declaring principal's (proposal
+ * dependency-subscription-ui.md §12.6 Q1, owner decision 2026-08-18: names are enriched server-side,
+ * one batched `objects` lookup, so every viewer sees the same answer in one round trip and no client
+ * pays N+1 reads it may not even be authorized to make — a user object is readable by few).
+ *
+ * A VIEW, NOT THE ROW: {@link DependencyLineProducerSchema} stays the repo/domain type
+ * (`isInternalDependencyLine` and the internal-release derivation read it and never need a name), so
+ * the enrichment lives at the two routes that answer humans and nowhere else. Additive on the wire:
+ * two REQUIRED properties added to a RESPONSE (oasdiff-safe — PR #222 precedent).
+ */
+export const DependencyLineProducerViewSchema = DependencyLineProducerSchema.extend({
+  /** The producing component, named. Same object as `producerObjectId`. */
+  producer: DependencyObjectRefSchema,
+  /** The principal that asserted the declaration, named. Same object as `declaredByObjectId`. */
+  declaredBy: DependencyObjectRefSchema
+});
+export type DependencyLineProducerView = z.infer<typeof DependencyLineProducerViewSchema>;
+
 /** True iff the coordinate has a DECLARED producer. The one place "internal" is decided — read from
  *  the declared row, never derived from `coordinate`. Kept as a function so no call site is tempted
  *  to re-derive it from a name (ADR-0032 §7).
@@ -895,7 +927,11 @@ export const DependencyProducerLineImpactSchema = z.object({
   headCleared: z.boolean(),
   /** WHOSE REPOSITORIES THIS REACHES. The declarer names one coordinate and affects a set of
    *  components they cannot see from the request; this list is that set. Sorted. */
-  subscribedComponentObjectIds: z.array(z.string().uuid())
+  subscribedComponentObjectIds: z.array(z.string().uuid()),
+  /** The same set, NAMED — one entry per id above, same order (sorted by id). A blast radius a human
+   *  is asked to confirm before it is written must name what it reaches; ids alone are not a
+   *  report a declarer can act on (dependency-subscription-ui.md §12.6 Q1). */
+  subscribedComponents: z.array(DependencyObjectRefSchema)
 });
 export type DependencyProducerLineImpact = z.infer<typeof DependencyProducerLineImpactSchema>;
 
@@ -931,8 +967,8 @@ export const DependencyLineProducerVerbResponseSchema = z.object({
   /** True when nothing was written. */
   dryRun: z.boolean(),
   /** The declaration as it now stands — `null` after a retraction, and `null` on a `dryRun` retract
-   *  because the report describes the state the caller ASKED FOR. */
-  declaration: DependencyLineProducerSchema.nullable(),
+   *  because the report describes the state the caller ASKED FOR. Named (the wire view). */
+  declaration: DependencyLineProducerViewSchema.nullable(),
   /** Every major line of this coordinate the verb covers, with what happened to its head. EMPTY is
    *  a legitimate and common answer: a producer may be declared before any consumer's manifest has
    *  minted a line, which is exactly what per-coordinate grain makes representable. */
@@ -959,7 +995,8 @@ export type ListDependencyLineProducersQuery = z.infer<
 >;
 
 export const ListDependencyLineProducersResponseSchema = z.object({
-  producers: z.array(DependencyLineProducerSchema),
+  /** Named rows (the wire view) — see {@link DependencyLineProducerViewSchema}. */
+  producers: z.array(DependencyLineProducerViewSchema),
   dependencyManagement: DependencyManagementSchema
 });
 export type ListDependencyLineProducersResponse = z.infer<

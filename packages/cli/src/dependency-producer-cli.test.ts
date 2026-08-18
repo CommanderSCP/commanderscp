@@ -4,6 +4,7 @@ import type { DependencyProducerLineImpact, DependencyProducerOpenBump } from "@
 import {
   buildProgram,
   dependencyProducerLineRow,
+  dependencyProducerListRow,
   dependencyProducerManagementNote,
   dependencyProducerOpenBumpRow
 } from "./cli.js";
@@ -125,6 +126,10 @@ describe("the producer-declaration CLI formatters", () => {
     subscribedComponentObjectIds: [
       "0198f000-0000-7000-8000-000000000002",
       "0198f000-0000-7000-8000-000000000003"
+    ],
+    subscribedComponents: [
+      { objectId: "0198f000-0000-7000-8000-000000000002", name: "checkout-api" },
+      { objectId: "0198f000-0000-7000-8000-000000000003", name: "billing-worker" }
     ]
   };
 
@@ -151,6 +156,62 @@ describe("the producer-declaration CLI formatters", () => {
     // was nothing to clear".
     expect(untouched.headCleared).toBe("false");
     expect(dependencyProducerLineRow(impact).headCleared).toBe("true");
+  });
+
+  it("NAMES the subscribers beside the count — the teams whose repositories this act reaches", () => {
+    // Server-side names (dependency-subscription-ui.md §12.6 Q1): the operator confirming a
+    // declaration is about to affect these repositories, and an id is not a name they can act on.
+    expect(dependencyProducerLineRow(impact).subscribedNames).toBe("checkout-api, billing-worker");
+    // A name the server could not resolve (`""` — see `namesForObjectIds`) falls back to the ID,
+    // never to a blank that would make the list shorter than the count.
+    expect(
+      dependencyProducerLineRow({
+        ...impact,
+        subscribedComponents: [
+          { objectId: "0198f000-0000-7000-8000-000000000002", name: "" },
+          { objectId: "0198f000-0000-7000-8000-000000000003", name: "billing-worker" }
+        ]
+      }).subscribedNames
+    ).toBe("0198f000-0000-7000-8000-000000000002, billing-worker");
+    // An OLDER server (no names array) or an EMPTY radius prints `-`, not a fabricated list.
+    expect(dependencyProducerLineRow(without(impact, "subscribedComponents")).subscribedNames).toBe(
+      "-"
+    );
+    expect(
+      dependencyProducerLineRow({ ...impact, subscribedComponentObjectIds: [], subscribedComponents: [] })
+        .subscribedNames
+    ).toBe("-");
+  });
+
+  it("the list row prints the producer's and the declarer's NAMES, ids beside them, id when unnamed", () => {
+    const row = dependencyProducerListRow({
+      orgId: "0198f000-0000-7000-8000-0000000000aa",
+      ecosystem: "npm",
+      coordinate: "@acme/lib",
+      producerObjectId: "0198f000-0000-7000-8000-000000000002",
+      declaredAt: "2026-08-18T00:00:00.000Z",
+      declaredByObjectId: "0198f000-0000-7000-8000-0000000000bb",
+      producer: { objectId: "0198f000-0000-7000-8000-000000000002", name: "checkout-api" },
+      declaredBy: { objectId: "0198f000-0000-7000-8000-0000000000bb", name: "admin" }
+    });
+    expect(row.producer).toBe("checkout-api");
+    expect(row.producerId).toBe("0198f000-0000-7000-8000-000000000002");
+    expect(row.declaredBy).toBe("admin");
+    // The coordinate is VERBATIM — `@acme/lib`, never a slug.
+    expect(row.coordinate).toBe("@acme/lib");
+    // Unnamed (the server could not resolve the row) -> the id, never a blank cell.
+    expect(
+      dependencyProducerListRow({
+        orgId: "0198f000-0000-7000-8000-0000000000aa",
+        ecosystem: "npm",
+        coordinate: "@acme/lib",
+        producerObjectId: "0198f000-0000-7000-8000-000000000002",
+        declaredAt: "2026-08-18T00:00:00.000Z",
+        declaredByObjectId: "0198f000-0000-7000-8000-0000000000bb",
+        producer: { objectId: "0198f000-0000-7000-8000-000000000002", name: "" },
+        declaredBy: { objectId: "0198f000-0000-7000-8000-0000000000bb", name: "" }
+      }).producer
+    ).toBe("0198f000-0000-7000-8000-000000000002");
   });
 
   it("never fabricates a subscriber count when the server omitted the array", () => {

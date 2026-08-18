@@ -60,7 +60,7 @@ import type {
   ComponentDependencyInventoryResponse,
   ComponentDependencyInventoryRow,
   // ADR-0032 §7e — the producer declaration's authoring surface.
-  DependencyLineProducer,
+  DependencyLineProducerView,
   DependencyLineProducerVerbResponse,
   DependencyProducerLineImpact,
   DependencyProducerOpenBump,
@@ -885,6 +885,25 @@ export function dependencyBumpRow(bump: ComponentDependencyBump): Record<string,
 }
 
 /**
+ * One ROW of `scp dependency-producers list` — the declaration NAMED (server-side view, ADR-0032 §7e,
+ * dependency-subscription-ui.md §12.6 Q1): the producing component and the declaring principal by
+ * name, with the ids beside them so a name is never the only handle. `""` (an id that named no row
+ * in the org — see `namesForObjectIds`) prints as the id, never as a blank cell.
+ *
+ * Exported and unit-tested DIRECTLY, for the reason `cli-absent-formatters.test.ts` records.
+ */
+export function dependencyProducerListRow(p: DependencyLineProducerView): Record<string, string> {
+  return {
+    ecosystem: p.ecosystem,
+    coordinate: p.coordinate,
+    producer: p.producer?.name || p.producerObjectId,
+    producerId: p.producerObjectId,
+    declaredBy: p.declaredBy?.name || p.declaredByObjectId,
+    declaredAt: p.declaredAt
+  };
+}
+
+/**
  * One LINE of a producer declaration's blast radius (`scp dependency-producers declare|retract`,
  * ADR-0032 §7e).
  *
@@ -917,6 +936,12 @@ export function dependencyProducerLineRow(
     headWas: head.latestVersion ?? "-",
     headCleared: String(line.headCleared === true),
     subscribers: String(line.subscribedComponentObjectIds?.length ?? 0),
+    // WHO, by name — the same set as `subscribers` counts, named server-side (one batched read,
+    // dependency-subscription-ui.md §12.6 Q1). Names, not ids: the operator reading this table is
+    // about to affect these teams' repositories, and an id is not a name they can act on. `-`
+    // when the server sent no names (an older server, or an empty radius) — never a fabricated
+    // list, and never a count that disagrees with `subscribers`.
+    subscribedNames: line.subscribedComponents?.map((c) => c.name || c.objectId).join(", ") || "-",
     lineId: line.lineId
   };
 }
@@ -4212,16 +4237,7 @@ export function buildProgram(): Command {
         console.log(JSON.stringify(response, null, 2));
         return;
       }
-      printResult(response.producers, "table", (raw) => {
-        const p = raw as DependencyLineProducer;
-        return {
-          ecosystem: p.ecosystem,
-          coordinate: p.coordinate,
-          producer: p.producerObjectId,
-          declaredBy: p.declaredByObjectId,
-          declaredAt: p.declaredAt
-        };
-      });
+      printResult(response.producers, "table", (raw) => dependencyProducerListRow(raw as DependencyLineProducerView));
       // The condition and the sentence live in `dependencyProducerManagementNote`, OUTSIDE this
       // closure, so both arms are reachable by a test — the M21.7 lesson: an inline caveat whose
       // condition is inverted warns the wrong deployment and leaves the suite green.

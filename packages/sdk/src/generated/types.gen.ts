@@ -15975,6 +15975,14 @@ export type ListDependencyLineProducersResponses = {
             producerObjectId: string;
             declaredAt: string;
             declaredByObjectId: string;
+            producer: {
+                objectId: string;
+                name: string;
+            };
+            declaredBy: {
+                objectId: string;
+                name: string;
+            };
         }>;
         dependencyManagement: {
             managedHere: boolean;
@@ -16073,6 +16081,14 @@ export type DeclareDependencyLineProducerResponses = {
             producerObjectId: string;
             declaredAt: string;
             declaredByObjectId: string;
+            producer: {
+                objectId: string;
+                name: string;
+            };
+            declaredBy: {
+                objectId: string;
+                name: string;
+            };
         } | null;
         lines: Array<{
             lineId: string;
@@ -16085,6 +16101,10 @@ export type DeclareDependencyLineProducerResponses = {
             };
             headCleared: boolean;
             subscribedComponentObjectIds: Array<string>;
+            subscribedComponents: Array<{
+                objectId: string;
+                name: string;
+            }>;
         }>;
         openBumpAuthorships: Array<{
             changeObjectId: string;
@@ -16192,6 +16212,14 @@ export type RetractDependencyLineProducerResponses = {
             producerObjectId: string;
             declaredAt: string;
             declaredByObjectId: string;
+            producer: {
+                objectId: string;
+                name: string;
+            };
+            declaredBy: {
+                objectId: string;
+                name: string;
+            };
         } | null;
         lines: Array<{
             lineId: string;
@@ -16204,6 +16232,10 @@ export type RetractDependencyLineProducerResponses = {
             };
             headCleared: boolean;
             subscribedComponentObjectIds: Array<string>;
+            subscribedComponents: Array<{
+                objectId: string;
+                name: string;
+            }>;
         }>;
         openBumpAuthorships: Array<{
             changeObjectId: string;
