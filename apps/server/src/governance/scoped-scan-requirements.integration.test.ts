@@ -452,7 +452,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     // This arm passes with `case "assembly"` reverted; that is exactly what makes arm 2 meaningful.
     expect(evidence.threshold.maxHigh).toBe(0);
     expect(run.detail).toMatch(/exceeds/i);
-    await assertStaysExecuting(admin, change.id);
+    await assertStaysExecuting(server, org.orgId, change.id);
 
     // ARM 2 — THE LABEL, read back out of the evidence the REAL gate persisted.
     const contributors = evidence.thresholdContributors ?? [];

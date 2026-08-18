@@ -91,11 +91,20 @@ describe("line head: a RESTATEMENT still refreshes latest_observed_at (M22.4 dep
         major: "4"
       });
 
-      const first = await recordDependencyLineHead(tx, org.orgId, {
-        lineId: line.id,
-        latestVersion: "4.17.21",
-        latestDigest: null
-      });
+      const first = await recordDependencyLineHead(
+        tx,
+        org.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "4.17.21",
+          latestDigest: null
+        },
+        // The coordinate has NO declared producer (this test never declares one), which is exactly
+        // and only when a public-index answer is legitimate — `line-head.ts`'s `third_party` arm.
+        // Required with no default since main's head-write ingress split: an omitted argument does
+        // not compile, deliberately.
+        { kind: "third_party" }
+      );
       expect(first.recorded).toBe(true);
 
       // Force the stored observation into the past by more than any plausible test runtime, so the
@@ -107,11 +116,20 @@ describe("line head: a RESTATEMENT still refreshes latest_observed_at (M22.4 dep
         .where(and(eq(dependencyLines.orgId, org.orgId), eq(dependencyLines.id, line.id)));
 
       // THE SAME VERSION AGAIN — exactly what the daily poll does to every stable line, every day.
-      const restated = await recordDependencyLineHead(tx, org.orgId, {
-        lineId: line.id,
-        latestVersion: "4.17.21",
-        latestDigest: null
-      });
+      const restated = await recordDependencyLineHead(
+        tx,
+        org.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "4.17.21",
+          latestDigest: null
+        },
+        // The coordinate has NO declared producer (this test never declares one), which is exactly
+        // and only when a public-index answer is legitimate — `line-head.ts`'s `third_party` arm.
+        // Required with no default since main's head-write ingress split: an omitted argument does
+        // not compile, deliberately.
+        { kind: "third_party" }
+      );
       expect(restated.recorded, SCAN_GATE).toBe(true);
       expect(restated.recorded ? restated.movement : "(refused)", SCAN_GATE).toBe("restated");
 

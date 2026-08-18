@@ -5694,6 +5694,138 @@ export const zRetractDependencyLineProducerResponse = z.object({
 /**
  * Success
  */
+export const zListScanOverrideGrantsResponse = z.object({
+    items: z.array(z.object({
+        id: z.string(),
+        urn: z.string(),
+        name: z.string(),
+        status: z.enum([
+            'requested',
+            'approved',
+            'denied',
+            'revoked'
+        ]),
+        componentId: z.string(),
+        vulnerabilityId: z.string(),
+        pkgName: z.string().nullable(),
+        tierObjectId: z.string(),
+        reason: z.string(),
+        expiresAt: z.string().nullable(),
+        decidedByActorId: z.string().nullable(),
+        decidedAt: z.string().nullable(),
+        decisionReason: z.string().nullable(),
+        requestedByActorId: z.string(),
+        createdAt: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zCreateScanOverrideGrantResponse = z.object({
+    id: z.string(),
+    urn: z.string(),
+    name: z.string(),
+    status: z.enum([
+        'requested',
+        'approved',
+        'denied',
+        'revoked'
+    ]),
+    componentId: z.string(),
+    vulnerabilityId: z.string(),
+    pkgName: z.string().nullable(),
+    tierObjectId: z.string(),
+    reason: z.string(),
+    expiresAt: z.string().nullable(),
+    decidedByActorId: z.string().nullable(),
+    decidedAt: z.string().nullable(),
+    decisionReason: z.string().nullable(),
+    requestedByActorId: z.string(),
+    createdAt: z.string()
+});
+
+/**
+ * Success
+ */
+export const zApproveScanOverrideGrantResponse = z.object({
+    id: z.string(),
+    urn: z.string(),
+    name: z.string(),
+    status: z.enum([
+        'requested',
+        'approved',
+        'denied',
+        'revoked'
+    ]),
+    componentId: z.string(),
+    vulnerabilityId: z.string(),
+    pkgName: z.string().nullable(),
+    tierObjectId: z.string(),
+    reason: z.string(),
+    expiresAt: z.string().nullable(),
+    decidedByActorId: z.string().nullable(),
+    decidedAt: z.string().nullable(),
+    decisionReason: z.string().nullable(),
+    requestedByActorId: z.string(),
+    createdAt: z.string()
+});
+
+/**
+ * Success
+ */
+export const zDenyScanOverrideGrantResponse = z.object({
+    id: z.string(),
+    urn: z.string(),
+    name: z.string(),
+    status: z.enum([
+        'requested',
+        'approved',
+        'denied',
+        'revoked'
+    ]),
+    componentId: z.string(),
+    vulnerabilityId: z.string(),
+    pkgName: z.string().nullable(),
+    tierObjectId: z.string(),
+    reason: z.string(),
+    expiresAt: z.string().nullable(),
+    decidedByActorId: z.string().nullable(),
+    decidedAt: z.string().nullable(),
+    decisionReason: z.string().nullable(),
+    requestedByActorId: z.string(),
+    createdAt: z.string()
+});
+
+/**
+ * Success
+ */
+export const zRevokeScanOverrideGrantResponse = z.object({
+    id: z.string(),
+    urn: z.string(),
+    name: z.string(),
+    status: z.enum([
+        'requested',
+        'approved',
+        'denied',
+        'revoked'
+    ]),
+    componentId: z.string(),
+    vulnerabilityId: z.string(),
+    pkgName: z.string().nullable(),
+    tierObjectId: z.string(),
+    reason: z.string(),
+    expiresAt: z.string().nullable(),
+    decidedByActorId: z.string().nullable(),
+    decidedAt: z.string().nullable(),
+    decisionReason: z.string().nullable(),
+    requestedByActorId: z.string(),
+    createdAt: z.string()
+});
+
+/**
+ * Success
+ */
 export const zListCampaignsResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

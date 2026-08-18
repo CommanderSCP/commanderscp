@@ -718,7 +718,6 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     expect(source).toContain("federation/import-repo.ts");
     expect(source).toContain("object_upsert");
   });
-});
 
   // -------------------------------------------------------------------------------------------
   // DOOR 5 — federation hand-fill.
