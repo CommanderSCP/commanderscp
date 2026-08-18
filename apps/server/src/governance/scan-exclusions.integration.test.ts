@@ -78,7 +78,9 @@ import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js"
  *             survivors are G1 (admits nothing by design) and G9 (asserts the table's CHECK over the
  *             admin pool). This is the measurement the whole increment exists for: before the
  *             conversion, deleting the production write door for the exclusion dimension's mandatory
- *             precondition killed NOTHING anywhere in the tree.
+ *             precondition killed NOTHING anywhere in the tree. Measured again (M-1b) against the
+ *             other two converted suites: 17 more failed across `scan-exclusion-actuator` and
+ *             `scan-declared-override-exclusions`, for 33 across four files.
  *   M-2  the PUT becomes ADDITIVE (the replace's `DELETE ... NOT (class = ANY($3))` removed)
  *          -> 2 failed: E2 (the withdrawal path) and E4 (its step 4 re-block never happens, so the
  *             wait for a `fail` run times out). The revocation is load-bearing, not decoration.
