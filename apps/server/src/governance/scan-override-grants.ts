@@ -112,7 +112,7 @@ function str(value: unknown): string | undefined {
 }
 
 /** The API projection of one grant object. Every field is read out of `properties` defensively: the
- *  registered schema is typed-but-open (drizzle/0067) and a row can arrive over federation from a
+ *  registered schema is typed-but-open (drizzle/0075) and a row can arrive over federation from a
  *  peer with a newer vocabulary, so a missing key must render as `null` rather than throw. */
 export function projectScanOverrideGrant(row: ScanOverrideGrantRow): ScanOverrideGrant {
   const p = row.properties;

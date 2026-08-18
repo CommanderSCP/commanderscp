@@ -832,7 +832,7 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
   // ===========================================================================================
 
   it("G9: the admission table's class CHECK agrees with ScanExclusionClassSchema, and refuses anything else", async () => {
-    // Two copies of one list is a cost migration 0066's header states rather than hides. This test
+    // Two copies of one list is a cost migration 0074's header states rather than hides. This test
     // is what keeps them from drifting: a fifth class added to the schema and not to the CHECK would
     // be an admission an operator believes they granted and that no row can ever hold.
     for (const cls of ["no_fix_available", "vendor_latest", "declared_fact", "approved_override"]) {

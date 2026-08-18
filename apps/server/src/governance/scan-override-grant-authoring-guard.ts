@@ -15,7 +15,7 @@ import { badRequest } from "../errors.js";
  * plain `object:write` could write `{status: "approved", expiresAt: "2099-…"}` directly" — true, and
  * not the whole shape. A holder of `policy:write` at a CONTAINMENT DOMAIN — an ordinary scoped
  * policy-author binding — could submit an IaC manifest creating exactly that document and
- * `POST /plans/{id}/apply` it. `drizzle/0067`'s `property_schema` is typed-but-OPEN (it must be:
+ * `POST /plans/{id}/apply` it. `drizzle/0075`'s `property_schema` is typed-but-OPEN (it must be:
  * `import-repo.ts` Ajv-validates with no try/catch and one rejection aborts a peer's whole signed
  * bundle), so it accepts `status: "approved"` and a free-string `expiresAt`. The result was an
  * already-approved grant with NO tier check on the rule being waived, NO Decision, NO hash-chained

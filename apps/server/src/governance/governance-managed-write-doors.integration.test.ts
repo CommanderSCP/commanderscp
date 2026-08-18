@@ -475,7 +475,7 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     // `writePermissionFor` maps a governance-managed type to `policy:write` at the resolved target
     // domain, and DOOR 2 above proves an `object:write`-only actor is refused. Nobody ever asked what
     // happens to an actor who HOLDS `policy:write` — a routine scoped policy-author binding, which is
-    // exactly what an Administrator at a containment domain is. drizzle/0067's `property_schema` is
+    // exactly what an Administrator at a containment domain is. drizzle/0075's `property_schema` is
     // typed-but-OPEN (it must be: `import-repo.ts` Ajv-validates with no try/catch and one rejection
     // aborts a peer's whole signed bundle), so it accepts `status: "approved"` and a free-string
     // `expiresAt`. That actor could therefore apply an already-approved standing waiver with NO tier

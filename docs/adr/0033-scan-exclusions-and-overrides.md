@@ -131,7 +131,7 @@ So the instance rungs get the **operator-token twin of `routes/instance-scan-flo
 
 **The PUT is a whole-set REPLACE for one `(tier, origin)`, and `classes: []` is the withdrawal.** An additive verb would make *withdrawal* the harder operation on a **loosening** dimension — an operator who believes they have narrowed an admission but whose request only ever adds leaves the loosening in force with no error anywhere. That is also why there is no `DELETE` verb: a second verb meaning "replace with nothing" would be a second way to say one thing.
 
-**The org-and-below rungs get nothing new, deliberately.** `org`, `containment_domain`, `service`, `assembly` and `component` admit through the already-shipped `scanExclusion` policy effect (`{"scanExclusion": {"admit": [...]}}`), written over the ordinary policy door, validated by 0066's `property_schema` and gathered per target by the same resolver loop. A second admission surface for those five tiers would be two constructions of one rule.
+**The org-and-below rungs get nothing new, deliberately.** `org`, `containment_domain`, `service`, `assembly` and `component` admit through the already-shipped `scanExclusion` policy effect (`{"scanExclusion": {"admit": [...]}}`), written over the ordinary policy door, validated by 0074's `property_schema` and gathered per target by the same resolver loop. A second admission surface for those five tiers would be two constructions of one rule.
 
 ### 8. Federation (D9) — grants federate fully
 

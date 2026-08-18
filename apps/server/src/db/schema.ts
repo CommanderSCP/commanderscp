@@ -1797,7 +1797,7 @@ export const scanRequirementFloors = pgTable(
 
 // -------------------------------------------------------------------------------------------
 // M22.2 — instance-scoped scan-EXCLUSION admissions (ADR-0033 §1, §7a). Hand-authored table/RLS/
-// grants in drizzle/0066_scan_exclusion_admissions.sql; read that file's header for the full
+// grants in drizzle/0074_scan_exclusion_admissions.sql; read that file's header for the full
 // rationale.
 //
 // THE SECOND TABLE IN THIS SCHEMA WITH NO `org_id`, and it is the SAME documented exception as
@@ -2334,10 +2334,10 @@ export const dependencyBumpAuthorships = pgTable(
 );
 
 /**
- * M22.1b (ADR-0033 §7/§7a, migration 0065) — the per-finding projection of ONE scan verdict.
+ * M22.1b (ADR-0033 §7/§7a, migration 0073) — the per-finding projection of ONE scan verdict.
  *
  * A scan verdict was four integers until M22.1a; every rule in ADR-0033 is a rule ABOUT A FINDING,
- * so this is the substrate the rest of M22 queues behind. See 0065's header for the full argument;
+ * so this is the substrate the rest of M22 queues behind. See 0073's header for the full argument;
  * the four load-bearing facts, restated where the code is:
  *
  *   1. ORDINARY TENANT DATA, `org_id NOT NULL` under the standard `org_isolation` RLS policy. NOT

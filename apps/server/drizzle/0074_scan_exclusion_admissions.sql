@@ -28,7 +28,7 @@
 --
 -- READ THE NEIGHBOUR CAREFULLY BEFORE COPYING, because M22's two new tables are deliberately
 -- OPPOSITE and one M22.1b reviewer nearly transposed them:
---   * `scan_findings` (0065) is ORDINARY TENANT DATA — `org_id NOT NULL`, standard `org_isolation`
+--   * `scan_findings` (0073) is ORDINARY TENANT DATA — `org_id NOT NULL`, standard `org_isolation`
 --     RLS. It records what a scanner saw for one tenant's artifact.
 --   * THIS table is INSTANCE CONFIG — no `org_id`, operator-write / tenant-read. It records what
 --     the deployment's operator will tolerate, identically for every org hosted here.
@@ -69,15 +69,24 @@
 -- lists agree.
 --
 -- ===========================================================================================
--- WHY THIS IS 0066
+-- WHY THIS IS 0074 (it was 0066 when written, and the rename is the point)
 --
 -- drizzle gates on `when` ALONE (`idx` orders the array and decides nothing) and it SILENTLY SKIPS
 -- an entry whose `when` does not exceed what a database has already applied — no error, no warning,
--- surfacing later as a missing table. This entry's `when` (1788109137000) was set strictly greater
--- than main's actual maximum at the time of writing (1788099137000, `0065_scan_findings`), read
--- from the journal rather than inferred. If this branch merges behind another migration, BOTH `idx`
--- AND `when` must be bumped again — the check is "strictly greater than every entry now ahead of
--- it", never "different from them". `src/db/journal-ordering.test.ts` guards the FILE.
+-- surfacing later as a missing table. This entry's `when` (1788133002000) is strictly greater than
+-- every entry ahead of it, read from the journal rather than inferred.
+--
+-- THIS MIGRATION HAS ALREADY BEEN RENUMBERED ONCE, WHICH IS THE WARNING WORTH KEEPING. It was
+-- authored as `0066` with `when` 1788109137000 — correct against the main of that day. While the
+-- branch sat unmerged, main took 0065, 0066 AND 0067 for unrelated migrations and went on to 0072,
+-- so on rebase this file collided by NAME with `0066_bump_pull_request_url` and its `when` fell
+-- BELOW four entries now ahead of it. Either fault alone is silent: the duplicate number is only a
+-- confusing `ls`, and the stale `when` is a table that never gets created on an existing database.
+--
+-- So the rule is not "pick a number greater than the one below you" — it is "on every rebase,
+-- re-derive BOTH `idx` AND `when` from the journal's current tail, and never trust the values you
+-- wrote before". The check is "strictly greater than every entry now ahead of it", never "different
+-- from them". `src/db/journal-ordering.test.ts` guards the FILE.
 -- ===========================================================================================
 
 CREATE TABLE IF NOT EXISTS "scan_exclusion_admissions" (

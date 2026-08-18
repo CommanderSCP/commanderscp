@@ -3624,7 +3624,7 @@ export function buildProgram(): Command {
         const classes = opts.class ?? [];
         for (const cls of classes) {
           if (!(allowed as readonly string[]).includes(cls)) {
-            // Refused here as well as by the route and the table's CHECK, for 0066's stated reason:
+            // Refused here as well as by the route and the table's CHECK, for 0074's stated reason:
             // a typo'd class is an admission the operator believes they granted and that admits
             // nothing, with the clause beneath it silently inert.
             throw new Error(`--class must be one of ${allowed.join("|")} (got '${cls}')`);

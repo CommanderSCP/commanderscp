@@ -472,7 +472,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
   });
 
   it("D4: the real component write route REFUSES a misspelled declaration bag, and stores nothing", async () => {
-    // Strict at the local author's door, open on the wire (drizzle/0067). `{"declarationz": …}`
+    // Strict at the local author's door, open on the wire (drizzle/0075). `{"declarationz": …}`
     // would otherwise be stored happily and read by the gate as NO declarations, leaving the author
     // believing they had declared something — a mistake that is always fail-closed and therefore
     // never surfaces as an incident, only as a rule that mysteriously never fires.

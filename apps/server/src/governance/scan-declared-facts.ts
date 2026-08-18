@@ -41,7 +41,7 @@ import { objects } from "../db/schema.js";
  * WHY ONLY A `component` MAY DECLARE
  * ===========================================================================================
  * The registered `property_schema` for `security.declarations` is on the `component` type and only
- * there — but `property_schema` is TYPED-BUT-OPEN by requirement (see drizzle/0067's header on the
+ * there — but `property_schema` is TYPED-BUT-OPEN by requirement (see drizzle/0075's header on the
  * federation bundle-abort hazard), so nothing at the database stops a `service` object from carrying
  * an unvalidated `security` bag too. The type filter below is therefore load-bearing rather than
  * decorative: without it, a facts read for a service-targeted change would honour a bag that passed

@@ -24,7 +24,7 @@ import { forbidden } from "../errors.js";
  * `platform` and `trust_domain` UNCONDITIONALLY. `tierForObjectType` structurally cannot return
  * either rung (it maps graph object types, and `containmentChain` is org-rooted), so NO policy at
  * any tier can contribute those two admissions. Their only source is `scan_exclusion_admissions`
- * (drizzle/0066). Until this route existed that table had no writer outside the integration suite's
+ * (drizzle/0074). Until this route existed that table had no writer outside the integration suite's
  * admin pool — so on a real deployment every clause an operator authored failed the AND at the top
  * rung and M22.2 through M22.7 were inert, invisibly, with a green suite. The feature's mandatory
  * precondition was reachable only by hand-written SQL against the database.
@@ -32,7 +32,7 @@ import { forbidden } from "../errors.js";
  * THE FIVE ORG-AND-BELOW RUNGS GET NOTHING HERE, and that is the correct answer rather than a gap.
  * `org`, `containment_domain`, `service`, `assembly` and `component` admit a class through the
  * ALREADY-SHIPPED `scanExclusion` policy effect — `{"scanExclusion": {"admit": ["vendor_latest"]}}`
- * on an ordinary policy document, written over the ordinary policy door, validated by 0066's
+ * on an ordinary policy document, written over the ordinary policy door, validated by 0074's
  * `property_schema` and gathered per target by `buildScanExclusionTargetInputs`'s policy loop.
  * That surface is live and covered. A second admission surface for those tiers would be a second
  * construction of one rule (charter principle 2: new concepts arrive as policy data).
@@ -55,7 +55,7 @@ import { forbidden } from "../errors.js";
  *    no role can grant it: the write requires the deployment-level `SCP_OPERATOR_TOKEN`
  *    (config.operatorToken) presented as `x-scp-operator-token`, and executes over the ADMIN
  *    connection because `scp_app` holds no write grant on the table and no write RLS policy exists
- *    for it (drizzle/0066 — two independent barriers). Unset token => the surface is CLOSED (403),
+ *    for it (drizzle/0074 — two independent barriers). Unset token => the surface is CLOSED (403),
  *    never a fallback to a tenant credential.
  *
  * THE PUT IS A WHOLE-SET REPLACE for one `(tier, origin)`, not an add. An additive verb makes

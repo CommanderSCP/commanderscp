@@ -8,7 +8,7 @@ import { badRequest } from "../errors.js";
  * ===========================================================================================
  * WHY THIS EXISTS SEPARATELY FROM THE REGISTERED `property_schema`
  * ===========================================================================================
- * drizzle/0067 registers `component.properties.security.declarations` as TYPED BUT OPEN, and it has
+ * drizzle/0075 registers `component.properties.security.declarations` as TYPED BUT OPEN, and it has
  * to be: `federation/import-repo.ts`'s `object_upsert` branch Ajv-validates an incoming object
  * against the registered schema with NO try/catch, so ONE rejection aborts a peer's ENTIRE signed
  * bundle and wedges the channel. A closed schema in the registry would turn every future property

@@ -825,7 +825,7 @@ export type ComponentScanRequirementsResponse = z.infer<
 // `buildScanExclusionTargetInputs` seeds `representedTiers` with `platform` and `trust_domain`
 // UNCONDITIONALLY. `tierForObjectType` can never return either of those two, so no policy — at any
 // tier, by any author — can contribute their admission. Their ONLY source is
-// `scan_exclusion_admissions` (drizzle/0066), and until this increment that table had no writer
+// `scan_exclusion_admissions` (drizzle/0074), and until this increment that table had no writer
 // outside the integration suite's admin pool. Every exclusion class M22.3–M22.6 built was therefore
 // inert on a real deployment while its tests were green: the whole dimension was reachable only by
 // hand-written SQL. A feature whose mandatory precondition has no production writer is not shipped.
@@ -850,7 +850,7 @@ export type ComponentScanRequirementsResponse = z.infer<
 /** One instance-scoped admission row — the API projection of `scan_exclusion_admissions` (no
  *  `orgId`: it speaks for the DEPLOYMENT, identically for every org hosted on it).
  *
- *  A ROW IS AN ADMISSION AND NO ROW IS NO ADMISSION (0066's header): this list is empty on every
+ *  A ROW IS AN ADMISSION AND NO ROW IS NO ADMISSION (0074's header): this list is empty on every
  *  deployment that has not authored one, and that empty list is the safe default rather than a
  *  missing configuration. */
 export const InstanceScanExclusionAdmissionSchema = z.object({
@@ -882,7 +882,7 @@ export const InstanceScanExclusionAdmissionTierParamSchema = z.object({
  * makes the request state what the deployment admits, so the read-back is the authored value.
  *
  * `classes` is a SET: duplicates collapse, and `ScanExclusionClassSchema` refuses an unrecognised
- * value here exactly as the table's CHECK constraint refuses it one layer down (0066's header: an
+ * value here exactly as the table's CHECK constraint refuses it one layer down (0074's header: an
  * operator typo that silently admits nothing is the failure worth two copies of the list).
  */
 export const PutInstanceScanExclusionAdmissionsRequestSchema = z.strictObject({

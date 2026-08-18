@@ -139,7 +139,7 @@ ON CONFLICT (id) DO NOTHING;
 -- 5. THE POLICY SCHEMA, RESTATED — the `declared_fact` clause's two new narrowing keys
 -- ===========================================================================================
 -- `property_schema` is a single jsonb value, so the whole document is restated and only the two
--- lines inside `effects[].scanExclusion.exclude` are new (diff this against 0066). That is the
+-- lines inside `effects[].scanExclusion.exclude` are new (diff this against 0074). That is the
 -- 0029 -> 0062 -> 0066 pattern and it is not avoidable: there is no JSON-patch verb for a jsonb
 -- column, and a partial `jsonb_set` on a nested path is far harder to review than a full restatement.
 --
