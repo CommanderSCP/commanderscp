@@ -70,6 +70,27 @@ import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js"
  *   M-6  `persistScanFindings` writing `scanFindingRetentionClass(false)` unconditionally
  *          -> 1 failed (G8). Excluded findings lose their accepted-risk (class E) retention.
  *
+ * M22.9 MUTATIONS RUN (2026-08-18) against the ADMISSION WRITE DOOR — the MEASURED result of each,
+ * reverted afterwards by an exact inverse edit. Baseline: 15 passed. Nothing below is a prediction.
+ *
+ *   M-1  DELETE `registerInstanceScanExclusionAdmissionRoutes(app, deps)` from `app.ts`
+ *          -> 13 of 15 failed HERE, plus 3 in `scan-requirements-read.integration.test.ts`. The two
+ *             survivors are G1 (admits nothing by design) and G9 (asserts the table's CHECK over the
+ *             admin pool). This is the measurement the whole increment exists for: before the
+ *             conversion, deleting the production write door for the exclusion dimension's mandatory
+ *             precondition killed NOTHING anywhere in the tree.
+ *   M-2  the PUT becomes ADDITIVE (the replace's `DELETE ... NOT (class = ANY($3))` removed)
+ *          -> 2 failed: E2 (the withdrawal path) and E4 (its step 4 re-block never happens, so the
+ *             wait for a `fail` run times out). The revocation is load-bearing, not decoration.
+ *   M-3  DELETE `requireOperator(deps, request)` from the PUT handler
+ *          -> 1 failed (E3), and ONLY E3. A tenant admin could then admit a loosening for every org
+ *             on the deployment.
+ *   M-4  [ANTI-VACUITY] the PUT answers 200 with the requested set but stores NO row (the INSERT
+ *        loop removed and the read-back replaced by the request's own classes)
+ *          -> 12 failed, E1 and E2 among them. E1 asserts the ROW over the admin pool rather than
+ *             the response body, which is the only reason it can tell these two apart; E3 correctly
+ *             SURVIVED, because its subject is the refusal and a refusal writes nothing either way.
+ *
  * Instance-scoped `scan_exclusion_admissions` rows are GLOBAL to the deployment and the integration
  * suite runs `singleFork` against ONE shared Postgres, so a row left behind would silently admit
  * loosenings in every later suite. They are cleared in an `afterEach` that runs regardless of
