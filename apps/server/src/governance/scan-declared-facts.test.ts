@@ -127,6 +127,9 @@ describe("M22.6 — grants INTERSECT across targets on what they EXCUSE", () => 
     grantObjectId: "aaaaaaaa-0000-0000-0000-000000000000",
     vulnerabilityId: "CVE-2026-1000",
     tierObjectId: "tier",
+    // M22.6 (D3) — the derived tier. `intersectApprovedOverrides` keys on (vulnerabilityId, pkgName)
+    // and never on the tier, which is exactly what these cases pin.
+    tier: "service" as const,
     expiresAt: "2099-01-01T00:00:00.000Z",
     ...over
   });

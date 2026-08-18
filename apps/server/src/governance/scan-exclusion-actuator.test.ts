@@ -118,6 +118,7 @@ describe("scanExclusionSetHash", () => {
             grantObjectId: "g1",
             vulnerabilityId: "CVE-1",
             tierObjectId: "svc",
+            tier: "service" as const,
             expiresAt: "2030-01-01T00:00:00.000Z"
           }
         ]
@@ -130,6 +131,7 @@ describe("scanExclusionSetHash", () => {
             grantObjectId: "g1",
             vulnerabilityId: "CVE-1",
             tierObjectId: "svc",
+            tier: "service" as const,
             expiresAt: "2031-01-01T00:00:00.000Z"
           }
         ]

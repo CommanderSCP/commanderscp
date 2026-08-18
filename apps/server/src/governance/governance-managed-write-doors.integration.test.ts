@@ -1,7 +1,9 @@
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
+import { ScpApiError, ScpClient } from "@scp/sdk";
 import {
+  createOrphanComponent,
   createTestOrg,
   createTestUser,
   listenTestServer,
@@ -431,6 +433,266 @@ describe("policy:write door census: a caller-supplied typeId cannot mint governa
     expect(apply.body).toMatch(/policy:write/);
     expect(await policyRowsByName(name)).toHaveLength(0);
   });
+
+  // -------------------------------------------------------------------------------------------
+  // THE GRANT-SPECIFIC CASES, carried in from M22.6/D3 on the rebase onto main.
+  //
+  // They were written against this file's other draft, whose door numbering ran 1 objects-generic /
+  // 2 IaC / 3 federation-import. This file numbers five doors differently, so the cases are
+  // RENUMBERED to the doors they actually drive — an IaC case labelled `DOOR 2` here would name the
+  // discovery-proposal door and send the next reader to the wrong module.
+  // -------------------------------------------------------------------------------------------
+  it("DOOR 4b: a policy:write HOLDER cannot mint an ALREADY-APPROVED grant through IaC — the permission mapping was never the defence", async () => {
+    // ============================================================================================
+    // THE HOLE THIS CLOSES
+    // ============================================================================================
+    // `writePermissionFor` maps a governance-managed type to `policy:write` at the resolved target
+    // domain, and DOOR 2 above proves an `object:write`-only actor is refused. Nobody ever asked what
+    // happens to an actor who HOLDS `policy:write` — a routine scoped policy-author binding, which is
+    // exactly what an Administrator at a containment domain is. drizzle/0067's `property_schema` is
+    // typed-but-OPEN (it must be: `import-repo.ts` Ajv-validates with no try/catch and one rejection
+    // aborts a peer's whole signed bundle), so it accepts `status: "approved"` and a free-string
+    // `expiresAt`. That actor could therefore apply an already-approved standing waiver with NO tier
+    // check on the rule being waived, NO Decision, NO hash-chained audit event and NO future-expiry
+    // validation — every guarantee of the override design, routed around a second door.
+    //
+    // The fix is NOT another permission: it is `assertScanOverrideGrantNotSelfDecided`, installed at
+    // the `graph/objects-repo.ts` choke point every local write door funnels through.
+    const server: ListeningTestServer = await listenTestServer({});
+    try {
+      const org: TestOrg = await createTestOrg(server, "gm-grant-iac");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const domain = await admin.object("domain").create({ name: "payments" });
+      const component = await createOrphanComponent(admin, "payments-api");
+
+      // A GENUINE `policy:write` HOLDER, scoped to that domain. Administrator is the role that
+      // carries `policy:write` (see `governance/scan-declared-override-exclusions`'s O4).
+      // `Viewer` at the org root supplies the `object:read` that `POST /plans` requires and NOTHING
+      // else; `Administrator` — the role carrying `policy:write` (drizzle/0010) — is bound at the
+      // DOMAIN only. That is the realistic shape: an author with policy authority over their own
+      // subtree and none above it.
+      const author = await createTestUser(server, org, [
+        { role: "Viewer", scope: org.orgId },
+        { role: "Administrator", scope: domain.id }
+      ]);
+      const client = new ScpClient({ baseUrl: server.baseUrl, token: author.token });
+
+      const grantProperties = (status: string, extra: Record<string, unknown> = {}) => ({
+        componentId: component.id,
+        vulnerabilityId: "CVE-2024-3094",
+        tierObjectId: domain.id,
+        status,
+        reason: "accepted",
+        ...extra
+      });
+
+      const applyGrant = async (stackName: string, properties: Record<string, unknown>) => {
+        const plan = await client.plans.create({
+          stackName,
+          objects: [
+            {
+              urn: `urn:scp:${stackName}:scan_override_grant:smuggled`,
+              typeId: "scan_override_grant",
+              name: `smuggled-${stackName}`,
+              domainId: domain.id,
+              properties
+            }
+          ],
+          relationships: []
+        });
+        return client.plans.apply(plan.id);
+      };
+
+      // ANTI-VACUITY CONTROL, FIRST. The same actor, the same door, the same type — a `requested`
+      // grant. It MUST go through: a grant that authorizes nothing is exactly the record ADR-0033
+      // wants raised early, and refusing it would make this case pass for the wrong reason (namely
+      // "this actor cannot use IaC on this type at all").
+      const okStack = `gm-req-${randomUUID().slice(0, 8)}`;
+      await applyGrant(okStack, grantProperties("requested"));
+      const afterOk = await admin.object("scan_override_grant").list();
+      expect(afterOk.items).toHaveLength(1);
+
+      // ...and now the same manifest with the decision already made.
+      for (const [label, properties] of [
+        [
+          "status: approved",
+          grantProperties("approved", { expiresAt: "2999-01-01T00:00:00.000Z" })
+        ],
+        [
+          "a bare future expiry",
+          grantProperties("requested", { expiresAt: "2999-01-01T00:00:00.000Z" })
+        ],
+        ["a forged decider", grantProperties("requested", { decidedByActorId: author.objectId })]
+      ] as const) {
+        const stackName = `gm-grant-${randomUUID().slice(0, 8)}`;
+        await applyGrant(stackName, properties as Record<string, unknown>).then(
+          () => {
+            throw new Error(`IaC apply must refuse a grant carrying ${label}`);
+          },
+          (err: unknown) => {
+            expect(err, label).toBeInstanceOf(ScpApiError);
+          }
+        );
+      }
+
+      // ASSERT THE ROWS, not the statuses. A refusal that stored the object anyway would satisfy
+      // three rejects and leave a live waiver in the graph.
+      const stored = await admin.object("scan_override_grant").list();
+      expect(stored.items).toHaveLength(1);
+      expect(stored.items[0]?.properties).toMatchObject({ status: "requested" });
+      expect(stored.items[0]?.properties).not.toHaveProperty("expiresAt");
+      expect(stored.items[0]?.properties).not.toHaveProperty("decidedByActorId");
+
+      // ...AND THE ONE THAT DID GET THROUGH CANNOT BE APPROVED EITHER. It names `payments` as its
+      // tier while the component hangs off the org root, so `payments` is nowhere on that component's
+      // containment chain. This is the case that proves the approve route RE-DERIVES standing rather
+      // than inheriting the raise route's check: this grant never passed through the raise route at
+      // all — it arrived through IaC — and a federated peer could deliver the same shape.
+      await expect(
+        admin.scanOverrideGrants.approve(stored.items[0]!.id, {
+          expiresAt: "2999-01-01T00:00:00.000Z",
+          reason: "approving a grant that names an off-chain authority"
+        })
+      ).rejects.toBeInstanceOf(ScpApiError);
+      const afterApprove = await admin.object("scan_override_grant").list();
+      expect(afterApprove.items[0]?.properties).toMatchObject({ status: "requested" });
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
+
+  it("DOOR 4c: the UPDATE half — IaC cannot flip an existing grant to approved either", async () => {
+    // `updateObject` REPLACES `properties`, so the same door that could mint an approved grant could
+    // also flip an already-DENIED one to `approved` — which the `decide` route explicitly refuses
+    // ("only a 'requested' grant can be approved"). A guard installed only on the create half would
+    // leave the strictly worse of the two open.
+    const server: ListeningTestServer = await listenTestServer({});
+    try {
+      const org: TestOrg = await createTestOrg(server, "gm-grant-update");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const component = await createOrphanComponent(admin, "billing-api");
+      const stackName = `gm-upd-${randomUUID().slice(0, 8)}`;
+      const urn = `urn:scp:${stackName}:scan_override_grant:standing`;
+      const base = {
+        componentId: component.id,
+        vulnerabilityId: "CVE-2024-3094",
+        tierObjectId: org.orgId,
+        reason: "accepted"
+      };
+
+      const apply = async (properties: Record<string, unknown>) => {
+        const plan = await admin.plans.create({
+          stackName,
+          objects: [
+            { urn, typeId: "scan_override_grant", name: `standing-${stackName}`, properties }
+          ],
+          relationships: []
+        });
+        return admin.plans.apply(plan.id);
+      };
+
+      await apply({ ...base, status: "requested" });
+      await expect(
+        apply({ ...base, status: "approved", expiresAt: "2999-01-01T00:00:00.000Z" })
+      ).rejects.toBeInstanceOf(ScpApiError);
+
+      const stored = await admin.object("scan_override_grant").list();
+      expect(stored.items).toHaveLength(1);
+      expect(stored.items[0]?.properties).toMatchObject({ status: "requested" });
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
+
+  it("DOORS 1+5: HAND-FILL and OVERLAY refuse a decided grant too — the census run filterlessly, not the two doors the docblock named", async () => {
+    // The two doors a per-route install always misses, and the reason the guard lives at the choke
+    // point. HAND-FILL is the sharper of the two: `handFillObject` stamps `federationImport`, which is
+    // exactly the flag that exempts the choke point — so it inherits an exemption whose stated reason
+    // ("a throw aborts a peer's whole signed bundle") is a statement about a CHANNEL that does not
+    // exist on a local operator action. `handfill-repo.ts` therefore calls the guard for itself, and
+    // this case is what proves it did. OVERLAY needs no special handling — `overlay-repo.ts` calls
+    // `createObject` with no import flag — and is asserted anyway, because "needs no handling" is a
+    // claim about today's code.
+    const server: ListeningTestServer = await listenTestServer({});
+    try {
+      const org: TestOrg = await createTestOrg(server, "gm-grant-fed");
+      const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+      const component = await createOrphanComponent(admin, "fed-api");
+      const decided = {
+        componentId: component.id,
+        vulnerabilityId: "CVE-2024-3094",
+        tierObjectId: org.orgId,
+        status: "approved",
+        reason: "accepted",
+        expiresAt: "2999-01-01T00:00:00.000Z"
+      };
+
+      const peerDomainId = randomUUID();
+      const { publicKey } = generateKeyPairSync("ed25519");
+      await admin.federation.pair({
+        domainId: peerDomainId,
+        name: `cmdr-${peerDomainId.slice(0, 8)}`,
+        role: "commander",
+        publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64")
+      });
+
+      const handFilledUrn = `urn:scp:${org.orgId}:scan_override_grant:hand-filled`;
+      await expect(
+        admin.federation.handFill({
+          peer: peerDomainId,
+          typeId: "scan_override_grant",
+          urn: handFilledUrn,
+          name: "hand-filled-grant",
+          properties: decided
+        })
+      ).rejects.toBeInstanceOf(ScpApiError);
+
+      const base = await admin.services.create({ name: `svc-${randomUUID().slice(0, 8)}` });
+      await expect(
+        admin.federation.createOverlay({
+          base: base.id,
+          typeId: "scan_override_grant",
+          name: "overlay-grant",
+          urn: `urn:scp:${org.orgId}:scan_override_grant:overlay`,
+          properties: decided
+        })
+      ).rejects.toBeInstanceOf(ScpApiError);
+
+      expect((await admin.object("scan_override_grant").list()).items).toHaveLength(0);
+
+      // CONTROL: the same hand-fill with `status: "requested"` goes through. Without it, the case
+      // above is satisfied by a route that refuses every `scan_override_grant`, or that broke.
+      const filled = await admin.federation.handFill({
+        peer: peerDomainId,
+        typeId: "scan_override_grant",
+        urn: handFilledUrn,
+        name: "hand-filled-grant",
+        properties: { ...decided, status: "requested", expiresAt: undefined }
+      });
+      expect(filled.provenance).toBe("manual");
+      const stored = await admin.object("scan_override_grant").list();
+      expect(stored.items).toHaveLength(1);
+      expect(stored.items[0]?.properties).toMatchObject({ status: "requested" });
+    } finally {
+      await server.close();
+    }
+  }, 120_000);
+
+  it("CENSUS: the set's docblock NAMES the federation-import path — the door its previous version omitted", async () => {
+    // Deliberately a source assertion and deliberately the ONLY one in this file. The behaviour of
+    // door 3 is that it does NOT refuse, which is indistinguishable from "nobody wired the guard" by
+    // observation alone — so the thing worth pinning is that the exemption is DOCUMENTED where the
+    // next author will look, rather than being an omission they have to rediscover. Its behavioural
+    // proof is `subscription-guard-write-doors.integration.test.ts`'s signed-bundle case.
+    const { readFile } = await import("node:fs/promises");
+    const source = await readFile(
+      new URL("./governance-managed-types.ts", import.meta.url),
+      "utf8"
+    );
+    expect(source).toContain("federation/import-repo.ts");
+    expect(source).toContain("object_upsert");
+  });
+});
 
   // -------------------------------------------------------------------------------------------
   // DOOR 5 — federation hand-fill.

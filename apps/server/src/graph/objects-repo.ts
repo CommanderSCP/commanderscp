@@ -36,6 +36,10 @@ import {
 } from "../governance/governance-labels.js";
 import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
 import { assertScanRuleRequiresScanControl } from "../governance/scan-rule-authoring-guard.js";
+import {
+  assertScanOverrideGrantNotSelfDecided,
+  type ScanOverrideGrantDecisionWrite
+} from "../governance/scan-override-grant-authoring-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 import {
@@ -132,7 +136,7 @@ export async function getOrgRootObjectId(tx: TenantTx, orgId: string): Promise<s
   return row.id;
 }
 
-export interface CreateObjectInput {
+export interface CreateObjectInput extends ScanOverrideGrantDecisionWrite {
   orgId: string;
   typeId: string;
   actorObjectId: string;
@@ -465,6 +469,18 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       typeId: input.typeId,
       properties
     });
+    // M22.6 (ADR-0033 §6a) — the FOURTH authoring refusal at this choke point, and the one that ends
+    // the override design's second door. `scan_override_grant` being governance-managed maps the IaC
+    // path to `policy:write`, which a routine domain-scoped policy author holds — so the manifest
+    // `{status: "approved", expiresAt: "2999-…"}` was accepted with no tier check on the rule being
+    // waived, no Decision and no audit event. Installed here for the reason the three above are: a
+    // per-route install would miss `POST /plans` + `/plans/{id}/apply`, `POST /federation/hand-fill`,
+    // `POST /federation/overlays` and the typed registries.
+    assertScanOverrideGrantNotSelfDecided({
+      typeId: input.typeId,
+      properties,
+      isDecisionWrite: input.scanOverrideGrantDecision
+    });
   }
 
   const urn = input.urn ?? deriveUrn(input.orgId, input.typeId, input.name);
@@ -744,7 +760,7 @@ export async function listObjects(
   };
 }
 
-export interface UpdateObjectInput {
+export interface UpdateObjectInput extends ScanOverrideGrantDecisionWrite {
   orgId: string;
   typeId: string;
   actorObjectId: string;
@@ -948,6 +964,15 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       orgId: input.orgId,
       typeId: input.typeId,
       properties: nextProperties
+    });
+    // M22.6 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the four above are. It is the half that matters MOST here: the same IaC
+    // door that could mint an approved grant could also flip an already-DENIED one to `approved`,
+    // which the `decide` route explicitly refuses.
+    assertScanOverrideGrantNotSelfDecided({
+      typeId: input.typeId,
+      properties: nextProperties,
+      isDecisionWrite: input.scanOverrideGrantDecision
     });
   }
 

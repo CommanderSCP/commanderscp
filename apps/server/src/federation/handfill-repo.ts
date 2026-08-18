@@ -17,6 +17,7 @@ import {
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
 import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
+import { assertScanOverrideGrantNotSelfDecided } from "../governance/scan-override-grant-authoring-guard.js";
 
 /**
  * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
@@ -212,6 +213,20 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
     orgId: input.orgId,
     typeId: input.typeId,
     properties: input.properties
+  });
+  // M22.6 (ADR-0033 §6a) — the same door, the same closing, another guard. Hand-fill wears the
+  // `federationImport` flag that exempts the choke point, and the exemption's reason (a throw aborts
+  // a peer's whole signed bundle) is a statement about a CHANNEL that does not exist here. Left
+  // exempt, `POST /v1/federation/hand-fill` would let any `federation:write` holder write
+  // `{status: "approved", expiresAt: "2099-…"}` onto a grant with no tier check, no Decision and no
+  // audit event — the exact bypass the guard exists to close, one door later.
+  //
+  // Ordered ahead of the awaited label check below (the #249/#251 pattern): this refusal is
+  // synchronous and reads only the request, while `assertMayWriteGovernanceLabels` issues a lookup
+  // for the stored row and resolves a permission.
+  assertScanOverrideGrantNotSelfDecided({
+    typeId: input.typeId,
+    properties: input.properties ?? {}
   });
   // THE GOVERNANCE-LABEL NAMESPACE — the third and fourth refusals this door has to run for itself,
   // and it is the same reason as the first two. Hand-fill wears the `federationImport` flag that

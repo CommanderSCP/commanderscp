@@ -452,7 +452,11 @@ export async function runPromotionScanStep(
       targetObjectIds,
       actorObjectId: input.actorObjectId,
       matches,
-      firedPolicies: fired
+      firedPolicies: fired,
+      // M22.6 (D3) — same ceiling this step compares its counts against, so a grant is measured
+      // against the tier that set that ceiling. The commander's managed producer is a THIRD gate
+      // site and had to be threaded here for the same reason the two in `gate-orchestrator.ts` were.
+      ceiling: effective
     });
 
     const planned: PlannedScan[] = [];

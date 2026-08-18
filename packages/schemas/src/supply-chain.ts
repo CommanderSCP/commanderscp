@@ -1001,12 +1001,51 @@ export const ScanOverrideGrantFactSchema = z.object({
   /** The object naming the tier that set the rule — the authority this grant was approved under
    *  (D3). */
   tierObjectId: z.string(),
+  /**
+   * The TIER of `tierObjectId`, DERIVED at resolve time from the target's own containment chain —
+   * never a value anybody wrote down.
+   *
+   * This is the field D3 is actually enforced on. `tierObjectId` is supplied by the REQUESTER, so on
+   * its own it decides nothing: naming a LOWER object would widen the approver set (`scopeExpandCte`
+   * expands upward), which is the exact inverse of "you cannot waive a constraint stricter than your
+   * own authority". The resolver therefore places the named object on the component's chain, reads
+   * its tier from that placement, and compares it against {@link ScanApprovedOverridesSchema}'s
+   * `requiredTier` — which is itself derived from the ceiling's contributing tiers. A grant that
+   * cannot be placed, or whose tier is junior to the bar, never reaches this array.
+   */
+  tier: ScanRequirementTierSchema,
   expiresAt: z.string()
 });
 export type ScanOverrideGrantFact = z.infer<typeof ScanOverrideGrantFactSchema>;
 
+/** A grant as the ROW says it is, before the authority bar has been applied — the resolver's
+ *  intermediate shape. It has no `tier` because a tier is a property of the target's containment
+ *  chain, not of the stored row. */
+export type ScanOverrideGrantCandidate = Omit<ScanOverrideGrantFact, "tier">;
+
+/** One grant that was live and in date but did NOT clear the authority bar, recorded so the refusal
+ *  is a positive statement in the Decision rather than a silent absence (charter principle 6). */
+export const RefusedScanOverrideGrantSchema = z.object({
+  grantObjectId: z.string(),
+  /** Absent when `tierObjectId` is not on the target's containment chain at all — the grant names an
+   *  authority that has no standing over this component whatsoever. */
+  tier: ScanRequirementTierSchema.optional(),
+  reason: z.enum(["tier_not_on_containment_chain", "tier_below_required"])
+});
+export type RefusedScanOverrideGrant = z.infer<typeof RefusedScanOverrideGrantSchema>;
+
 export const ScanApprovedOverridesSchema = z.object({
-  grants: z.array(ScanOverrideGrantFactSchema)
+  grants: z.array(ScanOverrideGrantFactSchema),
+  /**
+   * THE DERIVED BAR (D3). The most senior tier that set any part of the ceiling this exclusion would
+   * loosen; `component` when no tier set one at all. Present whenever the override dimension was
+   * resolved — it is the rule the grants above were measured against, and a Decision that named the
+   * grants without naming the bar would explain half of the verdict.
+   */
+  requiredTier: ScanRequirementTierSchema.optional(),
+  /** Live, in-date grants the bar refused. Sorted by `grantObjectId`, content-only — no timestamps,
+   *  so two identical evaluations still serialize identically (the M22.0 write-suppression rule). */
+  refusedForAuthority: z.array(RefusedScanOverrideGrantSchema).optional()
 });
 export type ScanApprovedOverrides = z.infer<typeof ScanApprovedOverridesSchema>;
 
@@ -1068,10 +1107,31 @@ export const ScanOverrideGrantListQuerySchema = z.object({
   component: z.string().min(1)
 });
 
-/** RAISING a request. `tierObjectId` is named by the REQUESTER and is the object whose tier set the
- *  rule they want waived — it is what decides WHO may approve (D3), so it is constitutive of the
- *  request rather than something the approver supplies later. Naming a tier confers nothing: the
- *  approval check runs against the named object at approve time. */
+/**
+ * RAISING a request. `tierObjectId` names the object whose tier set the rule the requester wants
+ * waived. It is constitutive of the request rather than something the approver supplies later.
+ *
+ * IT IS A CLAIM, NOT A GRANT OF STANDING, and the difference is load-bearing. The first version of
+ * this comment said "naming a tier confers nothing: the approval check runs against the named
+ * object" — which was false in the one direction that mattered. `authz/resolve.ts`'s
+ * `scopeExpandCte` expands UPWARD, so naming a LOWER object strictly WIDENS the set of principals
+ * whose bindings satisfy the approve check. A requester could therefore select their own approver
+ * standing by naming an object they already held `policy:write` at, and waive a ceiling set far
+ * above it. Three derived checks now bound the claim, none of which trusts it:
+ *
+ *   1. AT RAISE — the named object must lie on the component's own containment chain
+ *      (`assertOverrideTierStanding`). An object elsewhere in the graph has no standing over this
+ *      component at all.
+ *   2. AT APPROVE — the same chain check, re-derived, plus a refusal when an INSTANCE floor
+ *      (`platform`/`trust_domain`) contributes any ceiling: those rungs are operator-authored and no
+ *      tenant object maps to them, so such a grant could never apply and approving it would leave
+ *      the approver with a false belief.
+ *   3. AT THE GATE — the decisive one. The resolver places `tierObjectId` on the target's chain,
+ *      reads its TIER from that placement, and drops the grant unless that tier is at-or-above the
+ *      most senior tier that contributed to the effective ceiling. That comparison is derived from
+ *      `EffectiveScanThreshold.contributors`, which M22.0 recorded precisely so a verdict can name
+ *      the tier that bound it.
+ */
 export const CreateScanOverrideGrantRequestSchema = z.strictObject({
   componentId: z.string().min(1),
   vulnerabilityId: z.string().min(1).max(200),

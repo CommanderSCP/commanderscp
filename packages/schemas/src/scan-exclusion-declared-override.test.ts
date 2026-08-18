@@ -225,6 +225,11 @@ describe("M22.6 — approved_override joins a finding to a live grant, exactly",
     grantObjectId: "11111111-1111-1111-1111-111111111111",
     vulnerabilityId: "CVE-2026-1000",
     tierObjectId: "22222222-2222-2222-2222-222222222222",
+    // M22.6 (D3) — the DERIVED tier. The predicate never reads it (a grant reaching this array has
+    // already cleared the authority bar in `applyOverrideAuthorityBar`); it is here because the fact
+    // type requires it, and because a fixture that omitted it would be typing away the field the
+    // enforcement is carried on.
+    tier: "service" as const,
     expiresAt: "2099-01-01T00:00:00.000Z",
     ...over
   });

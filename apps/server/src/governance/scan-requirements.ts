@@ -9,6 +9,7 @@ import {
   type PartialScanThreshold,
   type ScanExclusionClass,
   type ScanExclusionClause,
+  type RefusedScanOverrideGrant,
   type ScanApprovedOverrides,
   type ScanDeclaredFacts,
   type ScanRequirementTier,
@@ -22,6 +23,7 @@ import {
 } from "./scan-vendor-latest.js";
 import { intersectDeclaredFacts, resolveDeclaredFactsForTarget } from "./scan-declared-facts.js";
 import {
+  applyOverrideAuthorityBar,
   intersectApprovedOverrides,
   resolveApprovedOverridesForTarget
 } from "./scan-override-grants.js";
@@ -144,7 +146,7 @@ const SEVERITY_KEYS = ["maxCritical", "maxHigh", "maxMedium", "maxLow"] as const
  * tier. Before the owning half existed, EVERY group-scoped ceiling read `org` regardless of what it
  * governed, quietly breaking ADR-0016 §5's promise that a block can show which tier set the floor.
  */
-function tierForObjectType(objectTypeId: string): ScanRequirementTier {
+export function tierForObjectType(objectTypeId: string): ScanRequirementTier {
   switch (objectTypeId) {
     case "organization":
       return "org";
@@ -373,7 +375,7 @@ const TIER_ORDER: readonly ScanRequirementTier[] = [
   "component"
 ];
 
-function tierRank(tier: ScanRequirementTier): number {
+export function tierRank(tier: ScanRequirementTier): number {
   return TIER_ORDER.indexOf(tier);
 }
 
@@ -409,6 +411,18 @@ export interface ScanExclusionTargetInput {
    * consent. So: a rung that EXISTS must say yes, and a rung that does not exist is not asked.
    */
   representedTiers: ScanRequirementTier[];
+  /**
+   * M22.6 (D3) — the TIER of every object on this target's containment chain, by object id.
+   *
+   * `representedTiers` answers "which rungs exist here"; this answers "which rung is THIS object",
+   * which is the question an override grant's derived authority needs and which no set of tier
+   * labels can answer. It is built from the SAME `containmentChain` walk that produced
+   * `representedTiers`, so a grant can never be placed at a rung the admission algebra did not see.
+   *
+   * An id ABSENT from this map is not "unknown, assume component" — it is an object that is not an
+   * ancestor of this target at all, and {@link applyOverrideAuthorityBar} refuses it.
+   */
+  chainTierByObjectId: Record<string, ScanRequirementTier>;
   admissions: ScanExclusionAdmission[];
   clauses: ScanExclusionClauseContribution[];
 }
@@ -643,7 +657,14 @@ export async function buildScanExclusionTargetInputs(
     // `platform` and `trust_domain` are facts about the DEPLOYMENT and are always represented; the
     // rest come from what this target's chain actually contains.
     const representedTiers = new Set<ScanRequirementTier>(["platform", "trust_domain"]);
-    for (const entry of chain) representedTiers.add(tierForObjectType(entry.typeId));
+    // M22.6 (D3) — built in the SAME loop as `representedTiers`, from the same walk, so the two can
+    // never disagree about what this target's chain contains.
+    const chainTierByObjectId: Record<string, ScanRequirementTier> = {};
+    for (const entry of chain) {
+      const tier = tierForObjectType(entry.typeId);
+      representedTiers.add(tier);
+      chainTierByObjectId[entry.id] = tier;
+    }
 
     const admissions: ScanExclusionAdmission[] = [...instanceAdmissions];
     const clauses: ScanExclusionClauseContribution[] = [];
@@ -668,6 +689,7 @@ export async function buildScanExclusionTargetInputs(
     targets.push({
       targetObjectId: targetId,
       representedTiers: [...representedTiers],
+      chainTierByObjectId,
       admissions,
       clauses
     });
@@ -696,15 +718,61 @@ export function scanRequirementTierOrder(): readonly ScanRequirementTier[] {
 }
 
 /**
+ * M22.6 (D3), THE DERIVED BAR — the tier an override grant must have been approved at-or-above, read
+ * off the RULE rather than off the request.
+ *
+ * PURE, and the one place the bar is computed. The ceiling's `contributors` are the provenance M22.0
+ * put into the gate Decision precisely so a block could name the tier that bound it; this is the
+ * second consumer of that provenance and the reason it had to be recorded rather than merged away.
+ *
+ * THE MOST SENIOR CONTRIBUTOR WINS, not the one whose value happens to be the per-severity MIN.
+ * Excluding a finding removes it from the COUNT, which loosens EVERY ceiling on that severity at once
+ * — a count of 6 dropping to 5 satisfies a platform ceiling of 5 exactly as it satisfies the service
+ * ceiling of 0 that produced the block. Keying on the binding contributor alone would let a junior
+ * tier defeat a senior tier's ceiling indirectly, which is the escalation D3 exists to forbid.
+ *
+ * NO CONTRIBUTORS AT ALL ⇒ `component`, the bottom rung, i.e. NO BAR. That is not a fallback chosen
+ * for convenience: with no tier-set ceiling there is no constraint stricter than the requester's own
+ * authority to escalate past, and the control falls back to its own per-binding `config.threshold`
+ * (the documented M17.1 behaviour). The ordinary `policy:write`-at-or-above check on an ancestor the
+ * requester does not choose freely is then the whole of the control.
+ */
+export function requiredOverrideApprovalTier(
+  ceiling: EffectiveScanThreshold | undefined
+): ScanRequirementTier {
+  let best: ScanRequirementTier = "component";
+  for (const contribution of ceiling?.contributors ?? []) {
+    const rank = tierRank(contribution.tier);
+    if (rank < 0) continue; // an unrecognized tier label raises no bar
+    if (rank < tierRank(best)) best = contribution.tier;
+  }
+  return best;
+}
+
+export interface ResolveScanExclusionsForTargetsInput extends ResolveScanExclusionsInput {
+  /**
+   * The effective ceiling for the SAME targets, already resolved by the caller.
+   *
+   * REQUIRED — declared as `T | undefined` rather than `?:` on purpose, so TypeScript forces every
+   * call site to state it and a fourth gate site cannot inherit an unguarded default. `undefined`
+   * means "no tier set a ceiling", which {@link requiredOverrideApprovalTier} reads as "no bar"; it
+   * must never mean "the caller forgot", because that reading would silently restore the hole D3's
+   * enforcement closes.
+   */
+  ceiling: EffectiveScanThreshold | undefined;
+}
+
+/**
  * Resolves the effective exclusion set for a change's targets across all seven rungs.
  *
  * Structurally parallel to `resolveEffectiveScanThreshold` and deliberately NOT folded into it: the
  * two share the tier vocabulary and nothing else, and a single function computing both would be one
- * edit away from letting a ceiling contributor admit an exclusion.
+ * edit away from letting a ceiling contributor admit an exclusion. It does CONSUME the ceiling —
+ * `approved_override` is measured against it (D3) — but only as an input it cannot change.
  */
 export async function resolveEffectiveScanExclusionsForTargets(
   tx: TenantTx,
-  input: ResolveScanExclusionsInput
+  input: ResolveScanExclusionsForTargetsInput
 ): Promise<EffectiveScanExclusions | undefined> {
   if (input.targetObjectIds.length === 0) return undefined;
 
@@ -712,7 +780,14 @@ export async function resolveEffectiveScanExclusionsForTargets(
   const resolved = resolveEffectiveScanExclusions(targets);
   const withVendor = await attachVendorLatestFacts(tx, input.orgId, targets, resolved, input.now);
   const withDeclared = await attachDeclaredFacts(tx, input.orgId, targets, withVendor);
-  return attachApprovedOverrides(tx, input.orgId, targets, withDeclared, input.now);
+  return attachApprovedOverrides(
+    tx,
+    input.orgId,
+    targets,
+    withDeclared,
+    input.now,
+    requiredOverrideApprovalTier(input.ceiling)
+  );
 }
 
 /**
@@ -793,21 +868,56 @@ async function attachDeclaredFacts(
  * The gate-evaluation instant is deliberately the SAME `now` the vendor rule's freshness bound uses
  * (injectable for tests, `new Date()` in production): two loosening dimensions reading two different
  * clocks within one evaluation is a difference nobody would ever look for.
+ *
+ * THE AUTHORITY BAR (D3) IS APPLIED HERE TOO, and it is applied PER TARGET before the intersection,
+ * never after. A grant's tier is derived from the containment chain of the target it excuses, and two
+ * targets have two different chains — the same `tierObjectId` can be an ancestor of one and a
+ * stranger to the other. Filtering after the intersection would let a grant that cleared the bar for
+ * target A excuse a finding on target B it has no standing over, which is the same cross-target leak
+ * ADR-0033 §3 forbids for clauses.
  */
 async function attachApprovedOverrides(
   tx: TenantTx,
   orgId: string,
   targets: ScanExclusionTargetInput[],
   resolved: EffectiveScanExclusions | undefined,
-  now: Date | undefined
+  now: Date | undefined,
+  requiredTier: ScanRequirementTier
 ): Promise<EffectiveScanExclusions | undefined> {
   if (!resolved) return undefined;
   if (!resolved.clauses.some((c) => c.clause.class === "approved_override")) return resolved;
   const at = now ?? new Date();
   const perTarget: ScanApprovedOverrides[] = [];
+  const refusedById = new Map<string, RefusedScanOverrideGrant>();
   for (const target of targets) {
-    perTarget.push(await resolveApprovedOverridesForTarget(tx, orgId, target.targetObjectId, at));
+    const candidates = await resolveApprovedOverridesForTarget(
+      tx,
+      orgId,
+      target.targetObjectId,
+      at
+    );
+    const { granted, refused } = applyOverrideAuthorityBar({
+      candidates,
+      chainTierByObjectId: target.chainTierByObjectId,
+      requiredTier,
+      rankOf: tierRank
+    });
+    perTarget.push({ grants: granted });
+    for (const entry of refused) refusedById.set(entry.grantObjectId, entry);
   }
   const approvedOverrides = intersectApprovedOverrides(perTarget);
-  return approvedOverrides ? { ...resolved, approvedOverrides } : resolved;
+  if (!approvedOverrides) return resolved;
+  const refusedForAuthority = [...refusedById.values()].sort((a, b) =>
+    a.grantObjectId < b.grantObjectId ? -1 : 1
+  );
+  return {
+    ...resolved,
+    approvedOverrides: {
+      ...approvedOverrides,
+      // Always present once this dimension resolved: the bar is the RULE the grants were measured
+      // against, and a Decision listing the grants without it explains half the verdict.
+      requiredTier,
+      ...(refusedForAuthority.length > 0 ? { refusedForAuthority } : {})
+    }
+  };
 }

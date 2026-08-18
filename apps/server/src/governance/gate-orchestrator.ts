@@ -480,8 +480,31 @@ function scanExclusionsForDecision(
               vulnerabilityId: g.vulnerabilityId,
               ...(g.pkgName ? { pkgName: g.pkgName } : {}),
               tierObjectId: g.tierObjectId,
+              // M22.6 (D3) — the DERIVED tier of that object, not the id the requester wrote down.
+              // The id alone told an auditor which object was named; the tier is what the grant was
+              // actually measured at, and the pair is what makes "under authority of X" checkable.
+              grantTier: g.tier,
               expiresAt: g.expiresAt
             }))
+          }
+        : {}),
+      // M22.6 (D3) — THE BAR, and every grant it refused. Recorded whether or not any grant survived,
+      // because "no exclusion applied" and "a live grant was refused for authority" are different
+      // facts and only the second one tells an operator why their approved waiver did nothing. Both
+      // are content-only and already sorted by the resolver, so write suppression still holds.
+      ...(resolved.approvedOverrides?.requiredTier
+        ? { overrideRequiredTier: resolved.approvedOverrides.requiredTier }
+        : {}),
+      ...(resolved.approvedOverrides?.refusedForAuthority &&
+      resolved.approvedOverrides.refusedForAuthority.length > 0
+        ? {
+            overridesRefusedForAuthority: resolved.approvedOverrides.refusedForAuthority.map(
+              (r) => ({
+                grantObjectId: r.grantObjectId,
+                ...(r.tier ? { tier: r.tier } : {}),
+                reason: r.reason
+              })
+            )
           }
         : {})
     }
@@ -740,7 +763,11 @@ export async function prewarmGovernanceForChange(
       matches,
       // FIRED ONLY, and never the ceiling's key set: an unevaluable condition must yield NO
       // exclusion (ADR-0033 §4 — the opposite sign from `ceilingContributorKeys`).
-      firedPolicies: fired
+      firedPolicies: fired,
+      // M22.6 (D3) — the ceiling resolved one statement above, so an override grant is measured
+      // against the tier that actually SET the rule it waives rather than against a tier the
+      // requester named. Required (not optional) so a fourth gate site cannot inherit "no bar".
+      ceiling: scanThreshold
     });
     // M22.7 (ADR-0033 §10) — THE ACTUATOR, at the site whose run is CACHED and later read by the
     // host-less accept edge. Without it a grant approved after this change's controls first ran is
@@ -940,7 +967,10 @@ export async function evaluateGovernanceGate(
     targetObjectIds: ctx.targetObjectIds,
     actorObjectId: ctx.actorObjectId,
     matches,
-    firedPolicies: fired
+    firedPolicies: fired,
+    // M22.6 (D3) — the ceiling resolved immediately above is the rule an override grant waives, so
+    // it is what the grant's derived tier is measured against.
+    ceiling: effectiveScanThreshold
   });
 
   // M22.7 — the actuator at the EVALUATE site. This is a SECOND call site, not a duplicate: the

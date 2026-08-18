@@ -59,6 +59,9 @@ function target(
   return {
     targetObjectId: id,
     representedTiers: opts.represented ?? CHAIN,
+    // M22.6 (D3) — the pure AND never reads this; it exists for the override authority bar, which is
+    // exercised against the real graph in `scan-declared-override-exclusions.integration.test.ts`.
+    chainTierByObjectId: {},
     admissions: (opts.admitAt ?? []).map((tier) => ({
       tier,
       class: (opts.clause ?? CLAUSE).class,
@@ -170,6 +173,7 @@ describe("M22.2: resolveEffectiveScanExclusions — the monotone AND", () => {
         {
           targetObjectId: "a",
           representedTiers: CHAIN,
+          chainTierByObjectId: {},
           admissions: [
             { tier: "platform", class: "no_fix_available", source: "admit:platform" },
             { tier: "trust_domain", class: "no_fix_available", source: "admit:trust_domain" }
@@ -188,6 +192,7 @@ describe("M22.2: resolveEffectiveScanExclusions — the monotone AND", () => {
       {
         targetObjectId: "a",
         representedTiers: CHAIN,
+        chainTierByObjectId: {},
         admissions: [
           { tier: "platform", class: "vendor_latest", source: "admit:platform" },
           { tier: "trust_domain", class: "vendor_latest", source: "admit:trust_domain" }

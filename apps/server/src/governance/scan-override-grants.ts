@@ -2,10 +2,13 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import {
   SCAN_OVERRIDE_GRANT_TYPE_ID,
   ScanOverrideGrantStatusSchema,
+  type RefusedScanOverrideGrant,
   type ScanApprovedOverrides,
   type ScanOverrideGrant,
+  type ScanOverrideGrantCandidate,
   type ScanOverrideGrantFact,
-  type ScanOverrideGrantStatus
+  type ScanOverrideGrantStatus,
+  type ScanRequirementTier
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
@@ -53,7 +56,26 @@ import { objects } from "../db/schema.js";
  *     `objectRef`; the org-root bar applies only to unscoped, selector and group scopes. Naming the
  *     tier's object concretely IS the bounded case.
  * So the approve check below is one ordinary `authorize({permission: "policy:write", scopeObjectId:
- * tierObjectId})` call and nothing else. That is the whole of why D3 was affordable.
+ * tierObjectId})` call. That is the whole of why D3 was affordable — AND IT IS NOT SUFFICIENT ON ITS
+ * OWN, which the first version of this module got wrong.
+ *
+ * THE HOLE THAT WAS HERE. `scopeExpandCte` expanding upward cuts BOTH ways: a binding below the named
+ * object never satisfies the check, but naming a LOWER object strictly WIDENS the set of principals
+ * that do. `tierObjectId` was supplied by the REQUESTER and compared to nothing, so the party seeking
+ * a waiver chose the authority that would grant it — name your own service, approve at your own
+ * service, and a platform-set `maxCritical: 0` is waived while the audit trail truthfully records
+ * "under authority of '<service>'". The authorize call was never wrong; what was missing was any
+ * DERIVATION of which object it should be pointed at.
+ *
+ * THE TIER IS NOW DERIVED, at three places, none of which trusts the claim:
+ *   - RAISE and APPROVE call {@link assertOverrideTierStanding} — the named object must lie on the
+ *     component's own containment chain, and the approve half additionally refuses while an INSTANCE
+ *     floor is set (no graph object maps to `platform`/`trust_domain`, so such a grant could never
+ *     apply and approving it would leave the approver with a false belief).
+ *   - THE GATE calls {@link applyOverrideAuthorityBar}, which is the decisive one: it re-derives the
+ *     grant's tier from the target's chain and compares it against the tier that actually set the
+ *     ceiling. See that function's docblock for the full argument, including why the bar is EVERY
+ *     contributing tier rather than only the binding one.
  *
  * A note on what CANNOT decide who may RAISE a request: `owners-of` walks `domain_id` only and never
  * joins `contains`, so it does not see a component's service or assembly. Raising is therefore gated
@@ -196,7 +218,7 @@ export async function resolveApprovedOverridesForTarget(
   orgId: string,
   targetObjectId: string,
   at: Date
-): Promise<ScanApprovedOverrides> {
+): Promise<ScanOverrideGrantCandidate[]> {
   const rows = await tx
     .select({ id: objects.id, properties: objects.properties })
     .from(objects)
@@ -212,7 +234,7 @@ export async function resolveApprovedOverridesForTarget(
         sql`(${objects.properties}->>'expiresAt')::timestamptz > ${at.toISOString()}::timestamptz`
       )
     );
-  const grants: ScanOverrideGrantFact[] = [];
+  const grants: ScanOverrideGrantCandidate[] = [];
   for (const row of rows) {
     const p = row.properties as Record<string, unknown>;
     const vulnerabilityId = str(p.vulnerabilityId);
@@ -234,7 +256,91 @@ export async function resolveApprovedOverridesForTarget(
   // `inputContext` — the M22.0 write-suppression rule. `grantObjectId` is a stored uuid, not a value
   // that varies between evaluations, so it is safe to sort on and safe to record.
   grants.sort((a, b) => (a.grantObjectId < b.grantObjectId ? -1 : 1));
-  return { grants };
+  return grants;
+}
+
+/**
+ * D3, ENFORCED — the authority bar, applied to one target's live grants.
+ *
+ * ===========================================================================================
+ * WHAT WAS WRONG, IN ONE SENTENCE
+ * ===========================================================================================
+ * `tierObjectId` was chosen freely by the REQUESTER, resolved with `getObjectByIdOrUrnAnyType` on
+ * trust, and read afterwards only for PRESENCE. Because `scopeExpandCte` expands UPWARD, naming a
+ * LOWER object strictly WIDENS the approver set — so the party seeking a waiver selected the
+ * authority that would grant it, and a service lead could approve away a platform-set floor while
+ * the audit trail truthfully recorded "under authority of '<service>'".
+ *
+ * ===========================================================================================
+ * THE FIX: THE TIER IS DERIVED, THE CLAIM IS ONLY VALIDATED
+ * ===========================================================================================
+ * Two derivations, neither of which reads anything the requester wrote:
+ *
+ *   - THE GRANT'S OWN TIER comes from placing `tierObjectId` on THIS TARGET'S containment chain and
+ *     reading `tierForObjectType` off the placement. A named object that is not on the chain is not
+ *     an ancestor of the component, holds no authority over it through any route the RBAC walk uses,
+ *     and is refused outright — never silently mapped to `component`.
+ *   - THE BAR (`requiredTier`) comes from `EffectiveScanThreshold.contributors`, the provenance M22.0
+ *     recorded so a block could name the tier that bound it.
+ *
+ * A grant applies only when its derived tier is AT OR ABOVE the bar. `TIER_ORDER` is top-down, so
+ * "at or above" is `rank <= rank`.
+ *
+ * ===========================================================================================
+ * WHY THE BAR IS *EVERY* CONTRIBUTOR AND NOT ONLY THE BINDING ONE
+ * ===========================================================================================
+ * Tempting and wrong: "only the tier whose value is the per-severity MIN is being waived". Excluding
+ * a finding removes it from the COUNT, which loosens every ceiling on that severity at once — a
+ * count of 6 dropping to 5 satisfies a platform ceiling of 5 just as surely as it satisfies the
+ * service ceiling of 0 that produced the block. So the bar is the most senior tier that set ANY
+ * ceiling; anything narrower lets a junior tier defeat a senior one indirectly.
+ *
+ * ===========================================================================================
+ * TWO CONSEQUENCES, STATED RATHER THAN DISCOVERED
+ * ===========================================================================================
+ *   - AN INSTANCE FLOOR MAKES GRANTS INERT. `readInstanceScanFloors` contributes at `platform` /
+ *     `trust_domain`, and `tierForObjectType` maps no graph object to either — those rungs are
+ *     authored with the deployment operator token, which no tenant role can grant. So while an
+ *     instance floor is set, no grant can clear the bar. That is D3 read literally ("a platform-set
+ *     floor is waivable only at platform") and it is why the approve route refuses up front rather
+ *     than letting an operator believe they granted something.
+ *   - WITH NO CEILING AT ALL THE BAR IS `component`. No tier set a rule, so there is no constraint
+ *     stricter than the requester's own authority to escalate past; the ordinary `policy:write`
+ *     at-or-above check on the named ancestor is then the whole of the control, exactly as shipped.
+ */
+export function applyOverrideAuthorityBar(input: {
+  candidates: readonly ScanOverrideGrantCandidate[];
+  /** Tier of every object on this target's containment chain, by object id. */
+  chainTierByObjectId: Readonly<Record<string, ScanRequirementTier>>;
+  requiredTier: ScanRequirementTier;
+  /** `TIER_ORDER.indexOf` — injected so this module never grows a second copy of the tier order. */
+  rankOf: (tier: ScanRequirementTier) => number;
+}): { granted: ScanOverrideGrantFact[]; refused: RefusedScanOverrideGrant[] } {
+  const granted: ScanOverrideGrantFact[] = [];
+  const refused: RefusedScanOverrideGrant[] = [];
+  const bar = input.rankOf(input.requiredTier);
+  for (const candidate of input.candidates) {
+    const tier = input.chainTierByObjectId[candidate.tierObjectId];
+    if (tier === undefined) {
+      refused.push({
+        grantObjectId: candidate.grantObjectId,
+        reason: "tier_not_on_containment_chain"
+      });
+      continue;
+    }
+    if (input.rankOf(tier) > bar) {
+      refused.push({
+        grantObjectId: candidate.grantObjectId,
+        tier,
+        reason: "tier_below_required"
+      });
+      continue;
+    }
+    granted.push({ ...candidate, tier });
+  }
+  granted.sort((a, b) => (a.grantObjectId < b.grantObjectId ? -1 : 1));
+  refused.sort((a, b) => (a.grantObjectId < b.grantObjectId ? -1 : 1));
+  return { granted, refused };
 }
 
 /**
