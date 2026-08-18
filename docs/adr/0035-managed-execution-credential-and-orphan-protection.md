@@ -1,6 +1,18 @@
-# ADR-0034: Managed execution — credential exposure, orphan containers, and the enforcement layering that catches neither
+# ADR-0035: Managed execution — credential exposure, orphan containers, and the enforcement layering that catches neither
 
 **Status:** **Accepted (2026-08-18)**, **amended 2026-08-18 (M23.1e, Decision 5)** — four decision points decided by the owner on 2026-08-18, before this milestone's code was written; a fifth records the whole-run budget that M23.1e added, which amends Decisions 2 and 3 and closes Defect 4. Three fixes land in M23.1 and M23.2 (pending). **This ADR records the defects found in production (managed-iac live on main, credential-readable from host process table and `docker inspect`; the 10-second SIGKILL defeating every run over 10 seconds; orphaned containers from crash-killed subprocesses), their fixes, and the fundamental enforcement-layering reason none of it was caught by any existing test.**
+
+**Numbering:** this ADR was authored as 0034 and renumbered to **0035** by agreement with the
+concurrent `claude/ui-review-worktree-efc42b` branch on 2026-08-18. Three branches independently claimed
+0034: this one, that branch's `remove-initiative`, and — already on `main` — the prose reservation at
+`docs/proposals/governance-label-namespace.md:3` ("An ADR (0034) follows owner approval"), which neither
+branch's renumber pass would have seen, because it reserves a number without holding a file in `docs/adr/`.
+Agreed map: **0034** reserved for governance-label-namespace, **0035** here, **0036–0038** that branch.
+Agreeing numbers up front makes merge order irrelevant, which is strictly better than renumbering
+second-to-merge. Two cautions for whoever renumbers next: grep `docs/proposals` for `An ADR (00` as well as
+reading `docs/adr/`, and replace **anchored** forms only (`ADR-00NN`, `adr/00NN-`, the filename) — a bare
+four-digit match collides with the migration namespace, where `0034` is `federation_inbox_files` and
+appears in nine unrelated places in this repo.
 
 **Context doc:** [docs/BUILD_AND_TEST.md](../BUILD_AND_TEST.md) §8 (M23.0–M23.2 entries describe the defects, their fix order and proof strategy).
 
