@@ -23,6 +23,7 @@ import type { PluginContext } from "@scp/plugin-api";
 import type { Db } from "../db/client.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { getChange } from "../coordination/changes-repo.js";
+import { appendAuditEvent } from "../audit/audit-repo.js";
 import {
   insertControlRun,
   listControlRunsForChange,
@@ -334,6 +335,23 @@ interface DepositRow {
 }
 
 /**
+ * A `runner.scan()` call that itself never produced a report — dispatch unavailable, an
+ * unresolvable pull ref, a launcher failure, anything `ManagedScanResult`'s `{ ok: false }` arm
+ * carries. Distinct from a `DepositRow` with `status: "fail"`: THAT is a real scan verdict (a
+ * digest mismatch or a threshold breach) and IS deposited as `control_runs` evidence. This is the
+ * opposite — no scan happened at all — and depositing it as scan EVIDENCE would misrepresent "we
+ * scanned and it failed" as "we could not scan", which `ScanEvidenceSchema`'s required
+ * `severityCounts` cannot even express honestly. Recorded as an AUDIT EVENT instead (charter
+ * principle 6), so the operator refused by E6's "no passing digest-bound evidence" can see WHY:
+ * a runner/dispatch error, not a scan that ran and found problems.
+ */
+interface RunnerFailure {
+  method: ScanMethod;
+  digest: string;
+  reason: string;
+}
+
+/**
  * Run the commander's promotion scan step for `changeIdOrUrn`, depositing managed-scan `control_runs`
  * rows so the UNCHANGED E6 gate (read next by `exportPromotionBundle`) has evidence to consume. A
  * no-op for a metadata-only promotion (no substantive artifacts) or an artifact already covered by
@@ -406,6 +424,7 @@ export async function runPromotionScanStep(
   // Phase B (no tx): pull + scan each planned artifact per method. Subprocesses (skopeo/docker) run
   // here, never while a pooled DB connection is held (the codebase-wide invariant, promotion-repo.ts).
   const deposits: DepositRow[] = [];
+  const runnerFailures: RunnerFailure[] = [];
   for (const { subject, methods } of plan.planned) {
     for (const method of methods) {
       const result = await runner.scan({
@@ -418,8 +437,12 @@ export async function runPromotionScanStep(
       });
       if (!result.ok) {
         // Runner/dispatch unavailable, or an unresolvable pull ref — produce NO passing evidence
-        // (fail-closed). We deposit nothing: E6 then refuses this artifact for lack of a passing,
-        // digest-bound outcome. Fabricating a pass here is exactly what the model forbids.
+        // (fail-closed). We deposit no CONTROL_RUN: E6 then refuses this artifact for lack of a
+        // passing, digest-bound outcome. Fabricating a pass here is exactly what the model
+        // forbids. `result.reason` is NOT discarded, though — recorded below as an audit event, so
+        // the refusal is diagnosable (a runner error, not a scan verdict) rather than a bare "no
+        // evidence" an operator cannot act on.
+        runnerFailures.push({ method, digest: subject.digest, reason: result.reason });
         continue;
       }
       const { report } = result;
@@ -474,9 +497,11 @@ export async function runPromotionScanStep(
     }
   }
 
-  if (deposits.length === 0) return;
+  if (deposits.length === 0 && runnerFailures.length === 0) return;
 
-  // Phase C (tx, write): deposit the managed-scan control_runs rows the UNCHANGED E6 gate reads next.
+  // Phase C (tx, write): deposit the managed-scan control_runs rows the UNCHANGED E6 gate reads
+  // next, AND record any runner failure as an audit event — same tx, same "written where the
+  // action happened" discipline as every other audited action in this codebase (DESIGN.md §4.3).
   await withTenantTx(db, input.orgId, async (tx) => {
     for (const d of deposits) {
       await insertControlRun(tx, {
@@ -492,6 +517,19 @@ export async function runPromotionScanStep(
         // id with no `control_bindings` row, so there is no module that produced them. NULL is the
         // honest answer and is what keeps a caller asking "what kind of evidence is this?" able to
         // tell a commander scan deposit apart from a bound plugin's verdict.
+      });
+    }
+    // NOT control_runs — a runner failure is not scan EVIDENCE (see RunnerFailure's doc); it is an
+    // audit trail of WHY no evidence exists for this (method, digest), so a later "no passing
+    // digest-bound evidence" E6 refusal is diagnosable instead of a bare fail-closed dead end.
+    for (const f of runnerFailures) {
+      await appendAuditEvent(tx, {
+        orgId: input.orgId,
+        actorId: input.actorObjectId,
+        action: "federation.promotion.scan.runner_failed",
+        subjectId: plan.changeId,
+        reason: `managed-scan (${f.method}) for ${f.digest}: ${f.reason}`,
+        requestId: `federation-promotion-scan:${plan.changeId}:${f.method}:${f.digest}`
       });
     }
   });
