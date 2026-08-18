@@ -19,12 +19,9 @@ describe("withRecordedOutcome", () => {
 
   it("a THROWN fn() is recorded as failed — the whole point: no path escapes unrecorded", async () => {
     const record = vi.fn();
-    const result = await withRecordedOutcome(
-      { record, redact: (t) => t },
-      async () => {
-        throw new Error("boom");
-      }
-    );
+    const result = await withRecordedOutcome({ record, redact: (t) => t }, async () => {
+      throw new Error("boom");
+    });
     expect(result).toBeUndefined();
     expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith(false, "boom");
@@ -57,8 +54,7 @@ describe("withRecordedOutcome", () => {
   it("a non-Error throw is stringified rather than dropped", async () => {
     const record = vi.fn();
     await withRecordedOutcome({ record, redact: (t) => t }, async () => {
-      // eslint-disable-next-line @typescript-eslint/no-throw-literal
-      throw "a plain string rejection";
+      throw "a plain string rejection" as unknown as Error;
     });
     expect(record).toHaveBeenCalledTimes(1);
     expect(record).toHaveBeenCalledWith(false, "a plain string rejection");
