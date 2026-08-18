@@ -1,0 +1,70 @@
+-- ===========================================================================================
+-- THE SAME DEFECT AS drizzle/0069, ONE TABLE OVER, AND HERE IT COSTS THE WHOLE INDEX. drizzle/0041
+-- BUILT AN ORDERING INDEX IN AN ORDER THE READ NEVER ASKS FOR.
+--
+-- FOUND BY CENSUS, not by a symptom. 0069 names the property behind a CI failure on `decisions`: an
+-- index created to make an `ORDER BY … LIMIT 1` read a single seek, whose declared order does not
+-- match the order the read requests, so the index cannot supply that order and the planner must put
+-- a sort node above it — or, when nothing else fits, sort the whole table. Sweeping every
+-- DESC-ordered index in the schema (there are exactly three: 0044, 0046, and this one) turned up
+-- this third instance.
+--
+-- THE MISMATCH. 0041 creates:
+--
+--     ON bundle_transfers (org_id, peer_domain_id, confirmed_at DESC) INCLUDE (transport)
+--       WHERE direction='import' AND kind='sync' AND status='confirmed'
+--
+-- PostgreSQL's `DESC` implies `NULLS FIRST`. The read it was built for —
+-- `federation/bundle-transfers-repo.ts`'s `lastConfirmedSyncImportAt` — orders by
+-- `confirmed_at DESC NULLS LAST`, and that `NULLS LAST` is load-bearing and must not be removed:
+-- it is there because a single confirmed sync-import row with a NULL `confirmed_at` would otherwise
+-- sort ahead of every genuinely-stamped one and make the commander report "never synced" over a
+-- real, correctly-stamped sync import (that trap was disarmed deliberately in 0041's own review
+-- round, H9a). So the QUERY is right and the INDEX is in the wrong order.
+--
+-- `DESC NULLS LAST` and `DESC NULLS FIRST` are different orderings, and an index in one cannot
+-- supply the other. The index is not merely deprioritised the way 0069's two were — it is
+-- ineligible, and the planner falls all the way back to the plan 0041's header says it exists to
+-- abolish: "the query degraded into a scan-and-sort of every transfer row ever written for that
+-- peer". It still does. MEASURED, PostgreSQL 16, 20,000 confirmed sync imports for one peer:
+--
+--   the read as written (`DESC NULLS LAST`) — what actually runs, once per peer per board render
+--     Limit  (cost=914.00..914.00 rows=1) (actual time=3.660..3.661 rows=1)
+--       ->  Sort   Sort Key: confirmed_at DESC NULLS LAST   Method: top-N heapsort
+--             ->  Seq Scan on bundle_transfers   rows=20000
+--     Buffers: shared hit=364        Execution Time: 3.675 ms
+--
+--   the order the index declares (`DESC`) — reachable by no caller, shown for contrast
+--     Limit  (cost=0.41..0.53 rows=1)
+--       ->  Index Scan using bundle_transfers_org_peer_confirmed
+--     Buffers: shared hit=4          Execution Time: 0.014 ms
+--
+--   after this migration, the read as written
+--     Limit  (cost=0.41..0.51 rows=1)
+--       ->  Index Scan using bundle_transfers_org_peer_confirmed
+--     Buffers: shared hit=1 read=3   Execution Time: 0.035 ms
+--
+-- WHY IT MATTERS MORE THAN THE NUMBERS LOOK. `bundle_transfers` is the air-gap handoff ledger and
+-- this module exposes NO pruning, by design — it only ever grows. The cost above is linear in that
+-- ledger's whole history, per peer, on every service-board render, forever. 3.7 ms at 20k rows is
+-- 0.4 s at 2M. That is the shape of the original incident this family of indexes was written for.
+--
+-- WHY THE INDEX MOVES AND NOT THE QUERY. Dropping `NULLS LAST` would match the index and reinstate
+-- the reporting bug named above. `NULLS LAST` is also the semantically correct order here: a row
+-- with no `confirmed_at` is not a candidate for "the most recently confirmed one" and belongs at the
+-- end. The index follows the query.
+--
+-- LOCKING: `DROP INDEX` + `CREATE INDEX` inside drizzle's migration transaction — atomic swap, no
+-- window without an index. `CREATE INDEX` takes an ordinary `SHARE` lock (writes to
+-- `bundle_transfers` block for the build; on this table that is a handful of rows per sync, and the
+-- build is seconds even on a large ledger). Same escape hatch as 0044/0046/0069: an operator who
+-- cannot take the window can pre-create the index by hand under the final name with
+-- `CREATE INDEX CONCURRENTLY` and the `IF NOT EXISTS` below will find it.
+-- ===========================================================================================
+
+DROP INDEX IF EXISTS "bundle_transfers_org_peer_confirmed";
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "bundle_transfers_org_peer_confirmed"
+  ON "bundle_transfers" ("org_id", "peer_domain_id", "confirmed_at" DESC NULLS LAST)
+  INCLUDE ("transport")
+  WHERE "direction" = 'import' AND "kind" = 'sync' AND "status" = 'confirmed';
