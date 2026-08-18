@@ -15,6 +15,16 @@ import { createManagedScanExecutorPlugin } from "./index.js";
  * dead beside it. The only check that distinguishes the two is to delete the wiring — here, by
  * injecting a launcher that throws — and require a named test to die.
  *
+ * M23.1 PHASE 2 CHANGED WHAT "DIES" LOOKS LIKE. Before phase 2, `trigger()` had no outer catch, so
+ * an injected launcher's throw escaped as a REJECTION and this test asserted that. It no longer
+ * does — `trigger()` now resolves, and the failure is recorded via `withRecordedOutcome` instead —
+ * so the first test below was rewritten rather than deleted, to the STRICTER shape managed-dep's own
+ * seam test already used: a plugin that kept a private, second launch path would report `succeeded`,
+ * and one that recorded a generic failure without the injected launcher's own message would fail the
+ * `detail` match. Editing this in place (rather than deleting it) is itself the gate for phase 2's
+ * fix — a bare deletion here would make phase 2's whole "every path records" property untestable in
+ * this plugin the same way it is meant to prove installed.
+ *
  * THIS PLUGIN IS THE ONE WHERE THE SEAM'S CONFIG SURFACE HAS TEETH. `dockerBinary` decides which
  * executable runs, and managed-scan shipped a live RCE because it sat on `KNOWN_EXECUTOR_MODULES`
  * with no manifest, so `validatePluginConfig` returned early and a tenant binding could set it. The
@@ -65,19 +75,25 @@ function ctx(overrides: Record<string, unknown> = {}): PluginContext {
 }
 
 describe("M23.1: managed-scan launches through the injected RunnerLauncher", () => {
-  it("a launcher that throws breaks trigger() — the plugin has no second, private launch path", async () => {
+  it("a launcher failure is RECORDED as failed, never left pending — the plugin has no second, private launch path", async () => {
     const plugin = createManagedScanExecutorPlugin(() => throwingLauncher());
-    await expect(
-      plugin.trigger(ctx(), {
-        kind: "custom",
-        idempotencyKey: "seam-1",
-        parameters: {
-          method: "trivy",
-          inputDir: join(scratch, "oci"),
-          outputDir: join(scratch, "out")
-        }
-      })
-    ).rejects.toThrow(/the injected RunnerLauncher was reached/);
+    const c = ctx();
+    const ref = await plugin.trigger(c, {
+      kind: "custom",
+      idempotencyKey: "seam-1",
+      parameters: {
+        method: "trivy",
+        inputDir: join(scratch, "oci"),
+        outputDir: join(scratch, "out")
+      }
+    });
+    // trigger() RESOLVES (phase 2) — if the plugin still had a private, second launch path that
+    // never touched the injected launcher, it would resolve too, but status() below would report
+    // `succeeded`. Only reaching THIS injected launcher and RECORDING what it threw makes both
+    // assertions pass together.
+    const status = await plugin.status(c, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/the injected RunnerLauncher was reached/);
   });
 
   it("the resolver is handed the server-injected dockerBinary and NOTHING else", async () => {

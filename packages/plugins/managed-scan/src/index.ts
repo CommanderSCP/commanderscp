@@ -14,6 +14,7 @@ import type {
 import {
   resolveDockerRunnerLauncher,
   toRunnerRunId,
+  withRecordedOutcome,
   type ResolveRunnerLauncher,
   type RunnerCopyIn
 } from "@scp/runner-launcher";
@@ -271,31 +272,47 @@ async function trigger(
   const scanArgs: string[] =
     method === "openscap" ? [params.profile ?? "", params.datastream ?? ""] : [];
 
-  await mkdir(params.outputDir, { recursive: true });
-  const result = await runScanContainer(
-    config,
-    resolveLauncher,
-    runKey,
-    method,
-    params.inputDir,
-    params.outputDir,
-    scanArgs,
+  // EVERY PATH OUT OF THE REST OF THIS FUNCTION RECORDS AN OUTCOME (M23.1 phase 2). Before this,
+  // nothing below caught a rejection: a launcher failure escaped `trigger()` as a rejection, no
+  // outcome was ever cached, and `status()` reported `pending` forever — indistinguishable from
+  // "still running". `redact` is the identity function because this plugin holds no credential —
+  // a scan reads bytes the server already pulled, `secretEnv` is always `[]` — so there is nothing
+  // for it to strip; that absence is a fact about managed-scan, not a shortcut taken here.
+  await withRecordedOutcome(
     {
-      scanDbDir: params.scanDbDir,
-      scanScapDir: params.scanScapDir
+      record: (succeeded, detail) => {
+        outcomes.set(externalId, { succeeded, detail: `managed-scan: ${detail}` });
+      },
+      redact: (text) => text
+    },
+    async () => {
+      await mkdir(params.outputDir!, { recursive: true });
+      const result = await runScanContainer(
+        config,
+        resolveLauncher,
+        runKey,
+        method,
+        params.inputDir!,
+        params.outputDir!,
+        scanArgs,
+        {
+          scanDbDir: params.scanDbDir,
+          scanScapDir: params.scanScapDir
+        }
+      );
+      outcomes.set(externalId, {
+        succeeded: result.succeeded,
+        detail: result.succeeded
+          ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
+          : `managed-scan: ${method} scan FAILED — ${result.stderr.slice(0, 2000)}`
+      });
+      ctx.logger.info("managed-scan: run complete", {
+        externalId,
+        method,
+        succeeded: result.succeeded
+      });
     }
   );
-  outcomes.set(externalId, {
-    succeeded: result.succeeded,
-    detail: result.succeeded
-      ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
-      : `managed-scan: ${method} scan FAILED — ${result.stderr.slice(0, 2000)}`
-  });
-  ctx.logger.info("managed-scan: run complete", {
-    externalId,
-    method,
-    succeeded: result.succeeded
-  });
   return { externalId };
 }
 

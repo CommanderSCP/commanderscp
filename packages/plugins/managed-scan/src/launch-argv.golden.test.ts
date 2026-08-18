@@ -55,8 +55,9 @@ import type { PluginContext } from "@scp/plugin-api";
  *     that is pinned, not normalised.
  *  4. THE FAILURE PATH: on a rejected `start` there is **no copy-out at all** — the opposite of
  *     managed-iac, which copies out unconditionally. And this plugin's copy-out is **not**
- *     catch-guarded, so a failed copy-out escapes `trigger()` rather than being swallowed. Both
- *     halves of that asymmetry are measured below.
+ *     catch-guarded, so a failed copy-out fails the RUN rather than being swallowed (M23.1 phase 2:
+ *     it is recorded as `failed` via `withRecordedOutcome`, not left to escape `trigger()` as a
+ *     rejection with nothing cached). Both halves of that asymmetry are measured below.
  *  5. THAT THE SECRECY SPLIT DID NOT TOUCH THIS PLUGIN'S ENVIRONMENT. When `RunnerSpec.env` was
  *     split into `env` and `secretEnv`, the five `create` lines below moved by EXACTLY the `--name`
  *     and the two `--label` pairs and by nothing else: `SCP_SCAN_DB_DIR` and `SCP_SCAN_SCAP_DIR`
@@ -480,23 +481,24 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
     expect(status.detail).toContain("trivy: boom");
   });
 
-  it("A FAILED COPY-OUT IS NOT SWALLOWED — it escapes `trigger()`, and `rm` still runs", async () => {
+  it("A FAILED COPY-OUT IS NOT SWALLOWED — it is RECORDED as failed, and `rm` still runs", async () => {
     // The second half of the asymmetry: managed-iac wraps its copy-out in `.catch(() => undefined)`;
     // managed-scan does not, so the same Docker failure that leaves an iac run "succeeded" makes a
-    // scan `trigger()` REJECT — no outcome is cached, so `status()` reports `pending`, not `failed`.
-    // Recorded as behaviour, without judgement: whether it should reject is an M23.1 question, but
-    // it must not change silently while the refactor is called byte-for-byte identical.
+    // scan run fail. M23.1 PHASE 2 CHANGED WHAT HAPPENS TO THAT FAILURE, not the argv: it used to
+    // escape `trigger()` as a rejection with no outcome cached (`status()` reported `pending`
+    // forever); `trigger()` now RESOLVES and the failure is recorded via `withRecordedOutcome`, so
+    // `status()` reports `failed` with the launcher's own message. The argv/opts assertions below
+    // are UNCHANGED — this is the same five-call sequence as before, only what `trigger()` does with
+    // the outcome moved.
     cpOutOk = false;
     const inputDir = join(scratch, "oci");
     const outputDir = join(scratch, "out");
     const plugin = createManagedScanExecutorPlugin();
-    await expect(
-      plugin.trigger(ctx(), {
-        kind: "custom",
-        idempotencyKey: "k5",
-        parameters: { method: "trivy", inputDir, outputDir }
-      })
-    ).rejects.toThrow(/docker cp/);
+    const ref = await plugin.trigger(ctx(), {
+      kind: "custom",
+      idempotencyKey: "k5",
+      parameters: { method: "trivy", inputDir, outputDir }
+    });
 
     expect(calls.map((c) => c.args[0])).toStrictEqual(["create", "cp", "start", "cp", "rm"]);
     expect(calls.at(-1)).toStrictEqual({
@@ -506,6 +508,8 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
       args: ["rm", "-f", "scp-runner-k5"],
       opts: RM_OPTS
     });
-    expect((await plugin.status(ctx(), { externalId: "managed-scan::k5" })).phase).toBe("pending");
+    const status = await plugin.status(ctx(), ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/docker cp/);
   });
 });
