@@ -15,7 +15,7 @@
     "build": "tsc -b",
     "dev": "tsc -b -w",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run"
   },
   "dependencies": {
     "zod": "^4.0.0"

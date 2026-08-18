@@ -10,7 +10,7 @@
     "start": "node dist/main.js",
     "migrate": "node dist/migrate-bin.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "openapi:emit": "tsx src/openapi-emit.ts",
     "db:generate": "drizzle-kit generate",
