@@ -305,6 +305,13 @@ export async function buildLineWorkList(db: Db, orgId: string): Promise<LineWork
  * and the write, and `pollOrgDependencyVersions` owns both ends of that window. The rule is pure, so
  * it is pinned pure — the same split as `evaluateIngressAuthority` (unit) and the race replay
  * (integration).
+ *
+ * AND THE CALL SITE IS PINNED SEPARATELY, because the pure test is NOT sufficient: restoring the old
+ * fixed sentence at `decisionFor`'s `not_recorded` arm leaves all 16 of that file's cases green
+ * (measured) — a rule proven in isolation while its only consumer is free to ignore it. The pin is
+ * `version-poll.integration.test.ts`'s "the PERSISTED Decision for a line_is_internal refusal
+ * explains OWNERSHIP", which declares a producer from INSIDE the index round trip and reads the
+ * stored text back out of `decisions`.
  */
 export function norecordFor(reason: HeadRefusalReason): string {
   switch (reason) {

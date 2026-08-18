@@ -316,6 +316,42 @@ function describeProducerCoordinate(p: {
   return `${p.ecosystem} '${p.coordinate}'`;
 }
 
+/**
+ * THE STAND-IN URN FOR A LIVE DECLARATION WHOSE PRODUCER OBJECT CANNOT BE NAMED — a tombstoned (or
+ * hard-deleted) component, which `plans-repo.ts` cannot resolve to a URN because every object read
+ * there filters `deleted_at IS NULL`.
+ *
+ * WHY A SENTINEL AND NOT A DROP. `dependency_line_producers` has no `deleted_at` of its own and
+ * `deleteObject` is a SOFT delete, so tombstoning a producer component leaves the declaration
+ * STANDING: the coordinate still has a holder, and the next declaration of it is an `ON CONFLICT DO
+ * UPDATE` that overwrites that holder. Dropping the row from the existence pool made the diff say
+ * `create` — whose reason sentence is literally "no producer is declared for this coordinate — it is
+ * polled as third-party today" — for a coordinate that IS declared. The plan an operator reviews
+ * would then be false about the single fact that decides whether the apply is a first declaration or
+ * a silent overwrite.
+ *
+ * WHY IT IS NOT THE TOMBSTONED OBJECT'S REAL URN. `invalidProducerDeclarations` refuses a
+ * displacement whose URN is not in `diff.objects`; a real URN can legitimately BE there (a manifest
+ * still naming the deleted component diffs it as a `create`), which would let the overwrite through
+ * on exactly the plan that should be refused. A sentinel is refused by its own named branch instead
+ * of by set membership, so no manifest can construct a passing case.
+ *
+ * NOT a valid address for anything: nothing resolves it, `executePlanDiff` never passes it to
+ * `endpointId`, and it appears only in `displacedProducerUrn`, which is read by the guard and by the
+ * operator. It satisfies `UrnSchema` because the diff is validated on the way into `plans.diff`.
+ */
+const UNRESOLVED_PRODUCER_URN_PREFIX = "urn:scp:unresolvable:producer-object:";
+
+/** @see UNRESOLVED_PRODUCER_URN_PREFIX */
+export function unresolvedProducerUrn(producerObjectId: string): string {
+  return `${UNRESOLVED_PRODUCER_URN_PREFIX}${producerObjectId}`;
+}
+
+/** @see UNRESOLVED_PRODUCER_URN_PREFIX */
+export function isUnresolvedProducerUrn(urn: string): boolean {
+  return urn.startsWith(UNRESOLVED_PRODUCER_URN_PREFIX);
+}
+
 function sourceMappingKey(m: ResolvedManifestSourceMapping): string {
   return canonicalJson({
     componentUrn: m.componentUrn,
@@ -922,6 +958,12 @@ const PRODUCER_TYPE_ID = "component";
  *     the blast radius and the bumps in flight, or within one stack — but not as a side effect of a
  *     manifest that never names the component it takes from.
  *
+ *     AND THE HOLDER MAY BE UNNAMEABLE. A tombstoned producer component leaves its declaration
+ *     standing (soft delete; the table has no `deleted_at`), and no object read resolves it to a
+ *     URN — so the displacement carries {@link unresolvedProducerUrn} and gets its own refusal
+ *     branch. Same act, same reason; only the remedy differs, because there is no stack to hand the
+ *     coordinate back to.
+ *
  *     "This stack's" here means "appears in `diff.objects` AT ALL", `delete` entries included. A
  *     delete entry can only have come from the label-scoped prune pool, so its presence PROVES
  *     ownership; excluding it would refuse the ordinary "component P is being replaced by Q, and the
@@ -972,7 +1014,18 @@ export function invalidProducerDeclarations(diff: PlanDiff): string[] {
         continue;
       }
     }
-    if (entry.displacedProducerUrn && !stackUrns.has(entry.displacedProducerUrn)) {
+    if (entry.displacedProducerUrn && isUnresolvedProducerUrn(entry.displacedProducerUrn)) {
+      // REFUSAL (2b) — the same displacement, with the holder unnameable. Its own branch rather than
+      // set membership: see {@link UNRESOLVED_PRODUCER_URN_PREFIX} for why a real URN here could be
+      // made to pass the membership test on precisely the plan that must be refused.
+      offenders.push(
+        `producer ${coordinate} is currently declared on a producer object that no longer resolves ` +
+          `(${entry.displacedProducerUrn}) — the component was deleted and the declaration outlived ` +
+          `it, so this plan would OVERWRITE a standing declaration rather than make a first one. ` +
+          `Retract it through POST /dependencies/producers/retract, which reports the bumps already ` +
+          `in flight, and then declare`
+      );
+    } else if (entry.displacedProducerUrn && !stackUrns.has(entry.displacedProducerUrn)) {
       offenders.push(
         `producer ${coordinate} is currently produced by ${entry.displacedProducerUrn}, which this ` +
           `stack does not manage — a transfer away from another stack's component must go through ` +

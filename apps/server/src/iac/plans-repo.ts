@@ -1,8 +1,10 @@
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type {
+  DependencyLineProducer,
   DesiredStateManifest,
   Plan,
+  PlanDependencyProducerDiffEntry,
   PlanDiff,
   PlanExecutorBindingDiffEntry,
   PlanStatus
@@ -38,6 +40,7 @@ import {
   managedLabels,
   uncontainedComponentCreates,
   unownedProjectionDeclarations,
+  unresolvedProducerUrn,
   type ExistingObjectSnapshot,
   type ExistingRelationshipTriple,
   type ResolvedManifest,
@@ -224,6 +227,28 @@ async function fetchObjectsByIds(tx: TenantTx, orgId: string, ids: string[]) {
     .select()
     .from(objects)
     .where(and(eq(objects.orgId, orgId), inArray(objects.id, ids), isNull(objects.deletedAt)));
+}
+
+ * The URN of one object by id, TOMBSTONES INCLUDED — deliberately unlike every other object read in
+ * this file, all of which filter `deleted_at IS NULL`.
+ *
+ * Used only to NAME the current holder of a producer coordinate in an apply-time refusal.
+ * `dependency_line_producers` has no `deleted_at` and `deleteObject` is a soft delete, so a holder
+ * may perfectly well be tombstoned while its declaration stands; a refusal that could not name it
+ * would leave the operator with a coordinate, a conflict, and nothing to go and look at. Never used
+ * to resolve an address — nothing is written to a tombstoned object on the strength of this.
+ */
+async function objectUrnByIdIncludingTombstones(
+  tx: TenantTx,
+  orgId: string,
+  id: string
+): Promise<string | null> {
+  const [row] = await tx
+    .select({ urn: objects.urn })
+    .from(objects)
+    .where(and(eq(objects.orgId, orgId), eq(objects.id, id)))
+    .limit(1);
+  return row?.urn ?? null;
 }
 
 /**
@@ -536,28 +561,42 @@ export async function computeDiffForManifest(
         objectsById.set(row.id, row);
       }
     }
-    const toResolved = (row: {
-      ecosystem: string;
-      coordinate: string;
-      producerObjectId: string;
-    }): ResolvedManifestDependencyProducer | null => {
+    // THE TWO POOLS MAP DIFFERENTLY ON AN UNRESOLVABLE PRODUCER, because "the safe direction" points
+    // opposite ways for them. One shared mapping used to drop the row from both and call that
+    // conservative; the existence-pool half of that claim was false — see each function's own note.
+    type ProducerRow = { ecosystem: string; coordinate: string; producerObjectId: string };
+    const ecosystemOf = (row: ProducerRow) =>
+      row.ecosystem as ResolvedManifestDependencyProducer["ecosystem"];
+
+    // THE PRUNE POOL — DROP, and here the claim holds. This pool decides what gets RETRACTED. A
+    // declaration whose producer cannot be named is one this plan can neither honestly report a
+    // prune of (the reviewed entry names the producer LOSING the coordinate) nor prove ownership
+    // of, since ownership is inherited from a component that is no longer there. Dropping it means
+    // the retraction does not happen: inaction, and the coordinate keeps the behaviour it has today.
+    const toManaged = (row: ProducerRow): ResolvedManifestDependencyProducer | null => {
       const producerUrn = objectsById.get(row.producerObjectId)?.urn;
-      // Defensive, and CONSERVATIVE IN THE SAFE DIRECTION: a producer object that cannot be resolved
-      // to a URN (a hard-deleted row) drops out of BOTH pools, so the declaration is invisible to
-      // prune and to displacement-detection alike — never mis-attributed to another component.
       if (!producerUrn) return null;
-      return {
-        producerUrn,
-        ecosystem: row.ecosystem as ResolvedManifestDependencyProducer["ecosystem"],
-        coordinate: row.coordinate
-      };
+      return { producerUrn, ecosystem: ecosystemOf(row), coordinate: row.coordinate };
     };
+
+    // THE EXISTENCE POOL — KEEP, ALWAYS. This pool answers "does this coordinate already have a
+    // holder", and the answer is YES whether or not the holder can be named: the row is live and the
+    // next declaration is an upsert straight over it. Dropping it made the diff emit a `create`,
+    // whose reason sentence tells the reviewing operator the coordinate "is polled as third-party
+    // today" — so the plan inverted its own most consequential fact and the apply performed an
+    // unreviewed overwrite. Keeping the row under {@link unresolvedProducerUrn} makes it an `update`
+    // that NAMES the situation, which `invalidProducerDeclarations` refuses in its own branch.
+    const toExisting = (row: ProducerRow): ResolvedManifestDependencyProducer => ({
+      producerUrn:
+        objectsById.get(row.producerObjectId)?.urn ?? unresolvedProducerUrn(row.producerObjectId),
+      ecosystem: ecosystemOf(row),
+      coordinate: row.coordinate
+    });
+
     managedDependencyProducers = producerRows
-      .map(toResolved)
+      .map(toManaged)
       .filter((p): p is ResolvedManifestDependencyProducer => p !== null);
-    existingDependencyProducers = declaredRows
-      .map(toResolved)
-      .filter((p): p is ResolvedManifestDependencyProducer => p !== null);
+    existingDependencyProducers = declaredRows.map(toExisting);
   }
 
   // A manifest may name its execution-system by id OR URN (`CreateExecutorBindingRequest` semantics,
@@ -1455,7 +1494,71 @@ export async function executePlanDiff(
   // Deletes before creates/updates, mirroring every other collection here — though for this one it
   // cannot matter: identity is the coordinate, so a single plan can never both prune and declare the
   // same key.
+  //
+  // AND EVERY NON-NOOP ENTRY RE-READS WHO HOLDS THE COORDINATE, HERE, RATHER THAN TRUSTING THE
+  // STORED DIFF — see `assertPlannedProducerHolder`.
   // -----------------------------------------------------------------------------------------
+
+  /**
+   * THE COORDINATE MUST STILL BE HELD BY WHOEVER THE PLAN SAID HELD IT.
+   *
+   * `plan-diff.ts` computes `create` / `update` + `displacedProducerUrn` / `delete` from a snapshot
+   * taken at `POST /plans` time, and `dependency_line_producers` is keyed on the COORDINATE and
+   * UPSERTED — so the coordinate can change hands between plan and apply with no row deleted and
+   * nothing stale-marking the plan. `displacedProducerUrn` exists precisely because a transfer is a
+   * supported act, which is the same reason one can happen inside this window. Trusting the stored
+   * answer produced three distinct wrong outcomes, all silent:
+   *
+   *  - a `create` whose coordinate was claimed in the window OVERWRITES the new holder. The
+   *    reviewed plan said "no producer is declared … it is polled as third-party today"; the apply
+   *    performs a transfer, and `invalidProducerDeclarations` cannot object because the STORED diff
+   *    carries no displacement to object to.
+   *  - an `update` whose displaced producer was itself displaced in the window takes the coordinate
+   *    from a THIRD component that the plan never named and no guard ever saw — the cross-stack
+   *    steal that refusal (2) exists to refuse, arriving through the back door.
+   *  - a `delete` whose row changed hands in the window RETRACTS SOMEBODY ELSE'S DECLARATION. The
+   *    existence check alone passes (a row is there), and the coordinate silently returns to
+   *    third-party polling for the component that just took it — a dependency-confusion re-arm
+   *    (ADR-0032 §7b) performed by a plan whose reviewed text names a different producer entirely.
+   *
+   * SO A STALE PLAN FAILS LOUDLY. The refusal is a 409 inside the apply transaction, so nothing
+   * partially applies, and the remedy is the ordinary one: re-plan against current state. The holder
+   * is compared BY URN because that is the vocabulary of the diff, and the read includes tombstones
+   * so a holder whose component was deleted is NAMED rather than reading as "nobody" — the null-drop
+   * that would otherwise let a `create` sail past a standing declaration for the second time.
+   */
+  const assertPlannedProducerHolder = async (
+    entry: PlanDependencyProducerDiffEntry
+  ): Promise<DependencyLineProducer | null> => {
+    const key = { ecosystem: entry.ecosystem, coordinate: entry.coordinate };
+    const live = await getDependencyLineProducer(tx, orgId, key);
+    // `create` planned against nobody; `update` against the displaced producer it named; `delete`
+    // against the producer whose name is in the reviewed prune entry. An `update` with no
+    // `displacedProducerUrn` is not a shape `computePlanDiff` emits — it expects nobody, and so
+    // refuses, which is the fail-closed direction for a diff this build did not write.
+    const expectedUrn =
+      entry.action === "create"
+        ? null
+        : entry.action === "update"
+          ? (entry.displacedProducerUrn ?? null)
+          : entry.producerUrn;
+    const liveUrn =
+      live === null
+        ? null
+        : // A holder that resolves to no row at all is still a HOLDER; naming it by id keeps it
+          // unequal to every expectation rather than collapsing into "nobody".
+          ((await objectUrnByIdIncludingTombstones(tx, orgId, live.producerObjectId)) ??
+          `object ${live.producerObjectId}`);
+    if (liveUrn === expectedUrn) return live;
+    throw conflict(
+      `this plan is stale for ${entry.ecosystem} '${entry.coordinate}': it was computed when the ` +
+        `coordinate was ${expectedUrn === null ? "declared by nobody" : `declared by '${expectedUrn}'`}` +
+        `, and it is now ${liveUrn === null ? "declared by nobody" : `declared by '${liveUrn}'`}. ` +
+        `Applying the '${entry.action}' anyway would act on a declaration this plan never showed ` +
+        `its reviewer. Re-plan against current state.`
+    );
+  };
+
   for (const entry of diff.producers ?? []) {
     if (entry.action !== "delete") continue;
     const key = { ecosystem: entry.ecosystem, coordinate: entry.coordinate };
@@ -1467,6 +1570,10 @@ export async function executePlanDiff(
         `no declared producer for ${entry.ecosystem} '${entry.coordinate}' to retract (apply-time prune)`
       );
     }
+    // …and the row that IS there must be the one the plan meant to remove. Kept separate from the
+    // miss above so the two failures stay distinguishable to an operator: "it is already gone" and
+    // "it now belongs to somebody else" are different facts with different remedies.
+    await assertPlannedProducerHolder(entry);
     await retractProducerWithEffects(tx, {
       orgId,
       actorObjectId,
@@ -1478,6 +1585,7 @@ export async function executePlanDiff(
 
   for (const entry of diff.producers ?? []) {
     if (entry.action !== "create" && entry.action !== "update") continue;
+    await assertPlannedProducerHolder(entry);
     await declareProducerWithEffects(tx, {
       orgId,
       actorObjectId,

@@ -7,6 +7,7 @@ import type { DependencyEcosystem } from "@scp/schemas";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { auditEvents, decisions } from "../db/schema.js";
 import {
+  declareDependencyLineProducer,
   getDependencyLineByKey,
   getDependencyLineProducer,
   recordDependencyLineHead,
@@ -14,7 +15,9 @@ import {
 } from "../dependencies/dependency-inventory-repo.js";
 import { PRODUCER_DECISION_KIND } from "../dependencies/producer-declaration.js";
 import {
+  createOrphanComponent,
   createTestOrg,
+  createTestUser,
   listenTestServer,
   type ListeningTestServer,
   type TestOrg
@@ -62,6 +65,15 @@ import {
  *  5. **THE TRANSFER**, which is this collection's own hazard: identity is the COORDINATE and the
  *     table upserts, so a declaration changes hands with NO row deleted. Owning the destination
  *     component is not enough.
+ *  7. **THE PLAN/APPLY WINDOW.** Every refusal in (5) is derived from the STORED diff —
+ *     deliberately, so a plan written by an older build is re-checked — and that is exactly what
+ *     makes the diff's account of WHO HOLDS the coordinate un-recheckable once the world moves.
+ *     Three shapes, three different wrong outcomes, all silent; the `delete` one RETRACTS SOMEBODY
+ *     ELSE'S declaration.
+ *  8. **THE AUTHORITY**, which was present and held by NOTHING — see (8)'s own header.
+ *  9. **A HOLDER THAT CANNOT BE NAMED IS STILL A HOLDER.** A tombstoned producer component leaves
+ *     its declaration standing, and the snapshot's null-drop made the diff report `create` about a
+ *     coordinate that is declared.
  *
  * ============================================================================================
  * MUTATION LOG — each applied, watched fail, reverted, watched pass
@@ -74,6 +86,9 @@ import {
  * | `declareProducerWithEffects` -> a bare `declareDependencyLineProducer` in the apply path | exactly 2 fail: "(3) …CLEARS a poisoned public head" (`expected '2.99.0' to be null`) and "(3) …records its own Decision…". "(2) WIRING" STAYS GREEN — which is precisely why a row-exists gate is not sufficient on its own |
  * | drop the `displacedProducerUrn` guard from `invalidProducerDeclarations` | 1 fails: "(5) a stack cannot TAKE a coordinate…" — the plan is accepted instead of rejected. `plan-diff.test.ts`'s unit case fails alongside it |
  * | drop the commander-only block from `routes/plans.ts`'s apply | 1 fails: "(6) …is refused on a deployment that is not a declared commander" — the apply resolves with a 200 |
+ * | drop both `assertPlannedProducerHolder` calls from `executePlanDiff` | exactly 3 fail, one per shape, each on the SUBSTANTIVE assertion rather than on the refusal: CREATE and UPDATE read `expected '<the stack's component>' to be '<the interloper>'` — the coordinate was taken from the component that claimed it in the window — and DELETE reads `expected undefined to be '<the interloper>'`, the silent retraction. "(7) …a plan whose world did NOT move still applies" stays green, so the guard is proven to be about DISAGREEMENT and not about refusing to re-apply |
+ * | delete `checks.push(dependencyProducerScopeCheck(orgId))` from `prepareApplyChecks` | exactly 1 fails: "(8)(b) …the SAME Operator is REFUSED a plan that declares one" — `promise resolved … instead of rejecting`, the plan applies with `creates: 4` and the declaration is written by a principal holding `policy:write` nowhere. "(8)(a)" stays green, which is what makes the 403 a statement about the collection rather than about Operators and plans |
+ * | restore the shared null-drop — `toExisting = toManaged`, both pools filtered | exactly 1 fails: "(9) a coordinate whose producer component was deleted…" — `POST /plans` resolves instead of rejecting, and the diff it returns reads `"action":"create"` with the reason `no producer is declared for … it is polled as third-party today` about a coordinate that IS declared. Measured on the same run: the apply is then stopped by (7)'s guard with `409 … it was computed when the coordinate was declared by nobody, and it is now declared by 'urn:scp:…:component:lib'` — the two layers are independent, and only this one keeps the reviewed plan honest |
  */
 describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
   let server: ListeningTestServer;
@@ -532,6 +547,322 @@ describe("iac: dependency-line producer declarations (ADR-0032 §7e)", () => {
       const plan = await outpostAdmin.plans.create(stack.synth());
       const { plan: applied } = await outpostAdmin.plans.apply(plan.id);
       expect(applied.status).toBe("applied");
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // (7) THE WINDOW BETWEEN PLAN AND APPLY — the stored diff is a CLAIM about who holds a coordinate
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * `dependency_line_producers` is keyed on the COORDINATE and upserted, so it can change hands with
+   * no row deleted, nothing to stale-mark the plan, and no trace in either stack's prune pool. Every
+   * guard section (5) proves is derived from the STORED diff — deliberately, so a plan written by an
+   * older build is re-checked — and that same property is what makes the diff's own account of the
+   * world un-recheckable once the world moves. `executePlanDiff` therefore re-reads the live holder
+   * for every non-noop entry.
+   *
+   * THE WINDOW IS DRIVEN AT THE REPO SEAM, the precedent
+   * `version-poll.integration.test.ts`'s race replays set: `declareDependencyLineProducer` is
+   * verbatim what the verb writes, called between `POST /plans` and `POST /plans/{id}/apply`, which
+   * are two separate HTTP requests in production and therefore a real wall-clock gap.
+   */
+  describe("(7) a plan is re-checked against the LIVE holder at apply time", () => {
+    /** A component outside every stack here — the party that takes the coordinate in the window. */
+    let interloper: string;
+
+    beforeAll(async () => {
+      interloper = (await createOrphanComponent(admin, `interloper-${randomUUID().slice(0, 8)}`))
+        .id;
+    });
+
+    /**
+     * The apply, DRIVEN TO COMPLETION whichever way it goes, so each case can assert the state of
+     * the coordinate FIRST. That ordering is deliberate and is the file's own discipline from (1):
+     * with `rejects.toMatchObject` first, removing the guard fails on "promise resolved instead of
+     * rejecting" and the damage it did is never read. Here the substantive assertion goes first, so
+     * the measured failure names the wrong OUTCOME — whose declaration was overwritten or retracted.
+     */
+    const applyOutcome = (planId: string): Promise<unknown> =>
+      admin.plans.apply(planId).then(
+        () => null,
+        (err: unknown) => err
+      );
+
+    /** The verb's own row write, landing in the plan/apply window. */
+    const declareInWindow = (
+      key: { ecosystem: DependencyEcosystem; coordinate: string },
+      producerObjectId: string
+    ) =>
+      inOrg((tx) =>
+        declareDependencyLineProducer(tx, org.orgId, {
+          ...key,
+          producerObjectId,
+          declaredByObjectId: producerObjectId
+        })
+      );
+
+    it("a CREATE whose coordinate was claimed in the window is REFUSED, not silently applied over the new holder", async () => {
+      const stackName = `stack-${randomUUID().slice(0, 8)}`;
+      const key = npm("claimed-late");
+
+      const app = new App();
+      const stack = new Stack(app, stackName);
+      const service = new Service(stack, "svc", { name: "Svc" });
+      new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
+
+      // The plan is computed against a world where the coordinate is third-party, and SAYS SO — the
+      // sentence the operator reads, and the reason no ownership guard can object to this diff.
+      const plan = await admin.plans.create(stack.synth());
+      expect(plan.diff.producers?.map((p) => p.action)).toEqual(["create"]);
+      expect(plan.diff.producers?.[0]?.displacedProducerUrn).toBeUndefined();
+
+      await declareInWindow(key, interloper);
+      const outcome = await applyOutcome(plan.id);
+
+      // The interloper's declaration is untouched — the outcome the stored diff would otherwise
+      // produce is a TRANSFER away from it, performed by a plan that reviewed as a first declaration.
+      expect(
+        (await producerOf(key))?.producerObjectId,
+        "the coordinate must still belong to the component that claimed it in the window"
+      ).toBe(interloper);
+      expect(outcome).toMatchObject({
+        status: 409,
+        problem: { detail: expect.stringContaining("this plan is stale") }
+      });
+      // …and fail-closed means the whole apply rolled back, not just the producer half.
+      await expect(
+        admin.components.get(`urn:scp:${stackName}:component:lib`)
+      ).rejects.toMatchObject({ status: 404 });
+    });
+
+    it("an UPDATE is REFUSED when the producer it planned to displace is no longer the one holding the coordinate", async () => {
+      const stackName = `stack-${randomUUID().slice(0, 8)}`;
+      const key = npm("displaced-late");
+
+      function build(producer: "old" | "new") {
+        const app = new App();
+        const stack = new Stack(app, stackName);
+        const service = new Service(stack, "svc", { name: "Svc" });
+        const oldLib = new Component(stack, "old", { name: "old", service });
+        const newLib = new Component(stack, "new", { name: "new", service });
+        (producer === "old" ? oldLib : newLib).producesDependency(key);
+        return stack.synth();
+      }
+
+      await applyLatest(build("old"));
+      const oldComponent = await admin.components.get(`urn:scp:${stackName}:component:old`);
+
+      // A legitimate WITHIN-STACK transfer, exactly the shape section (5) applies successfully: the
+      // plan names `old` as the displaced producer, and `old` is this stack's.
+      const plan = await admin.plans.create(build("new"));
+      expect(plan.diff.producers?.[0]?.displacedProducerUrn).toBe(
+        `urn:scp:${stackName}:component:old`
+      );
+
+      // …but in the window the coordinate moves to a THIRD component the plan never names. Applying
+      // the stored entry would take it from the interloper, and the displacement guard cannot see
+      // that: the diff it re-checks still says the displaced producer is `old`, which this stack owns.
+      await declareInWindow(key, interloper);
+      const outcome = await applyOutcome(plan.id);
+
+      expect(
+        (await producerOf(key))?.producerObjectId,
+        "the plan must not take the coordinate from a THIRD component it never named"
+      ).toBe(interloper);
+      // The refusal NAMES the producer the plan believed it was displacing, because that is the
+      // fact an operator has to reconcile against what is actually there now.
+      expect(outcome).toMatchObject({
+        status: 409,
+        problem: { detail: expect.stringContaining(oldComponent.urn) }
+      });
+    });
+
+    it("a DELETE is REFUSED when the row it planned to retract now belongs to someone else — a silent retraction", async () => {
+      const stackName = `stack-${randomUUID().slice(0, 8)}`;
+      const keep = npm("keep-late");
+      const drop = npm("drop-late");
+
+      function build(keys: { ecosystem: DependencyEcosystem; coordinate: string }[]) {
+        const app = new App();
+        const stack = new Stack(app, stackName);
+        const service = new Service(stack, "svc", { name: "Svc" });
+        const component = new Component(stack, "lib", { name: "lib", service });
+        for (const k of keys) component.producesDependency(k);
+        return stack.synth();
+      }
+
+      await applyLatest(build([keep, drop]));
+      const plan = await admin.plans.create(build([keep]));
+      expect(
+        Object.fromEntries((plan.diff.producers ?? []).map((p) => [p.coordinate, p.action]))
+      ).toEqual({ [keep.coordinate]: "noop", [drop.coordinate]: "delete" });
+
+      // The coordinate changes hands in the window. The existence check alone is satisfied — a row
+      // IS there — so the pre-fix apply retracted the INTERLOPER's declaration and returned the
+      // coordinate to third-party polling for a component that had just claimed it.
+      await declareInWindow(drop, interloper);
+      const outcome = await applyOutcome(plan.id);
+
+      expect(
+        (await producerOf(drop))?.producerObjectId,
+        "the interloper's declaration must survive a prune that named a different producer"
+      ).toBe(interloper);
+      expect(outcome).toMatchObject({
+        status: 409,
+        problem: { detail: expect.stringContaining(drop.coordinate) }
+      });
+    });
+
+    it("…and a plan whose world did NOT move still applies — the guard is about disagreement, not about re-reading", async () => {
+      const stackName = `stack-${randomUUID().slice(0, 8)}`;
+      const key = npm("unmoved");
+
+      const app = new App();
+      const stack = new Stack(app, stackName);
+      const service = new Service(stack, "svc", { name: "Svc" });
+      new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
+
+      const plan = await admin.plans.create(stack.synth());
+      const { plan: applied } = await admin.plans.apply(plan.id);
+      expect(applied.status).toBe("applied");
+      const component = await admin.components.get(`urn:scp:${stackName}:component:lib`);
+      expect((await producerOf(key))?.producerObjectId).toBe(component.id);
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // (8) AUTHORITY — `policy:write` at the ORG ROOT, which is the whole reason this collection
+  //     does not use the per-object `object:write` every other one does
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * THE GUARD THIS PINS WAS HELD BY NOTHING. Deleting
+   * `checks.push(dependencyProducerScopeCheck(orgId))` from `prepareApplyChecks` left 46 tests green
+   * — a security check that is present and uninstalled, which is the exact class this whole
+   * increment exists to close. A guard nobody exercises is one the next refactor removes without a
+   * symptom.
+   *
+   * `Operator` IS THE RIGHT PRINCIPAL, and the two cases below are one pair on purpose. Operator
+   * carries `object:write` and NOT `policy:write` (the `0002` seed; `0010` adds `policy:write` to
+   * Administrator and Owner only), so at the ORG ROOT it holds authority over every object in the
+   * org and still holds none over a producer declaration. Case (a) is what makes case (b) mean
+   * something: without it, a 403 would be satisfied by an Operator who simply cannot apply plans.
+   *
+   * MUTATION — applied, watched fail, reverted, watched pass:
+   * | Mutation | Measured |
+   * |---|---|
+   * | delete `checks.push(dependencyProducerScopeCheck(orgId))` from `prepareApplyChecks` | "(8) … a plan that DECLARES one is REFUSED" fails: the apply resolves 200 and the declaration is written by a principal holding no `policy:write` anywhere. "(a)" stays green |
+   */
+  describe("(8) a producer declaration needs policy:write AT THE ORG ROOT", () => {
+    let operator: ScpClient;
+
+    beforeAll(async () => {
+      const user = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+      operator = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
+    });
+
+    it("(a) an Operator bound at the ORG ROOT applies a plan that declares NO producer", async () => {
+      const stackName = `stack-${randomUUID().slice(0, 8)}`;
+      const app = new App();
+      const stack = new Stack(app, stackName);
+      const service = new Service(stack, "svc", { name: "Svc" });
+      new Component(stack, "lib", { name: "lib", service });
+
+      const plan = await operator.plans.create(stack.synth());
+      const { plan: applied } = await operator.plans.apply(plan.id);
+      expect(applied.status).toBe("applied");
+    });
+
+    it("(b) …and the SAME Operator is REFUSED a plan that declares one — object:write over every object in the org is not authority over a coordinate", async () => {
+      const stackName = `stack-${randomUUID().slice(0, 8)}`;
+      const key = npm("unauthorized");
+      const app = new App();
+      const stack = new Stack(app, stackName);
+      const service = new Service(stack, "svc", { name: "Svc" });
+      new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
+
+      // The PLAN is fine — computing a diff writes nothing, and the authority is per-apply.
+      const plan = await operator.plans.create(stack.synth());
+      expect(plan.diff.producers?.map((p) => p.action)).toEqual(["create"]);
+
+      await expect(operator.plans.apply(plan.id)).rejects.toMatchObject({ status: 403 });
+
+      // Nothing was written, and nothing was HALF written: the checks are drained to completion
+      // before `executePlanDiff` runs, so the component this plan would have created is absent too.
+      expect(await producerOf(key)).toBeNull();
+      await expect(
+        admin.components.get(`urn:scp:${stackName}:component:lib`)
+      ).rejects.toMatchObject({ status: 404 });
+    });
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // (9) A HOLDER THAT CANNOT BE NAMED IS STILL A HOLDER
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * A tombstoned producer component leaves its declaration STANDING — `deleteObject` is a soft
+   * delete and `dependency_line_producers` has no `deleted_at` — while every object read in
+   * `plans-repo.ts` filters `deleted_at IS NULL`, so the holder resolves to no URN.
+   *
+   * The snapshot used to DROP such a row from both producer pools and call that "conservative in the
+   * safe direction". For the prune pool it is. For the EXISTENCE pool it is the opposite: the diff
+   * then emits `create`, whose reason sentence reads "no producer is declared for this coordinate —
+   * it is polled as third-party today" about a coordinate that IS declared, and the apply upserts
+   * straight over the standing row. The reviewed plan is false about the one fact that separates a
+   * first declaration from a transfer.
+   *
+   * THE STRANDING IS PRODUCED BY THE PRODUCT'S OWN RULES, not by a hand-written row: rule (1) — an
+   * absent `producers` key manages nothing — is exactly how a stack deletes a component without
+   * retracting what it produced.
+   */
+  describe("(9) a declaration behind a TOMBSTONED producer still blocks a create", () => {
+    it("a coordinate whose producer component was deleted is an UPDATE naming the unresolvable holder, and the plan is refused", async () => {
+      const firstStack = `stack-${randomUUID().slice(0, 8)}`;
+      const secondStack = `stack-${randomUUID().slice(0, 8)}`;
+      const key = npm("stranded");
+
+      const app = new App();
+      const stack = new Stack(app, firstStack);
+      const service = new Service(stack, "svc", { name: "Svc" });
+      new Component(stack, "lib", { name: "lib", service }).producesDependency(key);
+      await applyLatest(stack.synth());
+      const producer = await admin.components.get(`urn:scp:${firstStack}:component:lib`);
+      expect((await producerOf(key))?.producerObjectId).toBe(producer.id);
+
+      // THE STRANDING. The same stack, minus the component and WITHOUT a `producers` key: the
+      // component is pruned and rule (1) retracts nothing, so the declaration outlives its producer.
+      const emptied = new App();
+      const emptiedStack = new Stack(emptied, firstStack);
+      new Service(emptiedStack, "svc", { name: "Svc" });
+      const strand = emptiedStack.synth();
+      expect(strand).not.toHaveProperty("producers");
+      await applyLatest(strand);
+
+      await expect(
+        admin.components.get(`urn:scp:${firstStack}:component:lib`)
+      ).rejects.toMatchObject({ status: 404 });
+      expect(
+        (await producerOf(key))?.producerObjectId,
+        "the declaration must have outlived its producer — otherwise this case tests nothing"
+      ).toBe(producer.id);
+
+      // A DIFFERENT stack now claims the coordinate on a component it owns. Destination ownership
+      // is satisfied, so refusal (1) passes; what must refuse it is that the coordinate is HELD.
+      const second = new App();
+      const sStack = new Stack(second, secondStack);
+      const sService = new Service(sStack, "svc", { name: "Svc" });
+      new Component(sStack, "mine", { name: "mine", service: sService }).producesDependency(key);
+
+      await expect(admin.plans.create(sStack.synth())).rejects.toMatchObject({
+        status: 400,
+        problem: { detail: expect.stringContaining("no longer resolves") }
+      });
+      expect(
+        (await producerOf(key))?.producerObjectId,
+        "…and the standing declaration is untouched"
+      ).toBe(producer.id);
     });
   });
 });

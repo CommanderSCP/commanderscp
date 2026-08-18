@@ -1106,6 +1106,130 @@ esac
     expect(again.line.latestVersion).toBe("2.5.0");
   });
 
+  /**
+   * THE REFUSAL'S EXPLANATION, READ BACK OUT OF THE `decisions` TABLE — the CALL SITE, not the
+   * helper.
+   *
+   * `norecordFor` is pinned pure in `version-poll.test.ts`, and that unit case is necessary and not
+   * sufficient: restoring the ONE FIXED SENTENCE this function replaced ("a head never moves
+   * backwards and never leaves the line it names") at the call site left 352 tests green. A rule
+   * proven in isolation while its only consumer is free to ignore it is the same shape as a guard
+   * nobody exercises — the explanation the operator actually reads comes from `decisionFor`, and
+   * nothing asserted what `decisionFor` put there.
+   *
+   * SO THE DECLARE LANDS INSIDE THE REAL POLL, not at the repo seam. `pollOrgDependencyVersions`
+   * builds its work-list in one transaction, does the index round trip with NO transaction open, and
+   * writes in another — so a host whose `listVersions` declares the producer occupies exactly the
+   * window the race replay above drives by hand, with the difference that this one goes on to write
+   * the Decision. That is the only way to read the persisted text of a `line_is_internal` refusal.
+   *
+   * MUTATION — applied, watched fail, reverted, watched pass:
+   * | Mutation | Measured |
+   * |---|---|
+   * | `norecord: norecordFor(refusal.reason)` -> the old fixed sentence at the `not_recorded` call site | this case fails on BOTH halves: the ownership sentence is absent, and the version sentence is present on a refusal that is not about the version |
+   */
+  it("the PERSISTED Decision for a line_is_internal refusal explains OWNERSHIP, not version ordering", async () => {
+    const coordinate = `@acme/norecord-call-site-${uuidv7().slice(0, 8)}`;
+    const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
+
+    // The declaration lands DURING the poll, from inside the index round trip — the same window the
+    // replay above drives at the repo seam, entered here through the code under test.
+    let declaredDuringPoll = false;
+    const declaringHost: PluginHost = {
+      async start() {},
+      async stop() {},
+      async stopInstances() {},
+      gitFileRead: () => {
+        throw new Error("not wired");
+      },
+      executor: () => {
+        throw new Error("not wired");
+      },
+      control: () => {
+        throw new Error("not wired");
+      },
+      discovery: () => {
+        throw new Error("not wired");
+      },
+      notification: () => {
+        throw new Error("not wired");
+      },
+      federationTransport: () => {
+        throw new Error("not wired");
+      },
+      dependencyIndex(): DependencyIndexPluginClient {
+        return {
+          listVersions: async (query) => {
+            if (query.coordinate !== coordinate) {
+              // Every OTHER line in this org's work-list answers nothing, so this tick writes one
+              // `not_recorded` verdict and nothing else that could be mistaken for it.
+              return {
+                status: "unavailable" as const,
+                reason: "not_configured" as const,
+                detail: "this host answers only the coordinate under test"
+              };
+            }
+            if (!declaredDuringPoll) {
+              declaredDuringPoll = true;
+              await inOrg(async (tx) => {
+                await declareDependencyLineProducer(tx, org.orgId, {
+                  ecosystem: "npm",
+                  coordinate,
+                  producerObjectId: subscribed,
+                  declaredByObjectId: subscribed
+                });
+                await resetLineHead(tx, org.orgId, lineId);
+              });
+            }
+            return { status: "available" as const, versions: [{ version: "2.99.0" }] };
+          },
+          resolveDigest: async () => ({
+            status: "unavailable" as const,
+            reason: "not_configured" as const,
+            detail: "no digests here"
+          }),
+          describeIndex: async () => ({ ecosystem: "npm" as const, reportsDigest: false })
+        };
+      }
+    };
+
+    const results = await pollOrgDependencyVersions(server.deps.db, org.orgId, {
+      host: declaringHost,
+      env: { ...AIRGAP_ENV, SCP_DEPENDENCY_INDEX_NPM_URL: "https://npm.internal" }
+    });
+
+    // The fixture APPLIED, and it produced a real refusal of the shape this case is about — without
+    // both of these the assertions below would pass on a Decision that was never written.
+    expect(declaredDuringPoll, "the declaration must have landed inside the poll").toBe(true);
+    const polled = results.find((r) => r.lineId === lineId);
+    expect(polled?.headRefusedReason).toBe("line_is_internal");
+
+    const [row] = await inOrg((tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, lineId),
+            eq(decisions.kind, DEPENDENCY_VERSION_POLL_DECISION_KIND)
+          )
+        )
+    );
+    expect(row?.verdict).toBe("not_recorded");
+    const reasonTree = row?.reasonTree as { reason?: string; norecord?: string };
+    expect(reasonTree.reason).toBe("line_is_internal");
+
+    // THE TEXT ITSELF. Positive: it explains the rule that actually fired. Negative: it does NOT
+    // explain the version rules, which are true of this poll and simply not why nothing was
+    // recorded — an operator reading that would go looking for a version-ordering problem on a line
+    // whose head is perfectly ahead of the standing one.
+    expect(reasonTree.norecord).toMatch(/a producer is declared for this coordinate/);
+    expect(reasonTree.norecord).toMatch(/dependency confusion/);
+    expect(reasonTree.norecord).not.toMatch(/never moves backwards/);
+    expect(reasonTree.norecord).not.toMatch(/never leaves the line it names/);
+  });
+
   async function headAdvancedRows(lineId: string) {
     return inOrg((tx) =>
       tx

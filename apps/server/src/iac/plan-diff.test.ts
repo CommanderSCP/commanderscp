@@ -7,6 +7,7 @@ import {
   managedLabels,
   uncontainedComponentCreates,
   unownedProjectionDeclarations,
+  unresolvedProducerUrn,
   type PlanDiffSnapshot,
   type ResolvedManifest
 } from "./plan-diff.js";
@@ -1288,6 +1289,27 @@ describe("iac/plan-diff: invalidProducerDeclarations", () => {
         )
       )
     ).toEqual([]);
+  });
+
+  it("refuses a displacement whose holder cannot be NAMED, with its own remedy rather than the other stack's", () => {
+    // A tombstoned producer component leaves its declaration standing and resolves to no URN, so the
+    // snapshot carries `unresolvedProducerUrn`. It gets its own branch rather than failing the
+    // membership test: the fixture below puts the sentinel IN `diff.objects`, which a real URN could
+    // legitimately be (a manifest still naming the deleted component diffs it as a `create`) — and
+    // membership alone would then wave the overwrite through on precisely the plan to refuse.
+    const stranded = unresolvedProducerUrn("01a012aa-b584-75cd-a938-3e92263538df");
+    const offenders = invalidProducerDeclarations(
+      diffWith(
+        [objectEntry(COMP, "component"), objectEntry(stranded, "component")],
+        [producerEntry({ action: "update", displacedProducerUrn: stranded })]
+      )
+    );
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toContain("no longer resolves");
+    // The remedy is the RETRACT verb, because there is no stack to hand the coordinate back to; the
+    // other-stack message would send an operator looking for a manifest that does not exist.
+    expect(offenders[0]).toContain("retract");
+    expect(offenders[0]).not.toContain("this stack does not manage");
   });
 
   it("exempts a DELETE entry from the producer-type and ownership checks — the prune pool is already scoped", () => {
