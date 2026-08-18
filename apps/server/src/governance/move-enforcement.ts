@@ -48,23 +48,47 @@ import { containmentChain } from "../graph/containment.js";
  * follows its own. Cross-referenced in `containment-parent-authz.ts` beside its two exemptions so
  * the difference reads as deliberate rather than as one of the copies having been missed.
  *
+ * ## EVERY WRITER OF A CONTAINMENT PARENT, and which of them is a door
+ *
+ * The first version of this header claimed the minter census was complete when it had been run only
+ * over `federation` and `discovery`, and that scoped claim — stated as a conclusion about the whole
+ * caller-facing surface — is precisely what hid TWO live holes (IaC apply's relationship loop, and
+ * discovery accept's, both closed 2026-08-18 after review). Re-run filterless
+ * (`grep -rna "'contains'\|\"contains\"" apps/server/src` plus every `updateObject`/`domainId`
+ * writer); this list is the whole of it, and a new writer belongs on it BEFORE it ships:
+ *
+ * ROUTE 1 (`objects.domain_id`) — gated at `graph/containment-parent-authz.ts`
+ *   `resolveDeclaredContainmentParent` (door (a); every typed + generic PATCH goes through it) and
+ *   `iac/plans-repo.ts::prepareApplyChecks`'s object twin (door (b)).
+ * ROUTE 2 (`contains` edge) — THREE caller-facing minters, all now gated:
+ *   - `graph/components-repo.ts` :104 (create — not a move, no prior reach to leave) and :180/:238
+ *     (`setComponentService`, door (c));
+ *   - `routes/relationships.ts` :104 POST / :252 DELETE (door (c));
+ *   - `iac/plans-repo.ts::prepareApplyChecks`'s RELATIONSHIP loop, which calls
+ *     `createRelationship`/`deleteRelationship` at :1288/:1293 with the manifest's own `typeId`
+ *     (door (b), route 2) — a manifest's `component.service` change compiles to exactly this;
+ *   - `routes/executors.ts`'s `POST /discovery/accept` relationship loop, which resolves BOTH
+ *     endpoints to pre-existing rows and mints with the REAL principal (door (c), third copy).
+ *
  * ## What is carved out, and why the carve-out is structural rather than a flag
  *
- * Federation import, discovery accept, the federation OVERLAY and HAND-FILL are NOT subject to this
- * bar, and no code in them says so — because none of them can reach a door. Measured, not assumed
- * (filterless census, 2026-08-18):
+ * Federation import, the federation OVERLAY and HAND-FILL are NOT subject to this bar, and no code
+ * in them says so — because none of them can reach a door. Measured, not assumed:
  *
  *   - `federation/import-repo.ts` (:208 `upsertObjectByUrn`, :363 `updateObject`),
  *     `federation/handfill-repo.ts` (:294), `federation/overlay-repo.ts` (:188) and
  *     `federation/outposts-repo.ts` (:142/:569/:634) call the REPO directly. They never call
- *     `resolveDeclaredContainmentParent`, which is where door (a) lives.
- *   - The only internal minters of a `contains` edge are `graph/components-repo.ts` (:104 create,
- *     :180/:238 the assign/move this file gates) — nothing in federation or discovery mints one, so
- *     doors (c) cover the whole of the caller-facing surface and nothing of the receiver's.
+ *     `resolveDeclaredContainmentParent`, which is where door (a) lives, and none of them mints a
+ *     `contains` edge (see the census above).
  *   - The subjects those paths carry are synthetic (`FEDERATION_IMPORT_ACTOR_ID` and friends) and
  *     hold no bindings, so running an authorization down there would abort every import rather than
  *     protect anything — the same argument `graph/containment-parent-authz.ts`'s "authorization at
  *     the door, invariant at the repo" section makes, applied unchanged.
+ *
+ * DISCOVERY ACCEPT IS NO LONGER ON THAT LIST. It looked like an import and is not one: it takes its
+ * proposal from the REQUEST BODY under `requireAuth`, so its subject is a real principal and its
+ * endpoints may be live rows. Only the objects it created IN THE SAME REQUEST are exempt there, and
+ * for the create-is-not-a-move reason, not the federation reason.
  *
  * The receiver does not referee: a peer's authority already decided the move, and refusing its
  * journal would diverge the replica from the authority that owns it.

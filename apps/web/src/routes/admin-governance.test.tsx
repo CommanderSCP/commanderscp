@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act } from "react";
+import { readFile } from "node:fs/promises";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ScpApiError } from "@scp/sdk";
@@ -21,9 +22,11 @@ import { fire, render, typeInto } from "../test-support/render-dom";
  *
  *   - NO ROLE/WIRE GATE: the page reads and renders identically regardless of `instanceRole` —
  *     enforcement is per-instance, unlike Admin › Dependencies;
- *   - THE INSTANCE WRITE IS NOT OFFERED IN THE BROWSER: no button, form or testid anywhere on the
- *     page can set the instance rung — only the read + the CLI pointer text. Mutation: add a
- *     write control → this test's exhaustive DOM scan goes RED;
+ *   - THE INSTANCE WRITE IS NOT OFFERED IN THE BROWSER, pinned TWO ways because the first way was
+ *     not enough: clicking every control on the page never records a `governanceMove.setInstance`
+ *     call, and the page's own source never mentions the method. (The original pin compared
+ *     `data-testid` against a name pattern; review defeated it with a real wired button — once
+ *     named off-pattern, once with no testid at all — and the suite stayed green both times.)
  *   - the empty rungs table renders ONLY after a successful zero-row read — never while pending;
  *     mutation: paint it during pending → RED;
  *   - the org rung switch derives its state from the `rungs` list (tier `"org"`), toggles by
@@ -158,6 +161,15 @@ vi.mock("../lib/client", () => ({
       disable: async (idOrUrn: string) => {
         calls.push({ method: "governanceMove.disable", req: { idOrUrn } });
         return disableImpl(idOrUrn);
+      },
+      /** STUBBED PURELY SO A CALL WOULD BE VISIBLE. The page must never reach it — the instance
+       *  write is operator-token-only and binds every org on the deployment — and the
+       *  "clicking EVERY control" case below asserts exactly that against this recorder. Leave it
+       *  here even though nothing calls it: without it a page that DID call `setInstance` would
+       *  throw `not a function` and the failure would read as an unrelated crash. */
+      setInstance: async (req: unknown) => {
+        calls.push({ method: "governanceMove.setInstance", req });
+        return { enabled: false, updatedAt: null };
       }
     },
     domains: {
@@ -316,19 +328,41 @@ describe("the instance rung — READ ONLY, no browser write anywhere on the page
     view.unmount();
   });
 
-  it("MUTATION-SENSITIVE: no element anywhere on the page can set the instance rung", async () => {
+  it("MUTATION-SENSITIVE: clicking EVERY control on the page never reaches the instance write", async () => {
+    // THE FUNCTIONAL PIN, and it replaced a naming-convention one. The first version of this case
+    // collected every control and asserted only that no `data-testid` matched
+    // /instance-(set|enable|disable|toggle|write)/ — which review defeated twice, with a real wired
+    // button named `instance-live-flip` and again with the same button carrying NO testid at all;
+    // the suite stayed 26/26 green both times. A substring check over names cannot see a control,
+    // so this asks the only question that matters: was the instance-write METHOD called?
     instanceImpl = async () => ({ enabled: true, updatedAt: "2026-08-18T00:00:00.000Z" });
     const view = await renderPage();
-    // Exhaustive: every button/input on the page, none targets the instance rung.
-    const controls = [
-      ...document.querySelectorAll("button, input, select"),
-      ...document.querySelectorAll<HTMLElement>("[data-testid]")
-    ];
+    const controls = [...document.querySelectorAll<HTMLElement>("button, input, select, a")];
+    expect(controls.length).toBeGreaterThan(0); // the scan itself must not be vacuous
     for (const el of controls) {
-      const testId = el.getAttribute("data-testid") ?? "";
-      expect(testId.toLowerCase()).not.toMatch(/instance-(set|enable|disable|toggle|write)/);
+      act(() => {
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      });
     }
+    await settle();
+    expect(calls.map((c) => c.method)).not.toContain("governanceMove.setInstance");
     view.unmount();
+  });
+
+  it("MUTATION-SENSITIVE: the page's own source never references the instance-write method", async () => {
+    // The static half, and it is the one that survives a control this DOM never renders (behind a
+    // dialog, a role gate, a lazy branch). `client.governanceMove.setInstance` exists in the SDK
+    // (the CLI uses it with an operator token); the browser bundle must not call it, because the
+    // browser has no operator token and the write binds enforcement for EVERY org on the
+    // deployment. Mutation: add any `setInstance(` call to the page → RED, wired or not, named or
+    // not.
+    // Read from the vitest root (`apps/web`) rather than `import.meta.url`, which vite rewrites to
+    // a non-file scheme. The length assertion keeps the check from passing on a path typo — a
+    // "file not found" would otherwise have to throw to be noticed, and a renamed page should fail
+    // loudly here rather than quietly stop checking anything.
+    const source = await readFile(`${process.cwd()}/src/routes/admin-governance.tsx`, "utf8");
+    expect(source.length).toBeGreaterThan(1000);
+    expect(source).not.toContain("setInstance");
   });
 });
 

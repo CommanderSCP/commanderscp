@@ -15,8 +15,10 @@ import type {
 } from "@scp/schemas";
 import { canonicalJson } from "../graph/objects-repo.js";
 
-/** The relationship type that binds a component to its owning service (migration 0021). */
-const CONTAINS_TYPE_ID = "contains";
+/** The relationship type that binds a component to its owning service (migration 0021).
+ *  EXPORTED because `plans-repo.ts`'s apply path has to ask the same question at its door — a
+ *  second string literal one module over is how one of the two comes to mean something else. */
+export const CONTAINS_TYPE_ID = "contains";
 /** The object type that must always belong to a service (M12 P5a). */
 const COMPONENT_TYPE_ID = "component";
 

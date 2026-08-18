@@ -36,6 +36,7 @@ import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-s
 import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
 import {
   computePlanDiff,
+  CONTAINS_TYPE_ID,
   duplicateProjectionDeclarations,
   invalidProducerDeclarations,
   managedLabels,
@@ -1074,6 +1075,46 @@ export async function prepareApplyChecks(
     const to = await resolveEndpoint(entry.toUrn);
     checks.push({ permission: "relationship:write", scopeObjectId: from.scopeObjectId });
     checks.push({ permission: "relationship:write", scopeObjectId: to.scopeObjectId });
+
+    // THE `governance:move` TWIN FOR ROUTE 2 — the SECOND half of door (b), and it was missing.
+    //
+    // The twin above guards `objects[].domainId` (containment route 1). A manifest reaches the
+    // SAME move through route 2: a `contains` relationship entry. `contains` is not system-managed
+    // (`graph/system-managed-relationships.ts` lists `approves`/`coordinates`/`annotates` only), so
+    // the refusal above does not touch it, and `executePlanDiff` mints it — and prunes it — from
+    // the manifest verbatim. That is exactly what a manifest's `component.service` change compiles
+    // to (`plan-diff.ts`: a `contains` create plus a prune-delete), so without this, door (c)
+    // (`components-repo.ts::setComponentService`, `routes/relationships.ts`) shipped INERT on IaC
+    // and an Operator holding `relationship:write` could perform through `POST /plans/{id}/apply`
+    // the very move the HTTP doors refuse them. #244's lesson repeated one loop lower: the twin was
+    // added where the first hole was found rather than to the whole class.
+    //
+    // Endpoints, matching `routes/relationships.ts` exactly:
+    //   create → the child is the `to`, the destination container is the `from` (:104);
+    //   delete → the child is the `to`, the destination is the ORG ROOT (`null`), because losing a
+    //            `contains` parent drops the row back onto its `domain_id` route (:252).
+    // Thrown EAGERLY for the reason the route-1 twin above is: the demand is conditional and its
+    // refusal names a rung, neither of which a `{permission, scopeObjectId}` pair can carry.
+    // A MISSING `id` MEANS "created by THIS apply" (`ObjectResolution.id` is unset for a `create`
+    // entry until `executePlanDiff` runs it), and that decides both halves:
+    //   - `to.id` unset → the child is being created here, so there is no prior governance reach for
+    //     it to leave. A create is not a move; door (a) does not gate a create either
+    //     (`resolveDeclaredContainmentParent` runs on an object that already exists), and
+    //     `POST /discovery/accept` carves out the same shape for the same reason. Gating it would
+    //     refuse the ordinary "new service and its new components" manifest under any enabled rung.
+    //   - `from.id` unset → the destination CONTAINER is being created here; it can carry no rung of
+    //     its own yet, and its reach is exactly its declared parent's, which is what `scopeObjectId`
+    //     already holds (`entry.target?.domainId ?? orgId`). So the destination chain is checked at
+    //     that parent rather than skipped.
+    if (entry.typeId === CONTAINS_TYPE_ID && to.id !== undefined) {
+      await assertGovernanceMoveAdmits(tx, {
+        orgId,
+        subjectObjectId: actorObjectId,
+        movedObjectId: to.id,
+        destinationObjectId: entry.action === "delete" ? null : (from.id ?? from.scopeObjectId),
+        permissionSetForExplain: "relationship:write"
+      });
+    }
   }
 
   // C1 — `object:write` at the OWNING object, the identical bar

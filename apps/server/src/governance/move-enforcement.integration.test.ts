@@ -25,6 +25,10 @@ import {
  *        DESTINATION is NOT exempt …", "the INSTANCE rung activates …" (all four reach that door)
  *  m2  remove ONLY the twin in `iac/plans-repo.ts::prepareApplyChecks`
  *      → RED: "POST /plans/{id}/apply …" ALONE — the M24 lesson (a door-only fix ships inert on IaC)
+ *  m2b remove ONLY the `contains` call in `prepareApplyChecks`' RELATIONSHIP loop (route 2)
+ *      → RED: "POST /plans/{id}/apply — a `contains` RELATIONSHIP entry …" ALONE. Added after
+ *        review found the first round had twinned route 1 (`domainId`) and not route 2, leaving an
+ *        Operator able to make through apply the move `POST /relationships` refuses them.
  *  m3  remove the call in `graph/components-repo.ts::setComponentService`
  *      → RED: "PUT /components/{idOrUrn}/service …" alone
  *  m4  remove the two `contains` calls in `routes/relationships.ts`
@@ -36,6 +40,11 @@ import {
  *        take-it-out-of-the-container verb, not just the explicit move-to-root
  *  m6  drop the instance-rung OR in `resolveGovernanceMoveEnforcement` (`enforced: rungs.length > 0`)
  *      → RED: "the INSTANCE rung activates …" alone
+ *  m9  remove the `contains` call in `routes/executors.ts`'s `POST /discovery/accept` loop
+ *      → RED: "POST /discovery/accept (contains onto a PRE-EXISTING child) …" alone
+ *  m9b drop the `!createdInThisBatch.has(toId)` carve-out at that same door
+ *      → RED: the SUCCESS half of that case (a fresh child contained in its own batch) — the case
+ *        that keeps "governed" from quietly meaning "discovery is off"
  *
  * ============================================================================================
  * THE INSTANCE RUNG IS AN INSTANCE-GLOBAL FIXTURE
@@ -106,6 +115,8 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     componentId: string;
     /** A component with NO container — the `POST /relationships` (contains) subject. */
     orphanComponentId: string;
+    /** …and its stored URN, which the IaC and discovery-accept `contains` cases name it by. */
+    orphanComponentUrn: string;
     /** Operator at the org root: holds `object:write` + `relationship:write` EVERYWHERE, and does
      *  NOT hold `governance:move` (drizzle/0079 grants it to Administrator + Owner only). */
     operatorToken: string;
@@ -156,6 +167,9 @@ describe("governance:move enforcement (proposal §9.2)", () => {
     expect(orphan.status, orphan.body).toBe(201);
     const orphanComponentId = (orphan.json() as { createdObjectIds: string[] })
       .createdObjectIds[0]!;
+    const orphanRead = await call("GET", admin, `/api/v1/objects/component/${orphanComponentId}`);
+    expect(orphanRead.status, orphanRead.body).toBe(200);
+    const orphanComponentUrn = orphanRead.json().urn as string;
 
     const operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
     const administrator = await createTestUser(server, org, [
@@ -171,6 +185,7 @@ describe("governance:move enforcement (proposal §9.2)", () => {
       otherServiceId: otherService.json().id as string,
       componentId: component.json().id as string,
       orphanComponentId,
+      orphanComponentUrn,
       operatorToken: operator.token,
       administratorToken: administrator.token
     };
@@ -329,6 +344,128 @@ describe("governance:move enforcement (proposal §9.2)", () => {
       `/api/v1/plans/${plan2.json().id as string}/apply`
     );
     expect(admitted.status, admitted.body).toBe(200);
+  });
+
+  it("POST /plans/{id}/apply — a `contains` RELATIONSHIP entry is the same move, both directions (m2b)", async () => {
+    // THE SECOND IaC HOLE, found in review after the first round shipped: the twin had been added
+    // to the object loop (route 1, `domainId`) and not to the relationship loop (route 2,
+    // `contains`) — so an Operator could perform through apply the exact move `POST /relationships`
+    // refuses them, and a manifest's `component.service` change compiles to precisely this pair of
+    // entries. Remove ONLY the relationship-loop call and only this case goes red.
+    const f = await makeFixture("gm-iac-rel");
+    expect((await enableRung(f, f.domainId)).status).toBe(200);
+    const stackName = `gm-iac-rel-${f.serviceId.slice(0, 8)}`;
+    const manifest = (relationships: Record<string, unknown>[]): Record<string, unknown> => ({
+      manifest: { stackName, objects: [], relationships }
+    });
+    const containsEntry = [
+      { typeId: "contains", fromUrn: f.serviceUrn, toUrn: f.orphanComponentUrn }
+    ];
+
+    // CREATE — a move INTO the governed subtree.
+    const plan = await call("POST", f.org.adminToken, "/api/v1/plans", manifest(containsEntry));
+    expect(plan.status, plan.body).toBe(201);
+    const refused = await call(
+      "POST",
+      f.operatorToken,
+      `/api/v1/plans/${plan.json().id as string}/apply`
+    );
+    expect(refused.status, refused.body).toBe(403);
+    expect(detailOf(refused)).toContain("is governed here");
+
+    // Nothing applied: the edge is not there.
+    const noEdge = await call(
+      "GET",
+      f.org.adminToken,
+      `/api/v1/relationships?toId=${f.orphanComponentId}`
+    );
+    expect((noEdge.json() as { items: unknown[] }).items).toHaveLength(0);
+
+    const plan2 = await call("POST", f.org.adminToken, "/api/v1/plans", manifest(containsEntry));
+    expect(plan2.status, plan2.body).toBe(201);
+    const admitted = await call(
+      "POST",
+      f.administratorToken,
+      `/api/v1/plans/${plan2.json().id as string}/apply`
+    );
+    expect(admitted.status, admitted.body).toBe(200);
+
+    // DELETE — the same stack re-applied WITHOUT the edge prunes it, which is a move OUT to the org
+    // root. Equally governed, and the org root is not exempt.
+    const prune = await call("POST", f.org.adminToken, "/api/v1/plans", manifest([]));
+    expect(prune.status, prune.body).toBe(201);
+    const refusedPrune = await call(
+      "POST",
+      f.operatorToken,
+      `/api/v1/plans/${prune.json().id as string}/apply`
+    );
+    expect(refusedPrune.status, refusedPrune.body).toBe(403);
+    expect(detailOf(refusedPrune)).toContain("is governed here");
+
+    const prune2 = await call("POST", f.org.adminToken, "/api/v1/plans", manifest([]));
+    expect(prune2.status, prune2.body).toBe(201);
+    const prunedOk = await call(
+      "POST",
+      f.administratorToken,
+      `/api/v1/plans/${prune2.json().id as string}/apply`
+    );
+    expect(prunedOk.status, prunedOk.body).toBe(200);
+  });
+
+  it("POST /discovery/accept (contains onto a PRE-EXISTING child) is a move and is refused (m9)", async () => {
+    // The third caller-supplied-`typeId` relationship door. It reads like an import and is not one:
+    // the proposal comes from the request body under `requireAuth`, and both endpoints resolve to
+    // LIVE rows — so this is a move made by a real principal, not a replica following its authority.
+    const f = await makeFixture("gm-discovery");
+    expect((await enableRung(f, f.domainId)).status).toBe(200);
+
+    const accept = (token: string, body: Record<string, unknown>): Promise<Response> =>
+      call("POST", token, "/api/v1/discovery/accept", body);
+
+    const refused = await accept(f.operatorToken, {
+      proposal: {
+        objects: [],
+        relationships: [{ typeId: "contains", fromUrn: f.serviceUrn, toUrn: f.orphanComponentUrn }],
+        bindings: []
+      }
+    });
+    expect(refused.status, refused.body).toBe(403);
+    expect(detailOf(refused)).toContain("is governed here");
+
+    const admitted = await accept(f.administratorToken, {
+      proposal: {
+        objects: [],
+        relationships: [{ typeId: "contains", fromUrn: f.serviceUrn, toUrn: f.orphanComponentUrn }],
+        bindings: []
+      }
+    });
+    expect(admitted.status, admitted.body).toBe(201);
+
+    // THE CARVE-OUT, pinned as a SUCCESS so the refusals above cannot be mistaken for "discovery is
+    // off under a rung": a child CREATED IN THIS SAME BATCH has no prior governance reach to leave,
+    // so contaning it is a create, not a move — the same rule `createObject`'s rooting follows at
+    // the other doors. An ordinary plugin proposal (new objects + their edges) keeps working for an
+    // Operator under an enabled rung.
+    const fresh = await accept(f.operatorToken, {
+      proposal: {
+        objects: [
+          {
+            typeId: "component",
+            name: "gm-discovery-fresh",
+            properties: {},
+            urn: "proposal-local:fresh"
+          }
+        ],
+        relationships: [
+          { typeId: "contains", fromUrn: f.serviceUrn, toUrn: "proposal-local:fresh" }
+        ],
+        bindings: []
+      }
+    });
+    expect(fresh.status, fresh.body).toBe(201);
+    expect(
+      (fresh.json() as { createdRelationshipIds: string[] }).createdRelationshipIds
+    ).toHaveLength(1);
   });
 
   it("PUT /components/{idOrUrn}/service refuses an Operator under an enabled rung (m3)", async () => {
