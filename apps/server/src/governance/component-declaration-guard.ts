@@ -8,12 +8,18 @@ import { badRequest } from "../errors.js";
  * ===========================================================================================
  * WHY THIS EXISTS SEPARATELY FROM THE REGISTERED `property_schema`
  * ===========================================================================================
- * drizzle/0075 registers `component.properties.security.declarations` as TYPED BUT OPEN, and it has
- * to be: `federation/import-repo.ts`'s `object_upsert` branch Ajv-validates an incoming object
- * against the registered schema with NO try/catch, so ONE rejection aborts a peer's ENTIRE signed
- * bundle and wedges the channel. A closed schema in the registry would turn every future property
- * addition — including one made by a NEWER peer talking to an OLDER receiver — into a fail-closed
- * version-skew hazard.
+ * drizzle/0075 registers NO schema at all for `component` — see its §2a. An earlier revision of that
+ * migration DID narrow `component.properties.security`, and the fragment was deleted: the registry
+ * has to stay open, because `federation/import-repo.ts`'s `object_upsert` branch Ajv-validates an
+ * incoming object against the registered schema with NO try/catch, so ONE rejection aborts a peer's
+ * ENTIRE signed bundle and wedges the channel. TYPING a key is the same version-skew hazard as
+ * CLOSING a key set — a NEWER peer talking to an OLDER receiver loses its whole bundle — and
+ * `component` is among the most-federated types in the graph, which makes it the worst place to
+ * spend that risk.
+ *
+ * SO THIS GUARD IS NOT A SECOND OPINION ALONGSIDE THE REGISTRY; IT IS THE ONLY SHAPE CHECK THAT
+ * EXISTS for a declaration bag. That raises the stakes on its call-site census rather than lowering
+ * them: a local write door that does not call it validates nothing whatsoever.
  *
  * So the strictness moves HERE, to the local author's door, where a refusal costs one 400 and
  * nobody's bundle. That is 0043's "strict at the operator's door, open on the wire" rule, and

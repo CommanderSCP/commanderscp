@@ -1,7 +1,8 @@
 # ADR-0024: Decision & audit retention — classes of evidence, checkpointed chains, and a floor no peer can fall below
 
 **Status:** **Accepted (owner-decided 2026-07-31 — all seven decisions in §Decisions taken).** Nothing in this ADR is implemented yet; it ships no code. Follow-ups F1–F11 carry the work.
-**Relates to:** charter principle 4 (PostgreSQL is the only required stateful dependency); principle 5 (air-gap first-class); principle 6 (explainability & auditability); principle 7 (Simplicity first); DESIGN.md §4.3 (audit log), §10.4 (Decision records), §13 (federation), §18 (deferred list); [ADR-0021](0021-terminology.md) (trust vs containment domain); PR #153 (`insertDecisionIfChanged`, the write-rate fix this retention design sits behind)
+**Amended 2026-08-18 (M22.9):** §D1's class assignment and F3's scope now name `scan_findings`, a table that did not exist when this ADR was written. **No decision here changed** — the amendment records a table inside the existing classes, so the job F3 describes cannot be built without it.
+**Relates to:** charter principle 4 (PostgreSQL is the only required stateful dependency); principle 5 (air-gap first-class); principle 6 (explainability & auditability); principle 7 (Simplicity first); DESIGN.md §4.3 (audit log), §10.4 (Decision records), §13 (federation), §18 (deferred list); [ADR-0021](0021-terminology.md) (trust vs containment domain); PR #153 (`insertDecisionIfChanged`, the write-rate fix this retention design sits behind); [ADR-0033](0033-scan-exclusions-and-overrides.md) D10 (`scan_findings`' per-row class, assigned under §D1 below)
 
 ---
 
@@ -61,6 +62,7 @@ Initial assignment (each is an owner-reviewable call, not a derivation):
 - **P:** `audit_events`; `sync_journal`; every Decision that is **cited** (§D4) or **pinned**; the audit events recording retention runs and retention-config changes (§D6).
 - **E:** `imported_approval_evidence`, `control_runs`, `approval_requests`/`approval_votes`, `state_transitions`, `plans`/`change_plans`/`change_waves`; the **latest** Decision per `(org, subject, kind)` while its subject object is live.
 - **O:** superseded, uncited Decisions; processed `change_source_events`; `bundle_transfers`; `federation_inbox_files`; delivered `outbox` rows; expired `sessions`; `object_health` history; `idempotency_keys` (see D7).
+- **Split per row — `scan_findings`** (added 2026-08 by [ADR-0033](0033-scan-exclusions-and-overrides.md) §7/D10; it did not exist for the 2026-07-31 census in §Context 1, which is why it is absent from the three lists above). Each row carries its own class in a `retention_class` column: **E** for a finding an admitted exclusion clause tolerated — accepted-risk evidence explaining a live verdict, and past that verdict's bounded evidence enumeration (`SCAN_EXCLUSION_EVIDENCE_CAP`, 100) the **only** per-finding record of what an operator chose to tolerate — and **O** for every other finding, which is telemetry about what a scanner saw. Not a new shape: this is exactly the per-row assignment `decisions` already has. **Recorded here because it is written and not actuated.** Nothing sweeps either class today, so the sole bound on the table is its `ON DELETE CASCADE` from `control_runs` — and `control_runs` is class **E**, so a class-O finding currently inherits an **E lifetime**. A deliberate non-decision accompanies it: no bespoke sweeper was built for this one table, because a second retention mechanism landing ahead of the general one trades against charter priority 7 (Simplicity first).
 
 ### D2 — A Decision is permanent iff it is *cited*, *current*, or *pinned*.
 
@@ -167,7 +169,7 @@ Sequenced per O7: production-driven work first, then the retention milestone, th
 |---|---|---|
 | **F1** | `decision_pins` table + pin/unpin API, audited | — |
 | **F2** | Retention config as a versioned org-scoped document + 30-day hard floor | — |
-| **F3** | Retention job (worker-capable, replica-safe, batched DELETE) + per-run audit event & `kind: 'retention'` Decision | F2 |
+| **F3** | Retention job (worker-capable, replica-safe, batched DELETE) + per-run audit event & `kind: 'retention'` Decision. **Scope explicitly includes `scan_findings`' per-row `retention_class`** (D1): that column is written on every scan today and swept by nothing, so a job that covers only the tables named in 2026-07's census would leave the highest-cardinality table in the system unbounded. | F2 |
 | **F4** | Composite FKs on the five citation columns (`NOT VALID` → `VALIDATE`), preceded by the production dangling-reference survey; plus the **filterless** citation-column integration test | survey |
 | **F5** | `audit_checkpoints` + anchor job + `verifyAuditChain(startingPrevHash)` + `GET /v1/audit-events?sinceSeq=` + `scp audit verify --from` | — |
 | **F7** | `idempotency_keys` TTL + documented 24h lifetime in OpenAPI | — |

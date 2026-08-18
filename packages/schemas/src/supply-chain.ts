@@ -727,11 +727,23 @@ export type AdmittedScanExclusionClause = z.infer<typeof AdmittedScanExclusionCl
 // ===========================================================================================
 // M22.8 — THE READ SURFACE'S WIRE CONTRACT (`GET /components/{idOrUrn}/scan-requirements`).
 //
-// Everything above this point travels on `control_runs.evidence` and in a Decision's
-// `inputContext`, both of which are free-form JSON and therefore NOT wire contracts (measured
-// during M22.0: `ScanRequirementTierSchema` never reaches `openapi.v1.json`). The schemas BELOW
-// are the first ones in this file that genuinely do, which is why the tier enum finally appears in
-// the generated spec with this increment and not with M22.0.
+// THE CLAIM THAT USED TO BE HERE WAS FALSE and is corrected rather than deleted, because this repo
+// has already paid for "never make a required response field optional" and the cost of that mistake
+// is decided entirely by which schemas are on the wire. It said everything ABOVE this line travels
+// only on `control_runs.evidence` and in a Decision's `inputContext` — free-form JSON, no contract —
+// and that the schemas BELOW are "the first ones in this file that genuinely" reach the wire. Check
+// `git show origin/main:tools/openapi/openapi.v1.json`: `/instance/scan-floors` and
+// `/instance/scan-floors/{tier}` were published BEFORE this branch, and their request/response
+// bodies are `InstanceScanFloorSchema`, `InstanceScanFloorListResponseSchema`,
+// `InstanceScanFloorTierParamSchema` and `PutInstanceScanFloorRequestSchema` — all defined above
+// this line. `InstanceScanExclusionAdmission*` (M22.9) joins them. Editing any of those is an
+// oasdiff-gated API change, not a refactor.
+//
+// ONLY THE PARENTHETICAL WAS RIGHT, and it is the part worth keeping: the SIX-TIER
+// `ScanRequirementTierSchema` never reached `openapi.v1.json` before this increment (measured again
+// for this correction — `assembly`, which only that enum carries, appears nowhere in main's spec).
+// The floors surfaces publish their own two-value `z.enum(["platform", "trust_domain"])` instead, so
+// the full tier enum genuinely does appear in the generated spec with M22.8 and not with M22.0.
 // ===========================================================================================
 
 /**
@@ -910,10 +922,18 @@ export type PutInstanceScanExclusionAdmissionsRequest = z.infer<
 //   - `os-pkgs`   — attributable to the BASE IMAGE line. `dockerfile.ts` parses every real `FROM`
 //                   into a declared `oci` dependency, so "we are on the latest base image" is a
 //                   fact about that line and it earns every OS-package finding a pass.
-//   - `lang-pkgs` with a DECLARED line — attributable to its own line, via {@link packageKeys}.
-//   - `lang-pkgs` TRANSITIVE — NO line, and therefore NO pass. Defensible rather than a gap: a
-//                   transitive is fixed by moving the DIRECT parent that pulls it, and the direct
-//                   parent has a line of its own.
+//   - `lang-pkgs` with a DECLARED line — attributable to its own line, via {@link packageKeys},
+//                   AND ONLY AT THE VERSION THE ARTIFACT ACTUALLY SHIPS (see
+//                   {@link vendorLatestPackageKey}).
+//   - `lang-pkgs` TRANSITIVE — NO line of its own, and so no key of its own. This line used to read
+//                   "and therefore NO pass", which was FALSE for as long as the key carried no
+//                   version: a transitive `lodash@3.10.1` matched the key emitted for a DECLARED
+//                   `lodash@4.17.21` at head, because the two differed only in the field the key
+//                   threw away. With the version in the key, a transitive is excused only when it
+//                   sits at exactly the version some declared line is at the head of — the same bytes
+//                   the manifest asked for, which is not a transitive escaping the rule. Anything
+//                   else is fixed by moving the DIRECT parent that pulls it, and that parent has a
+//                   line of its own.
 // ===========================================================================================
 
 /**
@@ -934,11 +954,39 @@ export type PutInstanceScanExclusionAdmissionsRequest = z.infer<
  * language specification (`github.com/Masterminds/semver`). Folding those would be inventing an
  * equality the ecosystem does not grant — and for a LOOSENING an invented equality is a false
  * positive, which is the one direction this feature may not fail in.
+ *
+ * THE VERSION IS PART OF THE IDENTITY (added 2026-08-18), and leaving it out was a defect rather
+ * than a simplification. A key of `(ecosystem, coordinate)` alone made `keys.has(…)` answer *"the
+ * component's MANIFEST declares this package at head"* — never *"the ARTIFACT BEING SCANNED contains
+ * it at head"*, which is the only question a finding can be excused by. Two live falsifications, both
+ * LOOSENINGS:
+ *
+ *  1. DRIFT. A manifest declaring `lodash@4.17.21` (at head) over an image that actually ships
+ *     `4.17.15` excused a HIGH whose `FixedVersion` was `4.17.21` — a finding with a shipped upstream
+ *     fix, dropped under a rule whose entire justification is "there is nothing more the team can do".
+ *  2. THE MAJOR LINE. At-head-ness is computed PER LINE and `dependency_lines` is keyed by
+ *     `(org_id, ecosystem, coordinate, major)`, so a component declaring `lodash@4.17.21` (at head of
+ *     `4`) AND `lodash@3.10.1` (behind head of `3`) projected both onto one version-less `npm|lodash`,
+ *     which then excused the `3.10.1` finding. That is precisely the current sibling voting away a
+ *     stale one that `foldVendorLatestFacts`' own docblock claimed could not happen.
+ *
+ * The version is compared VERBATIM on both sides — `component_dependencies.resolved_version` against
+ * Trivy's `InstalledVersion` — with no normalisation of its own. Both are exact published version
+ * strings rather than ranges, and a spelling difference between the two costs a pass rather than
+ * granting one, which is the only direction a loosening may fail in.
+ *
+ * THE THIRD PARAMETER IS REQUIRED, not optional-with-a-default, and that is the whole reason this is
+ * one exported function: an optional version would let either side of the join silently keep the old
+ * shape, which is exactly the drift a single join point exists to make impossible at compile time.
  */
-export function vendorLatestPackageKey(ecosystem: DependencyEcosystem, coordinate: string): string {
+export function vendorLatestPackageKey(
+  ecosystem: DependencyEcosystem,
+  coordinate: string,
+  version: string
+): string {
   const canonical =
     ecosystem === "python" ? coordinate.toLowerCase().replace(/[-_.]+/g, "-") : coordinate;
-  return `${ecosystem}|${canonical}`;
+  return `${ecosystem}|${canonical}|${version}`;
 }
 
 /** purl `type` → this project's `DependencyEcosystem`. A purl whose type is not one of the four
@@ -1381,18 +1429,67 @@ function scanExclusionClassPredicate(
  * excuses is the CLAUSE's other matchers (`findingClass`, `pkgName`, `vulnerabilityId`), authored at
  * `policy:write` by whoever admitted the class — never by the component. That split is the whole of
  * ADR-0033 §6 guard 1: the component authors the override, it does not author its own admission.
+ *
+ * ===========================================================================================
+ * WHICH IS WHY AN UNNARROWED CLAUSE OF THIS CLASS IS INERT (third condition, added 2026-08-18)
+ * ===========================================================================================
+ * The paragraph above is only true if the matchers EXIST. `ScanExclusionClauseSchema` makes all four
+ * of them optional, so `{"class": "declared_fact", "declaredFact": "egress", "declaredValue":
+ * "none"}` used to return a bare `() => true` — every finding, every severity, for every target that
+ * declared the pair. Admission is per CLASS, so the tiers above consent to "`declared_fact` may be
+ * used beneath me" and can NEVER see the blast radius of the clause a lower tier then writes: one
+ * service-tier author plus any component owner's `object:write` on their own `properties` turns the
+ * scan gate off for that component entirely. So a clause carrying none of `vulnerabilityId` /
+ * `pkgName` / `purl` / `findingClass` resolves to `undefined` — no exclusion at all.
+ *
+ * THIS IS THE READ HALF OF A PAIR, and neither half is redundant. `scan-rule-authoring-guard.ts`
+ * refuses the shape at the local write door with a 400 that names the fix; this refuses it at
+ * evaluation, which is the only reach a clause ALREADY STORED has (authored before the guard
+ * existed, or arriving over federation import, which the guard deliberately cannot touch because a
+ * throw there aborts a whole signed bundle).
+ *
+ * THE CENSUS — the property is "a class predicate that does not itself narrow per finding", and it
+ * is unique to this class. `no_fix_available` reads `fixedVersion` OFF THE FINDING; `vendor_latest`
+ * joins the finding's class, purl, name and installed version against the resolved facts;
+ * `approved_override` joins the finding's `vulnerabilityId` against a specific grant. Each of those
+ * is a genuine per-finding test whose reach an admitting tier can predict from the class name alone,
+ * so an unnarrowed clause of those classes excludes exactly what the class says and no more. This
+ * one alone collapses to a constant, and only this one gets the extra requirement.
  */
 function declaredFactPredicate(
   clause: ScanExclusionClause,
   facts: ScanDeclaredFacts | undefined
 ): ((finding: ScanFinding) => boolean) | undefined {
   if (clause.declaredFact === undefined || clause.declaredValue === undefined) return undefined;
+  if (!scanExclusionClauseIsNarrowed(clause)) return undefined;
   if (!facts) return undefined;
   const declared = facts.declarations.some(
     (d) => d.key === clause.declaredFact && d.value === clause.declaredValue
   );
   if (!declared) return undefined;
   return () => true;
+}
+
+/**
+ * Does this clause carry at least one matcher that narrows WHICH FINDINGS it reaches?
+ *
+ * EXPORTED because the authoring guard (`apps/server/src/governance/scan-rule-authoring-guard.ts`)
+ * refuses exactly the shape this rejects, and two hand-synced spellings of "narrowed" is the shape
+ * where the door and the evaluator drift into disagreeing — the door accepting a clause the gate
+ * silently ignores, or worse, the reverse. It is a predicate over the CLAUSE only, so it stays here
+ * beside the schema that declares the four fields optional.
+ *
+ * `declaredFact`/`declaredValue` are deliberately NOT counted: they narrow which COMPONENTS the
+ * clause resolves for, never which findings it then excuses, and it is the finding reach that the
+ * admitting tiers above cannot see. `reason` is free text and narrows nothing.
+ */
+export function scanExclusionClauseIsNarrowed(clause: ScanExclusionClause): boolean {
+  return (
+    clause.vulnerabilityId !== undefined ||
+    clause.pkgName !== undefined ||
+    clause.purl !== undefined ||
+    clause.findingClass !== undefined
+  );
 }
 
 /**
@@ -1448,6 +1545,12 @@ export function scanOverrideGrantFor(
  * excludes nothing at all, which is the whole of D7's "the gate is decoupled from automation, the
  * data is not" — a component with no dependency automation has no ingested manifests and no polled
  * head, so it gets no vendor-pass and upgrades manually.
+ *
+ * THE FACTS DESCRIBE THE MANIFEST; THE FINDING DESCRIBES THE ARTIFACT. Everything below exists to
+ * keep those two from being confused, because the inventory is resolved from what a component
+ * DECLARED and the scan is run against what an image actually SHIPS, and nothing forces the two to
+ * agree — a rebuild, a lockfile, a cached layer or a base image that vendors its own copy all make
+ * them differ. Both narrowings below are that one property, applied twice.
  */
 function vendorLatestPredicate(
   facts: ScanVendorLatestFacts | undefined
@@ -1455,9 +1558,26 @@ function vendorLatestPredicate(
   if (!facts) return undefined;
   const keys = new Set(facts.packageKeys);
   return (finding) => {
+    // NO `fixedVersion` BACKSTOP HERE, AND THAT IS A DECISION (owner, 2026-08-18).
+    //
+    // A blanket `finding.fixedVersion !== undefined ⇒ refuse` was implemented during the review round
+    // and REMOVED. It reads like free fail-closed safety and is not: it refuses the exact case D1
+    // exists for. D1 is "we are on the latest version OF A MAJOR VERSION" — so a component at the
+    // head of the `3` line, against a fix that shipped only in `4.x`, IS at head of the line it
+    // declared, and a major upgrade is a project rather than a patch. The blanket rule excused
+    // nothing that `no_fix_available` would not already excuse, which left this class unable to earn
+    // its own existence.
+    //
+    // THE SAME-MAJOR CASE NEEDS NO BACKSTOP, which is why dropping it costs nothing real: if a fix
+    // shipped within the declared major line, then the line's head has moved past the installed
+    // version, the inventory says so, and the version join below refuses on that basis — from the
+    // org's own observed data rather than from the scanner's opinion.
+    //
     // OS PACKAGES → THE BASE IMAGE LINE. An `apk`/`deb`/`rpm` package is not declared in any
     // manifest; what the component declares is the `FROM` it came in on, so the base image line's
-    // head is the fact that speaks for it.
+    // head is the fact that speaks for it. The `oci` arm of `evaluateVendorLineAtHead` compares
+    // DIGESTS, so `baseImageAtLatest` already speaks about bytes rather than about a tag — there is
+    // no version for the join below to narrow.
     if (finding.class === "os-pkgs") return facts.baseImageAtLatest;
     if (finding.class !== "lang-pkgs") {
       // An UNRECOGNISED or ABSENT `Class` attributes to nothing. Trivy emits other classes
@@ -1475,10 +1595,24 @@ function vendorLatestPredicate(
     // Python `requests` at head.
     const ecosystem = purlEcosystem(finding.purl);
     if (ecosystem === undefined || finding.pkgName === undefined) return false;
+    // NO `InstalledVersion` ⇒ NO PASS. `parseTrivyFindings` retains an entry on its severity alone,
+    // so a finding with no installed version is a real shape, and it is one this rule cannot answer:
+    // the facts say which VERSION of a package is at head, and a finding that will not say which
+    // version it is cannot be shown to be that one.
+    //
+    // MEASURED, NOT ASSUMED: deleting this line alone changes no behaviour — every key in the set is
+    // built from a non-null `resolved_version`, so a `…|undefined` lookup misses anyway, and the
+    // mutation run confirmed the suite stays green. It is kept because it is what makes the required
+    // third parameter below type-check, and that is the load-bearing part: without it the only way
+    // to compile is to coerce the missing version or to drop it from the lookup, and THAT mutation
+    // (degrading to a name-prefix match) kills four tests. Stated here rather than left as a line a
+    // future reader deletes as dead.
+    if (finding.installedVersion === undefined) return false;
     // A TRANSITIVE dependency has no declared line, so its key is simply not in the set and it does
-    // not qualify. That is the mechanism, not an omission (ADR-0033: a transitive is fixed by moving
+    // not qualify. Neither does a DECLARED package at a version this artifact does not actually ship
+    // — same mechanism, one key lookup, no second branch (ADR-0033: a transitive is fixed by moving
     // the direct parent that pulls it).
-    return keys.has(vendorLatestPackageKey(ecosystem, finding.pkgName));
+    return keys.has(vendorLatestPackageKey(ecosystem, finding.pkgName, finding.installedVersion));
   };
 }
 

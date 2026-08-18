@@ -243,7 +243,10 @@ describe("foldVendorLatestFacts — ALL, never ANY", () => {
     const current = npmLine();
     const behind = { ...npmLine(), resolvedVersion: "4.17.20" };
     expect(foldVendorLatestFacts([current], OPTS).packageKeys).toEqual([
-      vendorLatestPackageKey("npm", "lodash")
+      // The KEY NOW CARRIES THE VERSION (M22.4 review round). Without it the fact answered "the
+      // MANIFEST declares this package at head", not "the ARTIFACT being scanned contains it at
+      // head" — and a sibling line on a DIFFERENT major voted a stale one clean.
+      vendorLatestPackageKey("npm", "lodash", "4.17.21")
     ]);
     expect(foldVendorLatestFacts([current, behind], OPTS).packageKeys).toEqual([]);
     expect(foldVendorLatestFacts([behind, current], OPTS).packageKeys).toEqual([]);
@@ -261,7 +264,11 @@ describe("foldVendorLatestFacts — ALL, never ANY", () => {
     ];
     const keys = foldVendorLatestFacts(rows, OPTS).packageKeys;
     expect(keys).toEqual([...keys].sort());
-    expect(keys).toEqual(["npm|axios", "npm|zod", "python|zope-interface"]);
+    expect(keys).toEqual([
+      "npm|axios|4.17.21",
+      "npm|zod|4.17.21",
+      "python|zope-interface|4.17.21"
+    ]);
   });
 });
 

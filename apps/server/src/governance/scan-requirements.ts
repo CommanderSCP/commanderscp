@@ -612,9 +612,11 @@ export interface ResolveScanExclusionsInput {
   /** The condition-resolved firing set — REQUIRED for the same reason the ceiling's is: no call site
    *  may silently fall back to "every match contributes". */
   firedPolicies: FiredPolicy[];
-  /** M22.4 — the instant the vendor rule's freshness bound is measured against. Injectable for
-   *  tests ONLY; every production caller omits it and gets `new Date()`. It never enters a Decision
-   *  or evidence — a timestamp in either would defeat write suppression (M22.0). */
+  /** M22.4 — THE instant this whole evaluation is measured against: the vendor rule's freshness
+   *  bound AND the override grants' expiry window, which are the same clock by construction rather
+   *  than by convention (`resolveEffectiveScanExclusionsForTargets` resolves it once and threads it).
+   *  Injectable for tests ONLY; every production caller omits it and gets one `new Date()`. It never
+   *  enters a Decision or evidence — a timestamp in either would defeat write suppression (M22.0). */
   now?: Date;
 }
 
@@ -801,11 +803,20 @@ export async function resolveEffectiveScanExclusionsForTargets(
 ): Promise<EffectiveScanExclusions | undefined> {
   if (input.targetObjectIds.length === 0) return undefined;
 
+  // ONE INSTANT FOR THE WHOLE EVALUATION, resolved here and threaded UNCONDITIONALLY. The previous
+  // shape forwarded `input.now` only when it was defined, which meant the shared clock existed only
+  // on the TEST path: in production `resolveVendorLatestFactsForTarget` took a `new Date()` of its
+  // own ONCE PER TARGET and `attachApprovedOverrides` took yet another, so a change with three
+  // targets measured the vendor freshness bound against four different instants and the override
+  // expiry window against a fifth. Harmless-looking and unfindable — the tests that assert "the same
+  // now" were the only callers for whom it was true. Both attach* functions now REQUIRE the instant
+  // (as does `resolveVendorLatestFactsForTarget`), so no future one can quietly re-acquire a clock.
+  const at = input.now ?? new Date();
   const targets = await buildScanExclusionTargetInputs(tx, input);
   const resolved = resolveEffectiveScanExclusions(targets);
-  const withVendor = await attachVendorLatestFacts(tx, input.orgId, targets, resolved, input.now);
+  const withVendor = await attachVendorLatestFacts(tx, input.orgId, targets, resolved, at);
   const withDeclared = await attachDeclaredFacts(tx, input.orgId, targets, withVendor);
-  return attachApprovedOverrides(tx, input, targets, withDeclared);
+  return attachApprovedOverrides(tx, input, targets, withDeclared, at);
 }
 
 /**
@@ -828,16 +839,15 @@ async function attachVendorLatestFacts(
   orgId: string,
   targets: ScanExclusionTargetInput[],
   resolved: EffectiveScanExclusions | undefined,
-  now: Date | undefined
+  /** The evaluation's ONE instant — required, never conditionally forwarded. See the caller. */
+  at: Date
 ): Promise<EffectiveScanExclusions | undefined> {
   if (!resolved) return undefined;
   if (!resolved.clauses.some((c) => c.clause.class === "vendor_latest")) return resolved;
   const perTarget: ScanVendorLatestFacts[] = [];
   for (const target of targets) {
     perTarget.push(
-      await resolveVendorLatestFactsForTarget(tx, orgId, target.targetObjectId, {
-        ...(now !== undefined ? { now } : {})
-      })
+      await resolveVendorLatestFactsForTarget(tx, orgId, target.targetObjectId, { now: at })
     );
   }
   const vendorLatest = intersectVendorLatestFacts(perTarget);
@@ -883,9 +893,11 @@ async function attachDeclaredFacts(
  * gate's own instant, so a grant that expired one second ago is simply not in the result — there is
  * no status to have been flipped and no sweeper to have failed to run.
  *
- * The gate-evaluation instant is deliberately the SAME `now` the vendor rule's freshness bound uses
- * (injectable for tests, `new Date()` in production): two loosening dimensions reading two different
- * clocks within one evaluation is a difference nobody would ever look for.
+ * The gate-evaluation instant is the SAME one the vendor rule's freshness bound uses, and it is now
+ * PASSED IN rather than taken here. This docblock previously asserted that sameness while the code
+ * did `input.now ?? new Date()` locally and the vendor path did its own per target — so the claim
+ * held only under a test that injected `now`, which is why no test ever caught it. The instant is
+ * resolved once in `resolveEffectiveScanExclusionsForTargets` and is a required parameter here.
  *
  * THE AUTHORITY BAR (D3) IS APPLIED HERE TOO, and it is applied PER TARGET before the intersection,
  * never after. A grant's tier is derived from the containment chain of the target it excuses, and two
@@ -898,12 +910,13 @@ async function attachApprovedOverrides(
   tx: TenantTx,
   input: ResolveScanExclusionsInput,
   targets: ScanExclusionTargetInput[],
-  resolved: EffectiveScanExclusions | undefined
+  resolved: EffectiveScanExclusions | undefined,
+  /** The evaluation's ONE instant — required, never re-derived here. See the caller. */
+  at: Date
 ): Promise<EffectiveScanExclusions | undefined> {
   if (!resolved) return undefined;
   if (!resolved.clauses.some((c) => c.clause.class === "approved_override")) return resolved;
   const orgId = input.orgId;
-  const at = input.now ?? new Date();
   // THE BAR IS RESOLVED HERE, NOT THREADED IN FROM THE CALLER — measured, not preferred.
   //
   // The first version of this fix took the ceiling as a REQUIRED input field so TypeScript would

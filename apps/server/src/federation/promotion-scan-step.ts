@@ -22,14 +22,15 @@ import {
   type EffectiveScanThreshold,
   type ScanDbSource,
   type ScanDbStalenessClass,
-  type ScanDbThresholdFired
+  type ScanDbThresholdFired,
+  type EffectiveScanExclusions
 } from "@scp/schemas";
 import { resolveSkopeo } from "@scp/cosign";
 import { ociLayout as airgapOciLayout } from "@scp/airgap";
 import { createManagedScanExecutorPlugin } from "@scp/plugin-managed-scan";
 import type { PluginContext } from "@scp/plugin-api";
 import type { Db } from "../db/client.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { getChange } from "../coordination/changes-repo.js";
 import {
   insertControlRun,
@@ -50,6 +51,8 @@ import {
   type SeverityCeiling
 } from "./scan-evidence.js";
 import { resolveFiredPoliciesForTargets } from "../governance/gate-orchestrator.js";
+import type { MatchedPolicy } from "../governance/policy-model.js";
+import type { FiredPolicy } from "../governance/evaluate.js";
 import { getSharedCelSandbox, type CelSandbox } from "../governance/cel-sandbox.js";
 import { readScanDbStatus } from "../governance/scan-db.js";
 import { scanExclusionSetHash } from "../governance/scan-exclusion-actuator.js";
@@ -76,10 +79,14 @@ import {
  * it does not touch the gate.
  *
  * PER ARTIFACT (proposal §13.3):
- *   (a) SHORT-CIRCUIT — if a VALID org-pipeline `control_runs` scan outcome already covers this
- *       digest (status `pass` + `ScanEvidenceSchema` valid + `digestMatch` + `artifactDigest`
- *       match — the exact E6 predicate), SKIP the managed run: org evidence wins, the D1 alternate
- *       ingress, and the runner is never invoked.
+ *   (a) SHORT-CIRCUIT — if a covering org-pipeline (or prior managed) `control_runs` scan outcome
+ *       already covers this digest, SKIP the managed run: org evidence wins, the D1 alternate
+ *       ingress, and the runner is never invoked. "Covering" is not enumerated here on purpose —
+ *       this list used to spell it as "status `pass` + `ScanEvidenceSchema` valid + `digestMatch` +
+ *       `artifactDigest` match, the exact E6 predicate", which stopped being the whole rule the
+ *       moment E6 grew producer admission, supersession, the instance floor and (M22.9) exclusion-set
+ *       currency. It is ONE function, `evaluateScanCoverage` in `scan-evidence.ts`, and that module
+ *       doc is where the rule is stated.
  *   (b) SCANNER SELECTION — `resolveScannersForType(the artifact's ExecutorType)` → methods. If
  *       EMPTY, NO managed evidence is produced (fail-closed: E6 will refuse — we never fabricate a
  *       pass for an unassigned type).
@@ -211,9 +218,14 @@ export interface ManagedScanRunner {
 function isCoveringScanOutcome(
   runs: readonly ControlRunRow[],
   digest: string,
-  instanceFloor: SeverityCeiling
+  instanceFloor: SeverityCeiling,
+  /** M22.9 — the exclusion set in force on THIS pass; a covering pass judged under any other one is
+   *  not covering. Passed unconditionally (never conditionally spread): `undefined` here is the
+   *  meaningful value "no clause is in force now", and a run stamped with a hash must not survive
+   *  the withdrawal of every clause that produced it. */
+  expectedExclusionSetHash: string | undefined
 ): boolean {
-  return evaluateScanCoverage({ digest, runs, instanceFloor }).covered;
+  return evaluateScanCoverage({ digest, runs, instanceFloor, expectedExclusionSetHash }).covered;
 }
 
 // --- Artifact + pull-ref resolution from the change's sourceRef ----------------------------------
@@ -366,6 +378,109 @@ interface DepositRow {
 }
 
 /**
+ * THE EXCLUSION SET IN FORCE FOR A CHANGE — one resolution, because the export path now has TWO
+ * consumers of the answer and a difference between them is indistinguishable from a withdrawn
+ * waiver.
+ *
+ * The step below resolves the set to APPLY it (exclude-before-counting, phase B) and stamps
+ * `scanExclusionSetHash` onto every verdict it deposits. `promotion-repo.ts`'s E6 gate resolves it to
+ * CHECK that a cached verdict was judged under it (M22.9). If the two assembled their inputs
+ * separately — a target list read differently, a firing set resolved from a different CEL pass, a
+ * different actor — the two hashes would differ for a reason nobody authored, and EVERY export of a
+ * change carrying an exclusion would refuse `stale_exclusion_set` forever. That is the failure this
+ * function exists to make unreachable; the alternative considered was a second copy of these
+ * ~20 lines in `promotion-repo.ts`, kept in step by a comment.
+ *
+ * `matches`/`fired` come back with the answer because the CEILING dimension resolves off the SAME
+ * firing set (below) — re-running the CEL evaluation to obtain it a second time would be both a
+ * wasted worker round-trip and a second chance for the two dimensions to disagree.
+ *
+ * ===================================================================================
+ * M22.2 — THE FIRING SET, FOR REAL. This used to be `firedPolicies: []`.
+ *
+ * An empty firing set admits the instance-level floors (platform/trust_domain, always read) plus the
+ * fail-closed default, and NOTHING authored at org, containment domain, service, assembly or
+ * component. That was a documented follow-on and it was defensible while the only dimension was a
+ * TIGHTENING — the 0/0 default already refuses any Critical or High, so a missing scoped ceiling
+ * could only ever make this step stricter than the gate.
+ *
+ * It stops being defensible the moment a LOOSENING exists. An exclusion resolved by the lifecycle
+ * gate would be invisible here, so the commander's own managed scan would count findings the gate had
+ * agreed not to count — the two paths disagreeing about the same artifact at exactly the boundary
+ * where evidence is FROZEN into a signed bundle and the E6 export gate reads it. So both dimensions
+ * resolve off the SAME firing set the gate would compute.
+ *
+ * THIS IS A BEHAVIOUR CHANGE FOR THE CEILING TOO, and in both directions — stated rather than buried.
+ * A scoped policy that sets `maxHigh: 5` now applies here, where before this step used the 0/0
+ * default; a scoped policy that sets `maxHigh: 0` now applies where before nothing did. Convergence
+ * with the lifecycle gate is the point: two verdicts about one artifact must not be produced under
+ * two different rules.
+ *
+ * The sandbox is a THUNK. `new CelSandbox()` spawns its worker pool in the constructor, and
+ * `resolveFiredPolicies` calls `evaluate` only for a contributor that actually carries a `condition`
+ * — so an org whose policies have no conditions spins up no worker threads.
+ * ===================================================================================
+ *
+ * RESOLVED AS THE ACTOR WHO IS CROSSING THE BOUNDARY, which is a real and accepted limitation: an
+ * exclusion policy scoped to an ACTING GROUP resolves differently for the exporter than it did for
+ * the engineer whose gate run stamped the evidence, and the difference reads here as a moved set.
+ * The consequence is a refusal (or a re-scan), never a crossing — the direction a boundary check is
+ * allowed to be wrong in.
+ */
+export async function resolveScanExclusionsForChange(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    change: { id: string; properties: Record<string, unknown>; emergency: boolean };
+    actorObjectId: string;
+  },
+  /** Test seam ONLY — see `runPromotionScanStep`. */
+  sandbox?: Pick<CelSandbox, "evaluate">
+): Promise<{
+  targetObjectIds: string[];
+  matches: MatchedPolicy[];
+  fired: FiredPolicy[];
+  exclusions: EffectiveScanExclusions | undefined;
+  /** `undefined` when nothing was admitted — the value that keeps a deployment with no authored
+   *  exclusion byte-identical to pre-M22 at both consumers. */
+  exclusionSetHash: string | undefined;
+}> {
+  const targetObjectIds = Array.isArray(input.change.properties.targets)
+    ? (input.change.properties.targets as unknown[]).filter(
+        (t): t is string => typeof t === "string"
+      )
+    : [];
+  const lazySandbox: Pick<CelSandbox, "evaluate"> = {
+    evaluate: (expression, context) =>
+      (sandbox ?? getSharedCelSandbox()).evaluate(expression, context)
+  };
+  const { matches, fired } = await resolveFiredPoliciesForTargets(tx, lazySandbox, {
+    orgId: input.orgId,
+    changeObjectId: input.change.id,
+    targetObjectIds,
+    actorObjectId: input.actorObjectId,
+    emergency: input.change.emergency,
+    now: new Date()
+  });
+  // Resolved server-side rather than threaded through a plugin context: the managed producer has no
+  // plugin to thread one to — it parses the Trivy result itself in phase B.
+  const exclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
+    orgId: input.orgId,
+    targetObjectIds,
+    actorObjectId: input.actorObjectId,
+    matches,
+    firedPolicies: fired
+  });
+  return {
+    targetObjectIds,
+    matches,
+    fired,
+    exclusions,
+    exclusionSetHash: scanExclusionSetHash(exclusions)
+  };
+}
+
+/**
  * Run the commander's promotion scan step for `changeIdOrUrn`, depositing managed-scan `control_runs`
  * rows so the UNCHANGED E6 gate (read next by `exportPromotionBundle`) has evidence to consume. A
  * no-op for a metadata-only promotion (no substantive artifacts) or an artifact already covered by
@@ -395,59 +510,17 @@ export async function runPromotionScanStep(
     const executorType = executorTypeOf(change as { properties: Record<string, unknown> });
     const methods = await resolveScannersForType(tx, executorType);
 
-    const targetObjectIds = Array.isArray((change.properties as Record<string, unknown>).targets)
-      ? ((change.properties as Record<string, unknown>).targets as unknown[]).filter(
-          (t): t is string => typeof t === "string"
-        )
-      : [];
-    // ===================================================================================
-    // M22.2 — THE FIRING SET, FOR REAL. This used to be `firedPolicies: []`.
-    //
-    // An empty firing set admits the instance-level floors (platform/trust_domain, always read)
-    // plus the fail-closed default, and NOTHING authored at org, containment domain, service,
-    // assembly or component. That was a documented follow-on and it was defensible while the only
-    // dimension was a TIGHTENING — the 0/0 default already refuses any Critical or High, so a
-    // missing scoped ceiling could only ever make this step stricter than the gate.
-    //
-    // It stops being defensible the moment a LOOSENING exists. An exclusion resolved by the
-    // lifecycle gate would be invisible here, so the commander's own managed scan would count
-    // findings the gate had agreed not to count — the two paths disagreeing about the same artifact
-    // at exactly the boundary where evidence is FROZEN into a signed bundle and the E6 export gate
-    // reads it. So both dimensions now resolve off the SAME firing set the gate would compute.
-    //
-    // THIS IS A BEHAVIOUR CHANGE FOR THE CEILING TOO, and in both directions — stated rather than
-    // buried. A scoped policy that sets `maxHigh: 5` now applies here, where before this step used
-    // the 0/0 default; a scoped policy that sets `maxHigh: 0` now applies where before nothing did.
-    // Convergence with the lifecycle gate is the point: two verdicts about one artifact must not be
-    // produced under two different rules.
-    //
-    // The sandbox is a THUNK. `new CelSandbox()` spawns its worker pool in the constructor, and
-    // `resolveFiredPolicies` calls `evaluate` only for a contributor that actually carries a
-    // `condition` — so an org whose policies have no conditions spins up no worker threads.
-    // ===================================================================================
-    const lazySandbox: Pick<CelSandbox, "evaluate"> = {
-      evaluate: (expression, context) =>
-        (sandbox ?? getSharedCelSandbox()).evaluate(expression, context)
-    };
-    const { matches, fired } = await resolveFiredPoliciesForTargets(tx, lazySandbox, {
-      orgId: input.orgId,
-      changeObjectId: change.id,
-      targetObjectIds,
-      actorObjectId: input.actorObjectId,
-      emergency: change.emergency,
-      now: new Date()
-    });
+    // M22.2 + M22.9 — the firing set and the exclusion dimension, resolved through the function the
+    // E6 gate now calls too, so the set this step APPLIES and the set that gate CHECKS against are
+    // built from one assembly of inputs (see `resolveScanExclusionsForChange`).
+    const { targetObjectIds, matches, fired, exclusions, exclusionSetHash } =
+      await resolveScanExclusionsForChange(
+        tx,
+        { orgId: input.orgId, change, actorObjectId: input.actorObjectId },
+        sandbox
+      );
 
     const effective = await resolveEffectiveScanThreshold(tx, {
-      orgId: input.orgId,
-      targetObjectIds,
-      actorObjectId: input.actorObjectId,
-      matches,
-      firedPolicies: fired
-    });
-    // M22.2 — the exclusion dimension, resolved server-side here because this producer has no plugin
-    // to thread a context to: it parses the Trivy result itself in phase B.
-    const exclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
       orgId: input.orgId,
       targetObjectIds,
       actorObjectId: input.actorObjectId,
@@ -458,8 +531,12 @@ export async function runPromotionScanStep(
     const planned: PlannedScan[] = [];
     for (const digest of digests) {
       // (a) SHORT-CIRCUIT — CURRENT org-pipeline (or prior managed) passing digest-bound evidence
-      // wins. "Current" is the word that changed: a superseded pass no longer suppresses the scan.
-      if (isCoveringScanOutcome(existingRuns, digest, instanceFloor)) continue;
+      // wins. "Current" is the word that changed: a superseded pass no longer suppresses the scan,
+      // and (M22.9) neither does one judged under an exclusion set that has since moved — which is
+      // why the hash is resolved ABOVE this loop rather than at the deposit below. Computed after
+      // the short-circuit it could only ever stamp what this pass believed, never re-open a pass an
+      // expired grant had paid for.
+      if (isCoveringScanOutcome(existingRuns, digest, instanceFloor, exclusionSetHash)) continue;
       // (b) scanner selection — an unassigned type yields no methods ⇒ no managed evidence.
       if (methods.length === 0) continue;
       planned.push({
@@ -473,7 +550,7 @@ export async function runPromotionScanStep(
         methods
       });
     }
-    return { changeId: change.id, planned, effective, exclusions };
+    return { changeId: change.id, planned, effective, exclusions, exclusionSetHash };
   });
 
   if (!plan || plan.planned.length === 0) return;
@@ -481,7 +558,9 @@ export async function runPromotionScanStep(
   const { threshold, source } = applyThreshold(plan.effective);
   // M22.7 — hashed ONCE for the whole step: every deposit below was produced under the one set phase
   // A resolved, so a per-deposit recomputation could only ever introduce a way for them to differ.
-  const exclusionSetHash = scanExclusionSetHash(plan.exclusions);
+  // M22.9 moved the hashing itself INTO phase A (the short-circuit needs it); this reads that one
+  // value rather than re-deriving it, for the same reason.
+  const exclusionSetHash = plan.exclusionSetHash;
 
   // Phase B (no tx): pull + scan each planned artifact per method. Subprocesses (skopeo/docker) run
   // here, never while a pooled DB connection is held (the codebase-wide invariant, promotion-repo.ts).
@@ -551,12 +630,12 @@ export async function runPromotionScanStep(
         // M22.7 — the SAME stamp `control-runner.ts` puts on a plugin-produced verdict, from the same
         // pure function, so the two verdict producers describe an exclusion set identically.
         //
-        // NO ACTUATOR READS IT HERE YET, and that is stated rather than implied. This step
-        // short-circuits on ANY prior covering passing run (`isCoveringScanOutcome`), and the E6
-        // export gate likewise accepts any passing `control_runs` row rather than the latest — a gap
-        // ADR-0033's consequences list already tracks separately, with the explicit note that "an
-        // override's expiry is not trustworthy at that boundary until it lands". Recording the hash
-        // now is what makes that later fix a comparison rather than a re-scan of history.
+        // THIS COMMENT USED TO SAY "NO ACTUATOR READS IT HERE YET" — true when written, false since
+        // M22.9. Both readers now exist and both are on the export path: this step's short-circuit
+        // (`isCoveringScanOutcome`) and the E6 export gate (`promotion-repo.ts`), which is what makes
+        // ADR-0033's "an override's expiry is not trustworthy at that boundary until it lands" land.
+        // Recording the hash from M22.7 is why that fix was a comparison rather than a re-scan of
+        // history — every stamped run was already describable.
         ...(exclusionSetHash ? { exclusionSetHash } : {}),
         threshold,
         thresholdSource: source,

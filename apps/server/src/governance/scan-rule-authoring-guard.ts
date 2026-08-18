@@ -1,5 +1,9 @@
 import { and, eq, inArray } from "drizzle-orm";
-import { PartialScanThresholdSchema, ScanExclusionEffectSchema } from "@scp/schemas";
+import {
+  PartialScanThresholdSchema,
+  ScanExclusionEffectSchema,
+  scanExclusionClauseIsNarrowed
+} from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { controlBindings } from "../db/schema.js";
 import { badRequest } from "../errors.js";
@@ -8,6 +12,13 @@ import { isUuid } from "../graph/objects-repo.js";
 /**
  * M22.8 (BUILD_AND_TEST.md §8 M22.8) — A SCAN RULE THAT REQUIRES NO SCAN IS REFUSED AT AUTHORING
  * TIME.
+ *
+ * TWO REFUSALS LIVE HERE, and the header below is about the first. The second
+ * ({@link assertDeclaredFactClauseIsNarrowed}) refuses a `declared_fact` clause that narrows nothing;
+ * it has its own docblock. They share this file because both are authoring-time refusals of a scan
+ * rule that says something other than what its author believes — one that constrains nothing, and one
+ * that constrains everything — and both are installed at the same two choke points for the same
+ * `federationImport` reasons.
  *
  * ================================================================================================
  * THE MEASURED DEFAULT EXPERIENCE THIS ENDS
@@ -139,6 +150,82 @@ function carriesExclusionClause(effect: EffectBag): boolean {
   if (!raw || typeof raw !== "object") return false;
   const parsed = ScanExclusionEffectSchema.safeParse(raw);
   return parsed.success && parsed.data.exclude !== undefined;
+}
+
+/**
+ * A `declared_fact` CLAUSE THAT NARROWS NOTHING IS REFUSED — the write half of a pair whose read half
+ * is `declaredFactPredicate` in `@scp/schemas`.
+ *
+ * ================================================================================================
+ * THE SHAPE, AND WHY IT IS NOT MERELY BROAD
+ * ================================================================================================
+ * `{"scanExclusion": {"exclude": {"class": "declared_fact", "declaredFact": "egress",
+ *   "declaredValue": "none"}}}` carries none of `vulnerabilityId`/`pkgName`/`purl`/`findingClass`.
+ * The class's predicate is finding-INDEPENDENT once the declaration holds — it has nothing about a
+ * finding to test — so with no narrowing matcher the clause excludes EVERY finding at EVERY severity
+ * for every target that declared the pair. It turns the scan gate off, and it reads like an exception.
+ *
+ * ADMISSION CANNOT SEE IT, which is what makes this worth a door rather than a lint. ADR-0033 §1's
+ * AND is per CLASS: the tiers above consent to "`declared_fact` may be used beneath me", never to a
+ * particular clause, and they are not shown the clauses a lower tier subsequently writes. So one
+ * service-tier `policy:write` holder plus the component owner's own `object:write` on
+ * `properties.security` — the weaker permission ADR-0033 §6 names as the accepted seam — is the whole
+ * escalation. The seam is bounded by the CLAUSE's matchers; a clause with none has no bound.
+ *
+ * ================================================================================================
+ * WHY THE READ-TIME REFUSAL IS NOT ENOUGH ON ITS OWN, AND VICE VERSA
+ * ================================================================================================
+ * The predicate already returns `undefined` for this shape, so nothing is excluded even if such a
+ * clause is stored. That is the reach the door cannot have: a clause authored before this guard
+ * existed, or one arriving over federation import — which every guard at this choke point
+ * deliberately skips, because a throw on that path aborts a whole signed bundle and wedges the
+ * channel. Conversely the door is the reach the predicate cannot have: silently ignoring an authored
+ * rule leaves the author believing the exception is in force, which is the exact "rule that
+ * mysteriously does not fire" this module's header exists to end. Two halves, one property, neither
+ * redundant.
+ *
+ * ONLY THIS CLASS. The property is "a class predicate that does not itself narrow per finding", and
+ * a filterless read of all four cases in `scanExclusionClassPredicate` finds exactly one:
+ * `no_fix_available` tests the finding's own `fixedVersion`; `vendor_latest` joins its class, purl,
+ * name and installed version against resolved facts; `approved_override` joins its `vulnerabilityId`
+ * against a specific grant. An unnarrowed clause of those three excludes what the class name says and
+ * no more — a reach an admitting tier CAN predict from the class alone. This one collapses to a
+ * constant, so it alone carries the extra requirement, and widening the refusal to all four would
+ * refuse the ordinary org-wide `{"class": "no_fix_available"}` that ADR-0033 §1 uses as its example.
+ *
+ * PURE AND SYNCHRONOUS, unlike its neighbour: it reads only the document. That is why it is installed
+ * AHEAD of the awaited refusals at both choke points — a bad write must not pay for a round trip.
+ */
+export function assertDeclaredFactClauseIsNarrowed(args: {
+  typeId: string;
+  properties: Record<string, unknown>;
+}): void {
+  if (args.typeId !== "policy") return;
+  const effects = args.properties.effects;
+  if (!Array.isArray(effects)) return;
+
+  for (const effect of effects) {
+    if (typeof effect !== "object" || effect === null) continue;
+    const raw = (effect as EffectBag).scanExclusion;
+    if (!raw || typeof raw !== "object") continue;
+    const parsed = ScanExclusionEffectSchema.safeParse(raw);
+    // A MALFORMED effect is left alone here, deliberately: it contributes no clause at all
+    // (`parseScanExclusionEffect` drops it), so refusing it would be this guard inventing a second,
+    // weaker schema validator — the same reading `assertScanRuleRequiresScanControl` gives a
+    // malformed `scanThreshold` two functions up.
+    if (!parsed.success) continue;
+    const clause = parsed.data.exclude;
+    if (!clause || clause.class !== "declared_fact") continue;
+    if (scanExclusionClauseIsNarrowed(clause)) continue;
+    throw badRequest(
+      `policy carries a 'declared_fact' exclusion clause with no narrowing matcher — such a clause ` +
+        `excludes EVERY finding at EVERY severity for any component declaring ` +
+        `'${clause.declaredFact ?? "<unset>"}', which is the scan gate turned off rather than an ` +
+        `exception. Admission is per CLASS, so no tier above can see this clause's reach. Add at ` +
+        `least one of vulnerabilityId, pkgName, purl or findingClass to bound which findings the ` +
+        `declaration is allowed to excuse.`
+    );
+  }
 }
 
 export async function assertScanRuleRequiresScanControl(

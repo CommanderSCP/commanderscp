@@ -143,31 +143,52 @@ function parseOne(vuln: Record<string, unknown>): ScanFinding {
 
 describe("M22.4 — the join key is canonicalised ONCE, per ecosystem's own rule", () => {
   it("folds python by PEP 503 and NOTHING ELSE", () => {
-    expect(vendorLatestPackageKey("python", "Flask")).toBe(
-      vendorLatestPackageKey("python", "flask")
+    expect(vendorLatestPackageKey("python", "Flask", "3.0.0")).toBe(
+      vendorLatestPackageKey("python", "flask", "3.0.0")
     );
-    expect(vendorLatestPackageKey("python", "zope.interface")).toBe(
-      vendorLatestPackageKey("python", "zope_interface")
+    expect(vendorLatestPackageKey("python", "zope.interface", "6.1")).toBe(
+      vendorLatestPackageKey("python", "zope_interface", "6.1")
     );
-    expect(vendorLatestPackageKey("python", "zope.interface")).toBe("python|zope-interface");
+    expect(vendorLatestPackageKey("python", "zope.interface", "6.1")).toBe(
+      "python|zope-interface|6.1"
+    );
   });
 
   it("does NOT case-fold go, npm or maven — an invented equality is a false positive here", () => {
     // Go module paths are case-sensitive by language specification; Maven coordinates likewise. For
     // a LOOSENING an invented equality excuses a finding on a package the org never declared, which
     // is the one direction this feature may not fail in.
-    expect(vendorLatestPackageKey("go", "github.com/Masterminds/semver")).not.toBe(
-      vendorLatestPackageKey("go", "github.com/masterminds/semver")
+    expect(vendorLatestPackageKey("go", "github.com/Masterminds/semver", "v1.2.3")).not.toBe(
+      vendorLatestPackageKey("go", "github.com/masterminds/semver", "v1.2.3")
     );
-    expect(vendorLatestPackageKey("maven", "com.Acme:Lib")).not.toBe(
-      vendorLatestPackageKey("maven", "com.acme:lib")
+    expect(vendorLatestPackageKey("maven", "com.Acme:Lib", "1.0.0")).not.toBe(
+      vendorLatestPackageKey("maven", "com.acme:lib", "1.0.0")
     );
-    expect(vendorLatestPackageKey("npm", "@babel/core")).toBe("npm|@babel/core");
+    expect(vendorLatestPackageKey("npm", "@babel/core", "7.24.0")).toBe("npm|@babel/core|7.24.0");
   });
 
   it("keys are ECOSYSTEM-QUALIFIED, so one name never crosses ecosystems", () => {
-    expect(vendorLatestPackageKey("npm", "requests")).not.toBe(
-      vendorLatestPackageKey("python", "requests")
+    expect(vendorLatestPackageKey("npm", "requests", "2.31.0")).not.toBe(
+      vendorLatestPackageKey("python", "requests", "2.31.0")
+    );
+  });
+
+  it("keys are VERSION-QUALIFIED, so one name never crosses versions or majors", () => {
+    // The defect this closed: the key answered "the MANIFEST declares this package at head", not
+    // "the ARTIFACT contains it at head". Two spellings of that, both loosenings — a declared
+    // `4.17.21` excusing a shipped `4.17.15`, and an at-head `4` line excusing a stale `3` line,
+    // since at-head-ness is computed per `(ecosystem, coordinate, MAJOR)` and the key had no major.
+    expect(vendorLatestPackageKey("npm", "lodash", "4.17.21")).not.toBe(
+      vendorLatestPackageKey("npm", "lodash", "4.17.15")
+    );
+    expect(vendorLatestPackageKey("npm", "lodash", "4.17.21")).not.toBe(
+      vendorLatestPackageKey("npm", "lodash", "3.10.1")
+    );
+    // The VERSION is not canonicalised at all — only the coordinate is, and only for python. Both
+    // sides of the join are exact published version strings (`resolved_version` vs Trivy's
+    // `InstalledVersion`), and a difference in spelling costs a pass rather than granting one.
+    expect(vendorLatestPackageKey("python", "Flask", "3.0")).not.toBe(
+      vendorLatestPackageKey("python", "flask", "3.0.0")
     );
   });
 
@@ -191,8 +212,8 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   const atHead: ScanVendorLatestFacts = {
     baseImageAtLatest: true,
     packageKeys: [
-      vendorLatestPackageKey("npm", "lodash"),
-      vendorLatestPackageKey("python", "flask")
+      vendorLatestPackageKey("npm", "lodash", "4.17.21"),
+      vendorLatestPackageKey("python", "flask", "3.0.0")
     ]
   };
 
@@ -222,19 +243,119 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
 
   it("a DECLARED lang-pkgs dependency at head is excluded; a TRANSITIVE one is not", () => {
     const findings = [
-      // Declared, at head.
-      finding({ class: "lang-pkgs", pkgName: "lodash", purl: "pkg:npm/lodash@4.17.21" }),
+      // Declared, at head, and SHIPPING the version the manifest declared.
+      finding({
+        class: "lang-pkgs",
+        pkgName: "lodash",
+        purl: "pkg:npm/lodash@4.17.21",
+        installedVersion: "4.17.21"
+      }),
       // Transitive: no line of its own, so no key, so no pass. It is fixed by moving the DIRECT
       // parent that pulls it — which has a line.
-      finding({ class: "lang-pkgs", pkgName: "minimist", purl: "pkg:npm/minimist@0.0.8" })
+      finding({
+        class: "lang-pkgs",
+        pkgName: "minimist",
+        purl: "pkg:npm/minimist@0.0.8",
+        installedVersion: "0.0.8"
+      })
     ];
     const applied = applyScanExclusions(findings, withFacts(VENDOR, atHead), "full");
     expect(applied.excludedOrdinals).toEqual([0]);
     expect(applied.findings).toEqual([findings[1]]);
   });
 
+  it("THE MANIFEST IS NOT THE ARTIFACT: a declared package at head does not excuse a DIFFERENT installed version", () => {
+    // The blocking defect the version join closes. The manifest declares `lodash@4.17.21` and the
+    // line really is at its head — but the image ships `4.17.15`, and Trivy reports a HIGH against
+    // what it found. Excusing it drops a finding with a shipped upstream fix under a rule whose whole
+    // justification is "there is nothing more the team can do".
+    const drifted = finding({
+      class: "lang-pkgs",
+      pkgName: "lodash",
+      purl: "pkg:npm/lodash@4.17.15",
+      installedVersion: "4.17.15"
+    });
+    expect(
+      applyScanExclusions([drifted], withFacts(VENDOR, atHead), "full").excludedOrdinals
+    ).toEqual([]);
+  });
+
+  it("A CURRENT SIBLING ON ANOTHER MAJOR DOES NOT VOTE AWAY A STALE LINE", () => {
+    // `dependency_lines` is keyed by `(ecosystem, coordinate, MAJOR)` and at-head-ness is computed
+    // per line, so a component declaring `lodash@4.17.21` (head of `4`) AND `lodash@3.10.1` (behind
+    // head of `3`) has exactly one at-head line. A version-less key projected both onto `npm|lodash`
+    // and excused the 3.10.1 finding — the current sibling voting away the stale one that
+    // `foldVendorLatestFacts`' own docblock says cannot happen.
+    const stale = finding({
+      class: "lang-pkgs",
+      pkgName: "lodash",
+      purl: "pkg:npm/lodash@3.10.1",
+      installedVersion: "3.10.1"
+    });
+    expect(
+      applyScanExclusions([stale], withFacts(VENDOR, atHead), "full").excludedOrdinals
+    ).toEqual([]);
+  });
+
+  it("A FIX IN A NEWER MAJOR STILL EXCUSES — D1 is 'latest of a MAJOR version', not 'no fix anywhere'", () => {
+    // THIS CASE INVERTED (owner decision, 2026-08-18). A blanket `fixedVersion !== undefined ⇒
+    // refuse` backstop was implemented in the review round and removed: it reads like free
+    // fail-closed safety and instead refuses the exact case D1 exists for. The component IS at the
+    // head of the line it declared; the fix shipped in a different major line, and a major upgrade
+    // is a project rather than a patch. With the backstop, `vendor_latest` excused nothing that
+    // `no_fix_available` would not already excuse, so the class could not earn its own existence.
+    const lang = finding({
+      class: "lang-pkgs",
+      pkgName: "lodash",
+      purl: "pkg:npm/lodash@4.17.21",
+      installedVersion: "4.17.21",
+      // The declared line is major 4 and it is at head; the fix is in 5.x.
+      fixedVersion: "5.0.1"
+    });
+    expect(
+      applyScanExclusions([lang], withFacts(VENDOR, atHead), "full").excludedOrdinals
+    ).toEqual([0]);
+  });
+
+  it("a fix in the SAME major is still refused — by the version join, not by a backstop", () => {
+    // The half that makes dropping the backstop safe, and the reason it cost nothing real. If a fix
+    // shipped INSIDE the declared major line then the line's head has moved past what is installed,
+    // the org's own inventory says so, and the join refuses on that basis — from observed data
+    // rather than from the scanner's opinion. `atHead` puts the line at 4.17.21, so an artifact
+    // still carrying 4.17.20 misses the key no matter what `fixedVersion` says.
+    const lang = finding({
+      class: "lang-pkgs",
+      pkgName: "lodash",
+      purl: "pkg:npm/lodash@4.17.20",
+      installedVersion: "4.17.20",
+      fixedVersion: "4.17.21"
+    });
+    expect(
+      applyScanExclusions([lang], withFacts(VENDOR, atHead), "full").excludedOrdinals
+    ).toEqual([]);
+  });
+
+  it("a lang-pkgs finding with NO INSTALLED VERSION cannot be shown to be the one at head", () => {
+    // `parseTrivyFindings` retains an entry on its severity alone, so this is a real shape. The facts
+    // say which VERSION is at head; a finding that will not say which version it is gets no pass,
+    // rather than falling back to matching on the name — which was the whole defect.
+    //
+    // WHICH MUTATION THIS ACTUALLY KILLS, measured rather than claimed: deleting the predicate's
+    // `installedVersion === undefined` refusal leaves this green, because a `…|undefined` key misses
+    // the set anyway. It dies against the mutation that MATTERS — degrading the lookup to a
+    // name-prefix match, the pre-fix behaviour — which also kills the three cases above it.
+    const findings = [
+      finding({ class: "lang-pkgs", pkgName: "lodash", purl: "pkg:npm/lodash@4.17.21" })
+    ];
+    expect(
+      applyScanExclusions(findings, withFacts(VENDOR, atHead), "full").excludedOrdinals
+    ).toEqual([]);
+  });
+
   it("a lang-pkgs finding with NO PURL yields no ecosystem and therefore NO exclusion", () => {
-    const findings = [finding({ class: "lang-pkgs", pkgName: "lodash" })];
+    const findings = [
+      finding({ class: "lang-pkgs", pkgName: "lodash", installedVersion: "4.17.21" })
+    ];
     expect(
       applyScanExclusions(findings, withFacts(VENDOR, atHead), "full").excludedOrdinals
     ).toEqual([]);
@@ -242,14 +363,25 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
 
   it("A NAME AT HEAD IN ONE ECOSYSTEM DOES NOT EXCUSE THE SAME NAME IN ANOTHER", () => {
     // The specific false positive the ecosystem qualifier exists for: `requests` is a household
-    // Python distribution AND an npm package. Facts say the PYTHON one is current.
+    // Python distribution AND an npm package. Facts say the PYTHON one is current — and at the same
+    // version, so only the ecosystem qualifier can separate them.
     const facts: ScanVendorLatestFacts = {
       baseImageAtLatest: false,
-      packageKeys: [vendorLatestPackageKey("python", "requests")]
+      packageKeys: [vendorLatestPackageKey("python", "requests", "2.31.0")]
     };
     const findings = [
-      finding({ class: "lang-pkgs", pkgName: "requests", purl: "pkg:npm/requests@0.0.1" }),
-      finding({ class: "lang-pkgs", pkgName: "requests", purl: "pkg:pypi/requests@2.31.0" })
+      finding({
+        class: "lang-pkgs",
+        pkgName: "requests",
+        purl: "pkg:npm/requests@2.31.0",
+        installedVersion: "2.31.0"
+      }),
+      finding({
+        class: "lang-pkgs",
+        pkgName: "requests",
+        purl: "pkg:pypi/requests@2.31.0",
+        installedVersion: "2.31.0"
+      })
     ];
     const applied = applyScanExclusions(findings, withFacts(VENDOR, facts), "full");
     expect(applied.excludedOrdinals).toEqual([1]);
@@ -258,13 +390,14 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
   it("python findings match through PEP 503 — the fold is applied to BOTH sides of the join", () => {
     const facts: ScanVendorLatestFacts = {
       baseImageAtLatest: false,
-      packageKeys: [vendorLatestPackageKey("python", "zope.interface")]
+      packageKeys: [vendorLatestPackageKey("python", "zope.interface", "6.1")]
     };
     const findings = [
       finding({
         class: "lang-pkgs",
         pkgName: "zope_interface",
-        purl: "pkg:pypi/zope-interface@6.1"
+        purl: "pkg:pypi/zope-interface@6.1",
+        installedVersion: "6.1"
       })
     ];
     expect(
@@ -276,9 +409,16 @@ describe("M22.4 — vendor_latest excludes only what the SERVER said was at head
     // Trivy emits `license`, `secret` and `config` results too, and `parseTrivyFindings` retains an
     // entry on its severity alone — so a finding with no `Class` at all is a real shape. Neither the
     // base image nor a package line speaks for it, and guessing one is the inversion.
+    // Both carry a purl, a name AND the installed version the facts say is at head, so the ONLY
+    // thing refusing them is the class arm — without that, this would pass for the wrong reason.
     const findings = [
-      finding({ class: "license", pkgName: "lodash", purl: "pkg:npm/lodash@4.17.21" }),
-      finding({ pkgName: "lodash", purl: "pkg:npm/lodash@4.17.21" })
+      finding({
+        class: "license",
+        pkgName: "lodash",
+        purl: "pkg:npm/lodash@4.17.21",
+        installedVersion: "4.17.21"
+      }),
+      finding({ pkgName: "lodash", purl: "pkg:npm/lodash@4.17.21", installedVersion: "4.17.21" })
     ];
     expect(
       applyScanExclusions(findings, withFacts(VENDOR, atHead), "full").excludedOrdinals

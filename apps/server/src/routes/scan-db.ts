@@ -1,7 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import pg from "pg";
 import {
   LoadScanDbRequestSchema,
   LoadScanDbResponseSchema,
@@ -15,6 +14,7 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { forbidden, badRequest } from "../errors.js";
+import { withOperatorDb } from "./operator-db.js";
 import { managedScanServerSettings } from "../coordination/executor-bindings-repo.js";
 import {
   loadScanDbBlob,
@@ -115,8 +115,11 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
     }
   });
 
-  // PUT staleness policy — operator-only (admin connection; `scp_app` has no write grant + no write
-  // RLS policy on the table — drizzle/0036, two independent barriers).
+  // PUT staleness policy — operator-only, over the `scp_operator` connection: `scp_app` has no write
+  // grant and, until 0076, the table had no write RLS policy for ANY role (drizzle/0036 — two
+  // independent barriers). This comment said "admin connection" and the code opened one, and both
+  // were wrong on the deployment shape it mattered on — api/worker pods carry no admin credential,
+  // so the write dialed `config.databaseUrl`'s localhost fallback (routes/operator-db.ts).
   typed.route({
     method: "PUT",
     url: "/api/v1/instance/scan-db/staleness-policy",
@@ -137,9 +140,8 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
       requireOperator(deps, request);
       const body = request.body;
       const val = (v: number | null | undefined): number | null => (v === undefined ? null : v);
-      const pool = new pg.Pool({ connectionString: deps.config.databaseUrl, max: 1 });
-      try {
-        await pool.query(
+      await withOperatorDb(deps.config, "the scan-db staleness policy", async (client) => {
+        await client.query(
           `INSERT INTO scan_db_staleness_policy (id, soft_max_age_hours, hard_max_age_hours, note, updated_at)
              VALUES ('default', $1, $2, $3, now())
            ON CONFLICT (id) DO UPDATE SET
@@ -149,9 +151,7 @@ export function registerScanDbRoutes(app: FastifyInstance, deps: AppDeps): void 
              updated_at         = now()`,
           [val(body.softMaxAgeHours), val(body.hardMaxAgeHours), body.note ?? null]
         );
-      } finally {
-        await pool.end();
-      }
+      });
       const policy = await readScanDbStalenessPolicy(deps.db);
       reply.status(200).send(policy);
     }

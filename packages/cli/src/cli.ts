@@ -3553,8 +3553,10 @@ export function buildProgram(): Command {
   // The five org-and-below rungs are NOT here and need nothing: they admit through the ordinary
   // `scanExclusion` policy effect (`scp policy create ... {"scanExclusion":{"admit":[...]}}`).
   //
-  // `set` REPLACES the admitted set for the tier — `--class` given zero times REVOKES every
-  // admission at that tier, which is the withdrawal path.
+  // `set` REPLACES the admitted set for the tier, so withdrawing everything is `--revoke-all` rather
+  // than simply omitting `--class` — omitting it is refused, because an empty set at an instance rung
+  // makes every exclusion clause on the deployment inert and that is not something to reach by
+  // forgetting a flag.
   // -------------------------------------------------------------------------------------
   const scanAdmissionsCmd = program
     .command("scan-exclusion-admissions")
@@ -3580,7 +3582,7 @@ export function buildProgram(): Command {
   scanAdmissionsCmd
     .command("set")
     .description(
-      "REPLACE the exclusion classes admitted at one instance tier (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; omitting --class entirely revokes every admission at that tier)"
+      "REPLACE the exclusion classes admitted at one instance tier (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; this is a whole-set replace, so withdrawing everything needs --revoke-all)"
     )
     .requiredOption(
       "--tier <tier>",
@@ -3589,6 +3591,10 @@ export function buildProgram(): Command {
     .option(
       "--class <class...>",
       "no_fix_available|vendor_latest|declared_fact|approved_override (repeatable; the WHOLE admitted set for this tier)"
+    )
+    .option(
+      "--revoke-all",
+      "withdraw EVERY admission at this tier (required when --class is omitted, because that is a destructive whole-set replace and not a no-op)"
     )
     .option("--origin <origin>", "local|federated", "local")
     .option("--note <text>", "free-text note recorded with the admission")
@@ -3599,6 +3605,7 @@ export function buildProgram(): Command {
         opts: BaseCliOpts & {
           tier: string;
           class?: string[];
+          revokeAll?: boolean;
           origin: "local" | "federated";
           note?: string;
         }
@@ -3621,7 +3628,31 @@ export function buildProgram(): Command {
           "declared_fact",
           "approved_override"
         ] as const;
+        // THE DESTRUCTIVE DEFAULT, MADE EXPLICIT (owner decision, 2026-08-18).
+        //
+        // `set` is a whole-set REPLACE, and that is the right server contract: an additive verb would
+        // make withdrawal the harder operation on a LOOSENING, which is the wrong way round. But it
+        // means `--class` omitted sends `classes: []`, and an empty admitted set at an instance rung
+        // makes EVERY exclusion clause on the deployment inert — every org, every tier beneath it —
+        // because the monotone AND fails at the top. That is a bigger blast radius than any other
+        // single CLI call in this tool, and it was reachable by forgetting a flag.
+        //
+        // The server contract is unchanged; this refusal is CLI-side only. `--revoke-all` is the
+        // withdrawal path and it says what it does.
         const classes = opts.class ?? [];
+        if (classes.length === 0 && !opts.revokeAll) {
+          throw new Error(
+            `refusing to withdraw every exclusion-class admission at '${tier}': no --class was given, ` +
+              `and 'set' REPLACES the whole admitted set for a tier rather than adding to it. That would ` +
+              `make every exclusion clause on this deployment inert, for every org. Pass --revoke-all if ` +
+              `that is what you mean, or name the classes this tier should admit with --class.`
+          );
+        }
+        if (classes.length > 0 && opts.revokeAll) {
+          throw new Error(
+            "--revoke-all and --class are mutually exclusive: --revoke-all withdraws the whole set, so naming classes alongside it is contradictory."
+          );
+        }
         for (const cls of classes) {
           if (!(allowed as readonly string[]).includes(cls)) {
             // Refused here as well as by the route and the table's CHECK, for 0074's stated reason:

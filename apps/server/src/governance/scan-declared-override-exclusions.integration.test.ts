@@ -397,6 +397,12 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await exclusionPolicy(admin, "clause-decl", org.orgId, {
       exclude: {
         class: "declared_fact",
+        // NARROWED, and now required to be (M22.4 review round): a `declared_fact` clause with NO
+        // narrowing matcher was a bare `() => true` that excluded EVERY finding at EVERY severity,
+        // while the tiers above had consented only to the CLASS and could not see the blast radius.
+        // It is refused at the authoring door and inert at read time. Every finding these cases scan
+        // is `curl`, so naming it changes nothing they assert.
+        pkgName: "curl",
         declaredFact: "egress",
         declaredValue: "none",
         reason: "not reachable from any network"
@@ -441,7 +447,12 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
       properties: { security: { declarations: { egress: "none" } } }
     });
     await exclusionPolicy(admin, "clause-unadmitted", org.orgId, {
-      exclude: { class: "declared_fact", declaredFact: "egress", declaredValue: "none" }
+      exclude: {
+        class: "declared_fact",
+        pkgName: "curl",
+        declaredFact: "egress",
+        declaredValue: "none"
+      }
     });
     const control = await scanControl(admin, org, {
       suffix: "decl-unadmitted",
@@ -474,7 +485,10 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
       properties: { security: { declarations: { egress: "internet" } } }
     });
     await exclusionPolicy(admin, "clause-halfclause", org.orgId, {
-      exclude: { class: "declared_fact", declaredFact: "egress" }
+      // `pkgName` narrows; the POINT of this case is that `declaredFact` without `declaredValue`
+      // still excuses nothing. Narrowing is a separate requirement from the key/value rule, and
+      // without it the authoring door would refuse this clause before the rule could be shown.
+      exclude: { class: "declared_fact", pkgName: "curl", declaredFact: "egress" }
     });
     const control = await scanControl(admin, org, {
       suffix: "decl-halfclause",

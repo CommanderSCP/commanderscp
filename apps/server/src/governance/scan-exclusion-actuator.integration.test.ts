@@ -16,6 +16,7 @@ import { testDatabaseUrl } from "../test-support/harness.js";
 import {
   createOrphanComponent,
   createTestOrg,
+  createTestUser,
   listenTestServer,
   type ListeningTestServer,
   type TestOrg
@@ -347,13 +348,29 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     return row.evidence as ScanEvidence;
   }
 
+  /**
+   * TWO PRINCIPALS, because the raiser may not be the approver (ADR-0033 §6a, owner decision
+   * 2026-08-18). Every call here used to raise and approve as `admin`, which the separation-of-duties
+   * refusal answers 400 to — seven cases in this file went red at once when it landed, which is the
+   * measurement that says the guard reaches the real route.
+   *
+   * The raiser is `Operator` at the component: exactly the `object:write` the raise route asks for
+   * and nothing more, so these fixtures keep proving that raising is open (it authorizes nothing)
+   * while approving is not.
+   */
   async function approvedGrant(
+    org: TestOrg,
     admin: ScpClient,
     componentId: string,
     tierObjectId: string,
     vulnerabilityId: string
   ) {
-    const requested = await admin.scanOverrideGrants.create({
+    const raiserUser = await createTestUser(server, org, [
+      { role: "Viewer", scope: org.orgId },
+      { role: "Operator", scope: componentId }
+    ]);
+    const raiser = new ScpClient({ baseUrl: server.baseUrl, token: raiserUser.token });
+    const requested = await raiser.scanOverrideGrants.create({
       componentId,
       vulnerabilityId,
       tierObjectId,
@@ -401,7 +418,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     ).toBeTruthy();
 
     // THE HUMAN ACT, after the verdict. Nothing else about the change moves.
-    await approvedGrant(admin, component.id, service.id, "CVE-2026-9101");
+    await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9101");
 
     // TICK 2 — identical call, identical arguments. The resolved set now differs from the one the
     // cached run was produced under, so the control is re-run rather than re-read.
@@ -445,7 +462,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     const blocked = await waveTick(org, change.id, component.id, 0);
     expect(blocked.verdict).toBe("block");
 
-    await approvedGrant(admin, component.id, service.id, "CVE-2026-9201");
+    await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9201");
 
     const released = await waveTick(org, change.id, component.id, 0);
     expect(released.verdict).toBe("allow");
@@ -473,7 +490,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     await overrideClause(admin, "clause-stable", org.orgId);
     // A LIVE GRANT with a real expiry is in force throughout — the case most likely to leak a clock
     // reading into the digest, since `expiresAt` is the one timestamp the resolved set carries.
-    await approvedGrant(admin, component.id, service.id, "CVE-2026-9301");
+    await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9301");
     const control = await scanControl(admin, org, {
       suffix: "act-stable",
       cve: ["CVE-2026-9301"],
@@ -540,7 +557,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     const { service, component } = await buildChain(admin, "nonscan");
 
     await overrideClause(admin, "clause-nonscan", org.orgId);
-    await approvedGrant(admin, component.id, service.id, "CVE-2026-9801");
+    await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9801");
     const control = await scanControl(admin, org, {
       suffix: "act-nonscan",
       cve: ["CVE-2026-9801"],
@@ -591,7 +608,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     const { service, component } = await buildChain(admin, "expired");
 
     await overrideClause(admin, "clause-expired", org.orgId);
-    const grant = await approvedGrant(admin, component.id, service.id, "CVE-2026-9501");
+    const grant = await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9501");
     const control = await scanControl(admin, org, {
       suffix: "act-expired",
       cve: ["CVE-2026-9501"],
@@ -652,7 +669,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     const { service, component } = await buildChain(admin, "revoke");
 
     await overrideClause(admin, "clause-revoke", org.orgId);
-    const grant = await approvedGrant(admin, component.id, service.id, "CVE-2026-9601");
+    const grant = await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9601");
     const control = await scanControl(admin, org, {
       suffix: "act-revoke",
       cve: ["CVE-2026-9601"],
@@ -718,7 +735,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     expect(hashA).toBe(hashB);
 
     // Now give ONE of them a grant. Its set changes; the other's does not.
-    await approvedGrant(admin, component.id, service.id, "CVE-2026-9701");
+    await approvedGrant(org, admin, component.id, org.orgId, "CVE-2026-9701");
     await prewarmTick(org, changeA.id, component.id);
     await prewarmTick(org, changeB.id, other.component.id);
     const runsA = await runsFor(org, changeA.id);
@@ -775,6 +792,7 @@ describe("M22.7 — the actuator: a grant approved after the gate ran actually m
     // THE CEILING IS SET AT ORG — the rule the grant would be waiving.
     await orgCeiling(admin, `ceiling-bar-${label}`, org.orgId, control.id);
     const grant = await approvedGrant(
+      org,
       admin,
       chain.component.id,
       tierOf(chain, org.orgId),

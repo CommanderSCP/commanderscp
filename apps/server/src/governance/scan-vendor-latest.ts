@@ -242,6 +242,22 @@ export interface VendorInventoryRow extends VendorLineFacts, VendorDeclarationFa
  *     `package.json`), so one line can have several rows at different versions. A key is emitted
  *     only if EVERY row for that line is at the head — one stale declaration is a real exposure and
  *     must not be voted away by a current sibling.
+ *
+ * RULE 2 SAID THAT AND WAS FALSE ACROSS MAJORS UNTIL 2026-08-18, which is why the key now carries a
+ * version. "A line" is `(ecosystem, coordinate, MAJOR)`, and the emitted key carried no major and no
+ * version — so a component declaring `lodash@4.17.21` (at head of the `4` line) and `lodash@3.10.1`
+ * (behind head of the `3` line) emitted one `npm|lodash` from the current line, which then excused
+ * the stale one's findings. A current sibling voting away a stale declaration is exactly what the
+ * rule forbids; it was only ever enforced WITHIN one major. {@link vendorLatestPackageKey} now takes
+ * the version, so each at-head row contributes a key naming the version it is at, and a finding is
+ * excused only if the artifact SHIPS that version.
+ *
+ * EVERY AT-HEAD ROW ON A LINE CONTRIBUTES ITS OWN KEY, not just the first one seen. Two rows on one
+ * line can both be at head at DIFFERENT versions — `evaluateVendorLineAtHead` accepts a declaration
+ * AHEAD of the recorded head, so `4.17.21` (== head) and `4.17.22` (poll not caught up) both pass.
+ * Keeping only the first row's key would make the emitted set depend on the order the join returned
+ * rows, which has no `ORDER BY`: a loosening decided by row order, and a Decision `inputContext` that
+ * differs between two identical evaluations (defeating `insertDecisionIfChanged`).
  */
 export function foldVendorLatestFacts(
   rows: readonly VendorInventoryRow[],
@@ -249,8 +265,8 @@ export function foldVendorLatestFacts(
 ): ScanVendorLatestFacts {
   let ociLines = 0;
   let ociAllAtHead = true;
-  /** lineId → (every row at head so far, key) for the language lines. */
-  const langByLine = new Map<string, { allAtHead: boolean; key: string }>();
+  /** lineId → (every row at head so far, one key per at-head row) for the language lines. */
+  const langByLine = new Map<string, { allAtHead: boolean; keys: string[] }>();
   const seenOciLines = new Set<string>();
 
   for (const row of rows) {
@@ -263,20 +279,32 @@ export function foldVendorLatestFacts(
       if (!verdict.atHead) ociAllAtHead = false;
       continue;
     }
-    const key = vendorLatestPackageKey(row.ecosystem, row.coordinate);
+    // A NULL `resolved_version` yields no key at all. It is the `declaration_not_pinned` refusal —
+    // an open range pins nothing, so there is no version for a finding to be equal to — and that
+    // same row has already forced `allAtHead` false, so the line emits nothing either way. Skipping
+    // it here rather than coercing to `""` keeps the two facts from ever disagreeing.
+    const key =
+      row.resolvedVersion === null
+        ? undefined
+        : vendorLatestPackageKey(row.ecosystem, row.coordinate, row.resolvedVersion);
     const current = langByLine.get(row.lineId);
     if (current === undefined) {
-      langByLine.set(row.lineId, { allAtHead: verdict.atHead, key });
-    } else if (!verdict.atHead) {
-      current.allAtHead = false;
+      langByLine.set(row.lineId, {
+        allAtHead: verdict.atHead,
+        keys: verdict.atHead && key !== undefined ? [key] : []
+      });
+      continue;
     }
+    if (!verdict.atHead) current.allAtHead = false;
+    else if (key !== undefined) current.keys.push(key);
   }
 
   const packageKeys = [...langByLine.values()]
     .filter((entry) => entry.allAtHead)
-    .map((entry) => entry.key)
-    // Sorted and de-duplicated: two lines can canonicalise to one key (PEP 503 folds `zope.interface`
-    // and `zope_interface`), and the array reaches the gate Decision's `inputContext`, where an
+    .flatMap((entry) => entry.keys)
+    // Sorted and de-duplicated: two lines at the same version can canonicalise to one key (PEP 503
+    // folds `zope.interface` and `zope_interface`), and two manifests can declare one line at the
+    // same version. The array reaches the gate Decision's `inputContext`, where an
     // unstable order would defeat `insertDecisionIfChanged` and re-open the measured 1.44 GB/day
     // write amplification.
     .sort();
@@ -341,17 +369,28 @@ export async function readVendorInventoryRows(
   return out;
 }
 
-/** Resolve one target's vendor facts. */
+/**
+ * Resolve one target's vendor facts.
+ *
+ * `now` IS REQUIRED, and the optional `now?: Date` it replaces is the reason. The caller
+ * (`scan-requirements.ts`) forwarded it only when defined, so on every PRODUCTION path this function
+ * fell back to a `new Date()` of its own — once PER TARGET, with the override-expiry window taking
+ * yet another instant. Only the TEST path passed one, so the shared-instant claim in the caller's
+ * docblock was true exactly where nothing depended on it and false everywhere it mattered: the
+ * vacuous-test shape (a fixture that silently never applied) this repo tracks as a recurring source.
+ * A required parameter makes the single instant a compile-time property rather than a convention,
+ * and it is contained — one production call site.
+ */
 export async function resolveVendorLatestFactsForTarget(
   tx: TenantTx,
   orgId: string,
   targetObjectId: string,
-  options?: { now?: Date; env?: NodeJS.ProcessEnv }
+  options: { now: Date; env?: NodeJS.ProcessEnv }
 ): Promise<ScanVendorLatestFacts> {
   const rows = await readVendorInventoryRows(tx, orgId, targetObjectId);
   return foldVendorLatestFacts(rows, {
-    now: options?.now ?? new Date(),
-    stalenessBoundMs: vendorLatestStalenessBoundMs(options?.env)
+    now: options.now,
+    stalenessBoundMs: vendorLatestStalenessBoundMs(options.env)
   });
 }
 

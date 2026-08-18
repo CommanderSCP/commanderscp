@@ -1106,7 +1106,24 @@ describe("policy:write door census: the CENSUS is complete (source scan, no DB)"
     // inside that one function. NARROWED from the wholesale file exemption this used to be: only
     // these already-reviewed expressions are accepted, and layer 1 is what fires when a NEW write
     // surface appears in this file rather than a new expression inside an existing one.
-    "graph/objects-repo.ts": ["input.typeId ×2"]
+    "graph/objects-repo.ts": ["input.typeId ×2"],
+    // M22.6's typed grant routes — ADDED BY THIS CENSUS RATHER THAN BY THE AUTHOR, which is the
+    // mechanism working. The routes landed and this layer went red on the next run; the entry below
+    // is the review the redness demanded, not a suppression of it.
+    //
+    // NOT A DOOR, for the same reason `OUTPOST_OBJECT_TYPE_ID` is not: `SCAN_OVERRIDE_GRANT_TYPE_ID`
+    // is a module constant — a literal behind a name — so no caller chooses this type. The ×2 are
+    // the `createObject` at the RAISE route and the `updateObject` at the DECIDE route.
+    //
+    // AND THE PERMISSION SPLIT IS THE POINT OF THE PAIR, so it is recorded here where the next
+    // reviewer will read it: the raise site authorizes `object:write` at the COMPONENT (raising a
+    // `requested` grant authorizes nothing), while the decide site authorizes `policy:write` at the
+    // grant's derived tier object, refuses a self-approval, and is the ONLY caller permitted to write
+    // the five decision properties — `graph/objects-repo.ts` refuses `status`, `expiresAt`,
+    // `decidedByActorId`, `decidedAt` and `decisionReason` at every other local door. A future edit
+    // that let the raise site write those, or that let the decide site skip the tier check, would
+    // leave this entry looking unchanged, which is why DOORS 4b/4c above assert the behaviour.
+    "routes/scan-override-grants.ts": ["SCAN_OVERRIDE_GRANT_TYPE_ID ×2"]
   };
 
   /** `graph/objects-repo.ts` relative to the scan root — the anchor all three layers share. */

@@ -92,11 +92,29 @@
 -- 'P' is deliberately NOT an accepted value. No finding is permanent evidence; the permanent record
 -- of a gate verdict is the Decision and the audit event, both of which cite the control run.
 --
--- NOTHING IS EXCLUDED YET. M22.2 is the increment that resolves exclusions, so every row written
--- today is 'O' and the column has a DEFAULT of 'O'. The DEFAULT is the honest encoding of that:
--- the MECHANISM exists and is exercised, and the classification is not faked ahead of the thing that
--- produces it. ADR-0024 §D0 applies unchanged — a per-scan cap is not a retention story, and neither
--- of these bounds licenses write amplification.
+-- WHEN THIS MIGRATION RUNS, NOTHING IS EXCLUDED YET: M22.2 (0074/0075) is the increment that
+-- resolves exclusions, so every row written between the two is 'O'. The DEFAULT of 'O' outlives that
+-- window and is not merely a placeholder for it — a row whose class nobody stated is telemetry, and
+-- the 'E' arm is only ever reached by a writer that has an admitted clause's ordinals in hand.
+-- ADR-0024 §D0 applies unchanged — a per-scan cap is not a retention story, and neither of these
+-- bounds licenses write amplification.
+--
+-- WHAT ACTUALLY BOUNDS THIS TABLE TODAY: NOTHING BUT THE CASCADE. THE CLASS IS RECORDED, NOT
+-- ACTUATED — and a reader is owed that plainly, here, rather than inferring a sweeper from the fact
+-- that a column names a window.
+--
+-- There is no sweeper for `scan_findings`, no `boss.schedule` entry for one, and no generic retention
+-- job to join: ADR-0024 designs the mechanism and its own status line records that it ships NO CODE
+-- (F1-F3 carry the work). No bespoke sweeper is added here, deliberately — it would be a SECOND
+-- retention mechanism landing ahead of the general one, and charter priority 7 puts Simplicity first.
+-- What is done instead is to put this table inside the general one's scope before it is built:
+-- ADR-0024 §D1's class assignment now names `scan_findings` explicitly, so F3 cannot land without it.
+--
+-- Until F3 exists the only bound is this table's own `ON DELETE CASCADE` from `control_runs`, and
+-- since `control_runs` is class E, a class-O finding inherits an E LIFETIME. Every row therefore
+-- currently lives as long as the evidence class above it. That is the safe direction (nothing is lost
+-- early) and it is not the design; the column is an honest record of what each row IS, and is not yet
+-- a statement about how long it lives.
 --
 -- ===========================================================================================
 -- THE CAP, AND WHY TRUNCATION IS RECORDED SOMEWHERE ELSE
@@ -174,12 +192,23 @@ CREATE TABLE IF NOT EXISTS "scan_findings" (
 --> statement-breakpoint
 
 -- ===========================================================================================
--- Grants — mirrors 0007 §7 / 0061.
---   UPDATE: M22.2 promotes an EXCLUDED row from 'O' to 'E' in place (ADR-0024 §D1's per-row class).
---   DELETE: the retention job prunes class-O rows, and the composite FK cascades.
+-- Grants — mirrors 0007 §7 / 0061. NO UPDATE, and its absence is a CORRECTION, not an omission.
+--
+-- This block previously granted UPDATE and justified it as "M22.2 promotes an EXCLUDED row from 'O'
+-- to 'E' in place". THAT WAS FALSE, and it was false when it was written: M22.2 assigns the class at
+-- INSERT from the ordinals the producer transported alongside the findings, and
+-- `governance/scan-findings-repo.ts` says so in as many words — a two-step would leave a window in
+-- which a row's class contradicts the evidence beside it, so a later UPDATE is the design's REJECTED
+-- alternative rather than its plan. A filterless census of the tree finds no UPDATE against this
+-- table anywhere. The privilege was granted for a consumer that does not exist and was never going
+-- to, so it is not granted.
+--
+--   DELETE: kept, and labelled honestly rather than by implying a job. NOTHING sweeps this table
+--   today (see the retention section above); this is the privilege ADR-0024 F3's generic prune will
+--   need, held here so that increment does not also have to ship a migration to obtain it.
 -- ===========================================================================================
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON scan_findings TO scp_app;
+GRANT SELECT, INSERT, DELETE ON scan_findings TO scp_app;
 --> statement-breakpoint
 
 -- ===========================================================================================

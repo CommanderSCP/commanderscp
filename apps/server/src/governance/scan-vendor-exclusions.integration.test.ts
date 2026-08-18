@@ -65,7 +65,10 @@ interface TrivySource {
  * `os-pkgs` result and no purl at all.
  *
  * `cls`/`pkg`/`purl`/`sev` are parallel comma lists; every entry carries a `FixedVersion` so no pass
- * below can be attributed to `no_fix_available`.
+ * below can be attributed to `no_fix_available`. That isolation is about ADMISSION, not about the
+ * predicate: this suite admits only `vendor_latest`, so a `no_fix_available` clause never survives
+ * the AND anyway. `FixedVersion` itself does NOT disqualify a vendor pass — a fix in a newer major
+ * is exactly the case D1 excuses (owner decision, 2026-08-18).
  */
 async function startTrivySource(): Promise<TrivySource> {
   const httpServer = createServer((req, res) => {
@@ -83,7 +86,15 @@ async function startTrivySource(): Promise<TrivySource> {
         {
           VulnerabilityID: `CVE-2026-${9000 + i}`,
           PkgName: pkg[i] ?? `pkg${i}`,
-          InstalledVersion: "1.0.0",
+          // DERIVED FROM THE PURL rather than hardcoded, because M22.4's review round put the
+          // installed version INTO the join: the fact now says "this package is at head AT VERSION
+          // X", and the predicate requires the scanned artifact to actually carry X. A fixture
+          // pinning `1.0.0` while its purl said `@4.17.21` described an artifact that had DRIFTED
+          // from its manifest — which is precisely the case the join exists to refuse, so it would
+          // have made every lang-pkgs case here fail for the right reason and the wrong purpose.
+          // Falls back to `1.0.0` for the os-pkgs entries, which carry no purl and join on the base
+          // image digest instead.
+          InstalledVersion: purl[i]?.includes("@") ? purl[i]!.split("@").pop()! : "1.0.0",
           FixedVersion: "9.9.9",
           Severity: sev[i] ?? "HIGH",
           ...(purl[i] ? { PkgIdentifier: { PURL: purl[i] } } : {})

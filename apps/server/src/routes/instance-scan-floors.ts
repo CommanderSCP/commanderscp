@@ -2,7 +2,6 @@ import { timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import pg from "pg";
 import {
   InstanceScanFloorListResponseSchema,
   InstanceScanFloorSchema,
@@ -15,6 +14,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
+import { withOperatorDb } from "./operator-db.js";
 
 /**
  * M17.5 — the INSTANCE-SCOPED scan-requirement floors' API surface (ADR-0016 §3), API-first per
@@ -33,15 +33,22 @@ import { forbidden } from "../errors.js";
  *    org on the deployment; a tenant admin — however privileged inside their own org — must never
  *    author or loosen them. So no role can grant it: the write requires the deployment-level
  *    `SCP_OPERATOR_TOKEN` (config.operatorToken), presented as `x-scp-operator-token`, and executes
- *    over the ADMIN connection because the request-serving `scp_app` role holds no write grant on
- *    the table and no write RLS policy exists for it (drizzle/0029 — two independent barriers).
- *    Unset token ⇒ the surface is CLOSED (403), never a fallback to a tenant credential.
+ *    over the `scp_operator` connection (`withOperatorDb`) because the request-serving `scp_app`
+ *    role holds no write grant on the table and no write RLS policy existed for it at all
+ *    (drizzle/0029 — two independent barriers; 0076 adds the operator role as the one principal
+ *    both barriers admit). Unset token ⇒ the surface is CLOSED (403), never a fallback to a tenant
+ *    credential.
  *
- * The write path opening a short-lived admin connection is the deliberate asymmetry ADR-0016 §3
- * settles on: rejected option (b) was routing tenant-request READS through the privileged
- * connection (every read path would then hand-guarantee what RLS guarantees structurally). Operator
- * WRITES are a different thing entirely — they are not tenant requests, they happen rarely
- * (configuration, not traffic), and they are exactly what "operator-write" means.
+ * The write path opening a short-lived PRIVILEGED connection is the deliberate asymmetry ADR-0016
+ * §3 settles on: rejected option (b) was routing tenant-request READS through it (every read path
+ * would then hand-guarantee what RLS guarantees structurally). Operator WRITES are a different
+ * thing entirely — they are not tenant requests, they happen rarely (configuration, not traffic),
+ * and they are exactly what "operator-write" means.
+ *
+ * THIS DOC USED TO SAY "the ADMIN connection", AND SO DID THE CODE, AND BOTH WERE WRONG WHERE IT
+ * COUNTED: api/worker pods hold no admin credential (the chart gives `DATABASE_URL` to the
+ * migrations Job alone), so the write dialed `config.databaseUrl`'s `localhost:5432` fallback
+ * inside its own pod and 500'd on ECONNREFUSED. `routes/operator-db.ts` carries the full account.
  */
 
 interface FloorRow extends Record<string, unknown> {
@@ -152,9 +159,8 @@ export function registerInstanceScanFloorRoutes(app: FastifyInstance, deps: AppD
       // is normalized to null so a PUT is a full replace of the row, never a confusing partial merge.
       const val = (v: number | null | undefined): number | null => (v === undefined ? null : v);
 
-      const pool = new pg.Pool({ connectionString: deps.config.databaseUrl, max: 1 });
-      try {
-        const result = await pool.query<FloorRow>(
+      await withOperatorDb(deps.config, "instance scan floors", async (client) => {
+        const result = await client.query<FloorRow>(
           `INSERT INTO scan_requirement_floors
              (tier, origin, max_critical, max_high, max_medium, max_low, note, updated_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, now())
@@ -177,9 +183,7 @@ export function registerInstanceScanFloorRoutes(app: FastifyInstance, deps: AppD
           ]
         );
         reply.status(200).send(toApi(result.rows[0]!));
-      } finally {
-        await pool.end();
-      }
+      });
     }
   });
 }

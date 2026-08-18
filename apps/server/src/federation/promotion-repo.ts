@@ -60,6 +60,7 @@ import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import {
   runPromotionScanStep,
   createServerManagedScanRunner,
+  resolveScanExclusionsForChange,
   type ManagedScanRunner
 } from "./promotion-scan-step.js";
 
@@ -134,16 +135,17 @@ export type ExportPromotionResult =
  * M17.3 (E6) EXPORT SCAN GATE — the boundary re-check (defense in depth). For EACH SUBSTANTIVE
  * artifact (everything in `artifacts[]` EXCEPT `type: "blob"` — the SBOM is the scan's OUTPUT, not a
  * scanned input, so it is EXEMPT) there MUST exist a CURRENT, digest-bound, floor-satisfying scan
- * outcome from an ADMITTED PRODUCER. This is UNIVERSAL and fail-closed: a MISSING scan refuses
+ * outcome from an ADMITTED PRODUCER, judged under the scan-exclusion set that is in force NOW. This is UNIVERSAL and fail-closed: a MISSING scan refuses
  * exactly like a FAILED one, whether or not a scan-requirement policy was ever bound. This NEVER runs
  * a scan (coordinate-not-execute) — it only re-verifies an outcome an execution system already
  * produced.
  *
  * THE RULE ITSELF LIVES IN `scan-evidence.ts`, shared with the promotion scan step's short-circuit.
- * Its module doc records the three properties that changed here and why each was an authorization
+ * Its module doc records the four properties that changed here and why each was an authorization
  * defect: a scan outcome was identified by the SHAPE of its evidence (which `webhook-control` echoes
  * verbatim from an operator-configured URL, so a tenant could manufacture one), any HISTORICAL
- * passing row satisfied the gate forever, and the gate applied no threshold of its own.
+ * passing row satisfied the gate forever, the gate applied no threshold of its own, and (M22.9) a
+ * passing row kept authorizing crossings under an exclusion set that had since been withdrawn.
  *
  * Takes the RAW `control_runs` rows, not the bundle's `controlOutcomes` projection. The projection
  * drops `plugin_module`, `control_object_id` and `created_at` — which are exactly producer identity
@@ -154,7 +156,11 @@ export type ExportPromotionResult =
 function evaluatePromotionScanGate(
   substantiveArtifacts: ArtifactRef[],
   runs: readonly ScanRunLike[],
-  instanceFloor: SeverityCeiling
+  instanceFloor: SeverityCeiling,
+  /** M22.9 — the hash of the exclusion set resolved as in force at THIS export (ADR-0033 §10), or
+   *  `undefined` when none is. Positional and required rather than optional, so a future caller of
+   *  this gate cannot acquire the pre-M22.9 behaviour by omission. */
+  expectedExclusionSetHash: string | undefined
 ):
   | { ok: true }
   | {
@@ -166,7 +172,12 @@ function evaluatePromotionScanGate(
       detail: Record<string, unknown>;
     } {
   for (const artifact of substantiveArtifacts) {
-    const coverage = evaluateScanCoverage({ digest: artifact.digest, runs, instanceFloor });
+    const coverage = evaluateScanCoverage({
+      digest: artifact.digest,
+      runs,
+      instanceFloor,
+      expectedExclusionSetHash
+    });
     if (!coverage.covered) {
       return {
         ok: false,
@@ -370,7 +381,33 @@ export async function exportPromotionBundle(
     // outcome ends up satisfying each artifact. Empty (the default: no floor authored) constrains
     // nothing, which is what makes this addition a no-op on an untouched deployment.
     const instanceFloor = mergeInstanceFloor(await readInstanceScanFloors(tx));
-    const gate = evaluatePromotionScanGate(substantiveArtifacts, controlRuns, instanceFloor);
+    // M22.9 (ADR-0033 §10) — THE EXCLUSION SET IN FORCE RIGHT NOW, resolved BY THIS GATE.
+    //
+    // Not taken from the scan step that just ran, and that is the whole point. A boundary check whose
+    // input is handed to it by the step it exists to double-check goes inert exactly when the step
+    // does — and this call site already has a switch that does that (`scanRunner: null` skips the
+    // step entirely, and a default runner is inert whenever managed scanning is off). The gate reads
+    // the graph itself, so the crossing is held to the set an operator can see, whatever ran before.
+    //
+    // Only when there is something to gate: a metadata-only promotion passes the gate vacuously, so
+    // paying for a policy resolution there would buy nothing and would put a CEL evaluation on the
+    // one export path that never had one.
+    const expectedExclusionSetHash =
+      substantiveArtifacts.length > 0
+        ? (
+            await resolveScanExclusionsForChange(tx, {
+              orgId: input.orgId,
+              change,
+              actorObjectId
+            })
+          ).exclusionSetHash
+        : undefined;
+    const gate = evaluatePromotionScanGate(
+      substantiveArtifacts,
+      controlRuns,
+      instanceFloor,
+      expectedExclusionSetHash
+    );
     if (!gate.ok) {
       const decision = await insertDecision(tx, {
         orgId: input.orgId,
@@ -386,10 +423,11 @@ export async function exportPromotionBundle(
             digest: a.digest
           })),
           failingArtifact: { type: gate.artifactType, digest: gate.artifactDigest },
-          // WHICH of the four narrowings refused, machine-readably. A reader of this Decision has to
+          // WHICH of the five narrowings refused, machine-readably. A reader of this Decision has to
           // be able to tell "nothing scanned this" from "something scanned it and failed" from "the
-          // outcome came from a control that is not a scanner" without parsing prose — the prose is
-          // for the human, this is for the query (charter principle 6).
+          // outcome came from a control that is not a scanner" from "it passed under a waiver that
+          // has since expired" without parsing prose — the prose is for the human, this is for the
+          // query (charter principle 6).
           refusalCode: gate.code,
           ...gate.detail,
           instanceFloor

@@ -3,10 +3,13 @@
 -- classes get the substrate they need, and both of them are REGISTRY data rather than tables.
 --
 -- Two statements, both against `object_types`:
---   1. `component.property_schema` learns the `security.declarations` bag (D2 — component info
---      encodes the override directly).
---   2. a new `scan_override_grant` object type (D3/D4 — a standing, expiring grant per
+--   1. a new `scan_override_grant` object type (D3/D4 — a standing, expiring grant per
 --      (component x finding), approved at the tier that set the rule).
+--   2. the `policy` type's `declared_fact` narrowing keys, restated in full (§5).
+--
+-- D2's component declarations get NO registry statement at all. A third statement narrowing
+-- `component.properties.security` was written, and then deleted — §2a records what it claimed, why
+-- that claim was false, and the federation argument that decided it.
 --
 -- NO NEW TABLE. Charter principle 2: new concepts arrive as relationship/policy/REGISTRY data, not
 -- as new top-level tables. A grant is a governed thing with an owner, an authority, a lifecycle and
@@ -17,10 +20,11 @@
 -- never cross a federation boundary at all.
 --
 -- ===========================================================================================
--- 1. TYPED BUT OPEN — READ THIS BEFORE TIGHTENING EITHER SCHEMA
+-- 1. TYPED BUT OPEN — READ THIS BEFORE TIGHTENING ANY SCHEMA FROM HERE
 -- ===========================================================================================
--- Neither schema below closes `additionalProperties`, and that is not an oversight — it is the
--- 0043/0051 rule, restated by ADR-0033 §6 as a requirement:
+-- The grant schema below does not close `additionalProperties`, and the `component` type is not
+-- narrowed at all (§2a). Neither is an oversight — both are the 0043/0051 rule, restated by
+-- ADR-0033 §6 as a requirement:
 --
 --   `federation/import-repo.ts`'s `object_upsert` branch Ajv-validates an incoming object against
 --   the registered `property_schema` with NO try/catch. ONE rejection aborts a peer's ENTIRE signed
@@ -29,9 +33,10 @@
 --   version-skew hazard, on a channel whose failure mode is "no federation at all".
 --
 -- The strictness lives at the LOCAL AUTHOR'S DOOR instead, where a refusal costs one 400 and
--- nobody's bundle: `ComponentSecurityPropertySchema` (`z.strictObject`) is applied to the component
--- write routes, and `CreateScanOverrideGrantRequestSchema` / `ApproveScanOverrideGrantRequestSchema`
--- to the grant routes. Strict at the operator's door, open on the wire — 0043's rule, applied twice.
+-- nobody's bundle: `ComponentSecurityPropertySchema` (`z.strictObject`) is applied at
+-- `graph/objects-repo.ts`'s create/update choke point, and `CreateScanOverrideGrantRequestSchema` /
+-- `ApproveScanOverrideGrantRequestSchema` to the grant routes. Strict at the operator's door, open
+-- on the wire — 0043's rule, applied twice.
 --
 -- `required` carries none of that risk and IS used on the grant, exactly as 0051 used it: the four
 -- required fields are CONSTITUTIVE (a grant that names no component, no finding, no tier and no
@@ -44,36 +49,53 @@
 -- `labels` are tenant-writable, carry no schema, have no reserved namespace, and are ALREADY a live
 -- evasion path for selector-scoped policies (PR #247, tracked separately). Keying a loosening on
 -- them would mean any holder of `object:write` could move themselves into or out of a policy's reach
--- with an unvalidated string. `properties` under a registered `property_schema` is validated on
--- every write door through `graph/property-validation.ts` — which is the difference that matters
--- here, and the reason ADR-0033 §6 guard 3 states it as an absolute.
+-- with an unvalidated string. `properties.security` passes a declared shape at every LOCAL write
+-- door (§2a); `labels` pass NOTHING, anywhere. That asymmetry is the difference that matters here,
+-- and the reason ADR-0033 §6 guard 3 states it as an absolute. (It is a property of the GUARD, not
+-- of this file: §2a deletes the registry fragment, so `graph/property-validation.ts` no longer
+-- constrains the bag at all — which changes where the check lives, not whether one exists.)
 --
--- WHAT THIS SCHEMA DELIBERATELY DOES NOT CONSTRAIN: the declaration VOCABULARY. `egress: none` is an
--- example, not an enum. A closed value set here would be exactly the SecOps-authored mapping D2
--- considered and DECLINED — and it would also be wrong, because the vocabulary is the org's.
+-- WHAT THE DECLARATION SHAPE DELIBERATELY DOES NOT CONSTRAIN, wherever it is enforced: the
+-- VOCABULARY. `egress: none` is an example, not an enum. A closed value set would be exactly the
+-- SecOps-authored mapping D2 considered and DECLINED — and it would also be wrong, because the
+-- vocabulary is the org's.
 -- ===========================================================================================
 
--- The `component` type's schema is `{"type":"object"}` today (0002 seed), i.e. wide open. This
--- narrows the ONE key this feature reads and leaves everything else exactly as permissive as it was,
--- so no existing component object can fail validation on its next write. A component that has never
--- declared anything simply has no `security` key.
-UPDATE object_types
-   SET property_schema = '{
-         "type": "object",
-         "properties": {
-           "security": {
-             "type": "object",
-             "properties": {
-               "declarations": {
-                 "type": "object",
-                 "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 128 }
-               }
-             }
-           }
-         }
-       }'::jsonb
- WHERE id = 'component'
-   AND org_id IS NULL;
+-- ===========================================================================================
+-- 2a. THE COMPONENT FRAGMENT THAT USED TO BE HERE, AND WHY IT IS GONE
+-- ===========================================================================================
+-- An earlier revision of this migration carried a third statement — an
+-- `UPDATE object_types ... WHERE id = 'component'` narrowing `properties.security` to
+-- `{"declarations": {<key>: <string, 1..128>}}`. It is deleted. `component.property_schema` stays at
+-- the 0002 seed's `{"type":"object"}` (0002_rls_rbac_seed.sql:154).
+--
+-- ITS OWN COMMENT WAS FALSE, and that is recorded rather than quietly dropped, because the false
+-- sentence is why nobody looked further. It claimed the narrowing left "everything else exactly as
+-- permissive as it was, so no existing component object can fail validation on its next write". The
+-- 0002 seed left `security` entirely UNCONSTRAINED, so it was reachable: a component already
+-- carrying `{"security": "restricted"}`, or a declaration value longer than 128 characters, starts
+-- failing Ajv on its NEXT WRITE and becomes un-editable until someone rewrites the bag out of it.
+--
+-- THAT IS NOT THE DECIDING ARGUMENT. §1 is. TYPING a key is the same version-skew hazard as CLOSING
+-- a key set, and the cost is paid on the same channel: `import-repo.ts`'s `object_upsert` branch
+-- Ajv-validates an incoming object against this registered schema with NO try/catch, so a peer whose
+-- components carry any `security` shape this fragment did not describe loses its ENTIRE signed
+-- bundle — not one object. `component` is among the most-federated types in the graph, which makes
+-- it the worst place in the file to spend that risk. The identical tightening was implemented,
+-- measured against the import path and REVERTED on this same migration's `expiresAt` field (§3); a
+-- narrowed `properties.security` is that hazard wearing a third keyword, on a hotter type.
+--
+-- NOTHING THAT DECIDES LOSES A CHECK — verified by reading the call sites before deleting, not by
+-- assuming. `assertValidComponentSecurityDeclarations`
+-- (`governance/component-declaration-guard.ts`) runs at `graph/objects-repo.ts`'s `createObject`
+-- and `updateObject` — the choke point every LOCAL write door funnels through — and again in
+-- `federation/handfill-repo.ts`, which wears the `federationImport` exemption and so calls it
+-- explicitly. It is STRICTLY TIGHTER than the deleted fragment: being `z.strictObject` with a
+-- REQUIRED `declarations`, it also refuses `{"declarationz": ...}` and `{"security": {}}`, both of
+-- which the fragment accepted. At the gate, `parseDeclaredFacts` re-parses with the same schema and
+-- contributes nothing for a bag that fails it. The ONE path the fragment covered that these do not
+-- is federation import — which is exactly the path where its failure mode is a wedged channel.
+-- ===========================================================================================
 
 -- ===========================================================================================
 -- 3. THE GRANT OBJECT

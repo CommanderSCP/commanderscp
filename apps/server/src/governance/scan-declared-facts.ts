@@ -40,10 +40,10 @@ import { objects } from "../db/schema.js";
  * ===========================================================================================
  * WHY ONLY A `component` MAY DECLARE
  * ===========================================================================================
- * The registered `property_schema` for `security.declarations` is on the `component` type and only
- * there — but `property_schema` is TYPED-BUT-OPEN by requirement (see drizzle/0075's header on the
- * federation bundle-abort hazard), so nothing at the database stops a `service` object from carrying
- * an unvalidated `security` bag too. The type filter below is therefore load-bearing rather than
+ * There is no registered `property_schema` for `security.declarations` on ANY type — drizzle/0075's
+ * §2a records why the `component` fragment was written and then deleted (typing a key on a heavily
+ * federated type is the same bundle-abort hazard as closing a key set). So nothing at the database
+ * stops a `service` object — or a `component` — from carrying an unvalidated `security` bag. The type filter below is therefore load-bearing rather than
  * decorative: without it, a facts read for a service-targeted change would honour a bag that passed
  * through no validation at all. A non-component target contributes NO declarations, which after the
  * intersection means no `declared_fact` exclusion for the whole change — the fail-closed direction,

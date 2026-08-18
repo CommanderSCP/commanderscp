@@ -14012,6 +14012,80 @@ export type ListChangeControlRunsResponses = {
 
 export type ListChangeControlRunsResponse = ListChangeControlRunsResponses[keyof ListChangeControlRunsResponses];
 
+export type ListControlRunFindingsData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/control-runs/{id}/findings';
+};
+
+export type ListControlRunFindingsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListControlRunFindingsError = ListControlRunFindingsErrors[keyof ListControlRunFindingsErrors];
+
+export type ListControlRunFindingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            vulnerabilityId?: string;
+            pkgName?: string;
+            installedVersion?: string;
+            fixedVersion?: string;
+            class?: string;
+            target?: string;
+            severity: 'critical' | 'high' | 'medium' | 'low';
+            purl?: string;
+            ordinal: number;
+            retentionClass: 'E' | 'O';
+        }>;
+        nextCursor: string | null;
+        findingsRecord: 'full' | 'truncated' | 'unsupported' | null;
+    };
+};
+
+export type ListControlRunFindingsResponse = ListControlRunFindingsResponses[keyof ListControlRunFindingsResponses];
+
 export type ListApprovalsData = {
     body?: never;
     path?: never;

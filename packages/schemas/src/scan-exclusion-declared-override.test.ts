@@ -65,7 +65,12 @@ describe("M22.5 — declared_fact needs BOTH halves of the clause and a matching
   const EGRESS_NONE: ScanExclusionClause = {
     class: "declared_fact",
     declaredFact: "egress",
-    declaredValue: "none"
+    declaredValue: "none",
+    // A NARROWING MATCHER IS NOW MANDATORY for this class, so it is part of the baseline clause every
+    // test below shares. Without one the predicate is inert, and every `toEqual([])` in this describe
+    // would pass for that reason instead of its own — the vacuous-test shape this repo tracks. It
+    // matches the default `finding()`'s id, so it never narrows anything these cases care about.
+    vulnerabilityId: "CVE-2026-1000"
   };
 
   it("excludes when the targets declared exactly the pair the clause names", () => {
@@ -92,7 +97,9 @@ describe("M22.5 — declared_fact needs BOTH halves of the clause and a matching
     const applied = applyScanExclusions(
       [finding()],
       withFacts(
-        { class: "declared_fact", declaredFact: "egress" },
+        // Narrowed, so the ONLY thing missing is the value — otherwise this would pass because of
+        // the unnarrowed-clause refusal below and say nothing about the key/value rule.
+        { class: "declared_fact", declaredFact: "egress", vulnerabilityId: "CVE-2026-1000" },
         { declaredFacts: declared(["egress", "internet"]) }
       ),
       "full"
@@ -104,12 +111,65 @@ describe("M22.5 — declared_fact needs BOTH halves of the clause and a matching
     const applied = applyScanExclusions(
       [finding()],
       withFacts(
-        { class: "declared_fact", declaredValue: "none" },
+        { class: "declared_fact", declaredValue: "none", vulnerabilityId: "CVE-2026-1000" },
         { declaredFacts: declared(["egress", "none"]) }
       ),
       "full"
     );
     expect(applied.excludedOrdinals).toEqual([]);
+  });
+
+  it("A CLAUSE WITH NO NARROWING MATCHER IS INERT — it would otherwise turn the scan gate off", () => {
+    // The class's predicate is finding-INDEPENDENT once the declaration holds, so with none of
+    // vulnerabilityId/pkgName/purl/findingClass it excludes EVERY finding at EVERY severity. Admission
+    // is per CLASS, so no tier above ever sees this clause's reach: one service-tier `policy:write`
+    // plus the component owner's own `object:write` on `properties.security` is the whole escalation.
+    //
+    // THE READ HALF of a pair — `scan-rule-authoring-guard.ts` refuses the same shape at the write
+    // door. This half is the one that reaches a clause already stored, or federated in (where the
+    // door deliberately cannot throw without wedging a signed bundle).
+    const findings = [
+      finding({ severity: "critical", class: "os-pkgs", pkgName: "openssl" }),
+      finding({ severity: "low", class: "lang-pkgs", pkgName: "axios" })
+    ];
+    const unnarrowed: ScanExclusionClause = {
+      class: "declared_fact",
+      declaredFact: "egress",
+      declaredValue: "none"
+    };
+    const applied = applyScanExclusions(
+      findings,
+      withFacts(unnarrowed, { declaredFacts: declared(["egress", "none"]) }),
+      "full"
+    );
+    expect(applied.excludedOrdinals).toEqual([]);
+    // Adding ANY ONE of the four matchers makes the identical clause live again, so the refusal is
+    // about the narrowing and not about the class being broken.
+    for (const matcher of [
+      { vulnerabilityId: "CVE-2026-1000" },
+      { pkgName: "openssl" },
+      { findingClass: "os-pkgs" }
+    ]) {
+      expect(
+        applyScanExclusions(
+          [findings[0]!],
+          withFacts({ ...unnarrowed, ...matcher }, { declaredFacts: declared(["egress", "none"]) }),
+          "full"
+        ).excludedOrdinals
+      ).toEqual([0]);
+    }
+    // `purl`, the fourth, needs a finding that carries one.
+    const withPurl = finding({ purl: "pkg:npm/axios@1.6.0" });
+    expect(
+      applyScanExclusions(
+        [withPurl],
+        withFacts(
+          { ...unnarrowed, purl: "pkg:npm/axios@1.6.0" },
+          { declaredFacts: declared(["egress", "none"]) }
+        ),
+        "full"
+      ).excludedOrdinals
+    ).toEqual([0]);
   });
 
   it("a DIFFERENT declared value on the same key excludes nothing", () => {

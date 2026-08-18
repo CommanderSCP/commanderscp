@@ -5036,6 +5036,35 @@ export const zListChangeControlRunsResponse = z.object({
 /**
  * Success
  */
+export const zListControlRunFindingsResponse = z.object({
+    items: z.array(z.object({
+        vulnerabilityId: z.string().optional(),
+        pkgName: z.string().optional(),
+        installedVersion: z.string().optional(),
+        fixedVersion: z.string().optional(),
+        class: z.string().optional(),
+        target: z.string().optional(),
+        severity: z.enum([
+            'critical',
+            'high',
+            'medium',
+            'low'
+        ]),
+        purl: z.string().optional(),
+        ordinal: z.int().gte(0).lte(9007199254740991),
+        retentionClass: z.enum(['E', 'O'])
+    })),
+    nextCursor: z.string().nullable(),
+    findingsRecord: z.enum([
+        'full',
+        'truncated',
+        'unsupported'
+    ]).nullable()
+});
+
+/**
+ * Success
+ */
 export const zListApprovalsResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),

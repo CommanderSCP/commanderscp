@@ -35,7 +35,10 @@ import {
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
 import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
-import { assertScanRuleRequiresScanControl } from "../governance/scan-rule-authoring-guard.js";
+import {
+  assertDeclaredFactClauseIsNarrowed,
+  assertScanRuleRequiresScanControl
+} from "../governance/scan-rule-authoring-guard.js";
 import {
   assertScanOverrideGrantNotSelfDecided,
   type ScanOverrideGrantDecisionWrite
@@ -425,6 +428,16 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
     // three of them (`governance/component-declaration-guard.ts` names them).
     assertValidComponentSecurityDeclarations({ typeId: input.typeId, properties });
     assertEnforceableDependencySubscriptionScope({ typeId: input.typeId, properties });
+    // M22.5 — the OTHER half of ADR-0033 §6's split, and the half the line above cannot reach. That
+    // one bounds what a COMPONENT may declare; this one bounds what a POLICY may do with a
+    // declaration. A `declared_fact` clause carrying no narrowing matcher excludes every finding at
+    // every severity, and admission is per CLASS — so no tier above can see the clause's reach and
+    // consent to it. See `scan-rule-authoring-guard.ts`.
+    //
+    // Ordered here, among the SYNCHRONOUS refusals and ahead of every awaited one, for the reason
+    // stated on the M22.8 guard below: it reads only the document, so a bad write is rejected before
+    // anything pays for a round trip.
+    assertDeclaredFactClauseIsNarrowed({ typeId: input.typeId, properties });
     // M21.5 — the SECOND dependency-subscription authoring refusal, installed at this same choke
     // point for the same reasons and under the same `federationImport` exemption (see above and
     // `subscription-authoring-guard.ts`'s M21.5 section). It is `await`ed because it reads a stored
@@ -905,6 +918,13 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       typeId: input.typeId,
       properties: nextProperties
     });
+    // M22.5 — the UPDATE half of the unnarrowed-`declared_fact` refusal, checked against
+    // `nextProperties` for the identical reason its neighbours are, and it is the half that matters:
+    // the attack is an EDIT. A policy authored with `pkgName: "openssl"` clears the create guard, and
+    // a later PATCH that merely DROPS that key widens the clause from one package to every finding —
+    // the same bytes-on-the-wire ambiguity the label delta below describes, where only the stored row
+    // can tell a narrowing from a removal. Synchronous, so it sits ahead of the awaited refusals.
+    assertDeclaredFactClauseIsNarrowed({ typeId: input.typeId, properties: nextProperties });
     // M21.5 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
     // the identical reason the line above is: an ordinary PATCH that rewrites `scope`/`effects` can
     // turn an inert policy into an enabling one without ever passing through a create.

@@ -2,7 +2,6 @@ import { timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import pg from "pg";
 import {
   InstanceScanExclusionAdmissionListResponseSchema,
   InstanceScanExclusionAdmissionTierParamSchema,
@@ -14,6 +13,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
+import { withOperatorDb } from "./operator-db.js";
 
 /**
  * M22.9 — THE INSTANCE-SCOPED EXCLUSION ADMISSIONS' API SURFACE (ADR-0033 §1, §7a), API-first per
@@ -53,10 +53,18 @@ import { forbidden } from "../errors.js";
  *    loosening for EVERY org on the deployment; a tenant admin — however privileged inside their
  *    own org — must never author one, and D3's whole authority argument collapses if they can. So
  *    no role can grant it: the write requires the deployment-level `SCP_OPERATOR_TOKEN`
- *    (config.operatorToken) presented as `x-scp-operator-token`, and executes over the ADMIN
- *    connection because `scp_app` holds no write grant on the table and no write RLS policy exists
- *    for it (drizzle/0074 — two independent barriers). Unset token => the surface is CLOSED (403),
- *    never a fallback to a tenant credential.
+ *    (config.operatorToken) presented as `x-scp-operator-token`, and executes over the
+ *    `scp_operator` connection (`withOperatorDb`) because `scp_app` holds no write grant on the
+ *    table and no write RLS policy existed for it at all (drizzle/0074 — two independent barriers;
+ *    0076 adds the operator role as the one principal both barriers admit). Unset token => the
+ *    surface is CLOSED (403), never a fallback to a tenant credential.
+ *
+ *    THIS PARAGRAPH USED TO SAY "executes over the ADMIN connection", AND THAT WAS FALSE ON THE
+ *    DEPLOYMENT SHAPE IT MATTERED ON. api/worker pods hold no admin connection (the chart gives
+ *    `DATABASE_URL` to the migrations Job alone), so `config.databaseUrl` resolved to the
+ *    `localhost:5432` fallback and the write dialed 127.0.0.1 inside its own pod. And the admin
+ *    connection would not have sufficed anyway on a non-superuser admin: 0074 grants no write to
+ *    anyone. `routes/operator-db.ts` carries the full account.
  *
  * THE PUT IS A WHOLE-SET REPLACE for one `(tier, origin)`, not an add. An additive verb makes
  * WITHDRAWAL the harder operation, and this is a loosening: an operator who believes they have
@@ -182,9 +190,7 @@ export function registerInstanceScanExclusionAdmissionRoutes(
       const origin = body.origin;
       const note = body.note ?? null;
 
-      const pool = new pg.Pool({ connectionString: deps.config.databaseUrl, max: 1 });
-      try {
-        const client = await pool.connect();
+      await withOperatorDb(deps.config, "scan-exclusion admissions", async (client) => {
         try {
           // ONE TRANSACTION, because this is a REPLACE and a gate evaluating between the delete and
           // the insert would read a set the operator never authored — for the two rungs that gate
@@ -221,12 +227,8 @@ export function registerInstanceScanExclusionAdmissionRoutes(
         } catch (err) {
           await client.query("ROLLBACK").catch(() => undefined);
           throw err;
-        } finally {
-          client.release();
         }
-      } finally {
-        await pool.end();
-      }
+      });
     }
   });
 }
