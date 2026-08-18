@@ -17,9 +17,11 @@ import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
+  runnerOutcomeDetail,
   toRunnerRunId,
   withRecordedOutcome,
-  type ResolveRunnerLauncher
+  type ResolveRunnerLauncher,
+  type RunnerResult
 } from "@scp/runner-launcher";
 
 /**
@@ -229,7 +231,7 @@ async function runRunnerContainer(
    */
   infraCreds: Record<string, string>,
   extraEnv: Record<string, string> = {}
-): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
+): Promise<RunnerResult> {
   const secretValues = Object.values(infraCreds);
 
   const result = await resolveLauncher({ dockerBinary: config.dockerBinary }).run({
@@ -282,10 +284,27 @@ async function runRunnerContainer(
     maxBuffer: 16 * 1024 * 1024
   });
 
+  // THE SECOND, INDEPENDENT REDACTION — this plugin's own knowledge of which values are secret,
+  // applied on top of whatever the adapter already stripped (see `withRecordedOutcome`'s `redact`
+  // for why the plugin may not depend on that having happened). `failure.detail` joins the set it
+  // covers: it embeds `err.message`, which on a `create` failure is where an unredacted
+  // `-e AWS_SECRET_ACCESS_KEY=…` would appear, and it is now the string that reaches the DURABLE
+  // ledger — the highest-value channel this plugin has.
+  if (result.succeeded) {
+    return {
+      succeeded: true,
+      stdout: redactSecrets(result.stdout, secretValues),
+      stderr: redactSecrets(result.stderr, secretValues)
+    };
+  }
   return {
-    succeeded: result.succeeded,
+    succeeded: false,
     stdout: redactSecrets(result.stdout, secretValues),
-    stderr: redactSecrets(result.stderr, secretValues)
+    stderr: redactSecrets(result.stderr, secretValues),
+    failure: {
+      ...result.failure,
+      detail: redactSecrets(result.failure.detail, secretValues)
+    }
   };
 }
 
@@ -428,7 +447,11 @@ async function trigger(
           outcome = {
             externalId,
             succeeded: result.succeeded,
-            detail: result.succeeded ? result.stdout : result.stderr,
+            // `runnerOutcomeDetail`, NOT `succeeded ? stdout : stderr` — that expression recorded
+            // the EMPTY STRING for a budget-killed or never-spawned runner, which is exactly the
+            // pair an operator most needs told apart. See `@scp/runner-launcher`'s
+            // `classifyRunnerFailure`.
+            detail: runnerOutcomeDetail(result),
             stateRef: priorStateFile
           };
         }
@@ -447,7 +470,9 @@ async function trigger(
         outcome = {
           externalId,
           succeeded: result.succeeded,
-          detail: result.succeeded ? result.stdout : result.stderr
+          // See the rollback arm above: an empty `detail` in a DURABLE, replicated ledger is how a
+          // SIGTERMed `tofu apply` came to look identical to a runner that exited quietly.
+          detail: runnerOutcomeDetail(result)
         };
       }
     }

@@ -21,7 +21,24 @@ interface DockerCall {
   args: string[];
 }
 const dockerCalls: DockerCall[] = [];
-let startBehavior: { ok: boolean; stdout: string; stderr: string } = {
+/**
+ * `code` and `takesMs` ADDED FOR MEDIUM (verification pass 5). Without them this seam could produce
+ * exactly one kind of `start` failure, so the two shapes an operator most needs told apart — our own
+ * budget killing the runner, and the runner exiting quietly — were not expressible here at all.
+ *  - `code`: what Node puts on the rejection. A NUMBER is an exit status; `null` with `killed` is a
+ *    signal. `classifyRunnerFailure` branches on it.
+ *  - `takesMs`: how long `start` runs before answering, so the adapter's own `timeout` (derived from
+ *    the whole-run deadline) can actually FIRE. The mock honours it the way Node does — see the
+ *    `start` arm below — which is what makes `deadlineExceeded` a real derivation here rather than a
+ *    value the fixture asserts about itself.
+ */
+let startBehavior: {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  code?: string | number | null;
+  takesMs?: number;
+} = {
   ok: true,
   stdout: "ok",
   stderr: ""
@@ -50,7 +67,7 @@ vi.mock("node:child_process", () => {
     execFile: (
       file: string,
       args: string[],
-      _opts: unknown,
+      opts: { timeout?: number },
       cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
     ) => {
       dockerCalls.push({ file, args });
@@ -58,12 +75,36 @@ vi.mock("node:child_process", () => {
       if (sub === "create") {
         cb(null, { stdout: "container-abc123\n", stderr: "" });
       } else if (sub === "start") {
+        // NODE'S OWN RULE FOR `timeout`, modelled only for `start` because that is the only step
+        // whose failure this file needs to shape. A positive `timeout` shorter than the run's
+        // duration means Node SIGTERMs the child and rejects with `killed: true, signal: "SIGTERM",
+        // code: null` — the shape `@scp/runner-launcher`'s NODE_FAILURE_SHAPES table pins against a
+        // real child process.
+        const takesMs = startBehavior.takesMs ?? 0;
+        const timeout = opts?.timeout;
+        if (typeof timeout === "number" && timeout > 0 && timeout < takesMs) {
+          setTimeout(() => {
+            cb(
+              Object.assign(new Error(`Command failed: ${file} ${args.join(" ")}`), {
+                code: null,
+                killed: true,
+                signal: "SIGTERM",
+                stdout: startBehavior.stdout,
+                stderr: startBehavior.stderr
+              })
+            );
+          }, timeout);
+          return;
+        }
         if (startBehavior.ok) {
           cb(null, { stdout: startBehavior.stdout, stderr: startBehavior.stderr });
         } else {
           const err = Object.assign(new Error("container exited non-zero"), {
             stdout: startBehavior.stdout,
-            stderr: startBehavior.stderr
+            stderr: startBehavior.stderr,
+            ...(startBehavior.code !== undefined
+              ? { code: startBehavior.code, killed: false, signal: null }
+              : {})
           });
           cb(err);
         }
@@ -392,5 +433,90 @@ describe("@scp/plugin-managed-iac: LOW-6 — loadState/saveState never reject tr
     });
     expect(second).toStrictEqual(ref);
     expect(createCall(), "the failed save left no durable record of the first run").toBeDefined();
+  });
+});
+
+/**
+ * ================================================================================================
+ * MEDIUM (verification pass 5) — THE DURABLE LEDGER MUST NOT RECORD TWO FAILURES AS ONE
+ * ================================================================================================
+ *
+ * `@scp/runner-launcher`'s port-level arms prove the classification; THIS file is the only place
+ * the whole chain can be driven, because managed-iac is the one managed plugin with a DURABLE
+ * outcome store. The chain is: real Docker adapter (over the mocked `child_process` above) ->
+ * `runRunnerContainer` -> `trigger()`'s outcome -> `saveState` to a real JSON file on disk ->
+ * a fresh `loadState` inside `status()`. Everything a `Decision`'s `inputContext` will carry
+ * (`reconcile.ts` copies `status.detail` into it verbatim) has gone through a file by the time it
+ * is asserted, which is what "through the durable ledger, not just at the port" means.
+ *
+ * WHAT IT USED TO RECORD. `trigger()` built its detail as `result.succeeded ? result.stdout :
+ * result.stderr`, and `promisify(execFile)` always attaches `stderr` as a string — so a `tofu apply`
+ * that WE SIGTERMed mid-flight and a runner that exited quietly both wrote `detail: ""`. For
+ * managed-iac specifically that is the difference between "your infrastructure may be half-applied,
+ * re-running at this timeout will do it again" and "the runner failed, look at the runner", recorded
+ * identically, forever, in a replicated and backed-up file.
+ */
+describe("MEDIUM (pass 5): a budget kill and a silent exit are distinguishable IN THE DURABLE LEDGER", () => {
+  /** Drives one `apply` to completion and reads its outcome back out of the on-disk cache the way
+   *  `reconcile.ts` does — through `status()`, which re-reads the file rather than a memo. */
+  async function applyAndReadLedger(key: string): Promise<{ phase: string; detail: string }> {
+    const statePath = join(workspaceRoot, `${key}.json`);
+    const plugin = createManagedIacExecutorPlugin();
+    const c = ctx({ statePath, timeoutMs: 60 });
+    const ref = await plugin.trigger(c, {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "apply", sourceFiles: { "main.tf": "# tf" } },
+      idempotencyKey: key
+    });
+    // A SEPARATE PLUGIN INSTANCE for the read, so nothing can be served from process memory: this
+    // one has never seen the run and must find it on disk or not at all.
+    const status = await createManagedIacExecutorPlugin().status(c, ref);
+    return { phase: status.phase, detail: status.detail ?? "" };
+  }
+
+  it("A BUDGET-KILLED apply AND A SILENT NON-ZERO EXIT WRITE DIFFERENT DETAIL TO THE LEDGER", async () => {
+    // 1. OUR OWN BUDGET KILLS A RUNNING `tofu apply`. `timeoutMs: 60` against a `start` that would
+    //    take 400ms, so the adapter's derived `timeout` fires and the clock is past the run deadline
+    //    — `deadlineExceeded` is DERIVED here, not asserted by the fixture.
+    startBehavior = { ok: true, stdout: "", stderr: "", takesMs: 400 };
+    const killed = await applyAndReadLedger("budget-kill");
+
+    // 2. THE RUNNER EXITS 3, SILENTLY. Same visible outcome, entirely different cause and remedy.
+    startBehavior = { ok: false, stdout: "", stderr: "", code: 3 };
+    const exited = await applyAndReadLedger("silent-exit");
+
+    // BOTH ARE FAILURES, and the runner's own output is empty and identical in both — the condition
+    // under which the two records used to collapse. Asserted so the arm below cannot be satisfied by
+    // the two runs merely having become different in some other way.
+    expect([killed.phase, exited.phase]).toStrictEqual(["failed", "failed"]);
+
+    expect(killed.detail.length, "the durable ledger recorded an EMPTY reason").toBeGreaterThan(0);
+    expect(exited.detail.length, "the durable ledger recorded an EMPTY reason").toBeGreaterThan(0);
+    expect(
+      killed.detail,
+      "a SIGTERMed apply and a quiet runner failure are one record in the ledger"
+    ).not.toBe(exited.detail);
+
+    // AND EACH SAYS THE THING AN OPERATOR HAS TO ACT ON.
+    expect(killed.detail).toContain("budget-exhausted");
+    expect(killed.detail).toContain("RunnerSpec.timeoutMs");
+    expect(exited.detail).toContain("exit-nonzero");
+    expect(exited.detail).toContain("code=3");
+    // The budget record must NOT read as the runner's fault, and vice versa.
+    expect(killed.detail).not.toContain("exit-nonzero");
+    expect(exited.detail).not.toContain("budget-exhausted");
+  });
+
+  it("A SUCCESSFUL apply STILL RECORDS ITS EVIDENCE, not a diagnosis", async () => {
+    // THE OTHER HALF, and the one a careless fix breaks: `runnerOutcomeDetail` must leave the
+    // success path exactly as it was. A `tofu plan`'s stdout IS the evidence the change carries
+    // (charter principle 6), and replacing it with a status line would be a silent evidence loss
+    // with a green suite.
+    startBehavior = { ok: true, stdout: "Plan: 3 to add, 0 to change, 0 to destroy.", stderr: "" };
+    const ok = await applyAndReadLedger("evidence");
+
+    expect(ok.phase).toBe("succeeded");
+    expect(ok.detail).toBe("Plan: 3 to add, 0 to change, 0 to destroy.");
   });
 });

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { RunnerSpec } from "./index.js";
+import type { RunnerFailureKind, RunnerSpec } from "./index.js";
 import {
   runLaunchOrderingConformanceSuite,
   type LaunchOrderingSubstrate,
@@ -358,6 +358,7 @@ const {
   RUNNER_CONTAINER_NAME_PREFIX,
   RUNNER_LAUNCHER_DEADLINE_LABEL,
   RUNNER_LAUNCHER_OWNER_LABEL,
+  RUNNER_MAXBUFFER_CODE,
   RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
   RUNNER_RUN_ID_PATTERN,
@@ -787,11 +788,19 @@ describe("M23.1 conformance: the failure paths, and the identity every one of th
 
     const result = await createDockerRunnerLauncher("docker").run(spec());
 
-    expect(result).toStrictEqual({
+    expect({ ...result, failure: undefined }).toStrictEqual({
       succeeded: false,
       stdout: "partial plan",
-      stderr: "tofu: boom"
+      stderr: "tofu: boom",
+      failure: undefined
     });
+    // AND THE DIAGNOSIS COMES BACK WITH IT (MEDIUM, pass 5). `stdout`/`stderr` alone are the child's
+    // words; `failure` is what happened to the child, which for three of the four shapes the child
+    // never says.
+    expect(result.failure?.kind).toBe("exit-nonzero");
+    expect(result.failure?.step).toBe("start");
+    expect(result.failure?.deadlineExceeded).toBe(false);
+    expect(result.failure?.detail).toContain("container exited non-zero");
   });
 
   it('A REJECTED `start` WITH NO stdout/stderr FALLS BACK TO `""` AND THE ERROR MESSAGE', async () => {
@@ -807,11 +816,16 @@ describe("M23.1 conformance: the failure paths, and the identity every one of th
 
     const result = await createDockerRunnerLauncher("docker").run(spec());
 
-    expect(result).toStrictEqual({
+    expect({ ...result, failure: undefined }).toStrictEqual({
       succeeded: false,
       stdout: "",
-      stderr: "container exited non-zero"
+      stderr: "container exited non-zero",
+      failure: undefined
     });
+    // THE POINT OF THIS ARM, RESTATED FOR MEDIUM (pass 5). The falls above are unreachable in
+    // production, so what an operator actually got for a runner WE killed was two empty strings.
+    // `failure.detail` is the channel that is never empty, whatever the child did or did not print.
+    expect(result.failure?.detail.length, "the recorded reason is empty").toBeGreaterThan(0);
   });
 
   it("A REJECTED COPY-IN REJECTS the run — and `rm` still runs, so nothing is orphaned", async () => {
@@ -989,15 +1003,26 @@ describe("M23.1 conformance: the failure paths, and the identity every one of th
 //  - Anything about the runner-side truncation itself. The MAXBUFFER arms assert what the adapter
 //    reports; they do not assert that a truncated `plan.json` is REJECTED downstream — nothing in
 //    this package parses evidence, and `succeeded: false` is all the adapter offers a caller to go on.
-//  - That an operator can tell these four apart afterwards. They cannot, today: `run()` returns the
-//    same `{ succeeded: false, stdout, stderr }` shape for all of them and drops `killed`, `signal`
-//    and `code` on the floor, so a runner we SIGTERM'd at the timeout is indistinguishable in the
-//    Decision record from one that exited non-zero — with an EMPTY stderr, which is what the ENOENT
-//    and TIMEOUT-KILL arms record. That is a behaviour question for the port, not a test gap, and it
-//    is pinned here as it stands rather than quietly improved.
+//  - (CLOSED — MEDIUM, verification pass 5.) This bullet read: "That an operator can tell these four
+//    apart afterwards. They cannot, today: `run()` returns the same `{ succeeded: false, stdout,
+//    stderr }` shape for all of them and drops `killed`, `signal` and `code` on the floor … pinned
+//    here as it stands rather than quietly improved." It stood for a milestone, which is what a
+//    well-written comment naming a hazard does (CLAUDE.md). `RunnerResult`'s failed arm now carries
+//    a `RunnerFailure` — the `classifiedAs` column below is per-ROW, so two rows with byte-identical
+//    `stdout`/`stderr` must still classify differently — and all three plugins record
+//    `runnerOutcomeDetail(result)` instead of `succeeded ? stdout : stderr`, so the distinction
+//    reaches the durable ledger and the Decision rather than stopping at the port.
+//    What is STILL not proven here: that a BUDGET exhaustion classifies apart from an ordinary
+//    signal. This seam settles every step on the next tick and can never reach the run deadline;
+//    `whole-run-budget.test.ts` is the seam that models duration and owns that arm.
 
-/** `code` on a maxBuffer overflow. Node's own constant name, spelled out so the table below reads. */
-const MAXBUFFER_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+/**
+ * `code` on a maxBuffer overflow — THE PRODUCT'S OWN CONSTANT, imported rather than restated.
+ * `classifyRunnerFailure` branches on this exact string, and "THE TABLE IS NOT FICTION" below spawns
+ * a real child and compares `code` against the live Node. Importing is what joins those two: a local
+ * copy would let the check verify the fixture while the classifier branched on something else.
+ */
+const MAXBUFFER_CODE = RUNNER_MAXBUFFER_CODE;
 
 /**
  * THE FOUR SHAPES `promisify(execFile)` ACTUALLY REJECTS WITH — MEASURED, NOT INVENTED.
@@ -1031,6 +1056,14 @@ interface NodeFailureShape {
   make: () => Error;
   /** What `run()` must report when this shape lands on `start`. */
   startsAs: { stdout: string; stderr: string };
+  /**
+   * WHICH OF THE FIVE FAILURE KINDS `classifyRunnerFailure` MUST DERIVE FROM THIS SHAPE — MEDIUM
+   * (verification pass 5). This column is the whole fix for "an operator cannot tell these four
+   * apart afterwards", which the header above pinned as a known behaviour gap. It is per-ROW rather
+   * than one assertion for all four precisely because the rows must NOT agree: two of them here
+   * report `stdout`/`stderr` that are byte-identical and must still be distinguishable.
+   */
+  classifiedAs: RunnerFailureKind;
   /** How to provoke the REAL thing from the running Node, for the not-fiction guard below. */
   provoke: (
     run: (file: string, args: string[], opts: object) => Promise<unknown>
@@ -1052,6 +1085,12 @@ const NODE_FAILURE_SHAPES: NodeFailureShape[] = [
         stderr: ""
       }),
     startsAs: { stdout: '{"resource_ch', stderr: "" },
+    // `signalled`, NOT `budget-exhausted`: this fixture's kill did not come from the run's own
+    // deadline (the seam settles on the next tick, so the clock never reaches it). The budget arm is
+    // in `whole-run-budget.test.ts`, which is the only seam that can model duration — and the two
+    // being DIFFERENT kinds from the same Node shape is the reason `deadlineExceeded` is tested
+    // first and is a field of its own rather than a re-reading of `killed`.
+    classifiedAs: "signalled",
     provoke: (run) =>
       run(process.execPath, ["-e", "process.stdout.write('half');setTimeout(()=>{},5000)"], {
         timeout: 200
@@ -1067,6 +1106,10 @@ const NODE_FAILURE_SHAPES: NodeFailureShape[] = [
         stderr: ""
       }),
     startsAs: { stdout: '{"resource_ch', stderr: "" },
+    // Distinct from `signalled` even though the two rows' `startsAs` are IDENTICAL, and the reason
+    // the maxBuffer test comes before the `killed` test: this error carries no `killed` property at
+    // all, so ordering them the other way would put a TRUNCATED-output run in the wrong bucket.
+    classifiedAs: "output-exceeded",
     provoke: (run) =>
       run(process.execPath, ["-e", "process.stdout.write('x'.repeat(5000))"], { maxBuffer: 10 })
   },
@@ -1084,6 +1127,9 @@ const NODE_FAILURE_SHAPES: NodeFailureShape[] = [
         stderr: ""
       }),
     startsAs: { stdout: "", stderr: "" },
+    // NOTHING RAN. The one kind that tells an operator no infrastructure was touched — and the row
+    // whose `startsAs` used to be indistinguishable from a runner that exited quietly.
+    classifiedAs: "spawn-failed",
     provoke: (run) => run("scp-no-such-binary-8f3a2c", ["--version"], {})
   },
   {
@@ -1098,6 +1144,8 @@ const NODE_FAILURE_SHAPES: NodeFailureShape[] = [
         stderr: "docker: Error response from daemon"
       }),
     startsAs: { stdout: "", stderr: "docker: Error response from daemon" },
+    // The only one of the four the RUNNER caused. A numeric `code` is the discriminator.
+    classifiedAs: "exit-nonzero",
     provoke: (run) =>
       run(
         process.execPath,
@@ -1188,8 +1236,8 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
   }, 20_000);
 
   it.each(NODE_FAILURE_SHAPES)(
-    "$name at `start` → a FAILED run carrying the child's own output",
-    async ({ make, startsAs }) => {
+    "$name at `start` → a FAILED run carrying the child's own output AND its own diagnosis",
+    async ({ make, startsAs, classifiedAs }) => {
       // THE ONE THE TWO SURVIVING MUTATIONS NEEDED. Nothing about the SHAPE of the failure may
       // decide the runner's exit status: a runner we killed on timeout, one whose output overflowed,
       // one that never spawned and one that exited 125 are all `succeeded: false`.
@@ -1198,9 +1246,21 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
       const result = await createDockerRunnerLauncher("docker").run(spec());
 
       expect(
-        result,
+        { ...result, failure: undefined },
         "a `start` that failed this way was not reported as a failed run with the child's own output"
-      ).toStrictEqual({ succeeded: false, ...startsAs });
+      ).toStrictEqual({ succeeded: false, ...startsAs, failure: undefined });
+      // …AND THE HEADER'S FOURTH "WHAT THESE ARMS STILL CANNOT PROVE" IS NOW PROVEN. It read: "That
+      // an operator can tell these four apart afterwards. They cannot, today". They can: the kind is
+      // derived from `code`/`killed`/`deadlineExceeded`, none of which the child's own output
+      // carries, and it survives into the plugins' recorded `detail`.
+      expect(
+        result.failure?.kind,
+        "this failure shape is classified as something an operator cannot act on"
+      ).toBe(classifiedAs);
+      expect(result.failure?.step).toBe("start");
+      // NEVER EMPTY, on every row — the property the two zero-output rows exist to defend.
+      expect(result.failure?.detail.length).toBeGreaterThan(0);
+      expect(result.failure?.detail).toContain(classifiedAs);
       // …and it is a CAPTURED failure, so the container is still torn down.
       expect(calls.map((c) => c.args)).toStrictEqual([
         ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
@@ -1510,18 +1570,35 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
     // `run()` RETURNS this one rather than throwing it, and the plugins put it straight into a
     // Decision's `detail` (charter principle 6). managed-iac redacts it again on its own way out;
     // that is belt-and-braces, not the control — a fourth managed plugin would inherit nothing.
-    fail(
-      "start",
-      startExitFailure({ stdout: `plan wrote ${SECRET}`, stderr: `tofu: ${OTHER_SECRET} rejected` })
-    );
+    // THE FIXTURE CARRIES THE SECRET IN ITS `message` TOO, and that is not decoration. `failure.detail`
+    // embeds `err.message` and NOT `err.stdout`/`err.stderr`, so a fixture whose message was clean
+    // would make the two `not.toContain`s below pass no matter what the classifier did with it —
+    // vacuous by construction (CLAUDE.md, "green for the WRONG REASON"). Real Node puts the child's
+    // stderr in that message: `Command failed: <cmd>\n<stderr>`. This reproduces that.
+    const withSecretInMessage = startExitFailure({
+      stdout: `plan wrote ${SECRET}`,
+      stderr: `tofu: ${OTHER_SECRET} rejected`
+    });
+    withSecretInMessage.message = `Command failed: docker start -a container-abc123\ntofu: ${OTHER_SECRET} rejected`;
+    fail("start", withSecretInMessage);
 
     const result = await createDockerRunnerLauncher("docker").run(secretSpec());
 
-    expect(result).toStrictEqual({
+    expect({ ...result, failure: undefined }).toStrictEqual({
       succeeded: false,
       stdout: "plan wrote ***",
-      stderr: "tofu: *** rejected"
+      stderr: "tofu: *** rejected",
+      failure: undefined
     });
+    // `failure.detail` IS A CHANNEL TOO, and the newest one — it embeds the RunnerLaunchError's
+    // message, which is built from the argv AND from whatever the child printed. It is also the
+    // string the plugins put in a DURABLE ledger, so a leak here outlives the process.
+    expect(result.failure?.detail).not.toContain(SECRET);
+    expect(result.failure?.detail).not.toContain(OTHER_SECRET);
+    // NOT VACUOUS: the marker is there, so the secret was REPLACED rather than the whole message
+    // having been dropped — a detail of "an error occurred" would satisfy both lines above.
+    expect(result.failure?.detail).toContain("***");
+    expect(result.failure?.detail).toContain("exit-nonzero");
   });
 
   it("A SUCCEEDED run's stdout and stderr are redacted TOO — success is not a safe channel", async () => {

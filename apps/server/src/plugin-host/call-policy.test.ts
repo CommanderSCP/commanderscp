@@ -250,7 +250,6 @@ describe("M23.1e: the grace constants stand in the order the cleanup path needs"
   });
 });
 
-
 /**
  * ================================================================================================
  * MEDIUM (verification pass 5) — THE CEILING IS ONE NUMBER AND BOTH SIDES OF THE RPC APPLY IT

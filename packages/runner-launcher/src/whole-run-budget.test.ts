@@ -107,6 +107,7 @@ vi.mock("node:child_process", () => ({
 
 const {
   MANAGED_RUN_TIMEOUT_MAX_MS,
+  classifyRunnerFailure,
   RUNNER_LAUNCHER_DEADLINE_LABEL,
   RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
@@ -515,7 +516,6 @@ describe("M23.1e: a `create` that lost the NAME tears nothing down; every other 
   });
 });
 
-
 // ==================================================================================================
 describe("MEDIUM (verification pass 5): the product CEILING binds the run, not only the host budget", () => {
   // ================================================================================================
@@ -566,9 +566,10 @@ describe("MEDIUM (verification pass 5): the product CEILING binds the run, not o
     const timeouts = runSteps().map((c) => c.opts.timeout ?? 0);
     expect(timeouts, "the run issued no steps at all — vacuous").toHaveLength(4);
     for (const t of timeouts) {
-      expect(t, `a step was issued with ${t}ms — above the ${CLAMPED}ms ceiling`).toBeLessThanOrEqual(
-        CLAMPED
-      );
+      expect(
+        t,
+        `a step was issued with ${t}ms — above the ${CLAMPED}ms ceiling`
+      ).toBeLessThanOrEqual(CLAMPED);
       expect(t).toBeGreaterThan(0);
     }
     // And it really is the CEILING that bound it, not some smaller accident: the first step gets
@@ -634,5 +635,158 @@ describe("MEDIUM (verification pass 5): the product CEILING binds the run, not o
       await launcher.reap(),
       "an orphan stamped by an over-ceiling run is still unreapable a full bound later"
     ).toStrictEqual(["killed-peer-orphan"]);
+  });
+});
+
+// ==================================================================================================
+describe("MEDIUM (verification pass 5): a budget kill and a silent non-zero exit are DIFFERENT records", () => {
+  // ================================================================================================
+  /**
+   * THE DEFECT. `start` is the only step whose failure is CAPTURED rather than thrown, and the step
+   * that spends essentially all of a real run's budget. Its catch kept `e.stdout`/`e.stderr` and
+   * nothing else — and `promisify(execFile)` ALWAYS attaches `stderr` as a string, so
+   * `RunnerLaunchError`'s `?? message` fall never fires. Measured through the real adapter:
+   *
+   *     budget-killed `start`, no output   ->  {"succeeded":false,"stdout":"","stderr":""}
+   *     runner exits 3 silently            ->  {"succeeded":false,"stdout":"","stderr":""}
+   *
+   * Byte-identical, and through the real plugins that became `phase:"failed", detail:""` in the
+   * durable ledger, in `status()` and in reconcile's Decision `inputContext`. `index.ts` said "THE
+   * MESSAGE IS REPLACED, THE DIAGNOSIS IS NOT" about the thrown path; on the captured one the
+   * message was replaced and then dropped.
+   *
+   * THIS FILE OWNS THE BUDGET ARM because it is the only seam that models DURATION. The other four
+   * shapes are classified in `docker-adapter.test.ts`, whose steps settle on the next tick and can
+   * therefore never reach a run deadline at all.
+   */
+  /** A runner that exits non-zero having printed NOTHING — the shape a budget kill was identical to. */
+  const silentExit3 = (): Error =>
+    Object.assign(new Error("Command failed: docker start -a container-abc\n"), {
+      code: 3,
+      killed: false,
+      signal: null,
+      stdout: "",
+      stderr: ""
+    });
+
+  it("A BUDGET-KILLED `start` AND A SILENT NON-ZERO EXIT NO LONGER PRODUCE THE SAME RECORD", async () => {
+    // 1. The budget runs out DURING `start`: the step is killed by a `timeout` derived from what was
+    //    left, and the child printed nothing before it died.
+    durations = { create: 20, cp: 20, start: 5_000 };
+    const killed = await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: 300 }));
+
+    // 2. The same visible outcome from the runner's own doing.
+    calls.length = 0;
+    durations = { create: 20, cp: 20, start: 20 };
+    failures = { start: silentExit3() };
+    const exited = await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: 30_000 }));
+
+    // THE OLD RECORD, AS IT WAS: both failed, and the child's own output is identical and empty.
+    // Kept as an assertion rather than as prose, so the arm below cannot be satisfied by the two
+    // simply having become different runs.
+    expect([killed.succeeded, exited.succeeded]).toStrictEqual([false, false]);
+    expect({ stdout: killed.stdout, stderr: killed.stderr }).toStrictEqual({
+      stdout: "",
+      stderr: ""
+    });
+    expect({ stdout: exited.stdout, stderr: exited.stderr }).toStrictEqual({
+      stdout: "",
+      stderr: ""
+    });
+
+    // THE PROPERTY.
+    expect(killed.failure?.kind).toBe("budget-exhausted");
+    expect(exited.failure?.kind).toBe("exit-nonzero");
+    expect(
+      killed.failure?.detail,
+      "a SIGTERMed `tofu apply` and a runner that exited quietly still read the same"
+    ).not.toBe(exited.failure?.detail);
+
+    // AND NEITHER IS EMPTY — the actual regression to guard, since `""` !== `""` is false but `""`
+    // is what both used to be.
+    expect(killed.failure!.detail.length).toBeGreaterThan(0);
+    expect(exited.failure!.detail.length).toBeGreaterThan(0);
+
+    // AND EACH SAYS THE RIGHT THING. The budget one names the budget and the deadline — the two
+    // facts that tell an operator "re-running at this setting will do it again" — and reports the
+    // signal that stopped a possibly-half-applied run.
+    expect(killed.failure!.detail).toContain("whole-run budget of 300ms");
+    expect(killed.failure!.detail).toContain("RunnerSpec.timeoutMs");
+    expect(killed.failure!.detail).toContain("signal=SIGTERM");
+    expect(killed.failure!.deadlineExceeded).toBe(true);
+    // The exit one names the exit status, which Node's own `Command failed:` text omits entirely.
+    expect(exited.failure!.detail).toContain("code=3");
+    expect(exited.failure!.deadlineExceeded).toBe(false);
+    // Both record that the runner printed nothing, so "no output" is a stated fact rather than an
+    // absence the reader has to infer from an empty string.
+    expect(killed.failure!.detail).toContain("printed nothing");
+    expect(exited.failure!.detail).toContain("printed nothing");
+  });
+
+  it("A maxBuffer OVERFLOW THAT ALSO REPORTS killed IS STILL `output-exceeded` — a FORWARD guard", () => {
+    // EXPLICITLY NOT A RECORDING OF TODAY'S NODE. The measured RangeError carries no `killed`
+    // property at all (NODE_FAILURE_SHAPES pins that against a real child), so with today's shapes
+    // the maxBuffer test could sit on either side of the `killed` test and nothing would change —
+    // stated in `classifyRunnerFailure`'s own doc rather than implied. Node DOES kill the child on
+    // an overflow, though, so gaining `killed: true` there is an unremarkable future change, and
+    // after it the wrong order reclassifies a run whose evidence is TRUNCATED as a plain signal.
+    // That is a diagnosis an operator acts on differently: truncated output means the recorded
+    // `plan.json` is not the whole plan.
+    const overflow = Object.assign(new RangeError("stdout maxBuffer length exceeded"), {
+      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      killed: true,
+      signal: "SIGTERM",
+      stdout: '{"resource_ch',
+      stderr: ""
+    });
+    const err = new RunnerLaunchError({
+      step: "start",
+      file: "docker",
+      argv: ["start", "-a", "container-abc"],
+      cause: overflow,
+      redactions: []
+    });
+
+    expect(classifyRunnerFailure(err).kind).toBe("output-exceeded");
+    // And the truncation is NAMED in the detail, since that is the fact the evidence depends on.
+    expect(classifyRunnerFailure(err).detail).toContain("TRUNCATED");
+  });
+
+  it("A STEP REFUSED BEFORE IT IS ISSUED IS A BUDGET EXHAUSTION TOO, not a mystery", async () => {
+    // The OTHER budget path — the step never reaches Node at all, so there is no child, no `code`
+    // and no output of any kind. It rejects out of `run()` rather than being captured, and
+    // `classifyRunnerFailure` must give it the same kind: to an operator "we ran out mid-`start`"
+    // and "we ran out before `copy-in`" are one diagnosis with one remedy.
+    // `start` is killed by the derived timeout, which lands the clock ON the deadline; the copy-out
+    // that follows is therefore REFUSED rather than issued. `propagate` so it escapes `run()`
+    // (managed-scan's and managed-dep's axis) instead of being swallowed.
+    durations = { create: 50, cp: 50, start: 5_000 };
+    const failed = await createDockerRunnerLauncher("docker")
+      .run(
+        spec({
+          timeoutMs: 400,
+          copyOut: {
+            containerPath: "/work/out",
+            hostDir: "/host/out",
+            when: "always",
+            onFailure: "propagate"
+          }
+        })
+      )
+      .catch((e: unknown) => e);
+
+    expect(failed).toBeInstanceOf(RunnerLaunchError);
+    const classified = classifyRunnerFailure(failed as InstanceType<typeof RunnerLaunchError>);
+    expect(classified.kind).toBe("budget-exhausted");
+    expect(classified.step).toBe("copy-out");
+    expect(classified.detail).toContain("was not issued");
+    expect(classified.detail).toContain("whole-run budget of 400ms");
+    // NO CHILD EVER EXISTED, so there is no `code` and no `signal`, and this is the ONE path where
+    // `RunnerLaunchError`'s `?? message` fall does fire (the cause is a synthesised `Error`, not a
+    // `promisify(execFile)` rejection) — so `stderr` carries the refusal text rather than being
+    // empty. The record is complete either way, which is the property; the ABSENT `code` is asserted
+    // because a classifier that read a missing `code` as an errno would call this `spawn-failed`.
+    expect(classified.code).toBeUndefined();
+    expect(classified.detail).toContain("code=undefined");
   });
 });

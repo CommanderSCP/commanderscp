@@ -96,6 +96,10 @@ const calls: ExecFileCall[] = [];
 /** The bytes the stand-in runner "produces" — written by the copy-OUT mock into `outDir`. */
 let producedOutput: string = PACKAGE_JSON_BUMPED;
 let startOk = true;
+/** MEDIUM (verification pass 5) — the SHAPE of a `start` failure, when a test's subject is the
+ *  recorded reason rather than the argv. Default `undefined` keeps every existing arm on the
+ *  stderr-carrying error below, unchanged. */
+let startFailure: Error | undefined;
 /** Copy-OUT outcome. managed-dep does NOT guard it; the last test measures where the failure lands. */
 let cpOutOk = true;
 
@@ -143,10 +147,11 @@ vi.mock("node:child_process", () => {
           cb(null, { stdout: "", stderr: "" });
         } else {
           cb(
-            Object.assign(new Error("container exited non-zero"), {
-              stdout: "",
-              stderr: "scp-runner-dep: boom"
-            })
+            startFailure ??
+              Object.assign(new Error("container exited non-zero"), {
+                stdout: "",
+                stderr: "scp-runner-dep: boom"
+              })
           );
         }
         return;
@@ -220,6 +225,7 @@ let workspaceRoot: string;
 beforeEach(async () => {
   calls.length = 0;
   startOk = true;
+  startFailure = undefined;
   cpOutOk = true;
   producedOutput = PACKAGE_JSON_BUMPED;
   __resetManagedDepOutcomes();
@@ -533,5 +539,45 @@ describe("M23.0 golden: the `scp-managed-dep` runner launch, byte for byte", () 
     const status = await plugin.status(ctx, ref);
     expect(status.phase).toBe("failed");
     expect(status.detail).toContain("docker cp");
+  });
+
+  /**
+   * ==============================================================================================
+   * MEDIUM (verification pass 5) — A RUNNER THAT SAYS NOTHING STILL PRODUCES A RECORDED REASON
+   * ==============================================================================================
+   *
+   * The arm above passes on `run.stderr` alone, because that fixture's runner PRINTS. This plugin's
+   * detail used to be `— ${run.stderr.slice(0, 2000)}`, and `promisify(execFile)` always attaches
+   * `stderr` as a string — so a runner we killed on the budget, and a `docker` that never spawned,
+   * both recorded `the runner failed to edit 'package.json' — ` and stopped. managed-dep's failure
+   * detail is what a human reads when a dependency bump does not appear, and an em dash is not a
+   * reason.
+   *
+   * A SEPARATE ARM RATHER THAN A CHANGE TO THE ONE ABOVE: that one's subject is that the runner's
+   * OWN words survive, and this one's is that something survives when there are none. Merging them
+   * would leave neither pinned.
+   */
+  it("A SILENT NON-ZERO RUNNER STILL RECORDS WHY — the detail is never an em dash and a space", async () => {
+    startOk = false;
+    // Exit 3 with NOTHING on either stream — the shape that used to record nothing at all.
+    startFailure = Object.assign(new Error("Command failed: docker start -a dep-container-abc"), {
+      code: 3,
+      killed: false,
+      signal: null,
+      stdout: "",
+      stderr: ""
+    });
+    const plugin = createManagedDepExecutorPlugin();
+    const { ctx } = depCtx();
+    const ref = await plugin.trigger(ctx, npmIntent("g6"));
+
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("failed");
+    const reason = (status.detail ?? "").split("— ").slice(1).join("— ");
+    expect(reason.trim().length, "the recorded reason is empty").toBeGreaterThan(0);
+    expect(status.detail).toContain("exit-nonzero");
+    expect(status.detail).toContain("code=3");
+    // AND IT SAYS THE RUNNER WAS SILENT, so "no output" is a stated fact rather than an absence.
+    expect(status.detail).toContain("printed nothing");
   });
 });

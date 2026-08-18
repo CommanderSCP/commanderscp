@@ -15,10 +15,16 @@ import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
+  runnerOutcomeDetail,
   toRunnerRunId,
   withRecordedOutcome,
   type ResolveRunnerLauncher,
-  type RunnerCopyIn
+  type RunnerCopyIn,
+  // THE PORT'S OWN RESULT TYPE, not a local restatement of it. There used to be a `RunResult`
+  // interface here duplicating `{ succeeded, stdout, stderr }`; a structural copy of a union that
+  // carries a REQUIRED failure diagnosis on its false arm is a copy that silently drops the
+  // diagnosis, which is the defect this plugin's failure `detail` was built out of.
+  type RunnerResult
 } from "@scp/runner-launcher";
 
 /**
@@ -142,12 +148,6 @@ export interface ManagedScanIntentParameters {
   scanScapDir?: string;
 }
 
-interface RunResult {
-  succeeded: boolean;
-  stdout: string;
-  stderr: string;
-}
-
 /**
  * Launch the single-shot scan container. COPY the pulled layout in / evidence out (never bind-mount;
  * mirrors managed-iac's CRITICAL #1 fix + the dind-share fix). The ONE place the runner image is
@@ -168,7 +168,7 @@ async function runScanContainer(
   outputDir: string,
   scanArgs: string[],
   preload: { scanDbDir?: string; scanScapDir?: string }
-): Promise<RunResult> {
+): Promise<RunnerResult> {
   // When the server provides a pre-loaded DB / SCAP dir (M13.3b-ii) we set the env that steers
   // run.sh to it — still `--network none`, still copied IN and not mounted, so a host-path escape
   // stays structurally impossible. THE `-e` PAIRS AND THE COPIES ARE INDEPENDENTLY CONDITIONAL and
@@ -304,9 +304,13 @@ async function trigger(
       );
       outcomes.set(externalId, {
         succeeded: result.succeeded,
+        // THE SUCCESS ARM IS NOT `runnerOutcomeDetail`, DELIBERATELY: on success this plugin
+        // records where the EVIDENCE landed rather than a Trivy report that can run to 32 MiB. The
+        // FAILURE arm is, because `result.stderr` was the empty string for a budget-killed scan and
+        // for a `docker` that never spawned alike — see `classifyRunnerFailure`.
         detail: result.succeeded
           ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
-          : `managed-scan: ${method} scan FAILED — ${result.stderr.slice(0, 2000)}`
+          : `managed-scan: ${method} scan FAILED — ${runnerOutcomeDetail(result).slice(0, 2000)}`
       });
       ctx.logger.info("managed-scan: run complete", {
         externalId,

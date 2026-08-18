@@ -16,8 +16,13 @@ import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
+  runnerOutcomeDetail,
   toRunnerRunId,
-  type ResolveRunnerLauncher
+  type ResolveRunnerLauncher,
+  // THE PORT'S OWN RESULT TYPE rather than an inline `{ succeeded, stdout, stderr }`: a structural
+  // restatement of a union whose false arm REQUIRES a failure diagnosis is a restatement that drops
+  // the diagnosis, and dropping it is the defect this plugin's failure `detail` was built out of.
+  type RunnerResult
 } from "@scp/runner-launcher";
 import {
   coordinateRuleCandidates,
@@ -621,7 +626,7 @@ async function runEditorContainer(
   spec: ManifestBumpSpec,
   inDir: string,
   outDir: string
-): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
+): Promise<RunnerResult> {
   return resolveLauncher({ dockerBinary: config.dockerBinary }).run({
     // The same key `externalId` is built from, so an orphan is traceable to the bump it was editing.
     runId: toRunnerRunId(runKey),
@@ -894,9 +899,12 @@ async function trigger(
       await writeFile(join(inDir, fileName), original.content, "utf8");
       const run = await runEditorContainer(config, resolveLauncher, runKey, spec, inDir, outDir);
       if (!run.succeeded) {
+        // `runnerOutcomeDetail`, NOT `run.stderr` — `promisify(execFile)` always attaches `stderr`
+        // as a string, so for a budget-killed runner and for a `docker` that never spawned this
+        // read `— ` and stopped. See `@scp/runner-launcher`'s `classifyRunnerFailure`.
         return {
           succeeded: false,
-          detail: `managed-dep: the runner failed to edit '${descriptor.spec.manifestPath}' — ${run.stderr.slice(0, 2000)}`
+          detail: `managed-dep: the runner failed to edit '${descriptor.spec.manifestPath}' — ${runnerOutcomeDetail(run).slice(0, 2000)}`
         } satisfies RunOutcome;
       }
 

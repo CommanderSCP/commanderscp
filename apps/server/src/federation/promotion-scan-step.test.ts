@@ -261,7 +261,6 @@ describe("the Trivy-DB staleness gate covers the machine-image arm", () => {
   });
 });
 
-
 /**
  * ================================================================================================
  * MEDIUM (verification pass 5) — THE IN-PROCESS `trigger()` HAS NO HOST AND THEREFORE NO SIGKILL
@@ -286,7 +285,11 @@ describe("MEDIUM (pass 5): the commander's in-process scan path carries no runaw
     ).toBe(false);
     // The whole config, so a NEW key cannot arrive unnoticed: every one of these is a server-side
     // operator setting with no binding row behind it.
-    expect(Object.keys(config).sort()).toStrictEqual(["dockerBinary", "networkMode", "runnerImage"]);
+    expect(Object.keys(config).sort()).toStrictEqual([
+      "dockerBinary",
+      "networkMode",
+      "runnerImage"
+    ]);
   });
 
   it("SO THE RUN IS BOUNDED BY MANAGED-SCAN'S OWN DEFAULT, which is inside the product ceiling", () => {

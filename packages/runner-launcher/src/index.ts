@@ -338,12 +338,32 @@ export interface RunnerSpec {
   maxBuffer: number;
 }
 
-/** What a runner run produced. `succeeded` is the runner's own exit status, not the launch's. */
-export interface RunnerResult {
-  succeeded: boolean;
-  stdout: string;
-  stderr: string;
-}
+/**
+ * What a runner run produced. `succeeded` is the runner's own exit status, not the launch's.
+ *
+ * A UNION, NOT A FLAG PLUS AN OPTIONAL FIELD — MEDIUM (verification pass 5). `start` is the only
+ * step whose failure is CAPTURED rather than thrown, and it is the step that consumes essentially
+ * all of a real run's budget; it used to be captured as `{ succeeded: false, stdout, stderr }` and
+ * nothing else. `promisify(execFile)` ALWAYS attaches `stderr` as a string, so for the two shapes an
+ * operator most needs explained — our own budget killing the runner, and a spawn that never happened
+ * — that string is `""`. Measured through the real adapter:
+ *
+ *     budget-killed `start`, no output   -> {"succeeded":false,"stdout":"","stderr":""}
+ *     runner exits 3 silently            -> {"succeeded":false,"stdout":"","stderr":""}
+ *
+ * Byte-identical, and through the real plugins that becomes `phase:"failed", detail:""` in the
+ * durable ledger, in `status()`, and from there in `reconcile.ts`'s `insertDecision` `inputContext`
+ * — the record charter principle 6 exists for, reading as if nothing went wrong at all.
+ *
+ * Making {@link RunnerFailure} a member of the FAILED arm rather than an optional property is what
+ * stops that recurring: a caller cannot reach a failed result without also having the diagnosis in
+ * hand, and a future adapter cannot construct a failure without producing one. `stdout`/`stderr`
+ * stay exactly what the child printed (still possibly `""` — that is a true fact about the child);
+ * the never-empty explanation is {@link RunnerFailure.detail}.
+ */
+export type RunnerResult =
+  | { succeeded: true; stdout: string; stderr: string; failure?: undefined }
+  | { succeeded: false; stdout: string; stderr: string; failure: RunnerFailure };
 
 /**
  * THE PORT. One verb, because a managed runner has exactly one lifecycle: run it to completion and
@@ -576,9 +596,25 @@ export class RunnerLaunchError extends Error {
    * TRUE when this rejection is the WHOLE-RUN budget ({@link RunnerSpec.timeoutMs}) running out,
    * rather than the step itself going wrong — either the step was refused before it was issued
    * because nothing was left to issue it with, or it was killed by a `timeout` derived from what
-   * remained. It is a distinct fact from `killed`, which is also true when a single step blew a
-   * per-call cap, and callers that retry need to tell them apart: a run that exhausted its budget
-   * will exhaust it again at the same setting.
+   * remained.
+   *
+   * WHO READS IT, AND WHY THE ANSWER THIS DOC USED TO GIVE WAS WRONG (MEDIUM, verification pass 5).
+   * It said "callers that retry need to tell them apart: a run that exhausted its budget will
+   * exhaust it again at the same setting", and a census for `deadlineExceeded` over `apps` and
+   * `packages` found exactly ONE reader in the whole repository: an assertion in
+   * `whole-run-budget.test.ts`. Nothing in the product read it. Worse, the named caller does not
+   * retry a failed run at all — `reconcile.ts` terminalises a `failed` status
+   * (`updateWaveTargetObserved(..., "failed")` plus a `block` Decision); its backoff/`attempt` path
+   * governs a trigger that REJECTED, and since M23.1 phase 2 all three managed plugins catch and
+   * record instead of rejecting. So the justification named a consumer that could not exist, which
+   * is this repository's dominant defect wearing a doc comment.
+   *
+   * THE REAL READER IS {@link classifyRunnerFailure}, and it is a reader nothing else can replace:
+   * `killed === true` alone cannot distinguish "OUR deadline killed it" from "something else killed
+   * it", because only `run()` knows what the deadline was. That classification is what reaches
+   * `RunnerResult.failure.detail`, the plugins' recorded outcome, `status().detail` and finally
+   * reconcile's `inputContext` — so the audience that actually needs the distinction is the OPERATOR
+   * reading a failed run, not a retry loop.
    */
   readonly deadlineExceeded: boolean;
 
@@ -620,6 +656,182 @@ export class RunnerLaunchError extends Error {
     );
     this.deadlineExceeded = args.deadlineExceeded === true;
   }
+}
+
+// ==================================================================================================
+// THE DIAGNOSIS AN OPERATOR READS — four ways to fail that used to be one empty string.
+// ==================================================================================================
+
+/**
+ * `code` on a maxBuffer overflow. Node's own constant name, and the PRODUCT's copy of it: the table
+ * in `docker-adapter.test.ts` imports this rather than restating it, so "THE TABLE IS NOT FICTION"
+ * (which spawns a real child and compares `code` against the live Node) checks the string this
+ * classifier actually branches on. A second copy in the test would have made that check verify the
+ * fixture instead of the product.
+ */
+export const RUNNER_MAXBUFFER_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+
+/**
+ * HOW A RUN FAILED, at the granularity an operator has to act on. Not a restatement of Node's
+ * `code`: the four inhabitants of `code` (`null`, a string errno, a numeric exit status, and
+ * `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`) do not line up with the four questions a person reading a
+ * failed `tofu apply` actually asks, and one of the distinctions — did OUR budget kill it? — is not
+ * in `code` at all.
+ *
+ *  - `budget-exhausted`  {@link RunnerSpec.timeoutMs} ran out. Either the step was refused before it
+ *                        was issued or it was killed by a `timeout` derived from what remained. THE
+ *                        ONE AN OPERATOR MUST NOT MISREAD AS A RUNNER BUG: for managed-iac it means
+ *                        a `tofu apply` was SIGTERMed mid-flight, so the real infrastructure state
+ *                        is unknown, and re-running at the same setting will do it again.
+ *  - `output-exceeded`   the runner printed more than `maxBuffer`. `stdout` holds the output
+ *                        TRUNCATED at the limit, which is the hazard — it looks like data.
+ *  - `signalled`         something killed the child that was not our own budget.
+ *  - `spawn-failed`      an errno-coded failure: the container CLI could not be executed at all
+ *                        (`ENOENT` — `dockerBinary` is not on PATH; `EACCES` — not executable).
+ *                        Nothing ran, so nothing was mutated.
+ *  - `exit-nonzero`      the runner itself exited non-zero. The only one the RUNNER caused.
+ */
+export type RunnerFailureKind =
+  "budget-exhausted" | "output-exceeded" | "signalled" | "spawn-failed" | "exit-nonzero";
+
+/** The classified failure a caller records. See {@link classifyRunnerFailure}. */
+export interface RunnerFailure {
+  readonly kind: RunnerFailureKind;
+  /**
+   * ONE REDACTED LINE, NEVER EMPTY — the string a plugin puts in its outcome store and `status()`
+   * hands to `reconcile.ts`. Never-empty is the property, not a nicety: the whole defect is that
+   * `""` was the recorded reason for the two shapes that most need explaining.
+   */
+  readonly detail: string;
+  /** Which step failed, so the detail is not the only place the answer lives. */
+  readonly step: RunnerLaunchStep;
+  /** Node's own `code`, carried across so a caller can branch without re-parsing `detail`. */
+  readonly code: string | number | null | undefined;
+  readonly signal: string | null | undefined;
+  /** {@link RunnerLaunchError.deadlineExceeded}, i.e. `kind === "budget-exhausted"`. Kept as its own
+   *  field because it is the one fact a caller is most likely to want as a boolean. */
+  readonly deadlineExceeded: boolean;
+}
+
+/** Human wording per kind. Separate from the enum so the machine-readable name never has to be a
+ *  sentence and the sentence never has to be stable. */
+const FAILURE_WORDING: Record<RunnerFailureKind, string> = {
+  "budget-exhausted": "the whole-run budget ran out and the runner was stopped mid-flight",
+  "output-exceeded": "the runner printed more than maxBuffer allows, so its output is TRUNCATED",
+  signalled: "the runner was killed by a signal that was not this run's own budget",
+  "spawn-failed": "the container CLI could not be executed at all — nothing ran",
+  "exit-nonzero": "the runner itself exited non-zero"
+};
+
+/**
+ * TURN A {@link RunnerLaunchError} INTO SOMETHING AN OPERATOR CAN ACT ON — MEDIUM (verification
+ * pass 5), and the fix is for the CLASS, not for one flag.
+ *
+ * WHAT WAS WRONG. `run()`'s `start` catch kept `e.stdout`/`e.stderr` and threw the rest away — the
+ * replaced message, `code`, `killed`, `signal` and `deadlineExceeded` all of it. Because
+ * `promisify(execFile)` always attaches `stderr` as a string, {@link RunnerLaunchError}'s
+ * `?? message` fallback never fires, so a budget-kill with no output and a silent non-zero exit were
+ * BYTE-IDENTICAL at the port and reached the durable ledger as `detail: ""`. `index.ts` said "THE
+ * MESSAGE IS REPLACED, THE DIAGNOSIS IS NOT" about the thrown path; on the captured one the message
+ * was replaced and then dropped.
+ *
+ * THE ORDER OF THE TESTS IS LOAD-BEARING and every step of it is a measured Node shape (the table in
+ * `docker-adapter.test.ts`, which spawns real children to keep itself honest):
+ *   1. `deadlineExceeded` FIRST, because a budget kill also sets `killed: true` and would otherwise
+ *      read as `signalled` — and it is the distinction with the largest consequence.
+ *   2. maxBuffer BEFORE the errno test, because its `code` IS a string
+ *      (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`) and `typeof code === "string"` would otherwise call a
+ *      TRUNCATED-output run a spawn failure — the opposite diagnosis, since the runner ran fine.
+ *   3. `killed` BEFORE the errno test, because a signalled child's `code` is `null`.
+ *   4. A STRING `code` is an errno (the CLI could not be run); anything else — a number, or `null`
+ *      with no kill — is the runner's own exit status.
+ *
+ * ONE ORDERING HERE IS DEFENSIVE RATHER THAN LOAD-BEARING TODAY, AND IT IS SAID PLAINLY because a
+ * reader who takes it for live code will look for the test that kills it. Swapping steps 2 and 3 —
+ * testing `killed` before maxBuffer — reddens NOTHING against the shape the running Node actually
+ * produces, MEASURED: that RangeError carries no `killed` property at all (pinned by
+ * `docker-adapter.test.ts`'s NODE_FAILURE_SHAPES, which spawns a real child to keep itself honest),
+ * so it reaches the maxBuffer test either way. The order is kept because Node DOES kill the child on
+ * a maxBuffer overflow and adding `killed: true` to that rejection would be an unremarkable change
+ * on Node's side — after which the swapped order silently reclassifies a run whose evidence is
+ * TRUNCATED as a plain signal. `A maxBuffer OVERFLOW THAT ALSO REPORTS killed` below is the arm that
+ * makes the order matter; it is explicitly a FORWARD guard against a shape today's Node does not
+ * emit, not a recording of one that it does.
+ *
+ * THE DETAIL CARRIES `err.message` VERBATIM rather than re-deriving one. That message is already
+ * redacted, already names the step and the argv, and on the budget path is already the REPLACEMENT
+ * text naming the budget and the deadline — re-deriving it here is how the two drift. What is added
+ * is exactly what the message cannot say: the kind, `code`/`signal` (Node's `Command failed:` text
+ * omits the exit status), and an explicit marker when the child printed nothing at all, so "no
+ * output" is a recorded fact rather than an absence a reader has to interpret.
+ *
+ * AND THE CHILD'S OWN LAST WORDS ARE APPENDED WHEN THE MESSAGE DOES NOT ALREADY CARRY THEM, which is
+ * the part that must not be left to luck. Today's Node formats a non-zero exit as
+ * `Command failed: <cmd>\n<stderr>`, so for that ONE shape the message happens to contain the
+ * runner's own error — and nothing pins that. `docker-adapter.test.ts`'s live-Node check compares
+ * `code`/`killed`/`signal` and the TYPES of `stdout`/`stderr`; it says nothing about the message's
+ * wording, and the whole subject of this fix is a diagnosis that survived only by accident. So the
+ * output is appended explicitly, skipped only when it is provably already present.
+ *
+ * THE TAIL, NOT THE WHOLE THING: `maxBuffer` is up to 32 MiB and every consumer slices this to
+ * 2000-4000 characters from the FRONT, so carrying megabytes would cost memory to produce something
+ * that is then thrown away — and the useful end of a `tofu apply` or a Trivy failure is the LAST
+ * lines, which a front-slice would discard. The `includes` check is itself skipped above the cap,
+ * because a substring search over 32 MiB to save an append is the wrong trade.
+ */
+/** How much of the child's own output {@link classifyRunnerFailure} appends. See its doc. */
+const FAILURE_OUTPUT_TAIL_CHARS = 2_000;
+export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
+  const kind: RunnerFailureKind = err.deadlineExceeded
+    ? "budget-exhausted"
+    : err.code === RUNNER_MAXBUFFER_CODE
+      ? "output-exceeded"
+      : err.killed === true
+        ? "signalled"
+        : typeof err.code === "string"
+          ? "spawn-failed"
+          : "exit-nonzero";
+
+  const facts = [`code=${err.code === undefined ? "undefined" : String(err.code)}`];
+  if (err.signal) facts.push(`signal=${err.signal}`);
+  if (err.killed === true) facts.push("killed");
+
+  // stderr when there is any, else stdout: a runner that explains itself on stdout (managed-dep's
+  // does) must not be recorded as silent just because it kept stderr clean.
+  const output = err.stderr.length > 0 ? err.stderr : err.stdout;
+  let suffix: string;
+  if (output.length === 0) {
+    suffix = " [the runner printed nothing on stdout or stderr]";
+  } else if (output.length <= FAILURE_OUTPUT_TAIL_CHARS && err.message.includes(output)) {
+    suffix = ""; // already in the message (Node's `Command failed:` format) — do not say it twice
+  } else {
+    const tail = output.slice(-FAILURE_OUTPUT_TAIL_CHARS);
+    suffix = ` :: runner output${tail.length < output.length ? " (tail)" : ""}: ${tail}`;
+  }
+
+  return {
+    kind,
+    step: err.step,
+    code: err.code,
+    signal: err.signal,
+    deadlineExceeded: err.deadlineExceeded,
+    detail:
+      `${kind}: ${FAILURE_WORDING[kind]} during '${err.step}' (${facts.join(", ")}) — ` +
+      `${err.message}${suffix}`
+  };
+}
+
+/**
+ * THE ONE STRING A CALLER RECORDS FOR A RUN, whatever became of it — success or any of the five
+ * failure kinds. Exported because all three plugins need the same answer and each of them used to
+ * spell it `result.succeeded ? result.stdout : result.stderr`, which is precisely the expression
+ * that produced `""`.
+ *
+ * On SUCCESS this is the runner's own stdout, unchanged, because that is the evidence
+ * (`tofu plan` output, a scan summary) the previous behaviour correctly recorded.
+ */
+export function runnerOutcomeDetail(result: RunnerResult): string {
+  return result.succeeded ? result.stdout : result.failure.detail;
 }
 
 // ==================================================================================================
@@ -1288,10 +1500,13 @@ export function createDockerRunnerLauncher(
         }
 
         // 4. START attached — blocks until the container exits and propagates its exit code, so a
-        //    non-zero runner rejects here and is captured as `succeeded: false` with its stderr.
+        //    non-zero runner rejects here and is CAPTURED rather than thrown.
         let succeeded: boolean;
         let stdout: string;
         let stderr: string;
+        /** Set exactly when `succeeded` is false — see {@link RunnerResult} for why that is a type
+         *  invariant here rather than a convention. */
+        let failure: RunnerFailure | undefined;
         try {
           const r = await exec("start", ["start", "-a", containerId], { maxBuffer });
           succeeded = true;
@@ -1300,10 +1515,20 @@ export function createDockerRunnerLauncher(
         } catch (err) {
           // ALREADY REDACTED, and the `?? ""` / `?? message` falls already applied — they moved into
           // {@link RunnerLaunchError} so that a captured failure and a thrown one cannot drift apart.
+          //
+          // AND THE DIAGNOSIS IS NOW KEPT — MEDIUM (verification pass 5). This is the ONLY step whose
+          // failure is captured instead of thrown, and it is the step that spends essentially all of
+          // a real run's budget, so everything this catch dropped was dropped on the commonest
+          // failure path in the product. It kept `stdout`/`stderr` alone; `promisify(execFile)`
+          // always supplies `stderr` as a string, so a budget-kill with no output and a silent
+          // non-zero exit both arrived here as two empty strings and left as the same
+          // `{ succeeded: false, stdout: "", stderr: "" }` — `detail: ""` in managed-iac's durable
+          // ledger, in every `status()`, and in reconcile's Decision `inputContext`.
           const e = err as RunnerLaunchError;
           succeeded = false;
           stdout = e.stdout;
           stderr = e.stderr;
+          failure = classifyRunnerFailure(e);
         }
 
         // 5. COPY OUT — conditionally, and guarded or not, exactly as the caller asked. Both axes
@@ -1322,7 +1547,12 @@ export function createDockerRunnerLauncher(
           }
         }
 
-        return { succeeded, stdout, stderr };
+        // THE UNION IS REBUILT EXPLICITLY rather than spread from the three locals: `failure` is
+        // present exactly when `succeeded` is false, and writing that out is what lets the compiler
+        // hold callers to it (see {@link RunnerResult}).
+        return succeeded
+          ? { succeeded: true, stdout, stderr }
+          : { succeeded: false, stdout, stderr, failure: failure! };
       } finally {
         // 6. Destroy the container unconditionally — BY NAME, which is the identity that exists even
         //    when `create` is what failed. `docker rm -f` on a name that never existed exits ZERO
