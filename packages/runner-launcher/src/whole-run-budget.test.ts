@@ -3,13 +3,13 @@ import type { RunnerSpec } from "./index.js";
 
 /**
  * ================================================================================================
- * M23.3 — THE WHOLE-RUN BUDGET, THE REAP STAMP IT MAKES TRUE, AND THE TEARDOWN THAT MUST NOT FIRE
+ * M23.1e — THE WHOLE-RUN BUDGET, THE REAP STAMP IT MAKES TRUE, AND THE TEARDOWN THAT MUST NOT FIRE
  * ================================================================================================
  *
  * WHY THIS FILE EXISTS SEPARATELY FROM `docker-adapter.test.ts`. That suite's seam settles every
  * step on the NEXT TICK, deliberately — it is about WHAT goes on the command line and in what
  * ORDER, and a step that takes no time is the cleanest way to ask those questions. It is therefore
- * structurally unable to ask the only question M23.3 is about: HOW LONG. Every one of the four
+ * structurally unable to ask the only question M23.1e is about: HOW LONG. Every one of the four
  * defects below was invisible to eighty green tests for exactly that reason.
  *
  * THE SEAM HERE MODELS DURATION AND MODELS `timeout`, and the second half is not decoration:
@@ -141,9 +141,7 @@ function spec(overrides: Partial<RunnerSpec> = {}): RunnerSpec {
 /** The steps of the RUN PROPER, in issue order — teardown and reap's own calls excluded. Both
  *  copies are `cp`; the copy-OUT is the one whose destination carries no `<id>:` prefix. */
 function runSteps(): Rec[] {
-  return calls.filter(
-    (c) => c.args[0] === "create" || c.args[0] === "cp" || c.args[0] === "start"
-  );
+  return calls.filter((c) => c.args[0] === "create" || c.args[0] === "cp" || c.args[0] === "start");
 }
 function teardownCalls(): Rec[] {
   return calls.filter((c) => c.args[0] === "rm" && String(c.args[2]).startsWith("scp-runner-"));
@@ -170,7 +168,7 @@ beforeEach(() => {
 });
 
 // ==================================================================================================
-describe("M23.3 HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", () => {
+describe("M23.1e HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", () => {
   // ================================================================================================
   it("FOUR STEPS, EACH WELL UNDER THE PER-CALL BOUND, STILL CANNOT EXCEED THE WHOLE-RUN BUDGET", async () => {
     // THE NUMBERS ARE CHOSEN SO THAT THE ONLY THING THAT CAN FAIL IS THE PROPERTY. Every step —
@@ -229,7 +227,9 @@ describe("M23.3 HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", ()
     expect(failed).toBeInstanceOf(RunnerLaunchError);
     const err = failed as InstanceType<typeof RunnerLaunchError>;
     expect(err.step).toBe("create");
-    expect(err.deadlineExceeded, "the rejection must name itself as a budget exhaustion").toBe(true);
+    expect(err.deadlineExceeded, "the rejection must name itself as a budget exhaustion").toBe(
+      true
+    );
     expect(err.message).toContain("whole-run budget of 300ms");
     expect(err.message).toContain("RunnerSpec.timeoutMs");
     // The steps after it were never issued, and the teardown still was.
@@ -244,9 +244,7 @@ describe("M23.3 HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", ()
     durations = { create: 50, cp: 50, start: 5_000 };
     await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: 400 }));
 
-    const copyOuts = calls.filter(
-      (c) => c.args[0] === "cp" && !String(c.args[2]).includes(":")
-    );
+    const copyOuts = calls.filter((c) => c.args[0] === "cp" && !String(c.args[2]).includes(":"));
     expect(copyOuts, "the copy-out was issued with a spent budget").toStrictEqual([]);
     // Every timeout that DID reach Node was a legal, non-zero value.
     for (const c of runSteps()) expect(c.opts.timeout).toBeGreaterThan(0);
@@ -267,7 +265,7 @@ describe("M23.3 HIGH-1: `timeoutMs` bounds the RUN, not each execFile of it", ()
 });
 
 // ==================================================================================================
-describe("M23.3 HIGH-2: the container's stamped deadline is never in the past while run() is in flight", () => {
+describe("M23.1e HIGH-2: the container's stamped deadline is never in the past while run() is in flight", () => {
   // ================================================================================================
   it("SAMPLED THROUGHOUT A RUN THAT SPENDS ITS WHOLE BUDGET, the stamp is always in the future", async () => {
     // The measured defect: managed-scan's real shape (3 copy-ins, timeoutMs 30_000, steps of 28s)
@@ -318,7 +316,7 @@ describe("M23.3 HIGH-2: the container's stamped deadline is never in the past wh
 });
 
 // ==================================================================================================
-describe("M23.3 HIGH-3: reap() cannot spend the run's budget, delay `create`, or fail the run", () => {
+describe("M23.1e HIGH-3: reap() cannot spend the run's budget, delay `create`, or fail the run", () => {
   // ================================================================================================
   const FOREIGN = "22222222-2222-4222-8222-222222222222";
   const expired = (): string => new Date(Date.now() - 60_000).toISOString();
@@ -350,7 +348,9 @@ describe("M23.3 HIGH-3: reap() cannot spend the run's budget, delay `create`, or
     neverAnswers = new Set(["ps"]);
     durations = { create: 20, cp: 20, start: 20 };
 
-    const result = await createDockerRunnerLauncher("docker-wedged").run(spec({ timeoutMs: 1_000 }));
+    const result = await createDockerRunnerLauncher("docker-wedged").run(
+      spec({ timeoutMs: 1_000 })
+    );
 
     expect(result.succeeded).toBe(true);
     expect(calls.filter((c) => c.args[0] === "ps")).toHaveLength(1);
@@ -431,7 +431,7 @@ describe("M23.3 HIGH-3: reap() cannot spend the run's budget, delay `create`, or
 });
 
 // ==================================================================================================
-describe("M23.3: a `create` that lost the NAME tears nothing down; every other create failure still does", () => {
+describe("M23.1e: a `create` that lost the NAME tears nothing down; every other create failure still does", () => {
   // ================================================================================================
   /** MEASURED, Docker 29.5.2, through `promisify(execFile)`. */
   const CONFLICT_STDERR =

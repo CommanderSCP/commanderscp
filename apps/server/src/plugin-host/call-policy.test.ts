@@ -209,7 +209,7 @@ describe("assertManagedTimeoutSchemas (the boot gate)", () => {
 
 /**
  * ================================================================================================
- * M23.3 — THE CROSS-PACKAGE RELATIONSHIPS THAT USED TO BE COMMENTS THAT DRIFTED
+ * M23.1e — THE CROSS-PACKAGE RELATIONSHIPS THAT USED TO BE COMMENTS THAT DRIFTED
  * ================================================================================================
  * Two numbers in `@scp/runner-launcher` and one here have to stand in a fixed order, and every
  * previous phase expressed that order in prose. `RUNNER_REAP_GRACE_MS`'s own doc said it plainly:
@@ -217,11 +217,11 @@ describe("assertManagedTimeoutSchemas (the boot gate)", () => {
  * that boundary." That is true from the LAUNCHER's side and false from this one — `apps/server`
  * depends on `@scp/runner-launcher`, never the reverse — so the gate belongs here.
  *
- * IT IS NOT PEDANTRY. Every one of M23.3's HIGH defects was a number sized against a quantity that
+ * IT IS NOT PEDANTRY. Every one of M23.1e's HIGH defects was a number sized against a quantity that
  * had since changed, with a well-written comment still asserting the old arithmetic. A comment
  * naming a hazard is a signal to sweep, not evidence it was handled (CLAUDE.md).
  */
-describe("M23.3: the grace constants stand in the order the cleanup path needs", () => {
+describe("M23.1e: the grace constants stand in the order the cleanup path needs", () => {
   it("MANAGED_TRIGGER_GRACE_MS EXCEEDS the teardown it exists to protect", () => {
     // The only work that happens after a run's whole-run deadline is the adapter's
     // `finally { docker rm -f }`, capped at RUNNER_REMOVE_TIMEOUT_MS. A grace merely EQUAL to it

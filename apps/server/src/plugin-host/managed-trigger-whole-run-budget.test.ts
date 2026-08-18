@@ -7,7 +7,7 @@ import { SubprocessPluginHost } from "./host.js";
 
 /**
  * ================================================================================================
- * M23.3 — THE WIRING THAT HAD NO TEST AT ANY LEVEL, ASKED THE ONE QUESTION IT WAS NEVER ASKED
+ * M23.1e — THE WIRING THAT HAD NO TEST AT ANY LEVEL, ASKED THE ONE QUESTION IT WAS NEVER ASKED
  * ================================================================================================
  *
  * `managed-trigger-budget.test.ts` is this file's sibling and it closed M23.1c: a managed run
@@ -118,7 +118,7 @@ async function makeSlowFakeDocker(): Promise<FakeDocker> {
 }
 
 /** The server-injected config `executor-bindings-repo.ts` builds in production, minus the parts
- *  that need a database. `timeoutMs` is the tenant's, and since M23.3 it is the WHOLE-RUN budget. */
+ *  that need a database. `timeoutMs` is the tenant's, and since M23.1e it is the WHOLE-RUN budget. */
 async function managedIacConfig(
   fake: FakeDocker,
   timeoutMs: number
@@ -154,7 +154,7 @@ afterEach(async () => {
   }
 });
 
-describe("M23.3: a MULTI-STEP managed run through a DEFAULT-CONSTRUCTED host cannot exceed its own budget", () => {
+describe("M23.1e: a MULTI-STEP managed run through a DEFAULT-CONSTRUCTED host cannot exceed its own budget", () => {
   it("four steps, each individually under the per-call bound, still finish within timeoutMs + one teardown", async () => {
     const fake = await makeSlowFakeDocker();
     const config = await managedIacConfig(fake, RUN_BUDGET_MS);

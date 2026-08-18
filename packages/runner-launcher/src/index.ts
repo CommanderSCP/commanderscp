@@ -224,7 +224,7 @@ export interface RunnerSpec {
    * from the moment it is called to the moment it returns, teardown excepted. 10 min for
    * managed-iac and managed-scan, 5 min for managed-dep.
    *
-   * IT USED TO BE A PER-CALL BOUND, AND THAT IS THE DEFECT M23.3 EXISTS TO CLOSE. Every `execFile`
+   * IT USED TO BE A PER-CALL BOUND, AND THAT IS THE DEFECT M23.1e EXISTS TO CLOSE. Every `execFile`
    * this adapter issues — `create`, each `cp` in, `start -a`, the `cp` out — was handed
    * `{ timeout: spec.timeoutMs }` INDEPENDENTLY, so a run of k sequential calls had a wall clock of
    * k x timeoutMs and nothing bounded the sum. Measured: managed-iac (4 calls) with
@@ -290,7 +290,7 @@ export interface RunnerLauncher {
    * and swallowed rather than thrown, because a reap that cannot even list containers must not
    * block the run it precedes.
    *
-   * NOT ON THE RUN'S CRITICAL PATH, AND NOT INSIDE ITS BUDGET — M23.3. Phase 4 prepended
+   * NOT ON THE RUN'S CRITICAL PATH, AND NOT INSIDE ITS BUDGET — M23.1e. Phase 4 prepended
    * `await reap()` to `run()` AFTER phase 3 had sized the trigger budget as
    * `timeoutMs + MANAGED_TRIGGER_GRACE_MS`, and no phase re-checked the sum. Reap's `ps` and every
    * `rm -f` were then spent out of the run's own budget: measured with `timeoutMs: 1_000` and four
@@ -393,12 +393,19 @@ export function toRunnerRunId(raw: string): string {
  * Addressing the NAME is what makes the teardown reach a container the daemon committed for a
  * `create` we never got an answer from.
  *
- * THE HAZARD THIS INTRODUCES, NAMED RATHER THAN DISCOVERED LATER: because teardown is unconditional
- * and addresses a name the caller chose, a `create` that failed BECAUSE THE NAME WAS ALREADY TAKEN
- * will tear down the run that legitimately holds it. That is reachable only for two runs in flight
- * with the same `runId` — for managed-iac, two concurrent triggers with one `idempotencyKey` that
- * both miss the dedup cache. Retry-stable naming is what makes the fix work at all, so the two
- * cannot both be had; this is the documented cost of the trade, not an oversight.
+ * THE HAZARD THIS USED TO INTRODUCE — CLOSED IN M23.1e, and the closing is worth reading, because
+ * the note that stood here for one milestone is a specimen of the failure CLAUDE.md names. It said:
+ * teardown is unconditional and addresses a name the caller chose, so a `create` that failed
+ * BECAUSE THE NAME WAS ALREADY TAKEN tears down the run that legitimately holds it; reachable for
+ * two concurrent triggers of one `idempotencyKey`; "retry-stable naming is what makes the fix work
+ * at all, so the two cannot both be had; the documented cost of the trade, not an oversight."
+ *
+ * THE REACHABILITY WAS RIGHT AND THE TRADE WAS FALSE. Nothing was being traded: the alternatives on
+ * offer were "stable names" and "no teardown after a lost name", and those are not in tension. The
+ * conflict is DISTINGUISHABLE from every other create failure ({@link isContainerNameConflict}), so
+ * the destructive step is skipped for exactly that one case and every other create failure still
+ * tears down by name. A well-written comment naming a hazard is a signal to sweep, not evidence it
+ * was handled — this one read as handled for a milestone.
  */
 export function runnerContainerName(runId: string): string {
   return `${RUNNER_CONTAINER_NAME_PREFIX}${runId}`;
@@ -745,8 +752,10 @@ export function createDockerRunnerLauncher(
       // findable, so the next pass collects it; a pass that kept going with a 1ms `timeout` would
       // turn every remaining orphan into a kill-and-retry instead of leaving it alone.
       if (Date.now() >= passDeadline) {
-        debug("reap: pass budget spent with %d target(s) left, leaving them for the next pass",
-          targets.length - removed.length);
+        debug(
+          "reap: pass budget spent with %d target(s) left, leaving them for the next pass",
+          targets.length - removed.length
+        );
         break;
       }
       try {
@@ -774,7 +783,7 @@ export function createDockerRunnerLauncher(
   return {
     reap,
     async run(spec: RunnerSpec): Promise<RunnerResult> {
-      // SCHEDULED AT THE TOP, BEFORE `create`, AND NOT AWAITED — M23.1 phase 4's placement, M23.3's
+      // SCHEDULED AT THE TOP, BEFORE `create`, AND NOT AWAITED — M23.1 phase 4's placement, M23.1e's
       // coupling. The placement is still right: one place, reached before the next container this
       // process makes and — because the host respawns a SIGKILLed subprocess with backoff — within
       // one retry of the very event that orphans a container. The `await` was not: reap's `ps` and
@@ -850,7 +859,7 @@ export function createDockerRunnerLauncher(
 
       /**
        * EVERY STEP OF THE RUN PROPER, BOUNDED BY WHAT IS LEFT OF THE ONE BUDGET — the whole of
-       * M23.3's HIGH-1 fix. `options` carries NO `timeout`: each caller below used to hand in
+       * M23.1e's HIGH-1 fix. `options` carries NO `timeout`: each caller below used to hand in
        * `spec.timeoutMs` and get a fresh, FULL budget of its own, so k sequential steps meant a
        * k x timeoutMs run and no bound on the sum.
        *
@@ -1098,7 +1107,7 @@ export function createDockerRunnerLauncher(
         // before this line, which is a defect the same shape as the one this whole phase exists to
         // close (a hazard with no reader). `NODE_DEBUG=scp-runner-launcher` surfaces it.
         //
-        // AND EXACTLY ONE THING IT MUST NOT DO — M23.3. `create` failing BECAUSE THE NAME IS
+        // AND EXACTLY ONE THING IT MUST NOT DO — M23.1e. `create` failing BECAUSE THE NAME IS
         // ALREADY TAKEN means the container behind that name is SOMEBODY ELSE'S, still running,
         // and an unconditional `rm -f` here destroys it. That is not the orphan case this teardown
         // exists for; it is the exact opposite of it. See {@link isContainerNameConflict} for the

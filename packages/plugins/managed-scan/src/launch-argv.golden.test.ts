@@ -156,13 +156,13 @@ const { createManagedScanExecutorPlugin } = await import("./index.js");
 
 /**
  * ================================================================================================
- * THE OPTIONS — `maxBuffer` AS A LITERAL, `timeout` AS THE BOUND IT MUST NOW LIE IN (M23.3)
+ * THE OPTIONS — `maxBuffer` AS A LITERAL, `timeout` AS THE BOUND IT MUST NOW LIE IN (M23.1e)
  * ================================================================================================
  * Deliberately NOT imported from `index.ts`: a golden that re-derives its expectation from the code
  * it is guarding cannot detect a change to that code. 32 MiB is written here because that is what the plugin does TODAY.
  *
  * WHY `timeout` STOPPED BEING AN EQUALITY. `RunnerSpec.timeoutMs` is the WHOLE-RUN budget since
- * M23.3, so each step is issued with what is LEFT of it (`deadline - now`, off one clock read at
+ * M23.1e, so each step is issued with what is LEFT of it (`deadline - now`, off one clock read at
  * the top of `run()`). Handing every step the full `timeoutMs` was the defect this golden used to
  * pin: six sequential calls, each individually under the bound, made a run of six x
  * timeoutMs, which the host's own budget — sized `timeoutMs + grace` — then SIGKILLed, orphaning

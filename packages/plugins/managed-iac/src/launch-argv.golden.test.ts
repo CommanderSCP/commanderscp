@@ -94,7 +94,7 @@ let cpOutOk = true;
 /** `create` outcome — the two tests below are the ONLY failure-injection arms for this step; every
  *  other test in this file leaves it `true`.
  *
- *  IT IS AN ERROR OBJECT AND NOT A BOOLEAN SINCE M23.3, and the change is the point. The fixture
+ *  IT IS AN ERROR OBJECT AND NOT A BOOLEAN SINCE M23.1e, and the change is the point. The fixture
  *  used to reject with `name already in use` — a NAME CONFLICT — while asserting that the run then
  *  tears the name down, which is the one create failure for which tearing down is WRONG: by
  *  definition of the conflict, the container behind that name belongs to somebody else and is
@@ -202,13 +202,13 @@ const { createManagedIacExecutorPlugin } = await import("./index.js");
 
 /**
  * ================================================================================================
- * THE OPTIONS — `maxBuffer` AS A LITERAL, `timeout` AS THE BOUND IT MUST NOW LIE IN (M23.3)
+ * THE OPTIONS — `maxBuffer` AS A LITERAL, `timeout` AS THE BOUND IT MUST NOW LIE IN (M23.1e)
  * ================================================================================================
  * Deliberately NOT imported from `index.ts`: a golden that re-derives its expectation from the code
  * it is guarding cannot detect a change to that code. 16 MiB is written here because that is what the plugin does TODAY.
  *
  * WHY `timeout` STOPPED BEING AN EQUALITY. `RunnerSpec.timeoutMs` is the WHOLE-RUN budget since
- * M23.3, so each step is issued with what is LEFT of it (`deadline - now`, off one clock read at
+ * M23.1e, so each step is issued with what is LEFT of it (`deadline - now`, off one clock read at
  * the top of `run()`). Handing every step the full `timeoutMs` was the defect this golden used to
  * pin: four sequential calls, each individually under the bound, made a run of four x
  * timeoutMs, which the host's own budget — sized `timeoutMs + grace` — then SIGKILLed, orphaning
@@ -575,7 +575,7 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     expect(status.detail).toContain("docker: Error response from daemon: no such image");
   });
 
-  it("FAILURE — a `create` that lost the NAME to another run issues NO `rm`: this run never owned that container (M23.3)", async () => {
+  it("FAILURE — a `create` that lost the NAME to another run issues NO `rm`: this run never owned that container (M23.1e)", async () => {
     // THE OTHER ARM OF THE TEST ABOVE, AND THE REASON THAT ONE'S FIXTURE HAD TO CHANGE. Teardown is
     // unconditional and addresses the NAME, so for the one create failure that MEANS the name is
     // somebody else's, the teardown destroys a container this run did not create and is not

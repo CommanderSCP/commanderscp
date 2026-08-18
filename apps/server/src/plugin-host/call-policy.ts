@@ -40,7 +40,7 @@ import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
  * So the budget is a function of (module, method):
  *   - `trigger` on a MANAGED executor -> that instance's own resolved `timeoutMs` + {@link
  *     MANAGED_TRIGGER_GRACE_MS}. What guarantees the plugin's own bound fires first is NOT this
- *     grace (M23.3 — see that constant's doc for the measurement that disproved it) but the
+ *     grace (M23.1e — see that constant's doc for the measurement that disproved it) but the
  *     launcher: `RunnerSpec.timeoutMs` is the WHOLE-RUN budget, read once as a deadline and spent
  *     down across every step, so a run cannot exceed it however many `execFile`s it takes. The
  *     grace covers exactly what happens after that deadline — one `docker rm -f` teardown, the
@@ -53,7 +53,7 @@ import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
  * ledger entry is (by construction) not yet written — a SECOND `tofu apply` against live
  * infrastructure while the first is still applying. Its container name is derived from the same
  * `idempotencyKey`, so its `docker create` also collides with the still-running first container;
- * since M23.3 the loser at least no longer `rm -f`s the winner (the adapter skips teardown on a
+ * since M23.1e the loser at least no longer `rm -f`s the winner (the adapter skips teardown on a
  * name conflict — `@scp/runner-launcher`'s `isContainerNameConflict`), but a retry that cannot
  * proceed is not a retry worth having. A crash mid-apply must surface to `reconcile.ts`, not be
  * papered over one layer below it.
@@ -92,7 +92,7 @@ export const MANAGED_EXECUTOR_MODULES = ["managed-iac", "managed-scan", "managed
  * double-applying. The host's expiry is a `SIGKILL` of the subprocess and runs NONE of that.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────
- * WHAT THIS COMMENT USED TO CLAIM, WHY IT WAS FALSE, AND WHAT IS TRUE NOW (M23.3).
+ * WHAT THIS COMMENT USED TO CLAIM, WHY IT WAS FALSE, AND WHAT IS TRUE NOW (M23.1e).
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  * It said the grace was "sized so the plugin's inner `execFile` timeout fires first". That was true
  * of ONE `execFile`. A managed run issues four (managed-iac, managed-dep) to six (managed-scan)

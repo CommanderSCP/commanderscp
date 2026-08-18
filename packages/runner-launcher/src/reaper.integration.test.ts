@@ -8,7 +8,8 @@ import {
   RUNNER_LAUNCHER_DEADLINE_LABEL,
   RUNNER_LAUNCHER_OWNER_LABEL,
   createDockerRunnerLauncher,
-  runnerContainerName
+  runnerContainerName,
+  whenReapSettled
 } from "./index.js";
 
 /**
@@ -307,7 +308,7 @@ describe.runIf(await dockerAvailable())(
     }, 30_000);
 
     it(
-      "THE DELETE-THE-WIRING GATE — run() calls reap() at its own top: a past-deadline orphan " +
+      "THE DELETE-THE-WIRING GATE — run() schedules reap() at its own top: a past-deadline orphan " +
         "disappears as a SIDE EFFECT of an ordinary run(), with reap() never called directly",
       async () => {
         const foreignOwner = randomUUID();
@@ -324,9 +325,9 @@ describe.runIf(await dockerAvailable())(
           "the orphan must exist before the wiring is exercised"
         ).toBe("running");
 
-        // An ORDINARY, fast, real run — nothing about this spec asks for a reap. If `await reap()`
-        // is ever removed from the top of `RunnerLauncher.run()` (index.ts), this orphan survives
-        // this call and the assertion below goes red BY NAME.
+        // An ORDINARY, fast, real run — nothing about this spec asks for a reap. If the reap
+        // scheduling is ever removed from the top of `RunnerLauncher.run()` (index.ts), this orphan
+        // survives this call and the assertion below goes red BY NAME.
         const runId = uniqueRunId("wiring-run");
         ownedNames.add(runnerContainerName(runId));
         await createDockerRunnerLauncher().run({
@@ -341,6 +342,12 @@ describe.runIf(await dockerAvailable())(
           timeoutMs: 10_000,
           maxBuffer: 1024
         });
+        // THE SWEEP IS NOT AWAITED BY `run()` SINCE M23.1e — that is the fix for HIGH-3 (a reap that
+        // spends the run's budget can stop `create` being issued at all), so this test has to await
+        // it explicitly instead of racing it. THE GATE KEEPS ITS TEETH: with the scheduling deleted
+        // there is no pass in flight, `whenReapSettled()` resolves immediately, and the orphan is
+        // still there below.
+        await whenReapSettled();
 
         expect(
           await containerState(orphan),

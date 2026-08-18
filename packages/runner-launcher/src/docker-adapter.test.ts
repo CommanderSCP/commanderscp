@@ -379,7 +379,7 @@ const RM_OPTS = { timeout: 30_000 };
 
 /**
  * ================================================================================================
- * THE PER-CALL `timeout` IS NO LONGER A CONSTANT, AND THAT IS THE POINT (M23.3)
+ * THE PER-CALL `timeout` IS NO LONGER A CONSTANT, AND THAT IS THE POINT (M23.1e)
  * ================================================================================================
  * `RunnerSpec.timeoutMs` is the WHOLE-RUN budget, so each step is issued with what is LEFT of it —
  * `deadline - now`, off ONE clock read at the top of `run()`. Handing every step the full
