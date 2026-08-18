@@ -1,3 +1,4 @@
+import { MANAGED_RUN_TIMEOUT_MAX_MS } from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
 /**
@@ -70,7 +71,23 @@ import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
  * The CLAMP is not belt-and-braces either. `maximum` was added to those schemas in this same change,
  * so a binding row stored BEFORE it — including the 2^31 the old `{ minimum: 1000 }` admitted — is
  * still in the database and is never re-validated on read. Clamping on the way into the budget is
- * what makes the ceiling true of the running system rather than only of future writes.
+ * what makes the ceiling true of THIS number.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * WHAT THIS CLAMP DOES NOT COVER, BECAUSE THE SENTENCE ABOVE USED TO CLAIM IT DID.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * It said clamping here "is what makes the ceiling true of the running system". It made the ceiling
+ * true of ONE number in the running system — `budgetMs`, the host's own RPC deadline — and of
+ * nothing else. `resolveCallPolicy` clamps its return value; it does not write anything back, and
+ * the plugin on the other side of the RPC read the SAME stored row and passed
+ * `config.timeoutMs ?? DEFAULT_TIMEOUT_MS` straight into `RunnerSpec.timeoutMs`. For a stored 4h the
+ * host budgeted 3_660_000ms and the launcher ran to 14_400_000ms, so the host's SIGKILL orphaned a
+ * container stamped 181 minutes past the moment `reap()` could collect it.
+ *
+ * `@scp/runner-launcher`'s `clampRunTimeoutMs` is the other half, applied inside `run()` where all
+ * three plugins and both adapters converge. The two clamps must read the SAME ceiling or they
+ * reintroduce the ordering defect this file exists to close, so {@link assertManagedTimeoutSchemas}
+ * refuses at boot unless every managed manifest's `maximum` IS `MANAGED_RUN_TIMEOUT_MAX_MS`.
  */
 
 /**
@@ -173,7 +190,13 @@ export function assertManagedTimeoutSchemas(): void {
       !schema ||
       !(schema.minimum >= 1) ||
       !(schema.maximum > schema.minimum) ||
-      !(schema.default >= schema.minimum && schema.default <= schema.maximum)
+      !(schema.default >= schema.minimum && schema.default <= schema.maximum) ||
+      // AND THE CEILING MUST BE THE ONE THE LAUNCHER ENFORCES — see the module doc's last section.
+      // There are now TWO clamps on one number and they must not be allowed to drift: a manifest
+      // ceiling ABOVE the launcher's makes the host wait for a run the launcher already killed, and
+      // one BELOW it puts the M23.1c SIGKILL back on a run that is still legitimately inside its own
+      // budget. Equality, not "<=", because both directions are defects.
+      schema.maximum !== MANAGED_RUN_TIMEOUT_MAX_MS
     ) {
       bad.push(module);
     }
@@ -181,7 +204,8 @@ export function assertManagedTimeoutSchemas(): void {
   if (bad.length > 0) {
     throw new Error(
       `managed executor module(s) ${bad.join(", ")} do not publish a bounded ` +
-        `configSchema.properties.timeoutMs ({ type: "integer", minimum, maximum, default }). ` +
+        `configSchema.properties.timeoutMs ({ type: "integer", minimum, ` +
+        `maximum: MANAGED_RUN_TIMEOUT_MAX_MS (${MANAGED_RUN_TIMEOUT_MAX_MS}), default }). ` +
         `The plugin host derives that module's 'trigger' RPC budget from those bounds ` +
         `(apps/server/src/plugin-host/call-policy.ts); without a maximum a tenant-settable ` +
         `timeout is an unbounded host budget, and without the property at all the module silently ` +

@@ -5,7 +5,12 @@ import {
   assertManagedTimeoutSchemas,
   resolveCallPolicy
 } from "./call-policy.js";
-import { RUNNER_REAP_GRACE_MS, RUNNER_REMOVE_TIMEOUT_MS } from "@scp/runner-launcher";
+import {
+  MANAGED_RUN_TIMEOUT_MAX_MS,
+  RUNNER_REAP_GRACE_MS,
+  RUNNER_REMOVE_TIMEOUT_MS,
+  clampRunTimeoutMs
+} from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
 /**
@@ -242,5 +247,96 @@ describe("M23.1e: the grace constants stand in the order the cleanup path needs"
 
   it("the reap grace also covers the teardown, so a run that finishes normally is never reapable", () => {
     expect(RUNNER_REAP_GRACE_MS).toBeGreaterThan(RUNNER_REMOVE_TIMEOUT_MS);
+  });
+});
+
+
+/**
+ * ================================================================================================
+ * MEDIUM (verification pass 5) — THE CEILING IS ONE NUMBER AND BOTH SIDES OF THE RPC APPLY IT
+ * ================================================================================================
+ *
+ * `resolveCallPolicy` clamped the HOST's budget and nothing else. The plugin on the other side of
+ * the same RPC read the same stored row and handed `config.timeoutMs ?? DEFAULT_TIMEOUT_MS` to
+ * `RunnerSpec.timeoutMs` untouched, so above the ceiling the two numbers were not two views of one
+ * budget — they were hours apart, in the direction that defeats `reap()`.
+ *
+ * THIS FILE IS WHERE THAT RELATIONSHIP CAN BE CHECKED AT ALL. `@scp/runner-launcher` may not import
+ * from the server (the dependency only goes one way), which is the same reason the grace-ordering
+ * arms below live here rather than beside the constants they relate.
+ */
+describe("MEDIUM (pass 5): the host's budget and the launcher's run are clamped to the SAME ceiling", () => {
+  /** A row the pre-ceiling `{ minimum: 1000 }` schema admitted, still in the database, never
+   *  re-validated on read. 4 hours — the value the defect was measured at. */
+  const STORED_4H = 4 * 60 * 60_000;
+
+  const budgetFor = (module: string, timeoutMs: number): number =>
+    resolveCallPolicy({
+      module,
+      config: { timeoutMs },
+      method: "trigger",
+      hangDetectorMs: HANG_DETECTOR_MS
+    }).budgetMs;
+
+  it.each(MANAGED_EXECUTOR_MODULES)(
+    "%s: the run the launcher performs is exactly the run the host budgeted for",
+    (module) => {
+      // THE EQUALITY IS THE PROPERTY. `budgetMs` is `clampedRunBudget + MANAGED_TRIGGER_GRACE_MS`,
+      // so stripping the grace must leave precisely what `run()` will hold the run to. Before the
+      // launcher clamp these were 3_600_000 and 14_400_000.
+      expect(budgetFor(module, STORED_4H) - MANAGED_TRIGGER_GRACE_MS).toBe(
+        clampRunTimeoutMs(STORED_4H)
+      );
+      // …and for an in-range value the tenant's own number survives on both sides.
+      expect(budgetFor(module, 120_000) - MANAGED_TRIGGER_GRACE_MS).toBe(
+        clampRunTimeoutMs(120_000)
+      );
+    }
+  );
+
+  it("THE ORPHAN A HOST SIGKILL LEAVES IS REAPABLE WITHIN ONE GRACE, not within days", () => {
+    // The measured defect, as arithmetic across the boundary. The host's expiry is the event that
+    // CREATES the orphan (it SIGKILLs the subprocess, so no `finally` and no teardown run), and the
+    // orphan's stamp is what decides when any peer may collect it.
+    const runBudget = clampRunTimeoutMs(2 ** 31); // the largest the old schema admitted
+    const hostSigkillsAt = runBudget + MANAGED_TRIGGER_GRACE_MS;
+    const orphanStampedAt = runBudget + RUNNER_REAP_GRACE_MS;
+
+    expect(
+      orphanStampedAt - hostSigkillsAt,
+      "an orphaned container outlives the SIGKILL that created it by more than one reap grace"
+    ).toBeLessThanOrEqual(RUNNER_REAP_GRACE_MS - MANAGED_TRIGGER_GRACE_MS);
+    // Unclamped, this window was 2**31 - 3_600_000 ms — 24.5 days of an unsupervised `tofu apply`.
+    expect(orphanStampedAt - hostSigkillsAt).toBeLessThanOrEqual(60_000);
+    // Still POSITIVE: the container must not become reapable before its owner is dead (HIGH-2).
+    expect(orphanStampedAt).toBeGreaterThan(hostSigkillsAt);
+  });
+
+  it.each(MANAGED_EXECUTOR_MODULES)(
+    "%s's manifest ceiling IS the launcher's, so the two clamps cannot drift",
+    (module) => {
+      // The boot gate asserts this too; here it is with the actual manifest, named, so that a
+      // manifest edit fails on the module rather than on a generic boot message.
+      expect(timeoutMaximumFor(module)).toBe(MANAGED_RUN_TIMEOUT_MAX_MS);
+    }
+  );
+
+  it("the boot gate REFUSES a manifest whose ceiling is not the launcher's", () => {
+    const target = MANAGED_EXECUTOR_MODULES[0];
+    const schema = MANIFEST_BY_MODULE[target]!.configSchema as {
+      properties: { timeoutMs: { maximum: number } };
+    };
+    const original = schema.properties.timeoutMs.maximum;
+    try {
+      // A ceiling BELOW the launcher's: the host stops waiting while the run is still legitimately
+      // inside its own budget — the M23.1c SIGKILL, back on one plugin, with a green suite.
+      schema.properties.timeoutMs.maximum = MANAGED_RUN_TIMEOUT_MAX_MS / 2;
+      expect(() => assertManagedTimeoutSchemas()).toThrow(target);
+      // And ABOVE it: the write door admits a value the launcher will silently cut short.
+      schema.properties.timeoutMs.maximum = MANAGED_RUN_TIMEOUT_MAX_MS * 2;
+      expect(() => assertManagedTimeoutSchemas()).toThrow(target);
+    } finally {
+      schema.properties.timeoutMs.maximum = original;
+    }
   });
 });

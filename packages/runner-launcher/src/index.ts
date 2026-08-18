@@ -112,6 +112,60 @@ export const MANAGED_RUN_TIMEOUT_MIN_MS = 1_000;
 /** See {@link MANAGED_RUN_TIMEOUT_MIN_MS}. One hour. */
 export const MANAGED_RUN_TIMEOUT_MAX_MS = 60 * 60_000;
 
+/**
+ * THE CEILING, APPLIED WHERE EVERY CONSUMER OF IT CONVERGES — MEDIUM (verification pass 5).
+ *
+ * WHAT WAS ACTUALLY TRUE BEFORE THIS FUNCTION EXISTED. {@link MANAGED_RUN_TIMEOUT_MAX_MS} appeared
+ * in exactly two kinds of place: the three manifests' `configSchema.properties.timeoutMs.maximum`
+ * (the WRITE door, which a row stored before the ceiling existed never passes through again) and
+ * `apps/server/src/plugin-host/call-policy.ts`, whose `resolveCallPolicy` clamps — and clamps ONLY
+ * ITS OWN RETURN VALUE, the host's RPC budget. All three plugins passed
+ * `config.timeoutMs ?? DEFAULT_TIMEOUT_MS` STRAIGHT into {@link RunnerSpec.timeoutMs}, and nothing
+ * between there and `execFile` looked at the ceiling again. Measured for a stored `timeoutMs` of
+ * 14_400_000 (4h), which the old `{ minimum: 1000 }` schema admitted and which is still in the
+ * database:
+ *
+ *     host budgetMs (call-policy, CLAMPED)          3_660_000   (3_600_000 + the 60s grace)
+ *     RunnerSpec.timeoutMs, iac and scan           14_400_000   (UNCLAMPED)
+ *     -> the host SIGKILLs the subprocess at t+3_660_000ms, and that SIGKILL is the event that
+ *        CREATES the orphan; the container it leaves behind is stamped t+14_520_000ms, so it is
+ *        UNREAPABLE for a further 10_860_000ms — 181 minutes of a `tofu apply` with nobody
+ *        supervising it and its credentials readable via `docker inspect`.
+ *
+ * SO THE CLAMP DEFEATED ITSELF ON EXACTLY THE ROWS IT EXISTS FOR. {@link RunnerLauncher.reap}'s
+ * predicate is "foreign AND past its stamp", and the stamp was
+ * `unclamped timeoutMs + RUNNER_REAP_GRACE_MS`. At the 2^31 the call-policy comment names, that is
+ * ~24.9 days.
+ *
+ * WHY HERE AND NOT A THIRD CLAMP IN EACH PLUGIN. Three plugins build a spec, the Docker adapter
+ * consumes it, and M23.2's Kubernetes adapter will consume the same one; this port is the single
+ * place all of them pass through. A per-plugin clamp is three copies of one rule, which is the
+ * shape that leaves the fourth managed executor unbounded on the day it lands. `run()` calls this
+ * ONCE, at the top, and derives the deadline, the container's reap stamp and every step's `timeout`
+ * from the clamped value — so the ceiling is a property of the RUNNING SYSTEM rather than only of
+ * future writes. ANY FUTURE ADAPTER MUST CALL IT TOO; it is exported for that reason.
+ *
+ * THE FLOOR IS DELIBERATELY NOT APPLIED HERE, and the asymmetry is the point rather than an
+ * omission. {@link MANAGED_RUN_TIMEOUT_MIN_MS} is a USABILITY bound — a `timeoutMs` of 1 makes every
+ * run of that binding fail fast and harms nothing outside it — and it belongs at the write door,
+ * where it already is. The MAXIMUM is a CONTAINMENT bound: it is the sole term that makes the orphan
+ * stamp and {@link RUNNER_SECRET_ENV_MAX_AGE_MS} computable, and both of those are about what a run
+ * can do to OTHER runs and to the host after nobody is watching. Only the containment half has to be
+ * true of a value read back out of the database, so only the containment half is enforced here.
+ * Raising a too-small budget at this port would also silently rewrite the caller's spec on the one
+ * axis the three `launch-argv.golden.test.ts` files pin.
+ *
+ * A NON-FINITE `timeoutMs` (`NaN`, `Infinity`) COLLAPSES TO THE CEILING rather than propagating.
+ * `NaN` is the dangerous one: `now + NaN` is `NaN`, the `remaining <= 0` refusal below is then
+ * FALSE, and `Math.max(1, NaN)` is `NaN` — a `docker start -a` with no bound at all, arrived at
+ * through the one branch that exists to prevent exactly that. The ceiling is the fail-closed answer
+ * for both.
+ */
+export function clampRunTimeoutMs(requested: number): number {
+  if (!Number.isFinite(requested)) return MANAGED_RUN_TIMEOUT_MAX_MS;
+  return Math.min(requested, MANAGED_RUN_TIMEOUT_MAX_MS);
+}
+
 /** One `docker cp` of a host directory's CONTENTS into the container (the trailing `/.`). */
 export interface RunnerCopyIn {
   /** HOST directory. Its contents are copied, not the directory itself. */
@@ -256,14 +310,23 @@ export interface RunnerSpec {
    * an ordinary apply clears 630s without any single call reaching 600s.
    *
    * SO IT IS A DEADLINE, NOT A PER-CALL CAP. {@link createDockerRunnerLauncher} computes
-   * `deadline = now + timeoutMs` ONCE, at the top of `run()`, and every `execFile` it issues gets
-   * `timeout: deadline - now` — never `spec.timeoutMs`, and never `0`, which Node reads as NO
-   * TIMEOUT AT ALL (measured on the running Node 26.7.0: `{ timeout: 0 }` let a 1.5s child run to
-   * completion). A step reached with the budget already spent is REFUSED before it is issued, with
-   * a {@link RunnerLaunchError} carrying {@link RunnerLaunchError.deadlineExceeded}. The two
-   * numbers derived from this one — the host's RPC budget (`call-policy.ts`) and the container's
-   * own {@link RUNNER_LAUNCHER_DEADLINE_LABEL} — are therefore correct BY CONSTRUCTION rather than
-   * because a padding constant happened to be big enough.
+   * `deadline = now + clampRunTimeoutMs(timeoutMs)` ONCE, at the top of `run()`, and every
+   * `execFile` it issues gets `timeout: deadline - now` — never `spec.timeoutMs`, and never `0`,
+   * which Node reads as NO TIMEOUT AT ALL (measured on the running Node 26.7.0: `{ timeout: 0 }`
+   * let a 1.5s child run to completion). A step reached with the budget already spent is REFUSED
+   * before it is issued, with a {@link RunnerLaunchError} carrying
+   * {@link RunnerLaunchError.deadlineExceeded}.
+   *
+   * THE TWO NUMBERS DERIVED FROM THIS ONE — the host's RPC budget (`call-policy.ts`) and the
+   * container's own {@link RUNNER_LAUNCHER_DEADLINE_LABEL} — ARE CORRECT BY CONSTRUCTION UP TO A
+   * CEILING, AND {@link clampRunTimeoutMs} IS WHAT MAKES THE CEILING TRUE. The sentence that used to
+   * end this paragraph said the two were "correct BY CONSTRUCTION rather than because a padding
+   * constant happened to be big enough". The construction was sound for every value BELOW
+   * {@link MANAGED_RUN_TIMEOUT_MAX_MS}, which is not the same as every value in the database:
+   * `call-policy.ts` clamped its OWN return value and the three plugins handed the STORED number to
+   * this field untouched, so above the ceiling the two derived numbers diverged by hours rather than
+   * by a padding constant. The clamp now runs inside `run()`, so a caller cannot skip it and a
+   * second adapter cannot forget it.
    *
    * WHAT IS DELIBERATELY OUTSIDE IT: the `finally` teardown (`docker rm -f`), which must still run
    * after the budget is gone and keeps its own {@link RUNNER_REMOVE_TIMEOUT_MS}; and `reap()`,
@@ -345,9 +408,12 @@ export interface RunnerLauncher {
    * registry lives in the SAME process memory a SIGKILL erases, so it could never identify what a
    * DEAD process left behind. mtime survives the kill because it is a property of the file itself.
    * The age bound is conservative in the same direction the container deadline is: no run still
-   * inside its own {@link MANAGED_RUN_TIMEOUT_MAX_MS}-bounded budget can make its own file look
-   * stale, so a live run's file is never a candidate — the same "ambiguous must never read as safe"
-   * rule as a missing/garbled container deadline label.
+   * inside its own budget can make its own file look stale, so a live run's file is never a
+   * candidate — the same "ambiguous must never read as safe" rule as a missing/garbled container
+   * deadline label. That budget is bounded by {@link MANAGED_RUN_TIMEOUT_MAX_MS} because `run()`
+   * applies {@link clampRunTimeoutMs} to `spec.timeoutMs` itself; see
+   * {@link RUNNER_SECRET_ENV_MAX_AGE_MS} for what this used to rest on instead and why that was
+   * false.
    *
    * Called by the Docker adapter with the CURRENT run's own `spec.secretEnvDir` every time — never
    * a directory this method chooses, for the same reason `writeSecretEnvFile` refuses to choose
@@ -654,7 +720,7 @@ export const RUNNER_LAUNCHER_DEADLINE_LABEL = "scp.launcher.deadline";
 /**
  * How far past a run's own WHOLE-RUN DEADLINE its container's {@link RUNNER_LAUNCHER_DEADLINE_LABEL}
  * is stamped — the label's value is `runDeadline + this`, and `runDeadline` is the single
- * `now + spec.timeoutMs` computed once at the top of `run()`.
+ * `now + clampRunTimeoutMs(spec.timeoutMs)` computed once at the top of `run()`.
  *
  * THE INVARIANT IT BUYS, AND WHY IT IS NOW STRUCTURAL. `reap()` removes containers that are foreign
  * AND past their stamped deadline, so the one thing that must never be true is a container being
@@ -706,14 +772,31 @@ export const RUNNER_REAP_BUDGET_MS = 2 * 60_000;
  * SIZED SO NO LIVE RUN CAN EVER LOOK STALE, the same direction every other bound in this file leans.
  * A run's `--env-file` is written once, at the very top of {@link RunnerLauncher.run}, before a
  * single `execFile` is issued — so the OLDEST a live run's file can legitimately be, at any later
- * instant of that same run, is bounded by that run's OWN whole-run budget: at most
+ * instant of that same run, is bounded by that run's OWN whole-run budget. Add
+ * {@link RUNNER_REAP_GRACE_MS} — the same margin the container's own deadline label carries, for the
+ * same reason (a run that is past its deadline but still inside one teardown is not yet fair game)
+ * — and a file cannot be BOTH this old AND still belong to a run inside its own budget. A false
+ * positive would delete a live run's credential mid-`create`; this bound is chosen so that never
+ * happens, at the cost of a leaked file surviving for a while rather than being swept the instant it
+ * could safely be.
+ *
+ * WHAT ENFORCES THE BOUND THAT ARGUMENT RESTS ON, because the answer this doc used to give was
+ * FALSE (MEDIUM, verification pass 5). It said a run's budget is "at most
  * {@link MANAGED_RUN_TIMEOUT_MAX_MS}, the ceiling every tenant-settable `timeoutMs` in the product
- * is clamped to. Add {@link RUNNER_REAP_GRACE_MS} — the same margin the container's own deadline
- * label carries, for the same reason (a run that is past its deadline but still inside one teardown
- * is not yet fair game) — and a file cannot be BOTH this old AND still belong to a run inside its
- * own budget. A false positive would delete a live run's credential mid-`create`; this bound is
- * chosen so that never happens, at the cost of a leaked file surviving for a while rather than
- * being swept the instant it could safely be.
+ * is clamped to." It was not clamped to it. `apps/server/src/plugin-host/call-policy.ts` clamped the
+ * HOST's RPC budget and nothing else; all three plugins passed the stored `timeoutMs` into
+ * {@link RunnerSpec.timeoutMs} untouched. What ACTUALLY bounded a live run at that point was the
+ * host SIGKILLing the plugin subprocess at `budget + MANAGED_TRIGGER_GRACE_MS` — a margin supplied
+ * by a constant in a package this one may not import, whose own doc did not mention this dependency,
+ * and which is absent entirely on the ONE in-process caller (`promotion-scan-step.ts` calls
+ * `plugin.trigger()` with no host and therefore no SIGKILL at all). An age bound resting on a
+ * ceiling nobody applied and on a killer that is not always present is not a bound.
+ *
+ * {@link clampRunTimeoutMs} IS THE ENFORCEMENT, and it is in this package, called by `run()` on the
+ * same line that computes the deadline the `--env-file` is written under. The bound is therefore now
+ * arithmetic inside one file — the same repair {@link RUNNER_REAP_GRACE_MS} records for the
+ * container stamp — rather than a claim about what some other package's write door and some third
+ * package's grace period jointly happen to guarantee.
  */
 export const RUNNER_SECRET_ENV_MAX_AGE_MS = MANAGED_RUN_TIMEOUT_MAX_MS + RUNNER_REAP_GRACE_MS;
 
@@ -930,12 +1013,20 @@ export function createDockerRunnerLauncher(
       );
 
       /**
-       * THE WHOLE-RUN DEADLINE — the one clock in this function, read once and never recomputed.
-       * See {@link RunnerSpec.timeoutMs}: `timeoutMs` is the budget for the RUN, not for each of
-       * the four-to-six `execFile`s a run issues, and the ONLY reason the host's RPC budget and the
-       * container's own reap stamp are now correct is that this line makes them derivable.
+       * THE BUDGET THIS RUN IS ACTUALLY HELD TO — `spec.timeoutMs` with the product ceiling applied,
+       * read ONCE so that every number derived below derives from the same one. See
+       * {@link clampRunTimeoutMs} for the measurement: the ceiling used to be enforced on the host's
+       * RPC budget and on NEITHER of the two numbers this function derives, so a stored `timeoutMs`
+       * above it produced a container stamped hours past the SIGKILL that orphaned it.
        */
-      const runDeadlineAt = Date.now() + spec.timeoutMs;
+      const runTimeoutMs = clampRunTimeoutMs(spec.timeoutMs);
+      /**
+       * THE WHOLE-RUN DEADLINE — the one clock in this function, read once and never recomputed.
+       * See {@link RunnerSpec.timeoutMs}: the budget is for the RUN, not for each of the four-to-six
+       * `execFile`s a run issues, and the ONLY reason the host's RPC budget and the container's own
+       * reap stamp are now correct is that this line makes them derivable.
+       */
+      const runDeadlineAt = Date.now() + runTimeoutMs;
       const maxBuffer = spec.maxBuffer;
       const envArgs = spec.env.flatMap((entry) => ["-e", entry]);
 
@@ -1030,7 +1121,7 @@ export function createDockerRunnerLauncher(
             argv,
             deadlineExceeded: true,
             cause: new Error(
-              `whole-run budget of ${spec.timeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
+              `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
                 `at the run deadline ${new Date(runDeadlineAt).toISOString()} — '${step}' was not issued`
             ),
             redactions: redactions()
@@ -1067,7 +1158,7 @@ export function createDockerRunnerLauncher(
               ? {
                   ...e,
                   message:
-                    `whole-run budget of ${spec.timeoutMs}ms (RunnerSpec.timeoutMs) ran out during ` +
+                    `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) ran out during ` +
                     `'${step}' at the run deadline ${new Date(runDeadlineAt).toISOString()}`
                 }
               : cause,

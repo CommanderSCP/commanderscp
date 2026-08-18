@@ -723,7 +723,37 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
   };
 }
 
-function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
+/**
+ * THE ONE IN-PROCESS CALLER OF A MANAGED EXECUTOR'S `trigger()`, and what makes that safe — MEDIUM
+ * (verification pass 5). Every other managed run crosses the subprocess plugin host, whose
+ * `resolveCallPolicy` budget expiry SIGKILLs the child; this one calls `plugin.trigger()` directly,
+ * INSIDE THE SERVER PROCESS, so there is no host, no budget and no SIGKILL of any kind. The only
+ * things bounding a commander-side promotion scan are the ones the launcher itself carries.
+ *
+ * TWO FACTS MAKE THAT ACCEPTABLE, AND BOTH WERE ACCIDENTS UNTIL THEY WERE WRITTEN DOWN HERE. Each
+ * now has a NAMED test, because "it happens to be true today" is how the next edit breaks it:
+ *
+ *  1. NO TENANT `timeoutMs` REACHES THIS PATH. `config` below is built entirely from
+ *     server-side operator settings — `runnerImage`, `networkMode` and `managedRunnerSettings()`'s
+ *     `dockerBinary` — with no binding row anywhere in it, so `managed-scan` falls back to its own
+ *     `DEFAULT_TIMEOUT_MS` (10 min) and the run is bounded by that. Even if a `timeoutMs` were added
+ *     here it could not run away: `@scp/runner-launcher`'s `clampRunTimeoutMs` caps every run at
+ *     `MANAGED_RUN_TIMEOUT_MAX_MS` inside `run()` itself. Pinned by "THE IN-PROCESS SCAN PATH
+ *     CARRIES NO TENANT-SETTABLE BUDGET" in `promotion-scan-step.test.ts`.
+ *  2. MANAGED-SCAN CARRIES NO CREDENTIAL. Its `RunnerSpec.secretEnv` is the literal `[]`, so no
+ *     transient `--env-file` is ever written on this path and there is nothing for a killed process
+ *     to leak — which matters here precisely because there is no SIGKILL story to reason about.
+ *     Pinned by `@scp/plugin-managed-scan`'s `launcher-seam.test.ts`, whose whole-spec
+ *     `toStrictEqual` includes `secretEnv: []`.
+ *
+ * A THIRD MANAGED PLUGIN CALLED FROM HERE WOULD INHERIT NEITHER. Route it through the plugin host
+ * rather than adding a second in-process caller.
+ *
+ * EXPORTED FOR THE TEST ABOVE and for nothing else: fact 1 is a property of the object this builds,
+ * and a test that re-derived the object instead of reading the one the product passes would be
+ * asserting its own fixture.
+ */
+export function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
   return {
     orgId: "commander",
     scopeKey: "commander",

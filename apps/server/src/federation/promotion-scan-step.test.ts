@@ -4,9 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ScanMethodSchema } from "@scp/schemas";
 import { SUPPORTED_SCAN_METHODS } from "@scp/plugin-managed-scan";
+import { manifest as managedScanManifest } from "@scp/plugin-managed-scan";
+import { MANAGED_RUN_TIMEOUT_MAX_MS } from "@scp/runner-launcher";
 import {
   createServerManagedScanRunner,
   parseOscapResult,
+  pluginCtx,
   RUNNER_SUPPORTED_METHODS
 } from "./promotion-scan-step.js";
 
@@ -255,5 +258,50 @@ describe("the Trivy-DB staleness gate covers the machine-image arm", () => {
     if (result.ok) throw new Error("expected a fail-closed refusal");
     expect(result.reason).toMatch(/SCP_ARTIFACT_OCI_REGISTRY_HOSTS|not in/i);
     expect(result.reason).not.toMatch(/trivy\.db|DB cache/i);
+  });
+});
+
+
+/**
+ * ================================================================================================
+ * MEDIUM (verification pass 5) — THE IN-PROCESS `trigger()` HAS NO HOST AND THEREFORE NO SIGKILL
+ * ================================================================================================
+ *
+ * Every other managed run in the product crosses the subprocess plugin host, whose budget expiry
+ * SIGKILLs the child (`plugin-host/call-policy.ts`). `createServerManagedScanRunner` calls
+ * `plugin.trigger()` DIRECTLY, in the server process, so nothing outside the launcher bounds it.
+ * That is safe today, and it is safe by accident on both axes — see `pluginCtx`'s own doc. This
+ * makes the first axis a standing assertion rather than a comment; the second (`secretEnv: []`) is
+ * pinned by `@scp/plugin-managed-scan`'s `launcher-seam.test.ts` whole-spec `toStrictEqual`.
+ */
+describe("MEDIUM (pass 5): the commander's in-process scan path carries no runaway budget", () => {
+  it("THE IN-PROCESS SCAN PATH CARRIES NO TENANT-SETTABLE BUDGET", () => {
+    const config = pluginCtx("scp-runner-scan:vetted", "none").config as Record<string, unknown>;
+
+    // NOT `config.timeoutMs === undefined` — an explicit `timeoutMs: undefined` would satisfy that
+    // and still be a key some future spread could overwrite. The claim is that the key is ABSENT.
+    expect(
+      Object.hasOwn(config, "timeoutMs"),
+      "a tenant-settable budget reached the one trigger() path with no host to SIGKILL it"
+    ).toBe(false);
+    // The whole config, so a NEW key cannot arrive unnoticed: every one of these is a server-side
+    // operator setting with no binding row behind it.
+    expect(Object.keys(config).sort()).toStrictEqual(["dockerBinary", "networkMode", "runnerImage"]);
+  });
+
+  it("SO THE RUN IS BOUNDED BY MANAGED-SCAN'S OWN DEFAULT, which is inside the product ceiling", () => {
+    // With no `timeoutMs` in the config, `managed-scan` falls back to its own DEFAULT_TIMEOUT_MS —
+    // the same number its manifest publishes as the property's `default` — and hands that to
+    // `RunnerSpec.timeoutMs`. `clampRunTimeoutMs` would cap it in any case; this says the fallback
+    // never even reaches the cap, so this path's bound is an honest ten minutes rather than the
+    // ceiling of last resort, which on a path with no SIGKILL is the difference between a wedged
+    // promotion scan holding the commander for 10 minutes and holding it for an hour.
+    const declaredDefault = (
+      managedScanManifest.configSchema as {
+        properties: { timeoutMs: { default: number } };
+      }
+    ).properties.timeoutMs.default;
+    expect(declaredDefault).toBe(10 * 60_000);
+    expect(declaredDefault).toBeLessThan(MANAGED_RUN_TIMEOUT_MAX_MS);
   });
 });

@@ -106,10 +106,13 @@ vi.mock("node:child_process", () => ({
 }));
 
 const {
+  MANAGED_RUN_TIMEOUT_MAX_MS,
   RUNNER_LAUNCHER_DEADLINE_LABEL,
   RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
+  RUNNER_SECRET_ENV_MAX_AGE_MS,
   RunnerLaunchError,
+  clampRunTimeoutMs,
   createDockerRunnerLauncher,
   isContainerNameConflict,
   whenReapSettled
@@ -509,5 +512,127 @@ describe("M23.1e: a `create` that lost the NAME tears nothing down; every other 
     expect(isContainerNameConflict({ killed: true, signal: "SIGTERM" })).toBe(false);
     expect(isContainerNameConflict(undefined)).toBe(false);
     expect(isContainerNameConflict(new Error("Cannot connect to the Docker daemon"))).toBe(false);
+  });
+});
+
+
+// ==================================================================================================
+describe("MEDIUM (verification pass 5): the product CEILING binds the run, not only the host budget", () => {
+  // ================================================================================================
+  /**
+   * WHAT WAS WRONG. `MANAGED_RUN_TIMEOUT_MAX_MS` was enforced in exactly two places — the three
+   * manifests' `configSchema` (the write door, which a row stored before the ceiling existed never
+   * passes through again) and `resolveCallPolicy`, which clamps only its OWN return value, the
+   * host's RPC budget. All three plugins passed the STORED `timeoutMs` into `RunnerSpec.timeoutMs`
+   * untouched and this adapter derived its deadline, its step timeouts and its container's reap
+   * stamp from that unclamped number. Measured for a stored 4h:
+   *
+   *     host budgetMs                 3_660_000   (clamped: 3_600_000 + the 60s trigger grace)
+   *     RunnerSpec.timeoutMs         14_400_000   (UNCLAMPED)
+   *     the host SIGKILLs at t+3_660_000ms and the container it orphans is stamped t+14_520_000ms
+   *     -> UNREAPABLE for a further 181 minutes, with `docker inspect` still holding its credentials
+   *
+   * THE ARMS BELOW DRIVE THE THREE PLACES THE UNCLAMPED NUMBER REACHED, one each, so that removing
+   * the clamp reddens them BY NAME rather than reddening one composite assertion.
+   *
+   * THE STORED VALUE USED THROUGHOUT is 4 hours — a real inhabitant of the pre-ceiling schema
+   * (`{ minimum: 1000 }` admitted up to 2^31), large enough that every bound below is unambiguous,
+   * and small enough that its arithmetic is readable next to a one-hour ceiling.
+   */
+  const STORED_4H = 4 * 60 * 60_000;
+  /** What the ceiling makes of it. Not a literal, so a change to the ceiling moves the whole block. */
+  const CLAMPED = clampRunTimeoutMs(STORED_4H);
+
+  it("clampRunTimeoutMs: above the ceiling collapses to it, below it passes through, non-finite fails CLOSED", () => {
+    expect(CLAMPED).toBe(MANAGED_RUN_TIMEOUT_MAX_MS);
+    expect(clampRunTimeoutMs(2 ** 31)).toBe(MANAGED_RUN_TIMEOUT_MAX_MS);
+    // Below the ceiling the caller's own number survives — the port must not rewrite a legitimate
+    // spec, and the three `launch-argv.golden.test.ts` files pin these very numbers.
+    expect(clampRunTimeoutMs(600_000)).toBe(600_000);
+    expect(clampRunTimeoutMs(1)).toBe(1);
+    // `NaN` is the dangerous one: `now + NaN` is NaN, the `remaining <= 0` refusal is then FALSE and
+    // `Math.max(1, NaN)` is NaN — `docker start -a` with no bound at all, reached through the one
+    // branch that exists to prevent that.
+    expect(clampRunTimeoutMs(Number.NaN)).toBe(MANAGED_RUN_TIMEOUT_MAX_MS);
+    expect(clampRunTimeoutMs(Number.POSITIVE_INFINITY)).toBe(MANAGED_RUN_TIMEOUT_MAX_MS);
+  });
+
+  it("A STORED timeoutMs ABOVE THE CEILING IS CLAMPED BEFORE IT REACHES THE DEADLINE", async () => {
+    // Every step's `timeout` is `runDeadlineAt - now`, so the deadline is observable through them:
+    // if the clamp is missing, `create` goes out with 14_400_000 and this fails on the first step.
+    durations = { create: 20, cp: 20, start: 20 };
+    await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: STORED_4H }));
+
+    const timeouts = runSteps().map((c) => c.opts.timeout ?? 0);
+    expect(timeouts, "the run issued no steps at all — vacuous").toHaveLength(4);
+    for (const t of timeouts) {
+      expect(t, `a step was issued with ${t}ms — above the ${CLAMPED}ms ceiling`).toBeLessThanOrEqual(
+        CLAMPED
+      );
+      expect(t).toBeGreaterThan(0);
+    }
+    // And it really is the CEILING that bound it, not some smaller accident: the first step gets
+    // essentially the whole clamped budget.
+    expect(timeouts[0]!).toBeGreaterThan(CLAMPED - 1_000);
+  });
+
+  it("A STORED timeoutMs ABOVE THE CEILING IS CLAMPED BEFORE IT REACHES THE REAP STAMP", async () => {
+    // THE ONE THAT DEFEATS THE REAPER. `reap()` removes containers that are foreign AND past their
+    // stamp, so an over-ceiling stamp is an orphan nothing collects — for the 4h here, 181 minutes
+    // past the SIGKILL that created it.
+    const before = Date.now();
+    durations = { create: 20, cp: 20, start: 20 };
+    await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: STORED_4H }));
+
+    expect(
+      createdDeadlineLabel() - before,
+      "the container was stamped past the ceiling — a peer's reap() will not collect this orphan"
+    ).toBeLessThanOrEqual(CLAMPED + RUNNER_REAP_GRACE_MS);
+    // NOT VACUOUS in the other direction: the stamp is still the clamped budget plus the grace, not
+    // some tiny value that would make a LIVE run reapable (HIGH-2's hazard, in reverse).
+    expect(createdDeadlineLabel() - before).toBeGreaterThanOrEqual(
+      CLAMPED + RUNNER_REAP_GRACE_MS - 1_000
+    );
+  });
+
+  it("A STORED timeoutMs ABOVE THE CEILING IS CLAMPED BEFORE IT REACHES THE FILE-AGE BOUND", async () => {
+    // `RUNNER_SECRET_ENV_MAX_AGE_MS` is `MANAGED_RUN_TIMEOUT_MAX_MS + RUNNER_REAP_GRACE_MS`, and its
+    // safety argument is "no run still inside its own budget can make its own `--env-file` look this
+    // old". The `--env-file` is written at the top of `run()`, off the same clock the stamp is; so
+    // the argument is true exactly when the stamp is never further out than that age. That is the
+    // arithmetic this asserts, against the SAME emitted stamp the reaper reads — the doc used to
+    // rest instead on a ceiling nothing applied plus a SIGKILL from a package this one may not
+    // import (and which the one in-process caller does not have at all).
+    const writtenAt = Date.now();
+    durations = { create: 20, cp: 20, start: 20 };
+    await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: STORED_4H }));
+
+    expect(
+      createdDeadlineLabel() - writtenAt,
+      "a live run can outlive RUNNER_SECRET_ENV_MAX_AGE_MS — reap() may unlink a credential mid-run"
+    ).toBeLessThanOrEqual(RUNNER_SECRET_ENV_MAX_AGE_MS);
+  });
+
+  it("AN ORPHAN A KILLED RUN LEAVES IS REAPABLE WITHIN A BOUNDED TIME, whatever the stored value", async () => {
+    // THE COMPOSITION, DRIVEN RATHER THAN ASSERTED IN PROSE. The stamp is read back from the
+    // launcher's own `create` argv (never a literal), shifted back by the bound, and fed to a REAL
+    // `reap()` pass as a FOREIGN container. If the bound holds, a peer that started `bound` ago is
+    // past its stamp NOW and is removed; without the clamp that same shifted stamp is ~3 hours in
+    // the FUTURE and `reap()` correctly leaves it — which is precisely the defect.
+    const FOREIGN_OWNER = "33333333-3333-4333-8333-333333333333";
+    const bound = MANAGED_RUN_TIMEOUT_MAX_MS + RUNNER_REAP_GRACE_MS;
+    durations = { create: 20, cp: 20, start: 20 };
+
+    const launcher = createDockerRunnerLauncher("docker-ceiling");
+    await launcher.run(spec({ timeoutMs: STORED_4H }));
+    await whenReapSettled("docker-ceiling"); // the run scheduled its own pass; let it settle first
+
+    const stampOfAPeerThatStartedABoundAgo = new Date(createdDeadlineLabel() - bound).toISOString();
+    psStdout = `killed-peer-orphan	${FOREIGN_OWNER}	${stampOfAPeerThatStartedABoundAgo}`;
+
+    expect(
+      await launcher.reap(),
+      "an orphan stamped by an over-ceiling run is still unreapable a full bound later"
+    ).toStrictEqual(["killed-peer-orphan"]);
   });
 });
