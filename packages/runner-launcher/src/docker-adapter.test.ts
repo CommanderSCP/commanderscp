@@ -1,3 +1,7 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunnerSpec } from "./index.js";
 import {
@@ -71,6 +75,26 @@ interface ExecFileCall {
 /** Every `execFile` of the run, in the order the adapter issued them. */
 const calls: ExecFileCall[] = [];
 
+/**
+ * WHAT THE `--env-file` LOOKED LIKE WHILE `create` WAS IN FLIGHT.
+ *
+ * Read by the seam, synchronously, at the moment `create` is issued — which is the only moment it
+ * can be read, because the adapter unlinks the file as soon as `create` returns. Asserting on it
+ * afterwards would be asserting on nothing; asserting only that it is GONE afterwards would pass for
+ * an adapter that never wrote it and never passed a credential at all. Both halves are needed and
+ * only the seam is standing in the right place for the first one.
+ *
+ * `node:fs` is NOT mocked here — only `node:child_process` is — so these are real files in a real
+ * temp directory.
+ */
+interface EnvFileSnapshot {
+  path: string;
+  content: string;
+  /** The permission bits, masked to the low 9 — 0o600 means owner-only. */
+  mode: number;
+}
+const envFileSnapshots: EnvFileSnapshot[] = [];
+
 /** What `docker create` prints. Deliberately padded — the adapter must `.trim()` it. */
 let createStdout = "  container-abc123 \n";
 /**
@@ -81,6 +105,11 @@ let createStdout = "  container-abc123 \n";
 let createIdSequence = false;
 /** The (trimmed) id each `create` was ALLOCATED, in issue order — the identity that call produces. */
 const createdIds: string[] = [];
+/**
+ * `--name` -> the id that `create` allocated for it. Recorded by the seam because only the seam sees
+ * both, and read by {@link stepIdentity} so a teardown-by-name is comparable with a step-by-id.
+ */
+const nameToId = new Map<string, string>();
 
 /**
  * PER-STEP FAILURE INJECTION — the very object `execFile`'s callback is handed for that step, or
@@ -100,6 +129,12 @@ const createdIds: string[] = [];
  * of them FIRES. {@link NODE_FAILURE_SHAPES} fires them, on every step that can produce them.
  */
 const stepFails: Partial<Record<RunnerStepKind, Error>> = {};
+
+/**
+ * What a SUCCESSFUL `start` prints, when a case cares. Default `undefined` keeps the literal
+ * `runner ok`/`runner warned` every other assertion in this file pins.
+ */
+let startBehaviourOk: { stdout: string; stderr: string } | undefined;
 
 /**
  * The ordinary `start` rejection: a non-zero exit carrying the child's own output. A builder rather
@@ -179,7 +214,7 @@ vi.mock("node:child_process", () => {
       return;
     }
     if (kind === "start") {
-      cb(null, { stdout: "runner ok", stderr: "runner warned" });
+      cb(null, startBehaviourOk ?? { stdout: "runner ok", stderr: "runner warned" });
       return;
     }
     cb(null, { stdout: "", stderr: "" });
@@ -193,6 +228,15 @@ vi.mock("node:child_process", () => {
       cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
     ) => {
       calls.push({ file, args, opts });
+      const envFileIndex = args.indexOf("--env-file");
+      if (envFileIndex !== -1) {
+        const path = String(args[envFileIndex + 1]);
+        envFileSnapshots.push({
+          path,
+          content: readFileSync(path, "utf8"),
+          mode: statSync(path).mode & 0o777
+        });
+      }
       const kind = stepKind(args);
       // ALLOCATED AT ISSUE TIME, not at delivery: a `create` that is being HELD OPEN still has a
       // knowable identity, and two concurrent runs are then never handed the same one whatever
@@ -201,6 +245,8 @@ vi.mock("node:child_process", () => {
       if (kind === "create") {
         if (createIdSequence) createOut = `  container-${createdIds.length + 1} \n`;
         createdIds.push(createOut.trim());
+        const named = args[args.indexOf("--name") + 1];
+        if (named !== undefined) nameToId.set(named, createOut.trim());
       }
       const deliver = (failure?: Error): void => {
         if (failure) {
@@ -226,9 +272,14 @@ vi.mock("node:child_process", () => {
 
 const {
   DEFAULT_DOCKER_BINARY,
+  RUNNER_CONTAINER_NAME_PREFIX,
   RUNNER_REMOVE_TIMEOUT_MS,
+  RUNNER_RUN_ID_PATTERN,
+  RunnerLaunchError,
   createDockerRunnerLauncher,
-  resolveDockerRunnerLauncher
+  resolveDockerRunnerLauncher,
+  runnerContainerName,
+  toRunnerRunId
 } = await import("./index.js");
 
 /**
@@ -242,13 +293,23 @@ const DEP_OPTS = { timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024 };
 /** The teardown call's own options — a shorter timeout and, notably, NO `maxBuffer`. */
 const RM_OPTS = { timeout: 30_000 };
 
-/** A minimal, entirely explicit spec. Every test below overrides only what it is about. */
+/**
+ * A minimal, entirely explicit spec. Every test below overrides only what it is about.
+ *
+ * `runId` IS A FIXED LITERAL, and `labels` EMPTY, so that the argv assertions stay readable and so
+ * that a spurious label is a visible extra pair rather than noise. The ordering substrate at the
+ * bottom overrides `runId` per run — two concurrent runs must not share a container NAME any more
+ * than they may share a container id, and the case that proves it needs distinct ones.
+ */
 function spec(overrides: Partial<RunnerSpec> = {}): RunnerSpec {
   return {
+    runId: "r1",
+    labels: {},
     image: "scp-runner-iac:vetted",
     operands: [],
     networkMode: "none",
     env: [],
+    secretEnv: [],
     copyIn: [],
     timeoutMs: IAC_OPTS.timeout,
     maxBuffer: IAC_OPTS.maxBuffer,
@@ -263,6 +324,9 @@ function reset(): void {
   createStdout = "  container-abc123 \n";
   createIdSequence = false;
   createdIds.length = 0;
+  nameToId.clear();
+  envFileSnapshots.length = 0;
+  startBehaviourOk = undefined;
   for (const kind of Object.keys(stepFails) as RunnerStepKind[]) delete stepFails[kind];
 }
 
@@ -302,6 +366,8 @@ describe("M23.1 conformance: what the Docker adapter puts on the command line", 
           "create",
           "--network",
           "scp-scan-egress",
+          "--name",
+          "scp-runner-r1",
           "-e",
           "SCP_SCAN_DB_DIR=/work/db",
           "-e",
@@ -341,7 +407,7 @@ describe("M23.1 conformance: what the Docker adapter puts on the command line", 
       // THE TEARDOWN TIMEOUT IS NOT THE RUN TIMEOUT, and `rm` carries no `maxBuffer` at all.
       {
         file: "/usr/local/bin/docker",
-        args: ["rm", "-f", "container-abc123"],
+        args: ["rm", "-f", "scp-runner-r1"],
         opts: RM_OPTS
       }
     ]);
@@ -365,11 +431,19 @@ describe("M23.1 conformance: what the Docker adapter puts on the command line", 
     expect(calls, "the Docker adapter's minimal launch argv changed").toStrictEqual([
       {
         file: "docker",
-        args: ["create", "--network", "none", "scp-runner-dep:vetted", "npm"],
+        args: [
+          "create",
+          "--network",
+          "none",
+          "--name",
+          "scp-runner-r1",
+          "scp-runner-dep:vetted",
+          "npm"
+        ],
         opts: IAC_OPTS
       },
       { file: "docker", args: ["start", "-a", "container-abc123"], opts: IAC_OPTS },
-      { file: "docker", args: ["rm", "-f", "container-abc123"], opts: RM_OPTS }
+      { file: "docker", args: ["rm", "-f", "scp-runner-r1"], opts: RM_OPTS }
     ]);
     expect(result.succeeded).toBe(true);
   });
@@ -391,11 +465,11 @@ describe("M23.1 conformance: what the Docker adapter puts on the command line", 
     );
 
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["cp", "/host/in/.", "container-xyz:/work/in"],
       ["start", "-a", "container-xyz"],
       ["cp", "container-xyz:/work/out/.", "/host/out"],
-      ["rm", "-f", "container-xyz"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
   });
 
@@ -485,10 +559,10 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
       spec({ copyOut: { ...OUT_PATHS, when: "always", onFailure: "swallow" } })
     );
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["start", "-a", "container-abc123"],
       ["cp", "container-abc123:/work/out/.", "/host/out"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
   });
 
@@ -501,10 +575,10 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
     );
 
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["start", "-a", "container-abc123"],
       ["cp", "container-abc123:/work/out/.", "/host/out"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
     expect(result.succeeded).toBe(false);
   });
@@ -517,9 +591,9 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
     );
 
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["start", "-a", "container-abc123"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
     expect(result.succeeded).toBe(false);
   });
@@ -530,10 +604,10 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
       spec({ copyOut: { ...OUT_PATHS, when: "on-success", onFailure: "propagate" } })
     );
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["start", "-a", "container-abc123"],
       ["cp", "container-abc123:/work/out/.", "/host/out"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
   });
 
@@ -547,10 +621,10 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
 
     expect(result).toStrictEqual({ succeeded: true, stdout: "runner ok", stderr: "runner warned" });
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["start", "-a", "container-abc123"],
       ["cp", "container-abc123:/work/out/.", "/host/out"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
   });
 
@@ -567,10 +641,10 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
 
     // The `finally` still tore the container down — the credential-carrying env does not survive.
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["start", "-a", "container-abc123"],
       ["cp", "container-abc123:/work/out/.", "/host/out"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
   });
 });
@@ -619,9 +693,9 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
     ).rejects.toThrow(/cannot read host directory/);
 
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["cp", "/host/in/.", "container-abc123:/work/in"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
   });
 
@@ -633,23 +707,114 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
 
     expect(result).toStrictEqual({ succeeded: true, stdout: "runner ok", stderr: "runner warned" });
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"],
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
       ["start", "-a", "container-abc123"],
-      ["rm", "-f", "container-abc123"]
+      ["rm", "-f", "scp-runner-r1"]
     ]);
   });
 
-  it("THE RECORDED DEFECT — a REJECTED `create` issues NO `rm`, because its await is outside the `try`", async () => {
-    // M23.0 found this and deliberately did not fix it: a `create` that times out AFTER the daemon
-    // made the container leaves it behind, and no `--name`/`--label` is passed, so it carries no
-    // attribution. It is pinned here so the day someone moves that `await` inside the `try` — the
-    // right fix, now in ONE place instead of three — this test fails and is updated ON PURPOSE
-    // rather than the behaviour changing silently in either direction.
+  it("a create that REJECTS after the daemon committed still issues rm -f for the NAME the caller chose", async () => {
+    // ================================================================================================
+    // M23.0's DEFECT 1, FIXED — AND THIS TEST IS THE INVERSION OF THE ONE THAT PINNED IT.
+    // ================================================================================================
+    // It used to be named "THE RECORDED DEFECT — a REJECTED `create` issues NO `rm`, because its
+    // await is outside the `try`", and it asserted that the ONLY call was the `create`. That was the
+    // honest record of a real bug: a `create` that times out after the daemon already made the
+    // container leaves it behind, unattributed and un-reaped. It is INVERTED rather than deleted,
+    // because the invariant it now states is the one that must not silently regress in either
+    // direction.
+    //
+    // AND IT DOES NOT INHERIT THE OLD FILE'S ADVICE. That test's comment said the right fix was to
+    // "move that `await` inside the `try`". IT IS NOT, and this file was wrong about its own subject:
+    // moving the await alone leaves `containerId` unbound when `create` rejects, so the `finally`
+    // issues `rm -f undefined` — measured against a real daemon (Docker 29.5.2), `docker rm -f` on a
+    // name that does not exist EXITS ZERO, so that call is not even a visible failure. It repairs
+    // nothing, it reaches no orphan, and it breaks this test. The fix needs BOTH halves: a name
+    // computed BEFORE `create` is issued, and `create` inside the `try`.
+    //
+    // THE DELETE-THE-WIRING CHECK FOR THAT FIX, MEASURED (each mutation applied alone, whole file
+    // re-run):
+    //   teardown addresses `containerId` again        -> RED here (a `rm -f undefined` is recorded)
+    //   `create`'s await moves back outside the `try` -> RED here (no `rm` at all is recorded)
     fail("create");
     await expect(createDockerRunnerLauncher("docker").run(spec())).rejects.toThrow(/no such image/);
 
+    expect(
+      calls.map((c) => c.args),
+      "a create that failed left no teardown for the container the daemon may already have made"
+    ).toStrictEqual([
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
+      ["rm", "-f", "scp-runner-r1"]
+    ]);
+  });
+
+  it("THE NAME IS THE CALLER'S runId, NOT ANYTHING THE ADAPTER MINTED", async () => {
+    // The half of 1a a `--name` assertion alone cannot show: the string comes from the SPEC. An
+    // adapter that minted its own (a UUID, the image name, a counter) passes every argv assertion
+    // above that hard-codes `scp-runner-r1` only because `spec()` happens to say `r1`.
+    await createDockerRunnerLauncher("docker").run(spec({ runId: "iac-prod-eu-west-1" }));
+
+    expect(runnerContainerName("iac-prod-eu-west-1")).toBe("scp-runner-iac-prod-eu-west-1");
+    expect(RUNNER_CONTAINER_NAME_PREFIX).toBe("scp-runner-");
     expect(calls.map((c) => c.args)).toStrictEqual([
-      ["create", "--network", "none", "scp-runner-iac:vetted"]
+      [
+        "create",
+        "--network",
+        "none",
+        "--name",
+        "scp-runner-iac-prod-eu-west-1",
+        "scp-runner-iac:vetted"
+      ],
+      ["start", "-a", "container-abc123"],
+      ["rm", "-f", "scp-runner-iac-prod-eu-west-1"]
+    ]);
+  });
+
+  it("A runId THAT IS NOT DNS-SAFE IS REFUSED BEFORE ANY CONTAINER EXISTS — never sanitised", async () => {
+    // Sanitising here is the trap: `prod/eu-west-1` and `prod-eu-west-1` would become one name, and
+    // two runs would then fight over one container — one losing its `create` to a name conflict and
+    // the other losing its container to the loser's teardown. The refusal is fail-closed and issues
+    // NOTHING, so there is no container and no teardown to get wrong.
+    await expect(
+      createDockerRunnerLauncher("docker").run(spec({ runId: "prod/eu-west-1" }))
+    ).rejects.toThrow(/not DNS-safe/);
+    expect(calls, "a refused spec still reached the daemon").toStrictEqual([]);
+
+    // ...and the helper the callers are told to use produces something the pattern accepts, for the
+    // same input, WITHOUT collapsing two distinct keys onto one name.
+    expect(toRunnerRunId("prod/eu-west-1")).toMatch(RUNNER_RUN_ID_PATTERN);
+    expect(toRunnerRunId("prod/eu-west-1")).not.toBe(toRunnerRunId("prod-eu-west-1"));
+    // Deterministic, which is what makes managed-iac's retry land on the same container name.
+    expect(toRunnerRunId("prod/eu-west-1")).toBe(toRunnerRunId("prod/eu-west-1"));
+    expect(toRunnerRunId("k1")).toBe("k1");
+    expect(toRunnerRunId("x".repeat(300))).toMatch(RUNNER_RUN_ID_PATTERN);
+    expect(toRunnerRunId("///")).toMatch(RUNNER_RUN_ID_PATTERN);
+  });
+
+  it("LABELS ARE EMITTED IN INSERTION ORDER, one `--label k=v` each, after `--name` and before `-e`", async () => {
+    // The attribution half of M23.0's defect 1: an orphan with no label cannot be swept for. ORDER is
+    // asserted because the Kubernetes arm (M23.2) must put the same pairs in `metadata.labels`, and
+    // because an adapter that sorted them would make the goldens depend on key spelling.
+    await createDockerRunnerLauncher("docker").run(
+      spec({
+        labels: { "scp.executor": "scp-managed-iac", "scp.run-id": "r1" },
+        env: ["PRIOR_STATE_FILE=state-history/x.tfstate"]
+      })
+    );
+
+    expect(calls[0]!.args).toStrictEqual([
+      "create",
+      "--network",
+      "none",
+      "--name",
+      "scp-runner-r1",
+      "--label",
+      "scp.executor=scp-managed-iac",
+      "--label",
+      "scp.run-id=r1",
+      "-e",
+      "PRIOR_STATE_FILE=state-history/x.tfstate",
+      "scp-runner-iac:vetted"
     ]);
   });
 });
@@ -831,6 +996,33 @@ function errorFingerprint(err: unknown): Record<string, unknown> {
   return shape;
 }
 
+/**
+ * WHAT SURVIVES THE WRAP. Since the argv-leak fix these arms can no longer assert
+ * `rejects.toBe(err)` — the adapter never rethrows the original, precisely so `err.message`'s
+ * `Command failed: docker create … -e AWS_SECRET_ACCESS_KEY=…` cannot cross the plugin-host RPC
+ * boundary. That makes it possible to LOSE the diagnosis while looking correct, so this asserts the
+ * opposite direction: the wrapper is a `RunnerLaunchError` for the right STEP, and Node's own
+ * `code`/`killed`/`signal` and the original's own words all came across. A wrapper that dropped them
+ * would turn "our own timeout SIGTERM'd it" into an indistinguishable blank, which is the whole
+ * reason the shapes table exists.
+ */
+function expectWrapped(err: unknown, step: string, original: Error): true {
+  expect(err, "the adapter rethrew a raw execFile error, argv and all").toBeInstanceOf(
+    RunnerLaunchError
+  );
+  const e = err as InstanceType<typeof RunnerLaunchError>;
+  expect(e.step, "the failure was attributed to the wrong step").toBe(step);
+  const o = original as unknown as { code?: unknown; killed?: unknown; signal?: unknown };
+  expect(
+    { code: e.code, killed: e.killed, signal: e.signal },
+    "the wrapper dropped the diagnosis Node produced"
+  ).toStrictEqual({ code: o.code, killed: o.killed, signal: o.signal });
+  expect(e.message, "the wrapper lost the original failure's own words").toContain(
+    original.message
+  );
+  return true;
+}
+
 describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself produces, on every step", () => {
   const OUT_PATHS = { containerPath: "/work/out", hostDir: "/host/out" } as const;
 
@@ -879,28 +1071,33 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
       ).toStrictEqual({ succeeded: false, ...startsAs });
       // …and it is a CAPTURED failure, so the container is still torn down.
       expect(calls.map((c) => c.args)).toStrictEqual([
-        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
         ["start", "-a", "container-abc123"],
-        ["rm", "-f", "container-abc123"]
+        ["rm", "-f", "scp-runner-r1"]
       ]);
     }
   );
 
   it.each(NODE_FAILURE_SHAPES)(
-    "$name at `create` → REJECTS out of run(), and issues NO teardown",
+    "$name at `create` → REJECTS out of run(), and STILL tears the NAME down",
     async ({ make }) => {
-      // The recorded M23.0 defect, held for every shape rather than only for "no such image" — and
-      // the TIMEOUT row is the one that matters: `create` timing out is precisely the case where the
-      // daemon may already have made a container, and it is precisely the case with no `rm`.
+      // M23.0's defect 1, held for every shape rather than only for "no such image" — and the
+      // TIMEOUT row is the one that matters: `create` timing out is precisely the case where the
+      // daemon may already have made a container, and it used to be precisely the case with no `rm`.
       const err = make();
       fail("create", err);
 
-      await expect(createDockerRunnerLauncher("docker").run(spec())).rejects.toBe(err);
+      await expect(createDockerRunnerLauncher("docker").run(spec())).rejects.toSatisfy(
+        (thrown: unknown) => expectWrapped(thrown, "create", err)
+      );
 
       expect(
         calls.map((c) => c.args),
-        "a step other than `create` was issued after `create` failed"
-      ).toStrictEqual([["create", "--network", "none", "scp-runner-iac:vetted"]]);
+        "a create that failed this way left no teardown for the container the daemon may already have made"
+      ).toStrictEqual([
+        ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
+        ["rm", "-f", "scp-runner-r1"]
+      ]);
     }
   );
 
@@ -914,12 +1111,12 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
         createDockerRunnerLauncher("docker").run(
           spec({ copyIn: [{ hostDir: "/host/in", containerPath: "/work/in" }] })
         )
-      ).rejects.toBe(err);
+      ).rejects.toSatisfy((thrown: unknown) => expectWrapped(thrown, "copy-in", err));
 
       expect(calls.map((c) => c.args)).toStrictEqual([
-        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
         ["cp", "/host/in/.", "container-abc123:/work/in"],
-        ["rm", "-f", "container-abc123"]
+        ["rm", "-f", "scp-runner-r1"]
       ]);
     }
   );
@@ -941,10 +1138,10 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
         stderr: "runner warned"
       });
       expect(calls.map((c) => c.args)).toStrictEqual([
-        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
         ["start", "-a", "container-abc123"],
         ["cp", "container-abc123:/work/out/.", "/host/out"],
-        ["rm", "-f", "container-abc123"]
+        ["rm", "-f", "scp-runner-r1"]
       ]);
 
       reset();
@@ -954,12 +1151,12 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
         createDockerRunnerLauncher("docker").run(
           spec({ copyOut: { ...OUT_PATHS, when: "always", onFailure: "propagate" } })
         )
-      ).rejects.toBe(propagated);
+      ).rejects.toSatisfy((thrown: unknown) => expectWrapped(thrown, "copy-out", propagated));
       expect(calls.map((c) => c.args)).toStrictEqual([
-        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
         ["start", "-a", "container-abc123"],
         ["cp", "container-abc123:/work/out/.", "/host/out"],
-        ["rm", "-f", "container-abc123"]
+        ["rm", "-f", "scp-runner-r1"]
       ]);
     }
   );
@@ -980,12 +1177,334 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
         stderr: "runner warned"
       });
       expect(calls.map((c) => c.args)).toStrictEqual([
-        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
         ["start", "-a", "container-abc123"],
-        ["rm", "-f", "container-abc123"]
+        ["rm", "-f", "scp-runner-r1"]
       ]);
     }
   );
+});
+
+// ==================================================================================================
+// SECRETS — the `secretEnv` split, and the promise that nothing carrying one ever leaves this file.
+// ==================================================================================================
+//
+// WHAT THESE PROVE, AND THE MUTATION EACH ONE ANSWERS (every mutation applied alone to a clean tree,
+// the whole file re-run):
+//
+//   secretEnv goes back through `flatMap(e => ["-e", e])`   -> RED: "no value from secretEnv appears
+//                                                              anywhere in any recorded argv"
+//   the create catch rethrows the original error            -> RED: "a rejected create throws a
+//                                                              RunnerLaunchError whose message
+//                                                              contains no secret value"
+//   the wrapper keeps the original as `cause`               -> RED: the same test's `err.stack` arm
+//   the `--env-file` is never unlinked                      -> RED: "the env-file is gone by the time
+//                                                              `create` has returned"
+//   the env-file is written 0o644 instead of 0o600          -> RED: the same test's mode arm
+//   `env` is routed through `--env-file` too                -> RED: "a spec with NO secretEnv emits
+//                                                              NO --env-file"
+//
+// WHAT THEY CANNOT PROVE is stated with the rest at the bottom of this file.
+
+describe("M23.1 conformance: secretEnv never reaches the command line, and never leaves in an error", () => {
+  const SECRET = "AKIAEXAMPLE/s3cr3t+value";
+  const OTHER_SECRET = "wJalrXUtnFEMI-K7MDENG-bPxRfiCYEXAMPLEKEY";
+  let stateDir: string;
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), "runner-launcher-secret-env-"));
+  });
+
+  function secretSpec(overrides: Partial<RunnerSpec> = {}): RunnerSpec {
+    return spec({
+      env: ["PRIOR_STATE_FILE=state-history/2026-08-17.tfstate"],
+      secretEnv: [`AWS_ACCESS_KEY_ID=${SECRET}`, `AWS_SECRET_ACCESS_KEY=${OTHER_SECRET}`],
+      secretEnvDir: stateDir,
+      ...overrides
+    });
+  }
+
+  /** Every string the adapter put on any command line, flattened — argv elements AND the binary. */
+  function everyRecordedString(): string[] {
+    return calls.flatMap((c) => [c.file, ...c.args]);
+  }
+
+  it("no value from secretEnv appears anywhere in any recorded argv", async () => {
+    // THE CENTRAL CLAIM OF 1c, asserted over EVERY element of EVERY call rather than over the create
+    // line — a future step that started echoing the spec would be caught here and nowhere else.
+    await createDockerRunnerLauncher("docker").run(
+      secretSpec({
+        copyIn: [{ hostDir: "/host/in", containerPath: "/workspace" }],
+        copyOut: {
+          containerPath: "/workspace",
+          hostDir: "/host/out",
+          when: "always",
+          onFailure: "swallow"
+        }
+      })
+    );
+
+    for (const element of everyRecordedString()) {
+      expect(element, `a docker argv carried a secret VALUE: ${element}`).not.toContain(SECRET);
+      expect(element, `a docker argv carried a secret VALUE: ${element}`).not.toContain(
+        OTHER_SECRET
+      );
+    }
+    // ...and it is NOT vacuous: the run really happened, the non-secret env really is still `-e`,
+    // and the secrets really were delivered — through the env-file, whose contents the seam read.
+    expect(calls.map((c) => c.args[0])).toStrictEqual(["create", "cp", "start", "cp", "rm"]);
+    expect(calls[0]!.args).toContain("-e");
+    expect(calls[0]!.args).toContain("PRIOR_STATE_FILE=state-history/2026-08-17.tfstate");
+    expect(envFileSnapshots).toHaveLength(1);
+    expect(envFileSnapshots[0]!.content).toBe(
+      `AWS_ACCESS_KEY_ID=${SECRET}\nAWS_SECRET_ACCESS_KEY=${OTHER_SECRET}\n`
+    );
+  });
+
+  it("THE create LINE — `--env-file` sits where the `-e` secret pairs used to, before the non-secret ones", async () => {
+    await createDockerRunnerLauncher("docker").run(
+      secretSpec({ labels: { "scp.executor": "scp-managed-iac" }, operands: ["rollback"] })
+    );
+
+    const path = envFileSnapshots[0]!.path;
+    expect(calls[0]!.args).toStrictEqual([
+      "create",
+      "--network",
+      "none",
+      "--name",
+      "scp-runner-r1",
+      "--label",
+      "scp.executor=scp-managed-iac",
+      // WHERE THE TWO `-e AWS_*` PAIRS USED TO BE, and BEFORE the surviving non-secret `-e`, so that
+      // an explicit `-e` still wins over an env-file entry of the same name (docker's own precedence).
+      "--env-file",
+      path,
+      "-e",
+      "PRIOR_STATE_FILE=state-history/2026-08-17.tfstate",
+      "scp-runner-iac:vetted",
+      "rollback"
+    ]);
+  });
+
+  it("the env-file is 0600 while `create` runs and GONE by the time `create` has returned", async () => {
+    // THE PARTIAL FIX, MEASURED AS PARTIAL. This does not claim the credential is unreachable — it is
+    // in `docker inspect` for the container's life, and it is on a disk for the duration of one
+    // `create`. It claims exactly the two things that ARE true: owner-only while it exists, and it
+    // does not outlive the call.
+    await createDockerRunnerLauncher("docker").run(secretSpec());
+
+    expect(envFileSnapshots, "no env-file was ever written").toHaveLength(1);
+    expect(envFileSnapshots[0]!.mode, "the env-file was readable by other local users").toBe(0o600);
+    expect(
+      existsSync(envFileSnapshots[0]!.path),
+      "the env-file outlived the `create` that needed it"
+    ).toBe(false);
+  });
+
+  it("the env-file is unlinked ON THE FAILURE PATH TOO — a create that rejects leaves no credential on disk", async () => {
+    // The arm that a `finally` and a trailing `await unlink(...)` differ on, and the one an operator
+    // only discovers by finding the file months later.
+    fail("create");
+    await expect(createDockerRunnerLauncher("docker").run(secretSpec())).rejects.toThrow(
+      RunnerLaunchError
+    );
+
+    expect(envFileSnapshots).toHaveLength(1);
+    expect(
+      existsSync(envFileSnapshots[0]!.path),
+      "a failed create left the credential file behind"
+    ).toBe(false);
+  });
+
+  it("a rejected create throws a RunnerLaunchError whose message contains no secret value", async () => {
+    // ================================================================================================
+    // 1d — THE HIGHER-VALUE HALF, AND THE ONE THE PRODUCT ACTUALLY LEAKED THROUGH.
+    // ================================================================================================
+    // `promisify(execFile)` rejects with `Command failed: docker create --network none -e
+    // AWS_SECRET_ACCESS_KEY=… …` as its MESSAGE. That message is what `subprocess-entry.ts` serialises
+    // across the plugin-host RPC boundary — it serialises `err.message` and nothing else — and what
+    // reaches `console.error`. So every channel that can carry it is checked, not just the one that is
+    // convenient: `.message`, `String(err)`, `.stack` (which embeds the message, and which would embed
+    // a `cause`'s stack too), and `JSON.stringify` (which sees own ENUMERABLE properties, so the
+    // wrapper's `argv`, `stdout` and `stderr` are all in scope).
+    const shape = Object.assign(
+      new Error(
+        `Command failed: docker create --network none -e AWS_SECRET_ACCESS_KEY=${OTHER_SECRET} scp-runner-iac:vetted plan\n`
+      ),
+      { code: 125, killed: false, signal: null, stdout: SECRET, stderr: OTHER_SECRET }
+    );
+    fail("create", shape);
+
+    let thrown: unknown;
+    try {
+      await createDockerRunnerLauncher("docker").run(secretSpec());
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(RunnerLaunchError);
+    const err = thrown as InstanceType<typeof RunnerLaunchError>;
+    const channels: Record<string, string> = {
+      "err.message": err.message,
+      "String(err)": String(err),
+      "err.stack": err.stack ?? "",
+      "JSON.stringify(err)": JSON.stringify(err),
+      "err.argv.join": err.argv.join(" "),
+      "err.stdout": err.stdout,
+      "err.stderr": err.stderr
+    };
+    for (const [name, text] of Object.entries(channels)) {
+      expect(text, `${name} carried a secret VALUE`).not.toContain(SECRET);
+      expect(text, `${name} carried a secret VALUE`).not.toContain(OTHER_SECRET);
+      // The `--env-file` PATH is redacted too: it is the one argv element that points AT the
+      // credential, and a path is exactly the kind of thing that gets pasted into a shell.
+      expect(text, `${name} carried the env-file path`).not.toContain(envFileSnapshots[0]!.path);
+    }
+
+    // NOT VACUOUS — the redaction marker is present, the diagnosis survived, and the message still
+    // says what failed. A wrapper that replaced everything with "an error occurred" would satisfy
+    // every `not.toContain` above.
+    expect(err.message).toContain("***");
+    expect(err.message).toContain("managed runner create failed");
+    expect(err.message).toContain("Command failed: docker create");
+    expect({ code: err.code, killed: err.killed, signal: err.signal }).toStrictEqual({
+      code: 125,
+      killed: false,
+      signal: null
+    });
+  });
+
+  it("A FAILED `start` IS CAPTURED WITH ITS SECRETS REDACTED — the run's own result is a channel too", async () => {
+    // `run()` RETURNS this one rather than throwing it, and the plugins put it straight into a
+    // Decision's `detail` (charter principle 6). managed-iac redacts it again on its own way out;
+    // that is belt-and-braces, not the control — a fourth managed plugin would inherit nothing.
+    fail(
+      "start",
+      startExitFailure({ stdout: `plan wrote ${SECRET}`, stderr: `tofu: ${OTHER_SECRET} rejected` })
+    );
+
+    const result = await createDockerRunnerLauncher("docker").run(secretSpec());
+
+    expect(result).toStrictEqual({
+      succeeded: false,
+      stdout: "plan wrote ***",
+      stderr: "tofu: *** rejected"
+    });
+  });
+
+  it("A SUCCEEDED run's stdout and stderr are redacted TOO — success is not a safe channel", async () => {
+    // FOUND BY MUTATION, NOT BY READING. Dropping `redact()` from the SUCCESS arm of `start` survived
+    // the whole suite: every secret case above drove a FAILURE, so the one path a real `tofu plan`
+    // takes every day was the one path with no assertion on it. A provider that echoes its own
+    // credential into a plan summary — or a runner that prints its environment on `--debug` — lands
+    // in `RunnerResult.stdout`, which the plugins put straight into a Decision (charter principle 6).
+    startBehaviourOk = { stdout: `applied with ${SECRET}`, stderr: `warning: ${OTHER_SECRET}` };
+
+    const result = await createDockerRunnerLauncher("docker").run(secretSpec());
+
+    expect(result).toStrictEqual({
+      succeeded: true,
+      stdout: "applied with ***",
+      stderr: "warning: ***"
+    });
+  });
+
+  it("a spec with NO secretEnv emits NO `--env-file` — managed-scan's five golden create lines cannot move", async () => {
+    // THE NEGATIVE THAT KEEPS 1c HONEST. managed-scan's `SCP_SCAN_DB_DIR`/`SCP_SCAN_SCAP_DIR` are
+    // container PATHS, not secrets, so they stay in `env` and its goldens must not change by a byte
+    // beyond the name/label. An adapter that routed `env` through the env-file too would break every
+    // one of them — and would ALSO put a file on disk for a run that needs none.
+    await createDockerRunnerLauncher("docker").run(
+      spec({
+        image: "scp-runner-scan:vetted",
+        operands: ["trivy-vm"],
+        env: ["SCP_SCAN_DB_DIR=/work/db"],
+        secretEnv: [],
+        secretEnvDir: stateDir
+      })
+    );
+
+    expect(calls[0]!.args).toStrictEqual([
+      "create",
+      "--network",
+      "none",
+      "--name",
+      "scp-runner-r1",
+      "-e",
+      "SCP_SCAN_DB_DIR=/work/db",
+      "scp-runner-scan:vetted",
+      "trivy-vm"
+    ]);
+    expect(envFileSnapshots, "an env-file was written for a run with no secrets").toStrictEqual([]);
+    expect(calls.flatMap((c) => c.args)).not.toContain("--env-file");
+  });
+
+  it("secretEnv WITHOUT secretEnvDir IS REFUSED — the adapter never picks a directory of its own", async () => {
+    // `os.tmpdir()` is shared with every other local user; "somewhere sensible" is not a decision an
+    // adapter gets to make about where a credential lands. Fail-closed, before any container.
+    await expect(
+      createDockerRunnerLauncher("docker").run(
+        spec({ secretEnv: ["AWS_SECRET_ACCESS_KEY=x"], secretEnvDir: undefined })
+      )
+    ).rejects.toThrow(/secretEnv was supplied without secretEnvDir/);
+    expect(calls).toStrictEqual([]);
+  });
+
+  it("A NEWLINE IN A secretEnv VALUE IS REFUSED — one entry must never become two variables", async () => {
+    // An env-file line is `KEY=VALUE` to end of line, unquoted. A `\n` inside a value silently
+    // DEFINES ANOTHER VARIABLE in the runner's environment, which is an injection from whatever
+    // produced the secret — a secret store, or a tenant who got to write one.
+    await expect(
+      createDockerRunnerLauncher("docker").run(
+        secretSpec({ secretEnv: ["AWS_SECRET_ACCESS_KEY=x\nLD_PRELOAD=/tmp/evil.so"] })
+      )
+    ).rejects.toThrow(/single-line KEY=VALUE/);
+    expect(calls).toStrictEqual([]);
+    expect(envFileSnapshots).toStrictEqual([]);
+  });
+
+  it("THE REFUSAL MESSAGES CARRY NO SECRET — a fail-closed path is a channel like any other", async () => {
+    // The refusal above names the offending entry. It must name the KEY and not the VALUE, or the
+    // fail-closed path becomes the leak the success path no longer is.
+    let thrown: unknown;
+    try {
+      await createDockerRunnerLauncher("docker").run(
+        secretSpec({ secretEnv: [`AWS_SECRET_ACCESS_KEY=${OTHER_SECRET}\nLD_PRELOAD=x`] })
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    const err = thrown as Error;
+    expect(err.message).toContain("AWS_SECRET_ACCESS_KEY");
+    expect(err.message).not.toContain(OTHER_SECRET);
+    expect(JSON.stringify(err)).not.toContain(OTHER_SECRET);
+  });
+
+  it("SECRETS SURVIVE A RETRY BY NAME — the same runId is the same container name, twice", async () => {
+    // managed-iac derives `runId` from `intent.idempotencyKey` exactly so a retry addresses the same
+    // container. Two runs of the same spec must therefore produce the same `--name` and the same
+    // teardown target — and a DIFFERENT env-file path each time, because the first was unlinked.
+    await createDockerRunnerLauncher("docker").run(secretSpec());
+    const firstPath = envFileSnapshots[0]!.path;
+    await createDockerRunnerLauncher("docker").run(secretSpec());
+
+    const names = calls
+      .filter((c) => c.args[0] === "create")
+      .map((c) => c.args[c.args.indexOf("--name") + 1]);
+    expect(names).toStrictEqual(["scp-runner-r1", "scp-runner-r1"]);
+    expect(calls.filter((c) => c.args[0] === "rm").map((c) => c.args)).toStrictEqual([
+      ["rm", "-f", "scp-runner-r1"],
+      ["rm", "-f", "scp-runner-r1"]
+    ]);
+    expect(envFileSnapshots[1]!.path).not.toBe(firstPath);
+  });
+
+  it("CLEANUP: the state dir holds nothing after every case above", () => {
+    // A guard on this describe's own housekeeping. If a case leaked a file, the assertion that the
+    // adapter unlinks would be the only thing standing between a credential and a stale disk.
+    rmSync(stateDir, { recursive: true, force: true });
+    expect(existsSync(stateDir)).toBe(false);
+  });
 });
 
 // ==================================================================================================
@@ -1061,8 +1580,13 @@ describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself
 function stepIdentity(args: string[], createIndex: number): string | undefined {
   const sub = args[0];
   if (sub === "create") return createdIds[createIndex];
-  // `start -a <id>` and `rm -f <id>`.
-  if (sub === "start" || sub === "rm") return args[2];
+  // TEARDOWN ADDRESSES THE NAME, every other step the id (index.ts, "TWO IDENTITIES, ON PURPOSE").
+  // Translated back to the id here rather than left as a second identity, because the property the
+  // ordering suite tests is "each run tore down ITS OWN container" — and a teardown aimed at the
+  // WRONG run's name now maps to the wrong id and fails, which is exactly what should happen.
+  if (sub === "rm") return nameToId.get(String(args[2])) ?? String(args[2]);
+  // `start -a <id>`.
+  if (sub === "start") return args[2];
   // `cp <id>:<path>/. <hostDir>` out, `cp <hostDir>/. <id>:<path>` in.
   if (sub === "cp") return String(isCopyOut(args) ? args[1] : args[2]).split(":")[0];
   return undefined;
@@ -1070,12 +1594,13 @@ function stepIdentity(args: string[], createIndex: number): string | undefined {
 
 function dockerOrderingSubstrate(): LaunchOrderingSubstrate {
   reset();
-  // Every ordering case gets sequential ids, so identity is meaningful in all of them and the
-  // concurrency case is not a special configuration nobody else exercises.
+  // Every ordering case gets sequential ids AND a distinct runId per run, so identity is meaningful
+  // in all of them and the concurrency case is not a special configuration nobody else exercises.
   createIdSequence = true;
+  let runIdSequence = 0;
   return {
     launcher: createDockerRunnerLauncher("docker"),
-    baseSpec: () => spec(),
+    baseSpec: () => spec({ runId: `r${++runIdSequence}` }),
     issued: () => calls.map((c) => stepKind(c.args)),
     issuedIdentities: () => {
       let createIndex = 0;
