@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunnerSpec } from "./index.js";
+import {
+  runLaunchOrderingConformanceSuite,
+  type LaunchOrderingSubstrate,
+  type RunnerStepKind
+} from "./ordering-conformance.js";
 
 /**
  * ================================================================================================
@@ -82,7 +87,79 @@ function isCopyOut(args: string[]): boolean {
   return args[0] === "cp" && !String(args[2]).includes(":");
 }
 
+/**
+ * WHICH LIFECYCLE STEP AN argv IS. The ordering suite speaks in the port's five steps; this is the
+ * only place that translates them into Docker subcommands.
+ */
+function stepKind(args: string[]): RunnerStepKind {
+  const sub = args[0];
+  if (sub === "create") return "create";
+  if (sub === "start") return "start";
+  if (sub === "rm") return "teardown";
+  if (sub === "cp") return isCopyOut(args) ? "copy-out" : "copy-in";
+  throw new Error(`docker-adapter.test: unclassifiable docker subcommand '${String(sub)}'`);
+}
+
+/** How many of the NEXT occurrences of each step are to be held open (issued, never settling). */
+const holds: Record<RunnerStepKind, number> = {
+  create: 0,
+  "copy-in": 0,
+  start: 0,
+  "copy-out": 0,
+  teardown: 0
+};
+/** The steps currently held open, oldest first, each with the callback that will settle it. */
+const heldOpen: { kind: RunnerStepKind; deliver: (failure?: Error) => void }[] = [];
+
 vi.mock("node:child_process", () => {
+  /** The outcome this step would have had, decided by the flags AT DELIVERY TIME. */
+  function outcome(
+    args: string[],
+    cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
+  ): void {
+    const sub = args[0];
+    if (sub === "create") {
+      if (!createOk) {
+        cb(new Error("docker create: no such image"));
+        return;
+      }
+      cb(null, { stdout: createStdout, stderr: "" });
+      return;
+    }
+    if (sub === "start") {
+      if (startOk) {
+        cb(null, { stdout: "runner ok", stderr: "runner warned" });
+        return;
+      }
+      const err = new Error("container exited non-zero");
+      if (startFailure.stdout !== undefined) Object.assign(err, { stdout: startFailure.stdout });
+      if (startFailure.stderr !== undefined) Object.assign(err, { stderr: startFailure.stderr });
+      cb(err);
+      return;
+    }
+    if (sub === "rm") {
+      if (!rmOk) {
+        cb(new Error("docker rm: no such container"));
+        return;
+      }
+      cb(null, { stdout: "", stderr: "" });
+      return;
+    }
+    if (isCopyOut(args)) {
+      if (!cpOutOk) {
+        cb(new Error("docker cp: no such file or directory"));
+        return;
+      }
+      cb(null, { stdout: "", stderr: "" });
+      return;
+    }
+    if (!cpInOk) {
+      cb(new Error("docker cp: cannot read host directory"));
+      return;
+    }
+    cb(null, { stdout: "", stderr: "" });
+  }
+
   return {
     execFile: (
       file: string,
@@ -91,47 +168,25 @@ vi.mock("node:child_process", () => {
       cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
     ) => {
       calls.push({ file, args, opts });
-      const sub = args[0];
-      if (sub === "create") {
-        if (!createOk) {
-          cb(new Error("docker create: no such image"));
+      const kind = stepKind(args);
+      const deliver = (failure?: Error): void => {
+        if (failure) {
+          cb(failure);
           return;
         }
-        cb(null, { stdout: createStdout, stderr: "" });
+        outcome(args, cb);
+      };
+      // HELD: issued and recorded, but it will not settle until `release()` says so. This is the
+      // only thing that makes an un-awaited step distinguishable from an awaited one.
+      if (holds[kind] > 0) {
+        holds[kind] -= 1;
+        heldOpen.push({ kind, deliver });
         return;
       }
-      if (sub === "start") {
-        if (startOk) {
-          cb(null, { stdout: "runner ok", stderr: "runner warned" });
-          return;
-        }
-        const err = new Error("container exited non-zero");
-        if (startFailure.stdout !== undefined) Object.assign(err, { stdout: startFailure.stdout });
-        if (startFailure.stderr !== undefined) Object.assign(err, { stderr: startFailure.stderr });
-        cb(err);
-        return;
-      }
-      if (sub === "rm") {
-        if (!rmOk) {
-          cb(new Error("docker rm: no such container"));
-          return;
-        }
-        cb(null, { stdout: "", stderr: "" });
-        return;
-      }
-      if (isCopyOut(args)) {
-        if (!cpOutOk) {
-          cb(new Error("docker cp: no such file or directory"));
-          return;
-        }
-        cb(null, { stdout: "", stderr: "" });
-        return;
-      }
-      if (!cpInOk) {
-        cb(new Error("docker cp: cannot read host directory"));
-        return;
-      }
-      cb(null, { stdout: "", stderr: "" });
+      // NEVER SYNCHRONOUSLY, even unheld. A real `execFile` callback lands on a later turn of the
+      // loop; a seam that resolved inline made every step complete before the adapter's next line
+      // ran, which is precisely how the two dropped awaits above survived twenty green tests.
+      setImmediate(() => deliver());
     }
   };
 });
@@ -170,6 +225,8 @@ function spec(overrides: Partial<RunnerSpec> = {}): RunnerSpec {
 
 function reset(): void {
   calls.length = 0;
+  heldOpen.length = 0;
+  for (const kind of Object.keys(holds) as RunnerStepKind[]) holds[kind] = 0;
   createStdout = "  container-abc123 \n";
   createOk = true;
   cpInOk = true;
@@ -562,3 +619,75 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
     ]);
   });
 });
+
+// ==================================================================================================
+// AWAIT ORDERING — the half of the contract the argv assertions above are structurally blind to.
+// ==================================================================================================
+//
+// Everything above records ISSUE order. Issue order is identical whether a step was awaited or
+// fired and forgotten, so two real mutations of `index.ts` used to survive all twenty of those
+// tests: `await pending.catch(() => undefined)` -> `void pending.catch(() => undefined)` (the
+// evidence copy-out), and `await execFileAsync(docker, ["rm","-f",id], …)` -> `void …` (teardown).
+// The cases below hold one step OPEN and assert that the next one has not been issued, which is the
+// only formulation that can tell the two apart. They are parameterised so the M23.2 Kubernetes
+// adapter inherits them by supplying a substrate rather than by re-deriving the race.
+//
+// THE MEASURED TABLE — EVERY `await` in `packages/runner-launcher/src/index.ts` (there are six),
+// dropped in turn and the suite re-run. "pre-existing" = the 20 tests above, selected with
+// `vitest run -t "M23.1 conformance:"`; "with ordering" = the whole file.
+//
+//   index.ts:195  create, `const { stdout } = await execFileAsync(…)`
+//                 pre-existing: CAUGHT (all 20)   with ordering: CAUGHT (30)
+//                 Dropping it destroys the value flow too — `createOut` becomes a Promise and
+//                 `.trim()` throws — so this await cannot be dropped in an ordering-only way. The
+//                 named ordering case is "`create` IS AWAITED".
+//   index.ts:205  copy-in loop, `await execFileAsync(…)` -> `void`
+//                 pre-existing: CAUGHT (1)        with ordering: CAUGHT (2)
+//                 "A REJECTED COPY-IN REJECTS the run" catches the un-awaited rejection; only
+//                 "THE COPY-INS ARE SEQUENTIAL" catches the ORDER (two copies racing into one
+//                 container, and `start` racing both).
+//   index.ts:218  start, `const r = await execFileAsync(…)`
+//                 pre-existing: CAUGHT (8)        with ordering: CAUGHT (9)
+//                 Value flow again (`r.stdout` undefined), plus "`start` IS AWAITED".
+//   index.ts:242  copy-out swallow arm, `await pending.catch(…)` -> `void pending.catch(…)`
+//                 pre-existing: **SURVIVED**      with ordering: CAUGHT (2)
+//                 THE managed-iac plan.json RACE. Measured, not assumed: with `-t "M23.1
+//                 conformance:"` the run is "20 passed | 10 skipped" and exit 0.
+//   index.ts:244  copy-out propagate arm, `await pending;` -> `void pending;`
+//                 pre-existing: CAUGHT (1)        with ordering: CAUGHT (2)
+//                 The pre-existing catch is incidental — the rejection stops escaping `run()`.
+//                 "THE PROPAGATING COPY-OUT IS AWAITED" is what names the teardown race.
+//   index.ts:251  teardown, `await execFileAsync(… "rm","-f" …).catch(…)` -> `void …`
+//                 pre-existing: **SURVIVED**      with ordering: CAUGHT (2)
+//                 Also measured at exit 0 against the pre-existing tests alone.
+//
+// NOT OBSERVABLE HERE, STATED RATHER THAN GLOSSED. The suite proves each step is awaited BEFORE THE
+// NEXT ONE IS ISSUED. It does NOT prove that the process the adapter waited on is the one that
+// finished — a substrate settles a step when the test says so, not when a container really exits;
+// only `managed-iac.integration.test.ts` (real Docker) can speak to that. It also says nothing
+// about the plugins' own awaits AROUND `run()` (writing the workspace, reading the evidence back),
+// which live in each plugin's suites, nor about `create`'s await being outside the `try` — that is
+// a deliberate recorded defect with its own named test above, not an ordering property.
+
+function dockerOrderingSubstrate(): LaunchOrderingSubstrate {
+  reset();
+  return {
+    launcher: createDockerRunnerLauncher("docker"),
+    baseSpec: () => spec(),
+    issued: () => calls.map((c) => stepKind(c.args)),
+    hold: (kind, count = 1) => {
+      holds[kind] += count;
+    },
+    release: (kind, failure) => {
+      const index = heldOpen.findIndex((held) => held.kind === kind);
+      if (index === -1) throw new Error(`docker-adapter.test: no held '${kind}' step to release`);
+      const [held] = heldOpen.splice(index, 1);
+      held!.deliver(failure);
+    }
+  };
+}
+
+runLaunchOrderingConformanceSuite(
+  "M23.1 conformance — the Docker adapter",
+  dockerOrderingSubstrate
+);
