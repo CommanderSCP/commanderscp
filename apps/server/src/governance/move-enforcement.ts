@@ -101,7 +101,11 @@ import { containmentChain } from "../graph/containment.js";
  * sentence: which rung is enabled, at which tier and name, and which END the actor lacks the
  * permission at. The out-of-band shape that WOULD persist a Decision on a refusal
  * (`federation/promotion-repo.ts`: record in a fresh committed transaction, then throw) needs a `Db`
- * handle, which no repo-level door has; raised as an open question rather than faked here.
+ * handle, which no repo-level door has. OWNER RULING 2026-08-18 (ADR-0036 §3): door-level
+ * AUTHORIZATION refusals are sentence-only — consistent with every other permission 403 in the
+ * system (object:write, policy:write, #244's own move refusals carry none); charter principle 6's
+ * `decision_id` is for ENGINE VERDICTS (gates, policies), which these are not. Not an open question
+ * any more; the sentence is the record, and the audit log carries the write that was refused.
  */
 
 /** The tiers a rung may sit at — the literal stored at write time (drizzle/0079's CHECK). */

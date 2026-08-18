@@ -1,6 +1,6 @@
 # Governance reach is tenant-writable — recording the move, and the open question of refusing it
 
-**Status:** v0.1 Draft — **proposed, pending review.** The code in the accompanying PR implements §5 (detection). §4 is the owner decision this document exists to ask for; nothing in §4 is implemented. An ADR follows owner approval.
+**Status:** v0.2 — §5 (detection) shipped by #249; **§4's owner decision is taken and built (§9, 2026-08-18) — [ADR-0036](../adr/0036-containment-governance.md) records it** (governance:move lattice, container-delete guard, sentence-only door refusals).
 
 **Relates to:** [governance-label-namespace.md](governance-label-namespace.md) §7a/§8.8 — this is the task that document filed and said "should be sequenced next"; [ADR-0031](../adr/0031-domain-local-objects-never-federate.md) ("authorization at the door, invariant at the repo" — this lands on the other side of that split, and §6 says why); [ADR-0026](../adr/0026-placements-and-derived-stage-names.md) (the placement pair, containment routes 3 and 4); [ADR-0028](../adr/0028-decision-retention.md) (persist-on-change, the constraint §5c is built to satisfy).
 
@@ -190,18 +190,18 @@ The two rulings as relayed (owner's words where they exist):
 
 **Writes (the rung API):** `PUT /governance/move-enforcement/rungs/{idOrUrn}` (enable; `policy:write` at-or-above the subject — a governance-authoring act, same bar as authoring a policy) → 200 with the resolved state and a `decision_id`; `DELETE …/rungs/{idOrUrn}` (disable) → **409 when an upper rung is enabled**, naming it (*"orgs can't disable it"* — the state must not silently stay enforced after a "successful" disable); `GET /governance/move-enforcement/rungs` (list, `object:read` at org); `GET /objects/{idOrUrn}/governance-move-enforcement` (the explain read: enforced + why); instance rung `GET`/`PUT /instance/governance-move-enforcement` (operator token, exactly the unlock shape). Every write records a Decision (`kind: governance.move_enforcement`) and an audit event in the same transaction (principle 6). SDK + CLI (`scp governance move-enforcement status <object> | enable <object> | disable <object> | rungs | instance get|set`).
 
-**Refusal shape (one sentence, both doors):** *"moving '<X>' is governed here — governance:move enforcement is enabled at <tier '<name>'> (and above); '<subject>' lacks 'governance:move' at <the object | the destination>. Ask an Administrator to move it, or disable enforcement at that rung (policy:write)."* 403 with `decision_id`.
+**Refusal shape (one sentence, both doors):** *"moving '<X>' is governed here — governance:move enforcement is enabled at <tier '<name>'> (and above); '<subject>' lacks 'governance:move' at <the object | the destination>. Ask an Administrator to move it, or disable enforcement at that rung (policy:write)."* 403 with `decision_id` (superseded — see the note below).
 
-> **SHIPPED WITHOUT `decision_id` — an open deviation, not a settled decision (2026-08-18).** Every door
+> **SHIPPED WITHOUT `decision_id` — settled by owner ruling 2026-08-18 ([ADR-0036 §3](../adr/0036-containment-governance.md)).** Every door
 > throws from inside the caller's `withTenantTx`, so a Decision written there is rolled back with the
-> refusal it explains and the id would name a row that does not exist. The refusal instead carries the
-> whole explanation in its sentence (which rung, which tier and name, which END the actor lacks the
-> permission at), which is also what #244's existing move refusals do. This is a charter-principle-6
-> deviation and is **awaiting an owner ruling**: either thread a `Db` handle to the doors and persist
-> the Decision out-of-band before throwing (`federation/promotion-repo.ts` does exactly that — record
-> in a fresh committed transaction, then throw), or accept sentence-only for door refusals and say so
-> in an ADR. Until then this paragraph and `governance/move-enforcement.ts`'s header disagree with the
-> line above on purpose, and the code is the honest one.
+> refusal it explains and the id would name a row that does not exist. The refusal carries the whole
+> explanation in its sentence (which rung, which tier and name, which END the actor lacks the
+> permission at) — which is also what #244's existing move refusals do, and what every other
+> permission 403 in the system does. **Owner ruling: door-level AUTHORIZATION refusals are
+> sentence-only**; charter principle 6's `decision_id` is for engine verdicts (gates, policies), which
+> a permission refusal is not. The alternative (thread a `Db` handle and persist out-of-band before
+> throwing, `federation/promotion-repo.ts` shape) was offered and declined. The "403 with
+> `decision_id`" in the refusal-shape line above is therefore superseded by this note.
 
 **Who holds `governance:move` — the lever that decides whether the switch does anything (§9.6 Q2).** With today's built-in roles and no custom roles: if Operator-and-above hold it, **every principal who can move can also move under enforcement — the lattice is inert until custom roles exist**; if Administrator/Owner only, enabling a rung makes "moving a governed object" an Administrator act under that rung — teeth today, at the cost §4(a) named, but opt-in per rung and predictable.
 
