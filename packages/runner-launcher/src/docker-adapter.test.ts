@@ -66,17 +66,61 @@ const calls: ExecFileCall[] = [];
 
 /** What `docker create` prints. Deliberately padded — the adapter must `.trim()` it. */
 let createStdout = "  container-abc123 \n";
-/** Per-step outcomes. Each arm below is a named test; none of them is a default. */
-let createOk = true;
-let cpInOk = true;
-let startOk = true;
-let cpOutOk = true;
-let rmOk = true;
-/** The `start` rejection's payload. The `undefined` arms exercise the `?? ""` / `?? message` falls. */
-let startFailure: { stdout?: string; stderr?: string } = {
-  stdout: "partial output",
-  stderr: "runner: boom"
-};
+/**
+ * CONCURRENCY ONLY: with this set, successive `create`s print `container-1`, `container-2`, … so
+ * that two runs in flight are distinguishable. Off everywhere else, where the literal
+ * `container-abc123` is asserted and must stay.
+ */
+let createIdSequence = false;
+/** The (trimmed) id each `create` was ALLOCATED, in issue order — the identity that call produces. */
+const createdIds: string[] = [];
+
+/**
+ * PER-STEP FAILURE INJECTION — the very object `execFile`'s callback is handed for that step, or
+ * absent for a step that succeeds.
+ *
+ * IT IS AN ERROR OBJECT AND NOT A BOOLEAN ON PURPOSE, and that is the whole of what this knob fixed:
+ * the seam used to reject `start` with `new Error("container exited non-zero")` carrying nothing but
+ * `stdout`/`stderr`, so nothing in this file could tell "the runner exited non-zero" apart from "our
+ * own `timeout` fired and WE killed it" or "its output blew `maxBuffer`". Two mutations of the
+ * `succeeded = false` at `index.ts:227` therefore passed all thirty tests —
+ *
+ *     succeeded = false;  ->  succeeded = (err as { killed?: boolean }).killed === true;
+ *     succeeded = false;  ->  succeeded = (err as { code?: string }).code === MAXBUFFER_CODE;
+ *
+ * — which is the "verify the lever, not just the signal" class CLAUDE.md names: four tests assert
+ * that `timeout` and `maxBuffer` REACH the options object, and none asserted what happens when one
+ * of them FIRES. {@link NODE_FAILURE_SHAPES} fires them, on every step that can produce them.
+ */
+const stepFails: Partial<Record<RunnerStepKind, Error>> = {};
+
+/**
+ * The ordinary `start` rejection: a non-zero exit carrying the child's own output. A builder rather
+ * than a literal because the absent-property arms exercise the adapter's `?? ""` / `?? e.message`
+ * falls — see the measured note on those falls in the shapes table below.
+ */
+function startExitFailure(payload: { stdout?: string; stderr?: string } = {}): Error {
+  const err = new Error("container exited non-zero");
+  if (payload.stdout !== undefined) Object.assign(err, { stdout: payload.stdout });
+  if (payload.stderr !== undefined) Object.assign(err, { stderr: payload.stderr });
+  return err;
+}
+
+/** Each step's ordinary failure, for the tests that care only THAT it failed and not how. */
+function defaultFailure(kind: RunnerStepKind): Error {
+  if (kind === "create") return new Error("docker create: no such image");
+  if (kind === "copy-in") return new Error("docker cp: cannot read host directory");
+  if (kind === "start") {
+    return startExitFailure({ stdout: "partial output", stderr: "runner: boom" });
+  }
+  if (kind === "copy-out") return new Error("docker cp: no such file or directory");
+  return new Error("docker rm: no such container");
+}
+
+/** Make `kind` fail — with `error` when the SHAPE of the failure is the subject, else plainly. */
+function fail(kind: RunnerStepKind, error: Error = defaultFailure(kind)): void {
+  stepFails[kind] = error;
+}
 
 /**
  * A copy-OUT is distinguishable from a copy-IN without knowing the container id: the copy-IN's
@@ -112,49 +156,23 @@ const holds: Record<RunnerStepKind, number> = {
 const heldOpen: { kind: RunnerStepKind; deliver: (failure?: Error) => void }[] = [];
 
 vi.mock("node:child_process", () => {
-  /** The outcome this step would have had, decided by the flags AT DELIVERY TIME. */
+  /** The outcome this step would have had, decided AT DELIVERY TIME. */
   function outcome(
-    args: string[],
+    kind: RunnerStepKind,
+    createOut: string,
     cb: (err: Error | null, result?: { stdout: string; stderr: string }) => void
   ): void {
-    const sub = args[0];
-    if (sub === "create") {
-      if (!createOk) {
-        cb(new Error("docker create: no such image"));
-        return;
-      }
-      cb(null, { stdout: createStdout, stderr: "" });
+    const failure = stepFails[kind];
+    if (failure) {
+      cb(failure);
       return;
     }
-    if (sub === "start") {
-      if (startOk) {
-        cb(null, { stdout: "runner ok", stderr: "runner warned" });
-        return;
-      }
-      const err = new Error("container exited non-zero");
-      if (startFailure.stdout !== undefined) Object.assign(err, { stdout: startFailure.stdout });
-      if (startFailure.stderr !== undefined) Object.assign(err, { stderr: startFailure.stderr });
-      cb(err);
+    if (kind === "create") {
+      cb(null, { stdout: createOut, stderr: "" });
       return;
     }
-    if (sub === "rm") {
-      if (!rmOk) {
-        cb(new Error("docker rm: no such container"));
-        return;
-      }
-      cb(null, { stdout: "", stderr: "" });
-      return;
-    }
-    if (isCopyOut(args)) {
-      if (!cpOutOk) {
-        cb(new Error("docker cp: no such file or directory"));
-        return;
-      }
-      cb(null, { stdout: "", stderr: "" });
-      return;
-    }
-    if (!cpInOk) {
-      cb(new Error("docker cp: cannot read host directory"));
+    if (kind === "start") {
+      cb(null, { stdout: "runner ok", stderr: "runner warned" });
       return;
     }
     cb(null, { stdout: "", stderr: "" });
@@ -169,12 +187,20 @@ vi.mock("node:child_process", () => {
     ) => {
       calls.push({ file, args, opts });
       const kind = stepKind(args);
+      // ALLOCATED AT ISSUE TIME, not at delivery: a `create` that is being HELD OPEN still has a
+      // knowable identity, and two concurrent runs are then never handed the same one whatever
+      // order their creates settle in.
+      let createOut = createStdout;
+      if (kind === "create") {
+        if (createIdSequence) createOut = `  container-${createdIds.length + 1} \n`;
+        createdIds.push(createOut.trim());
+      }
       const deliver = (failure?: Error): void => {
         if (failure) {
           cb(failure);
           return;
         }
-        outcome(args, cb);
+        outcome(kind, createOut, cb);
       };
       // HELD: issued and recorded, but it will not settle until `release()` says so. This is the
       // only thing that makes an un-awaited step distinguishable from an awaited one.
@@ -228,12 +254,9 @@ function reset(): void {
   heldOpen.length = 0;
   for (const kind of Object.keys(holds) as RunnerStepKind[]) holds[kind] = 0;
   createStdout = "  container-abc123 \n";
-  createOk = true;
-  cpInOk = true;
-  startOk = true;
-  cpOutOk = true;
-  rmOk = true;
-  startFailure = { stdout: "partial output", stderr: "runner: boom" };
+  createIdSequence = false;
+  createdIds.length = 0;
+  for (const kind of Object.keys(stepFails) as RunnerStepKind[]) delete stepFails[kind];
 }
 
 beforeEach(reset);
@@ -465,7 +488,7 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
   it("`when: always` + a FAILED start — the copy-out is STILL issued, before `rm`", async () => {
     // managed-iac's arm: a failed `apply` may still have produced a partial `plan.json` worth
     // persisting. This is the half of the asymmetry a "unify the three" refactor deletes by accident.
-    startOk = false;
+    fail("start");
     const result = await createDockerRunnerLauncher("docker").run(
       spec({ copyOut: { ...OUT_PATHS, when: "always", onFailure: "swallow" } })
     );
@@ -481,7 +504,7 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
 
   it("`when: on-success` + a FAILED start — NO copy-out at all; only `rm` follows", async () => {
     // managed-scan's and managed-dep's arm: a failed run must produce no evidence (fail-closed).
-    startOk = false;
+    fail("start");
     const result = await createDockerRunnerLauncher("docker").run(
       spec({ copyOut: { ...OUT_PATHS, when: "on-success", onFailure: "propagate" } })
     );
@@ -510,7 +533,7 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
   it("`onFailure: swallow` — a FAILED copy-out leaves the run SUCCEEDED, and `rm` still runs", async () => {
     // managed-iac's `.catch(() => undefined)`. A port that awaited all five steps uniformly would
     // turn a succeeded apply into a failed one, and only this test would say so.
-    cpOutOk = false;
+    fail("copy-out");
     const result = await createDockerRunnerLauncher("docker").run(
       spec({ copyOut: { ...OUT_PATHS, when: "always", onFailure: "swallow" } })
     );
@@ -528,7 +551,7 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
     // managed-scan's and managed-dep's arm. The rejection is the adapter's contract; where it LANDS
     // differs per plugin (scan lets it escape `trigger()`, dep's outer catch turns it into `failed`)
     // and is the plugins' business, pinned in their goldens rather than here.
-    cpOutOk = false;
+    fail("copy-out");
     await expect(
       createDockerRunnerLauncher("docker").run(
         spec({ copyOut: { ...OUT_PATHS, when: "always", onFailure: "propagate" } })
@@ -547,8 +570,7 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
 
 describe("M23.1 conformance: the failure paths, including the defect M23.0 recorded and kept", () => {
   it("A REJECTED `start` IS CAPTURED, NOT RETHROWN — succeeded:false with the child's stdout/stderr", async () => {
-    startOk = false;
-    startFailure = { stdout: "partial plan", stderr: "tofu: boom" };
+    fail("start", startExitFailure({ stdout: "partial plan", stderr: "tofu: boom" }));
 
     const result = await createDockerRunnerLauncher("docker").run(spec());
 
@@ -560,10 +582,15 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
   });
 
   it('A REJECTED `start` WITH NO stdout/stderr FALLS BACK TO `""` AND THE ERROR MESSAGE', async () => {
-    // `execFile` rejects with a bare Error when it cannot spawn at all (ENOENT on the binary, or the
-    // `timeout` firing). Without the `?? e.message` fall the operator would get an empty `detail`.
-    startOk = false;
-    startFailure = {};
+    // THE `?? ""` / `?? e.message` FALLS, AND A CORRECTION. This test's comment used to say the fall
+    // covers the cases where "`execFile` rejects with a bare Error … (ENOENT on the binary, or the
+    // `timeout` firing)". MEASURED, that is false: `promisify(execFile)` attaches `stdout` and
+    // `stderr` to EVERY rejection it produces — including ENOENT and the timeout kill, where both are
+    // `""` — so in production these falls never fire and an operator gets an EMPTY `detail` for a
+    // runner we killed ourselves. The four arms of `NODE_FAILURE_SHAPES` below pin that consequence
+    // as it actually is; this test keeps covering the falls themselves, which remain the adapter's
+    // only defence against a rejection that did not come from `promisify(execFile)` at all.
+    fail("start", startExitFailure());
 
     const result = await createDockerRunnerLauncher("docker").run(spec());
 
@@ -577,7 +604,7 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
   it("A REJECTED COPY-IN REJECTS the run — and `rm` still runs, so nothing is orphaned", async () => {
     // The copy-INs are inside the `try`, unlike `create`. There is no `onFailure` axis for them:
     // a subject that did not reach the container must never be scanned or applied.
-    cpInOk = false;
+    fail("copy-in");
     await expect(
       createDockerRunnerLauncher("docker").run(
         spec({ copyIn: [{ hostDir: "/host/in", containerPath: "/work/in" }] })
@@ -594,7 +621,7 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
   it("A REJECTED `rm` IS SWALLOWED — the run's own result still comes back", async () => {
     // Teardown is best-effort by design: a container the daemon already reaped must not turn a
     // succeeded run into a failed one.
-    rmOk = false;
+    fail("teardown");
     const result = await createDockerRunnerLauncher("docker").run(spec());
 
     expect(result).toStrictEqual({ succeeded: true, stdout: "runner ok", stderr: "runner warned" });
@@ -611,13 +638,315 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
     // attribution. It is pinned here so the day someone moves that `await` inside the `try` — the
     // right fix, now in ONE place instead of three — this test fails and is updated ON PURPOSE
     // rather than the behaviour changing silently in either direction.
-    createOk = false;
+    fail("create");
     await expect(createDockerRunnerLauncher("docker").run(spec())).rejects.toThrow(/no such image/);
 
     expect(calls.map((c) => c.args)).toStrictEqual([
       ["create", "--network", "none", "scp-runner-iac:vetted"]
     ]);
   });
+});
+
+// ==================================================================================================
+// THE LEVERS, FIRED — what happens when `timeout` or `maxBuffer` actually goes off.
+// ==================================================================================================
+//
+// Everything above asserts that `timeout` and `maxBuffer` are ON THE OPTIONS OBJECT. That is the
+// signal, not the actuator, and CLAUDE.md names the gap: five tests (the three profile rows, "A
+// TENANT `timeoutMs` NEVER REACHES `rm`", and `RUNNER_REMOVE_TIMEOUT_MS`) assert those numbers, and
+// not one of them said what the adapter DOES when a number is exceeded. The consequence was
+// measurable: with the old boolean seam, `succeeded = false` at `index.ts:227` could be replaced by
+// `succeeded = (err as { killed?: boolean }).killed === true` and all thirty tests still passed —
+// a build in which every runner WE killed on timeout is reported to the plugin as a SUCCESS, with a
+// truncated or empty plan.json cached as evidence.
+
+/** `code` on a maxBuffer overflow. Node's own constant name, spelled out so the table below reads. */
+const MAXBUFFER_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+
+/**
+ * THE FOUR SHAPES `promisify(execFile)` ACTUALLY REJECTS WITH — MEASURED, NOT INVENTED.
+ *
+ * Each was captured from a real child process (`node -e …`, plus a spawn of a binary that does not
+ * exist) and its own-properties printed; the objects below reproduce what came back. Three of the
+ * four are things WE did rather than things the runner did, and the adapter cannot currently tell
+ * them apart from a plain non-zero exit:
+ *
+ *   - TIMEOUT-KILL  `killed: true, signal: "SIGTERM", code: null` — OUR `timeout` fired and Node
+ *                   SIGTERM'd the runner mid-flight. `stdout`/`stderr` hold what it had printed.
+ *   - MAXBUFFER     a **RangeError** with `code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"` and — measured,
+ *                   and load-bearing — **no `killed` property at all**, so a mutation keyed on
+ *                   `killed` is caught by the timeout arm and NOT by this one. `stdout` is the
+ *                   output TRUNCATED at `maxBuffer`, which is the whole hazard: it looks like data.
+ *   - SPAWN ENOENT  `code: "ENOENT"` (a string) with `stdout` and `stderr` both `""` — the docker
+ *                   binary is missing. The run is reported failed with NOTHING to explain it.
+ *   - EXIT 125      `code: 125` (a NUMBER), `killed: false, signal: null` — docker's own "container
+ *                   failed to run", the only one of the four the runner itself caused.
+ *
+ * `.code` IS OVERLOADED and all three of its inhabitants are in this table on purpose: `null`, a
+ * string errno, and a numeric exit status. `index.ts` READS NONE OF THEM — it derives `succeeded`
+ * from the fact of the rejection alone — so today there is nothing to conflate, and these arms are
+ * what keeps that true: any future refactor that starts branching on `.code` (`=== 0`,
+ * `typeof === "number"`, an errno allowlist) changes the outcome of at least one row and fails BY
+ * NAME rather than by a diff.
+ */
+interface NodeFailureShape {
+  name: string;
+  /** A FRESH error per use — the seam hands the object itself to the adapter, and Errors are mutable. */
+  make: () => Error;
+  /** What `run()` must report when this shape lands on `start`. */
+  startsAs: { stdout: string; stderr: string };
+  /** How to provoke the REAL thing from the running Node, for the not-fiction guard below. */
+  provoke: (
+    run: (file: string, args: string[], opts: object) => Promise<unknown>
+  ) => Promise<unknown>;
+}
+
+const START_CMD = "docker start -a container-abc123";
+
+const NODE_FAILURE_SHAPES: NodeFailureShape[] = [
+  {
+    name: "TIMEOUT-KILL (our own `timeout` fired and WE SIGTERM'd the runner)",
+    make: () =>
+      Object.assign(new Error(`Command failed: ${START_CMD}\n`), {
+        code: null,
+        killed: true,
+        signal: "SIGTERM",
+        cmd: START_CMD,
+        stdout: '{"resource_ch',
+        stderr: ""
+      }),
+    startsAs: { stdout: '{"resource_ch', stderr: "" },
+    provoke: (run) =>
+      run(process.execPath, ["-e", "process.stdout.write('half');setTimeout(()=>{},5000)"], {
+        timeout: 200
+      })
+  },
+  {
+    name: "MAXBUFFER (the runner's output blew `maxBuffer` and its stdout is TRUNCATED)",
+    make: () =>
+      Object.assign(new RangeError("stdout maxBuffer length exceeded"), {
+        code: MAXBUFFER_CODE,
+        cmd: START_CMD,
+        stdout: '{"resource_ch',
+        stderr: ""
+      }),
+    startsAs: { stdout: '{"resource_ch', stderr: "" },
+    provoke: (run) =>
+      run(process.execPath, ["-e", "process.stdout.write('x'.repeat(5000))"], { maxBuffer: 10 })
+  },
+  {
+    name: "SPAWN ENOENT (the docker binary is missing — nothing ran at all)",
+    make: () =>
+      Object.assign(new Error("spawn docker ENOENT"), {
+        errno: -2,
+        code: "ENOENT",
+        syscall: "spawn docker",
+        path: "docker",
+        spawnargs: ["start", "-a", "container-abc123"],
+        cmd: START_CMD,
+        stdout: "",
+        stderr: ""
+      }),
+    startsAs: { stdout: "", stderr: "" },
+    provoke: (run) => run("scp-no-such-binary-8f3a2c", ["--version"], {})
+  },
+  {
+    name: "EXIT 125 (docker's own `container failed to run` — the runner really did fail)",
+    make: () =>
+      Object.assign(new Error(`Command failed: ${START_CMD}\ndocker: Error response from daemon`), {
+        code: 125,
+        killed: false,
+        signal: null,
+        cmd: START_CMD,
+        stdout: "",
+        stderr: "docker: Error response from daemon"
+      }),
+    startsAs: { stdout: "", stderr: "docker: Error response from daemon" },
+    provoke: (run) =>
+      run(
+        process.execPath,
+        ["-e", "process.stderr.write('docker: Error response from daemon');process.exit(125)"],
+        {}
+      )
+  }
+];
+
+/** The fields the table above CLAIMS. Compared between the recorded shape and the live one. */
+const PINNED_ERROR_FIELDS = ["code", "killed", "signal"] as const;
+const ABSENT = "<<no such own property>>";
+
+/**
+ * The claim each row makes, reduced to something comparable. `stdout`/`stderr` are compared by TYPE
+ * rather than value — their contents are the child's business — because the load-bearing fact about
+ * them is that they are ALWAYS PRESENT STRINGS, which is what makes the adapter's `?? e.message`
+ * fall unreachable in production.
+ */
+function errorFingerprint(err: unknown): Record<string, unknown> {
+  const e = err as Record<string, unknown>;
+  const shape: Record<string, unknown> = {};
+  for (const field of PINNED_ERROR_FIELDS) {
+    shape[field] = Object.hasOwn(e, field) ? e[field] : ABSENT;
+  }
+  shape["typeof stdout"] = typeof e["stdout"];
+  shape["typeof stderr"] = typeof e["stderr"];
+  return shape;
+}
+
+describe("M23.1 conformance: the LEVERS FIRE — every failure shape Node itself produces, on every step", () => {
+  const OUT_PATHS = { containerPath: "/work/out", hostDir: "/host/out" } as const;
+
+  it("THE TABLE IS NOT FICTION — the RUNNING Node still rejects with exactly these shapes", async () => {
+    // A recorded constant nobody re-derives goes stale in silence, and this table is a recording of
+    // another program's behaviour. So it is checked against that program: `importActual` reaches
+    // PAST this file's own `vi.mock` to the real `child_process`, four real children are spawned
+    // (no network, no Docker — `process.execPath` is the node running this test, and one binary that
+    // cannot exist), and the fields each row claims are compared. If a future Node renames
+    // `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, stops setting `killed`, or starts omitting `stderr`, THIS
+    // fails and names the row rather than the twenty arms below quietly testing a museum piece.
+    const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const { promisify } = await import("node:util");
+    const realExecFileAsync = promisify(actual.execFile);
+    const run = (file: string, args: string[], opts: object): Promise<unknown> =>
+      realExecFileAsync(file, args, opts) as unknown as Promise<unknown>;
+
+    for (const shape of NODE_FAILURE_SHAPES) {
+      let live: unknown = ABSENT;
+      try {
+        await shape.provoke(run);
+      } catch (err) {
+        live = err;
+      }
+      expect(live, `${shape.name}: the real child did not fail at all`).not.toBe(ABSENT);
+      expect(
+        errorFingerprint(live),
+        `${shape.name}: the running Node no longer rejects with the shape this table records`
+      ).toStrictEqual(errorFingerprint(shape.make()));
+    }
+  }, 20_000);
+
+  it.each(NODE_FAILURE_SHAPES)(
+    "$name at `start` → a FAILED run carrying the child's own output",
+    async ({ make, startsAs }) => {
+      // THE ONE THE TWO SURVIVING MUTATIONS NEEDED. Nothing about the SHAPE of the failure may
+      // decide the runner's exit status: a runner we killed on timeout, one whose output overflowed,
+      // one that never spawned and one that exited 125 are all `succeeded: false`.
+      fail("start", make());
+
+      const result = await createDockerRunnerLauncher("docker").run(spec());
+
+      expect(
+        result,
+        "a `start` that failed this way was not reported as a failed run with the child's own output"
+      ).toStrictEqual({ succeeded: false, ...startsAs });
+      // …and it is a CAPTURED failure, so the container is still torn down.
+      expect(calls.map((c) => c.args)).toStrictEqual([
+        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["start", "-a", "container-abc123"],
+        ["rm", "-f", "container-abc123"]
+      ]);
+    }
+  );
+
+  it.each(NODE_FAILURE_SHAPES)(
+    "$name at `create` → REJECTS out of run(), and issues NO teardown",
+    async ({ make }) => {
+      // The recorded M23.0 defect, held for every shape rather than only for "no such image" — and
+      // the TIMEOUT row is the one that matters: `create` timing out is precisely the case where the
+      // daemon may already have made a container, and it is precisely the case with no `rm`.
+      const err = make();
+      fail("create", err);
+
+      await expect(createDockerRunnerLauncher("docker").run(spec())).rejects.toBe(err);
+
+      expect(
+        calls.map((c) => c.args),
+        "a step other than `create` was issued after `create` failed"
+      ).toStrictEqual([["create", "--network", "none", "scp-runner-iac:vetted"]]);
+    }
+  );
+
+  it.each(NODE_FAILURE_SHAPES)(
+    "$name at a copy-IN → REJECTS out of run(), and teardown STILL runs",
+    async ({ make }) => {
+      const err = make();
+      fail("copy-in", err);
+
+      await expect(
+        createDockerRunnerLauncher("docker").run(
+          spec({ copyIn: [{ hostDir: "/host/in", containerPath: "/work/in" }] })
+        )
+      ).rejects.toBe(err);
+
+      expect(calls.map((c) => c.args)).toStrictEqual([
+        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["cp", "/host/in/.", "container-abc123:/work/in"],
+        ["rm", "-f", "container-abc123"]
+      ]);
+    }
+  );
+
+  it.each(NODE_FAILURE_SHAPES)(
+    "$name at the copy-OUT → `swallow` still SUCCEEDS, `propagate` REJECTS, and both tear down",
+    async ({ make }) => {
+      // Both arms in one row, because the axis under test is `onFailure` and the point is that the
+      // SHAPE does not move it: a copy-out killed by our own timeout is swallowed by managed-iac
+      // exactly as a missing-file copy-out is, evidence silently absent either way.
+      const swallowed = make();
+      fail("copy-out", swallowed);
+      const result = await createDockerRunnerLauncher("docker").run(
+        spec({ copyOut: { ...OUT_PATHS, when: "always", onFailure: "swallow" } })
+      );
+      expect(result).toStrictEqual({
+        succeeded: true,
+        stdout: "runner ok",
+        stderr: "runner warned"
+      });
+      expect(calls.map((c) => c.args)).toStrictEqual([
+        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["start", "-a", "container-abc123"],
+        ["cp", "container-abc123:/work/out/.", "/host/out"],
+        ["rm", "-f", "container-abc123"]
+      ]);
+
+      reset();
+      const propagated = make();
+      fail("copy-out", propagated);
+      await expect(
+        createDockerRunnerLauncher("docker").run(
+          spec({ copyOut: { ...OUT_PATHS, when: "always", onFailure: "propagate" } })
+        )
+      ).rejects.toBe(propagated);
+      expect(calls.map((c) => c.args)).toStrictEqual([
+        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["start", "-a", "container-abc123"],
+        ["cp", "container-abc123:/work/out/.", "/host/out"],
+        ["rm", "-f", "container-abc123"]
+      ]);
+    }
+  );
+
+  it.each(NODE_FAILURE_SHAPES)(
+    "$name at teardown → SWALLOWED; the run's own result still comes back",
+    async ({ make }) => {
+      // `rm` carries `RUNNER_REMOVE_TIMEOUT_MS`, so it has a lever of its own to fire. A teardown we
+      // killed at 30 s means the credential-carrying container may still be alive — and the caller
+      // is told nothing, today, by design. Pinned so that "by design" stays a decision.
+      fail("teardown", make());
+
+      const result = await createDockerRunnerLauncher("docker").run(spec());
+
+      expect(result).toStrictEqual({
+        succeeded: true,
+        stdout: "runner ok",
+        stderr: "runner warned"
+      });
+      expect(calls.map((c) => c.args)).toStrictEqual([
+        ["create", "--network", "none", "scp-runner-iac:vetted"],
+        ["start", "-a", "container-abc123"],
+        ["rm", "-f", "container-abc123"]
+      ]);
+    }
+  );
 });
 
 // ==================================================================================================
@@ -669,18 +998,48 @@ describe("M23.1 conformance: the failure paths, including the defect M23.0 recor
 // which live in each plugin's suites, nor about `create`'s await being outside the `try` — that is
 // a deliberate recorded defect with its own named test above, not an ordering property.
 
+/**
+ * WHICH CONTAINER AN argv ADDRESSES — the Docker spelling of the port's per-run identity. Read off
+ * the argv rather than tracked alongside it, so a step aimed at the wrong container is visible here
+ * for the same reason it would be visible to the daemon. `create` addresses none, so it reports the
+ * id it was ALLOCATED (`createdIds`, in issue order), which is what the run will go on to use.
+ */
+function stepIdentity(args: string[], createIndex: number): string | undefined {
+  const sub = args[0];
+  if (sub === "create") return createdIds[createIndex];
+  // `start -a <id>` and `rm -f <id>`.
+  if (sub === "start" || sub === "rm") return args[2];
+  // `cp <id>:<path>/. <hostDir>` out, `cp <hostDir>/. <id>:<path>` in.
+  if (sub === "cp") return String(isCopyOut(args) ? args[1] : args[2]).split(":")[0];
+  return undefined;
+}
+
 function dockerOrderingSubstrate(): LaunchOrderingSubstrate {
   reset();
+  // Every ordering case gets sequential ids, so identity is meaningful in all of them and the
+  // concurrency case is not a special configuration nobody else exercises.
+  createIdSequence = true;
   return {
     launcher: createDockerRunnerLauncher("docker"),
     baseSpec: () => spec(),
     issued: () => calls.map((c) => stepKind(c.args)),
+    issuedIdentities: () => {
+      let createIndex = 0;
+      return calls.map((c) =>
+        stepIdentity(c.args, c.args[0] === "create" ? createIndex++ : createIndex)
+      );
+    },
     hold: (kind, count = 1) => {
       holds[kind] += count;
     },
-    release: (kind, failure) => {
-      const index = heldOpen.findIndex((held) => held.kind === kind);
-      if (index === -1) throw new Error(`docker-adapter.test: no held '${kind}' step to release`);
+    release: (kind, failure, nth = 0) => {
+      const matching = heldOpen.flatMap((held, index) => (held.kind === kind ? [index] : []));
+      const index = matching[nth];
+      if (index === undefined) {
+        throw new Error(
+          `docker-adapter.test: no held '${kind}' step at position ${nth} to release (${matching.length} held)`
+        );
+      }
       const [held] = heldOpen.splice(index, 1);
       held!.deliver(failure);
     }

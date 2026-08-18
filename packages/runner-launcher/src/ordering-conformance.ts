@@ -52,10 +52,27 @@ export interface LaunchOrderingSubstrate {
   baseSpec(): RunnerSpec;
   /** The steps ISSUED so far, in issue order. */
   issued(): RunnerStepKind[];
+  /**
+   * THE PER-RUN IDENTITY each issued step ADDRESSED, aligned one-for-one with {@link issued} — the
+   * Docker container id, a Kubernetes Job name, whatever this adapter's runs are named by. For a
+   * `create`, the identity that call PRODUCES (Docker reads it out of the call's stdout; an adapter
+   * that generates the name up front already has it on the argv).
+   *
+   * REQUIRED, not optional, and the concurrency case THROWS rather than skips when a substrate
+   * reports `undefined`: an adapter author who could opt out would opt out, and the case would then
+   * pass vacuously for exactly the adapter that had not thought about two runs at once.
+   */
+  issuedIdentities(): (string | undefined)[];
   /** Hold the next `count` occurrences of `kind`: issued, but not settled until released. */
   hold(kind: RunnerStepKind, count?: number): void;
-  /** Settle the oldest held occurrence of `kind` — successfully, or with `failure`. */
-  release(kind: RunnerStepKind, failure?: Error): void;
+  /**
+   * Settle a held occurrence of `kind` — successfully, or with `failure`. `nth` selects among the
+   * occurrences CURRENTLY HELD, oldest first, and defaults to the oldest, which is the only thing a
+   * single run can mean. Releasing OUT OF ORDER is what the concurrency case needs: two runs' steps
+   * do not settle in issue order in production, and an adapter that only ever saw them settle in
+   * issue order can share one identity between runs and still look correct.
+   */
+  release(kind: RunnerStepKind, failure?: Error, nth?: number): void;
   /**
    * Optional: flush whatever this substrate's deliveries ride on, ONE round. The default drains
    * three macrotask turns; the suite calls it repeatedly until no further step is issued, so an
@@ -127,9 +144,11 @@ const FULL_SEQUENCE: RunnerStepKind[] = [
  */
 interface Case {
   hold(kind: RunnerStepKind, count?: number): void;
-  release(kind: RunnerStepKind, failure?: Error): void;
+  release(kind: RunnerStepKind, failure?: Error, nth?: number): void;
   run(copyOut: RunnerCopyOut | undefined, copyIn?: RunnerCopyIn[]): Tracked<{ succeeded: boolean }>;
   issued(): RunnerStepKind[];
+  /** The identity each issued step addressed, aligned with {@link Case.issued}. */
+  identities(): (string | undefined)[];
   /** Drain until the adapter cannot issue anything further — it is blocked on a held step. */
   quiesce(): Promise<void>;
   cleanup(): Promise<void>;
@@ -157,9 +176,9 @@ function newCase(substrate: LaunchOrderingSubstrate): Case {
       outstanding.set(kind, (outstanding.get(kind) ?? 0) + count);
       substrate.hold(kind, count);
     },
-    release(kind, failure) {
+    release(kind, failure, nth) {
       outstanding.set(kind, Math.max(0, (outstanding.get(kind) ?? 0) - 1));
-      substrate.release(kind, failure);
+      substrate.release(kind, failure, nth);
     },
     run(copyOut, copyIn = [COPY_IN_A, COPY_IN_B]) {
       const tracked = track(substrate.launcher.run({ ...substrate.baseSpec(), copyIn, copyOut }));
@@ -167,6 +186,7 @@ function newCase(substrate: LaunchOrderingSubstrate): Case {
       return tracked;
     },
     issued: () => substrate.issued(),
+    identities: () => substrate.issuedIdentities(),
     quiesce,
     async cleanup() {
       for (const [kind, count] of outstanding) {
@@ -186,6 +206,25 @@ function newCase(substrate: LaunchOrderingSubstrate): Case {
 }
 
 /**
+ * Case bookkeeping for one `describe`: hands back an `open()` and registers the cleanup that keeps a
+ * failed case from leaking its half-finished run into the next one. Called inside a `describe` body.
+ */
+function useCases(createSubstrate: () => LaunchOrderingSubstrate): () => Case {
+  let current: Case | undefined;
+
+  afterEach(async () => {
+    const c = current;
+    current = undefined;
+    if (c) await c.cleanup();
+  });
+
+  return () => {
+    current = newCase(createSubstrate());
+    return current;
+  };
+}
+
+/**
  * Runs the await-ordering cases against one adapter.
  *
  * `createSubstrate` is called ONCE PER CASE and must return a substrate carrying no state from the
@@ -196,18 +235,7 @@ export function runLaunchOrderingConformanceSuite(
   createSubstrate: () => LaunchOrderingSubstrate
 ): void {
   describe(`${label}: every step is AWAITED before the next one is issued`, () => {
-    let current: Case | undefined;
-
-    function open(): Case {
-      current = newCase(createSubstrate());
-      return current;
-    }
-
-    afterEach(async () => {
-      const c = current;
-      current = undefined;
-      if (c) await c.cleanup();
-    });
+    const open = useCases(createSubstrate);
 
     it("THE UNHELD CONTROL — with nothing held, every step is issued in order and run() resolves", async () => {
       // Non-vacuity for every case below: it proves the substrate ISSUES what the adapter asks for,
@@ -384,4 +412,100 @@ export function runLaunchOrderingConformanceSuite(
       expect(c.issued()).toStrictEqual(["create", "start", "teardown"]);
     });
   });
+
+  describe(`${label}: two runs in flight never address each other's container`, () => {
+    const open = useCases(createSubstrate);
+
+    it("TWO RUNS AT ONCE — every step of each run addresses ITS OWN identity", async () => {
+      // WHAT THIS CATCHES, EXACTLY. Hoisting `containerId` out of the `run()` body to module scope
+      // typechecks clean and passes every other test in this package, because no other test has two
+      // `run()` calls in flight — one run's steps are always the only ones there are. Under that
+      // mutation the second run's later steps address the FIRST run's container and both teardowns
+      // `rm -f` the same id: one container is orphaned still carrying its resolved credentials
+      // (`RunnerSpec.env`, managed-iac's recorded defect 3), and the other is destroyed twice, the
+      // second time out from under a live run.
+      //
+      // It is not a live bug today — `index.ts` holds no module-level mutable state — and that is
+      // the reason to pin it rather than to skip it: the three managed plugins are three pg-boss
+      // `work()` handlers in ONE Node process, so two `run()` calls across plugins overlap as a
+      // matter of course, and this suite's own framing (a substrate that holds a step OPEN) is an
+      // invitation to park per-run state where it is convenient.
+      const c = open();
+      c.hold("create", 2);
+      // The first copy-in of EACH run. Held so that one run's second copy-in is issued at the moment
+      // the OTHER run's create was the last thing to settle — where a shared identity is wrong and
+      // an own identity is right.
+      c.hold("copy-in", 2);
+
+      const first = c.run(OUT_SWALLOW);
+      const second = c.run(OUT_SWALLOW);
+
+      await c.quiesce();
+      // THE NON-VACUITY CHECK for everything below: both runs really are in flight at once. If the
+      // harness serialised them, only one `create` would be here and the rest would prove nothing.
+      expect(
+        c.issued(),
+        "the two runs did not overlap — the case cannot see a shared identity if only one run exists at a time"
+      ).toStrictEqual(["create", "create"]);
+
+      // OUT OF ORDER ON PURPOSE: the SECOND run's container is created first.
+      c.release("create", undefined, 1);
+      await c.quiesce();
+      c.release("create", undefined, 0);
+      await c.quiesce();
+      expect(c.issued()).toStrictEqual(["create", "create", "copy-in", "copy-in"]);
+
+      // Release the copy-in belonging to the run whose `create` settled FIRST. Its next copy-in is
+      // issued now, while the other run's `create` is the most recent one to have resolved.
+      c.release("copy-in", undefined, 0);
+      await c.quiesce();
+      c.release("copy-in", undefined, 0);
+
+      await Promise.all([first.promise, second.promise]);
+
+      // THE ASSERTION IS SYMMETRIC — it never asks which run is which, only that the steps partition
+      // into two complete lifecycles. That holds for any adapter and needs no run attribution.
+      const partitions = partitionByIdentity(c.issued(), c.identities());
+      expect(
+        [...partitions.keys()],
+        "the two runs shared one identity: one run's container is orphaned with its credentials, and the other is torn down twice"
+      ).toHaveLength(2);
+      for (const [identity, steps] of partitions) {
+        expect(
+          steps,
+          `the run on '${identity}' did not see its own complete lifecycle — a step of one run addressed the other run's container`
+        ).toStrictEqual(FULL_SEQUENCE);
+      }
+    });
+  });
+}
+
+/**
+ * Groups the issued steps by the identity they addressed, preserving issue order within each group.
+ * Throws rather than returning something weaker when a substrate reports no identity: an all-
+ * `undefined` substrate would collapse both runs into one group and the case would pass for the
+ * wrong reason, which is the exact failure mode it exists to catch.
+ */
+function partitionByIdentity(
+  steps: RunnerStepKind[],
+  identities: (string | undefined)[]
+): Map<string, RunnerStepKind[]> {
+  if (identities.length !== steps.length) {
+    throw new Error(
+      `substrate: issuedIdentities() returned ${identities.length} entries for ${steps.length} issued steps; they must align one-for-one`
+    );
+  }
+  const partitions = new Map<string, RunnerStepKind[]>();
+  steps.forEach((step, index) => {
+    const identity = identities[index];
+    if (identity === undefined) {
+      throw new Error(
+        `substrate: issuedIdentities() reported no identity for the '${step}' step at index ${index}. Every step must report the run it addressed, and a 'create' must report the identity it PRODUCES — without that this case cannot tell two runs apart and would pass vacuously.`
+      );
+    }
+    const group = partitions.get(identity) ?? [];
+    group.push(step);
+    partitions.set(identity, group);
+  });
+  return partitions;
 }
