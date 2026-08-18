@@ -246,9 +246,20 @@ describe("a containment move may not build a cycle, and is authorized at both en
     // So `the org root is missing` does not fire, and yet the move WOULD close a real cycle whose
     // proof lies at the edge of the bound. Under ADR-0035 the walk does not truncate silently: it
     // probes one level PAST the bound and REFUSES when anything is there — and the containment-
-    // parent door turns that refusal into its own 400 (refusal 2: "cannot be shown to be free of a
-    // cycle"). Delete that conversion — or let the door read a shortened chain — and this case is
-    // the one that goes red.
+    // parent door turns that refusal into its own 400 (`containmentParentChainForDoor`'s conversion
+    // branch: "a row under it would sit past the bound on that route"). Delete that conversion —
+    // or let the door read a shortened chain — and this case is the one that goes red (measured
+    // 2026-08-18: `throw error` in place of the conversion, in CODE, turned exactly this case red
+    // while `containment-depth-doors` stayed green — the two files pin two different properties).
+    //
+    // WHY THIS BRANCH IS STILL LOAD-BEARING when no door can build the shape any more: the depth
+    // invariant is a WRITE door, so rows planted before 2026-08-18, or arrived under the
+    // federation-import carve-out, are untouched by it. Whether an estate actually holds one is a
+    // measurable fact, not a guess — `scripts/containment-depth-census.sql` asks each database.
+    // Review pair, 2026-08-18: zero rows past the bound (deepest live route 5 on the commander, 6
+    // on the outpost); production not measured from a laptop. So today this is defence-in-depth
+    // against a state no current door can create, and the comment says so rather than implying a
+    // live population.
     //
     // Nine levels under `movable`: `deep-9`'s own chain is exactly ten hops — the ceiling, complete
     // and readable — so a row under it would sit at hop ELEVEN. Since the owner ruling of 2026-08-18
