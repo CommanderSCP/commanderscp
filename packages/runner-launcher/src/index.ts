@@ -863,7 +863,16 @@ export function createDockerRunnerLauncher(
        *     as a raw error carrying an unredacted argv in its message.
        *   - So a step reached with nothing left is REFUSED BEFORE IT IS ISSUED, with a message that
        *     names the budget and the deadline rather than a bare `Command failed: docker cp …`.
-       *     Between the two, `Math.max(1, …)` guarantees what Node is handed is in range, never 0.
+       *
+       * THE `Math.max(1, …)` BELOW IS UNREACHABLE, AND IS KEPT ANYWAY — said plainly, because a
+       * reader who takes it for live code will look for the test that covers it and find none, and
+       * because mutating it away changes no behaviour whatsoever. `Date.now()` is integral, so past
+       * the refusal above `remaining` is an integer >= 1 and the clamp is the identity function.
+       * What it buys is the one boundary no test can reach: move the refusal by a single character
+       * (`<= 0` to `< 0`) and `remaining === 0` — one instant of the clock, unhittable on purpose
+       * and perfectly hittable by accident — becomes `timeout: 0`, i.e. NO BOUND AT ALL, on a
+       * `docker start -a` that is running `tofu apply`. The clamp costs nothing and makes that
+       * instant harmless. The refusal is the part with the teeth, and the part the tests drive.
        */
       const exec = async (
         step: RunnerLaunchStep,

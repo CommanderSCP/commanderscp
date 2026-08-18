@@ -39,19 +39,24 @@ import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
  *
  * So the budget is a function of (module, method):
  *   - `trigger` on a MANAGED executor -> that instance's own resolved `timeoutMs` + {@link
- *     MANAGED_TRIGGER_GRACE_MS}. The plugin's `execFile` timeout is the inner bound and must fire
- *     FIRST — the grace is what guarantees it does, leaving the plugin's own recorded-outcome path
- *     (M23.1 phase 2's `withRecordedOutcome`) the room to run and `saveState` the room to land.
+ *     MANAGED_TRIGGER_GRACE_MS}. What guarantees the plugin's own bound fires first is NOT this
+ *     grace (M23.3 — see that constant's doc for the measurement that disproved it) but the
+ *     launcher: `RunnerSpec.timeoutMs` is the WHOLE-RUN budget, read once as a deadline and spent
+ *     down across every step, so a run cannot exceed it however many `execFile`s it takes. The
+ *     grace covers exactly what happens after that deadline — one `docker rm -f` teardown, the
+ *     recorded-outcome write (M23.1 phase 2's `withRecordedOutcome`) and `saveState`.
  *   - everything else -> the host's unchanged 10s hang detector.
  *
  * AND NO TRANSPARENT RETRY FOR A MANAGED `trigger`. `host.call()` retries once per crash while
  * budget remains, which is right for an idempotent read and actively dangerous here: this change
- * widens the crash window from ≤10s to ≤10.5min, and the retry would re-enter a `trigger()` whose
- * ledger entry is (by construction) not yet written. Worse, the retry's container name is derived
- * from the same `idempotencyKey`, so its `docker create` collides with the still-running first
- * container and the adapter's unconditional teardown then `rm -f`s the run that legitimately holds
- * the name (`@scp/runner-launcher`'s `runnerContainerName` names that trade). A crash mid-apply must
- * surface to `reconcile.ts`, not be papered over one layer below it.
+ * widens the crash window from ≤10s to ≤11min, and the retry would re-enter a `trigger()` whose
+ * ledger entry is (by construction) not yet written — a SECOND `tofu apply` against live
+ * infrastructure while the first is still applying. Its container name is derived from the same
+ * `idempotencyKey`, so its `docker create` also collides with the still-running first container;
+ * since M23.3 the loser at least no longer `rm -f`s the winner (the adapter skips teardown on a
+ * name conflict — `@scp/runner-launcher`'s `isContainerNameConflict`), but a retry that cannot
+ * proceed is not a retry worth having. A crash mid-apply must surface to `reconcile.ts`, not be
+ * papered over one layer below it.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  * WHY THE NUMBERS COME FROM THE MANIFEST AND NOWHERE ELSE.
@@ -78,18 +83,50 @@ import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 export const MANAGED_EXECUTOR_MODULES = ["managed-iac", "managed-scan", "managed-dep"] as const;
 
 /**
- * How much longer the HOST waits than the plugin's own `execFile` timeout.
+ * How much longer the HOST waits than the plugin's own WHOLE-RUN budget.
  *
- * ORDERING IS THE WHOLE POINT, not headroom for slowness. The inner timeout must be the one that
- * fires, because it is the only one attached to code that cleans up: `execFile`'s timeout kills the
+ * ORDERING IS THE WHOLE POINT, not headroom for slowness. The plugin's own bound must be the one
+ * that fires, because it is the only one attached to code that cleans up: it stops the
  * `docker start -a`, the adapter's `finally` issues `rm -f <name>`, `withRecordedOutcome` records a
  * failure, and managed-iac's `saveState` writes the ledger entry that stops the retry from
- * double-applying. The host's expiry is a `SIGKILL` of the subprocess and runs NONE of that. 30s is
- * sized for the teardown that follows the inner expiry — one `docker rm -f`
- * (`RUNNER_REMOVE_TIMEOUT_MS` is itself 30s), a copy-out that may still be draining, and a
- * `saveState` fsync.
+ * double-applying. The host's expiry is a `SIGKILL` of the subprocess and runs NONE of that.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * WHAT THIS COMMENT USED TO CLAIM, WHY IT WAS FALSE, AND WHAT IS TRUE NOW (M23.3).
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * It said the grace was "sized so the plugin's inner `execFile` timeout fires first". That was true
+ * of ONE `execFile`. A managed run issues four (managed-iac, managed-dep) to six (managed-scan)
+ * SEQUENTIAL ones, and `@scp/runner-launcher` handed each of them `{ timeout: spec.timeoutMs }`
+ * INDEPENDENTLY — so what the grace was sized against was a per-call bound while what it had to
+ * cover was their SUM, which nothing bounded at all. Measured through a default-constructed
+ * `SubprocessPluginHost` driving the real managed-iac plugin with `timeoutMs: 20_000` and steps of
+ * 18s/9s/18s/9s — every one of them comfortably under the inner 20s bound — the run reached 50003ms
+ * against a 50000ms budget and was SIGKILLed: an orphaned container still applying, and no ledger
+ * entry, so `reconcile.ts` issued a second `tofu apply` on top of the first. Reachable at the
+ * shipped 10-minute defaults, because `docker create` PULLS THE IMAGE when it is absent — a cold
+ * pull plus an ordinary apply clears 630s with no single call reaching 600s. The proof that nothing
+ * here was load-bearing: shrinking this constant from 30_000 to 3_000 reddened NOTHING.
+ *
+ * SO THE ORDERING IS NOW A PROPERTY OF THE LAUNCHER, NOT OF THIS NUMBER. `RunnerSpec.timeoutMs` is
+ * the WHOLE-RUN budget: the adapter reads one deadline at the top of `run()` and issues every step
+ * with what is LEFT of it, so a run cannot exceed `timeoutMs` however many steps it takes. This
+ * constant no longer has to guess at a sum. It has to cover exactly the work that happens AFTER
+ * that deadline, and there is one such thing:
+ *
+ *     RUNNER_REMOVE_TIMEOUT_MS   the adapter's `finally { docker rm -f }`, deliberately outside
+ *                                the run budget because the commonest reason to reach it is that
+ *                                the budget is what ran out                              30s
+ *   + the plugin's own tail      `withRecordedOutcome`'s write and managed-iac's `saveState`
+ *                                fsync, plus the RPC response crossing the pipe          ~ms
+ *
+ * 30s was therefore WRONG BY CONSTRUCTION rather than merely tight: one worst-case teardown
+ * consumed the entire grace, leaving nothing for the outcome write the grace exists to protect.
+ * 60s is two worst-case teardowns. The RELATIONSHIP, not the number, is what `call-policy.test.ts`
+ * gates — importing {@link RUNNER_REMOVE_TIMEOUT_MS} rather than restating it. The launcher package
+ * cannot check it from its side; the dependency only goes one way, which is exactly why the old
+ * "re-derived here rather than shared, and padded well past it" drifted.
  */
-export const MANAGED_TRIGGER_GRACE_MS = 30_000;
+export const MANAGED_TRIGGER_GRACE_MS = 60_000;
 
 /** The one RPC method whose budget is derived rather than fixed. */
 const TRIGGER_METHOD = "trigger";

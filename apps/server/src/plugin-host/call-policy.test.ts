@@ -5,6 +5,7 @@ import {
   assertManagedTimeoutSchemas,
   resolveCallPolicy
 } from "./call-policy.js";
+import { RUNNER_REAP_GRACE_MS, RUNNER_REMOVE_TIMEOUT_MS } from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
 /**
@@ -203,5 +204,43 @@ describe("assertManagedTimeoutSchemas (the boot gate)", () => {
         hangDetectorMs: HANG_DETECTOR_MS
       })
     ).toEqual({ budgetMs: HANG_DETECTOR_MS, retryOnCrash: true });
+  });
+});
+
+/**
+ * ================================================================================================
+ * M23.3 — THE CROSS-PACKAGE RELATIONSHIPS THAT USED TO BE COMMENTS THAT DRIFTED
+ * ================================================================================================
+ * Two numbers in `@scp/runner-launcher` and one here have to stand in a fixed order, and every
+ * previous phase expressed that order in prose. `RUNNER_REAP_GRACE_MS`'s own doc said it plainly:
+ * "nothing enforces the relationship automatically, precisely because nothing CAN import across
+ * that boundary." That is true from the LAUNCHER's side and false from this one — `apps/server`
+ * depends on `@scp/runner-launcher`, never the reverse — so the gate belongs here.
+ *
+ * IT IS NOT PEDANTRY. Every one of M23.3's HIGH defects was a number sized against a quantity that
+ * had since changed, with a well-written comment still asserting the old arithmetic. A comment
+ * naming a hazard is a signal to sweep, not evidence it was handled (CLAUDE.md).
+ */
+describe("M23.3: the grace constants stand in the order the cleanup path needs", () => {
+  it("MANAGED_TRIGGER_GRACE_MS EXCEEDS the teardown it exists to protect", () => {
+    // The only work that happens after a run's whole-run deadline is the adapter's
+    // `finally { docker rm -f }`, capped at RUNNER_REMOVE_TIMEOUT_MS. A grace merely EQUAL to it
+    // (which is what 30_000 was) is spent entirely by one worst-case teardown, leaving zero for the
+    // `withRecordedOutcome` write and `saveState` that the grace exists to make room for — so the
+    // host SIGKILLs the subprocess at precisely the moment the ledger entry would have landed.
+    expect(MANAGED_TRIGGER_GRACE_MS).toBeGreaterThan(RUNNER_REMOVE_TIMEOUT_MS);
+  });
+
+  it("RUNNER_REAP_GRACE_MS EXCEEDS MANAGED_TRIGGER_GRACE_MS — never reapable while its owner may live", () => {
+    // A container's `scp.launcher.deadline` is `runDeadline + RUNNER_REAP_GRACE_MS`; the host gives
+    // up on the subprocess at `runDeadline + MANAGED_TRIGGER_GRACE_MS`. If the stamp expired FIRST,
+    // there would be a window in which a peer launcher sees a container as `foreign AND past
+    // deadline` — the exact predicate `reap()` destroys on — while the process that owns it is
+    // still alive and still running `tofu apply`. That is HIGH-2 arriving through the other door.
+    expect(RUNNER_REAP_GRACE_MS).toBeGreaterThan(MANAGED_TRIGGER_GRACE_MS);
+  });
+
+  it("the reap grace also covers the teardown, so a run that finishes normally is never reapable", () => {
+    expect(RUNNER_REAP_GRACE_MS).toBeGreaterThan(RUNNER_REMOVE_TIMEOUT_MS);
   });
 });

@@ -50,6 +50,7 @@
     "@scp/plugin-terraform": "workspace:*",
     "@scp/plugin-webhook-control": "workspace:*",
     "@scp/plugin-webhook-notify": "workspace:*",
+    "@scp/runner-launcher": "workspace:*",
     "@scp/schemas": "workspace:*",
     "@scp/sdk": "workspace:*",
     "ajv": "^8.17.0",
