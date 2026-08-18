@@ -194,18 +194,56 @@ Two sessions relayed the same decision to the owner within an hour and got oppos
 5. **Air-gap first** — no new runtime egress. Trivy already runs `--offline-scan --skip-db-update --network none`; the latest-version read is a local indexed row. D7's resolution introduces no egress at all — no widening of ingestion or polling means no new outbound reach — so there is no principle-5 exception here.
 6. **Explainability** — Increment 0 puts the rule into the Decision *before* any exception can hide inside it, and every applied exclusion names its clause, its admitting tier, its authority and its expiry.
 
-## 12. UI handoff
+## 12. UI handoff — SHIPPED SURFACES, as of M22.8
 
-UI work belongs to the UI session, whose base is the unmerged `claude/ui-review-worktree-efc42b` (~110 commits ahead of main, contains main, carries the substrate-facet `property_schema` precedent). **Do not target main.** Nothing here should be built before Increment 1 lands, because until then there are no findings to render.
+UI work belongs to the UI session, whose base is the unmerged `claude/ui-review-worktree-efc42b` (~110 commits ahead of main, contains main, carries the substrate-facet `property_schema` precedent). **Do not target main.**
 
-Four surfaces, in dependency order:
+This section was written before any of it was built. It is now a record of what actually exists, so the UI session builds against measured endpoints rather than a plan. Everything below is on the wire in `tools/openapi/openapi.v1.json` and reachable from the generated SDK.
 
-1. **Cheapest first win, available today:** the Control runs card on `/changes/$id` already renders scan evidence into a raw-JSON `<pre>`. The resolved threshold, its contributing tiers and (later) the exclusion list are all sitting there unrendered. Turning that into a real panel needs no server change.
-2. **"Why did this pass/fail?"** — per-finding table with, for each excluded finding, the clause that excluded it, the tier that admitted it, the authority behind it and its expiry. This is charter principle 6 made visible and is the feature's main operator surface.
-3. **Rule authoring and preview** — consuming `GET /components/{idOrUrn}/scan-requirements` (Increment 8). Must show the *resolved* ceiling and every contributing tier, because "I authored a rule and cannot tell whether it applies" is today's default SecOps experience (§2(d)). Note the endpoint deliberately writes no Decision, so it is safe to poll; `POST /policy-evaluate` is **not** — it writes a Decision per call with no suppression.
-4. **Override request lifecycle** — raise, approve/deny, revoke, and an expiry that is visibly a read-time window rather than a status flag.
+### 12.1 The endpoints that exist
 
-Two constraints worth stating up front: the tier enum widening (`assembly`) does **not** regenerate the SDK — measured during M22.0, `ScanRequirementTierSchema` never reaches the wire — so there is no contract churn to coordinate; and an override's expiry must never be rendered from a stored status column, because none exists by design.
+| Surface | Endpoint | SDK | CLI |
+|---|---|---|---|
+| Rules in force for a component | `GET /components/{idOrUrn}/scan-requirements` | `client.components.scanRequirements(idOrUrn)` | `scp component scan-requirements <idOrUrn>` |
+| Control runs for a change | `GET /changes/{idOrUrn}/control-runs` | `client.controlRuns.listForChange(id)` | — |
+| Everything about a change | `GET /changes/{id}/explain` | `client.changes.explain(id)` | `scp change explain` |
+| Instance floors (operator-write, tenant-read) | `GET/PUT /instance/scan-floors[/{tier}]` | `client.instanceScanFloors` | — |
+| Override grants | `/scan-override-grants` (create/approve/deny/revoke/list) | `client.scanOverrideGrants` | — |
+
+**`GET /components/{idOrUrn}/scan-requirements` returns, and this is the whole contract:**
+
+- `threshold` — `null`, or `{threshold, contributors[]}`: the resolved per-severity ceiling and every tier that contributed, each with its `tier`, its `source` (`instance:platform:local`, `policy:<name>@<id>`) and its own partial threshold. `null` means no tier sets one and the control falls back to its per-binding config, which this endpoint cannot see.
+- `admittedExclusionClasses[]` — **all four** classes, always, each with `admittedBy[]` and `effectiveAtTiers[]`. `effectiveAtTiers` is the field that answers the operator's actual question: *at which tiers would a clause of this class survive the AND right now*. An empty `effectiveAtTiers` next to a non-empty `admittedBy` is the diagnostic state — somebody admitted the class and a rung above them did not.
+- `exclusionClauses[]` — the clauses surviving the AND today, each with the full `admittedBy` chain.
+- `representedTiers[]` — which of the six rungs exist for this component. A rung that does not exist is never asked to admit.
+- `unevaluatedConditions[]` — every contributing policy carrying a CEL condition. **The endpoint evaluates no CEL** (there is no change to evaluate against), so each of these was treated conservatively: kept for the CEILING, dropped from the EXCLUSION set. Render them; an operator who cannot see them cannot tell a conservative answer from a confident one.
+
+**It writes no Decision, so it is safe to poll.** `POST /policy-evaluate` is not — it writes one per call with no suppression, and a polled UI on it reproduces the measured 1.44 GB/day amplification. This is pinned by an integration test that counts `decisions` rows across both endpoints in the same org.
+
+**Two honesty notes for whoever renders it.** (a) The answer is computed for the CALLING subject, because `scope.group`'s acting half depends on who asks — two users can legitimately see two different ceilings, and the wave-boundary gate sees a third as `SYSTEM_ACTOR_ID`. Do not present it as "what the gate will do". (b) It reports ADMISSION, never APPLICATION: whether a surviving clause actually excludes a finding depends on the dependency inventory, the component's declarations, live grants and findings that do not exist until a scan runs.
+
+### 12.2 Control runs now name their crossing
+
+`ControlRunSchema` gained optional `gateKind` (`lifecycle_edge` | `wave_boundary`) and `gateRef` (`{fromState,toState}` or `{waveIndex,topologyObjectId}`), on **both** projections — `/control-runs` and `/explain`. Since M22.0a keyed the control-run cache on gate identity, a change routinely holds several runs of one control, and until now the list could not say which one authorized production. Group or label runs by crossing; a bare list of same-status rows is actively misleading.
+
+### 12.3 Authoring a rule now fails loudly instead of silently
+
+A `scanThreshold` or `scanExclusion.exclude` policy that does not, **in its own document**, require a control bound to a scan-verdict plugin is refused with a 400 at every write door (typed route, IaC apply, hand-fill, overlays — the refusal lives at `graph/objects-repo.ts`'s choke point, not at a route). An `admit`-only `scanExclusion` is exempt. A rule-authoring UI should require the control up front rather than surfacing the 400.
+
+### 12.4 The four surfaces to build, in dependency order
+
+1. **Cheapest first win:** the Control runs card on `/changes/$id` renders scan evidence into a raw-JSON `<pre>`. The resolved threshold, its contributing tiers, the exclusion list and the applied-exclusion detail are all sitting there unrendered. No server change needed.
+2. **"Why did this pass/fail?"** — per-finding table naming, for each excluded finding, the clause, the admitting tier, the authority and the expiry. Charter principle 6 made visible; the feature's main operator surface.
+3. **Rule authoring and preview** — on `GET /components/{idOrUrn}/scan-requirements`. Lead with `effectiveAtTiers`, not with `admittedBy`.
+4. **Override request lifecycle** — raise, approve/deny, revoke, with the expiry rendered as a read-time window. There is **no status column** to render and there never will be, by design.
+
+### 12.5 What is NOT built, and will block surface 3 in one specific place
+
+**`scan_exclusion_admissions` has no API at all.** The `platform` and `trust_domain` rungs of the AND — the two that gate every exclusion beneath them — can today only be written by direct SQL against the database. Every integration test in M22 writes them over the admin pool. The read side is live (this endpoint reports them), so a UI can *show* that nothing is admitted; it cannot offer a way to fix it. The missing piece is an operator-token-guarded twin of `routes/instance-scan-floors.ts` (`GET`/`PUT /instance/scan-exclusion-admissions`), which is the same shape, the same tenancy exception and the same two-barrier write path. It is not in M22.8's scope and is tracked as a follow-up.
+
+**No retention job exists.** ADR-0033 §7's class-E/class-O split is assigned at write time on `scan_findings`, but nothing sweeps either class, so the M22 DoD item "an excluded finding survives the class-O window; an ordinary one does not" is unsatisfiable in this tree.
+
+**IaC has no surface here and should not get one.** IaC declares desired state; a read endpoint has no desired state to declare. The authoring side is already IaC-reachable, because policies are ordinary graph objects in a `DesiredStateManifest` — and M22.8's authoring refusal is proven to fire through `POST /plans/{id}/apply`, which is why that door is in the guard's test suite.
 
 ## 13. Attribution
 

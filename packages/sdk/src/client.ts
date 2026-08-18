@@ -153,6 +153,7 @@ import {
   ingestChangeSourceWebhook as ingestChangeSourceWebhookRequest,
   reportChangeSource as reportChangeSourceRequest,
   getComponentPipeline as getComponentPipelineRequest,
+  getComponentScanRequirements as getComponentScanRequirementsRequest,
   createSourceMapping as createSourceMappingRequest,
   deleteSourceMapping as deleteSourceMappingRequest,
   listSourceMappings as listSourceMappingsRequest,
@@ -318,6 +319,7 @@ import type {
   DecisionListResponse,
   DecisionListQuery,
   ComponentPipelineResponse,
+  ComponentScanRequirementsResponse,
   CreateSourceMappingRequest,
   DeleteSourceMappingRequest,
   DeleteSourceMappingResponse,
@@ -1084,6 +1086,21 @@ export class ScpClient {
        *  point: the change-anchored surface it replaces could not represent one at all. */
       pipeline: async (idOrUrn: string): Promise<ComponentPipelineResponse> => {
         const result = await getComponentPipelineRequest({
+          client: this.client,
+          path: { idOrUrn }
+        });
+        return unwrap(result);
+      },
+      /** M22.8 — THE SCAN RULES IN FORCE FOR THIS COMPONENT: the resolved six-tier severity ceiling
+       *  with every tier that contributed to it (ADR-0016), plus which exclusion classes the tiers
+       *  above admit and at which tiers a clause of each would actually take effect (ADR-0033 §1).
+       *
+       *  READS ONLY — it writes no Decision, which is exactly why it exists beside `policyEvaluate`
+       *  rather than being folded into it. `policyEvaluate` runs the real orchestrator and writes a
+       *  Decision row per call with no suppression, so polling it from a UI reproduces the
+       *  1.44 GB/day amplification ADR-0024 §D0 exists over. Poll THIS one. */
+      scanRequirements: async (idOrUrn: string): Promise<ComponentScanRequirementsResponse> => {
+        const result = await getComponentScanRequirementsRequest({
           client: this.client,
           path: { idOrUrn }
         });

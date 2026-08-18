@@ -138,7 +138,17 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
           evidence: r.evidence,
           detail: r.detail,
           decisionId: r.decisionId,
-          createdAt: r.createdAt.toISOString()
+          createdAt: r.createdAt.toISOString(),
+          // M22.8 — WHICH CROSSING THIS RUN AUTHORIZED. Stored since M4, never projected. It became
+          // load-bearing at M22.0a, which keyed the cache on gate identity and thereby made several
+          // runs per change the NORM rather than an anomaly; until now an operator reading this list
+          // saw N rows for one control with no way to tell which one let production through.
+          //
+          // Sent unconditionally. The columns are NOT NULL, so the wire fields' optionality is for
+          // older generated clients only (see `ControlRunSchema`), never a licence to omit them —
+          // and a `?? undefined` here would silently turn a schema-drift bug into a missing field.
+          gateKind: r.gateKind as "lifecycle_edge" | "wave_boundary",
+          gateRef: r.gateRef
         })),
         nextCursor: null
       });

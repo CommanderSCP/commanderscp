@@ -171,7 +171,12 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     });
   }
 
-  /** A policy whose ONLY effect is a scan ceiling, scoped at one object — the org-and-below
+  // M22.8 — `governance/scan-rule-authoring-guard.ts` refuses a `scanThreshold` rule that requires no
+  // control. This suite creates no control and runs no plugin host, so it names a control REFERENCE
+  // rather than a bound control — the same non-uuid form the rest of this file already uses. The
+  // guard reads that as "cannot be PROVEN inert" and passes, which is its documented sign: an absent
+  // or unresolvable binding is never evidence that a document does nothing.
+  /** A policy whose effect set is a scan ceiling plus the control that ceiling constrains, scoped at one object — the org-and-below
    *  authoring surface the six-tier MIN reads (ADR-0016). */
   async function scanFloorPolicy(
     admin: ScpClient,
@@ -186,7 +191,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
       properties: {
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
-        effects: [{ scanThreshold: threshold }]
+        effects: [{ scanThreshold: threshold }, { requireControls: ["security-scan"] }]
       }
     });
   }
@@ -358,13 +363,7 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
   it("A2: an UNKNOWN scope keyword still resolves to null — it blocks, and no approval request is materialized", async () => {
     const { org, admin } = await newOrg("approval-unknown");
     const chain = await buildChain(admin, "approval-unknown");
-    await requireApprovalPolicy(
-      admin,
-      org,
-      "unknown",
-      chain.component.id,
-      UNKNOWN_SCOPE_KEYWORD
-    );
+    await requireApprovalPolicy(admin, org, "unknown", chain.component.id, UNKNOWN_SCOPE_KEYWORD);
     const parked = await parkAtWaveGate(org, chain.component.id, "unknown");
 
     await tick(org, 3);
@@ -385,9 +384,9 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
     const policies =
       (rows.at(-1)!.reasonTree as { policies?: Array<Record<string, unknown>> }).policies ?? [];
     const entry = policies.find((p) => p.name === "gate-unknown");
-    const effect = (
-      entry!.effects as Array<{ kind: string; satisfied: boolean }>
-    ).find((e) => e.kind === "requireApprovals");
+    const effect = (entry!.effects as Array<{ kind: string; satisfied: boolean }>).find(
+      (e) => e.kind === "requireApprovals"
+    );
     expect(effect?.satisfied).toBe(false);
   });
 
@@ -421,7 +420,10 @@ describe("M22.0: the assembly rung, and the Decision that explains its own rule"
       maxMedium: 90,
       maxLow: 7
     });
-    await scanFloorPolicy(admin, org, "floor-domain", chain.domain.id, { maxMedium: 6, maxLow: 80 });
+    await scanFloorPolicy(admin, org, "floor-domain", chain.domain.id, {
+      maxMedium: 6,
+      maxLow: 80
+    });
     await scanFloorPolicy(admin, org, "floor-service", chain.service.id, {
       maxHigh: 70,
       maxMedium: 60

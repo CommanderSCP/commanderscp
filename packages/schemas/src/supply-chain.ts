@@ -725,6 +725,98 @@ export const AdmittedScanExclusionClauseSchema = z.object({
 export type AdmittedScanExclusionClause = z.infer<typeof AdmittedScanExclusionClauseSchema>;
 
 // ===========================================================================================
+// M22.8 — THE READ SURFACE'S WIRE CONTRACT (`GET /components/{idOrUrn}/scan-requirements`).
+//
+// Everything above this point travels on `control_runs.evidence` and in a Decision's
+// `inputContext`, both of which are free-form JSON and therefore NOT wire contracts (measured
+// during M22.0: `ScanRequirementTierSchema` never reaches `openapi.v1.json`). The schemas BELOW
+// are the first ones in this file that genuinely do, which is why the tier enum finally appears in
+// the generated spec with this increment and not with M22.0.
+// ===========================================================================================
+
+/**
+ * ONE exclusion class, and where a clause of it would actually have effect for this component.
+ *
+ * `admittedBy` alone is not the answer an operator needs. ADR-0033 §1's algebra is a monotone AND
+ * *down the tier chain*: a clause anchored at tier T has effect only if EVERY represented tier
+ * strictly above T admits its class. So "org admits `no_fix_available`" tells you nothing about
+ * whether a clause you author at the component will work — that depends on `platform` and
+ * `trust_domain` too. {@link effectiveAtTiers} answers the question directly: these are the tiers at
+ * which a clause of this class would survive the AND right now.
+ *
+ * An EMPTY `effectiveAtTiers` with a non-empty `admittedBy` is the diagnostic shape this field
+ * exists for — somebody admitted the class somewhere, and a rung above them did not, so every
+ * clause of that class is inert. That is the shipped default (admission is empty at every tier) and
+ * it is precisely the state that is invisible without this surface.
+ */
+export const ScanExclusionAdmittedClassSchema = z.object({
+  class: ScanExclusionClassSchema,
+  /** Every admission statement for this class, from any represented tier, content-sorted. */
+  admittedBy: z.array(z.object({ tier: ScanRequirementTierSchema, source: z.string() })),
+  /** The tiers at which a clause of this class would survive the AND, top-down. May be empty. */
+  effectiveAtTiers: z.array(ScanRequirementTierSchema)
+});
+export type ScanExclusionAdmittedClass = z.infer<typeof ScanExclusionAdmittedClassSchema>;
+
+/**
+ * A contributing policy this route DID NOT EVALUATE, named rather than silently folded in.
+ *
+ * The route resolves scan requirements for a COMPONENT, not for a change — so there is no change,
+ * no subject, no graph facts and no gate instant to build a CEL context from. Evaluating a
+ * condition against a fabricated context would produce an answer that is confidently wrong; the
+ * route therefore evaluates NO CEL at all and treats every condition-carrying contributor
+ * conservatively **in each dimension's own direction** (see `scan-requirements-read.ts`).
+ */
+export const UnevaluatedScanPolicyConditionSchema = z.object({
+  policyObjectId: z.string().uuid(),
+  policyVersion: z.number().int().nonnegative(),
+  name: z.string(),
+  condition: z.string()
+});
+export type UnevaluatedScanPolicyCondition = z.infer<typeof UnevaluatedScanPolicyConditionSchema>;
+
+/**
+ * `GET /components/{idOrUrn}/scan-requirements` — WHAT RULES ARE IN FORCE FOR THIS COMPONENT.
+ *
+ * WRITES NO DECISION, and that is the reason it exists rather than pointing operators at
+ * `POST /policy-evaluate`: that endpoint runs the real orchestrator and writes one Decision row per
+ * call with NO write suppression, so a UI polling it would reproduce, on a per-viewer schedule, the
+ * exact 1.44 GB/day amplification ADR-0024 §D0 was raised to stop. This surface reads.
+ *
+ * IT IS NOT A PREDICTION OF A GATE VERDICT. It answers "which ceiling and which loosenings are
+ * authored and admitted for this component", which is a question about POLICY. A gate verdict also
+ * depends on the change, the actor, the artifact, the scanner's findings and every CEL condition —
+ * none of which exist here.
+ */
+export const ComponentScanRequirementsResponseSchema = z.object({
+  componentId: z.string().uuid(),
+  componentUrn: z.string(),
+  /** The rungs of the six-tier chain that EXIST for this component (`platform` and `trust_domain`
+   *  always; the rest from its containment chain). A rung that does not exist is never asked to
+   *  admit anything — ADR-0033 §1, and the reason the AND is not vacuous in either direction. */
+  representedTiers: z.array(ScanRequirementTierSchema),
+  /** The resolved per-severity ceiling and every tier that contributed to it. `null` when NO tier
+   *  contributes a ceiling at all — the scan control then falls back to its own per-binding
+   *  `config.threshold` (the unchanged M17.1 behaviour), which this route cannot see. */
+  threshold: EffectiveScanThresholdSchema.nullable(),
+  /** Which exclusion classes are admitted, and where a clause of each would have effect. */
+  admittedExclusionClasses: z.array(ScanExclusionAdmittedClassSchema),
+  /** The exclusion clauses that survive the AND for this component today.
+   *
+   *  ADMISSION ONLY — never application. Whether a surviving clause actually excludes a finding
+   *  depends on facts this route deliberately does not resolve (the dependency inventory's head,
+   *  the component's declarations, live grants and their expiry) and on findings that do not exist
+   *  until a scan runs. Conflating "admitted" with "applied" is the confusion ADR-0033 §1's last
+   *  paragraph names; both halves are needed and they are different questions. */
+  exclusionClauses: z.array(AdmittedScanExclusionClauseSchema),
+  /** Every contributor carrying a CEL condition, which this route did not evaluate. */
+  unevaluatedConditions: z.array(UnevaluatedScanPolicyConditionSchema)
+});
+export type ComponentScanRequirementsResponse = z.infer<
+  typeof ComponentScanRequirementsResponseSchema
+>;
+
+// ===========================================================================================
 // M22.4 (ADR-0033 D1) — THE VENDOR RULE'S FACTS.
 //
 // The owner's headline rule: a vendor dependency is accepted only if we are on the LATEST VERSION

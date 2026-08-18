@@ -15,6 +15,7 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
 /**
  * M17.5 — SCOPED SCAN-REQUIREMENT POLICIES (ADR-0016), the BUILD_AND_TEST.md §8 M17 "Integration
@@ -99,13 +100,14 @@ async function startTrivySource(): Promise<TrivySource> {
  * BEFORE it mattered: the first test whose two runs legitimately DIFFER would have gone green or red
  * on listing order. Now the caller gets the NEWEST matching run rather than an arbitrary one.
  *
- * IT CANNOT YET NAME THE GATE IT MEANS, and that is a gap M22.0a introduces rather than one it
- * inherits: `controlRuns.listForChange` does not expose `gate_kind`/`gate_ref` at all. While one
- * control produced at most one run per change that omission was invisible. Now that a change
- * routinely holds a lifecycle-edge run AND a wave-boundary run per control, an operator reading the
- * API literally cannot tell which crossing a given run authorized — a principle-6 problem, not just
- * a test-ergonomics one. Surfacing it is additive (a new optional response field) and belongs with
- * the M22.8 read surface; tracked there rather than smuggled in here.
+ * IT CAN NOW NAME THE GATE IT MEANS — M22.8 closed the gap this comment used to record.
+ * `controlRuns.listForChange` (and `/changes/{id}/explain`, the other projection of the same shape)
+ * carry `gateKind` and `gateRef` as additive optional response fields, so an operator reading the
+ * API can finally tell which crossing a given run authorized rather than inferring it from ordering.
+ * This helper is deliberately left filtering on control + status: its callers want "the newest run
+ * of this control in this state", and narrowing it to one crossing would change what every existing
+ * assertion in this file means. `scan-requirements-read.integration.test.ts` is where the projection
+ * itself is pinned.
  */
 async function waitForControlRun(
   admin: ScpClient,
@@ -272,6 +274,12 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
      *  otherwise derive the same name-slug URN and collide). Defaults to the server's name-slug. */
     urn?: string
   ) {
+    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
+    // `scanThreshold` rule that requires no scan control: such a document is silently inert,
+    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
+    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
+    // doc: a real bound control would add a control run and change what these tests measure.
+    const scanControlId = SCAN_RULE_TEST_CONTROL_REF;
     return admin.policies.create({
       name,
       ...(urn ? { urn } : {}),
@@ -279,7 +287,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
         ...(condition ? { condition } : {}),
-        effects: [{ scanThreshold: threshold }]
+        effects: [{ scanThreshold: threshold }, { requireControls: [scanControlId] }]
       }
     });
   }

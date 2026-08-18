@@ -16,6 +16,7 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
 /**
  * M22.5 (component-declared facts, D2) and M22.6 (the override request, D3/D4) — PROVEN AT THE REAL
@@ -190,12 +191,26 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     scopeObjectId: string,
     effect: Record<string, unknown>
   ) {
+    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
+    // `scanExclusion` rule that requires no scan control: such a document is silently inert,
+    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
+    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
+    // doc: a real bound control would add a control run and change what these tests measure.
+    // `admit`-only stays untouched — it is an admission, not a rule about a finding (exempt).
+    const requires =
+      effect.exclude === undefined
+        ? []
+        : [
+            {
+              requireControls: [SCAN_RULE_TEST_CONTROL_REF]
+            }
+          ];
     return admin.policies.create({
       name,
       properties: {
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
-        effects: [{ scanExclusion: effect }]
+        effects: [{ scanExclusion: effect }, ...requires]
       }
     });
   }

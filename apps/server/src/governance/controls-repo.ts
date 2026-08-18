@@ -127,6 +127,12 @@ export interface ControlRunRow {
    * request rather than an unattended merge.
    */
   pluginModule: string | null;
+  /** M22.8 — WHICH GATE CROSSING this run authorized. Already stored (`NOT NULL` since M4) and
+   *  already the cache key since M22.0a; declared on the row type so `listControlRunsForChange`'s
+   *  caller can project it. Typed loosely because `select()` returns the column verbatim and the
+   *  DB's CHECK, not this interface, is what constrains it. */
+  gateKind: string;
+  gateRef: Record<string, unknown>;
   createdAt: Date;
 }
 

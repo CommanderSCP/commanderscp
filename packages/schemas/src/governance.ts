@@ -27,7 +27,30 @@ export const ControlRunSchema = z.object({
   evidence: z.record(z.string(), z.unknown()),
   detail: z.string().nullable(),
   decisionId: z.string().uuid().nullable(),
-  createdAt: z.string().datetime()
+  createdAt: z.string().datetime(),
+  /**
+   * M22.8 — WHICH GATE CROSSING THIS RUN AUTHORIZED. Both columns have existed on `control_runs`
+   * since M4; neither has ever been projected onto the wire.
+   *
+   * That was survivable while a change had at most ONE run per control: `latestControlRun` was keyed
+   * `(orgId, changeObjectId, controlObjectId)`, so the single row WAS the change's answer and naming
+   * the crossing added nothing. M22.0a changed that — the cache key now carries gate identity, so a
+   * change legitimately carries a run per crossing (the `validating -> accepted` lifecycle edge, then
+   * one per wave boundary), and M22.7 adds forced re-runs on top. An operator reading
+   * `GET /changes/{id}/control-runs` today sees several rows with the same control and status and no
+   * way to tell which one let production through.
+   *
+   * OPTIONAL ON THE WIRE, NOT NULLABLE, and the distinction is the oasdiff rule this repo has
+   * already paid for once: making an EXISTING required response field optional is a breaking change,
+   * so these are added as new optional fields beside the required ones rather than by re-shaping
+   * anything. The columns are `NOT NULL`, so a live server always sends them; the optionality exists
+   * for older generated clients, never as a licence to omit them.
+   */
+  gateKind: z.enum(["lifecycle_edge", "wave_boundary"]).optional(),
+  /** `{fromState,toState}` for a lifecycle edge, `{waveIndex,topologyObjectId}` for a wave boundary.
+   *  Free-form on purpose: it is the gate's own identity object, and pinning a closed union here
+   *  would make adding a third gate kind a wire-breaking change. */
+  gateRef: z.record(z.string(), z.unknown()).optional()
 });
 export type ControlRun = z.infer<typeof ControlRunSchema>;
 export const ControlRunListResponseSchema = cursorPageResponseSchema(ControlRunSchema);

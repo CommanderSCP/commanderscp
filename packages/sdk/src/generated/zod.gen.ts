@@ -2219,6 +2219,124 @@ export const zGetComponentPipelineResponse = z.object({
 /**
  * Success
  */
+export const zGetComponentScanRequirementsResponse = z.object({
+    componentId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    componentUrn: z.string(),
+    representedTiers: z.array(z.enum([
+        'platform',
+        'trust_domain',
+        'org',
+        'containment_domain',
+        'service',
+        'assembly',
+        'component'
+    ])),
+    threshold: z.object({
+        threshold: z.object({
+            maxCritical: z.int().gte(0).lte(9007199254740991).optional(),
+            maxHigh: z.int().gte(0).lte(9007199254740991).optional(),
+            maxMedium: z.int().gte(0).lte(9007199254740991).optional(),
+            maxLow: z.int().gte(0).lte(9007199254740991).optional()
+        }),
+        contributors: z.array(z.object({
+            tier: z.enum([
+                'platform',
+                'trust_domain',
+                'org',
+                'containment_domain',
+                'service',
+                'assembly',
+                'component'
+            ]),
+            source: z.string(),
+            objectTypeId: z.string().optional(),
+            threshold: z.object({
+                maxCritical: z.int().gte(0).lte(9007199254740991).optional(),
+                maxHigh: z.int().gte(0).lte(9007199254740991).optional(),
+                maxMedium: z.int().gte(0).lte(9007199254740991).optional(),
+                maxLow: z.int().gte(0).lte(9007199254740991).optional()
+            })
+        }))
+    }).nullable(),
+    admittedExclusionClasses: z.array(z.object({
+        class: z.enum([
+            'no_fix_available',
+            'vendor_latest',
+            'declared_fact',
+            'approved_override'
+        ]),
+        admittedBy: z.array(z.object({
+            tier: z.enum([
+                'platform',
+                'trust_domain',
+                'org',
+                'containment_domain',
+                'service',
+                'assembly',
+                'component'
+            ]),
+            source: z.string()
+        })),
+        effectiveAtTiers: z.array(z.enum([
+            'platform',
+            'trust_domain',
+            'org',
+            'containment_domain',
+            'service',
+            'assembly',
+            'component'
+        ]))
+    })),
+    exclusionClauses: z.array(z.object({
+        clause: z.object({
+            class: z.enum([
+                'no_fix_available',
+                'vendor_latest',
+                'declared_fact',
+                'approved_override'
+            ]),
+            vulnerabilityId: z.string().min(1).optional(),
+            pkgName: z.string().min(1).optional(),
+            purl: z.string().min(1).optional(),
+            findingClass: z.string().min(1).optional(),
+            declaredFact: z.string().min(1).max(64).regex(/^[a-z][a-z0-9_.-]*$/).optional(),
+            declaredValue: z.string().min(1).max(128).regex(/^[^\r\n\t]+$/).optional(),
+            reason: z.string().max(500).optional()
+        }),
+        tier: z.enum([
+            'platform',
+            'trust_domain',
+            'org',
+            'containment_domain',
+            'service',
+            'assembly',
+            'component'
+        ]),
+        source: z.string(),
+        admittedBy: z.array(z.object({
+            tier: z.enum([
+                'platform',
+                'trust_domain',
+                'org',
+                'containment_domain',
+                'service',
+                'assembly',
+                'component'
+            ]),
+            source: z.string()
+        }))
+    })),
+    unevaluatedConditions: z.array(z.object({
+        policyObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        policyVersion: z.int().gte(0).lte(9007199254740991),
+        name: z.string(),
+        condition: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
 export const zListComponentsResponse = z.object({
     items: z.array(z.object({
         id: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
@@ -4192,7 +4310,9 @@ export const zExplainChangeResponse = z.object({
         evidence: z.record(z.string(), z.unknown()),
         detail: z.string().nullable(),
         decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
-        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+        gateKind: z.enum(['lifecycle_edge', 'wave_boundary']).optional(),
+        gateRef: z.record(z.string(), z.unknown()).optional()
     })),
     waitStatus: z.object({
         waiting: z.boolean(),
@@ -4906,7 +5026,9 @@ export const zListChangeControlRunsResponse = z.object({
         evidence: z.record(z.string(), z.unknown()),
         detail: z.string().nullable(),
         decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
-        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/)
+        createdAt: z.iso.datetime().regex(/^(?:(?:\d\d[2468][048]|\d\d[13579][26]|\d\d0[48]|[02468][048]00|[13579][26]00)-02-29|\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\d|30)|(?:02)-(?:0[1-9]|1\d|2[0-8])))T(?:(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z))$/),
+        gateKind: z.enum(['lifecycle_edge', 'wave_boundary']).optional(),
+        gateRef: z.record(z.string(), z.unknown()).optional()
     })),
     nextCursor: z.string().nullable()
 });

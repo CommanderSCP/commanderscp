@@ -27,6 +27,7 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
 /**
  * M22.2 — THE EXCLUSION DIMENSION, PROVEN AT THE REAL GATE (ADR-0033 §1–§4, migration 0066).
@@ -215,13 +216,29 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     effect: Record<string, unknown>,
     condition?: string
   ) {
+    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
+    // `scanExclusion` rule that requires no scan control: such a document is silently inert,
+    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
+    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
+    // doc: a real bound control would add a control run and change what these tests measure.
+    // An `admit`-ONLY effect is EXEMPT and is deliberately left untouched: it is an admission,
+    // not a rule about a finding, and demanding that an org-wide admission enumerate scan controls
+    // would be wrong. Every `admit`-only call in this suite therefore still exercises the exemption.
+    const requires =
+      effect.exclude === undefined
+        ? []
+        : [
+            {
+              requireControls: [SCAN_RULE_TEST_CONTROL_REF]
+            }
+          ];
     return admin.policies.create({
       name,
       properties: {
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
         ...(condition ? { condition } : {}),
-        effects: [{ scanExclusion: effect }]
+        effects: [{ scanExclusion: effect }, ...requires]
       }
     });
   }
@@ -233,13 +250,19 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
     threshold: Record<string, number>,
     condition?: string
   ) {
+    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
+    // `scanThreshold` rule that requires no scan control: such a document is silently inert,
+    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
+    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
+    // doc: a real bound control would add a control run and change what these tests measure.
+    const scanControlId = SCAN_RULE_TEST_CONTROL_REF;
     return admin.policies.create({
       name,
       properties: {
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
         ...(condition ? { condition } : {}),
-        effects: [{ scanThreshold: threshold }]
+        effects: [{ scanThreshold: threshold }, { requireControls: [scanControlId] }]
       }
     });
   }

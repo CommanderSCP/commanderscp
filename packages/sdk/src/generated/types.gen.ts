@@ -6613,6 +6613,117 @@ export type GetComponentPipelineResponses = {
 
 export type GetComponentPipelineResponse = GetComponentPipelineResponses[keyof GetComponentPipelineResponses];
 
+export type GetComponentScanRequirementsData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/scan-requirements';
+};
+
+export type GetComponentScanRequirementsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetComponentScanRequirementsError = GetComponentScanRequirementsErrors[keyof GetComponentScanRequirementsErrors];
+
+export type GetComponentScanRequirementsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        componentId: string;
+        componentUrn: string;
+        representedTiers: Array<'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component'>;
+        threshold: {
+            threshold: {
+                maxCritical?: number;
+                maxHigh?: number;
+                maxMedium?: number;
+                maxLow?: number;
+            };
+            contributors: Array<{
+                tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+                source: string;
+                objectTypeId?: string;
+                threshold: {
+                    maxCritical?: number;
+                    maxHigh?: number;
+                    maxMedium?: number;
+                    maxLow?: number;
+                };
+            }>;
+        } | null;
+        admittedExclusionClasses: Array<{
+            class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+            admittedBy: Array<{
+                tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+                source: string;
+            }>;
+            effectiveAtTiers: Array<'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component'>;
+        }>;
+        exclusionClauses: Array<{
+            clause: {
+                class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+                vulnerabilityId?: string;
+                pkgName?: string;
+                purl?: string;
+                findingClass?: string;
+                declaredFact?: string;
+                declaredValue?: string;
+                reason?: string;
+            };
+            tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+            source: string;
+            admittedBy: Array<{
+                tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+                source: string;
+            }>;
+        }>;
+        unevaluatedConditions: Array<{
+            policyObjectId: string;
+            policyVersion: number;
+            name: string;
+            condition: string;
+        }>;
+    };
+};
+
+export type GetComponentScanRequirementsResponse = GetComponentScanRequirementsResponses[keyof GetComponentScanRequirementsResponses];
+
 export type ListComponentsData = {
     body?: never;
     path?: never;
@@ -11758,6 +11869,10 @@ export type ExplainChangeResponses = {
             detail: string | null;
             decisionId: string | null;
             createdAt: string;
+            gateKind?: 'lifecycle_edge' | 'wave_boundary';
+            gateRef?: {
+                [key: string]: unknown;
+            };
         }>;
         waitStatus: {
             waiting: boolean;
@@ -13886,6 +14001,10 @@ export type ListChangeControlRunsResponses = {
             detail: string | null;
             decisionId: string | null;
             createdAt: string;
+            gateKind?: 'lifecycle_edge' | 'wave_boundary';
+            gateRef?: {
+                [key: string]: unknown;
+            };
         }>;
         nextCursor: string | null;
     };

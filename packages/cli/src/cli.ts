@@ -2345,6 +2345,79 @@ export function buildProgram(): Command {
       printResult(updated, opts.output, (item) => objectRow(item as GraphObject));
     });
 
+  // `scp component scan-requirements <idOrUrn>` — M22.8, charter principle 3 (API -> SDK -> CLI).
+  //
+  // WHICH SCAN RULES ARE IN FORCE for this component: the resolved six-tier severity ceiling with
+  // every tier that contributed to it, and which exclusion classes are admitted and where a clause
+  // of each would take effect.
+  //
+  // THIS IS THE POLLABLE ONE. `scp policy evaluate` runs the real orchestrator and writes a Decision
+  // row per invocation with no write suppression; a watch loop on it recreates the amplification
+  // ADR-0024 §D0 exists over. This command reads and writes nothing.
+  //
+  // The table view answers the one question that has no other answer today — "will the exclusion I
+  // am about to author do anything?" — by printing each class's `effectiveAtTiers`. An EMPTY column
+  // there is the shipped default (admission is empty at every tier) and is the state that was
+  // previously invisible from every surface.
+  componentCmd
+    .command("scan-requirements <idOrUrn>")
+    .description(
+      "Show the scan rules in force for a component — resolved severity ceiling, its contributors, and which exclusion classes are admitted (writes no Decision)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.components.scanRequirements(idOrUrn);
+      if (opts.output === "json") {
+        printResult(result, "json", () => ({}));
+        return;
+      }
+      const t = result.threshold;
+      console.log(`component: ${result.componentUrn}`);
+      console.log(
+        `effective ceiling: ${
+          t
+            ? JSON.stringify(t.threshold)
+            : "(none — no tier sets one; the scan control falls back to its own binding config)"
+        }`
+      );
+      if (t && t.contributors.length > 0) {
+        console.log("contributors:");
+        printResult(t.contributors, "table", (item) => {
+          const c = item as (typeof t.contributors)[number];
+          return { tier: c.tier, source: c.source, threshold: JSON.stringify(c.threshold) };
+        });
+      }
+      console.log("exclusion classes:");
+      printResult(result.admittedExclusionClasses, "table", (item) => {
+        const c = item as (typeof result.admittedExclusionClasses)[number];
+        return {
+          class: c.class,
+          admittedBy: c.admittedBy.map((a) => a.tier).join(",") || "(nobody)",
+          effectiveAtTiers: c.effectiveAtTiers.join(",") || "(nowhere — inert)"
+        };
+      });
+      if (result.exclusionClauses.length > 0) {
+        console.log("admitted clauses:");
+        printResult(result.exclusionClauses, "table", (item) => {
+          const c = item as (typeof result.exclusionClauses)[number];
+          return { class: c.clause.class, tier: c.tier, source: c.source };
+        });
+      }
+      if (result.unevaluatedConditions.length > 0) {
+        // Named, never folded in silently: this surface evaluates NO CEL (there is no change to
+        // evaluate against), so each of these was treated conservatively — kept for the CEILING,
+        // dropped from the EXCLUSION set. A reader who cannot see them cannot tell a conservative
+        // answer from a confident one.
+        console.log("conditions NOT evaluated here (no change to evaluate against):");
+        printResult(result.unevaluatedConditions, "table", (item) => {
+          const c = item as (typeof result.unevaluatedConditions)[number];
+          return { policy: c.name, condition: c.condition };
+        });
+      }
+    });
+
   // `scp component merge <survivor> --loser <loser>` — driving-case merge (M12 P5d): fold a freshly-
   // imported, binding-only component into <survivor> (moves its bindings, soft-deletes it). 409 on a
   // binding-type collision (relabel one first via `scp executor repurpose`).

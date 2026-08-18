@@ -9,6 +9,7 @@ import {
   MergeComponentsResponseSchema,
   ProblemSchema,
   ComponentPipelineResponseSchema,
+  ComponentScanRequirementsResponseSchema,
   RegistryIdOrUrnParamSchema,
   RegistryUrnParamSchema,
   SetComponentServiceRequestSchema,
@@ -21,6 +22,7 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { assertMayDeclareDomainLocal } from "../federation/domain-local.js";
 import { getComponentPipeline } from "../coordination/component-pipeline.js";
+import { readComponentScanRequirements } from "../governance/scan-requirements-read.js";
 import { badRequest } from "../errors.js";
 import { withIdempotency } from "../idempotency.js";
 import {
@@ -98,6 +100,70 @@ export function registerComponentRoutes(app: FastifyInstance, deps: AppDeps): vo
       reply.status(200).send(pipeline);
     }
   });
+
+  // GET /components/:idOrUrn/scan-requirements — M22.8 (ADR-0033 §11, charter principle 3).
+  //
+  // THE RULES IN FORCE FOR ONE COMPONENT: the resolved six-tier ceiling and every tier that
+  // contributed to it (ADR-0016), plus which exclusion CLASSES the tiers above admit and where a
+  // clause of each would actually have effect (ADR-0033 §1).
+  //
+  // IT WRITES NO DECISION. That is the whole reason it exists as a separate surface rather than
+  // "just call `POST /policy-evaluate`": that endpoint runs the real orchestrator and writes one
+  // Decision per call with no suppression, so a polled UI on it would recreate — per viewer, per
+  // interval — the 1.44 GB/day amplification ADR-0024 §D0 exists over. Anything added to this
+  // handler that writes a row breaks the contract this route is named for.
+  //
+  // An extra path segment, so it never collides with the registry's `/:idOrUrn` detail route —
+  // the same shape as `/pipeline` above and `/services/:idOrUrn/board`.
+  typed.route({
+    method: "GET",
+    url: "/api/v1/components/:idOrUrn/scan-requirements",
+    schema: {
+      params: RegistryIdOrUrnParamSchema,
+      response: {
+        200: ComponentScanRequirementsResponseSchema,
+        401: ProblemSchema,
+        403: ProblemSchema,
+        404: ProblemSchema
+      }
+    },
+    config: {
+      openapi: {
+        operationId: "getComponentScanRequirements",
+        summary:
+          "The scan rules in force for a component — the resolved six-tier severity ceiling with its contributors, and which exclusion classes are admitted and where a clause would take effect (ADR-0016/ADR-0033). Reads only: writes no Decision, unlike POST /policy-evaluate",
+        tags: ["components"]
+      }
+    },
+    handler: async (request, reply) => {
+      const auth = await requireAuth(deps, request);
+      const result = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        const component = await getObjectByIdOrUrn(
+          tx,
+          auth.orgId,
+          "component",
+          request.params.idOrUrn
+        );
+        await authorize(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:read",
+          scopeObjectId: component.id
+        });
+        // The CALLER is the actor, not `SYSTEM_ACTOR_ID`. DESIGN §10.1's `scope.group` has an
+        // ACTING half, so a group-scoped ceiling legitimately resolves differently per caller —
+        // and answering as somebody else would describe an evaluation that never happens for this
+        // caller. `scan-requirements-read.ts`'s module doc states the divergence in full.
+        return readComponentScanRequirements(tx, {
+          orgId: auth.orgId,
+          component: { id: component.id, urn: component.urn },
+          actorObjectId: auth.subjectObjectId
+        });
+      });
+      reply.status(200).send(result);
+    }
+  });
+
   const base = "/api/v1/components";
   const idempotencyKey = (request: FastifyRequest): string | undefined => {
     const header = request.headers["idempotency-key"];

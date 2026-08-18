@@ -605,18 +605,25 @@ export interface ResolveScanExclusionsInput {
 }
 
 /**
- * Resolves the effective exclusion set for a change's targets across all seven rungs.
+ * THE PER-TARGET GATHER — every input the pure AND consumes, built from the graph, for each target
+ * independently.
  *
- * Structurally parallel to `resolveEffectiveScanThreshold` and deliberately NOT folded into it: the
- * two share the tier vocabulary and nothing else, and a single function computing both would be one
- * edit away from letting a ceiling contributor admit an exclusion.
+ * EXTRACTED IN M22.8, NOT REWRITTEN. `GET /components/{idOrUrn}/scan-requirements` has to answer
+ * "which exclusion classes are admitted here, and where would a clause have effect" — which is a
+ * question about ADMISSIONS and REPRESENTED TIERS, neither of which survives into
+ * {@link EffectiveScanExclusions} (that type carries only the clauses that already won). Rebuilding
+ * the gather in the read module would have produced a second construction of the AND's inputs, one
+ * edit away from the read surface and the gate disagreeing about what is admitted — which is the
+ * exact class of divergence M22.2 closed at `promotion-scan-step.ts`'s `firedPolicies: []`.
+ *
+ * So there is ONE gather, and both consumers call it. `resolveEffectiveScanExclusionsForTargets`
+ * feeds it to the pure resolver and then attaches the per-class FACTS; the read surface feeds it to
+ * the same pure resolver and reads the admissions off it directly, resolving no facts.
  */
-export async function resolveEffectiveScanExclusionsForTargets(
+export async function buildScanExclusionTargetInputs(
   tx: TenantTx,
   input: ResolveScanExclusionsInput
-): Promise<EffectiveScanExclusions | undefined> {
-  if (input.targetObjectIds.length === 0) return undefined;
-
+): Promise<ScanExclusionTargetInput[]> {
   const instanceAdmissions = await readInstanceScanExclusionAdmissions(tx);
 
   const matches =
@@ -665,7 +672,43 @@ export async function resolveEffectiveScanExclusionsForTargets(
       clauses
     });
   }
+  return targets;
+}
 
+/**
+ * M22.8 — WHICH TIERS ABOVE `tier` ARE REPRESENTED, top-down. The one place `TIER_ORDER` and
+ * `tierRank` are read from outside this module's own AND, so the read surface cannot drift into a
+ * second opinion about the chain's shape.
+ */
+export function representedTiersAbove(
+  tier: ScanRequirementTier,
+  represented: Iterable<ScanRequirementTier>
+): ScanRequirementTier[] {
+  const set = new Set(represented);
+  const rank = tierRank(tier);
+  if (rank < 0) return [];
+  return TIER_ORDER.filter((t) => tierRank(t) < rank && set.has(t));
+}
+
+/** M22.8 — the tier chain itself, top-down, for a consumer that must enumerate every rung. */
+export function scanRequirementTierOrder(): readonly ScanRequirementTier[] {
+  return TIER_ORDER;
+}
+
+/**
+ * Resolves the effective exclusion set for a change's targets across all seven rungs.
+ *
+ * Structurally parallel to `resolveEffectiveScanThreshold` and deliberately NOT folded into it: the
+ * two share the tier vocabulary and nothing else, and a single function computing both would be one
+ * edit away from letting a ceiling contributor admit an exclusion.
+ */
+export async function resolveEffectiveScanExclusionsForTargets(
+  tx: TenantTx,
+  input: ResolveScanExclusionsInput
+): Promise<EffectiveScanExclusions | undefined> {
+  if (input.targetObjectIds.length === 0) return undefined;
+
+  const targets = await buildScanExclusionTargetInputs(tx, input);
   const resolved = resolveEffectiveScanExclusions(targets);
   const withVendor = await attachVendorLatestFacts(tx, input.orgId, targets, resolved, input.now);
   const withDeclared = await attachDeclaredFacts(tx, input.orgId, targets, withVendor);

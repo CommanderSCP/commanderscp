@@ -20,6 +20,7 @@ import {
   type ListeningTestServer,
   type TestOrg
 } from "../test-support/harness.js";
+import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js";
 
 /**
  * M22.4 — THE VENDOR RULE AT THE REAL GATE (ADR-0033, owner decision D1).
@@ -228,12 +229,21 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
   };
 
   async function vendorExclusionPolicy(admin: ScpClient, name: string, scopeObjectId: string) {
+    // M22.8 — the authoring guard (`governance/scan-rule-authoring-guard.ts`) refuses a
+    // `scanExclusion` rule that requires no scan control: such a document is silently inert,
+    // because the six-tier resolution is reached only inside `if (allControlIds.length > 0)`.
+    // `SCAN_RULE_TEST_CONTROL_REF` is a DANGLING reference on purpose — see that constant's own
+    // doc: a real bound control would add a control run and change what these tests measure.
+    const scanControlId = SCAN_RULE_TEST_CONTROL_REF;
     return admin.policies.create({
       name,
       properties: {
         scope: { objectRef: scopeObjectId },
         enforcement: "advisory",
-        effects: [{ scanExclusion: { exclude: { class: "vendor_latest" } } }]
+        effects: [
+          { scanExclusion: { exclude: { class: "vendor_latest" } } },
+          { requireControls: [scanControlId] }
+        ]
       }
     });
   }

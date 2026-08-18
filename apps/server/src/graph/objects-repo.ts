@@ -35,6 +35,7 @@ import {
   assertSelectorKeysAreGovernanceLabels
 } from "../governance/governance-labels.js";
 import { assertValidComponentSecurityDeclarations } from "../governance/component-declaration-guard.js";
+import { assertScanRuleRequiresScanControl } from "../governance/scan-rule-authoring-guard.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
 import {
@@ -445,6 +446,24 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       before: {},
       after: labels,
       subject: `${input.typeId} '${input.name}'`
+    });
+    // M22.8 — the FIFTH authoring refusal at this choke point, and the one that ends M22's most
+    // common first-time experience: a `scanThreshold`/`scanExclusion` rule that requires no scan
+    // control constrains nothing, silently (the reconcile prewarm never even resolves the two
+    // dimensions, and no scan verdict is ever produced for them to act on). Installed here rather
+    // than at the `/policies` route for the reason the four above are — `POST /plans` +
+    // `/plans/{id}/apply`, `POST /federation/hand-fill` and `POST /federation/overlays` all reach
+    // this function with a free-form `typeId` and free-form `properties`, and a per-route install
+    // would miss all three.
+    //
+    // Ordered LAST of the five deliberately: it is the only one that issues a query of its own (it
+    // reads the org's controls to ask whether any scan control is required), so every cheaper
+    // refusal above — two of them purely synchronous — gets to reject a bad write before this one
+    // spends a round trip.
+    await assertScanRuleRequiresScanControl(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      properties
     });
   }
 
@@ -916,6 +935,19 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       objectId: existing.id,
       before: existing.properties as Record<string, unknown>,
       after: nextProperties
+    });
+    // M22.8 — the UPDATE half, checked against `nextProperties` (the value about to be STORED) for
+    // the identical reason the three above are: a PATCH that adds a `scanThreshold` effect, or one
+    // that strips the `requireControls` effect out from under an existing ceiling, turns an
+    // enforceable rule into an inert one without ever passing through a create.
+    //
+    // Ordered LAST of the four for the same reason as on the create half: it is the only one here
+    // that issues its own query, so the synchronous selector check and the delta-gated label check
+    // both get to refuse before this one pays for a round trip.
+    await assertScanRuleRequiresScanControl(tx, {
+      orgId: input.orgId,
+      typeId: input.typeId,
+      properties: nextProperties
     });
   }
 
