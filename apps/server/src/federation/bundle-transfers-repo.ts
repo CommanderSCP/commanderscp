@@ -103,44 +103,64 @@ export async function recordBundleTransfer(
  * authority or idempotency decision.
  *
  * PERF: runs once per peer on every service-board render. drizzle/0041's partial index
- * `bundle_transfers_org_peer_confirmed` matches this predicate and its `confirmed_at DESC` ordering
- * exactly, and INCLUDEs `transport`, so it is an index-only seek no matter how deep the
- * (never-pruned, by design) transfer history gets.
+ * `bundle_transfers_org_peer_confirmed` matches this predicate and INCLUDEs `transport`, so it is
+ * an index-only seek no matter how deep the (never-pruned, by design) transfer history gets — but
+ * only since drizzle/0070. 0041 built the index as bare `confirmed_at DESC`, which PostgreSQL reads
+ * as NULLS FIRST, while this read asks for `DESC NULLS LAST`; those are different orderings, the
+ * index was therefore INELIGIBLE, and every board render seq-scanned the whole ledger and sorted it
+ * — the exact plan 0041's header says it exists to abolish. Measured at 20,000 rows: 364 buffers
+ * and a top-N heapsort over every row, against 4 buffers for the seek. Do not "simplify" the
+ * `NULLS LAST` away to match an index; the index is what moved.
  */
+export function lastConfirmedSyncImportQuery(
+  tx: TenantTx,
+  orgId: string,
+  peerDomainId: TrustDomainId
+) {
+  return (
+    tx
+      .select({
+        confirmedAt: bundleTransfers.confirmedAt,
+        transport: bundleTransfers.transport,
+        // Returned so `GET /federation/status`'s "as of ⟨bundle⟩" label names the bundle from the SAME row
+        // this timestamp came from. It previously picked its own row with a much looser predicate (review
+        // round 4, H3) and could name a PROMOTION bundle for a peer no sync bundle had arrived from.
+        checksum: bundleTransfers.checksum
+      })
+      .from(bundleTransfers)
+      .where(
+        and(
+          eq(bundleTransfers.orgId, orgId),
+          eq(bundleTransfers.peerDomainId, peerDomainId),
+          eq(bundleTransfers.direction, "import"),
+          eq(bundleTransfers.kind, "sync"),
+          eq(bundleTransfers.status, "confirmed")
+        )
+      )
+      // `NULLS LAST` is load-bearing here for exactly the reason it is in `lastSyncExportForPeer`
+      // (H9a), and this helper is the one H3 has since made TWO MORE fields depend on. Postgres `DESC`
+      // is NULLS FIRST, so a single confirmed import/sync row with a NULL `confirmed_at` sorted ahead
+      // of every genuinely-stamped one and the `!row?.confirmedAt` bail below reported BOTH
+      // `lastSyncedAt` AND `lastSyncedBundleChecksum` as null — the commander saying "never synced" and
+      // "bundle unknown" over a real, correctly-stamped sync import. `recordBundleTransfer` cannot
+      // write that row today, which is precisely the reachability argument this PR used to justify
+      // disarming the identical trap two files away (review round 5, N8).
+      //
+      // It is ALSO what drizzle/0070's index must be declared with, or the index cannot serve this
+      // read at all. Split out as a BUILDER so `bundle-transfer-read-plan.integration.test.ts` can
+      // `EXPLAIN` this exact query rather than a re-typed copy — a copy would keep passing while the
+      // real one drifted off the index, which is precisely how 0041 shipped unused.
+      .orderBy(sql`${bundleTransfers.confirmedAt} DESC NULLS LAST`)
+      .limit(1)
+  );
+}
+
 export async function lastConfirmedSyncImportAt(
   tx: TenantTx,
   orgId: string,
   peerDomainId: TrustDomainId
 ): Promise<{ at: Date; transport: BundleTransport | null; checksum: string | null } | null> {
-  const rows = await tx
-    .select({
-      confirmedAt: bundleTransfers.confirmedAt,
-      transport: bundleTransfers.transport,
-      // Returned so `GET /federation/status`'s "as of ⟨bundle⟩" label names the bundle from the SAME row
-      // this timestamp came from. It previously picked its own row with a much looser predicate (review
-      // round 4, H3) and could name a PROMOTION bundle for a peer no sync bundle had arrived from.
-      checksum: bundleTransfers.checksum
-    })
-    .from(bundleTransfers)
-    .where(
-      and(
-        eq(bundleTransfers.orgId, orgId),
-        eq(bundleTransfers.peerDomainId, peerDomainId),
-        eq(bundleTransfers.direction, "import"),
-        eq(bundleTransfers.kind, "sync"),
-        eq(bundleTransfers.status, "confirmed")
-      )
-    )
-    // `NULLS LAST` is load-bearing here for exactly the reason it is in `lastSyncExportForPeer`
-    // (H9a), and this helper is the one H3 has since made TWO MORE fields depend on. Postgres `DESC`
-    // is NULLS FIRST, so a single confirmed import/sync row with a NULL `confirmed_at` sorted ahead
-    // of every genuinely-stamped one and the `!row?.confirmedAt` bail below reported BOTH
-    // `lastSyncedAt` AND `lastSyncedBundleChecksum` as null — the commander saying "never synced" and
-    // "bundle unknown" over a real, correctly-stamped sync import. `recordBundleTransfer` cannot
-    // write that row today, which is precisely the reachability argument this PR used to justify
-    // disarming the identical trap two files away (review round 5, N8).
-    .orderBy(sql`${bundleTransfers.confirmedAt} DESC NULLS LAST`)
-    .limit(1);
+  const rows = await lastConfirmedSyncImportQuery(tx, orgId, peerDomainId);
   const row = rows[0];
   if (!row?.confirmedAt) return null;
   return {

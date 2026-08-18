@@ -143,6 +143,14 @@
 -- operator who cannot take that window can create the index by hand with
 -- `CREATE INDEX CONCURRENTLY` under the same name BEFORE upgrading; the `IF NOT EXISTS` here then
 -- finds it and does nothing.
+--
+-- SUPERSEDED BY drizzle/0069 (2026-08-17). This key stops at `created_at DESC` while the read it
+-- serves orders by `created_at DESC, id DESC`, so the index supplies only a PREFIX of that order
+-- and every plan using it needs a sort node above it — whose startup cost `LIMIT 1` cannot
+-- amortise. Once `decisions` has real statistics the planner therefore prefers
+-- `decisions_org_kind_created` (0056), which supplies the whole order sortlessly, and filters
+-- `subject_id` off the heap across the ORG. 0069 rebuilds this index under the same name with the
+-- tiebreak included; the measurements are there.
 -- ===========================================================================================
 
 CREATE INDEX IF NOT EXISTS "decisions_org_subject_kind_created"

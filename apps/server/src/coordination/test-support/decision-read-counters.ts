@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import pg from "pg";
 import type { TenantTx } from "../../db/tenant-tx.js";
 
 /**
@@ -34,52 +35,80 @@ export async function preferIndexPlans(tx: TenantTx): Promise<void> {
 }
 
 /**
- * Refresh `decisions`' planner statistics.
+ * PUT `decisions` INTO THE STATISTICS STATE EVERY LIVE INSTANCE IS PERMANENTLY IN, before the
+ * measurement — and fail loudly if it did not happen.
  *
- * A suite that seeds tens of thousands of rows and measures IMMEDIATELY is racing autovacuum's
- * analyze, which is asynchronous — so the planner may be costing the read from stale or default
- * estimates, and which index it picks can differ run to run on identical data. That is the one
- * mechanism that plausibly explains `service-board-decision-read-bound` failing once in CI
- * (`expected 804 to be less than or equal to 10`) and passing on a plain re-run of the SAME commit.
+ * WHY THESE SUITES MUST ANALYZE AT ALL, stated as the diagnosis rather than as variance-reduction.
+ * A suite that seeds a few hundred rows and measures within ~1.7 s normally measures a table with
+ * NO COLUMN STATISTICS: `pg_statistic` is empty, autovacuum's analyze has not run yet, and every
+ * equality falls back to `DEFAULT_EQ_SEL` (0.005). In that regime the planner estimates ~1 matching
+ * row, prices the sortless rival index at its FULL length, and picks the partial/kind index — so
+ * the bound holds for a reason that has nothing to do with the index being right. Once real
+ * statistics land, the estimate jumps (~200 matching rows on this fixture), the rival is repriced
+ * at 1/200th of its length, and the plan flips to an ORG-WIDE walk. MEASURED, same data, same
+ * `enable_seqscan = off`, PostgreSQL 16 — the board's never-blocked probe:
  *
- * NOT A PROVEN CAUSE, and worth being honest about: an attempt to reproduce the flip locally
- * failed. The partial index was chosen with a SQL literal and with a bound parameter, before and
- * after an explicit ANALYZE, and `latestBlockDecisionForSubject` touched 0 rows every time. This
- * call removes a real source of run-to-run variance; it is not a fix for a diagnosed bug, and the
- * plan assertion is what actually pins the intent.
+ *     no statistics   Incremental Sort -> Index Scan using decisions_org_subject_block_created
+ *                     11 buffers, 0 rows touched
+ *     after ANALYZE   Index Scan Backward using decisions_org_created
+ *                     Filter: subject_id AND verdict   Rows Removed by Filter: 802
+ *                     819 buffers  <-- `expected 804 to be less than or equal to 10`
+ *
+ * That is the whole "flake": CI hit the second regime on the two occasions autoanalyze happened to
+ * fire inside the seed-to-measure window, and hit the first one on every re-run. Analyzing HERE,
+ * unconditionally, deletes the race in the honest direction — the suites now always measure the
+ * regime production is always in, so the bound fails EVERY run when the index cannot serve the read
+ * rather than one run in dozens. drizzle/0069 is the fix that makes it hold there.
+ *
+ * WHY NOT ON THE TENANT TRANSACTION, which is where this used to run. `withTenantTx` issues
+ * `SET LOCAL ROLE scp_app`, and `scp_app` does not own `decisions`. PostgreSQL does not raise for
+ * that: it emits `WARNING: permission denied to analyze "decisions", skipping it` and returns
+ * success. So the previous implementation was a NO-OP that looked like a fix — VERIFIED against a
+ * real postgres:16, `pg_statistic` still empty and `last_analyze` still NULL afterwards. It is the
+ * reason the hypothesis it was written for could never be confirmed OR refuted by running the
+ * suite. `MAINTAIN` (PostgreSQL 17) would let a grant fix this without a second connection; on 16
+ * the owner connection is the only route, so this opens one on `TEST_DATABASE_URL` (the superuser
+ * URL, already repointed at this worker's cloned database by test-support/db-clone.ts).
+ *
+ * Call it BEFORE opening the measuring transaction, not inside it: the ANALYZE must be COMMITTED
+ * for the read's plan to see it, and its own scan must not be charged to the counters.
  */
-export async function refreshDecisionStats(tx: TenantTx): Promise<void> {
-  await tx.execute(sql`ANALYZE decisions`);
+export async function refreshDecisionStats(): Promise<void> {
+  const connectionString = process.env.TEST_DATABASE_URL;
+  if (!connectionString) {
+    throw new Error(
+      "TEST_DATABASE_URL is unset — refreshDecisionStats needs the OWNER connection (integration tests must run via vitest.integration.config.ts)."
+    );
+  }
+  const client = new pg.Client({ connectionString });
+  await client.connect();
+  try {
+    await client.query("ANALYZE decisions");
+    // THE NO-OP GUARD. `ANALYZE` returns success whether or not it analyzed anything, so the only
+    // honest confirmation is the thing the planner actually reads. Without this assertion a future
+    // change of connection or role silently restores the vacuous version of this helper, and both
+    // read-bound suites go back to measuring a regime no instance is ever in — green, and blind.
+    const { rows } = await client.query<{ n: string }>(
+      "SELECT count(*)::text AS n FROM pg_statistic WHERE starelid = 'decisions'::regclass"
+    );
+    if (Number(rows[0]?.n ?? 0) === 0) {
+      throw new Error(
+        "ANALYZE decisions left pg_statistic empty — the connection is not the table owner, so the ANALYZE was skipped with a WARNING and this helper measured nothing."
+      );
+    }
+  } finally {
+    await client.end();
+  }
 }
 
 /**
- * The index names an `EXPLAIN` of `query` mentions.
- *
- * WHY ASSERT ON THE PLAN AT ALL, when the suite already counts rows. The row count is the honest
- * measurement — it cannot be gamed, and it is what the bound actually means. But when it fails it
- * says only "804", which is a number with no diagnosis attached: it does not say WHICH index was
- * used instead, so the next person starts the investigation from scratch (as happened here). The
- * plan assertion converts that into a named failure — "served by `decisions_org_subject` instead of
- * `decisions_org_subject_block_created`" — and it is stable against data volume in a way a row
- * count is not.
- *
- * It does NOT replace the row count. A plan can name the right index and still be slow, and the
- * count is what would catch that.
- *
- * Takes the BUILDER, not a re-typed SQL string, so this explains the exact query production runs —
- * see `latestBlockDecisionQuery`'s doc comment for why a copy would be worse than no test.
+ * The plan assertion these suites pair with the row count MOVED to `test-support/query-plan.ts`.
+ * It was never specific to `decisions`: the census behind drizzle/0069 and drizzle/0070 found the
+ * same "index built in an order the read never asks for" defect on `bundle_transfers` too, and a
+ * second copy of the instrument would have been a second copy to drift. Re-exported here so the
+ * two `decisions` suites keep one import for the whole toolkit.
  */
-export async function indexesInPlan(
-  tx: TenantTx,
-  query: { getSQL: () => ReturnType<typeof sql> }
-): Promise<string[]> {
-  const explained = await tx.execute(sql`EXPLAIN ${query.getSQL()}`);
-  const rows = (explained as unknown as { rows: Array<Record<string, string>> }).rows;
-  const text = rows.map((r) => Object.values(r)[0] ?? "").join("\n");
-  return [...text.matchAll(/(?:Index (?:Only )?Scan|Bitmap Index Scan)[^\n]*?using (\w+)/g)].map(
-    (m) => m[1]!
-  );
-}
+export { indexesInPlan, sortNodesInPlan } from "../../test-support/query-plan.js";
 
 /**
  * Index entries returned + sequential-scan rows read for `decisions` IN THIS TRANSACTION.

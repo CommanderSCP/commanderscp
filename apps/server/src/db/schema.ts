@@ -609,11 +609,14 @@ export const decisions = pgTable(
     // match — measured at 12M rows: 22.8 s / 402,430 buffers for a probe that returns NO row, 0.3 ms
     // with this index (drizzle/0044 carries the full before/after EXPLAIN and the write cost).
     // With `kind` in the key, every probe is one index descent whatever else the subject holds.
+    // `id DESC` CLOSES THE KEY, and it is load-bearing for a reason that is NOT about the answer —
+    // see the identical note on the block index below, and drizzle/0069 for the measurements.
     index("decisions_org_subject_kind_created").on(
       table.orgId,
       table.subjectId,
       table.kind,
-      table.createdAt.desc()
+      table.createdAt.desc(),
+      table.id.desc()
     ),
     // The SERVICE BOARD's shape (`decisions-repo.ts`'s `latestBlockDecisionForSubject`, once per
     // board row): org + subject + the latest `block`. PARTIAL, because `block` is the only verdict
@@ -622,8 +625,20 @@ export const decisions = pgTable(
     // finds nothing instead of a walk over its whole history. Measured at 12M rows: 45.8 ms /
     // 20,526 buffers fully cached to return NO row, 0.070 ms / 13 buffers with this index
     // (drizzle/0046 carries the full before/after EXPLAIN and the write cost).
+    //
+    // `id DESC` CLOSES THE KEY, AND IT IS THE DIFFERENCE BETWEEN THIS INDEX BEING USED AND NOT
+    // BEING USED. The read ends `ORDER BY created_at DESC, id DESC`; an index that stops at
+    // `created_at DESC` supplies only a PREFIX of that order, so every plan using it carries an
+    // `Incremental Sort` above it — and a sort node's STARTUP cost is exactly what `LIMIT 1`
+    // cannot amortise. `decisions_org_created` below supplies the whole order sortlessly, so the
+    // planner prices it at `1/estimated_matches` of its length and prefers it the moment
+    // statistics make a match look near, then applies `subject_id`/`verdict` as a heap FILTER and
+    // walks the ORG's entire stream. This comment previously argued the opposite — that a `LIMIT 1`
+    // query needs no tiebreak in its index because a tiebreak "cannot change the answer". It cannot;
+    // that was never its job here. drizzle/0069 carries the before/after plans and the CI failure
+    // (`expected 804 to be less than or equal to 10`) that this cost.
     index("decisions_org_subject_block_created")
-      .on(table.orgId, table.subjectId, table.createdAt.desc())
+      .on(table.orgId, table.subjectId, table.createdAt.desc(), table.id.desc())
       .where(sql`${table.verdict} = 'block'`),
     // `GET /decisions?kind=…` WITHOUT a subject (ADR-0028 increment 4) — the operator who knows the
     // coupling but not the change id. Every index above leads with `subject_id` or omits `kind`, so
@@ -631,8 +646,9 @@ export const decisions = pgTable(
     // 100.0 ms / 55,650 buffers and every row scanned to return 101, versus 0.098 ms / 8 buffers
     // with this index (drizzle/0056 carries the full before/after EXPLAIN and the write cost).
     // `created_at, id` closes the key because that is the keyset cursor's ordering verbatim, so a
-    // page costs one descent and no sort — 0044 leaves `id` out for the opposite reason, its query
-    // is a `LIMIT 1` where a tiebreak cannot change the answer.
+    // page costs one descent and no sort. That is the same reason the two indexes above now close
+    // theirs (drizzle/0069): "no sort node" is a property every one of these ordered reads needs,
+    // `LIMIT 1` included — this index is also the RIVAL that won whenever they lacked it.
     index("decisions_org_kind_created").on(table.orgId, table.kind, table.createdAt, table.id)
   ]
 );
@@ -1416,10 +1432,17 @@ export const bundleTransfers = pgTable(
     // render. Declared here for schema fidelity; the migration creates it PARTIAL + INCLUDE
     // (`direction='import' AND kind='sync' AND status='confirmed'`, INCLUDE (transport)), which
     // drizzle-kit cannot express — see 0041's header.
+    //
+    // `DESC NULLS LAST` MATCHES THE READ, and that is the whole point of the column order here:
+    // the query orders by `confirmed_at DESC NULLS LAST` (deliberately — a NULL `confirmed_at` must
+    // not sort ahead of a real one), while 0041 built the index as bare `DESC`, which PostgreSQL
+    // reads as NULLS FIRST. Those are different orderings, so the index was INELIGIBLE for the read
+    // and every board render seq-scanned the whole never-pruned transfer ledger and sorted it.
+    // drizzle/0070 carries the plans.
     index("bundle_transfers_org_peer_confirmed").on(
       table.orgId,
       table.peerDomainId,
-      table.confirmedAt
+      table.confirmedAt.desc().nullsLast()
     )
   ]
 );
