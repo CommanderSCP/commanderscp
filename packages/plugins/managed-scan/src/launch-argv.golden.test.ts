@@ -9,15 +9,33 @@ import type { PluginContext } from "@scp/plugin-api";
  * M23.0 — THE GOLDEN DOCKER ARGV FOR `scp-managed-scan`, RECORDED BEFORE ANYTHING MOVES
  * ================================================================================================
  *
- * WHY THIS FILE EXISTS AND WHEN IT SHOULD STOP EXISTING.
+ * WHY THIS FILE EXISTS, AND WHY M23.1 DID NOT RETIRE IT.
  * M23 extracts a `RunnerLauncher` port so the three managed executors can also launch their runners
  * as Kubernetes Jobs. That refactor's central promise is that **the Docker path is byte-for-byte
  * unchanged**. A promise like that is only checkable if the current bytes were written down FIRST,
  * by a test that existed BEFORE the refactor — otherwise the "unchanged" baseline is whatever the
  * refactor happens to emit, and the assertion is a tautology.
  *
- * Until M23.1 lands the port, THIS FILE IS THE DEFINITION OF "UNCHANGED" for this plugin. When the
- * port lands, these tests are to be **deleted or superseded** by the port's own conformance suite.
+ * THE PARAGRAPH THAT USED TO SIT HERE WAS WRONG, AND THIS ONE REPLACES IT. It said that until
+ * M23.1 landed the port this file was the definition of "unchanged", and that when the port landed
+ * these tests were "to be **deleted or superseded** by the port's own conformance suite". M23.1 HAS
+ * LANDED. It did NOT retire this file, and that standing instruction is withdrawn — because the
+ * port's conformance suite (`packages/runner-launcher/src/docker-adapter.test.ts`) and this file
+ * prove DIFFERENT things, and neither implies the other:
+ *   - THE CONFORMANCE SUITE drives `createDockerRunnerLauncher` DIRECTLY. Its subject is what the
+ *     adapter emits FOR A GIVEN `RunnerSpec` — argv, per-call `timeout`/`maxBuffer`, both copy-out
+ *     axes, the failure paths. A `RunnerSpec` is its INPUT.
+ *   - THIS FILE drives `plugin.trigger()`. Its subject is THE OTHER HALF, which the conformance
+ *     suite structurally cannot reach: that this plugin still hands the port THE SAME SPEC it used
+ *     to build by hand. A spec field changed here — a copy-IN that stopped being conditional, or
+ *     an `onFailure: "propagate"` relaxed to `"swallow"` — produces a perfectly CONFORMANT launch
+ *     of the WRONG container, and the conformance suite is blind to it, because that spec is what
+ *     it is handed rather than what it checks.
+ * Deleting this file on the strength of the old sentence would take the plugin→port boundary to
+ * ZERO coverage while every task stayed green — the vacuous-green class BUILD_AND_TEST.md §4.4
+ * names, and the same reason `@scp/runner-launcher` no longer runs with `--passWithNoTests`.
+ * RETIRE THIS FILE ONLY ALONGSIDE SOMETHING THAT COVERS THAT BOUNDARY, never merely alongside
+ * something that covers the adapter.
  *
  * WHAT IS PINNED, AND WHY EACH PART IS PART OF THE PROMISE.
  *  1. THE FULL argv ARRAY of every `execFile`, in order. Asserted as an array against a literal,
