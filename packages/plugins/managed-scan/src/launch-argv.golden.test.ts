@@ -325,7 +325,26 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
     // It also pins the `""` positional arm: openscap with neither `profile` nor `datastream` puts
     // TWO EMPTY STRING OPERANDS on the command line, which is what lets run.sh's `${2:-default}`
     // form apply its own defaults. A launcher that dropped empty operands instead of passing them
-    // would shift `datastream` into `profile`'s position and nothing else would notice.
+    // would shift `datastream` into `profile`'s position.
+    //
+    // CORRECTION TO THIS FILE'S OWN RECORD (and to commit 53bf2f4d's message, which cannot be
+    // rewritten because it is published). Both claimed that dropping empty operands would happen
+    // with "nothing else" noticing, and 53bf2f4d's message claimed the sharper form: that of the
+    // four mutations it measured, "the new one ALONE fails". THAT IS TRUE OF THREE OF THEM AND
+    // FALSE OF THE FOURTH. Re-measured, each mutation applied to `src/index.ts` in turn:
+    //
+    //   the DB `-e` fires whenever EITHER preload is present   -> only this case fails
+    //   the /work/db copy-IN takes whichever dir it can find    -> only this case fails
+    //   the SCAP copy-IN needs a DB preload too                 -> only this case fails
+    //   empty positional operands are DROPPED, not passed       -> TWO tests fail: this case AND
+    //     `src/index.test.ts` > "openscap dispatch (M13.3b) > passes empty positional args when
+    //     profile/datastream are unset (run.sh applies defaults)", which already covered that arm.
+    //
+    // The SUBSTANTIVE claim of 53bf2f4d survives intact and is the one that mattered: the three
+    // PRE-EXISTING preload combinations survive all four mutations, so the fourth combination was
+    // genuinely unpinned. Only the "alone" wording was wrong — an overstatement of novelty, in the
+    // direction that flatters the new test. Recorded here rather than quietly dropped, because a
+    // measurement claim that nobody re-ran is indistinguishable from one that was never made.
     const inputDir = join(scratch, "oci");
     const outputDir = join(scratch, "out");
     const scanScapDir = join(scratch, "ssg");
