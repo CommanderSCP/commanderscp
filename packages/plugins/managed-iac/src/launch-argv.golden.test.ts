@@ -91,9 +91,37 @@ const envFiles: { path: string; content: string; mode: number }[] = [];
 let startOk = true;
 /** Copy-OUT outcome. Only managed-iac swallows a failure here; that is what test 4 measures. */
 let cpOutOk = true;
-/** `create` outcome — the new test below is the ONLY failure-injection arm for this step; every
- *  other test in this file leaves it `true`. */
-let createOk = true;
+/** `create` outcome — the two tests below are the ONLY failure-injection arms for this step; every
+ *  other test in this file leaves it `true`.
+ *
+ *  IT IS AN ERROR OBJECT AND NOT A BOOLEAN SINCE M23.3, and the change is the point. The fixture
+ *  used to reject with `name already in use` — a NAME CONFLICT — while asserting that the run then
+ *  tears the name down, which is the one create failure for which tearing down is WRONG: by
+ *  definition of the conflict, the container behind that name belongs to somebody else and is
+ *  still running. Reachable here for two concurrent triggers of one `idempotencyKey`, whose
+ *  container names are equal by design. The default is therefore an ORDINARY create failure, and
+ *  the conflict is its own arm with the opposite expectation. */
+let createFailure: Error | undefined;
+/** An ordinary `create` failure: the daemon answered, and it was not about the name. */
+function ordinaryCreateFailure(): Error {
+  return Object.assign(new Error("docker: Error response from daemon: no such image"), {
+    stdout: "",
+    stderr: "create: no such image: scp-runner-iac:vetted"
+  });
+}
+/** MEASURED against Docker 29.5.2 — the exact wording a second `docker create --name X` produces. */
+function nameConflictCreateFailure(): Error {
+  const stderr =
+    'Error response from daemon: Conflict. The container name "/scp-runner-k7" is already in use ' +
+    'by container "fd602b921ac608a0f33551acba7943abbf2816160d30e09e3a33d8f86f1873c5". You have to ' +
+    "remove (or rename) that container to be able to reuse that name.";
+  return Object.assign(new Error(`Command failed: docker create …\n${stderr}`), {
+    code: 1,
+    killed: false,
+    stdout: "",
+    stderr
+  });
+}
 
 /**
  * M23.1 PHASE 4 — the reaper. `reap()` now runs at the top of every `run()`, issuing a `docker ps -a
@@ -141,15 +169,10 @@ vi.mock("node:child_process", () => {
       }
       const sub = args[0];
       if (sub === "create") {
-        if (createOk) {
-          cb(null, { stdout: "container-abc123\n", stderr: "" });
+        if (createFailure) {
+          cb(createFailure);
         } else {
-          cb(
-            Object.assign(new Error("docker: Error response from daemon: name already in use"), {
-              stdout: "",
-              stderr: "create: name already in use"
-            })
-          );
+          cb(null, { stdout: "container-abc123\n", stderr: "" });
         }
         return;
       }
@@ -178,11 +201,42 @@ vi.mock("node:child_process", () => {
 const { createManagedIacExecutorPlugin } = await import("./index.js");
 
 /**
- * THE OPTIONS, AS LITERALS. Deliberately NOT imported from `index.ts`: a golden that re-derives its
- * expectation from the code it is guarding cannot detect a change to that code. 10 minutes and
- * 16 MiB are written here because that is what the plugin does TODAY.
+ * ================================================================================================
+ * THE OPTIONS — `maxBuffer` AS A LITERAL, `timeout` AS THE BOUND IT MUST NOW LIE IN (M23.3)
+ * ================================================================================================
+ * Deliberately NOT imported from `index.ts`: a golden that re-derives its expectation from the code
+ * it is guarding cannot detect a change to that code. 16 MiB is written here because that is what the plugin does TODAY.
+ *
+ * WHY `timeout` STOPPED BEING AN EQUALITY. `RunnerSpec.timeoutMs` is the WHOLE-RUN budget since
+ * M23.3, so each step is issued with what is LEFT of it (`deadline - now`, off one clock read at
+ * the top of `run()`). Handing every step the full `timeoutMs` was the defect this golden used to
+ * pin: four sequential calls, each individually under the bound, made a run of four x
+ * timeoutMs, which the host's own budget — sized `timeoutMs + grace` — then SIGKILLed, orphaning
+ * the container and leaving the idempotency ledger unwritten.
+ *
+ * So the assertion is the PROPERTY: never ABOVE the caller's budget (that is the old behaviour
+ * back), and never more than {@link BUDGET_SLACK_MS} below it in this seam, where every step
+ * settles on the next tick — which is what stops a degenerate "always 1ms" from passing. The strict
+ * decrease across a run and the refusal once nothing is left are proven where they can be measured:
+ * `@scp/runner-launcher`'s `whole-run-budget.test.ts`.
+ *
+ * `toStrictEqual` KEEPS ITS TEETH — the matcher stands in for the `timeout` VALUE only, so the
+ * ABSENCE of `maxBuffer` on `rm` and of every other key everywhere is still pinned exactly.
  */
-const RUN_OPTS = { timeout: 10 * 60_000, maxBuffer: 16 * 1024 * 1024 };
+const BUDGET_SLACK_MS = 5_000;
+function runOpts(budgetMs: number, maxBuffer: number): unknown {
+  return {
+    timeout: {
+      asymmetricMatch: (actual: unknown): boolean =>
+        typeof actual === "number" && actual > budgetMs - BUDGET_SLACK_MS && actual <= budgetMs,
+      toAsymmetricMatcher: (): string =>
+        `RemainingBudget(>${budgetMs - BUDGET_SLACK_MS}, <=${budgetMs})`,
+      toString: (): string => "RemainingBudget"
+    },
+    maxBuffer
+  };
+}
+const RUN_OPTS = runOpts(10 * 60_000, 16 * 1024 * 1024);
 /** The teardown call's own options — a shorter timeout and, notably, NO `maxBuffer`. */
 const RM_OPTS = { timeout: 30_000 };
 
@@ -193,7 +247,7 @@ beforeEach(async () => {
   envFiles.length = 0;
   startOk = true;
   cpOutOk = true;
-  createOk = true;
+  createFailure = undefined;
   workspaceRoot = await mkdtemp(join(tmpdir(), "managed-iac-golden-"));
 });
 
@@ -351,7 +405,7 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
 
     // `workspaceDirFor` replaces every character outside [A-Za-z0-9._-] with `_`.
     const w = workspaceDir("prod_eu-west-1");
-    const opts = { timeout: 123_456, maxBuffer: 16 * 1024 * 1024 };
+    const opts = runOpts(123_456, 16 * 1024 * 1024);
     expect(
       normaliseEnvFile(calls, "k2"),
       "the managed-iac maximal Docker launch argv changed"
@@ -495,7 +549,7 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
     // no outer catch), nothing was ever written to the dedup cache, and `status()` reported
     // "pending" forever — indistinguishable from "still running". `trigger()` now RESOLVES and the
     // failure is recorded via `withRecordedOutcome`.
-    createOk = false;
+    createFailure = ordinaryCreateFailure();
     const plugin = createManagedIacExecutorPlugin();
     const ref = await plugin.trigger(ctx(), {
       kind: "sync",
@@ -518,6 +572,38 @@ describe("M23.0 golden: the `scp-managed-iac` runner launch, byte for byte", () 
 
     const status = await plugin.status(ctx(), ref);
     expect(status.phase).toBe("failed");
-    expect(status.detail).toContain("docker: Error response from daemon: name already in use");
+    expect(status.detail).toContain("docker: Error response from daemon: no such image");
+  });
+
+  it("FAILURE — a `create` that lost the NAME to another run issues NO `rm`: this run never owned that container (M23.3)", async () => {
+    // THE OTHER ARM OF THE TEST ABOVE, AND THE REASON THAT ONE'S FIXTURE HAD TO CHANGE. Teardown is
+    // unconditional and addresses the NAME, so for the one create failure that MEANS the name is
+    // somebody else's, the teardown destroys a container this run did not create and is not
+    // supervising. For managed-iac that is two concurrent triggers of a single `idempotencyKey` —
+    // `toRunnerRunId(intent.idempotencyKey)` makes their container names equal ON PURPOSE, because
+    // retry-stable naming is what makes a retry address the same container instead of starting a
+    // second `tofu apply`. The name is the feature; the unconditional teardown was the bug.
+    //
+    // BOTH ARMS OR NOTHING: without the test above, "skip teardown on any create failure" passes
+    // here and re-opens M23.0 defect 1 (a `create` that timed out leaves a committed container with
+    // nothing addressing it). Without this one, the old unconditional teardown passes there.
+    createFailure = nameConflictCreateFailure();
+    const plugin = createManagedIacExecutorPlugin();
+    const ref = await plugin.trigger(ctx(), {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "k7"
+    });
+
+    expect(
+      calls.map((c) => c.args[0]),
+      "a create that lost the name must not tear that name down"
+    ).toStrictEqual(["create"]);
+
+    // The run still FAILS, and still records its outcome — only the destructive step is skipped.
+    const status = await plugin.status(ctx(), ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toContain("already in use");
   });
 });

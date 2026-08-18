@@ -155,11 +155,42 @@ vi.mock("node:child_process", () => {
 const { createManagedScanExecutorPlugin } = await import("./index.js");
 
 /**
- * THE OPTIONS, AS LITERALS. Deliberately NOT imported from `index.ts`: a golden that re-derives its
- * expectation from the code it is guarding cannot detect a change to that code. 10 minutes and
- * 32 MiB are written here because that is what the plugin does TODAY.
+ * ================================================================================================
+ * THE OPTIONS — `maxBuffer` AS A LITERAL, `timeout` AS THE BOUND IT MUST NOW LIE IN (M23.3)
+ * ================================================================================================
+ * Deliberately NOT imported from `index.ts`: a golden that re-derives its expectation from the code
+ * it is guarding cannot detect a change to that code. 32 MiB is written here because that is what the plugin does TODAY.
+ *
+ * WHY `timeout` STOPPED BEING AN EQUALITY. `RunnerSpec.timeoutMs` is the WHOLE-RUN budget since
+ * M23.3, so each step is issued with what is LEFT of it (`deadline - now`, off one clock read at
+ * the top of `run()`). Handing every step the full `timeoutMs` was the defect this golden used to
+ * pin: six sequential calls, each individually under the bound, made a run of six x
+ * timeoutMs, which the host's own budget — sized `timeoutMs + grace` — then SIGKILLed, orphaning
+ * the container and leaving the idempotency ledger unwritten.
+ *
+ * So the assertion is the PROPERTY: never ABOVE the caller's budget (that is the old behaviour
+ * back), and never more than {@link BUDGET_SLACK_MS} below it in this seam, where every step
+ * settles on the next tick — which is what stops a degenerate "always 1ms" from passing. The strict
+ * decrease across a run and the refusal once nothing is left are proven where they can be measured:
+ * `@scp/runner-launcher`'s `whole-run-budget.test.ts`.
+ *
+ * `toStrictEqual` KEEPS ITS TEETH — the matcher stands in for the `timeout` VALUE only, so the
+ * ABSENCE of `maxBuffer` on `rm` and of every other key everywhere is still pinned exactly.
  */
-const RUN_OPTS = { timeout: 10 * 60_000, maxBuffer: 32 * 1024 * 1024 };
+const BUDGET_SLACK_MS = 5_000;
+function runOpts(budgetMs: number, maxBuffer: number): unknown {
+  return {
+    timeout: {
+      asymmetricMatch: (actual: unknown): boolean =>
+        typeof actual === "number" && actual > budgetMs - BUDGET_SLACK_MS && actual <= budgetMs,
+      toAsymmetricMatcher: (): string =>
+        `RemainingBudget(>${budgetMs - BUDGET_SLACK_MS}, <=${budgetMs})`,
+      toString: (): string => "RemainingBudget"
+    },
+    maxBuffer
+  };
+}
+const RUN_OPTS = runOpts(10 * 60_000, 32 * 1024 * 1024);
 /** The teardown call's own options — a shorter timeout and, notably, NO `maxBuffer`. */
 const RM_OPTS = { timeout: 30_000 };
 
@@ -267,7 +298,7 @@ describe("M23.0 golden: the `scp-managed-scan` runner launch, byte for byte", ()
       }
     });
 
-    const opts = { timeout: 123_456, maxBuffer: 32 * 1024 * 1024 };
+    const opts = runOpts(123_456, 32 * 1024 * 1024);
     expect(calls, "the managed-scan maximal Docker launch argv changed").toStrictEqual([
       {
         file: "/usr/local/bin/docker",

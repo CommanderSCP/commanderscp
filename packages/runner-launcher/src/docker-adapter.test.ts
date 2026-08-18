@@ -378,6 +378,44 @@ const DEP_OPTS = { timeout: 5 * 60_000, maxBuffer: 8 * 1024 * 1024 };
 const RM_OPTS = { timeout: 30_000 };
 
 /**
+ * ================================================================================================
+ * THE PER-CALL `timeout` IS NO LONGER A CONSTANT, AND THAT IS THE POINT (M23.3)
+ * ================================================================================================
+ * `RunnerSpec.timeoutMs` is the WHOLE-RUN budget, so each step is issued with what is LEFT of it —
+ * `deadline - now`, off ONE clock read at the top of `run()`. Handing every step the full
+ * `spec.timeoutMs` is exactly the defect: four sequential calls, each individually well under the
+ * bound, made a run of 4 x timeoutMs, which the host budget (sized `timeoutMs + grace`) then
+ * SIGKILLed mid-`tofu apply`.
+ *
+ * So the equality these constants used to be asserted with was pinning the DEFECT. Two facts are
+ * asserted instead, and both are the property rather than a number:
+ *   - NEVER ABOVE the caller's budget. A step handed more than `timeoutMs` is the old behaviour
+ *     back, whatever arithmetic produced it.
+ *   - NEVER MORE THAN {@link BUDGET_SLACK_MS} BELOW it in this file, where every step settles on
+ *     the next tick of the loop — which is what stops a degenerate "always 1ms" from passing.
+ * The strict decrease across a run, and the refusal once nothing is left, are in
+ * `whole-run-budget.test.ts`, which can hold a step open for a measured duration.
+ *
+ * `toStrictEqual` KEEPS ITS TEETH: the asymmetric matcher substitutes for the `timeout` VALUE only.
+ * The ABSENCE of `maxBuffer` on `rm`, and the absence of any other key anywhere, is still asserted
+ * exactly as it was.
+ */
+const BUDGET_SLACK_MS = 5_000;
+function remainingBudget(budgetMs: number): unknown {
+  return {
+    asymmetricMatch: (actual: unknown): boolean =>
+      typeof actual === "number" && actual > budgetMs - BUDGET_SLACK_MS && actual <= budgetMs,
+    toAsymmetricMatcher: (): string =>
+      `RemainingBudget(>${budgetMs - BUDGET_SLACK_MS}, <=${budgetMs})`,
+    toString: (): string => "RemainingBudget"
+  };
+}
+/** The options object every step of the RUN PROPER carries, for a caller with this profile. */
+function runOpts(profile: { timeout: number; maxBuffer: number }): unknown {
+  return { timeout: remainingBudget(profile.timeout), maxBuffer: profile.maxBuffer };
+}
+
+/**
  * A minimal, entirely explicit spec. Every test below overrides only what it is about.
  *
  * `runId` IS A FIXED LITERAL, and `labels` EMPTY, so that the argv assertions stay readable and so
@@ -466,32 +504,32 @@ describe("M23.1 conformance: what the Docker adapter puts on the command line", 
           "profile-x",
           "/ssg/ds.xml"
         ],
-        opts: SCAN_OPTS
+        opts: runOpts(SCAN_OPTS)
       },
       {
         file: "/usr/local/bin/docker",
         args: ["cp", "/host/oci/.", "container-abc123:/work/image"],
-        opts: SCAN_OPTS
+        opts: runOpts(SCAN_OPTS)
       },
       {
         file: "/usr/local/bin/docker",
         args: ["cp", "/host/trivy-db/.", "container-abc123:/work/db"],
-        opts: SCAN_OPTS
+        opts: runOpts(SCAN_OPTS)
       },
       {
         file: "/usr/local/bin/docker",
         args: ["cp", "/host/ssg/.", "container-abc123:/work/scap"],
-        opts: SCAN_OPTS
+        opts: runOpts(SCAN_OPTS)
       },
       {
         file: "/usr/local/bin/docker",
         args: ["start", "-a", "container-abc123"],
-        opts: SCAN_OPTS
+        opts: runOpts(SCAN_OPTS)
       },
       {
         file: "/usr/local/bin/docker",
         args: ["cp", "container-abc123:/work/out/.", "/host/out"],
-        opts: SCAN_OPTS
+        opts: runOpts(SCAN_OPTS)
       },
       // THE TEARDOWN TIMEOUT IS NOT THE RUN TIMEOUT, and `rm` carries no `maxBuffer` at all.
       {
@@ -529,9 +567,9 @@ describe("M23.1 conformance: what the Docker adapter puts on the command line", 
           "scp-runner-dep:vetted",
           "npm"
         ],
-        opts: IAC_OPTS
+        opts: runOpts(IAC_OPTS)
       },
-      { file: "docker", args: ["start", "-a", "container-abc123"], opts: IAC_OPTS },
+      { file: "docker", args: ["start", "-a", "container-abc123"], opts: runOpts(IAC_OPTS) },
       { file: "docker", args: ["rm", "-f", "scp-runner-r1"], opts: RM_OPTS }
     ]);
     expect(result.succeeded).toBe(true);
@@ -614,11 +652,12 @@ describe("M23.1 conformance: the per-call timeout and maxBuffer are the CALLER's
         })
       );
 
+      const expected = runOpts(opts);
       expect(calls.map((c) => ({ sub: c.args[0], opts: c.opts }))).toStrictEqual([
-        { sub: "create", opts },
-        { sub: "cp", opts },
-        { sub: "start", opts },
-        { sub: "cp", opts },
+        { sub: "create", opts: expected },
+        { sub: "cp", opts: expected },
+        { sub: "start", opts: expected },
+        { sub: "cp", opts: expected },
         // NOT `opts`: `rm` keeps its own literal 30 s and carries NO `maxBuffer` key at all, which is
         // only observable because this is `toStrictEqual` against an object with one property.
         { sub: "rm", opts: RM_OPTS }
@@ -633,8 +672,8 @@ describe("M23.1 conformance: the per-call timeout and maxBuffer are the CALLER's
 
     expect(RUNNER_REMOVE_TIMEOUT_MS).toBe(30_000);
     expect(calls.map((c) => ({ sub: c.args[0], opts: c.opts }))).toStrictEqual([
-      { sub: "create", opts: { timeout: 123_456, maxBuffer: 999 } },
-      { sub: "start", opts: { timeout: 123_456, maxBuffer: 999 } },
+      { sub: "create", opts: runOpts({ timeout: 123_456, maxBuffer: 999 }) },
+      { sub: "start", opts: runOpts({ timeout: 123_456, maxBuffer: 999 }) },
       { sub: "rm", opts: { timeout: RUNNER_REMOVE_TIMEOUT_MS } }
     ]);
   });

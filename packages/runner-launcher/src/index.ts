@@ -219,7 +219,37 @@ export interface RunnerSpec {
   copyIn: RunnerCopyIn[];
   /** The single evidence copy-OUT, if this runner produces one. */
   copyOut?: RunnerCopyOut;
-  /** Per-call `timeout`. 10 min for managed-iac and managed-scan, 5 min for managed-dep. */
+  /**
+   * THE WHOLE-RUN BUDGET — the maximum wall clock {@link RunnerLauncher.run} may spend on this run,
+   * from the moment it is called to the moment it returns, teardown excepted. 10 min for
+   * managed-iac and managed-scan, 5 min for managed-dep.
+   *
+   * IT USED TO BE A PER-CALL BOUND, AND THAT IS THE DEFECT M23.3 EXISTS TO CLOSE. Every `execFile`
+   * this adapter issues — `create`, each `cp` in, `start -a`, the `cp` out — was handed
+   * `{ timeout: spec.timeoutMs }` INDEPENDENTLY, so a run of k sequential calls had a wall clock of
+   * k x timeoutMs and nothing bounded the sum. Measured: managed-iac (4 calls) with
+   * `timeoutMs: 20_000` and steps of 18s/9s/18s/9s — every one of them comfortably UNDER the inner
+   * 20s timeout — ran 50s and was SIGKILLed by the host budget that had been sized as
+   * `timeoutMs + 30s`, leaving an orphaned container mid-`tofu apply` and an unwritten idempotency
+   * ledger, so `reconcile.ts` issued a SECOND apply on top of the first. Reachable at the shipped
+   * 10-minute defaults, because `docker create` PULLS THE IMAGE when it is absent: a cold pull plus
+   * an ordinary apply clears 630s without any single call reaching 600s.
+   *
+   * SO IT IS A DEADLINE, NOT A PER-CALL CAP. {@link createDockerRunnerLauncher} computes
+   * `deadline = now + timeoutMs` ONCE, at the top of `run()`, and every `execFile` it issues gets
+   * `timeout: deadline - now` — never `spec.timeoutMs`, and never `0`, which Node reads as NO
+   * TIMEOUT AT ALL (measured on the running Node 26.7.0: `{ timeout: 0 }` let a 1.5s child run to
+   * completion). A step reached with the budget already spent is REFUSED before it is issued, with
+   * a {@link RunnerLaunchError} carrying {@link RunnerLaunchError.deadlineExceeded}. The two
+   * numbers derived from this one — the host's RPC budget (`call-policy.ts`) and the container's
+   * own {@link RUNNER_LAUNCHER_DEADLINE_LABEL} — are therefore correct BY CONSTRUCTION rather than
+   * because a padding constant happened to be big enough.
+   *
+   * WHAT IS DELIBERATELY OUTSIDE IT: the `finally` teardown (`docker rm -f`), which must still run
+   * after the budget is gone and keeps its own {@link RUNNER_REMOVE_TIMEOUT_MS}; and `reap()`,
+   * which is not awaited at all (see {@link RunnerLauncher.reap}). `run()` therefore returns within
+   * `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`, and that sum is what every outer budget must cover.
+   */
   timeoutMs: number;
   /** Per-call `maxBuffer`. 16 MiB / 32 MiB / 8 MiB respectively — NOT one shared default. */
   maxBuffer: number;
@@ -260,11 +290,28 @@ export interface RunnerLauncher {
    * and swallowed rather than thrown, because a reap that cannot even list containers must not
    * block the run it precedes.
    *
-   * Called by the Docker adapter at the top of every {@link RunnerLauncher.run}, before `create` —
-   * see `reaper.integration.test.ts` for why the mock recording seam
-   * (`docker-adapter.test.ts`) cannot prove any of this: it cannot show that a killed process
-   * leaves a container, that a label survives on it, or that a real `docker ps --filter` finds it.
-   * Returns the ids actually removed.
+   * NOT ON THE RUN'S CRITICAL PATH, AND NOT INSIDE ITS BUDGET — M23.3. Phase 4 prepended
+   * `await reap()` to `run()` AFTER phase 3 had sized the trigger budget as
+   * `timeoutMs + MANAGED_TRIGGER_GRACE_MS`, and no phase re-checked the sum. Reap's `ps` and every
+   * `rm -f` were then spent out of the run's own budget: measured with `timeoutMs: 1_000` and four
+   * stale orphans taking 9s each to remove, the budget (31s) expired at 31.2s with `create` NEVER
+   * ISSUED. That failure MANUFACTURES ITS OWN WORKLOAD — the host's expiry SIGKILLs the subprocess,
+   * the respawned successor mints a new {@link LAUNCHER_OWNER_ID}, and every container the dead
+   * process had created is now FOREIGN, so it joins the next pass: the reaper's cost grows with
+   * each timeout it causes. A cleanup mechanism that can prevent the thing it cleans up after from
+   * starting is not a backstop, it is the failure.
+   *
+   * So `run()` SCHEDULES a pass and does not await it, and each pass is itself hard-bounded by
+   * {@link RUNNER_REAP_BUDGET_MS} and single-flighted process-wide ({@link whenReapSettled}), which
+   * is what stops the amplification: an arbitrarily slow or wedged sweep can no longer delay
+   * `create` by so much as a tick, cannot consume a run's budget, and cannot stack up one pass per
+   * concurrent run. This method itself stays awaitable and keeps returning the ids it removed —
+   * that is what the tests and any future operator-facing sweep drive.
+   *
+   * Scheduled by the Docker adapter at the top of every {@link RunnerLauncher.run}, before `create`
+   * — see `reaper.integration.test.ts` for why the mock recording seam (`docker-adapter.test.ts`)
+   * cannot prove any of this: it cannot show that a killed process leaves a container, that a label
+   * survives on it, or that a real `docker ps --filter` finds it. Returns the ids actually removed.
    */
   reap(): Promise<string[]>;
 }
@@ -411,6 +458,15 @@ export class RunnerLaunchError extends Error {
   readonly stdout: string;
   /** The child's stderr, REDACTED — falling back to the original error's message. */
   readonly stderr: string;
+  /**
+   * TRUE when this rejection is the WHOLE-RUN budget ({@link RunnerSpec.timeoutMs}) running out,
+   * rather than the step itself going wrong — either the step was refused before it was issued
+   * because nothing was left to issue it with, or it was killed by a `timeout` derived from what
+   * remained. It is a distinct fact from `killed`, which is also true when a single step blew a
+   * per-call cap, and callers that retry need to tell them apart: a run that exhausted its budget
+   * will exhaust it again at the same setting.
+   */
+  readonly deadlineExceeded: boolean;
 
   constructor(args: {
     step: RunnerLaunchStep;
@@ -418,6 +474,7 @@ export class RunnerLaunchError extends Error {
     argv: readonly string[];
     cause: unknown;
     redactions: readonly string[];
+    deadlineExceeded?: boolean;
   }) {
     const e = (args.cause ?? {}) as {
       message?: string;
@@ -447,7 +504,47 @@ export class RunnerLaunchError extends Error {
     this.stderr = redact(
       typeof e.stderr === "string" ? e.stderr : typeof e.message === "string" ? e.message : ""
     );
+    this.deadlineExceeded = args.deadlineExceeded === true;
   }
+}
+
+// ==================================================================================================
+// THE ONE FAILURE A TEARDOWN MUST NEVER ANSWER — a `create` that lost the NAME to somebody else.
+// ==================================================================================================
+
+/**
+ * Does this `create` rejection mean THE NAME WAS ALREADY TAKEN?
+ *
+ * WHY IT HAS TO BE ASKED AT ALL. {@link runnerContainerName} named the hazard when it landed and
+ * left it open: teardown is unconditional and addresses the NAME, so a `create` that failed
+ * BECAUSE THE NAME IS IN USE goes on to `rm -f` that name — which by the definition of the
+ * conflict is a container this run did not create and is not supervising. For managed-iac that is
+ * two concurrent triggers of one `idempotencyKey`, and the loser destroys the winner's live
+ * `tofu apply`. It is the same family as the reaper's own cardinal rule: never destroy a container
+ * you do not own.
+ *
+ * WHY NOT "GIVE EACH ATTEMPT A UNIQUE NAME". That would trade this bug for a worse one. Retry-stable
+ * naming is exactly what makes a retry address the SAME container instead of starting a second run
+ * of the same apply, and it is what lets the Kubernetes arm (M23.2) rely on `create` being
+ * idempotent on `metadata.name`. The name is the feature; the unconditional teardown was the bug.
+ *
+ * MEASURED, NOT GUESSED (Docker 29.5.2, via `promisify(execFile)`): a second
+ * `docker create --name X` rejects with `code: 1`, `killed: false`, and
+ * `stderr: 'Error response from daemon: Conflict. The container name "/X" is already in use by
+ * container "<id>". You have to remove (or rename) that container to be able to reuse that name.'`
+ * The `Conflict.` token is Docker's own; `already in use by container` is the part every
+ * OCI CLI in this class shares, and `dockerBinary` is server-injected precisely so an operator MAY
+ * point it at podman or nerdctl (whose wording differs and is NOT measured here). The match is
+ * therefore the broad one, and DELIBERATELY so: the two ways to be wrong are not symmetric. A false
+ * POSITIVE skips one teardown and leaves a container that `reap()` collects on its deadline; a
+ * false NEGATIVE `rm -f`s live infrastructure somebody else is running.
+ */
+export function isContainerNameConflict(err: unknown): boolean {
+  const e = (err ?? {}) as { stderr?: unknown; message?: unknown };
+  const text = `${typeof e.stderr === "string" ? e.stderr : ""}\n${
+    typeof e.message === "string" ? e.message : ""
+  }`;
+  return /already in use/i.test(text);
 }
 
 /**
@@ -472,6 +569,12 @@ async function writeSecretEnvFile(
 /**
  * The teardown call's own timeout, and it is NOT the run timeout — a tenant `timeoutMs` never
  * reaches `rm`. It also carries NO `maxBuffer`; both absences are pinned by all three goldens.
+ *
+ * IT IS ALSO THE ONLY WORK THAT HAPPENS AFTER THE WHOLE-RUN DEADLINE, which makes it the term every
+ * outer budget has to carry on top of {@link RunnerSpec.timeoutMs}: `run()` returns within
+ * `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`. Both {@link RUNNER_REAP_GRACE_MS} here and
+ * `MANAGED_TRIGGER_GRACE_MS` in `apps/server/src/plugin-host/call-policy.ts` are derived from this
+ * number, and the latter is gated against it by a test rather than by a comment.
  */
 export const RUNNER_REMOVE_TIMEOUT_MS = 30_000;
 
@@ -493,24 +596,50 @@ export const RUNNER_LAUNCHER_OWNER_LABEL = "scp.launcher.owner";
 export const RUNNER_LAUNCHER_DEADLINE_LABEL = "scp.launcher.deadline";
 
 /**
- * How far past a run's own `timeoutMs` its container's `{@link RUNNER_LAUNCHER_DEADLINE_LABEL}`
- * is set — i.e. the deadline stamped at `create` time is `now + spec.timeoutMs + this`. Everything
- * about `reap()`'s safety turns on this being generous enough that a container a PEER replica is
- * still legitimately supervising is never touched: a process that is still ALIVE always tears its
- * own container down via `run()`'s own `finally`, whatever `timeoutMs` said, because that `finally`
- * runs regardless of whether the per-call `exec()` timeout fired — it is only the SURROUNDING
- * PROCESS dying (a SIGKILL, a crash) that leaves an orphan at all. The earliest that can happen in
- * this product today is `apps/server/src/plugin-host/call-policy.ts`'s host-level hang detector for
- * a managed `trigger`, which fires `MANAGED_TRIGGER_GRACE_MS` (30s there) after `timeoutMs` elapses.
- * This package cannot IMPORT that constant — `@scp/runner-launcher` is a dependency of
- * `apps/server`, never the reverse — so the number is re-derived here rather than shared, and
- * padded well past it: double the host's own grace, plus room for `RUNNER_REMOVE_TIMEOUT_MS`'s own
- * 30s teardown call and ordinary `create`/`copy-in` overhead before a run's `start` step even
- * begins. If `MANAGED_TRIGGER_GRACE_MS` ever grows, this should be re-checked against it — nothing
- * enforces the relationship automatically, precisely because nothing CAN import across that
- * boundary.
+ * How far past a run's own WHOLE-RUN DEADLINE its container's {@link RUNNER_LAUNCHER_DEADLINE_LABEL}
+ * is stamped — the label's value is `runDeadline + this`, and `runDeadline` is the single
+ * `now + spec.timeoutMs` computed once at the top of `run()`.
+ *
+ * THE INVARIANT IT BUYS, AND WHY IT IS NOW STRUCTURAL. `reap()` removes containers that are foreign
+ * AND past their stamped deadline, so the one thing that must never be true is a container being
+ * past its own stamp while the run that made it is still in flight — a peer's `rm -f` then lands on
+ * a live `tofu apply`, which {@link RunnerLauncher.reap}'s own contract names as the thing it must
+ * never do.
+ *
+ * IT USED TO BE FALSE, MEASURED. The stamp was `Date.now() + spec.timeoutMs + this` while
+ * `timeoutMs` was a PER-CALL bound, so a run's wall clock was k x timeoutMs and nothing tied the two
+ * together. Real managed-scan shape (3 copy-ins, `timeoutMs: 30_000`, steps of 28s): the container
+ * was stamped for ~t0+150000ms and `run()` returned after 168354ms — 18s spent `foreign AND past
+ * deadline` to any peer launcher. The threshold was ~24s of `timeoutMs`; all three shipped defaults
+ * are far above it.
+ *
+ * NOW IT IS ARITHMETIC INSIDE THIS ONE FILE. `run()` cannot outlive `runDeadline` by more than one
+ * teardown, so the only term this has to cover is {@link RUNNER_REMOVE_TIMEOUT_MS} — 30s, declared
+ * forty lines up rather than re-derived across a package boundary from a constant this package is
+ * forbidden to import. Two minutes is four times that, and it also stays clear of
+ * `MANAGED_TRIGGER_GRACE_MS` (the point at which the host gives up and SIGKILLs the subprocess,
+ * `apps/server/src/plugin-host/call-policy.ts`), so a container is never reapable while the process
+ * that owns it may still be alive. That second relationship is the one nothing here CAN enforce —
+ * the import only goes the other way — so `call-policy.test.ts` gates it from the side that can.
  */
 export const RUNNER_REAP_GRACE_MS = 2 * 60_000;
+
+/**
+ * THE HARD BOUND ON ONE `reap()` PASS — see {@link RunnerLauncher.reap} for the measurement.
+ *
+ * A pass is `docker ps` plus one `docker rm -f` per expired orphan, and the orphan count is
+ * unbounded (it grows with every crash the fleet has had). Bounding only the individual calls, as
+ * phase 4 did, bounds nothing: n orphans at {@link RUNNER_REMOVE_TIMEOUT_MS} each is
+ * n x 30s. The pass therefore has its own deadline and simply STOPS issuing removals when it
+ * passes; whatever is left is still expired, still labelled, and still there for the next pass —
+ * a sweep is idempotent, so finishing it late costs nothing and finishing it inside an unbounded
+ * loop costs a run.
+ *
+ * Two minutes: room for four worst-case removals, which is far more than a healthy fleet ever has
+ * to do, and short enough that a wedged daemon does not leave a background pass running for the
+ * life of the process.
+ */
+export const RUNNER_REAP_BUDGET_MS = 2 * 60_000;
 
 /**
  * This PROCESS's own identity, for the lifetime of the process — minted ONCE, at module load, and
@@ -526,6 +655,34 @@ export const RUNNER_REAP_GRACE_MS = 2 * 60_000;
  * container as foreign and reapable once that container's deadline has passed.
  */
 const LAUNCHER_OWNER_ID = randomUUID();
+
+/**
+ * THE SINGLE-FLIGHT SLOT FOR THE BACKGROUND SWEEP, one per container CLI — module scope for exactly
+ * the reason {@link LAUNCHER_OWNER_ID} is: a launcher instance lives for ONE run, so a guard held in
+ * the factory's closure would guard nothing at all.
+ *
+ * WHAT IT IS FOR. `run()` no longer awaits its sweep, so without this, k concurrent triggers start k
+ * concurrent passes, all listing the same containers and all racing to `rm -f` the same ids — and
+ * the losers' rejections are swallowed, so the waste is invisible. Every pass is idempotent, so a
+ * caller arriving while one is in flight has nothing to add and simply joins it.
+ *
+ * KEYED BY BINARY because `dockerBinary` is server-injected and a test (or a future operator with
+ * two runtimes) may drive two different CLIs from one process; a shared slot would let one CLI's
+ * pass satisfy the other's.
+ */
+const reapInFlight = new Map<string, Promise<string[]>>();
+
+/**
+ * The background sweep currently in flight for `dockerBinary`, or a resolved promise when there is
+ * none. Nothing in production awaits it — that is the entire point of the change (see
+ * {@link RunnerLauncher.reap}) — and it exists so a shutdown path, or a test that needs the sweep to
+ * have SETTLED before it asserts on what was removed, has something to await instead of a sleep.
+ */
+export function whenReapSettled(
+  dockerBinary: string = DEFAULT_DOCKER_BINARY
+): Promise<readonly string[]> {
+  return reapInFlight.get(dockerBinary) ?? Promise.resolve([]);
+}
 
 /**
  * THE DOCKER ADAPTER — `create` / `cp` in / `start -a` / `cp` out / `rm -f`, reproducing what the
@@ -546,7 +703,10 @@ export function createDockerRunnerLauncher(
    * fail-closed direction as everything else in this file: an ambiguous label must never read as
    * "safe to destroy".
    */
-  const reap = async (): Promise<string[]> => {
+  const reapOnce = async (): Promise<string[]> => {
+    /** THE PASS's OWN DEADLINE — see {@link RUNNER_REAP_BUDGET_MS}. Bounding the individual calls
+     *  bounds nothing when the number of calls is the unbounded term. */
+    const passDeadline = Date.now() + RUNNER_REAP_BUDGET_MS;
     let listing: string;
     try {
       listing = (
@@ -581,6 +741,14 @@ export function createDockerRunnerLauncher(
 
     const removed: string[] = [];
     for (const id of targets) {
+      // STOP, DO NOT TRUNCATE THE TIMEOUT. What is left is still expired, still labelled and still
+      // findable, so the next pass collects it; a pass that kept going with a 1ms `timeout` would
+      // turn every remaining orphan into a kill-and-retry instead of leaving it alone.
+      if (Date.now() >= passDeadline) {
+        debug("reap: pass budget spent with %d target(s) left, leaving them for the next pass",
+          targets.length - removed.length);
+        break;
+      }
       try {
         await execFileAsync(dockerBinary, ["rm", "-f", id], { timeout: RUNNER_REMOVE_TIMEOUT_MS });
         removed.push(id);
@@ -591,17 +759,40 @@ export function createDockerRunnerLauncher(
     return removed;
   };
 
+  /** {@link reapOnce}, single-flighted per binary through {@link reapInFlight} — see that map's
+   *  own doc for why a per-launcher guard would guard nothing. */
+  const reap = async (): Promise<string[]> => {
+    const joined = reapInFlight.get(dockerBinary);
+    if (joined) return joined;
+    const pass = reapOnce().finally(() => {
+      if (reapInFlight.get(dockerBinary) === pass) reapInFlight.delete(dockerBinary);
+    });
+    reapInFlight.set(dockerBinary, pass);
+    return pass;
+  };
+
   return {
     reap,
     async run(spec: RunnerSpec): Promise<RunnerResult> {
-      // AT THE TOP, BEFORE `create` — M23.1 PHASE 4. One place, guaranteed to run before the next
-      // container this process makes, and — because the host restarts a SIGKILLed subprocess with
-      // backoff — within one retry of the very event that orphans a container. See {@link
-      // RunnerLauncher.reap}. Best-effort by construction (`reap` never rejects), so this can never
-      // be the reason a real run fails to start.
-      await reap();
+      // SCHEDULED AT THE TOP, BEFORE `create`, AND NOT AWAITED — M23.1 phase 4's placement, M23.3's
+      // coupling. The placement is still right: one place, reached before the next container this
+      // process makes and — because the host respawns a SIGKILLed subprocess with backoff — within
+      // one retry of the very event that orphans a container. The `await` was not: reap's `ps` and
+      // every `rm -f` were spent out of the run's own budget, and with four stale orphans a run
+      // could exhaust it with `create` never issued (measurement in {@link RunnerLauncher.reap}).
+      // `void`, not `await`: the sweep is idempotent, single-flighted and hard-bounded, and it can
+      // now delay `create` by no ticks at all. `reap()` never rejects; the `.catch` is for the case
+      // where some future edit makes it able to, so an unhandled rejection can never take the
+      // subprocess down over a cleanup pass.
+      void reap().catch((cause) => debug("reap: background pass rejected: %O", cause));
 
-      const timeout = spec.timeoutMs;
+      /**
+       * THE WHOLE-RUN DEADLINE — the one clock in this function, read once and never recomputed.
+       * See {@link RunnerSpec.timeoutMs}: `timeoutMs` is the budget for the RUN, not for each of
+       * the four-to-six `execFile`s a run issues, and the ONLY reason the host's RPC budget and the
+       * container's own reap stamp are now correct is that this line makes them derivable.
+       */
+      const runDeadlineAt = Date.now() + spec.timeoutMs;
       const maxBuffer = spec.maxBuffer;
       const envArgs = spec.env.flatMap((entry) => ["-e", entry]);
 
@@ -610,11 +801,18 @@ export function createDockerRunnerLauncher(
       // never answered. See {@link runnerContainerName} for why "move the await inside the try" —
       // this file's own former advice — repairs nothing.
       const containerName = runnerContainerName(spec.runId);
-      /** {@link RUNNER_LAUNCHER_DEADLINE_LABEL}'s value for the container THIS run is about to
-       *  create — computed once, from THIS spec's own `timeoutMs`, before `create` is issued. */
-      const reapDeadline = new Date(
-        Date.now() + spec.timeoutMs + RUNNER_REAP_GRACE_MS
-      ).toISOString();
+      /**
+       * {@link RUNNER_LAUNCHER_DEADLINE_LABEL}'s value for the container THIS run is about to
+       * create — {@link runDeadlineAt} plus {@link RUNNER_REAP_GRACE_MS}, off the SAME clock read
+       * the run itself is bounded by.
+       *
+       * THAT SHARED READ IS THE FIX FOR HIGH-2. It used to be its own `Date.now() + spec.timeoutMs
+       * + grace` while the run's real duration was k x `timeoutMs`, so a run routinely outlived the
+       * deadline it had stamped on its own container and spent that window looking, to every peer
+       * launcher, exactly like an orphan to be `rm -f`'d. Now the run cannot pass `runDeadlineAt`
+       * except by one teardown, and the grace is four of those.
+       */
+      const reapDeadline = new Date(runDeadlineAt + RUNNER_REAP_GRACE_MS).toISOString();
 
       // THE REDACTION SET, and it is complete by construction rather than by inspection: the secret
       // VALUES the caller declared, plus the `--env-file` path once there is one. Read through a
@@ -624,8 +822,15 @@ export function createDockerRunnerLauncher(
       const redactions = (): string[] => [...secretValues, ...(envFilePath ? [envFilePath] : [])];
       const redact = (text: string): string => redactAll(text, redactions());
 
-      /** THE ONLY `execFile` IN THE PRODUCT, AND THE ONLY PLACE A RAW REJECTION CAN ESCAPE. */
-      const exec = async (
+      /**
+       * THE ONLY `execFile` IN THE PRODUCT, AND THE ONLY PLACE A RAW REJECTION CAN ESCAPE — the
+       * redaction wrapper, with the `timeout` supplied by the caller.
+       *
+       * EXACTLY ONE STEP MAY USE IT DIRECTLY, AND ONLY BECAUSE IT IS OUTSIDE THE RUN BUDGET: the
+       * `finally` teardown, which has to work when the budget is precisely what ran out. Every
+       * other step goes through {@link exec}, which derives its bound from the run's one deadline.
+       */
+      const execFixed = async (
         step: RunnerLaunchStep,
         argv: string[],
         options: { timeout: number; maxBuffer?: number }
@@ -639,6 +844,83 @@ export function createDockerRunnerLauncher(
             argv,
             cause,
             redactions: redactions()
+          });
+        }
+      };
+
+      /**
+       * EVERY STEP OF THE RUN PROPER, BOUNDED BY WHAT IS LEFT OF THE ONE BUDGET — the whole of
+       * M23.3's HIGH-1 fix. `options` carries NO `timeout`: each caller below used to hand in
+       * `spec.timeoutMs` and get a fresh, FULL budget of its own, so k sequential steps meant a
+       * k x timeoutMs run and no bound on the sum.
+       *
+       * THREE THINGS AT EXHAUSTION, and the first two are traps rather than taste:
+       *   - `timeout: 0` IS NOT "no time left", IT IS NO TIMEOUT AT ALL. Measured on the running
+       *     Node: `execFile(…, { timeout: 0 })` let a 1.5s child run to completion. A naive
+       *     `deadline - now` therefore turns the instant the budget runs out into an UNBOUNDED call
+       *     — the precise defect, restored, at the one moment it does the most damage.
+       *   - A NEGATIVE `timeout` THROWS SYNCHRONOUSLY (`ERR_OUT_OF_RANGE`), outside the try below,
+       *     as a raw error carrying an unredacted argv in its message.
+       *   - So a step reached with nothing left is REFUSED BEFORE IT IS ISSUED, with a message that
+       *     names the budget and the deadline rather than a bare `Command failed: docker cp …`.
+       *     Between the two, `Math.max(1, …)` guarantees what Node is handed is in range, never 0.
+       */
+      const exec = async (
+        step: RunnerLaunchStep,
+        argv: string[],
+        options: { maxBuffer?: number }
+      ): Promise<{ stdout: string; stderr: string }> => {
+        const remaining = runDeadlineAt - Date.now();
+        if (remaining <= 0) {
+          throw new RunnerLaunchError({
+            step,
+            file: dockerBinary,
+            argv,
+            deadlineExceeded: true,
+            cause: new Error(
+              `whole-run budget of ${spec.timeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
+                `at the run deadline ${new Date(runDeadlineAt).toISOString()} — '${step}' was not issued`
+            ),
+            redactions: redactions()
+          });
+        }
+        try {
+          return await execFileAsync(dockerBinary, argv, {
+            ...options,
+            timeout: Math.max(1, remaining)
+          });
+        } catch (cause) {
+          // OUR OWN DEADLINE, NOT THE STEP'S FAULT — distinguishable because `promisify(execFile)`
+          // sets `killed` only when IT did the killing, and because the clock has by then reached
+          // the deadline the `timeout` was derived from.
+          const e = cause as {
+            message?: string;
+            code?: string | number | null;
+            killed?: boolean;
+            signal?: string | null;
+            stdout?: string;
+            stderr?: string;
+          };
+          const deadlineExceeded = e.killed === true && Date.now() >= runDeadlineAt;
+          throw new RunnerLaunchError({
+            step,
+            file: dockerBinary,
+            argv,
+            // THE MESSAGE IS REPLACED, THE DIAGNOSIS IS NOT. `code`/`killed`/`signal` and whatever
+            // the child managed to print before we killed it are carried across unchanged — a
+            // partial `tofu plan` on stdout is exactly what an operator needs from a run that ran
+            // out of budget — while the text says WHY it died instead of `Command failed: docker
+            // start -a …`, which is indistinguishable from the runner having crashed on its own.
+            cause: deadlineExceeded
+              ? {
+                  ...e,
+                  message:
+                    `whole-run budget of ${spec.timeoutMs}ms (RunnerSpec.timeoutMs) ran out during ` +
+                    `'${step}' at the run deadline ${new Date(runDeadlineAt).toISOString()}`
+                }
+              : cause,
+            redactions: redactions(),
+            deadlineExceeded
           });
         }
       };
@@ -694,6 +976,16 @@ export function createDockerRunnerLauncher(
         }
       }
 
+      /**
+       * DID `create` LOSE THE NAME TO SOMEBODY ELSE? Declared out here because it is read in the
+       * `finally` and written in the `try`, and it is the ONE thing that makes the unconditional
+       * teardown conditional. Anything else that goes wrong with `create` — a timeout, a missing
+       * image, a dead daemon — still tears down, because the daemon may have committed a container
+       * for a call we never got an answer from (M23.0 defect 1, and the reason the name is computed
+       * before `create` is issued at all).
+       */
+      let createNameConflict = false;
+
       try {
         // 2. CREATE (not run). The container exists but has not started; `docker cp` requires
         //    exactly that state.
@@ -723,9 +1015,15 @@ export function createDockerRunnerLauncher(
                 spec.image,
                 ...spec.operands
               ],
-              { timeout, maxBuffer }
+              { maxBuffer }
             )
           ).stdout;
+        } catch (cause) {
+          // THE ONE CREATE FAILURE THAT MUST NOT BE FOLLOWED BY A TEARDOWN. Recorded, then
+          // rethrown unchanged — the caller's error is the same `RunnerLaunchError` it always was;
+          // only what the `finally` does about it changes.
+          createNameConflict = isContainerNameConflict(cause);
+          throw cause;
         } finally {
           // UNLINKED THE INSTANT `create` RETURNS, on the failure path too. Docker has read the file
           // by then; nothing later in the run needs it. The window is one `create`.
@@ -742,7 +1040,7 @@ export function createDockerRunnerLauncher(
           await exec(
             "copy-in",
             ["cp", `${copy.hostDir}/.`, `${containerId}:${copy.containerPath}`],
-            { timeout, maxBuffer }
+            { maxBuffer }
           );
         }
 
@@ -752,7 +1050,7 @@ export function createDockerRunnerLauncher(
         let stdout: string;
         let stderr: string;
         try {
-          const r = await exec("start", ["start", "-a", containerId], { timeout, maxBuffer });
+          const r = await exec("start", ["start", "-a", containerId], { maxBuffer });
           succeeded = true;
           stdout = redact(r.stdout);
           stderr = redact(r.stderr);
@@ -772,7 +1070,7 @@ export function createDockerRunnerLauncher(
           const pending = exec(
             "copy-out",
             ["cp", `${containerId}:${copyOut.containerPath}/.`, copyOut.hostDir],
-            { timeout, maxBuffer }
+            { maxBuffer }
           );
           if (copyOut.onFailure === "swallow") {
             await pending.catch(() => undefined);
@@ -790,11 +1088,29 @@ export function createDockerRunnerLauncher(
         // orphan — `reap()` is the backstop, but the reason THIS teardown failed had nowhere to go
         // before this line, which is a defect the same shape as the one this whole phase exists to
         // close (a hazard with no reader). `NODE_DEBUG=scp-runner-launcher` surfaces it.
-        await exec("teardown", ["rm", "-f", containerName], {
-          timeout: RUNNER_REMOVE_TIMEOUT_MS
-        }).catch((cause) => {
-          debug("teardown: rm -f %s failed: %O", containerName, cause);
-        });
+        //
+        // AND EXACTLY ONE THING IT MUST NOT DO — M23.3. `create` failing BECAUSE THE NAME IS
+        // ALREADY TAKEN means the container behind that name is SOMEBODY ELSE'S, still running,
+        // and an unconditional `rm -f` here destroys it. That is not the orphan case this teardown
+        // exists for; it is the exact opposite of it. See {@link isContainerNameConflict} for the
+        // measured signal and for why the answer is not per-attempt unique names.
+        //
+        // `execFixed`, NOT `exec`: the teardown is deliberately OUTSIDE the whole-run budget, since
+        // the commonest reason to reach it is that the budget is what ran out. Its own
+        // `RUNNER_REMOVE_TIMEOUT_MS` is what every golden records, and what `RUNNER_REAP_GRACE_MS`
+        // is sized against.
+        if (createNameConflict) {
+          debug(
+            "teardown: SKIPPED for %s — create lost the name to a container this run does not own",
+            containerName
+          );
+        } else {
+          await execFixed("teardown", ["rm", "-f", containerName], {
+            timeout: RUNNER_REMOVE_TIMEOUT_MS
+          }).catch((cause) => {
+            debug("teardown: rm -f %s failed: %O", containerName, cause);
+          });
+        }
       }
     }
   };
