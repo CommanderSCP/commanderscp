@@ -1,7 +1,7 @@
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
 /**
- * PER-METHOD RPC POLICY FOR THE SUBPROCESS PLUGIN HOST (M23.3).
+ * PER-METHOD RPC POLICY FOR THE SUBPROCESS PLUGIN HOST (M23.1c).
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  * THE DEFECT THIS EXISTS TO CLOSE, stated as the measurement rather than as a worry.
@@ -29,7 +29,7 @@ import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
  * wiring untested, suite green — CLAUDE.md's dominant failure class.
  *
  * ─────────────────────────────────────────────────────────────────────────────────────────────
- * THE POLICY (owner decision, M23.3 (a)): PER-METHOD, NOT A BIGGER GLOBAL NUMBER.
+ * THE POLICY (owner decision, M23.1c (a)): PER-METHOD, NOT A BIGGER GLOBAL NUMBER.
  * ─────────────────────────────────────────────────────────────────────────────────────────────
  * Raising `callTimeoutMs` globally is the obvious fix and it is the wrong one: the 10s budget is a
  * HANG DETECTOR, and it is meaningful for exactly the methods that are supposed to be fast —
@@ -125,7 +125,7 @@ function timeoutSchemaFor(module: string): TimeoutSchema | undefined {
  * `assertEveryModuleHasManifest` is: an unbounded ceiling is a defect the moment it is committed,
  * not the moment some write door happens to be exercised. Without it, deleting `maximum` from one
  * manifest degrades silently — {@link timeoutSchemaFor} returns `undefined`, that plugin's `trigger`
- * quietly falls back to the 10s hang detector, and the M23.3 defect is back on exactly one of the
+ * quietly falls back to the 10s hang detector, and the M23.1c defect is back on exactly one of the
  * three plugins with a green suite. A boot that would do that does not boot.
  */
 export function assertManagedTimeoutSchemas(): void {

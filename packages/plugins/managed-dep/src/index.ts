@@ -1088,7 +1088,7 @@ export const manifest: PluginManifest = {
       installationId: { type: "string", minLength: 1 },
       privateKeySecretKey: { type: "string", minLength: 1 },
       apiBaseUrl: { type: "string", minLength: 1 },
-      // BOUNDED AT BOTH ENDS (M23.3). The `maximum` is the half that was missing: with only a
+      // BOUNDED AT BOTH ENDS (M23.1c). The `maximum` is the half that was missing: with only a
       // floor, a tenant could set 2^31 and make the runner unkillable by its own timeout AND
       // unbound the plugin-host RPC budget derived from it. Enforced at every write door by
       // `validatePluginConfig` (Ajv honours `maximum`), and clamped again host-side for rows

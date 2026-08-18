@@ -453,7 +453,7 @@ assertEveryModuleHasManifest(KNOWN_EXECUTOR_MODULES, "KNOWN_EXECUTOR_MODULES");
 
 /**
  * AND THE SECOND PROPERTY OF THE SAME MANIFEST, checked in the same place and at the same moment,
- * because the first one on its own is not enough (M23.3).
+ * because the first one on its own is not enough (M23.1c).
  *
  * `assertEveryModuleHasManifest` above answers "may this module's config be validated at all". This
  * answers "is the one tenant-settable number in that config BOUNDED" — and for the three managed

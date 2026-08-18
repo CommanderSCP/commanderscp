@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
- * THE INSTALL-SITE GATE for M23.3's `assertManagedTimeoutSchemas()`.
+ * THE INSTALL-SITE GATE for M23.1c's `assertManagedTimeoutSchemas()`.
  *
  * `call-policy.test.ts` proves the assertion WORKS. This proves it is CALLED — and the distinction
  * is this repository's single most common defect (CLAUDE.md: "a component correctly built, well
@@ -31,7 +31,7 @@ describe("the managed timeoutMs ceiling is asserted AT BOOT, not merely asserted
       const actual = await importOriginal<typeof import("@scp/plugin-managed-scan")>();
       return {
         ...actual,
-        // Byte-for-byte the shape all three managed plugins shipped before M23.3: a floor and no
+        // Byte-for-byte the shape all three managed plugins shipped before M23.1c: a floor and no
         // ceiling, so a tenant could set 2^31.
         manifest: {
           id: "managed-scan",

@@ -8,7 +8,7 @@ import {
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
 /**
- * M23.3 — the per-method RPC budget, and the manifest ceiling it is derived from.
+ * M23.1c — the per-method RPC budget, and the manifest ceiling it is derived from.
  *
  * The end-to-end proof that the budget reaches a real managed run lives in
  * `managed-trigger-budget.test.ts` (a real `managed-iac` through a DEFAULT-constructed host). This
@@ -159,7 +159,7 @@ describe("resolveCallPolicy", () => {
  * THE BOOT GATE, and why it is not redundant with the schema test above.
  *
  * If a `maximum` is ever deleted, nothing FAILS — `resolveCallPolicy` stops recognising that module
- * as managed and quietly hands its `trigger` the 10s hang detector back. That is the M23.3 defect,
+ * as managed and quietly hands its `trigger` the 10s hang detector back. That is the M23.1c defect,
  * restored on exactly one plugin, with a green suite. So the degradation has to be made loud at the
  * one moment it can be: module load, beside the allowlist, in
  * `coordination/executor-bindings-repo.ts`. These two tests assert BOTH halves — that the gate

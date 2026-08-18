@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SubprocessPluginHost } from "./host.js";
 
 /**
- * M23.3 — THE ONE TEST SHAPE THAT DID NOT EXIST AT ANY LEVEL, and the reason a ten-second SIGKILL
+ * M23.1c — THE ONE TEST SHAPE THAT DID NOT EXIST AT ANY LEVEL, and the reason a ten-second SIGKILL
  * through every managed run shipped and stayed shipped.
  *
  * WHAT WAS ALREADY COVERED, AND WHY IT COVERED NOTHING. `managed-iac.integration.test.ts`'s own
@@ -129,7 +129,7 @@ afterEach(async () => {
   }
 });
 
-describe("managed executor trigger through a DEFAULT-CONSTRUCTED plugin host (M23.3)", () => {
+describe("managed executor trigger through a DEFAULT-CONSTRUCTED plugin host (M23.1c)", () => {
   it("a managed-iac run longer than the 10s hang detector completes, reports a terminal status, and leaves no container behind", async () => {
     const fake = await makeFakeDocker(RUNNER_SLEEP_SECONDS);
     // A tenant timeout well past the runner's own duration: the point is that the HOST no longer

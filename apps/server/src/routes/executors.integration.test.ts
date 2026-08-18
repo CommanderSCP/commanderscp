@@ -813,7 +813,7 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
   });
 
   /**
-   * M23.3 — THE TENANT-SETTABLE RUN BUDGET IS CAPPED, AT THE DOOR, ON EVERY MANAGED CLASS.
+   * M23.1c — THE TENANT-SETTABLE RUN BUDGET IS CAPPED, AT THE DOOR, ON EVERY MANAGED CLASS.
    *
    * All three managed manifests shipped `timeoutMs: { type: "integer", minimum: 1000 }` with NO
    * maximum, and the value is settable by any org member with plain `object:write` on a Component.

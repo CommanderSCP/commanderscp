@@ -107,7 +107,7 @@ export interface PluginHostOptions {
    * The HANG DETECTOR: per-call RPC budget (ms), including any wait-for-ready + one transparent
    * retry. Default 10s.
    *
-   * NOT A UNIVERSAL BUDGET SINCE M23.3. It applies to every method that is supposed to be fast, and
+   * NOT A UNIVERSAL BUDGET SINCE M23.1c. It applies to every method that is supposed to be fast, and
    * a managed executor's `trigger` — the one method that legitimately runs a container to completion
    * — derives its own from the instance's resolved `timeoutMs` instead (`call-policy.ts`). Do not
    * "fix" a slow managed run by raising this: doing so blinds the host to a wedged `status()` on
@@ -670,7 +670,7 @@ export class SubprocessPluginHost implements PluginHost {
         // exit handler reclaims it and restart-with-backoff kicks in, converting "hung forever"
         // into "will come back". `sendOnce`'s caller (`call`) still only sees a timeout error.
         //
-        // THIS SIGKILL IS WHY THE BUDGET HAS TO BE PER-METHOD (M23.3). There is no `finally` here
+        // THIS SIGKILL IS WHY THE BUDGET HAS TO BE PER-METHOD (M23.1c). There is no `finally` here
         // and there cannot be one: the cleanup that matters lives in the CHILD (the runner
         // launcher's `rm -f`, `withRecordedOutcome`, managed-iac's `saveState`) and SIGKILL runs
         // none of it. So the only defence is to never let this fire while a legitimate managed run
@@ -696,7 +696,7 @@ export class SubprocessPluginHost implements PluginHost {
    * This is what makes `contract.ts`'s "callers never see a dead subprocess, only a
    * slower/retried call" true rather than aspirational.
    *
-   * WITH ONE EXCLUSION, M23.3: a managed executor's `trigger` is NOT retried. It is not idempotent
+   * WITH ONE EXCLUSION, M23.1c: a managed executor's `trigger` is NOT retried. It is not idempotent
    * from here — its ledger entry is written only after the run completes, so a retry re-enters a
    * `tofu apply` that may still be in flight, and the retry's container name (derived from the same
    * `idempotencyKey`) collides with the first run's and gets it torn down. That crash belongs to
@@ -706,7 +706,7 @@ export class SubprocessPluginHost implements PluginHost {
     const instance = this.instances.get(instanceId);
     if (!instance) throw new Error(`no plugin instance configured with id '${instanceId}'`);
 
-    // PER-METHOD, NOT ONE NUMBER FOR EVERYTHING (M23.3). `opts.callTimeoutMs` stays the 10s HANG
+    // PER-METHOD, NOT ONE NUMBER FOR EVERYTHING (M23.1c). `opts.callTimeoutMs` stays the 10s HANG
     // DETECTOR for `observe`/`status`/`abort`/`evaluate`/`send`/… — it is meaningful precisely
     // because those are supposed to be fast. A managed executor's `trigger` is the one method that
     // legitimately blocks for minutes (the charter's scoped execution exception runs its container
