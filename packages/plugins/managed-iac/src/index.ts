@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type {
@@ -15,8 +13,7 @@ import type {
   PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
-
-const execFileAsync = promisify(execFile);
+import { resolveDockerRunnerLauncher, type ResolveRunnerLauncher } from "@scp/runner-launcher";
 
 /**
  * `@scp/plugin-managed-iac` — the `scp-managed-iac` executor (DESIGN.md §12 Mode 2, charter's
@@ -172,6 +169,12 @@ async function saveState(statePath: string | undefined, state: DedupState): Prom
 // Runner container launch — COPY the workspace in/out (never bind-mount; CRITICAL #1 + fixes the
 // dind CI failure where a bind-mounted host /tmp path isn't shared with the dind daemon). The ONE
 // place credentials are materialized as env vars, on the CHILD `docker` invocations only.
+//
+// M23.1: the five-step create/copy-in/start/copy-out/remove sequence itself now lives in
+// `@scp/runner-launcher`, shared with `@scp/plugin-managed-scan` and `@scp/plugin-managed-dep` —
+// three hand-rolled copies of one mechanism were three places a fix had to be remembered. What
+// stays HERE is everything that is this plugin's own: which operands, which env, and the
+// copy-out policy (`always` + `swallow`) that no other caller shares.
 // -----------------------------------------------------------------------------------------
 
 async function resolveInfraCreds(
@@ -189,75 +192,50 @@ async function resolveInfraCreds(
 async function runRunnerContainer(
   ctx: PluginContext,
   config: ManagedIacConfig,
+  resolveLauncher: ResolveRunnerLauncher,
   action: "plan" | "apply" | "rollback",
   workspaceDir: string,
   extraEnv: Record<string, string> = {}
 ): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
-  const docker = config.dockerBinary ?? "docker";
-  const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxBuffer = 16 * 1024 * 1024;
   const infraCreds = await resolveInfraCreds(ctx, config);
   const secretValues = Object.values(infraCreds);
-  const envArgs = Object.entries({ ...infraCreds, ...extraEnv }).flatMap(([k, v]) => [
-    "-e",
-    `${k}=${v}`
-  ]);
 
-  // 1. CREATE (not run) — no `-v` host bind mount, no docker.sock, server-fixed --network. The
-  //    container exists but hasn't started; `docker cp` (step 2) requires exactly that state.
-  const createArgs = [
-    "create",
-    "--network",
-    config.networkMode,
-    ...envArgs,
-    config.runnerImage,
-    action
-  ];
-  const { stdout: createOut } = await execFileAsync(docker, createArgs, { timeout, maxBuffer });
-  const containerId = createOut.trim();
+  const result = await resolveLauncher({ dockerBinary: config.dockerBinary }).run({
+    image: config.runnerImage,
+    // The single operand this runner takes: which tofu verb `run.sh` should perform.
+    operands: [action],
+    // A CONFIG READ HERE, deliberately — unlike managed-dep, whose charter clause carries no
+    // operator qualifier. `networkMode` is server-injected (default "none"), never tenant.
+    networkMode: config.networkMode,
+    // THE ONE PLACE CREDENTIALS ARE MATERIALIZED, on the child `docker` invocation only. The order
+    // is the config's own key order first, the action's extra env last — pinned by the golden.
+    // M23.0 recorded that this puts them on the host process table; the Kubernetes arm takes
+    // Secret-backed env instead of inheriting the argv shape (M23.2), which is why `env` is a list
+    // of entries rather than an argv fragment.
+    env: Object.entries({ ...infraCreds, ...extraEnv }).map(([k, v]) => `${k}=${v}`),
+    // COPIED, never bind-mounted (CRITICAL #1 + the dind-share fix): there is no host path that
+    // becomes a container mount, so a `workspaceDir: "/"`-style escape is structurally impossible.
+    copyIn: [{ hostDir: workspaceDir, containerPath: "/workspace" }],
+    // THE ASYMMETRY THAT IS THIS PLUGIN'S ALONE, and it is load-bearing on both axes: the evidence
+    // comes back out even after a FAILED run (a failed apply may still have produced a partial
+    // plan.json worth persisting), and a copy-out that itself fails is SWALLOWED (the run stays
+    // succeeded). managed-scan and managed-dep do the opposite on both. Pinned by the goldens; a
+    // port that normalised the three into one sequence must break them.
+    copyOut: {
+      containerPath: "/workspace",
+      hostDir: workspaceDir,
+      when: "always",
+      onFailure: "swallow"
+    },
+    timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024
+  });
 
-  try {
-    // 2. COPY the server-controlled workspace INTO the container (not a mount).
-    await execFileAsync(docker, ["cp", `${workspaceDir}/.`, `${containerId}:/workspace`], {
-      timeout,
-      maxBuffer
-    });
-
-    // 3. START attached — blocks until the container exits and propagates its exit code, so a
-    //    non-zero tofu run rejects here (captured as succeeded:false with its stderr).
-    let succeeded: boolean;
-    let stdout: string;
-    let stderr: string;
-    try {
-      const r = await execFileAsync(docker, ["start", "-a", containerId], { timeout, maxBuffer });
-      succeeded = true;
-      stdout = r.stdout;
-      stderr = r.stderr;
-    } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message: string };
-      succeeded = false;
-      stdout = e.stdout ?? "";
-      stderr = e.stderr ?? e.message;
-    }
-
-    // 4. COPY the evidence (plan.json, state-history/*) back OUT — best-effort even on a failed
-    //    run, since a failed apply may still have produced a partial plan worth persisting.
-    await execFileAsync(docker, ["cp", `${containerId}:/workspace/.`, workspaceDir], {
-      timeout,
-      maxBuffer
-    }).catch(() => undefined);
-
-    return {
-      succeeded,
-      stdout: redactSecrets(stdout, secretValues),
-      stderr: redactSecrets(stderr, secretValues)
-    };
-  } finally {
-    // 5. Destroy the container (and therefore its credential-carrying env) unconditionally.
-    await execFileAsync(docker, ["rm", "-f", containerId], { timeout: 30_000 }).catch(
-      () => undefined
-    );
-  }
+  return {
+    succeeded: result.succeeded,
+    stdout: redactSecrets(result.stdout, secretValues),
+    stderr: redactSecrets(result.stderr, secretValues)
+  };
 }
 
 // -----------------------------------------------------------------------------------------
@@ -284,7 +262,11 @@ async function writeSourceFiles(
   }
 }
 
-async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
+async function trigger(
+  ctx: PluginContext,
+  intent: TriggerIntent,
+  resolveLauncher: ResolveRunnerLauncher
+): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const cacheKey = intent.idempotencyKey ?? randomUUID();
   const state = await loadState(config.statePath);
@@ -315,9 +297,16 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
           "managed-iac rollback: FAILED CLOSED — priorStateRef missing or not a state-history/*.tfstate path"
       };
     } else {
-      const result = await runRunnerContainer(ctx, config, "rollback", workspaceDir, {
-        PRIOR_STATE_FILE: priorStateFile
-      });
+      const result = await runRunnerContainer(
+        ctx,
+        config,
+        resolveLauncher,
+        "rollback",
+        workspaceDir,
+        {
+          PRIOR_STATE_FILE: priorStateFile
+        }
+      );
       outcome = {
         externalId,
         succeeded: result.succeeded,
@@ -329,7 +318,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
     const sourceFiles = intent.parameters?.sourceFiles as Record<string, string> | undefined;
     if (sourceFiles) await writeSourceFiles(workspaceDir, sourceFiles);
     const iacAction = (intent.parameters?.iacAction as "plan" | "apply" | undefined) ?? "plan";
-    const result = await runRunnerContainer(ctx, config, iacAction, workspaceDir);
+    const result = await runRunnerContainer(ctx, config, resolveLauncher, iacAction, workspaceDir);
     outcome = {
       externalId,
       succeeded: result.succeeded,
@@ -379,17 +368,27 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-export const managedIacExecutorPlugin: ExecutorPlugin = {
-  observe,
-  trigger,
-  status,
-  abort,
-  describeCapabilities
-};
-
-export function createManagedIacExecutorPlugin(): ExecutorPlugin {
-  return managedIacExecutorPlugin;
+/**
+ * THE LAUNCHER SEAM (M23.1). `resolveLauncher` defaults to the Docker adapter — the only one that
+ * exists until M23.2 — and is a FACTORY PARAMETER rather than a config field on purpose: adapter
+ * selection is not tenant-facing, and adding a config field would mean adding it to the
+ * server-injected/never-tenant-settable class in all three enforcement layers for no behaviour a
+ * caller can yet ask for. Tests pass a substitute here, which is what makes "the plugin really goes
+ * through the port" falsifiable rather than a claim about the source text.
+ */
+export function createManagedIacExecutorPlugin(
+  resolveLauncher: ResolveRunnerLauncher = resolveDockerRunnerLauncher
+): ExecutorPlugin {
+  return {
+    observe,
+    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher),
+    status,
+    abort,
+    describeCapabilities
+  };
 }
+
+export const managedIacExecutorPlugin: ExecutorPlugin = createManagedIacExecutorPlugin();
 
 /**
  * Manifest `configSchema` is the TENANT-facing surface only — `additionalProperties: false` so a

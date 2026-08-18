@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
@@ -14,6 +12,7 @@ import type {
   PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
+import { resolveDockerRunnerLauncher, type ResolveRunnerLauncher } from "@scp/runner-launcher";
 import {
   coordinateRuleCandidates,
   isDependencyEcosystem,
@@ -38,8 +37,6 @@ import {
   locateVersionLine,
   verifyManifestOnlyEdit
 } from "./write-guard.js";
-
-const execFileAsync = promisify(execFile);
 
 /**
  * `@scp/plugin-managed-dep` — the `scp-managed-dep` executor (charter Managed Execution Exception,
@@ -598,38 +595,37 @@ function asConfig(config: unknown): ManagedDepConfig {
 
 // -------------------------------------------------------------------------------------------
 // The runner container — COPY the one manifest in, COPY the edited manifest out. Never a bind
-// mount, never a docker socket, always the server-fixed `--network` (default `none`). Identical in
-// shape to managed-iac/managed-scan's launch, for the identical reason (a host-path escape is
-// structurally impossible when nothing is mounted).
+// mount, never a docker socket, always `--network none`. Identical in shape to
+// managed-iac/managed-scan's launch, for the identical reason (a host-path escape is structurally
+// impossible when nothing is mounted) — and since M23.1 that shape is literally the same code:
+// `@scp/runner-launcher`, the one port all three managed executors launch through.
+//
+// WHAT DID NOT MOVE INTO THE PORT, AND MUST NOT: the network mode. It is passed from here as the
+// LITERAL {@link RUNNER_NETWORK_MODE}, so the charter clause and the value it fixes stay in the same
+// file. A port that read `config.networkMode` uniformly for all three callers would turn an
+// unqualified charter clause into an operator-settable default; the golden's third case names a
+// different mode in the context and still requires `none` on the command line.
 // -------------------------------------------------------------------------------------------
 
 async function runEditorContainer(
   config: ManagedDepConfig,
+  resolveLauncher: ResolveRunnerLauncher,
   spec: ManifestBumpSpec,
   inDir: string,
   outDir: string
 ): Promise<{ succeeded: boolean; stdout: string; stderr: string }> {
-  const docker = config.dockerBinary ?? "docker";
-  const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxBuffer = 8 * 1024 * 1024;
-
-  // The edit is described ENTIRELY on argv — five strings that name a declaration and a version,
-  // plus (M21.7, split shapes only) the two that name WHICH LINE carries it. Nothing on this command
-  // line can be a file body, a path outside the container, or a command: the anchor text is one line
-  // the container already has in the file it was handed, and the shim only ever COMPARES it.
-  //
-  // THE PAIR IS APPENDED ONLY WHEN THERE IS AN ANCHOR, which is what makes version skew fail-closed
-  // in both directions (`run.sh`'s argv contract): a five-operand invocation is byte-for-byte the
-  // one every previously-shipped image understands, and an image that predates the anchor ignores
-  // the extra two and refuses the split shape it could not have edited anyway.
-  const { stdout: createOut } = await execFileAsync(
-    docker,
-    [
-      "create",
-      // THE LITERAL, never a config read — see {@link RUNNER_NETWORK_MODE}.
-      "--network",
-      RUNNER_NETWORK_MODE,
-      config.runnerImage,
+  return resolveLauncher({ dockerBinary: config.dockerBinary }).run({
+    image: config.runnerImage,
+    // The edit is described ENTIRELY on argv — five strings that name a declaration and a version,
+    // plus (M21.7, split shapes only) the two that name WHICH LINE carries it. Nothing here can be a
+    // file body, a path outside the container, or a command: the anchor text is one line the
+    // container already has in the file it was handed, and the shim only ever COMPARES it.
+    //
+    // THE PAIR IS APPENDED ONLY WHEN THERE IS AN ANCHOR, which is what makes version skew
+    // fail-closed in both directions (`run.sh`'s argv contract): a five-operand invocation is
+    // byte-for-byte the one every previously-shipped image understands, and an image that predates
+    // the anchor ignores the extra two and refuses the split shape it could not have edited anyway.
+    operands: [
       spec.ecosystem,
       spec.manifestPath,
       spec.coordinate,
@@ -637,43 +633,26 @@ async function runEditorContainer(
       spec.toVersion,
       ...(spec.anchor ? [String(spec.anchor.line), spec.anchor.text] : [])
     ],
-    { timeout, maxBuffer }
-  );
-  const containerId = createOut.trim();
-
-  try {
-    await execFileAsync(docker, ["cp", `${inDir}/.`, `${containerId}:/work/in`], {
-      timeout,
-      maxBuffer
-    });
-
-    let succeeded: boolean;
-    let stdout: string;
-    let stderr: string;
-    try {
-      const r = await execFileAsync(docker, ["start", "-a", containerId], { timeout, maxBuffer });
-      succeeded = true;
-      stdout = r.stdout;
-      stderr = r.stderr;
-    } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message: string };
-      succeeded = false;
-      stdout = e.stdout ?? "";
-      stderr = e.stderr ?? e.message;
-    }
-
-    if (succeeded) {
-      await execFileAsync(docker, ["cp", `${containerId}:/work/out/.`, outDir], {
-        timeout,
-        maxBuffer
-      });
-    }
-    return { succeeded, stdout, stderr };
-  } finally {
-    await execFileAsync(docker, ["rm", "-f", containerId], { timeout: 30_000 }).catch(
-      () => undefined
-    );
-  }
+    // THE LITERAL, never a config read — see {@link RUNNER_NETWORK_MODE}.
+    networkMode: RUNNER_NETWORK_MODE,
+    // NO ENVIRONMENT AT ALL. The runner holds no credential; there is nothing to pass it.
+    env: [],
+    copyIn: [{ hostDir: inDir, containerPath: "/work/in" }],
+    // Only on success — there is nothing to salvage from a runner that did not finish the edit, and
+    // copying out a partial manifest would put unverified bytes where the verifiers read from. Not
+    // guarded either: `trigger()`'s outer catch is what turns a failed copy-out into a `failed` run
+    // (managed-scan's escapes its `trigger()`; managed-iac's is swallowed — three answers to one
+    // Docker failure, all three pinned by goldens).
+    copyOut: {
+      containerPath: "/work/out",
+      hostDir: outDir,
+      when: "on-success",
+      onFailure: "propagate"
+    },
+    timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    // 8 MiB — the smallest of the three, because this runner edits one manifest and prints nothing.
+    maxBuffer: 8 * 1024 * 1024
+  });
 }
 
 // -------------------------------------------------------------------------------------------
@@ -778,7 +757,11 @@ async function triggerMerge(
   }
 }
 
-async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
+async function trigger(
+  ctx: PluginContext,
+  intent: TriggerIntent,
+  resolveLauncher: ResolveRunnerLauncher
+): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const externalId = `managed-dep::${intent.idempotencyKey ?? `${Date.now()}`}`;
   const cached = outcomes.get(externalId);
@@ -885,7 +868,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
       await mkdir(inDir, { recursive: true });
       await mkdir(outDir, { recursive: true });
       await writeFile(join(inDir, fileName), original.content, "utf8");
-      const run = await runEditorContainer(config, spec, inDir, outDir);
+      const run = await runEditorContainer(config, resolveLauncher, spec, inDir, outDir);
       if (!run.succeeded) {
         return {
           succeeded: false,
@@ -1041,17 +1024,28 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-export const managedDepExecutorPlugin: ExecutorPlugin = {
-  observe,
-  trigger,
-  status,
-  abort,
-  describeCapabilities
-};
-
-export function createManagedDepExecutorPlugin(): ExecutorPlugin {
-  return managedDepExecutorPlugin;
+/**
+ * THE LAUNCHER SEAM (M23.1). `resolveLauncher` defaults to the Docker adapter — the only one that
+ * exists until M23.2 — and is a FACTORY PARAMETER rather than a config field on purpose: adapter
+ * selection is not tenant-facing, and any new config field would have to join the server-injected,
+ * never-tenant-settable class in all three enforcement layers (this manifest's `configSchema`, the
+ * four `validatePluginConfig` write doors, and the LAST-wins injection sites) on day one. Note what
+ * the seam does NOT carry: the network mode, which this class fixes as a literal rather than a
+ * setting (ADR-0032 §8d).
+ */
+export function createManagedDepExecutorPlugin(
+  resolveLauncher: ResolveRunnerLauncher = resolveDockerRunnerLauncher
+): ExecutorPlugin {
+  return {
+    observe,
+    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher),
+    status,
+    abort,
+    describeCapabilities
+  };
 }
+
+export const managedDepExecutorPlugin: ExecutorPlugin = createManagedDepExecutorPlugin();
 
 /**
  * Manifest `configSchema` is the TENANT-facing surface ONLY. `additionalProperties: false`, and the

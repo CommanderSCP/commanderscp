@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { mkdir } from "node:fs/promises";
 import type {
   AbortResult,
@@ -13,8 +11,11 @@ import type {
   PluginManifest,
   TriggerIntent
 } from "@scp/plugin-api";
-
-const execFileAsync = promisify(execFile);
+import {
+  resolveDockerRunnerLauncher,
+  type ResolveRunnerLauncher,
+  type RunnerCopyIn
+} from "@scp/runner-launcher";
 
 /**
  * `@scp/plugin-managed-scan` — the `scp-managed-scan` executor, the thin orchestrator behind the
@@ -147,101 +148,65 @@ interface RunResult {
  * Launch the single-shot scan container. COPY the pulled layout in / evidence out (never bind-mount;
  * mirrors managed-iac's CRITICAL #1 fix + the dind-share fix). The ONE place the runner image is
  * executed — with the server-fixed `--network` (default `none`), no docker.sock, no `-v`.
+ *
+ * M23.1: the create/copy-in/start/copy-out/remove sequence itself lives in `@scp/runner-launcher`,
+ * shared with `@scp/plugin-managed-iac` and `@scp/plugin-managed-dep`. What stays HERE is what is
+ * this plugin's own — the one-to-three copy-in shape, the two conditional `-e` pairs that pair with
+ * them, the 32 MiB buffer, and a copy-out that is `on-success` + `propagate`.
  */
 async function runScanContainer(
   config: ManagedScanConfig,
+  resolveLauncher: ResolveRunnerLauncher,
   method: string,
   inputDir: string,
   outputDir: string,
   scanArgs: string[],
   preload: { scanDbDir?: string; scanScapDir?: string }
 ): Promise<RunResult> {
-  const docker = config.dockerBinary ?? "docker";
-  const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const maxBuffer = 32 * 1024 * 1024;
+  // When the server provides a pre-loaded DB / SCAP dir (M13.3b-ii) we set the env that steers
+  // run.sh to it — still `--network none`, still copied IN and not mounted, so a host-path escape
+  // stays structurally impossible. THE `-e` PAIRS AND THE COPIES ARE INDEPENDENTLY CONDITIONAL and
+  // in a FIXED order (DB then SCAP for the env, subject/DB/SCAP for the copies); the golden's
+  // "middle case" exists because a launcher that emitted both whenever EITHER was present would
+  // otherwise pass.
+  const env: string[] = [];
+  if (preload.scanDbDir) env.push("SCP_SCAN_DB_DIR=/work/db");
+  if (preload.scanScapDir) env.push("SCP_SCAN_SCAP_DIR=/work/scap");
 
-  // 1. CREATE (not run) — no `-v` host bind mount, no docker.sock, server-fixed --network. The
-  //    container exists but hasn't started; `docker cp` (step 2) requires exactly that state. The
-  //    method + any method-specific run.sh args (openscap: profile, datastream) are the ENTRYPOINT
-  //    argv — server-resolved, never a mount or a network toggle. When the server provides a
-  //    pre-loaded DB / SCAP dir (M13.3b-ii), we set the env that steers run.sh to it (still --network
-  //    none, still copied IN not mounted — a host-path escape stays structurally impossible).
-  const envArgs: string[] = [];
-  if (preload.scanDbDir) envArgs.push("-e", "SCP_SCAN_DB_DIR=/work/db");
-  if (preload.scanScapDir) envArgs.push("-e", "SCP_SCAN_SCAP_DIR=/work/scap");
-  const { stdout: createOut } = await execFileAsync(
-    docker,
-    [
-      "create",
-      "--network",
-      config.networkMode,
-      ...envArgs,
-      config.runnerImage,
-      method,
-      ...scanArgs
-    ],
-    { timeout, maxBuffer }
-  );
-  const containerId = createOut.trim();
-
-  try {
-    // 2. COPY the SERVER-pulled OCI layout INTO the container's /work/image (not a mount).
-    await execFileAsync(docker, ["cp", `${inputDir}/.`, `${containerId}:/work/image`], {
-      timeout,
-      maxBuffer
-    });
-
-    // 2b. COPY the SERVER-provided pre-loaded DB / SCAP content IN (M13.3b-ii). A SECOND `docker cp`
-    //     of an operator-governed, server-maintained cache dir — same copy-in seam as the subject,
-    //     never a mount, so the runner still reaches no host path and no network.
-    if (preload.scanDbDir) {
-      await execFileAsync(docker, ["cp", `${preload.scanDbDir}/.`, `${containerId}:/work/db`], {
-        timeout,
-        maxBuffer
-      });
-    }
-    if (preload.scanScapDir) {
-      await execFileAsync(docker, ["cp", `${preload.scanScapDir}/.`, `${containerId}:/work/scap`], {
-        timeout,
-        maxBuffer
-      });
-    }
-
-    // 3. START attached — blocks until the container exits and propagates its exit code. A non-zero
-    //    scanner run (a broken/failed scan) rejects here and is captured as succeeded:false, so a
-    //    broken scan can never masquerade as a clean result (fail-closed — the commander produces NO
-    //    evidence for a failed run, and E6 then refuses).
-    let succeeded: boolean;
-    let stdout: string;
-    let stderr: string;
-    try {
-      const r = await execFileAsync(docker, ["start", "-a", containerId], { timeout, maxBuffer });
-      succeeded = true;
-      stdout = r.stdout;
-      stderr = r.stderr;
-    } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message: string };
-      succeeded = false;
-      stdout = e.stdout ?? "";
-      stderr = e.stderr ?? e.message;
-    }
-
-    // 4. COPY the evidence (/work/out/result.json, scanner-version.txt) back OUT — only meaningful on
-    //    a succeeded run, but attempted best-effort so a partial result is available for diagnosis.
-    if (succeeded) {
-      await execFileAsync(docker, ["cp", `${containerId}:/work/out/.`, outputDir], {
-        timeout,
-        maxBuffer
-      });
-    }
-
-    return { succeeded, stdout, stderr };
-  } finally {
-    // 5. Destroy the container unconditionally.
-    await execFileAsync(docker, ["rm", "-f", containerId], { timeout: 30_000 }).catch(
-      () => undefined
-    );
+  // The SERVER-pulled OCI layout always; the operator-governed caches only when resolved.
+  const copyIn: RunnerCopyIn[] = [{ hostDir: inputDir, containerPath: "/work/image" }];
+  if (preload.scanDbDir) copyIn.push({ hostDir: preload.scanDbDir, containerPath: "/work/db" });
+  if (preload.scanScapDir) {
+    copyIn.push({ hostDir: preload.scanScapDir, containerPath: "/work/scap" });
   }
+
+  return resolveLauncher({ dockerBinary: config.dockerBinary }).run({
+    image: config.runnerImage,
+    // The method + any method-specific run.sh args (openscap: profile, datastream) are the
+    // ENTRYPOINT argv — server-resolved, never a mount and never a network toggle.
+    operands: [method, ...scanArgs],
+    // A CONFIG READ, unlike managed-dep: this class's charter clause is qualified ("excepting
+    // operator-allowlisted registry pulls"), so the operator setting is legitimate. Server-injected
+    // (default "none"), never tenant.
+    networkMode: config.networkMode,
+    env,
+    copyIn,
+    // ONLY ON SUCCESS, AND NOT GUARDED — the opposite of managed-iac on both axes. A failed scan
+    // must produce NO evidence (fail-closed: the commander writes none and E6 then refuses), and a
+    // failed copy-out escapes `trigger()` rather than being swallowed. M23.0 recorded that the
+    // escape leaves the run reporting `pending` forever; that defect is deliberately preserved here
+    // and is the next increment's, because fixing it now would make "byte-identical" untestable.
+    copyOut: {
+      containerPath: "/work/out",
+      hostDir: outputDir,
+      when: "on-success",
+      onFailure: "propagate"
+    },
+    timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    // 32 MiB — the largest of the three, because a Trivy report is the biggest thing any of these
+    // runners writes to stdout. NOT a shared default.
+    maxBuffer: 32 * 1024 * 1024
+  });
 }
 
 // -----------------------------------------------------------------------------------------
@@ -257,7 +222,11 @@ async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEv
   return []; // no push events — this executor's only activity is its own promotion-scan trigger().
 }
 
-async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<ExternalRunRef> {
+async function trigger(
+  ctx: PluginContext,
+  intent: TriggerIntent,
+  resolveLauncher: ResolveRunnerLauncher
+): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const params = (intent.parameters ?? {}) as Partial<ManagedScanIntentParameters>;
   const method = params.method ?? "";
@@ -284,6 +253,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
   await mkdir(params.outputDir, { recursive: true });
   const result = await runScanContainer(
     config,
+    resolveLauncher,
     method,
     params.inputDir,
     params.outputDir,
@@ -340,17 +310,29 @@ function describeCapabilities(): ExecutorCapabilities {
   };
 }
 
-export const managedScanExecutorPlugin: ExecutorPlugin = {
-  observe,
-  trigger,
-  status,
-  abort,
-  describeCapabilities
-};
-
-export function createManagedScanExecutorPlugin(): ExecutorPlugin {
-  return managedScanExecutorPlugin;
+/**
+ * THE LAUNCHER SEAM (M23.1). `resolveLauncher` defaults to the Docker adapter — the only one that
+ * exists until M23.2 — and is a FACTORY PARAMETER rather than a config field on purpose. Adapter
+ * selection is not tenant-facing, and a new config field would have to join the server-injected,
+ * never-tenant-settable class in all three enforcement layers (this manifest's `configSchema`,
+ * `validatePluginConfig` at the four write doors, and the LAST-wins injection sites) for behaviour
+ * no caller can yet ask for. THIS PLUGIN IS THE REASON THAT RULE IS WRITTEN DOWN: it shipped a live
+ * RCE by sitting on `KNOWN_EXECUTOR_MODULES` with no manifest, so `dockerBinary` was tenant-settable
+ * and `execFile`d.
+ */
+export function createManagedScanExecutorPlugin(
+  resolveLauncher: ResolveRunnerLauncher = resolveDockerRunnerLauncher
+): ExecutorPlugin {
+  return {
+    observe,
+    trigger: (ctx, intent) => trigger(ctx, intent, resolveLauncher),
+    status,
+    abort,
+    describeCapabilities
+  };
 }
+
+export const managedScanExecutorPlugin: ExecutorPlugin = createManagedScanExecutorPlugin();
 
 /**
  * Manifest `configSchema` is the TENANT-facing surface only — `additionalProperties: false` so a

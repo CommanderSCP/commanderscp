@@ -626,6 +626,9 @@ importers:
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../plugin-api
+      '@scp/runner-launcher':
+        specifier: workspace:*
+        version: link:../../runner-launcher
     devDependencies:
       '@scp/plugin-testkit':
         specifier: workspace:*
@@ -645,6 +648,9 @@ importers:
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../plugin-api
+      '@scp/runner-launcher':
+        specifier: workspace:*
+        version: link:../../runner-launcher
     devDependencies:
       '@scp/plugin-testkit':
         specifier: workspace:*
@@ -664,6 +670,9 @@ importers:
       '@scp/plugin-api':
         specifier: workspace:*
         version: link:../../plugin-api
+      '@scp/runner-launcher':
+        specifier: workspace:*
+        version: link:../../runner-launcher
     devDependencies:
       '@scp/plugin-testkit':
         specifier: workspace:*
@@ -794,6 +803,15 @@ importers:
       nock:
         specifier: ^13.5.0
         version: 13.5.6
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  packages/runner-launcher:
+    devDependencies:
       typescript:
         specifier: ~5.8.0
         version: 5.8.3

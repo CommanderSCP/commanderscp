@@ -186,14 +186,28 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
 
   it("the orchestrator plugin launches `docker`, never a scanner", () => {
     // RAW for the ABSENCE half: `invocationHits` finding nothing is the assertion, and stripping
-    // could only shrink what it searches.
+    // could only shrink what it searches. THE SWEEP NOW COVERS THE PORT TOO — M23.1 moved the
+    // create/copy/start/remove sequence into `@scp/runner-launcher`, and a containment gate that
+    // still looked only at the plugin would have stopped covering the file that actually spawns
+    // processes.
     expect(invocationHits(read("packages/plugins/managed-scan/src/index.ts"))).toEqual([]);
-    // …and it really does launch containers (so the assertion above is about a live code path).
+    expect(invocationHits(read("packages/runner-launcher/src/index.ts"))).toEqual([]);
+
+    // …and it really does launch containers (so the assertions above are about a live code path).
     // STRIPPED for the PRESENCE half: this is the non-vacuity guard, and a guard satisfiable by a
     // comment describing the launch would let the launch itself be deleted with the containment
     // assertion above passing trivially.
-    expect(readStripped(resolve(REPO_ROOT, "packages/plugins/managed-scan/src/index.ts"))).toMatch(
-      /execFileAsync\(\s*\n?\s*docker,/
+    //
+    // IT TAKES BOTH HALVES NOW, and that is the point of asserting them separately: the plugin must
+    // still hand a runner spec to the port (`.run({`, reached through the injected resolver), and
+    // the port must still exec the container CLI. Either one going missing would leave "no scanner
+    // is executed here" true for the uninteresting reason that nothing is executed at all.
+    const pluginSource = readStripped(
+      resolve(REPO_ROOT, "packages/plugins/managed-scan/src/index.ts")
+    );
+    expect(pluginSource).toMatch(/resolveLauncher\(\{[^}]*\}\)\.run\(\{/);
+    expect(readStripped(resolve(REPO_ROOT, "packages/runner-launcher/src/index.ts"))).toMatch(
+      /execFileAsync\(\s*\n?\s*dockerBinary,/
     );
   });
 });
