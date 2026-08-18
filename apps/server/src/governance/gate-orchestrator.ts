@@ -11,6 +11,7 @@ import {
   type PolicyEvaluationContext
 } from "./evaluate.js";
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
+import { scanExclusionSetChangedForGate } from "./scan-exclusion-actuator.js";
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
 import { hasPermission } from "../authz/resolve.js";
@@ -741,12 +742,27 @@ export async function prewarmGovernanceForChange(
       // exclusion (ADR-0033 §4 — the opposite sign from `ceilingContributorKeys`).
       firedPolicies: fired
     });
+    // M22.7 (ADR-0033 §10) — THE ACTUATOR, at the site whose run is CACHED and later read by the
+    // host-less accept edge. Without it a grant approved after this change's controls first ran is
+    // inert on this change forever: `ensureControlRun` returns the cached outcome and the plugin is
+    // never asked again. Re-resolving is not enough on its own — the resolved set has to be able to
+    // INVALIDATE the cached verdict, which is what `force` does.
+    const gateRef = { fromState: "validating", toState: "accepted" };
+    const force = await scanExclusionSetChangedForGate(tx, {
+      orgId: input.orgId,
+      changeObjectId: input.changeObjectId,
+      controlObjectIds: allControlIds,
+      gateKind: "lifecycle_edge",
+      gateRef,
+      exclusions: scanExclusions
+    });
     await ensureControlRuns(tx, host, {
       orgId: input.orgId,
       changeObjectId: input.changeObjectId,
       controlObjectIds: allControlIds,
       gateKind: "lifecycle_edge",
-      gateRef: { fromState: "validating", toState: "accepted" },
+      gateRef,
+      force,
       context: buildControlContext({
         changeId: input.changeObjectId,
         targetObjectIds: input.targetObjectIds,
@@ -927,6 +943,26 @@ export async function evaluateGovernanceGate(
     firedPolicies: fired
   });
 
+  // M22.7 — the actuator at the EVALUATE site. This is a SECOND call site, not a duplicate: the
+  // prewarm's run authorizes the host-less accept edge, this one authorizes a wave boundary, and
+  // M22.0a keys them separately on purpose — so a wave parked for days behind a failing scan is
+  // exactly the case where a grant approved in the meantime has to take effect. Wiring only one of
+  // the two is the precise mistake M22.2's measured mutation M-2 found in the threading itself.
+  //
+  // Resolved even when `host` is null (it costs one indexed read per accept attempt and nothing on a
+  // reconcile tick) so the `force` below is computed from the same expression on both branches; the
+  // host-less branch cannot run a control at all, so it simply never uses it.
+  const scanExclusionsChanged = host
+    ? await scanExclusionSetChangedForGate(tx, {
+        orgId: ctx.orgId,
+        changeObjectId: ctx.changeObjectId,
+        controlObjectIds: allControlIds,
+        gateKind: ctx.gateKind,
+        gateRef: ctx.gateRef,
+        exclusions: effectiveScanExclusions
+      })
+    : false;
+
   const controlOutcomes = host
     ? await ensureControlRuns(tx, host, {
         orgId: ctx.orgId,
@@ -934,6 +970,7 @@ export async function evaluateGovernanceGate(
         controlObjectIds: allControlIds,
         gateKind: ctx.gateKind,
         gateRef: ctx.gateRef,
+        force: scanExclusionsChanged,
         context: buildControlContext({
           changeId: ctx.changeObjectId,
           targetObjectIds: ctx.targetObjectIds,

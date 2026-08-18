@@ -52,6 +52,7 @@ import {
 import { resolveFiredPoliciesForTargets } from "../governance/gate-orchestrator.js";
 import { getSharedCelSandbox, type CelSandbox } from "../governance/cel-sandbox.js";
 import { readScanDbStatus } from "../governance/scan-db.js";
+import { scanExclusionSetHash } from "../governance/scan-exclusion-actuator.js";
 import {
   managedRunnerSettings,
   managedScanServerSettings
@@ -478,6 +479,9 @@ export async function runPromotionScanStep(
   if (!plan || plan.planned.length === 0) return;
 
   const { threshold, source } = applyThreshold(plan.effective);
+  // M22.7 — hashed ONCE for the whole step: every deposit below was produced under the one set phase
+  // A resolved, so a per-deposit recomputation could only ever introduce a way for them to differ.
+  const exclusionSetHash = scanExclusionSetHash(plan.exclusions);
 
   // Phase B (no tx): pull + scan each planned artifact per method. Subprocesses (skopeo/docker) run
   // here, never while a pooled DB connection is held (the codebase-wide invariant, promotion-repo.ts).
@@ -544,6 +548,16 @@ export async function runPromotionScanStep(
         ...(applied.evidence
           ? { effectiveSeverityCounts: effectiveCounts, exclusions: applied.evidence }
           : {}),
+        // M22.7 — the SAME stamp `control-runner.ts` puts on a plugin-produced verdict, from the same
+        // pure function, so the two verdict producers describe an exclusion set identically.
+        //
+        // NO ACTUATOR READS IT HERE YET, and that is stated rather than implied. This step
+        // short-circuits on ANY prior covering passing run (`isCoveringScanOutcome`), and the E6
+        // export gate likewise accepts any passing `control_runs` row rather than the latest — a gap
+        // ADR-0033's consequences list already tracks separately, with the explicit note that "an
+        // override's expiry is not trustworthy at that boundary until it lands". Recording the hash
+        // now is what makes that later fix a comparison rather than a re-scan of history.
+        ...(exclusionSetHash ? { exclusionSetHash } : {}),
         threshold,
         thresholdSource: source,
         ...(plan.effective ? { thresholdContributors: plan.effective.contributors } : {}),

@@ -15,6 +15,7 @@ import {
   latestControlRunForGate
 } from "./controls-repo.js";
 import { persistScanFindings } from "./scan-findings-repo.js";
+import { scanExclusionSetHashOfContext } from "./scan-exclusion-actuator.js";
 import { getObjectByIdOrUrnAnyType, isUuid } from "../graph/objects-repo.js";
 
 // `control_bindings.plugin_module` is a free-form string at the schema layer
@@ -211,6 +212,22 @@ export async function ensureControlRun(
   // says otherwise" unreachable.
   const findingsRecord = scanMethod ? scanFindingsRecordFor(scanMethod, capped) : undefined;
   if (findingsRecord) evidence = { ...evidence, findingsRecord };
+  // M22.7 (ADR-0033 §10) — STAMP THE EXCLUSION SET THIS RUN WAS PRODUCED UNDER, so the next
+  // evaluation can tell whether the cached outcome is still current. Written by the SERVER, from the
+  // context it actually threaded, for the same reason `findingsRecord` above is: the producer is a
+  // separate process and this is a statement about what the GATE resolved, not about what the plugin
+  // did with it.
+  //
+  // Gated on `scanMethod` exactly like `findingsRecord`: only a scan verdict can have exclusions
+  // applied to it, and only a scan verdict is compared by `scanExclusionSetChangedForGate`. Stamping
+  // a webhook control's evidence with a hash nothing ever reads would be noise; failing to stamp a
+  // scan verdict's would make it look permanently stale and re-run it every tick.
+  //
+  // An `openscap` verdict IS stamped, and that is deliberate: its exclusions are refused for a
+  // structural reason (`unsupported`), not because no set was in force, and leaving it unstamped
+  // would force a pointless re-scan on every set change forever.
+  const exclusionSetHash = scanMethod ? scanExclusionSetHashOfContext(input.context) : undefined;
+  if (exclusionSetHash) evidence = { ...evidence, exclusionSetHash };
 
   const run = await insertControlRun(tx, {
     orgId: input.orgId,

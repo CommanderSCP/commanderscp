@@ -1464,6 +1464,35 @@ export const ScanEvidenceSchema = z.object({
   /** M22.2 — WHICH findings were excluded, under whose clause and at which tier — or the positive
    *  reason every exclusion was refused. Same absent-when-nothing-authored rule as above. */
   exclusions: ScanExclusionEvidenceSchema.optional(),
+  /**
+   * M22.7 (ADR-0033 §10) — THE ACTUATOR'S HANDLE: a content hash of the exclusion set the GATE
+   * RESOLVED AND THREADED for this run.
+   *
+   * WHAT IT IS FOR. A control outcome is cached and treated as a historical fact
+   * (`control-runner.ts`), so without this every grant is inert on any change whose gate has already
+   * run — "a signal with no lever". The reconcile prewarm and the wave-boundary gate re-resolve the
+   * set on every pass, hash it, and force a re-run when this recorded value differs. A grant approved
+   * (or expired, or revoked) after a verdict was reached is therefore noticed exactly once, at the
+   * next evaluation, rather than never.
+   *
+   * WHAT IT IS NOT. It is NOT a claim about what the producer *did* with the set — that is
+   * {@link ScanExclusionEvidenceSchema} above, which records the applications and the refusals. It is
+   * the label "this verdict was computed while THIS set was in force", written by the server, which
+   * is the only party that knows what it threaded. Reading it as "the producer honoured these
+   * clauses" would be exactly the inferred-provenance-label defect this codebase has already paid for
+   * once.
+   *
+   * IT CARRIES NO TIMESTAMP AND NOTHING DERIVED FROM `now`. The digest is taken over the RESOLVED
+   * SET — clause list, admitting tiers, and the stored facts (a grant's own `expiresAt` is a stored
+   * value, not a clock reading). Hashing anything time-varying would make it differ on every tick and
+   * re-run the control forever, re-creating the measured 1.44 GB/day write-amplification pattern in a
+   * new sink.
+   *
+   * ABSENT when the gate resolved NO admitted clause, so a deployment with nothing authored writes a
+   * byte-identical evidence document to pre-M22 — and absent on every run written before M22.7, which
+   * the comparison treats as "not the current set" and re-runs once.
+   */
+  exclusionSetHash: z.string().optional(),
   /** The threshold ACTUALLY applied to reach this verdict (post-merge). */
   threshold: ScanThresholdSchema,
   /** M17.5 (ADR-0016) — WHERE the APPLIED ceilings actually came from, per severity. This is the
