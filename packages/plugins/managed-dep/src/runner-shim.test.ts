@@ -36,7 +36,12 @@ afterAll(() => {
   rmSync(scratch, { recursive: true, force: true });
 });
 
-/** Run the shim exactly as `runEditorContainer` does: five argv strings, the file at /work/in. */
+/**
+ * Run the shim exactly as `runEditorContainer` does: five argv strings and the file at /work/in —
+ * plus the anchor pair when, and ONLY when, the spec carries one. The conditional append is the
+ * production shape, not a test convenience: it is what makes an image that predates the anchor
+ * receive a byte-identical five-operand command line (`run.sh`'s "VERSION SKEW" table).
+ */
 function runShim(
   content: string,
   spec: ManifestBumpSpec
@@ -48,7 +53,15 @@ function runShim(
   try {
     execFileSync(
       "/bin/sh",
-      [runSh, spec.ecosystem, spec.manifestPath, spec.coordinate, spec.fromVersion, spec.toVersion],
+      [
+        runSh,
+        spec.ecosystem,
+        spec.manifestPath,
+        spec.coordinate,
+        spec.fromVersion,
+        spec.toVersion,
+        ...(spec.anchor ? [String(spec.anchor.line), spec.anchor.text] : [])
+      ],
       {
         // The shim resolves `in/manifest` and `out/manifest` against the WORKING DIRECTORY, which
         // the image fixes as `WORKDIR /work`. Running it from a scratch dir is therefore the same
@@ -161,6 +174,173 @@ describe.skipIf(process.platform === "win32")(
           fromVersion: "1.2.3",
           toVersion: "1.4.0"
         }
+      },
+
+      // ----------------------------------------------------------------------------------------
+      // M21.7 — the ANCHORED cases. Both implementations changed for these, so both must be
+      // compared, and the REFUSALS are compared too: agreement on the happy path is the half a
+      // fixture list gets for free, and a shim that "helpfully" edited where the reference refuses
+      // would be a wrong edit in somebody's repository that no test noticed.
+      // ----------------------------------------------------------------------------------------
+      {
+        name: "oci/values.yaml — a split shape, edited by the anchor (five other 1.2.3s untouched)",
+        content: [
+          "global:",
+          "  imageTag: 1.2.3",
+          "api:",
+          "  image:",
+          "    repository: acme/api",
+          "    tag: 1.2.3",
+          "worker:",
+          "  image:",
+          "    repository: acme/worker",
+          "    tag: 1.2.3",
+          "appVersion: 1.2.3",
+          ""
+        ].join("\n"),
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 6, text: "    tag: 1.2.3" }
+        }
+      },
+      {
+        name: "oci/values.yaml — SHAPE C, whose coordinate is in the file nowhere at all",
+        content: [
+          "image:",
+          "  registry: ghcr.io",
+          "  repository: acme/api",
+          "  tag: 1.2.3",
+          ""
+        ].join("\n"),
+        spec: {
+          ecosystem: "oci",
+          coordinate: "ghcr.io/acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 4, text: "  tag: 1.2.3" }
+        }
+      },
+      {
+        name: "an anchored split shape with NO trailing newline keeps its byte shape too",
+        content: "image:\n  repository: acme/api\n  tag: 1.2.3",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 3, text: "  tag: 1.2.3" }
+        }
+      },
+      {
+        name: "REFUSAL: the anchor text no longer matches the file's own bytes",
+        content: "image:\n  repository: acme/api\n  tag: 1.2.3\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 3, text: "  tag: 1.2.3 # pinned" }
+        }
+      },
+      {
+        // THIS IS THE CASE THAT KILLS THE WRAP MUTATION, and it is why `run.sh` needs no explicit
+        // range guard: make the shim fold an out-of-range anchor back into the file
+        // (`anchor_nr = ((anchor_nr - 1) % NR) + 1`) and line 99 lands on the tag line and EDITS,
+        // so this goes red. The anchor-text comparison is the whole control.
+        name: "REFUSAL: the anchor points past the end of the file",
+        content: "image:\n  repository: acme/api\n  tag: 1.2.3\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 99, text: "  tag: 1.2.3" }
+        }
+      },
+      {
+        // A LINE NUMBER PAST EVERY AWK'S INTEGER RANGE — the ONE input where the three
+        // implementations do not compute the same number. The shell validator accepts it (digits
+        // only, no leading zero), so it reaches awk, where `anchor_line + 0` is a float that `%d`
+        // clamps: at 2^63-1 under the host's awk, at 2147483647 under the BusyBox awk the image
+        // actually runs (both measured), while the reference simply indexes `beforeLines[1e20 - 1]`
+        // and gets `undefined`. All three must refuse.
+        //
+        // WHAT THIS PINS, STATED HONESTLY: a PLATFORM property, not a code branch. No mutation of
+        // ours kills it — the case above is the one that kills the wrap mutation — and it is here
+        // because `run.sh` carried an explicit `anchor_nr > NR` guard that no mutation killed
+        // either, and it was deleted as dead code. Deleting a guard obliges someone to have checked
+        // the value range it nominally covered on every awk in play; this case is that check, kept
+        // permanently rather than done once and written into a comment.
+        name: "REFUSAL: an anchor line past every awk's integer range refuses on both sides",
+        content: "image:\n  repository: acme/api\n  tag: 1.2.3\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          // `1e20`, not the 21 digits spelled out: a literal that long is a lint error for losing
+          // precision, and losing precision is beside the point here. `String(1e20)` is
+          // "100000000000000000000", which is what actually reaches argv — digits only, no leading
+          // zero, so the shell validator accepts it and awk is the thing that has to cope.
+          anchor: { line: 1e20, text: "  tag: 1.2.3" }
+        }
+      },
+      {
+        name: "REFUSAL: the anchored line carries no version to replace",
+        content: "image:\n  repository: acme/api\n  tag: 1.2.3\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 2, text: "  repository: acme/api" }
+        }
+      },
+      {
+        name: "REFUSAL: the coordinate rule speaks and the anchor disagrees with it (the veto)",
+        content: "image: acme/api:1.2.3\nothers:\n  tag: 1.2.3\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 3, text: "  tag: 1.2.3" }
+        }
+      },
+      {
+        name: "REFUSAL: the coordinate rule is AMBIGUOUS, and an anchor may not resolve it",
+        content: "image: acme/api:1.2.3\nsidecar: acme/api:1.2.3\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "acme/api",
+          manifestPath: "chart/values.yaml",
+          fromVersion: "1.2.3",
+          toVersion: "1.2.4",
+          anchor: { line: 1, text: "image: acme/api:1.2.3" }
+        }
+      },
+      {
+        name: "an anchor that AGREES with a speaking coordinate rule edits the same line either way",
+        content: "FROM alpine:3.18\nRUN true\n",
+        spec: {
+          ecosystem: "oci",
+          coordinate: "alpine",
+          manifestPath: "Dockerfile",
+          fromVersion: "3.18",
+          toVersion: "3.19",
+          anchor: { line: 1, text: "FROM alpine:3.18" }
+        }
       }
     ];
 
@@ -199,6 +379,59 @@ describe.skipIf(process.platform === "win32")(
       };
       expect(applyManifestBump(content, spec)).toBeUndefined();
       expect(runShim(content, spec).ok).toBe(false);
+    });
+
+    it("the anchored and unanchored paths produce IDENTICAL bytes where both have an answer", () => {
+      // The contiguous case is the one an image that predates the anchor must keep handling. If the
+      // anchored branch ever selected differently — or reconstructed the line differently — this is
+      // where an operator would see a diff that depends on which build produced it.
+      const content = "FROM alpine:3.18\nRUN true\n";
+      const base: ManifestBumpSpec = {
+        ecosystem: "oci",
+        coordinate: "alpine",
+        manifestPath: "Dockerfile",
+        fromVersion: "3.18",
+        toVersion: "3.19"
+      };
+      const anchored: ManifestBumpSpec = {
+        ...base,
+        anchor: { line: 1, text: "FROM alpine:3.18" }
+      };
+      const five = runShim(content, base);
+      const seven = runShim(content, anchored);
+      expect(five.ok && seven.ok).toBe(true);
+      expect(five.ok && five.output).toBe(seven.ok ? seven.output : "different");
+      expect(five.ok && five.output).toBe(applyManifestBump(content, base));
+    });
+
+    it("refuses HALF an anchor — a line number with no text, and text with no line number", () => {
+      // Not reachable through `runShim` (it appends the pair or neither), and that is exactly why it
+      // is asserted directly: the shim is a public argv contract, and proceeding on half an anchor
+      // would mean editing a line whose bytes nobody checked.
+      const work = mkdtempSync(join(scratch, "half-"));
+      mkdirSync(join(work, "in"), { recursive: true });
+      mkdirSync(join(work, "out"), { recursive: true });
+      writeFileSync(join(work, "in", "manifest"), "  tag: 1.2.3\n", "utf8");
+      const argvs = [
+        ["oci", "chart/values.yaml", "acme/api", "1.2.3", "1.2.4", "1"],
+        ["oci", "chart/values.yaml", "acme/api", "1.2.3", "1.2.4", "", "  tag: 1.2.3"],
+        ["oci", "chart/values.yaml", "acme/api", "1.2.3", "1.2.4", "0", "  tag: 1.2.3"],
+        ["oci", "chart/values.yaml", "acme/api", "1.2.3", "1.2.4", "1x", "  tag: 1.2.3"]
+      ];
+      for (const argv of argvs) {
+        let failed = false;
+        try {
+          execFileSync("/bin/sh", [runSh, ...argv], {
+            env: {},
+            cwd: work,
+            stdio: "pipe",
+            encoding: "utf8"
+          });
+        } catch {
+          failed = true;
+        }
+        expect(failed, `argv ${JSON.stringify(argv)} must be refused`).toBe(true);
+      }
     });
 
     it("refuses an unknown ecosystem loudly rather than ignoring the argument it does not branch on", () => {

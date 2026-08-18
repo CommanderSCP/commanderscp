@@ -1,13 +1,24 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type PgBoss from "pg-boss";
 import { describe, expect, it } from "vitest";
 import type { DomainEventJob } from "../events/pgboss.js";
+import { readStripped } from "@scp/source-census";
+import { BACKGROUND_LOOPS, type BackgroundLoopContext } from "../background-work.js";
+import type { CelSandbox } from "../governance/cel-sandbox.js";
 import { BUMP_OBSERVED_EVENT } from "../coordination/correlation.js";
+import {
+  DOMAIN_EVENT_ROUTERS,
+  domainEventRouters,
+  type RouterGuardConfig
+} from "../events/domain-event-registry.js";
+import { bumpDispatchRoleGuard } from "./bump-dispatch.js";
 import {
   DEPENDENCY_BUMP_GATE_QUEUE,
   isBumpObservedEvent,
-  observedBumpRouter
+  observedBumpRouter,
+  startBumpGateLoop
 } from "./bump-gate.js";
 import { buildBumpMergeIntentParameters } from "./bump-actuator.js";
 
@@ -33,27 +44,128 @@ const srcDir = dirname(fileURLToPath(import.meta.url));
  * `dependency-bump-gate` would resolve `auto_merge`, downgrade it forever, and be green everywhere.
  * That is the fifth instance of "built and never installed" this milestone exists to not become a
  * sixth of, so it is asserted rather than reviewed.
+ *
+ * THIS BLOCK NO LONGER READS `main.ts` AT ALL, and the history of why is the point.
+ *
+ * It used to be three substring assertions. Measured on this very block (M21.7): commenting out
+ * `const bumpGateLoop = await startBumpGateLoop(boss, {…})` and its `.stop()` left all 11 cases
+ * green — and not only the two `toMatch`es. The "hands it the SHARED CEL sandbox" arm sliced the
+ * call out with a regex and asserted on its TEXT, so it happily read `getSharedCelSandbox()` and
+ * `host: pluginHost` out of the COMMENTED-OUT call.
+ *
+ * Stripping comments (`readStripped`) fixed that one case and not the class: a call in a DEAD
+ * BRANCH survives stripping untouched, and on 2026-08-17 flipping `main.ts`'s background-work
+ * condition to `false` left this file green again with the gate loop never starting.
+ *
+ * So the loop startups moved into `background-work.ts`'s importable `BACKGROUND_LOOPS`, and every
+ * assertion below RUNS the registry entry instead of reading about it. The one census left in this
+ * file is an ABSENCE assertion (no competing consumer), which is deliberately raw — see its comment.
  */
-describe("the composition root actually wires the gate (source census)", () => {
-  const mainTs = readFileSync(join(srcDir, "..", "main.ts"), "utf8");
+/** A context whose `boss` records the queues it is asked to create. Everything else is absent on
+ *  purpose: a loop that dereferenced `db` or `host` before deciding whether to run would fail here,
+ *  which is information rather than noise. */
+function gateContext(createdInto: string[]): BackgroundLoopContext {
+  return {
+    boss: {
+      createQueue: async (queue: string) => void createdInto.push(queue),
+      work: async () => "worker-id",
+      send: async () => "job-id",
+      schedule: async () => undefined
+    } as unknown as PgBoss,
+    db: undefined as never,
+    host: undefined as never,
+    sandbox: undefined as never,
+    config: {
+      role: "worker",
+      federationRole: "commander",
+      federationRoleDeclared: true,
+      secretsMasterKey: Buffer.alloc(32)
+    } as never
+  };
+}
 
-  it("registers the observed-bump router WITH startPgBoss, so its queue exists before any event", () => {
-    const startCall = /startPgBoss\([\s\S]*?\);/.exec(mainTs)?.[0] ?? "";
-    expect(startCall).toContain("observedBumpRouter()");
-    // …and never as a second `boss.work()` on the shared stream, which would steal M21.4's and the
-    // dispatcher's events and receive roughly half of its own.
-    expect(mainTs).not.toMatch(/work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/);
+describe("the composition root actually wires the gate", () => {
+  it("registers the observed-bump router in the production registry, under the DISPATCHER's guard", () => {
+    // By identity: "same guard as the dispatcher's, by import rather than by copy" is the claim the
+    // module doc makes, and merging is the more consequential repository write of the two — so a
+    // registry entry pairing this router with a laxer guard is the defect this rules out.
+    const entries = DOMAIN_EVENT_ROUTERS.filter((entry) => entry.factory === observedBumpRouter);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.guard).toBe(bumpDispatchRoleGuard);
   });
 
-  it("starts the gate worker, and stops it on shutdown", () => {
-    expect(mainTs).toMatch(/startBumpGateLoop\(/);
-    expect(mainTs).toMatch(/bumpGateLoop\.stop\(\)/);
+  it("registers it on a declared commander worker, and on nothing else", () => {
+    const queuesFor = (config: RouterGuardConfig): string[] =>
+      domainEventRouters(config).map((router) => router.queue);
+    expect(
+      queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: true })
+    ).toContain(DEPENDENCY_BUMP_GATE_QUEUE);
+    expect(
+      queuesFor({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
+    ).not.toContain(DEPENDENCY_BUMP_GATE_QUEUE);
+    expect(
+      queuesFor({ role: "worker", federationRole: "commander", federationRoleDeclared: false })
+    ).not.toContain(DEPENDENCY_BUMP_GATE_QUEUE);
   });
 
-  it("hands it the SHARED CEL sandbox — 'the existing gate machinery' means literally the same one", () => {
-    const call = /startBumpGateLoop\([\s\S]*?\}\);/.exec(mainTs)?.[0] ?? "";
-    expect(call).toContain("getSharedCelSandbox()");
-    expect(call).toContain("host: pluginHost");
+  it("is in the production loop registry, and creates ITS OWN queue when the registry runs it", async () => {
+    // Identity, then behaviour. `background-work.test.ts` starts the whole registry and pins the
+    // full queue set; this asserts the gate's own link, in the file a reader of the gate opens.
+    const entries = BACKGROUND_LOOPS.filter((entry) => entry.loop === startBumpGateLoop);
+    expect(entries).toHaveLength(1);
+
+    const created: string[] = [];
+    const handle = await entries[0]!.start(gateContext(created));
+    await handle.stop();
+    expect(created).toContain(DEPENDENCY_BUMP_GATE_QUEUE);
+  });
+
+  it("hands it the SHARED CEL sandbox — 'the existing gate machinery' means literally the same one", async () => {
+    // WAS a regex that sliced `startBumpGateLoop(…)` out of `main.ts` and asserted on its TEXT. That
+    // check was satisfied by a COMMENTED-OUT call (measured, M21.7), and once comments were stripped
+    // it would still have been satisfied by a dead branch. It is now a question about what the
+    // registry entry DOES: does it take the sandbox from the one shared context, or fetch its own?
+    //
+    // The observable is the READ. If this entry were changed back to `sandbox: getSharedCelSandbox()`
+    // — the pre-extraction shape, which relied on that function memoising — `ctx.sandbox` would
+    // never be touched and this goes red.
+    let sandboxReads = 0;
+    const marker = { marker: "the one shared sandbox" } as unknown as CelSandbox;
+    const recording: BackgroundLoopContext = {
+      ...gateContext([]),
+      get sandbox() {
+        sandboxReads++;
+        return marker;
+      }
+    };
+
+    const gate = BACKGROUND_LOOPS.find((entry) => entry.loop === startBumpGateLoop)!;
+    await (await gate.start(recording)).stop();
+    expect(sandboxReads, "the gate entry did not read ctx.sandbox").toBeGreaterThan(0);
+
+    // …and the reconcile loop reads the SAME field of the SAME context, which is what makes
+    // "literally the same one" true rather than a coincidence of two memoised calls.
+    const afterGate = sandboxReads;
+    const reconcile = BACKGROUND_LOOPS.find((entry) => entry.name === "reconcile")!;
+    await (await reconcile.start(recording)).stop();
+    expect(sandboxReads, "the reconcile entry did not read ctx.sandbox").toBeGreaterThan(afterGate);
+  });
+
+  it("never takes a competing consumer on the shared domain-event stream", () => {
+    // `boss.work` on `domain-events` does not deduplicate — a second worker there steals M21.4's and
+    // the dispatcher's events and receives roughly half of its own. An ABSENCE assertion, so it
+    // reads RAW on purpose: a comment marker only makes a violation harder to hide, and anchoring
+    // would narrow what counts as one (`@scp/source-census`'s hash.ts doc states that rule).
+    //
+    // BOTH composition files, because the loop startups moved out of `main.ts` on 2026-08-17 — a
+    // census still aimed only at the old location is the "fixed some call sites" failure CLAUDE.md
+    // names as recurring here.
+    for (const file of ["main.ts", "background-work.ts"]) {
+      const raw = readFileSync(join(srcDir, "..", file), "utf8");
+      expect(raw, `${file} registers a competing consumer on domain-events`).not.toMatch(
+        /work<[^>]*>\(\s*DOMAIN_EVENTS_QUEUE/
+      );
+    }
   });
 });
 
@@ -66,12 +178,14 @@ describe("the composition root actually wires the gate (source census)", () => {
  * this pins the SITE, because the emit lives in `coordination/webhook-processor.ts` — a file the
  * dependencies suite has no other reason to look at, and a place a later edit could quietly drop it
  * from while every dependency test stayed green.
+ *
+ * Stripped for the same reason as the block above, and here the raw read was arguably worse: this
+ * census slices a BRANCH out with `/if \(authoredChangeId\) \{[\s\S]*?continue;/` and asks what is
+ * inside it. Comments are the bulk of that branch's text, so a `writeOutboxEvent` named only in a
+ * comment explaining the emit satisfied the assertion just as well as the emit did.
  */
 describe("the trigger is emitted at the ingress choke point (source census)", () => {
-  const processorTs = readFileSync(
-    join(srcDir, "..", "coordination", "webhook-processor.ts"),
-    "utf8"
-  );
+  const processorTs = readStripped(join(srcDir, "..", "coordination", "webhook-processor.ts"));
 
   it("writes the observed-bump outbox event in the branch that attached the event to a bump", () => {
     const attached = /if \(authoredChangeId\) \{[\s\S]*?continue;/.exec(processorTs)?.[0] ?? "";

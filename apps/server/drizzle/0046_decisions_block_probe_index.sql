@@ -66,6 +66,15 @@
 --
 -- NO PLANNER TRICKERY HERE EITHER: no hint, no `enable_seqscan` toggling, no session state. The
 -- board's read is now a single index probe because the index matches its shape.
+--
+-- SUPERSEDED BY drizzle/0069 (2026-08-17) — the shape was matched one column short. This key stops
+-- at `created_at DESC` while the read orders by `created_at DESC, id DESC`, so it supplies only a
+-- PREFIX of that order and can only be used underneath a sort node, whose startup cost `LIMIT 1`
+-- cannot amortise. Once `decisions` has real statistics the planner prefers `decisions_org_created`
+-- (0007), which supplies the whole order sortlessly, and filters `subject_id`/`verdict` off the
+-- heap across the ORG — the walk this migration was written to abolish, one scope wider. It cost
+-- two red CI runs reading `expected 804 to be less than or equal to 10`. 0069 rebuilds this index
+-- under the same name with the tiebreak included; the measurements are there.
 -- ===========================================================================================
 
 CREATE INDEX IF NOT EXISTS "decisions_org_subject_block_created"

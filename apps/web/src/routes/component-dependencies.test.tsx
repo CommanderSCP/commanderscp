@@ -59,9 +59,14 @@ const noWrite = {
 
 type BumpsResponse = {
   component: typeof COMPONENT;
+  dependencyManagement: {
+    managedHere: boolean;
+    reason: "commander" | "outpost" | "retrans" | "role_undeclared";
+  };
   rows: ReturnType<typeof bumpFixture>[];
   nextCursor: null;
 };
+const MANAGED_HERE = { managedHere: true, reason: "commander" } as const;
 
 function renderView(
   over: {
@@ -73,7 +78,12 @@ function renderView(
   } = {}
 ): string {
   const unlock = over.unlock ?? unlockFixture();
-  const bumps = over.bumps ?? { component: COMPONENT, rows: [], nextCursor: null };
+  const bumps = over.bumps ?? {
+    component: COMPONENT,
+    dependencyManagement: MANAGED_HERE,
+    rows: [],
+    nextCursor: null
+  };
   return renderToStaticMarkup(
     <DependenciesView
       unlock={"status" in unlock ? unlock : { status: "ok", data: unlock }}
@@ -295,10 +305,10 @@ describe("row honesty: latest, declared/resolved, producer", () => {
 });
 
 describe("empty states never collapse to `No dependencies` for an unknown", () => {
-  it("stamp null AND decision null → amber `Ingestion status not recorded` + how to ingest, and NOT `No dependencies`", () => {
+  it("stamp null AND decision null → amber `Ingestion status not recorded — never attempted` + how to ingest, and NOT `No dependencies`", () => {
     const html = renderView({ inventory: inventoryFixture() });
     expect(html).toContain('data-kind="not-recorded"');
-    expect(html).toContain("Ingestion status not recorded");
+    expect(html).toContain("Ingestion status not recorded — never attempted");
     expect(html).toContain("text-amber-700");
     expect(html).toContain("scp dependency-subscriptions backfill-inventory");
     expect(html).not.toContain("No dependencies");
@@ -330,7 +340,16 @@ describe("empty states never collapse to `No dependencies` for an unknown", () =
             source: "backfill",
             outcome: "ok",
             rowsWritten: 0,
-            manifests: [{ path: "package.json", outcome: "read" }]
+            detail: null,
+            manifests: [
+              {
+                repo: "acme/checkout",
+                path: "package.json",
+                outcome: "ok",
+                rows: 0,
+                at: "2026-08-15T00:00:00.000Z"
+              }
+            ]
           }
         })}
       />
@@ -345,9 +364,22 @@ describe("empty states never collapse to `No dependencies` for an unknown", () =
             source: "loop",
             outcome: "ok",
             rowsWritten: 0,
+            detail: null,
             manifests: [
-              { path: "package.json", outcome: "read" },
-              { path: "go.mod", outcome: "read" }
+              {
+                repo: "acme/checkout",
+                path: "package.json",
+                outcome: "ok",
+                rows: 0,
+                at: "2026-08-15T00:00:00.000Z"
+              },
+              {
+                repo: "acme/checkout",
+                path: "go.mod",
+                outcome: "ok",
+                rows: 0,
+                at: "2026-08-15T00:00:00.000Z"
+              }
             ]
           }
         })}
@@ -366,15 +398,23 @@ describe("empty states never collapse to `No dependencies` for an unknown", () =
             source: "loop",
             outcome: "unreadable",
             rowsWritten: 0,
+            detail: null,
             manifests: [
-              { path: "package.json", outcome: "unreadable", detail: "403 from provider" }
+              {
+                repo: "acme/checkout",
+                path: "package.json",
+                outcome: "unreadable",
+                rows: 0,
+                at: "2026-08-15T00:00:00.000Z",
+                detail: "403 from provider"
+              }
             ]
           }
         })}
       />
     );
     expect(html).toContain('data-kind="unreadable"');
-    expect(html).toContain("package.json — unreadable: 403 from provider");
+    expect(html).toContain("acme/checkout:package.json — unreadable: 403 from provider");
     expect(html).not.toContain("No dependencies");
   });
 
@@ -388,6 +428,7 @@ describe("empty states never collapse to `No dependencies` for an unknown", () =
             source: "loop",
             outcome: "not_enabled",
             rowsWritten: 0,
+            detail: null,
             manifests: []
           }
         })}
@@ -712,10 +753,11 @@ describe("the enable dialog body", () => {
 });
 
 describe("the bumps section", () => {
-  it("commander: a row per bump, PR as `#n` text only (no link — the URL is not stored), merge state + Why", () => {
+  it("commander: a row per bump, PR as `#n` text only when the URL is not stored (no link), merge state + Why", () => {
     const html = renderView({
       bumps: {
         component: COMPONENT,
+        dependencyManagement: MANAGED_HERE,
         rows: [
           bumpFixture(),
           bumpFixture({
@@ -740,6 +782,52 @@ describe("the bumps section", () => {
     expect(html).toContain('data-testid="bump-merge-why"');
     expect(html).toContain("1.2.3 → 1.2.4");
     expect(html).not.toContain('data-testid="bumps-not-commander"');
+  });
+
+  it("the PR cell LINKS to `pullRequestUrl` when the server stored one (external, noopener) and shows `#n` text otherwise — never a composed link", () => {
+    const html = renderView({
+      bumps: {
+        component: COMPONENT,
+        dependencyManagement: MANAGED_HERE,
+        rows: [
+          bumpFixture({ pullRequestUrl: "https://git.example.test/acme/checkout/pull/42" }),
+          bumpFixture({
+            changeId: "019f0000-0000-7000-8000-00000000c4a2",
+            pullRequestNumber: 43,
+            pullRequestUrl: null
+          })
+        ],
+        nextCursor: null
+      }
+    });
+    const link = html.match(/<a[^>]*data-testid="bump-pr-link"[^>]*>#42<\/a>/)?.[0] ?? "";
+    expect(link).toContain('href="https://git.example.test/acme/checkout/pull/42"');
+    expect(link).toContain('target="_blank"');
+    expect(link).toMatch(/rel="[^"]*noopener[^"]*"/);
+    // #43 has no stored URL: text only, and nothing composed from repo + number.
+    expect(html).toContain("#43");
+    expect(html).not.toMatch(/<a[^>]*href="[^"]*43/);
+    expect(html).not.toMatch(/href="[^"]*acme\/checkout\/pull\/43/);
+  });
+
+  it("the server's `dependencyManagement.managedHere: false` on the bumps read → the commander pointer and NO table, even on a commander-role client (the wire is the authority)", () => {
+    const html = renderToStaticMarkup(
+      <BumpsSection
+        bumps={{
+          status: "ok",
+          data: {
+            component: COMPONENT,
+            dependencyManagement: { managedHere: false, reason: "outpost" },
+            rows: [bumpFixture()],
+            nextCursor: null
+          }
+        }}
+        instanceRole="commander"
+      />
+    );
+    expect(html).toContain('data-testid="bumps-not-commander"');
+    expect(html).not.toContain('data-testid="bump-row"');
+    expect(html).not.toContain("No bumps yet.");
   });
 
   it("commander with a SUCCESSFUL read of zero bumps → `No bumps yet.`", () => {
@@ -773,6 +861,7 @@ describe("the bumps section", () => {
           status: "ok",
           data: {
             component: COMPONENT,
+            dependencyManagement: MANAGED_HERE,
             rows: [bumpFixture({ pullRequestNumber: null, mergedAt: null, merge: null })],
             nextCursor: null
           }
@@ -792,6 +881,7 @@ describe("the bumps section", () => {
           status: "ok",
           data: {
             component: COMPONENT,
+            dependencyManagement: MANAGED_HERE,
             rows: [bumpFixture({ pullRequestNumber: 42, mergedAt: null, merge: null })],
             nextCursor: null
           }
@@ -811,7 +901,12 @@ describe("the bumps section", () => {
         <BumpsSection
           bumps={{
             status: "ok",
-            data: { component: COMPONENT, rows: [bumpFixture()], nextCursor: null }
+            data: {
+              component: COMPONENT,
+              dependencyManagement: MANAGED_HERE,
+              rows: [bumpFixture()],
+              nextCursor: null
+            }
           }}
           instanceRole={role}
         />
@@ -866,7 +961,12 @@ describe("vocabulary and copy rules over the whole rendered tab", () => {
         })
       ]
     }),
-    bumps: { component: COMPONENT, rows: [bumpFixture()], nextCursor: null }
+    bumps: {
+      component: COMPONENT,
+      dependencyManagement: MANAGED_HERE,
+      rows: [bumpFixture()],
+      nextCursor: null
+    }
   });
   // The dialogs portal nothing under a static render, so their bodies (and the empty states the
   // tab above does not show because it has rows) are rendered into the same sweep, and the dialog

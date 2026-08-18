@@ -7,7 +7,7 @@ import { and, eq } from "drizzle-orm";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changes } from "../db/schema.js";
 import { insertControlRun } from "../governance/controls-repo.js";
-import { MANAGED_SCAN_CONTROL_OBJECT_ID } from "../federation/promotion-scan-step.js";
+import { MANAGED_SCAN_CONTROL_OBJECT_ID } from "../federation/scan-evidence.js";
 import { PROMOTION_EXPORTS_KEY } from "../federation/boundary-bundle-ref.js";
 import { compileAndPersistPlan } from "./plan-service.js";
 import {
@@ -41,7 +41,12 @@ import {
  *   - a stored `promotionExports[]` entry that does not parse is COUNTED under `unknownFields`,
  *     the parseable one beside it still rendered with `peerName: null` (no peer row here).
  *   - the reduction keeps the NEWEST row per key even when it is a fail over an older pass (a
- *     "prefer pass" sort would lie), while E6 — over ALL outcomes — still reads `pass`.
+ *     "prefer pass" sort would lie), and E6 reads `fail` too: the newer fail is the CURRENT answer of
+ *     its control, and every control that has ever answered about the digest must currently pass
+ *     (`scan-evidence.ts` property 2 — an older pass never outvotes a newer fail).
+ *   - a row from an UNADMITTED producer (`webhook-control` echoing a scan-shaped payload) shows in
+ *     `scans[]` (it is a row the change holds) but counts for NOTHING at the gate: `fail`, not `pass`
+ *     (property 1 — a scan outcome is identified by its producer, never by the shape of its evidence).
  *   - `managed` is the synthetic control id ALONE: a gateRef claiming `promotionScanStep` on a
  *     random control id reads `managed: false`; the managed id with an empty gateRef reads `true`
  *     with `method` falling back to the scanner.
@@ -55,7 +60,9 @@ import {
  * | drop the `preferredChangeIds` arm (fallback only) | the pick-preference test FAILS (newer non-current change picked) |
  * | drop the `seen` dedupe in `scanRunsForChange` | the reduction test FAILS (3 scans, and a `fail` row beside the pass) |
  * | `managed: false` always | the reduction test FAILS on the openscap row |
- * | `exportGate` = `outcomes.length > 0 ? "pass" : "not_run"` | the digest-unbound test FAILS (`pass` where `fail`) |
+ * | `exportGate` = `runs.length > 0 ? "pass" : "not_run"` | the digest-unbound test FAILS (`pass` where `fail`) |
+ * | `exportGate` over `runs.filter(r => ScanEvidenceSchema parses)` ignoring the producer | the webhook-control test FAILS (`pass` where `fail`) |
+ * | `exportGate` reads ANY passing digest-bound row (the pre-#245 rule) | the newer-fail test FAILS (`pass` where `fail`) |
  * | skip the `sbom:unparseable` push | the unparseable-sbom test FAILS |
  * | sort rows `pass` first before the reduction | the newer-fail test FAILS (older pass survives) |
  * | `managed: gateRef?.promotionScanStep === true` | the managed-flag test FAILS (impostor reads managed) |
@@ -116,18 +123,29 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     scannedDigest?: string;
     managed?: boolean;
     counts?: { critical: number; high: number; medium: number; low: number };
+    /** The control the row answers for. Two rows under ONE control are two answers to ONE question
+     *  (the newer supersedes); under two controls they are two questions that must BOTH pass. */
+    controlObjectId?: string;
+    /** WHAT PRODUCED the row — the E6 admission key (`scan-evidence.ts`). Defaults to the
+     *  org-pipeline scan control for a bound row and NULL for a managed deposit (the authentic
+     *  shapes); pass a module explicitly to seed an unadmitted producer. */
+    pluginModule?: string | null;
   };
   async function seedScan(changeId: string, digest: string, over: ScanRow = {}) {
     const scanner = over.scanner ?? "trivy";
+    const pluginModule =
+      "pluginModule" in over ? over.pluginModule : over.managed ? null : "scan-result-control";
     return withTenantTx(server.deps.db, org.orgId, (tx) =>
       insertControlRun(tx, {
         orgId: org.orgId,
-        controlObjectId: over.managed ? MANAGED_SCAN_CONTROL_OBJECT_ID : randomUUID(),
+        controlObjectId:
+          over.controlObjectId ?? (over.managed ? MANAGED_SCAN_CONTROL_OBJECT_ID : randomUUID()),
         changeObjectId: changeId,
         gateKind: "lifecycle_edge",
         gateRef: over.managed
           ? { promotionScanStep: true, method: scanner, artifactDigest: digest }
           : { fromState: "validating", toState: "accepted" },
+        ...(pluginModule === null ? {} : { pluginModule }),
         status: over.status ?? "pass",
         evidence: {
           scanner,
@@ -190,11 +208,19 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     const digest = digestOf("c");
     const change = await proposeWith(component.id, { artifact_digest: [digest] });
 
+    // The org control answers twice: an older fail, then a pass — ONE question, whose CURRENT
+    // answer is the pass (that is what lets E6 read `pass` below; two controls would be two
+    // questions and the failing one's answer would stand).
+    const orgControl = randomUUID();
     const olderFail = await seedScan(change.id, digest, {
       status: "fail",
-      counts: { critical: 1, high: 0, medium: 0, low: 0 }
+      counts: { critical: 1, high: 0, medium: 0, low: 0 },
+      controlObjectId: orgControl
     });
-    const newerPass = await seedScan(change.id, digest, { status: "pass" });
+    const newerPass = await seedScan(change.id, digest, {
+      status: "pass",
+      controlObjectId: orgControl
+    });
     const managed = await seedScan(change.id, digest, { scanner: "openscap", managed: true });
 
     const { artifact } = await pipelineOf(component.id);
@@ -226,9 +252,10 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
       managed: true
     });
 
-    expect(artifact!.exportGate, "a passing digest-bound row exists for the one digest").toBe(
-      "pass"
-    );
+    expect(
+      artifact!.exportGate,
+      "every question about the digest currently answers pass: the org control (its newer row) and the managed trivy step"
+    ).toBe("pass");
   });
 
   it("E6 read-only: a scan row that is not digest-bound reads `fail` (evidence exists, covers nothing)", async () => {
@@ -327,15 +354,20 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
     expect(artifact!.unknownFields).toEqual(["sbom:unparseable"]);
   });
 
-  it("keeps the NEWEST row per (scanner, digest) even when it is a FAIL over an older pass — the reduction is by recency, never 'prefer pass'; E6 still reads `pass` off the older digest-bound row (it accepts ANY passing row)", async () => {
+  it("keeps the NEWEST row per (scanner, digest) even when it is a FAIL over an older pass — the reduction is by recency, never 'prefer pass'; and E6 reads `fail`: the newer fail is the control's CURRENT answer, an older pass never outvotes it", async () => {
     const component = await createOrphanComponent(admin, uniq("newer-fail"));
     const digest = digestOf("8");
     const change = await proposeWith(component.id, { artifactDigest: digest });
 
-    const olderPass = await seedScan(change.id, digest, { status: "pass" });
+    const control = randomUUID();
+    const olderPass = await seedScan(change.id, digest, {
+      status: "pass",
+      controlObjectId: control
+    });
     const newerFail = await seedScan(change.id, digest, {
       status: "fail",
-      counts: { critical: 2, high: 0, medium: 0, low: 0 }
+      counts: { critical: 2, high: 0, medium: 0, low: 0 },
+      controlObjectId: control
     });
 
     const { artifact } = await pipelineOf(component.id);
@@ -349,10 +381,40 @@ describe("component pipeline: the artifact and its change-scoped facts (§9.3)",
       counts: { critical: 2, high: 0, medium: 0, low: 0 }
     });
     expect(artifact!.scans.map((s) => s.controlRunId)).not.toContain(olderPass.id);
-    // E6's own predicate is applied over ALL outcomes, not the reduced rows: the older passing
-    // digest-bound row satisfies it. The projection reports E6 as it really decides — a tile that
-    // shows a red row beside a green gate is telling the truth about two different things.
-    expect(artifact!.exportGate).toBe("pass");
+    // E6's own predicate (`evaluateScanCoverage`) consults the NEWEST run per question: this
+    // control's current answer is the fail, so the older pass authorizes nothing. The projection
+    // reports E6 as it really decides — the same rule the export applies.
+    expect(artifact!.exportGate).toBe("fail");
+  });
+
+  it("E6 admits a scan outcome by its PRODUCER, never by the shape of its evidence: a `webhook-control` row echoing a perfect scan-shaped pass shows in `scans[]` but reads `fail`; the same row from `scan-result-control` reads `pass`", async () => {
+    const component = await createOrphanComponent(admin, uniq("producer"));
+    const digest = digestOf("w");
+    const change = await proposeWith(component.id, { artifactDigest: digest });
+
+    const forged = await seedScan(change.id, digest, {
+      status: "pass",
+      pluginModule: "webhook-control"
+    });
+    const withForgery = await pipelineOf(component.id);
+    expect(
+      withForgery.artifact!.scans.map((s) => s.controlRunId),
+      "the row IS on the change and the tile shows it"
+    ).toEqual([forged.id]);
+    expect(
+      withForgery.artifact!.exportGate,
+      "an unadmitted producer's row is not evidence about anything — the export would refuse, so the tile says `fail`, never `pass` and never `not_run`"
+    ).toBe("fail");
+
+    // A NULL module on a bound (non-managed) control id is unattributable — fail-closed too.
+    const component2 = await createOrphanComponent(admin, uniq("producer-null"));
+    const change2 = await proposeWith(component2.id, { artifactDigest: digest });
+    await seedScan(change2.id, digest, { status: "pass", pluginModule: null });
+    expect((await pipelineOf(component2.id)).artifact!.exportGate).toBe("fail");
+
+    // The admitted org-pipeline producer, same evidence, reads `pass`.
+    await seedScan(change.id, digest, { status: "pass" });
+    expect((await pipelineOf(component.id)).artifact!.exportGate).toBe("pass");
   });
 
   it("`managed` is read off the SYNTHETIC CONTROL ID alone — a gateRef claiming `promotionScanStep` on an org control does not make it managed, and a managed row with no gateRef method still is (method falls back to the scanner)", async () => {

@@ -15,6 +15,7 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import {
+  coordinateRuleCandidates,
   isDependencyEcosystem,
   verifyManifestBump,
   type DependencyEcosystem,
@@ -34,6 +35,7 @@ import {
   assertWriteCommit,
   assertWritePath,
   assertWriteRepo,
+  locateVersionLine,
   verifyManifestOnlyEdit
 } from "./write-guard.js";
 
@@ -154,18 +156,29 @@ export interface ManagedDepConfig {
    *  edit is a text transform on one small file, so a run that takes longer is stuck, not busy. */
   timeoutMs?: number;
   /**
-   * The docker CLI to spawn. Defaults to `"docker"`, resolved on the subprocess's PATH, and NOTHING
-   * SETS IT IN PRODUCTION — a test/fixture seam, exactly as it is for `@scp/plugin-managed-iac` and
-   * `@scp/plugin-managed-scan`.
+   * The container CLI to spawn. Defaults to `"docker"`, resolved on the subprocess's PATH, and
+   * SERVER-INJECTED IN PRODUCTION from `SCP_MANAGED_RUNNER_DOCKER_BINARY` — the operator-governed
+   * knob that lets a deployment run rootless podman instead, which is the sanctioned runtime on the
+   * RHEL/air-gapped estates this class ships into (docs/container-runtimes.md).
    *
-   * It used to say "Server-injected in production", which was false: `executor-bindings-repo.ts`'s
-   * `managedDepServerSettings` injects `runnerImage` and `workspaceRoot` and nothing else. That is
-   * the same shape as the shipped managed-scan schema hole — a comment describing a control that
-   * does not exist — and a reader who trusted it would believe an operator governs which executable
-   * this plugin spawns. What actually keeps a TENANT from setting it is the manifest at the bottom
-   * of this file: `additionalProperties: false` with `dockerBinary` absent, so a binding carrying it
-   * is rejected at create/update by `routes/executors.ts`
-   * (`plugin-manifests-managed-dep.test.ts` pins that refusal by name).
+   * THE HISTORY IS WORTH KEEPING, because it is the shape of the bug rather than a war story. This
+   * comment previously said "NOTHING SETS IT IN PRODUCTION — a test/fixture seam", and that was
+   * accurate: `managedDepServerSettings` injected `runnerImage` and `workspaceRoot` and nothing
+   * else, on BOTH of this class's construction paths, while its two sibling managed classes
+   * injected the binary correctly. The gap had been NOTICED — an earlier edit corrected this
+   * comment from "Server-injected in production" to describe the hole — but the comment was
+   * corrected to match the broken behaviour instead of the behaviour being fixed, which left an
+   * operator's `podman` silently applying to two managed classes out of three, and left the
+   * defence-in-depth argument in `managedRunnerDockerBinary`'s doc ("the two defences now fail
+   * independently") untrue for this one. Wired 2026-08-16; both paths are pinned by tests
+   * (`routes/executors.integration.test.ts` for the hand-made binding,
+   * `dependencies/bump-dispatch.integration.test.ts` for the ordinary binding-free dispatch).
+   *
+   * A TENANT still cannot set it: the manifest at the bottom of this file is
+   * `additionalProperties: false` with `dockerBinary` absent, so a binding carrying it is rejected
+   * at create/update by `routes/executors.ts` (`plugin-manifests-managed-dep.test.ts` pins that
+   * refusal by name). The write door refuses it and the server overwrites it — two independent
+   * defences, which is the point.
    */
   dockerBinary?: string;
 
@@ -600,8 +613,15 @@ async function runEditorContainer(
   const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxBuffer = 8 * 1024 * 1024;
 
-  // The edit is described ENTIRELY on argv — five strings that name a declaration and a version.
-  // Nothing on this command line can be a file body, a path outside the container, or a command.
+  // The edit is described ENTIRELY on argv — five strings that name a declaration and a version,
+  // plus (M21.7, split shapes only) the two that name WHICH LINE carries it. Nothing on this command
+  // line can be a file body, a path outside the container, or a command: the anchor text is one line
+  // the container already has in the file it was handed, and the shim only ever COMPARES it.
+  //
+  // THE PAIR IS APPENDED ONLY WHEN THERE IS AN ANCHOR, which is what makes version skew fail-closed
+  // in both directions (`run.sh`'s argv contract): a five-operand invocation is byte-for-byte the
+  // one every previously-shipped image understands, and an image that predates the anchor ignores
+  // the extra two and refuses the split shape it could not have edited anyway.
   const { stdout: createOut } = await execFileAsync(
     docker,
     [
@@ -614,7 +634,8 @@ async function runEditorContainer(
       spec.manifestPath,
       spec.coordinate,
       spec.fromVersion,
-      spec.toVersion
+      spec.toVersion,
+      ...(spec.anchor ? [String(spec.anchor.line), spec.anchor.text] : [])
     ],
     { timeout, maxBuffer }
   );
@@ -818,12 +839,53 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
         } satisfies RunOutcome;
       }
 
-      // 2. EDIT, in the isolated single-shot runner. It gets the file and five argv strings; it has
-      //    no network, no credential, and no package manager.
+      // 1b. LOCATE THE VERSION LINE, from the bytes just read (M21.7, split shapes).
+      //
+      //     Derived HERE and spent immediately, against the very same string: an anchor captured at
+      //     ingestion and spent at actuation would be a line number taken from a read at one ref and
+      //     applied to a read at another, which is a confidently wrong edit rather than a refused
+      //     one. `locateVersionLine` never throws and returns `undefined` freely — its ABSENCE is
+      //     not an error, it just means the coordinate rule runs exactly as it always has.
+      //
+      //     AN ANCHOR IS DERIVED HERE FOR MORE THAN THE NEW SHAPE, and saying otherwise would be a
+      //     comment asserting a property this code does not have: `go`, `python`'s
+      //     `requirements*.txt` and `oci`'s Dockerfile all anchor, because their parsers report the
+      //     line that carries the version. What keeps them unchanged is not the absence of an
+      //     anchor but clause (c) of `verifyManifestBump` — those parsers read the coordinate off
+      //     that same line, so the anchor is itself a coordinate-rule candidate and the veto admits
+      //     it only where the unanchored rule would have chosen it anyway. The ecosystems that
+      //     genuinely yield NO anchor are `npm` and `pyproject.toml` (their parsers report no line
+      //     at all) and `maven` (`pom-xml.ts` reports the `<dependency>` open-tag line, which does
+      //     not carry the version, so step 4 refuses it).
+      const anchor = locateVersionLine(original.content, descriptor.spec);
+      const spec: ManifestBumpSpec = anchor ? { ...descriptor.spec, anchor } : descriptor.spec;
+
+      // 1c. THE RESIDUE, NAMED. With no anchor AND no line naming both the coordinate and the
+      //     declared version, neither selector has an answer and the runner would exit 3 — a
+      //     container round trip whose only product is "the runner failed", which reads as a broken
+      //     image rather than as a stale inventory row or a declaration pinned identically twice.
+      //     Refused here instead, with its own name (ADR-0032 §7b clause 6: a reason names its own
+      //     cause). This MEASURES the coordinate rule, it does not author with it — the runner is
+      //     still the only thing that produces bytes.
+      const candidates = coordinateRuleCandidates(original.content.split("\n"), descriptor.spec);
+      if (anchor === undefined && candidates.length === 0) {
+        return {
+          succeeded: false,
+          detail:
+            `managed-dep: REFUSED (anchor_not_derivable) — no line of '${descriptor.spec.manifestPath}' names both ` +
+            `'${descriptor.spec.coordinate}' and '${descriptor.spec.fromVersion}', and the manifest's own parser did not ` +
+            `resolve that declaration to a single line carrying it. The inventory row may be stale, or this file may ` +
+            `declare the same image identically in more than one place, which has no single edit site. ` +
+            `Nothing was written to '${descriptor.repo}' and no container was started.`
+        } satisfies RunOutcome;
+      }
+
+      // 2. EDIT, in the isolated single-shot runner. It gets the file and five argv strings (seven
+      //    when an anchor is supplied); it has no network, no credential, and no package manager.
       await mkdir(inDir, { recursive: true });
       await mkdir(outDir, { recursive: true });
       await writeFile(join(inDir, fileName), original.content, "utf8");
-      const run = await runEditorContainer(config, descriptor.spec, inDir, outDir);
+      const run = await runEditorContainer(config, spec, inDir, outDir);
       if (!run.succeeded) {
         return {
           succeeded: false,
@@ -852,7 +914,7 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
       //    text? Each catches what the other structurally cannot — the second is what survives a
       //    minified `package.json`, where "bump react AND add a postinstall script" is one line's
       //    worth of change and the textual test alone would pass it.
-      const verdict = verifyManifestBump(original.content, edited, descriptor.spec);
+      const verdict = verifyManifestBump(original.content, edited, spec);
       if (!verdict.ok) {
         return {
           succeeded: false,
@@ -880,26 +942,46 @@ async function trigger(ctx: PluginContext, intent: TriggerIntent): Promise<Exter
       });
 
       // 4. PUBLISH. Branch, commit, pull request — and merge only when the server already decided.
+      //
+      //    D2 (`split-shape-image-bumps.md` §9): A SPLIT-SHAPE BUMP IS PULL-REQUEST-ONLY THIS ROUND,
+      //    whatever the subscription resolved to. "Split shape" is not a guess about the format — it
+      //    is exactly the condition under which the widening did any work: an anchor was used AND no
+      //    line of the file named both the coordinate and the declared version, so the binding
+      //    between the edited line and the coordinate came from the parser's association of a `tag`
+      //    scalar with its sibling `repository` rather than from the bytes. Write-guard gate 6
+      //    catches a wrong SELECTION; a wrong ASSOCIATION is common-mode with that gate's own parser
+      //    and is not caught, so a human on the diff is the control for it (§4, residual risk).
+      //
+      //    This only ever DOWNGRADES. The plugin never upgrades a delivery — that decision is the
+      //    server's governed one — and a downgrade cannot make an unauthorised write reachable.
+      const splitShape = anchor !== undefined && candidates.length === 0;
+      const delivery = splitShape ? "pull_request" : descriptor.delivery;
       const result = await session.publishBump({
         target: {
           repo: descriptor.repo,
           baseBranch: descriptor.baseBranch,
           headBranch: descriptor.headBranch
         },
-        spec: descriptor.spec,
+        spec,
         content: verdict.after,
         proof,
-        delivery: descriptor.delivery,
+        delivery,
         ...(descriptor.expectedHeadCommit
           ? { expectedHeadCommit: descriptor.expectedHeadCommit }
           : {})
       });
+      const downgraded =
+        splitShape && descriptor.delivery === "auto_merge"
+          ? " (delivered as a pull request, not auto-merged: the coordinate and the version are on" +
+            " different lines, so which declaration was edited rests on the manifest parser and a" +
+            " human reads the diff)"
+          : "";
       return {
         succeeded: true,
         result,
         detail: result.merged
           ? `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} merged as ${result.commitSha} (#${result.pullRequestNumber})`
-          : `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} opened as ${result.pullRequestUrl || `#${result.pullRequestNumber}`}${result.mergeRefusal ? ` — ${result.mergeRefusal}` : ""}`
+          : `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} opened as ${result.pullRequestUrl || `#${result.pullRequestNumber}`}${result.mergeRefusal ? ` — ${result.mergeRefusal}` : ""}${downgraded}`
       } satisfies RunOutcome;
     });
     outcomes.set(externalId, outcome);

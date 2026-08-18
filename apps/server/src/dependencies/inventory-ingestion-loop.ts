@@ -8,6 +8,11 @@ import { withTenantTx } from "../db/tenant-tx.js";
 import { changes, objects } from "../db/schema.js";
 import { targetObjectIdsOf } from "../coordination/changes-repo.js";
 import { createGitProviderManifestReader } from "./manifest-reader.js";
+import {
+  commanderOnlyJobVerdict,
+  type CommanderOnlyConfig,
+  type CommanderOnlyVerdict
+} from "./commander-only.js";
 import { isAcceptedChangeEvent } from "./internal-release-loop.js";
 import { ingestComponentManifests, type ComponentIngestionOutcome } from "./inventory-ingestion.js";
 
@@ -60,59 +65,73 @@ import { ingestComponentManifests, type ComponentIngestionOutcome } from "./inve
  * never pushed since enablement gets a first inventory at all.
  *
  * ============================================================================================
- * THE ROLE GUARD, DERIVED — NOT COPIED FROM EITHER NEIGHBOUR
+ * THE ROLE GUARD — COMMANDER-ONLY (ADR-0032 §7d, owner decision 2026-08-17)
  * ============================================================================================
- * M21.4's two jobs reached OPPOSITE verdicts on the federation axis, for reasons that are about
- * what each job does rather than about what it is called. Asked of ingestion:
+ * BOTH axes apply. This module doc previously argued at length that only the process axis did, and
+ * that a commander-only guard "would break the feature"; that argument is WRONG and is recorded as
+ * reversed in ADR-0032 §7d, which preserves it verbatim beside the reasoning that overturned it. It
+ * is spelled out again here rather than merely cited, because whoever reads this file next is
+ * exactly the person who could delete the guard on the strength of the old paragraph.
  *
  *  - THE PROCESS AXIS APPLIES, unchanged. This is background work driven by a queue; an `api`
  *    process must stay a request server. `main.ts` additionally only reaches this inside its
  *    `runsBackgroundWork` branch, and the guard is what makes that a property of the job rather
  *    than of where it happens to be called.
  *
- *  - THE FEDERATION AXIS DOES NOT APPLY, and a commander-only guard would break the feature. The
- *    version poll is commander-only because it DIALS PUBLIC PACKAGE REGISTRIES ON A TIMER, which an
- *    air-gapped outpost must never do, and it is fail-closed on an undeclared role for exactly that
- *    reason. Ingestion initiates no timed egress and reaches no public index: it reacts to THIS
- *    domain's own accepted change and reads a file from the git provider this domain's executors
- *    are already bound to and already coordinate through, over the same bindings and the same
- *    egress guard — an air-gapped outpost running a local Gitea (M15) reads from that Gitea.
- *    And the evidence is local: `changes` and `source_mappings` are this domain's own records,
- *    while a commander receives only `change_status` journal entries. ADR-0032 §3 says the
- *    inventory "does not federate, and each domain derives its own"; restricting ingestion to a
- *    commander would leave every outpost domain's `component_dependencies` permanently empty —
- *    which is the same silent-inertness failure this whole milestone is about, pointed at the
- *    deployments §3 says derive their own.
+ *  - THE FEDERATION AXIS APPLIES TOO: this runs on a COMMANDER ONLY, fail-closed on an undeclared
+ *    `SCP_FEDERATION_ROLE`, like every other job in this feature. THE OWNER'S REASON, which is not
+ *    an argument about egress: the point of dependency automation is to PULL FROM PUBLIC
+ *    REPOSITORIES — Python library versions, CDK versions, base-image versions — and that is not
+ *    needed from a FIELD outpost's standpoint, because the resulting change GETS PUSHED DOWN THE
+ *    GLOBAL PIPELINE THE COMMANDER MANAGES. A field outpost never ORIGINATES a bump; it RECEIVES the
+ *    resulting change through the ordinary promotion path, as it receives every other change. So a
+ *    field outpost needs no inventory, and the inventory it used to derive fed nothing that could act
+ *    on it: the only consumer of an inventory is a bump, and `bumpDispatchRoleGuard` has been
+ *    commander-only since M21.5 because writing to a source repository with a credential is a thing
+ *    an air-gapped or high-side field outpost must never do.
  *
- * So: same answer as internal detection, reached from ingestion's own facts. Where it differs from
- * the poll is named above rather than assumed.
+ *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (GLOSSARY `HQ outpost` / `field outpost`, ADR-0021
+ *    D7; ADR-0032 §7d's vocabulary note). An HQ outpost — the outpost in the commander's own trust
+ *    domain — is not a second deployment this guard could refuse: `SCP_FEDERATION_ROLE` is one value
+ *    per process (`config.ts`), and this guard reads THAT, never an `outpost` graph object — an
+ *    `outpost` object CAN name the commander's own domain (the commander-declared HQ outpost record,
+ *    pipeline-substrate-registry-scan.md §10.5, `federation/outpost-binding.ts`), but that record
+ *    describes which outpost, not what this deployment is. So THE HQ OUTPOST'S DEPENDENCY INVENTORY
+ *    IS THE COMMANDER'S — the same rows, in this database, written by this loop. Do not read "an
+ *    outpost holds no inventory" as covering it; the correct statement is that the inventory exists
+ *    in exactly one place.
+ *
+ *    WHAT THE OLD PARAGRAPH GOT RIGHT, AND WHY IT STILL LOST. Its facts hold — ingestion really
+ *    does initiate no timed egress, and `changes`/`source_mappings` really are this domain's own
+ *    records. What it got wrong was treating a per-domain inventory as THE GOAL rather than as a
+ *    substrate for an action only the commander performs.
+ *
+ *    THE ACCEPTED COST, stated rather than left to be discovered: dependencies declared in
+ *    DOMAIN-SPECIFIC repositories — FIELD-outpost-only IaC/CaC the commander never sees — are OUT OF
+ *    SCOPE for dependency subscriptions. The owner accepted that explicitly. A component whose
+ *    manifests live only in a repository the commander has no `source_mappings` for gets no
+ *    inventory and no bump, and the shape that would fix it is a field-outpost-side job, which is the
+ *    thing this decision removes. A repository specific to the HQ DOMAIN is not excluded by this —
+ *    the commander can see it, so it is an ordinary in-scope repository.
+ *
+ * Note the scope of the reversal: the SUBSCRIPTION still federates (it is a `dependencySubscription`
+ * effect on an ordinary `policy` object, ADR-0032 §3a), and a field outpost still receives it. What
+ * is commander-only is the JOBS and the projection tables they write.
  */
 
 export const INVENTORY_INGESTION_QUEUE = "dependency-inventory-ingestion";
 
-export interface InventoryIngestionRoleVerdict {
-  allowed: boolean;
-  reason: string;
-}
+export type InventoryIngestionRoleVerdict = CommanderOnlyVerdict;
 
-/** MAY THIS PROCESS INGEST DEPENDENCY INVENTORY? See the module doc for the derivation. */
+/**
+ * MAY THIS PROCESS INGEST DEPENDENCY INVENTORY? See the module doc for the derivation, and
+ * `commander-only.ts` for why the predicate is SHARED rather than re-spelled here — the fail-closed
+ * undeclared branch is the one that regresses invisibly, and it now has five callers.
+ */
 export function inventoryIngestionRoleGuard(
-  config: Pick<ServerConfig, "role" | "federationRole">
+  config: CommanderOnlyConfig
 ): InventoryIngestionRoleVerdict {
-  if (config.role !== "all" && config.role !== "worker") {
-    return {
-      allowed: false,
-      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
-    };
-  }
-  return {
-    allowed: true,
-    reason:
-      `background-work process; runs on every federation role ('${config.federationRole}' here) ` +
-      `because each domain derives its OWN dependency inventory (ADR-0032 §3), the evidence is ` +
-      `this domain's own correlated change, and the read goes to the git provider this domain is ` +
-      `already bound to — never to a public index on a timer`
-  };
+  return commanderOnlyJobVerdict(config, "dependency-inventory ingestion");
 }
 
 /** What {@link inventoryIngestionRouter} puts on {@link INVENTORY_INGESTION_QUEUE}. */
@@ -147,7 +166,7 @@ export function inventoryIngestionRouter(): DomainEventRouter {
 export interface InventoryIngestionLoopDeps {
   db: Db;
   host: PluginHost;
-  config: Pick<ServerConfig, "role" | "federationRole" | "secretsMasterKey">;
+  config: CommanderOnlyConfig & Pick<ServerConfig, "secretsMasterKey">;
 }
 
 export type ChangeIngestionVerdict =
@@ -250,7 +269,12 @@ export async function ingestChangeInventory(
         componentObjectId,
         repo: source.repo,
         ref: source.commit ?? source.ref ?? "HEAD",
-        readManifest
+        readManifest,
+        // WHICH PRODUCER THIS IS, on the component's ingestion stamp (M21.7, drizzle/0065). The
+        // distinction is operationally real rather than bookkeeping: `loop` means this component's
+        // inventory is maintained by its OWN releases, `backfill` means it is only as fresh as
+        // whoever last ran one — two very different readings of the same timestamp.
+        source: "loop"
       })
     );
   }
@@ -300,7 +324,8 @@ export interface InventoryIngestionLoopHandle {
 
 /**
  * Register the capability's worker. Returns nothing but the handle; the router half is registered
- * with `startPgBoss` by `main.ts`, so neither knows the other's internals.
+ * with `startPgBoss` by `events/domain-event-registry.ts`, under this module's own guard, so
+ * neither knows the other's internals.
  *
  * A REFUSED ROLE RETURNS AN INERT HANDLE AND NEVER CREATES THE QUEUE — the same shape every other
  * loop uses, and for the same reason: a process that merely skipped the work inside the handler

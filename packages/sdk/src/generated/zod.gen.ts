@@ -3565,6 +3565,17 @@ export const zCreatePlanResponse = z.object({
         placements: z.array(z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+        })).optional(),
+        producers: z.array(z.object({
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3666,6 +3677,26 @@ export const zCreatePlanResponse = z.object({
                 externalRef: z.string().nullable(),
                 executionSystemId: z.string().nullable()
             }).optional()
+        })).optional(),
+        producers: z.array(z.object({
+            kind: z.literal('dependency-producer'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
         })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -3748,6 +3779,17 @@ export const zGetPlanResponse = z.object({
         placements: z.array(z.object({
             componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
             deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+        })).optional(),
+        producers: z.array(z.object({
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512)
         })).optional()
     }),
     diff: z.object({
@@ -3849,6 +3891,26 @@ export const zGetPlanResponse = z.object({
                 externalRef: z.string().nullable(),
                 executionSystemId: z.string().nullable()
             }).optional()
+        })).optional(),
+        producers: z.array(z.object({
+            kind: z.literal('dependency-producer'),
+            action: z.enum([
+                'create',
+                'update',
+                'delete',
+                'noop'
+            ]),
+            ecosystem: z.enum([
+                'npm',
+                'go',
+                'maven',
+                'python',
+                'oci'
+            ]),
+            coordinate: z.string().min(1).max(512),
+            producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+            displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+            reason: z.string()
         })).optional(),
         summary: z.object({
             creates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -3932,6 +3994,17 @@ export const zApplyPlanResponse = z.object({
             placements: z.array(z.object({
                 componentUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
                 deploymentTargetUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/)
+            })).optional(),
+            producers: z.array(z.object({
+                producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                ecosystem: z.enum([
+                    'npm',
+                    'go',
+                    'maven',
+                    'python',
+                    'oci'
+                ]),
+                coordinate: z.string().min(1).max(512)
             })).optional()
         }),
         diff: z.object({
@@ -4033,6 +4106,26 @@ export const zApplyPlanResponse = z.object({
                     externalRef: z.string().nullable(),
                     executionSystemId: z.string().nullable()
                 }).optional()
+            })).optional(),
+            producers: z.array(z.object({
+                kind: z.literal('dependency-producer'),
+                action: z.enum([
+                    'create',
+                    'update',
+                    'delete',
+                    'noop'
+                ]),
+                ecosystem: z.enum([
+                    'npm',
+                    'go',
+                    'maven',
+                    'python',
+                    'oci'
+                ]),
+                coordinate: z.string().min(1).max(512),
+                producerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/),
+                displacedProducerUrn: z.string().regex(/^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:\/-]+$/).optional(),
+                reason: z.string()
             })).optional(),
             summary: z.object({
                 creates: z.int().gte(-9007199254740991).lte(9007199254740991),
@@ -5523,6 +5616,15 @@ export const zGetComponentDependencySubscriptionResponse = z.object({
             granularity: z.enum(['patch', 'minor_and_patch']).optional(),
             delivery: z.enum(['pull_request', 'auto_merge']).optional()
         }))
+    }),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
     })
 });
 
@@ -5535,6 +5637,15 @@ export const zListComponentDependencyInventoryResponse = z.object({
         name: z.string(),
         domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
     }),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
+    }),
     ingestion: z.object({
         lastAttemptAt: z.string(),
         source: z.enum(['loop', 'backfill']),
@@ -5545,9 +5656,13 @@ export const zListComponentDependencyInventoryResponse = z.object({
             'not_enabled'
         ]),
         rowsWritten: z.int().gte(0).lte(9007199254740991),
+        detail: z.string().nullable(),
         manifests: z.array(z.object({
+            repo: z.string(),
             path: z.string(),
             outcome: z.string(),
+            rows: z.int().gte(0).lte(9007199254740991),
+            at: z.string(),
             detail: z.string().optional()
         }))
     }).nullish(),
@@ -5687,6 +5802,15 @@ export const zListComponentDependencyBumpsResponse = z.object({
         name: z.string(),
         domainId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable()
     }),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
+    }),
     rows: z.array(z.object({
         changeId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
         changeName: z.string(),
@@ -5753,6 +5877,157 @@ export const zBackfillDependencyInventoryResponse = z.object({
     superseded: z.int().gte(0).lte(9007199254740991),
     notAttempted: z.int().gte(0).lte(9007199254740991),
     declarationsPruned: z.int().gte(0).lte(9007199254740991)
+});
+
+/**
+ * Success
+ */
+export const zListDependencyLineProducersResponse = z.object({
+    producers: z.array(z.object({
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        ecosystem: z.enum([
+            'npm',
+            'go',
+            'maven',
+            'python',
+            'oci'
+        ]),
+        coordinate: z.string().min(1).max(512),
+        producerObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        declaredAt: z.string(),
+        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+    })),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
+    })
+});
+
+/**
+ * Success
+ */
+export const zDeclareDependencyLineProducerResponse = z.object({
+    ecosystem: z.enum([
+        'npm',
+        'go',
+        'maven',
+        'python',
+        'oci'
+    ]),
+    coordinate: z.string().min(1).max(512),
+    action: z.enum(['declare', 'retract']),
+    dryRun: z.boolean(),
+    declaration: z.object({
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        ecosystem: z.enum([
+            'npm',
+            'go',
+            'maven',
+            'python',
+            'oci'
+        ]),
+        coordinate: z.string().min(1).max(512),
+        producerObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        declaredAt: z.string(),
+        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+    }).nullable(),
+    lines: z.array(z.object({
+        lineId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        major: z.string().min(1).max(64),
+        tagPattern: z.string().nullable(),
+        headBefore: z.object({
+            latestVersion: z.string().nullable(),
+            latestDigest: z.string().nullable(),
+            latestObservedAt: z.string().nullable()
+        }),
+        headCleared: z.boolean(),
+        subscribedComponentObjectIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/))
+    })),
+    openBumpAuthorships: z.array(z.object({
+        changeObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        repo: z.string(),
+        manifestPath: z.string(),
+        fromVersion: z.string(),
+        toVersion: z.string(),
+        pullRequestUrl: z.string().optional()
+    })),
+    decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
+    })
+});
+
+/**
+ * Success
+ */
+export const zRetractDependencyLineProducerResponse = z.object({
+    ecosystem: z.enum([
+        'npm',
+        'go',
+        'maven',
+        'python',
+        'oci'
+    ]),
+    coordinate: z.string().min(1).max(512),
+    action: z.enum(['declare', 'retract']),
+    dryRun: z.boolean(),
+    declaration: z.object({
+        orgId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        ecosystem: z.enum([
+            'npm',
+            'go',
+            'maven',
+            'python',
+            'oci'
+        ]),
+        coordinate: z.string().min(1).max(512),
+        producerObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        declaredAt: z.string(),
+        declaredByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+    }).nullable(),
+    lines: z.array(z.object({
+        lineId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        major: z.string().min(1).max(64),
+        tagPattern: z.string().nullable(),
+        headBefore: z.object({
+            latestVersion: z.string().nullable(),
+            latestDigest: z.string().nullable(),
+            latestObservedAt: z.string().nullable()
+        }),
+        headCleared: z.boolean(),
+        subscribedComponentObjectIds: z.array(z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/))
+    })),
+    openBumpAuthorships: z.array(z.object({
+        changeObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        componentObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        repo: z.string(),
+        manifestPath: z.string(),
+        fromVersion: z.string(),
+        toVersion: z.string(),
+        pullRequestUrl: z.string().optional()
+    })),
+    decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/).nullable(),
+    dependencyManagement: z.object({
+        managedHere: z.boolean(),
+        reason: z.enum([
+            'commander',
+            'outpost',
+            'retrans',
+            'role_undeclared'
+        ])
+    })
 });
 
 /**
@@ -6943,7 +7218,8 @@ export const zRunDiscoveryResponse = z.object({
     objects: z.array(z.object({
         typeId: z.string(),
         name: z.string(),
-        properties: z.record(z.string(), z.unknown()).optional()
+        properties: z.record(z.string(), z.unknown()).optional(),
+        urn: z.string().min(1).optional()
     })),
     relationships: z.array(z.object({
         typeId: z.string(),

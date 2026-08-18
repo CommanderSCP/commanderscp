@@ -5,33 +5,12 @@ import { runMigrations } from "./db/migrate.js";
 import { provisionPgBossRole, provisionRuntimeRole, runtimeCredentials } from "./db/provision.js";
 import { ensureBootstrapAdmin } from "./auth/local-auth.js";
 import { startPgBoss } from "./events/pgboss.js";
+import { domainEventRouters } from "./events/domain-event-registry.js";
 import { startOutboxRelay } from "./events/outbox-relay.js";
 import { connectNatsFanout, type NatsFanoutHandle } from "./events/nats-fanout.js";
 import { loginAndSeedDemoData } from "./seed.js";
 import { startPluginHostForRole } from "./plugin-host/host-bootstrap.js";
-import { startReconcileLoop } from "./coordination/reconcile.js";
-import { startObserveLoop } from "./coordination/observe.js";
-import { startWatchdogLoop } from "./coordination/watchdog.js";
-import { startInboxLoop } from "./federation/inbox-loop.js";
-import { startDependencyVersionPollLoop } from "./dependencies/version-poll.js";
-import {
-  acceptedChangeRouter,
-  internalReleaseDetectionRoleGuard,
-  startInternalReleaseLoop
-} from "./dependencies/internal-release-loop.js";
-import {
-  inventoryIngestionRoleGuard,
-  inventoryIngestionRouter,
-  startInventoryIngestionLoop
-} from "./dependencies/inventory-ingestion-loop.js";
-import {
-  advancedLineHeadRouter,
-  bumpDispatchRoleGuard,
-  startBumpDispatchLoop
-} from "./dependencies/bump-dispatch.js";
-import { observedBumpRouter, startBumpGateLoop } from "./dependencies/bump-gate.js";
-import { startAutoRelayLoop } from "./federation/auto-relay.js";
-import { startFederationSyncLoop } from "./federation/federation-sync.js";
+import { runsBackgroundWork, startBackgroundLoops } from "./background-work.js";
 import { warnOnFederationSelfOriginDivergence } from "./federation/self-origin-check.js";
 import { createCommanderPokeSender } from "./federation/poke-sender.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
@@ -149,12 +128,17 @@ async function main(): Promise<void> {
   // guard is per-plugin-instance, not per-process. Neither boundary moves because a different
   // process dispatches the plugin.
   // ---------------------------------------------------------------------------------------------
-  const runsBackgroundWork = config.role === "all" || config.role === "worker";
+  // `runsBackgroundWork(config)` is IMPORTED, not inlined (`background-work.ts`). It used to be an
+  // inline `config.role === "all" || config.role === "worker"`, and that made it unreachable by any
+  // test: setting it `false` — killing all eleven loops below — left the entire apps/server unit
+  // suite green, because nothing can import this file. The predicate is now a pure exported
+  // function with its own coverage, and the loops it gates are a registry that is STARTED in a test.
+  const backgroundWork = runsBackgroundWork(config);
   const pluginHost = await startPluginHostForRole(deps, config.role);
   // An api-only process owns nothing else to tear down, so it stops the host itself. The
   // background-work branch below keeps stopping it in ITS onClose, ordered after the loops that use
   // it — stopping the host out from under a running reconcile tick is what that ordering avoids.
-  if (!runsBackgroundWork) {
+  if (!backgroundWork) {
     app.addHook("onClose", async () => {
       await pluginHost.stop();
     });
@@ -166,41 +150,22 @@ async function main(): Promise<void> {
   // and assumes the outbox-only `scp_relay` role per transaction; pg-boss connects as the
   // schema-scoped `scp_pgboss` login role (M3 tracked security follow-up — pg-boss no longer
   // runs its own schema migrations on the admin/superuser connection).
-  if (runsBackgroundWork) {
-    // M21.4 (ADR-0032 §7): the FIRST real consumer of the domain-event stream. `boss.work()` is a
-    // competing consumer, so a feature that reacts to an event registers a ROUTER here rather than a
-    // second worker on `domain-events` — the router makes one cheap decision and enqueues onto this
-    // capability's own queue, which is then worked by `startInternalReleaseLoop` below. Guarded so
-    // an api-only process neither routes nor works (the guard is the job's own property, not a
-    // consequence of sitting inside `runsBackgroundWork`); a refused guard contributes NO router, so
-    // an event is not even enqueued for a queue nothing will drain.
+  if (backgroundWork) {
+    // M21.4 (ADR-0032 §7): the domain-event stream's real consumers. `boss.work()` is a competing
+    // consumer, so a feature that reacts to an event registers a ROUTER rather than a second worker
+    // on `domain-events` — the router makes one cheap decision and enqueues onto that capability's
+    // own queue, worked by the `start…Loop` calls below.
     //
-    // M21.2 registers the SECOND router on the same event. Routers are not workers: the
-    // domain-events worker calls every router for every event, so they do not compete — which is
-    // exactly why a router exists rather than a `boss.work()` per capability. Each enqueues onto its
-    // OWN queue, so a slow manifest read cannot starve internal detection or vice versa. The same
-    // reasoning is why this array is the ONE registration site: a router listed twice would be two
-    // enqueues per event, and `boss.work()` on the receiving queue is a competing consumer that
-    // would then do the work twice. Every entry below appears exactly once.
-    const internalReleaseAllowed = internalReleaseDetectionRoleGuard(config).allowed;
-    const inventoryIngestionAllowed = inventoryIngestionRoleGuard(config).allowed;
-    // M21.5 (ADR-0032 §8): a line's head advancing is what makes a bump due, and that event is
-    // emitted by the ONE head write door so both M21.4 ingresses feed it. Its guard is STRICTER than
-    // internal detection's and is derived rather than copied (see `bumpDispatchRoleGuard`): this job
-    // writes to a source repository with a credential, which an air-gapped or high-side outpost must
-    // never do — and internal detection running on every role means heads DO advance there.
-    const bumpDispatchAllowed = bumpDispatchRoleGuard(config).allowed;
-    const boss = await startPgBoss(config.pgBossDatabaseUrl, [
-      ...(internalReleaseAllowed ? [acceptedChangeRouter()] : []),
-      ...(inventoryIngestionAllowed ? [inventoryIngestionRouter()] : []),
-      ...(bumpDispatchAllowed ? [advancedLineHeadRouter()] : []),
-      // M21.5 auto-merge link (ADR-0032 §8c). Its trigger is an observed provider event that
-      // correlated to a bump SCP authored — the authored push, and then the CI conclusion on that
-      // same commit — which is the only moment the delivery question is worth asking a second time.
-      // Same guard as the dispatcher's, by IMPORT rather than by copy: merging is a repository
-      // write, and a strictly more consequential one than opening a pull request.
-      ...(bumpDispatchAllowed ? [observedBumpRouter()] : [])
-    ]);
+    // WHICH routers, and under WHICH role guard, is `events/domain-event-registry.ts` — not a
+    // literal here. Until M21.7 it was a literal here, and that is precisely why nothing could
+    // check it: `main()` runs at module scope, so no test can import this file, so the census that
+    // guarded the list had to read this file as TEXT — and text cannot tell a live registration
+    // from an unreachable one (an inverted guard leaves the factory's name sitting right there in
+    // the source). The registry is a pure value, so `events/domain-event-routers.test.ts` now
+    // EXECUTES it for a matrix of configs and asserts what is actually registered, against the set
+    // of routers it discovers in the tree. The one thing that census still reads as text is the
+    // line below — that this composition root calls `domainEventRouters` at all.
+    const boss = await startPgBoss(config.pgBossDatabaseUrl, domainEventRouters(config));
     // M14.2 (ADR-0009): expose the job queue to request handlers (mirrors `deps.pluginHost` below)
     // so the inbound federation poke endpoint can enqueue an immediate federation-sync tick — the
     // contentless wake that pulls NOW instead of at the next interval, without pulling inline.
@@ -225,94 +190,21 @@ async function main(): Promise<void> {
       onEventsRelayed: (orgIds) => pokeSender.onEventsRelayed(orgIds)
     });
 
-    // M3 coordination engine (BUILD_AND_TEST.md §8 M3, DESIGN.md §9.3/§9.4): the resumable
-    // reconciliation loop, over the plugin host constructed above. The shared fake-executor
-    // instance it relies on (coordination/executor-config.ts documents why: M3 has no
-    // plugin-instance configuration API yet) is registered there under this same role condition,
-    // with its state file under the OS temp dir — durable across the plugin SUBPROCESS restarting
-    // (the plugin-host isolation DoD scenario), not across this whole `scpd` process restarting,
-    // which is fine: fake-executor is never a real system of record.
-    const reconcileLoop = await startReconcileLoop(
+    // EVERY BACKGROUND LOOP THIS PROCESS RUNS — `background-work.ts`'s `BACKGROUND_LOOPS`, not a
+    // list of eleven `const`s here, and not eleven matching `.stop()` calls in the `onClose` below.
+    //
+    // WHY IT MOVED. This block used to hand-write both halves, and both were unverifiable: nothing
+    // can import this file (`main()` runs at module scope), so every test that claimed to check the
+    // wiring was matching SUBSTRINGS. Measured 2026-08-17 — flipping this block's own condition to
+    // `false`, killing all eleven loops, left `bump-dispatch`, `bump-gate`, `inventory-ingestion`
+    // and `domain-event-routers` green at 79/79 and the whole unit suite green. A registry is a pure
+    // importable value, so `background-work.test.ts` STARTS it against a probe boss and asserts what
+    // actually happened, and a loop that is never registered fails that test rather than shipping
+    // inert. Same move, same reason, as M21.7 moving the router list into `domain-event-registry.ts`.
+    //
+    // The one link still checked as text is the CALL BELOW — see that test file, which says so.
+    const backgroundLoops = await startBackgroundLoops({
       boss,
-      db,
-      pluginHost,
-      getSharedCelSandbox(),
-      config.secretsMasterKey
-    );
-    // CRITICAL #1 fix (PR #7 review): the stuck-change watchdog sweep (DESIGN.md §9.4) had no
-    // production caller at all before this — scheduled here the same way the reconcile loop is,
-    // one queue per capability, both under the same `role === "all" || "worker"` guard.
-    const watchdogLoop = await startWatchdogLoop(boss, db, pluginHost, config.secretsMasterKey);
-    // M10.2 observe()-driver: the PULL side of change detection (webhook is push). Same queue-per-
-    // capability pattern under the same `role === "all" || "worker"` guard; a much slower cadence.
-    const observeLoop = await startObserveLoop(boss, db, pluginHost, config.secretsMasterKey);
-    // M13.1a staging-node inbox ingest (proposal §13.1): same queue-per-capability pattern under
-    // the same role guard — but DEFAULT-OFF (explicit `SCP_INBOX_LOOP=1` opt-in; without it this
-    // returns an inert handle and never schedules a tick — an unconfigured instance does not spin).
-    const inboxLoop = await startInboxLoop(boss, db, config.secretsMasterKey);
-    // M13.1b staging-node AUTO-RELAY (proposal §13.1): the last operator-gated step of the CDS
-    // boundary walk — a `role: retrans` instance builds the onward byte tarball for an imported
-    // promotion with no operator command. Same queue-per-capability pattern under the same role
-    // guard, DEFAULT-OFF behind its own explicit `SCP_RETRANS_AUTO_RELAY=1` (unattended byte egress
-    // across a security boundary is opted into separately from unattended INGEST; without it this
-    // returns an inert handle and the queue is never created).
-    const autoRelayLoop = await startAutoRelayLoop(boss, db, config.secretsMasterKey);
-    // M14.0 outpost live-pull scheduler (docs/proposals/outpost-poke.md §"Milestone scope",
-    // ADR-0009): same queue-per-capability pattern under the same role guard — DEFAULT-OFF (explicit
-    // `SCP_FEDERATION_SYNC_LOOP=1` opt-in; without it an inert handle, never a scheduled tick). The
-    // deferred federation-over-HTTP live-sync substrate the poke increments (M14.1–M14.4) optimize;
-    // it pulls+imports commander config over the fail-closed per-peer mTLS outbound dialer
-    // (federation-outbound.ts) and is the sparse-safety-net + pull-on-startup reliability floor.
-    const federationSyncLoop = await startFederationSyncLoop(boss, db);
-    // M21.4 third-party dependency version poll (ADR-0032 §7): same queue-per-capability pattern,
-    // but with a SECOND, explicit guard on top of `runsBackgroundWork` — `config.federationRole`
-    // must be `commander`. An unguarded background job that dials package registries on a timer
-    // would run on AIR-GAPPED OUTPOSTS too, and neither the process-role split nor any runtime
-    // predicate would stop it (`self_domain.role` is per-org, lazy and advisory). The guard lives
-    // in `dependencyVersionPollRoleGuard`, which returns an inert handle and never creates the
-    // queue when it refuses.
-    const dependencyVersionPollLoop = await startDependencyVersionPollLoop(
-      boss,
-      db,
-      pluginHost,
-      config
-    );
-    // M21.4 internal release detection (ADR-0032 §7) — the other half of the router registered with
-    // `startPgBoss` above. Event-driven rather than a timer, because a release IS an event; it runs
-    // on EVERY federation role, deliberately, since each domain derives its own inventory and the
-    // wave-target evidence exists only where the change executed (the loop's module doc has the
-    // reasoning in full).
-    const internalReleaseLoop = await startInternalReleaseLoop(boss, {
-      db,
-      host: pluginHost,
-      config
-    });
-    // M21.2 dependency-inventory ingestion (ADR-0032 §4/§6) — the worker half of the ingestion
-    // router registered above. THIS IS WHAT WRITES `component_dependencies`: without it the table is
-    // empty on every deployment and the enablement chain, the version poll and internal detection
-    // all resolve over nothing. Same role reasoning as internal detection, derived from ingestion's
-    // own facts in the loop's module doc (it reads this domain's own change and this domain's own
-    // git binding; it never dials a public index on a timer, which is the poll's whole reason for
-    // being commander-only).
-    const inventoryIngestionLoop = await startInventoryIngestionLoop(boss, {
-      db,
-      host: pluginHost,
-      config
-    });
-    // M21.5 the bump dispatcher (ADR-0032 §8/§9) — the other half of the advanced-line-head router
-    // registered with `startPgBoss` above, and the thing that makes a dependency subscription DO
-    // anything. Same queue-per-capability pattern; commander-only and fail-closed on an undeclared
-    // federation role, because it authors into a user's repository with a per-run credential.
-    const bumpDispatchLoop = await startBumpDispatchLoop(boss, {
-      db,
-      host: pluginHost,
-      config
-    });
-    // M21.5 the auto-merge link (ADR-0032 §8c) — runs the EXISTING governance gate FOR a bump change
-    // once its own commit has been observed back, then merges only if a governed control evidenced
-    // the component's own checks passed for exactly that commit. It shares the CEL sandbox with the
-    // reconcile loop above, which is what makes "the same gate machinery" literally the same.
-    const bumpGateLoop = await startBumpGateLoop(boss, {
       db,
       host: pluginHost,
       sandbox: getSharedCelSandbox(),
@@ -320,17 +212,9 @@ async function main(): Promise<void> {
     });
 
     app.addHook("onClose", async () => {
-      await reconcileLoop.stop();
-      await watchdogLoop.stop();
-      await observeLoop.stop();
-      await inboxLoop.stop();
-      await autoRelayLoop.stop();
-      await federationSyncLoop.stop();
-      await dependencyVersionPollLoop.stop();
-      await internalReleaseLoop.stop();
-      await inventoryIngestionLoop.stop();
-      await bumpDispatchLoop.stop();
-      await bumpGateLoop.stop();
+      // Stops every loop in registration order — the same order this file stopped them in by hand,
+      // and now impossible to get out of step with the list that STARTED them.
+      await backgroundLoops.stop();
       await pluginHost.stop();
       await relay.stop();
       // Stop the poke sender AFTER the relay so no new post-commit hook fires into it; then drain any

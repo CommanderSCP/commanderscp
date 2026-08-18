@@ -12,8 +12,11 @@ import {
   buildProgram,
   dependencyBumpRow,
   dependencyInventoryBackfillRow,
+  dependencyIngestionStampLine,
   dependencyInventoryHeaderLines,
   dependencyInventoryRow,
+  dependencyManagementNote,
+  dependencyReadNotManagedLine,
   dependencySubscriptionContributionRow,
   dependencySubscriptionResolutionRow,
   dependencySubscriptionUnlockRow
@@ -97,7 +100,7 @@ describe("scp dependency-subscriptions — the CLI surface (ADR-0032 §6)", () =
     }
     // The absence is only defensible if the surface points at the real path. The first thing
     // somebody will look for here is the verb that does not exist.
-    expect(root!.description()).toMatch(/scp policy create/i);
+    expect(root!.description()).toMatch(/scp policy register/i);
     expect(root!.description()).toMatch(/dependencySubscription/);
   });
 
@@ -228,8 +231,92 @@ describe("the M21.3 CLI formatters", () => {
       granularity: "patch",
       delivery: "pull_request",
       contributions: []
-    }
+    },
+    // The deployment that answered MANAGES dependencies (ADR-0032 §7d) — the ordinary case, so the
+    // fixture carries it and the refusals below are the deviation.
+    dependencyManagement: { managedHere: true, reason: "commander" }
   };
+
+  it("prints WHETHER ANYTHING HERE WILL ACT ON THE VERDICT — an enabled subscription on an outpost is not a running one", () => {
+    // The hole this closes: `enabled: true` is arithmetically correct on an outpost and NOTHING
+    // THERE WILL EVER ACT ON IT. The row must carry both halves or the reader is told something
+    // true and misleading at once.
+    const onOutpost = dependencySubscriptionResolutionRow({
+      ...enabledResponse,
+      dependencyManagement: { managedHere: false, reason: "outpost" }
+    });
+    expect(onOutpost.enabled).toBe("true");
+    expect(onOutpost.managedHere).toBe("false");
+    expect(onOutpost.managedReason).toBe("outpost");
+
+    // `role_undeclared` IS ITS OWN VALUE and must reach the column as itself — it is the branch
+    // whose config VALUE reads 'commander', so a formatter that flattened it would print the
+    // opposite of the truth.
+    expect(
+      dependencySubscriptionResolutionRow({
+        ...enabledResponse,
+        dependencyManagement: { managedHere: false, reason: "role_undeclared" }
+      }).managedReason
+    ).toBe("role_undeclared");
+
+    // NEGATIVE CONTROL: a declared commander prints `true`, so the column is about the payload and
+    // is not hardcoded to a refusal.
+    const onCommander = dependencySubscriptionResolutionRow(enabledResponse);
+    expect(onCommander.managedHere).toBe("true");
+    expect(onCommander.managedReason).toBe("commander");
+  });
+
+  /**
+   * THE OPERATOR-FACING CAVEAT, HELD IN BOTH DIRECTIONS (ADR-0032 §7d, M21.7 follow-up).
+   *
+   * This note used to be written INLINE inside the resolve command's Commander `.action()` closure,
+   * where nothing could call it: inverting its condition — so the note printed on a healthy
+   * commander and went SILENT on the deployment it exists to warn, the exact inversion that matters
+   * — left the whole suite green. A conditional caveat is only held when BOTH arms are pinned, so
+   * both are below. The wording is deliberately NOT pinned beyond the two facts an operator acts on
+   * (the posture, and where to go instead), so a rewrite passes and a wrong condition fails.
+   */
+  describe("the `resolve` caveat printed beside the table", () => {
+    it("APPEARS when nothing here will act on the verdict, and names the posture and the remedy", () => {
+      const note = dependencyManagementNote({ managedHere: false, reason: "outpost" });
+      expect(note).toBeDefined();
+      // The posture, so the operator knows WHICH refusal this is — `outpost` and `role_undeclared`
+      // have different remedies (call the commander vs set one env var).
+      expect(note).toContain("outpost");
+      // …and where the work actually happens, because a caveat an operator cannot act on is silence.
+      expect(note).toMatch(/COMMANDER/);
+
+      // `role_undeclared` is the branch whose config VALUE reads `commander`; it must reach the
+      // note as itself or the sentence names the opposite of the truth.
+      expect(dependencyManagementNote({ managedHere: false, reason: "role_undeclared" })).toContain(
+        "role_undeclared"
+      );
+    });
+
+    it("is SILENT on a declared commander — the direction whose inversion was fully green", () => {
+      // THE HALF THAT WAS UNHELD. A caveat on every invocation is one nobody reads, so its absence
+      // here is as load-bearing as its presence above.
+      expect(dependencyManagementNote({ managedHere: true, reason: "commander" })).toBeUndefined();
+    });
+
+    it("is SILENT when the server omitted the envelope — absent is not a refusal", () => {
+      // A server that predates the field claims no posture, and asserting one it never claimed is
+      // the same fabrication the `-` column exists to avoid. `=== false`, never falsy.
+      expect(dependencyManagementNote(undefined)).toBeUndefined();
+    });
+  });
+
+  it("never FABRICATES `managedHere` when the server omitted the envelope — `-`, never `true`", () => {
+    // A server that predates the field sends nothing, and inventing "yes, managed here" is the exact
+    // false reassurance the envelope exists to remove. Same guard as `delivery`, sharper consequence.
+    const row = dependencySubscriptionResolutionRow(
+      without(enabledResponse, "dependencyManagement")
+    );
+    expect(row.managedHere).toBe("-");
+    expect(row.managedReason).toBe("-");
+    // …and the verdict is still printed, because the answer is not withheld — only unqualified.
+    expect(row.enabled).toBe("true");
+  });
 
   it("never prints `undefined` in the DELIVERY column — where the two values are 'open a PR' and 'merge it automatically'", () => {
     const stripped: DependencySubscriptionResolutionResponse = {
@@ -372,6 +459,7 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
 
   const baseResponse: ComponentDependencyInventoryResponse = {
     component: { id: COMPONENT_ID, name: "checkout-api", domainId: null },
+    dependencyManagement: { managedHere: true, reason: "commander" },
     ingestion: null,
     lastIngestionDecision: null,
     componentGate: { enabled: true, reason: "enabled", contributions: [] },
@@ -448,12 +536,14 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
 
   it("inventory header: a null stamp prints NOT RECORDED (never 'never ingested', never 'no dependencies'); a stamp prints itself; the gate is labelled apart from row reasons", () => {
     const lines = dependencyInventoryHeaderLines(baseResponse);
-    expect(lines).toContain("ingestion: not recorded");
+    // A null stamp is NEVER ATTEMPTED — the stamp table's one reading of a missing row — and is
+    // never "no dependencies".
+    expect(lines).toContain("ingestion: never attempted");
     expect(lines).toContain("last ingestion decision: none on record");
-    expect(lines.join("\n")).not.toMatch(/never ingested|no dependencies/i);
-    // …and when the key is OMITTED (a server predating the stamp read).
+    expect(lines.join("\n")).not.toMatch(/no dependencies/i);
+    // …and when the key is OMITTED (a server predating the stamp read) — nothing recorded either.
     expect(dependencyInventoryHeaderLines(without(baseResponse, "ingestion"))).toContain(
-      "ingestion: not recorded"
+      "ingestion: never attempted"
     );
     // The gate line uses the GATE's vocabulary under its own label.
     expect(lines.find((l) => l.startsWith("component gate:"))).toBe(
@@ -466,7 +556,7 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
       }).find((l) => l.startsWith("component gate:"))
     ).toBe("component gate: no_enabling_contribution (enabled=false, 0 contribution(s))");
 
-    // NEGATIVE CONTROL: a present stamp is printed as itself, so "not recorded" reports ABSENCE.
+    // NEGATIVE CONTROL: a present stamp is printed as itself, so "never attempted" reports ABSENCE.
     const stamped = dependencyInventoryHeaderLines({
       ...baseResponse,
       ingestion: {
@@ -474,9 +564,23 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
         source: "backfill",
         outcome: "partial",
         rowsWritten: 3,
+        detail: null,
         manifests: [
-          { path: "package.json", outcome: "ok" },
-          { path: "go.mod", outcome: "skipped", detail: "read_failed" }
+          {
+            repo: "acme/app",
+            path: "package.json",
+            outcome: "ok",
+            rows: 3,
+            at: "2026-08-16T02:00:00.000Z"
+          },
+          {
+            repo: "acme/app",
+            path: "go.mod",
+            outcome: "unreadable",
+            rows: 0,
+            at: "2026-08-16T02:00:00.000Z",
+            detail: "read_failed"
+          }
         ]
       },
       lastIngestionDecision: {
@@ -488,12 +592,94 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
       }
     });
     expect(stamped).toContain(
-      "ingestion: partial at 2026-08-16T02:00:00.000Z (backfill), 3 row(s) written; manifests: package.json=ok, go.mod=skipped (read_failed)"
+      "ingestion: partial — some manifests could not be read at 2026-08-16T02:00:00.000Z (backfill), 3 row(s) written; manifests: acme/app:package.json=ok, acme/app:go.mod=unreadable (read_failed)"
     );
     expect(stamped).toContain(
       "last ingestion decision: 0198f000-0000-7000-8000-000000000014 first observed 2026-08-15T00:00:00.000Z; read [package.json] absent [Dockerfile] skipped 1 (go.mod: read_failed)"
     );
-    expect(stamped.join("\n")).not.toMatch(/not recorded/);
+    expect(stamped.join("\n")).not.toMatch(/never attempted/);
+  });
+
+  it("ingestion stamp line: the TRICHOTOMY — never attempted / ok+0 = no dependencies declared / ok+N / partial and unreadable with the file list / not enabled — read off the stamp, never off `rows`", () => {
+    const at = "2026-08-16T02:00:00.000Z";
+    const okEntry = { repo: "acme/app", path: "package.json", outcome: "ok", rows: 0, at };
+    expect(dependencyIngestionStampLine(null)).toBe("ingestion: never attempted");
+    expect(dependencyIngestionStampLine(undefined)).toBe("ingestion: never attempted");
+    // ok + 0 rows: the one state an empty inventory could not express before the stamp.
+    expect(
+      dependencyIngestionStampLine({
+        lastAttemptAt: at,
+        source: "loop",
+        outcome: "ok",
+        rowsWritten: 0,
+        detail: null,
+        manifests: [okEntry, { ...okEntry, path: "go.mod" }]
+      })
+    ).toBe(
+      `ingestion: ok — no dependencies declared (read 2 manifest(s)) at ${at} (loop); manifests: acme/app:package.json=ok, acme/app:go.mod=ok`
+    );
+    // ok + N rows: an ordinary receipt.
+    expect(
+      dependencyIngestionStampLine({
+        lastAttemptAt: at,
+        source: "loop",
+        outcome: "ok",
+        rowsWritten: 4,
+        detail: null,
+        manifests: [{ ...okEntry, rows: 4 }]
+      })
+    ).toBe(`ingestion: ok at ${at} (loop), 4 row(s) written; manifests: acme/app:package.json=ok`);
+    // unreadable: every file listed with its verdict — the operator's next action is a file.
+    expect(
+      dependencyIngestionStampLine({
+        lastAttemptAt: at,
+        source: "backfill",
+        outcome: "unreadable",
+        rowsWritten: 0,
+        detail: null,
+        manifests: [
+          {
+            repo: "acme/app",
+            path: "go.mod",
+            outcome: "unreadable",
+            rows: 0,
+            at,
+            detail: "parse error"
+          },
+          { repo: "acme/charts", path: "Dockerfile", outcome: "unsupported", rows: 0, at }
+        ]
+      })
+    ).toBe(
+      `ingestion: unreadable — no manifest could be read at ${at} (backfill), 0 row(s) written; manifests: acme/app:go.mod=unreadable (parse error), acme/charts:Dockerfile=unsupported`
+    );
+    // not enabled: the gate's own sentence, and the word "no dependencies" never appears.
+    const gated = dependencyIngestionStampLine({
+      lastAttemptAt: at,
+      source: "loop",
+      outcome: "not_enabled",
+      rowsWritten: 0,
+      detail: "instance_locked",
+      manifests: []
+    });
+    expect(gated).toBe(
+      `ingestion: not enabled — the gate was closed, nothing was fetched at ${at} (loop) — instance_locked`
+    );
+    expect(gated).not.toMatch(/no dependencies/);
+  });
+
+  it("the not-managed line: printed ONLY for `managedHere: false` (with the reason), silent on a commander AND when the server omitted the envelope", () => {
+    const line = dependencyReadNotManagedLine({ managedHere: false, reason: "outpost" });
+    expect(line).toBeDefined();
+    expect(line).toContain("dependencies are not managed on this instance (outpost)");
+    expect(
+      dependencyReadNotManagedLine({ managedHere: false, reason: "role_undeclared" })
+    ).toContain("(role_undeclared)");
+    // A declared commander: silent — a caveat on every invocation is one nobody reads.
+    expect(
+      dependencyReadNotManagedLine({ managedHere: true, reason: "commander" })
+    ).toBeUndefined();
+    // Absent is not a refusal (`=== false`, never falsy).
+    expect(dependencyReadNotManagedLine(undefined)).toBeUndefined();
   });
 
   const baseBump: ComponentDependencyBump = {
@@ -516,7 +702,7 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
     merge: null
   };
 
-  it("bump row: `#n` from the number, NO link unless the server stored one, `-` for an unconfirmed merge and an unrun gate", () => {
+  it("bump row: the PR column is the stored URL when present, else `#n` from the number, else `-`; `-` for an unconfirmed merge and an unrun gate", () => {
     const row = dependencyBumpRow(baseBump);
     expect(row.coordinate).toBe("@acme/lib");
     expect(row["from -> to"]).toBe("1.2.3 -> 1.4.0");
@@ -528,10 +714,11 @@ describe("scp dependency-subscriptions inventory | bumps — the M21.6 read verb
     expect(row.verdict).toBe("-");
     expect(row.delivery).toBe("pull_request");
 
-    // A stored URL IS printed — the guard is about absence, not a column that never links.
+    // A stored URL IS printed, and it REPLACES the number (the better address of the same PR) —
+    // the guard is about absence, not a column that never links.
     expect(
       dependencyBumpRow({ ...baseBump, pullRequestUrl: "https://git.example/acme/app/pulls/42" }).pr
-    ).toBe("#42 https://git.example/acme/app/pulls/42");
+    ).toBe("https://git.example/acme/app/pulls/42");
     // No number yet: `-`, not `#null`.
     expect(dependencyBumpRow({ ...baseBump, pullRequestNumber: null }).pr).toBe("-");
 

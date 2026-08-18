@@ -59,6 +59,11 @@ import type {
   ComponentDependencyBumpsResponse,
   ComponentDependencyInventoryResponse,
   ComponentDependencyInventoryRow,
+  // ADR-0032 §7e — the producer declaration's authoring surface.
+  DependencyLineProducer,
+  DependencyLineProducerVerbResponse,
+  DependencyProducerLineImpact,
+  DependencyProducerOpenBump,
   // M16.2 phase A — the `outpost` config object (E1) + the narrow peer PATCH (E4).
   OutpostConfig,
   OutpostConfigReconcileResult,
@@ -578,11 +583,22 @@ export function dependencySubscriptionUnlockRow(
  * newer server omits arrives as `undefined` whatever the type says, and printing the literal
  * `undefined` in a DELIVERY column — where the two values are "open a PR" and "merge it
  * automatically" — is a fabrication with teeth.
+ *
+ * `managedHere`/`managedReason` carry the server's `dependencyManagement` envelope (ADR-0032 §7d),
+ * printed BESIDE the verdict because they QUALIFY it: on a deployment that is not an explicitly
+ * declared commander, `enabled: true` is arithmetically correct and NOTHING THERE WILL EVER ACT ON
+ * IT. Guarded like the pair above, and for a sharper reason — a server that omits the key must
+ * render `-`, never a fabricated `true`, because inventing "yes, managed here" is the exact false
+ * reassurance the envelope exists to remove.
  */
 export function dependencySubscriptionResolutionRow(
   response: DependencySubscriptionResolutionResponse
 ): Record<string, string> {
   const r = response.resolution;
+  const managed = response.dependencyManagement as
+    DependencySubscriptionResolutionResponse["dependencyManagement"] | undefined;
+  const managedHere = managed?.managedHere;
+  const managedReason = managed?.reason;
   return {
     component: response.componentObjectId,
     ecosystem: response.line.ecosystem,
@@ -591,8 +607,40 @@ export function dependencySubscriptionResolutionRow(
     enabled: String(r.enabled),
     reason: r.reason,
     granularity: isAbsent(r.granularity) ? "-" : r.granularity,
-    delivery: isAbsent(r.delivery) ? "-" : r.delivery
+    delivery: isAbsent(r.delivery) ? "-" : r.delivery,
+    managedHere: isAbsent(managedHere) ? "-" : String(managedHere),
+    managedReason: isAbsent(managedReason) ? "-" : managedReason
   };
+}
+
+/**
+ * …AND THE SAME THING IN WORDS, when nothing on this deployment will act on the verdict (ADR-0032
+ * §7d). `undefined` means print nothing.
+ *
+ * A `false` in a column is easy to read past, and the whole point of the envelope is that an
+ * operator reading `enabled: true` on a field outpost is being told something true and misleading at
+ * once. Printed ONLY for the refusals: a declared commander needs no caveat, and a caveat on every
+ * invocation is one nobody reads.
+ *
+ * EXPORTED, AND OUTSIDE THE `.action()` CLOSURE, FOR THE REASON THE FORMATTERS ABOVE RECORD. This
+ * lived inline in the resolve command's Commander closure, where no test can reach it: inverting the
+ * condition — so the note prints on a healthy commander and is SILENT on the deployment it exists to
+ * warn, the one inversion that matters — left the entire suite green. `dependency-subscription-cli.
+ * test.ts` now pins BOTH directions, which is the only shape in which a conditional caveat is held.
+ *
+ * ABSENT IS NOT A REFUSAL. A server that omits the envelope gets no note (`=== false`, never
+ * falsy): the row already renders `-` there rather than fabricating a posture, and asserting a
+ * refusal the server never claimed would be the same fabrication with a louder voice.
+ */
+export function dependencyManagementNote(
+  managed: DependencySubscriptionResolutionResponse["dependencyManagement"] | undefined
+): string | undefined {
+  if (managed?.managedHere !== false) return undefined;
+  return (
+    `NOTE: dependency management does NOT run on this deployment (${managed.reason}), ` +
+    `so nothing here will act on the verdict above — the subscription is resolved from policies ` +
+    `that federated down, and any bump is authored on the COMMANDER (ADR-0032 §7d).`
+  );
 }
 
 /** ONE contribution to the enablement AND. `contributed` is the load-bearing column: `lock`/`disable`
@@ -653,16 +701,37 @@ export function dependencyInventoryBackfillRow(
 }
 
 /**
+ * The one line BOTH read verbs print when the answering deployment does not manage dependencies
+ * (`dependencyManagement.managedHere === false`, ADR-0032 §7d) — and then print NOTHING ELSE of the
+ * envelope: on such a deployment an empty inventory is "nothing here ever ingested a manifest", not
+ * "declares nothing", and an empty bump list is "nothing is ever dispatched here", not "up to date",
+ * so a table there is a table of a fact that does not exist. `undefined` when dependencies ARE
+ * managed here — and ALSO when the server omitted the envelope (`=== false`, never falsy): an older
+ * server claims no posture and this must not invent one. Exported and pure so both directions are
+ * pinned (`dependency-subscription-cli.test.ts`, `dependency-read-verbs-wire.test.ts`).
+ */
+export function dependencyReadNotManagedLine(
+  managed: { managedHere: boolean; reason: string } | undefined
+): string | undefined {
+  if (managed?.managedHere !== false) return undefined;
+  return `dependencies are not managed on this instance (${managed.reason}) — ask the commander; nothing below would be a statement about this component`;
+}
+
+/**
  * The header lines of `scp dependency-subscriptions inventory` (M21.6) — the envelope BEFORE the
- * rows: which component, whether an ingestion attempt is on record, and the component-level
- * ingestion gate. Exported and pure for the reason `cli-absent-formatters.test.ts` records.
+ * rows: which component, the ingestion STAMP (M21.7), the newest ingestion Decision, and the
+ * component-level ingestion gate. Exported and pure for the reason `cli-absent-formatters.test.ts`
+ * records. The caller has ALREADY handled `managedHere: false` (see
+ * {@link dependencyReadNotManagedLine}); these lines describe a deployment that manages dependencies.
  *
- * `null` IS "NOT RECORDED", NEVER "NOTHING". A null `ingestion` stamp is "no ingestion attempt is
- * on record" — the wire cannot yet distinguish that from "never attempted" (the stamp's read path
- * is the M21.7 session's), so this prints `not recorded` and never `never ingested`; a null
+ * THE STAMP IS THE TRICHOTOMY, PRINTED AS ONE (`ingestion-stamp-repo.ts`): a null stamp is NEVER
+ * ATTEMPTED (there is no row, and only a pass writes one); `ok` with 0 rows written is "read fine —
+ * no dependencies declared" (the sentence an empty inventory could not earn before the stamp);
+ * `partial` / `unreadable` list every manifest with its per-file verdict, because the operator's
+ * next action is a file, not a component; `not_enabled` is "the gate was closed; nothing fetched".
+ * None of these is inferred from `rows` — the printer reads the stamp and says what it says. A null
  * `lastIngestionDecision` is "no ingestion Decision exists" (never ingested, OR refused as
- * not-enabled / not-addressable / superseded, none of which write one). Neither is "no
- * dependencies", and an empty `rows` beside them is UNKNOWN — the row printer's caller says so.
+ * not-enabled / not-addressable / superseded, none of which write one).
  *
  * `componentGate.reason` is a THIRD vocabulary (`enabled | instance_locked |
  * no_enabling_contribution`), distinct from a row's `subscription.reason`; it is printed under its
@@ -673,21 +742,7 @@ export function dependencyInventoryHeaderLines(
 ): string[] {
   const lines: string[] = [];
   lines.push(`component: ${response.component.name} (${response.component.id})`);
-  const stamp = response.ingestion;
-  if (isAbsent(stamp)) {
-    lines.push("ingestion: not recorded");
-  } else {
-    lines.push(
-      `ingestion: ${stamp.outcome} at ${stamp.lastAttemptAt} (${stamp.source}), ` +
-        `${stamp.rowsWritten} row(s) written` +
-        (stamp.manifests.length > 0
-          ? "; manifests: " +
-            stamp.manifests
-              .map((m) => `${m.path}=${m.outcome}${m.detail ? ` (${m.detail})` : ""}`)
-              .join(", ")
-          : "")
-    );
-  }
+  lines.push(dependencyIngestionStampLine(response.ingestion));
   const decision = response.lastIngestionDecision;
   if (isAbsent(decision)) {
     lines.push("last ingestion decision: none on record");
@@ -706,6 +761,42 @@ export function dependencyInventoryHeaderLines(
     `component gate: ${gate.reason} (enabled=${String(gate.enabled)}, ${gate.contributions.length} contribution(s))`
   );
   return lines;
+}
+
+/** The ingestion stamp as one line — see {@link dependencyInventoryHeaderLines} for the four
+ *  readings. `manifests[]` is listed as `repo:path=outcome (detail)`; on `ok` the list is the
+ *  receipt of what was read, on `partial`/`unreadable` it is the work list. */
+export function dependencyIngestionStampLine(
+  stamp: ComponentDependencyInventoryResponse["ingestion"]
+): string {
+  // `null` AND `undefined` alike: a server that omits the field (predating the stamp) has recorded
+  // nothing, and "never attempted" is the only reading a missing stamp has.
+  if (isAbsent(stamp)) return "ingestion: never attempted";
+  const manifests = stamp.manifests ?? [];
+  const files =
+    manifests.length > 0
+      ? "; manifests: " +
+        manifests
+          .map((m) => `${m.repo}:${m.path}=${m.outcome}${m.detail ? ` (${m.detail})` : ""}`)
+          .join(", ")
+      : "";
+  const when = `at ${stamp.lastAttemptAt} (${stamp.source})`;
+  const detail = isAbsent(stamp.detail) || stamp.detail === "" ? "" : ` — ${stamp.detail}`;
+  switch (stamp.outcome) {
+    case "ok":
+      return stamp.rowsWritten === 0
+        ? `ingestion: ok — no dependencies declared (read ${manifests.length} manifest(s)) ${when}${files}`
+        : `ingestion: ok ${when}, ${stamp.rowsWritten} row(s) written${files}`;
+    case "partial":
+      return `ingestion: partial — some manifests could not be read ${when}, ${stamp.rowsWritten} row(s) written${files}`;
+    case "unreadable":
+      return `ingestion: unreadable — no manifest could be read ${when}, ${stamp.rowsWritten} row(s) written${files}`;
+    case "not_enabled":
+      return `ingestion: not enabled — the gate was closed, nothing was fetched ${when}${detail}`;
+    default:
+      // A word this build does not know: print it rather than mislabel it.
+      return `ingestion: ${String(stamp.outcome)} ${when}, ${stamp.rowsWritten} row(s) written${files}${detail}`;
+  }
 }
 
 /**
@@ -752,16 +843,22 @@ export function dependencyInventoryRow(
  *
  * Progress is `pullRequestNumber` (opened), `mergedAt` (the provider confirmed the merge) and the
  * merge Decision's verdict — never the change's `state`, which sits at `proposed` for a bump's
- * whole life. `pullRequestUrl` is printed ONLY when the server sent one; it is NEVER composed from
- * `repo` + number (the provider is not known here, and a guessed link is a fabricated record).
+ * whole life. The PR column is `pullRequestUrl` when the server stored one, else `#<number>`; a
+ * URL is NEVER composed from `repo` + number (the provider is not known here, and a guessed link is
+ * a fabricated record).
  * `mergedAt: null` prints `-`, not "open": the provider has not confirmed a merge, which is all
  * that is known. `delivery` is what the dispatch RESOLVED TO — the first look is always
  * `pull_request` — and `-` when no dispatch Decision is on record.
  */
 export function dependencyBumpRow(bump: ComponentDependencyBump): Record<string, string> {
-  const pr = isAbsent(bump.pullRequestNumber)
-    ? "-"
-    : `#${bump.pullRequestNumber}${isAbsent(bump.pullRequestUrl) ? "" : ` ${bump.pullRequestUrl}`}`;
+  // THE URL WHEN THE SERVER STORED ONE, ELSE THE NUMBER, ELSE `-`. The URL is the provider's own
+  // (`pull_request_url`, M21.7) and is never composed here; a stored URL is the better address of the
+  // same PR, so it replaces the number rather than decorating it.
+  const pr = !isAbsent(bump.pullRequestUrl)
+    ? bump.pullRequestUrl
+    : isAbsent(bump.pullRequestNumber)
+      ? "-"
+      : `#${bump.pullRequestNumber}`;
   return {
     coordinate: bump.line.coordinate,
     "from -> to": `${bump.fromVersion} -> ${bump.toVersion}`,
@@ -772,6 +869,145 @@ export function dependencyBumpRow(bump: ComponentDependencyBump): Record<string,
     verdict: isAbsent(bump.merge) ? "-" : bump.merge.verdict,
     delivery: isAbsent(bump.delivery) ? "-" : bump.delivery
   };
+}
+
+/**
+ * One LINE of a producer declaration's blast radius (`scp dependency-producers declare|retract`,
+ * ADR-0032 §7e).
+ *
+ * THE THREE COLUMNS THAT ARE NOT DECORATION:
+ *
+ *  - `subscribers` is the number of components whose repositories this act reaches. It is the whole
+ *    reason declaring is a VERB with a report rather than a field write: the operator names one
+ *    coordinate and affects a set of repositories the request never mentions.
+ *  - `headWas` is what the observed head WAS. Both verbs clear it, and an operator needs to see the
+ *    value that was discarded rather than only that something was — a wrong declaration is undone
+ *    by re-observing, and knowing `2.7.0` was thrown away is how you know what to look for.
+ *  - `headCleared` distinguishes "there was a head and it is gone" from "there was nothing to
+ *    clear". Printing only `headWas` would render both as a blank.
+ *
+ * Exported and unit-tested DIRECTLY, for the reason `cli-absent-formatters.test.ts` records: a
+ * mapper written inline in a Commander `.action()` closure is unreachable by any test.
+ */
+export function dependencyProducerLineRow(
+  line: DependencyProducerLineImpact
+): Record<string, string> {
+  const head = line.headBefore ?? {
+    latestVersion: null,
+    latestDigest: null,
+    latestObservedAt: null
+  };
+  return {
+    major: line.major,
+    // `-` and NEVER a blank or "none": absent means NOT OBSERVED, which is not the same claim as
+    // "no newer version exists" (ADR-0032 §7's reading of the nullable head).
+    headWas: head.latestVersion ?? "-",
+    headCleared: String(line.headCleared === true),
+    subscribers: String(line.subscribedComponentObjectIds?.length ?? 0),
+    lineId: line.lineId
+  };
+}
+
+/**
+ * One OPEN bump at the moment of a retraction — a pull request SCP already opened in someone else's
+ * repository.
+ *
+ * IT IS PRINTED BECAUSE SCP WILL NOT CLOSE IT. Retraction stops future triggers only; a dispatched
+ * bump has left SCP, and closing it from here would make SCP assert it closed a PR it did not
+ * close. This table is the operator's only list of what to go and close by hand, so the URL column
+ * prints `-` rather than composing one: `repo` + number is a github.com convention and the row does
+ * not record which provider authored the bump.
+ */
+export function dependencyProducerOpenBumpRow(
+  bump: DependencyProducerOpenBump
+): Record<string, string> {
+  return {
+    repo: bump.repo,
+    manifest: bump.manifestPath,
+    bump: `${bump.fromVersion} -> ${bump.toVersion}`,
+    url: bump.pullRequestUrl ?? "-",
+    change: bump.changeObjectId
+  };
+}
+
+/**
+ * The sentence a caller must read before believing an empty producer list, and after a write.
+ *
+ * BOTH ARMS ARE LOAD-BEARING AND BOTH ARE TESTED. On a field outpost `dependency_line_producers` is
+ * empty BY DESIGN (declarations live at the commander, ADR-0032 §7d), so an unqualified empty table
+ * reads as "nothing is declared" when the truth is "you asked the wrong deployment". On a declared
+ * commander the note must be SILENT — a caveat printed on every invocation is one nobody reads,
+ * which is how the M21.7 inversion (`dependencyManagementNote`) went green while warning the wrong
+ * deployment.
+ */
+export function dependencyProducerManagementNote(
+  managed: { managedHere: boolean; reason: string } | undefined
+): string | undefined {
+  // `=== false`, never falsy: a server that predates the envelope claims no posture, and asserting
+  // one it never claimed is the same fabrication the `-` columns exist to avoid.
+  if (managed?.managedHere !== false) return undefined;
+  return (
+    `NOTE: dependency management does NOT run on this deployment (${managed.reason}), so producer ` +
+    `declarations live at the COMMANDER. An empty list here is not evidence that nothing is declared.`
+  );
+}
+
+/**
+ * The whole receipt of a declare or a retract — the table, the note, and the in-flight bumps.
+ *
+ * IT IS A FUNCTION, NOT INLINE IN TWO `.action()` CLOSURES, for two reasons. The tested one: a
+ * printer written inside a Commander action is unreachable by any test, and this one carries the
+ * `dryRun` banner and the open-bump table, both of which are conditional and therefore both of
+ * which have a silent-wrong arm. The other: declare and retract must print the SAME receipt, and
+ * two copies of a receipt are two receipts that drift.
+ */
+export function printProducerVerbResult(
+  response: DependencyLineProducerVerbResponse,
+  output: string | undefined
+): void {
+  if (output === "json") {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+  // FIRST LINE, NOT A FOOTER. An operator who scrolls away after the table must not be able to
+  // mistake a dry run for a write, and the blast-radius table below looks identical either way.
+  console.log(
+    response.dryRun
+      ? `DRY RUN — nothing was written. ${response.action} ${response.ecosystem} ${response.coordinate}`
+      : `${response.action}d: ${response.ecosystem} ${response.coordinate}` +
+          (response.declaration ? ` -> producer ${response.declaration.producerObjectId}` : "")
+  );
+  console.log("");
+  if (response.lines.length === 0) {
+    // AN EMPTY BLAST RADIUS IS ORDINARY AND MUST SAY WHY. A producer can be declared before any
+    // consumer's manifest has minted a line — that is precisely what per-coordinate grain makes
+    // representable — and a bare empty table reads as "the command did nothing".
+    console.log(
+      "No dependency line exists for this coordinate yet, so the declaration covers zero lines " +
+        "today. It applies to every major line minted for the coordinate from now on, which is why " +
+        "the declaration is per COORDINATE and not per line."
+    );
+  } else {
+    console.log("BLAST RADIUS (every major line this coordinate covers):");
+    printResult(response.lines, "table", (raw) =>
+      dependencyProducerLineRow(raw as DependencyProducerLineImpact)
+    );
+  }
+  if (response.openBumpAuthorships.length > 0) {
+    console.log("");
+    console.log(
+      "BUMPS ALREADY IN FLIGHT — SCP does NOT close these. Retraction stops future triggers only; " +
+        "an open pull request is another team's to close."
+    );
+    printResult(response.openBumpAuthorships, "table", (raw) =>
+      dependencyProducerOpenBumpRow(raw as DependencyProducerOpenBump)
+    );
+  }
+  const note = dependencyProducerManagementNote(response.dependencyManagement);
+  if (note !== undefined) {
+    console.log("");
+    console.log(note);
+  }
 }
 
 /**
@@ -3613,14 +3849,14 @@ export function buildProgram(): Command {
   //
   // THERE IS NO `subscribe` VERB, AND ONE MUST NOT BE ADDED. A dependency subscription IS a
   // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored
-  // with `scp policy create` — the same command, versioning and federation path every other policy
+  // with `scp policy register` — the same command, versioning and federation path every other policy
   // uses. `scp dependency-subscriptions --help` says so out loud, because the first thing someone
   // will look for here is the verb that does not exist.
   // -------------------------------------------------------------------------------------
   const depSubsCmd = program
     .command("dependency-subscriptions")
     .description(
-      "Dependency subscriptions (ADR-0032 §6) — the instance unlock and the (component, line) enablement resolution. Subscriptions THEMSELVES are policy effects: author them with `scp policy create` carrying effects: [{ dependencySubscription: { enabled: true } }]"
+      "Dependency subscriptions (ADR-0032 §6) — the instance unlock and the (component, line) enablement resolution. Subscriptions THEMSELVES are policy effects: author them with `scp policy register` carrying effects: [{ dependencySubscription: { enabled: true } }]"
     );
 
   depSubsCmd
@@ -3715,6 +3951,14 @@ export function buildProgram(): Command {
         printResult(response, "table", (raw) =>
           dependencySubscriptionResolutionRow(raw as DependencySubscriptionResolutionResponse)
         );
+        // AND SAY IT IN WORDS WHEN NOTHING HERE WILL ACT ON THE VERDICT (ADR-0032 §7d). Both the
+        // condition and the sentence live in `dependencyManagementNote`, outside this closure, so
+        // they are reachable by a test — inline here, inverting the condition was fully green.
+        const note = dependencyManagementNote(response.dependencyManagement);
+        if (note !== undefined) {
+          console.log("");
+          console.log(note);
+        }
         // THE CONTRIBUTIONS ARE THE POINT (charter principle 6). Printed as their own table rather
         // than squeezed into a cell — "which level turned this off" is the question this command
         // exists to answer, and the verdict alone does not answer it.
@@ -3732,10 +3976,16 @@ export function buildProgram(): Command {
   // manifests. That covers components that RELEASE and nothing else, so an existing estate — and any
   // component that has not pushed since it was enabled — needs this once. Idempotent, so running it
   // twice is a no-op, and it reports every skip rather than a bare count.
+  //
+  // POINT IT AT THE COMMANDER. All dependency automation is commander-only (ADR-0032 §7d), so an
+  // instance whose `SCP_FEDERATION_ROLE` is not an explicitly declared `commander` answers 409 with
+  // a detail naming why — including the fail-closed case where the role was never declared at all.
+  // It is said in the description because that 409 is a mistake an operator makes when choosing
+  // `--base-url`, not a mistake in the request, and the flag is right here.
   depSubsCmd
     .command("backfill-inventory")
     .description(
-      "Read enabled components' dependency manifests and (re)build their inventory (ADR-0032 §4). Idempotent. A component with no enabling subscription is REFUSED BEFORE ITS REPO IS READ — this command cannot bypass the enablement chain"
+      "Read enabled components' dependency manifests and (re)build their inventory (ADR-0032 §4). Idempotent. A component with no enabling subscription is REFUSED BEFORE ITS REPO IS READ — this command cannot bypass the enablement chain. COMMANDER-ONLY: run it against the commander; an outpost, or a deployment that never declared its federation role, answers 409"
     )
     // Repeatable rather than comma-separated: a component URN legitimately contains punctuation, and
     // the existing repeatable flags on `scp change create` set the precedent.
@@ -3792,7 +4042,7 @@ export function buildProgram(): Command {
   depSubsCmd
     .command("inventory")
     .description(
-      "Show a component's dependency inventory — one row per (major line × dependency manifest) with the line's observed head and the resolved dependency subscription for THIS caller. A null ingestion stamp means NOT RECORDED, never 'no dependencies'"
+      "Show a component's dependency inventory — one row per (major line × dependency manifest) with the line's observed head and the resolved dependency subscription for THIS caller. The ingestion stamp says whether the manifests were ever read (never attempted / ok / partial / unreadable / not enabled) — an empty table is NOT RECORDED as 'no dependencies' without it. On a deployment that does not manage dependencies (an outpost) only the posture is printed"
     )
     .requiredOption("--component <idOrUrn>", "component id or URN")
     .option(
@@ -3827,13 +4077,22 @@ export function buildProgram(): Command {
           console.log(JSON.stringify({ ...response, rows }, null, 2));
           return;
         }
+        // NOT MANAGED HERE (ADR-0032 §7d): the component line, the posture, and NOTHING ELSE —
+        // no stamp, no gate, no table. The envelope below the posture is not to be interpreted.
+        const notManaged = dependencyReadNotManagedLine(response.dependencyManagement);
+        if (notManaged !== undefined) {
+          console.log(`component: ${response.component.name} (${response.component.id})`);
+          console.log(notManaged);
+          return;
+        }
         for (const line of dependencyInventoryHeaderLines(response)) console.log(line);
         console.log("");
         if (rows.length === 0) {
-          // AN EMPTY PAGE IS NOT "NO DEPENDENCIES". Beside a null stamp and no Decision it is
-          // UNKNOWN; beside a recorded pass that read N manifests it is "declared nothing".
+          // AN EMPTY PAGE IS NOT "NO DEPENDENCIES". Beside a null stamp (never attempted) it is
+          // UNKNOWN; beside an `ok` stamp with 0 rows written it is "declared nothing" — the
+          // ingestion line above already said which.
           console.log(
-            "(no rows on record — read the ingestion lines above before reading this as 'no dependencies')"
+            "(no rows on record — read the ingestion line above before reading this as 'no dependencies')"
           );
         } else {
           printResult(rows, "table", (raw) =>
@@ -3871,8 +4130,14 @@ export function buildProgram(): Command {
         return;
       }
       console.log(`component: ${response.component.name} (${response.component.id})`);
-      // "(no results)" here is honest only about THIS commander's records: bumps are dispatched
-      // by a declared commander, so an outpost (or an undeclared role) has none by construction.
+      // NOT MANAGED HERE (ADR-0032 §7d): bumps are dispatched by a declared commander only, so on
+      // an outpost (or an undeclared role) the list is empty BY CONSTRUCTION and a table of it would
+      // read as "up to date". Say the posture and stop.
+      const notManaged = dependencyReadNotManagedLine(response.dependencyManagement);
+      if (notManaged !== undefined) {
+        console.log(notManaged);
+        return;
+      }
       printResult(response.rows, "table", (raw) =>
         dependencyBumpRow(raw as ComponentDependencyBump)
       );
@@ -3881,6 +4146,139 @@ export function buildProgram(): Command {
         console.log(`more rows: --cursor ${response.nextCursor}`);
       }
     });
+
+  // -------------------------------------------------------------------------------------
+  // dependency-producers (ADR-0032 §7e) — WHICH COORDINATES THIS ORG PUBLISHES.
+  //
+  // This is the switch between two entirely different head ingresses. A DECLARED coordinate's
+  // versions come from the org's own production releases; an undeclared one's are fetched from a
+  // public index. Getting it wrong fails in both directions and both are silent:
+  //
+  //   - declare a coordinate you do NOT publish -> it leaves the third-party poll permanently, and
+  //     every subscriber stops receiving upstream versions INCLUDING SECURITY RELEASES. There is no
+  //     error, because the failure is an absence.
+  //   - fail to declare one you DO publish -> the coordinate is polled against a public index, and
+  //     a stranger's package answering `9.9.9` bumps every subscriber onto it, on a daily timer.
+  //
+  // SO `--dry-run` IS ON BOTH WRITE VERBS AND IS THE FIRST THING TO REACH FOR. It prints the same
+  // blast radius and writes nothing.
+  //
+  // THERE IS NO `--producer none`. Retraction is its own subcommand: a flag that switches a verb
+  // between declaring and undeclaring is how an omitted value becomes a destructive default.
+  //
+  // POINT IT AT THE COMMANDER. The writes are commander-only (ADR-0032 §7d) and answer 409
+  // elsewhere; the read works anywhere but is empty by design on a field outpost.
+  // -------------------------------------------------------------------------------------
+  const depProducersCmd = program
+    .command("dependency-producers")
+    .description(
+      "Declared dependency-line producers (ADR-0032 §7e) — which COMPONENT this org publishes which coordinate from. A declared coordinate is INTERNAL: its versions are derived from the org's own production releases instead of a public index. Requires 'policy:write' at the ORG ROOT, because the declaration changes behaviour for every component in the org that depends on the coordinate"
+    );
+
+  depProducersCmd
+    .command("list")
+    .description(
+      "List this org's declared producers. Narrowable by ecosystem or to one exact coordinate (compared VERBATIM). On a field outpost the list is EMPTY BY DESIGN — declarations live at the commander"
+    )
+    .option("--ecosystem <ecosystem>", "npm|go|maven|python|oci")
+    .option(
+      "--coordinate <coordinate>",
+      "one exact coordinate, VERBATIM — never slugified, so case and punctuation matter"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts & { ecosystem?: string; coordinate?: string }) => {
+      const client = await clientFromStoredCredentials(opts);
+      const response = await client.dependencyProducers.list({
+        ...(opts.ecosystem !== undefined
+          ? { ecosystem: opts.ecosystem as DependencyEcosystem }
+          : {}),
+        ...(opts.coordinate !== undefined ? { coordinate: opts.coordinate } : {})
+      });
+      if (opts.output === "json") {
+        console.log(JSON.stringify(response, null, 2));
+        return;
+      }
+      printResult(response.producers, "table", (raw) => {
+        const p = raw as DependencyLineProducer;
+        return {
+          ecosystem: p.ecosystem,
+          coordinate: p.coordinate,
+          producer: p.producerObjectId,
+          declaredBy: p.declaredByObjectId,
+          declaredAt: p.declaredAt
+        };
+      });
+      // The condition and the sentence live in `dependencyProducerManagementNote`, OUTSIDE this
+      // closure, so both arms are reachable by a test — the M21.7 lesson: an inline caveat whose
+      // condition is inverted warns the wrong deployment and leaves the suite green.
+      const note = dependencyProducerManagementNote(response.dependencyManagement);
+      if (note !== undefined) {
+        console.log("");
+        console.log(note);
+      }
+    });
+
+  depProducersCmd
+    .command("declare")
+    .description(
+      "Declare that a component produces a coordinate. Prints the BLAST RADIUS — every major line covered, its observed head, and how many components are subscribed. CLEARS each line's observed head, so a poisoned public head does not survive the declaration that exists to undo it. A service is refused: head derivation reads the COMPONENT a production placement names"
+    )
+    .requiredOption("--ecosystem <ecosystem>", "npm|go|maven|python|oci")
+    .requiredOption(
+      "--coordinate <coordinate>",
+      "the ecosystem-native coordinate, VERBATIM (`@acme/lib`, `github.com/acme/lib`, `com.acme:lib`, `docker.io/library/alpine`)"
+    )
+    .requiredOption("--producer <idOrUrn>", "the producing COMPONENT's id or URN")
+    // Argument-LESS, and with no default: a `--dry-run <bool>` is how "the operator said nothing"
+    // silently becomes a value, and here the two values are "look" and "change every subscriber's
+    // upstream".
+    .option("--dry-run", "compute and print the blast radius; write nothing")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          ecosystem: string;
+          coordinate: string;
+          producer: string;
+          dryRun?: boolean;
+        }
+      ) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencyProducers.declare({
+          // Validated server-side by the shared `DependencyEcosystemSchema` (a bad value is a 400
+          // naming the enum); cast rather than duplicate the list here.
+          ecosystem: opts.ecosystem as DependencyEcosystem,
+          coordinate: opts.coordinate,
+          producerIdOrUrn: opts.producer,
+          ...(opts.dryRun === true ? { dryRun: true } : {})
+        });
+        printProducerVerbResult(response, opts.output);
+      }
+    );
+
+  depProducersCmd
+    .command("retract")
+    .description(
+      "Retract a producer declaration and return the coordinate to third-party polling. CLEARS each covered line's observed head — a head the org's own releases put there would otherwise wedge the line, and it is an input to the M22 vendor scan rule. Prints the bumps still in flight, which SCP does NOT close"
+    )
+    .requiredOption("--ecosystem <ecosystem>", "npm|go|maven|python|oci")
+    .requiredOption("--coordinate <coordinate>", "the coordinate, VERBATIM")
+    .option("--dry-run", "compute and print the blast radius; write nothing")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (opts: BaseCliOpts & { ecosystem: string; coordinate: string; dryRun?: boolean }) => {
+        const client = await clientFromStoredCredentials(opts);
+        const response = await client.dependencyProducers.retract({
+          ecosystem: opts.ecosystem as DependencyEcosystem,
+          coordinate: opts.coordinate,
+          ...(opts.dryRun === true ? { dryRun: true } : {})
+        });
+        printProducerVerbResult(response, opts.output);
+      }
+    );
 
   // federation (M6 Federation Basics — DESIGN.md §13, BUILD_AND_TEST.md §8 M6). `export`/`import`
   // work on `.scpbundle` files on disk (the built-in file transport — "the air gap is the design

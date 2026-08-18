@@ -17,6 +17,7 @@ import {
   ProblemSchema,
   RollbackChangeRequestSchema
 } from "@scp/schemas";
+import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
@@ -151,11 +152,21 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
         });
       }
       const { change } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // The declared parent, resolved ONCE and used for both the permission scope and the write
+        // (`graph/containment-parent-authz.ts` — a wire `null` means the org root, never "detach").
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+          declared: containmentDomainIdFromWire(body.domainId),
+          current: undefined
+        });
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
-          scopeObjectId: body.domainId ?? auth.orgId
+          scopeObjectId: declaredParent ?? auth.orgId
         });
         // DESIGN §10.3: "a change flagged emergency by a PERMITTED actor" — `object:write` alone
         // is not enough to set `emergency: true`, since that flag is what lets
@@ -169,7 +180,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
             orgId: auth.orgId,
             subjectObjectId: auth.subjectObjectId,
             permission: "change:emergency",
-            scopeObjectId: body.domainId ?? auth.orgId
+            scopeObjectId: declaredParent ?? auth.orgId
           });
         }
         // P4B Phase 2: bind the change's DECLARED targets to the actor's own authority. The
@@ -201,8 +212,7 @@ export function registerChangeRoutes(app: FastifyInstance, deps: AppDeps): void 
           requestId: request.id,
           id: body.id,
           urn: body.urn,
-          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
-          domainId: containmentDomainIdFromWire(body.domainId),
+          domainId: declaredParent,
           name: body.name,
           properties: body.properties,
           labels: body.labels,

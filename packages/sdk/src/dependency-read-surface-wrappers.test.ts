@@ -34,6 +34,7 @@ function subject(): JsonObject {
 function wellFormedInventory(): JsonObject {
   return {
     component: subject(),
+    dependencyManagement: { managedHere: true, reason: "commander" },
     ingestion: null,
     lastIngestionDecision: null,
     componentGate: { enabled: true, reason: "enabled", contributions: [] },
@@ -76,6 +77,7 @@ function wellFormedInventory(): JsonObject {
 function wellFormedBumps(): JsonObject {
   return {
     component: subject(),
+    dependencyManagement: { managedHere: true, reason: "commander" },
     rows: [
       {
         changeId: CHANGE_ID,

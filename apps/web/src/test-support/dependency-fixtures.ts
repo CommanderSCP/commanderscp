@@ -78,6 +78,7 @@ export function inventoryFixture(
 ): ComponentDependencyInventoryResponse {
   return {
     component: COMPONENT,
+    dependencyManagement: { managedHere: true, reason: "commander" },
     ingestion: null,
     lastIngestionDecision: null,
     componentGate: {

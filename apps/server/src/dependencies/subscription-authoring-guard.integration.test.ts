@@ -152,12 +152,13 @@ describe("group-scoped dependency-subscription effects are refused by the policy
     });
 
     // This case USED to be the guard's narrowness control, on M21.3's reasoning that failing to
-    // match leaves it not-enabled and nothing is lost. M21.4 measured the other half: the jobs that
-    // act on a subscription resolve as `SYSTEM_ACTOR_ID`, which has no `objects` row at all
-    // (`coordination/system-actor.ts:9`) and so is `member_of` nothing — the enable never
-    // contributes for them, while a team member reading the API sees `enabled: true`. The
-    // narrowness controls the direction axis no longer provides are supplied by the objectRef and
-    // no-scope cases below and beside it.
+    // match leaves it not-enabled and nothing is lost. M21.4 refused it on a reason that has since
+    // been retired as FALSE (ADR-0032 §6a-ii): "the jobs resolve as `SYSTEM_ACTOR_ID`, which is
+    // `member_of` nothing, so the enable never contributes for them". Group scope's OWNING half
+    // ignores the actor, so it can contribute. The refusal stands on the ground that survived: a
+    // group-scoped effect's reach is decided by membership and by mutable `owns` edges rather than
+    // by what the author wrote, in either direction. The narrowness controls the direction axis no
+    // longer provides are supplied by the objectRef and no-scope cases below and beside it.
     expect(res.statusCode, res.body).toBe(400);
     expect(res.body).toMatch(/objectRef/);
     // WHICH refusal — a bare 400 would pass equally against the opt-out branch, the URN check or
@@ -184,8 +185,8 @@ describe("group-scoped dependency-subscription effects are refused by the policy
     // THE NEGATIVE CONTROL THE WIDENING NEEDS. Without it, the refusal above is equally satisfied by
     // a guard that rejects every group-scoped policy or every dependencySubscription enable —
     // exactly the over-broad shape clause 6a-i(b) narrowed away, and the one a direction widening is
-    // most likely to reintroduce. The `objectRef` branch runs for the system actor too, so this
-    // enable is neither inert nor fail-open.
+    // most likely to reintroduce. The `objectRef` branch reaches exactly what it names, for every
+    // caller, so this enable's reach is what the author wrote and is not fail-open.
     expect(res.statusCode, res.body).toBe(201);
   });
 
@@ -228,10 +229,10 @@ describe("group-scoped dependency-subscription effects are refused by the policy
       effects: [{ dependencySubscription: { enabled: false, coordinate: "acme-lib" } }]
     });
 
-    // `policy-resolve.ts` evaluates the scope kinds INDEPENDENTLY: the objectRef branch (:161-169)
-    // records its match before the actor-dependent group branch (:183-193) is reached, so this
-    // policy contributes for every caller regardless of membership. The hazard the refusal exists
-    // for is absent, and refusing here told the author to add an objectRef they had already added.
+    // `policy-resolve.ts` evaluates the scope kinds INDEPENDENTLY: the objectRef branch (:271-279)
+    // records its match before the group branch (:292-322) is reached, so this policy contributes
+    // for every caller regardless of membership or ownership. The hazard the refusal exists for is
+    // absent, and refusing here told the author to add an objectRef they had already added.
     expect(res.statusCode, res.body).toBe(201);
   });
 

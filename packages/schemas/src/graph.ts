@@ -173,7 +173,34 @@ export const CreateObjectRequestSchema = z.object({
   id: z.string().uuid().optional(),
   urn: UrnSchema.optional(),
   name: z.string().min(1).max(500),
-  domainId: z.string().uuid().nullable().optional(),
+  /**
+   * The containment parent. Carried as a `.describe()` rather than as a JSDoc comment ON PURPOSE:
+   * JSDoc does not reach `z.toJSONSchema()`, so it would never appear in
+   * `tools/openapi/openapi.v1.json`, in the generated SDK, or in a client's editor — which is
+   * exactly where this fact was missing (ADR-0032 §8g). If you shorten this string, shorten the
+   * argument, not the literal request body: the body is the part a caller can copy.
+   */
+  domainId: z
+    .string()
+    .uuid()
+    .nullable()
+    .optional()
+    .describe(
+      "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. " +
+        "The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later " +
+        "re-check at the row's own id, so this field decides both where the row is placed and who may change it " +
+        "afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold " +
+        "write authority over: a narrowly-bound author who omits this is checked at the org root and refused with " +
+        "\"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not " +
+        "mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) " +
+        "sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its " +
+        "containment domain, or at the org root (sending the component's containment DOMAIN instead would work only " +
+        'for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>",' +
+        '"properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},' +
+        '"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are ' +
+        "different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), " +
+        "scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all."
+    ),
   properties: JsonRecordSchema.optional(),
   labels: JsonRecordSchema.optional(),
   /**
@@ -389,10 +416,15 @@ export const RelationshipSchema = z.object({
   fromId: z.string().uuid(),
   toId: z.string().uuid(),
   properties: JsonRecordSchema,
-  // M2 step 3 addition (BUILD_AND_TEST.md §8 M2 item 4): mirrors `objects.labels` so IaC's
-  // `scp:managed-by`/`scp:stack` pruning convention applies uniformly to relationships too
-  // (apps/server/src/iac/plan-diff.ts) — additive, backward-compatible (DESIGN.md "additive-only
-  // within v1"), defaults to `{}` for every relationship created before this milestone.
+  // M2 step 3 addition (BUILD_AND_TEST.md §8 M2 item 4): mirrors `objects.labels` — additive,
+  // backward-compatible (DESIGN.md "additive-only within v1"), defaults to `{}` for every
+  // relationship created before this milestone.
+  //
+  // An IaC apply writes `scp:managed-by`/`scp:stack` here, but SINCE drizzle/0068 THOSE ARE A
+  // DESCRIPTIVE MIRROR AND SCOPE NOTHING. Pruning is scoped by the server-written
+  // `relationships.managed_by_stack` column, precisely because this map is writable by the edge's
+  // own endpoints' owners and the previous wording ("the pruning convention") is what made a
+  // tenant-writable key into a delete decision.
   labels: JsonRecordSchema,
   originDomainId: z.string().uuid(),
   revision: z.number().int(),

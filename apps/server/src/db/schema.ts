@@ -1,7 +1,6 @@
 import {
   bigint,
   boolean,
-  check,
   foreignKey,
   index,
   integer,
@@ -169,10 +168,13 @@ export const objects = pgTable(
   {
     id: uuid("id").primaryKey(), // UUIDv7, client-suppliable
     orgId: uuid("org_id").notNull(),
-    // CONTAINMENT sense (ADR-0021 D4) — the containing `domain` graph object; NULL only for the
-    // org root object. Deliberately branded differently from `originDomainId` nine lines below,
-    // which is the TRUST sense: the two are structurally identical uuids and were freely
-    // interchangeable before branding.
+    // CONTAINMENT sense (ADR-0021 D4) — the containment parent (ANY object; a `domain` in the
+    // common case); NULL only for the org root object. There is deliberately NO FK and NO CHECK
+    // here (0001_graph_core.sql:32) and `resolveContainmentParent` applies no type filter, so a
+    // service id or a component id is valid and is what several shipped tests pass. The brand
+    // asserts the SENSE, never the TYPE. Deliberately branded differently from `originDomainId`
+    // nine lines below, which is the TRUST sense: the two are structurally identical uuids and were
+    // freely interchangeable before branding.
     domainId: uuid("domain_id").$type<ContainmentDomainId>(),
     typeId: text("type_id")
       .notNull()
@@ -224,6 +226,23 @@ export const objects = pgTable(
     // create, which for historical provenance is the more honest label.
     domainLocalInheritedFrom: uuid("domain_local_inherited_from"),
     domainLocalInheritedFromUrn: text("domain_local_inherited_from_urn"),
+    // drizzle/0068 — the `@scp/iac` stack whose apply owns this row, or NULL. This is what scopes
+    // PRUNING: an apply deletes exactly the live rows carrying its own stack name that its manifest
+    // no longer declares (`iac/plan-diff.ts`'s `isStackManaged`).
+    //
+    // SERVER-WRITTEN ONLY, and that is the whole point of it being a column. It lived in `labels`
+    // until 0068, where the prune TARGET could rewrite it under plain `object:write` — enrolling an
+    // arbitrary object into a stack's delete pool, or walking its own object out of one. The sole
+    // writer is `iac/stack-ownership.ts`, called from the IaC apply path; no request body can reach
+    // it and no route passes it, exactly as for `origin_domain_id`, `provenance` and `domain_local`.
+    //
+    // DOES NOT FEDERATE, deliberately: it is absent from the journal payload, so a replica arrives
+    // owned by nobody. That is the truth — the importing domain's IaC does not manage a row another
+    // domain authored — and it is a bonus over the label scheme, under which a peer's `scp:stack=X`
+    // did land here (labels ARE in the payload) and would join a local stack X's prune pool. That
+    // consequence is READ FROM THE CODE, not reproduced against two live domains; see
+    // `iac/stack-ownership.ts` for the chain and the caveat.
+    managedByStack: text("managed_by_stack"),
     // lifecycle
     version: bigint("version", { mode: "number" }).notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -236,7 +255,12 @@ export const objects = pgTable(
     index("obj_domain").on(table.orgId, table.domainId),
     index("obj_created_cursor").on(table.orgId, table.createdAt, table.id),
     index("obj_props").using("gin", sql`${table.properties} jsonb_path_ops`),
-    index("obj_labels").using("gin", sql`${table.labels} jsonb_path_ops`)
+    index("obj_labels").using("gin", sql`${table.labels} jsonb_path_ops`),
+    // drizzle/0068 — the prune-pool lookup. Partial: almost nothing on an estate is IaC-managed,
+    // and the query never asks for the rows that are not.
+    index("obj_managed_stack")
+      .on(table.orgId, table.managedByStack)
+      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`)
   ]
 );
 
@@ -256,13 +280,18 @@ export const relationships = pgTable(
       .references(() => objects.id),
     properties: jsonb("properties").notNull().default({}),
     // M2 step 3 addition (BUILD_AND_TEST.md §8 M2 item 4, drizzle/0005_plans.sql) — mirrors
-    // `objects.labels` so the `scp:managed-by`/`scp:stack` IaC pruning convention
-    // (apps/server/src/iac/plan-diff.ts) applies uniformly to relationships, not just objects.
+    // `objects.labels`. An IaC apply writes `scp:managed-by`/`scp:stack` here, but SINCE
+    // drizzle/0068 THOSE ARE A DESCRIPTIVE MIRROR THAT SCOPES NOTHING: pruning reads
+    // `managed_by_stack` below. This map is writable by the endpoints' owners, which is exactly
+    // what made the previous "pruning convention" a delete decision its own subject could rewrite.
     labels: jsonb("labels").notNull().default({}),
     // TRUST sense (ADR-0021 D4) — the security domain that authored this row.
     originDomainId: uuid("origin_domain_id").notNull().$type<TrustDomainId>(),
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     contentHash: text("content_hash").notNull(),
+    // drizzle/0068 — mirrors `objects.managed_by_stack`; see that column for the full reasoning.
+    // Same single writer (`iac/stack-ownership.ts`), same non-federating behaviour, same reason.
+    managedByStack: text("managed_by_stack"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp("deleted_at", { withTimezone: true })
   },
@@ -276,7 +305,11 @@ export const relationships = pgTable(
     index("rel_fwd").on(table.orgId, table.fromId, table.typeId),
     index("rel_rev").on(table.orgId, table.toId, table.typeId),
     index("rel_created_cursor").on(table.orgId, table.createdAt, table.id),
-    index("rel_labels").using("gin", sql`${table.labels} jsonb_path_ops`)
+    index("rel_labels").using("gin", sql`${table.labels} jsonb_path_ops`),
+    // drizzle/0068 — see `obj_managed_stack`.
+    index("rel_managed_stack")
+      .on(table.orgId, table.managedByStack)
+      .where(sql`${table.managedByStack} IS NOT NULL AND ${table.deletedAt} IS NULL`)
   ]
 );
 
@@ -575,11 +608,14 @@ export const decisions = pgTable(
     // match — measured at 12M rows: 22.8 s / 402,430 buffers for a probe that returns NO row, 0.3 ms
     // with this index (drizzle/0044 carries the full before/after EXPLAIN and the write cost).
     // With `kind` in the key, every probe is one index descent whatever else the subject holds.
+    // `id DESC` CLOSES THE KEY, and it is load-bearing for a reason that is NOT about the answer —
+    // see the identical note on the block index below, and drizzle/0069 for the measurements.
     index("decisions_org_subject_kind_created").on(
       table.orgId,
       table.subjectId,
       table.kind,
-      table.createdAt.desc()
+      table.createdAt.desc(),
+      table.id.desc()
     ),
     // The SERVICE BOARD's shape (`decisions-repo.ts`'s `latestBlockDecisionForSubject`, once per
     // board row): org + subject + the latest `block`. PARTIAL, because `block` is the only verdict
@@ -588,8 +624,20 @@ export const decisions = pgTable(
     // finds nothing instead of a walk over its whole history. Measured at 12M rows: 45.8 ms /
     // 20,526 buffers fully cached to return NO row, 0.070 ms / 13 buffers with this index
     // (drizzle/0046 carries the full before/after EXPLAIN and the write cost).
+    //
+    // `id DESC` CLOSES THE KEY, AND IT IS THE DIFFERENCE BETWEEN THIS INDEX BEING USED AND NOT
+    // BEING USED. The read ends `ORDER BY created_at DESC, id DESC`; an index that stops at
+    // `created_at DESC` supplies only a PREFIX of that order, so every plan using it carries an
+    // `Incremental Sort` above it — and a sort node's STARTUP cost is exactly what `LIMIT 1`
+    // cannot amortise. `decisions_org_created` below supplies the whole order sortlessly, so the
+    // planner prices it at `1/estimated_matches` of its length and prefers it the moment
+    // statistics make a match look near, then applies `subject_id`/`verdict` as a heap FILTER and
+    // walks the ORG's entire stream. This comment previously argued the opposite — that a `LIMIT 1`
+    // query needs no tiebreak in its index because a tiebreak "cannot change the answer". It cannot;
+    // that was never its job here. drizzle/0069 carries the before/after plans and the CI failure
+    // (`expected 804 to be less than or equal to 10`) that this cost.
     index("decisions_org_subject_block_created")
-      .on(table.orgId, table.subjectId, table.createdAt.desc())
+      .on(table.orgId, table.subjectId, table.createdAt.desc(), table.id.desc())
       .where(sql`${table.verdict} = 'block'`),
     // `GET /decisions?kind=…` WITHOUT a subject (ADR-0028 increment 4) — the operator who knows the
     // coupling but not the change id. Every index above leads with `subject_id` or omits `kind`, so
@@ -597,8 +645,9 @@ export const decisions = pgTable(
     // 100.0 ms / 55,650 buffers and every row scanned to return 101, versus 0.098 ms / 8 buffers
     // with this index (drizzle/0056 carries the full before/after EXPLAIN and the write cost).
     // `created_at, id` closes the key because that is the keyset cursor's ordering verbatim, so a
-    // page costs one descent and no sort — 0044 leaves `id` out for the opposite reason, its query
-    // is a `LIMIT 1` where a tiebreak cannot change the answer.
+    // page costs one descent and no sort. That is the same reason the two indexes above now close
+    // theirs (drizzle/0069): "no sort node" is a property every one of these ordered reads needs,
+    // `LIMIT 1` included — this index is also the RIVAL that won whenever they lacked it.
     index("decisions_org_kind_created").on(table.orgId, table.kind, table.createdAt, table.id)
   ]
 );
@@ -1424,10 +1473,17 @@ export const bundleTransfers = pgTable(
     // render. Declared here for schema fidelity; the migration creates it PARTIAL + INCLUDE
     // (`direction='import' AND kind='sync' AND status='confirmed'`, INCLUDE (transport)), which
     // drizzle-kit cannot express — see 0041's header.
+    //
+    // `DESC NULLS LAST` MATCHES THE READ, and that is the whole point of the column order here:
+    // the query orders by `confirmed_at DESC NULLS LAST` (deliberately — a NULL `confirmed_at` must
+    // not sort ahead of a real one), while 0041 built the index as bare `DESC`, which PostgreSQL
+    // reads as NULLS FIRST. Those are different orderings, so the index was INELIGIBLE for the read
+    // and every board render seq-scanned the whole never-pruned transfer ledger and sorted it.
+    // drizzle/0070 carries the plans.
     index("bundle_transfers_org_peer_confirmed").on(
       table.orgId,
       table.peerDomainId,
-      table.confirmedAt
+      table.confirmedAt.desc().nullsLast()
     )
   ]
 );
@@ -1796,9 +1852,24 @@ export const scanRequirementFloors = pgTable(
 // -------------------------------------------------------------------------------------------
 
 /**
- * The identity of ONE MAJOR LINE of one dependency, in one org. Derived, per-domain, high-churn
- * observation data — the category `changeSourceEvents` and `objectHealth` already occupy — so it is
- * a projection table and it does NOT federate; each domain derives its own (ADR-0032 §3).
+ * The identity of ONE MAJOR LINE of one dependency, in one org. Derived, high-churn observation
+ * data — the category `changeSourceEvents` and `objectHealth` already occupy — so it is a
+ * projection table and it does NOT federate (ADR-0032 §3, unchanged: that is what justifies the
+ * principle-2 bend).
+ *
+ * IT IS WRITTEN ON THE COMMANDER ONLY (ADR-0032 §7d, owner decision 2026-08-17). This comment used
+ * to say "per-domain … each domain derives its own", quoting §3; that half is reversed. All
+ * dependency automation is commander-only — a FIELD outpost never ORIGINATES a bump, it receives the
+ * resulting change down the global pipeline the commander manages — so these rows exist in exactly
+ * one place, and an EMPTY `dependency_lines` on a field outpost is correct rather than a sync
+ * failure. "Field" is the qualifier that makes that sentence true: an HQ outpost is the outpost in
+ * the COMMANDER'S OWN trust domain, so its rows ARE these rows (ADR-0032 §7d's vocabulary note,
+ * read out of the code in `dependencies/commander-only.ts`). Any deployment whose
+ * `SCP_FEDERATION_ROLE` reads `outpost` is a field outpost, which is why the table is empty
+ * exactly there and nowhere else.
+ * `drizzle/0061`'s `COMMENT ON` carried the old wording, which is what an operator actually meets
+ * in `\d+ dependency_lines`; 0061 is merged and not editable in place, so `drizzle/0066` restates
+ * it there. The two are meant to be read as one statement — keep them saying the same thing.
  *
  * THE COORDINATE IS NOT A URN, and that is why this is a table. `graph/urn.ts`'s `slugify`
  * lowercases and hyphenate-collapses every non-alphanumeric run, so `@acme/lib`, `acme/lib` and
@@ -1830,32 +1901,22 @@ export const dependencyLines = pgTable(
      *  extractor cannot parse are SKIPPED, never guessed (ADR-0032 §7). NULL for the four language
      *  ecosystems. */
     tagPattern: text("tag_pattern"),
-    /**
-     * The component/service this org DECLARES produces this line. NULL = third-party.
-     *
-     * DECLARED, NEVER INFERRED (ADR-0032 §7, ADR-0030 §2). Nothing reads a coordinate, repo name or
-     * registry host and concludes "this one is ours" — a label named after WHAT MATCHED goes false
-     * the moment the matcher covers a second case, which this repo has already shipped once
-     * (charter principle 6). There is no material to infer it from anyway: SCP has no artifact name
-     * at all (`ArtifactRef` is `{type, digest}`; no `purl` exists in the tree).
-     *
-     * What removes the capability rather than guarding it is the INGESTION VERB, not the CHECK:
-     * `UpsertDependencyLineInputSchema` has no producer field and `upsertDependencyLine`'s ON
-     * CONFLICT set cannot reach these columns, so a manifest-parsing path has nowhere to put a
-     * producer it "worked out". That is the shape 0059 used for `objects.domainLocal`. The
-     * `dependency_lines_internal_is_declared` CHECK is the weaker, complementary half: it refuses a
-     * HALF-WRITTEN row from raw SQL or a future verb that forgets a column. It does not make the
-     * writer a human — see 0060's "INTERNAL vs THIRD-PARTY" header.
-     */
-    producedByObjectId: uuid("produced_by_object_id").references(() => objects.id),
-    producedByDeclaredAt: timestamp("produced_by_declared_at", { withTimezone: true }),
-    /** The principal (graph `user` object) that declared the producer link — principle 6: "which
-     *  principal asserted this line is internal?" must be answerable. `references(objects.id)` and
-     *  part of the CHECK below so the answer can be neither NULL nor a fabricated uuid; org-unbound,
-     *  like the other two `objects(id)` references here (0060 header, barrier 2's scope note). */
-    producedByDeclaredByObjectId: uuid("produced_by_declared_by_object_id").references(
-      () => objects.id
-    ),
+    // THE PRODUCER LINK USED TO BE HERE — `produced_by_object_id` + `produced_by_declared_at` +
+    // `produced_by_declared_by_object_id`, with a partial index and the
+    // `dependency_lines_internal_is_declared` CHECK. All five are gone (drizzle/0068, ADR-0032 §7e).
+    //
+    // They made the declaration PER MAJOR LINE, and a line is minted only by a CONSUMER's manifest.
+    // So every new major of a coordinate the org publishes minted a fresh row with a NULL producer —
+    // honestly third-party, since nobody had filled it in — and `buildLineWorkList` then handed the
+    // org's own coordinate to a PUBLIC INDEX. That is §7b clause 1's dependency-confusion
+    // catastrophe, re-armed silently at each major bump; both barriers that exist against it read
+    // the column, and neither can protect a column nobody filled in. The declaration now lives in
+    // `dependencyLineProducers`, keyed `(org_id, ecosystem, coordinate)`.
+    //
+    // DO NOT REINSTATE THIS AS A MATERIALIZED CACHE stamped by `upsertDependencyLine` at mint time.
+    // It closes the same hole with no human step, and it puts a `produced_by_*` write back inside
+    // the ingestion verb — which deletes "the capability is absent from ingestion", the property
+    // this whole feature protects. The join makes the projection unnecessary rather than safe.
     /** The head of the line as last OBSERVED. Written by M21.4 detection, never by manifest
      *  ingestion — a component declaring `1.2.0` says nothing about what the line's head is. NULL is
      *  "not yet observed", which is NOT "no newer version exists": absent never means zero, the same
@@ -1880,21 +1941,78 @@ export const dependencyLines = pgTable(
     // The composite-FK target for `componentDependencies` — see that table's `line_id` note.
     // Redundant with the primary key for uniqueness; it exists so a `(org_id, id)` foreign key has
     // something to reference.
-    unique("dependency_lines_org_id_key").on(table.orgId, table.id),
-    // "Which lines does component X publish?" — the M21.4 internal-release derivation. PARTIAL over
-    // the declared minority (internal lines are the exception, third-party the rule), so it stays
-    // proportional to that minority instead of to the table — 0059's partial index, same reasoning.
-    index("dependency_lines_org_producer")
-      .on(table.orgId, table.producedByObjectId)
-      .where(sql`${table.producedByObjectId} IS NOT NULL`),
-    // Link, timestamp and declaring principal exist together or not at all. The second conjunct is
-    // load-bearing: without it a producer link could carry a NULL principal, which is exactly the
-    // state that makes `producedByDeclaredByObjectId`'s "must be answerable" comment false.
-    check(
-      "dependency_lines_internal_is_declared",
-      sql`(${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredAt} IS NULL)
-          AND (${table.producedByObjectId} IS NULL) = (${table.producedByDeclaredByObjectId} IS NULL)`
-    )
+    unique("dependency_lines_org_id_key").on(table.orgId, table.id)
+    // `dependency_lines_org_producer` (the partial index over the declared minority) and
+    // `dependency_lines_internal_is_declared` (the all-three-or-none CHECK) were dropped with the
+    // columns they served — drizzle/0068. "Which lines does component X publish?" is now
+    // `dependency_line_producers_org_producer` -> this table's `dependency_lines_identity`, whose
+    // `(org_id, ecosystem, coordinate)` PREFIX serves the second hop, so no index was added to
+    // replace it. The CHECK is retired rather than reproduced: in the new table every column is NOT
+    // NULL and the ROW'S EXISTENCE IS THE DECLARATION, so a half-written declaration is not
+    // representable instead of being refused.
+  ]
+);
+
+/**
+ * WHICH COMPONENT THIS ORG DECLARES IT PRODUCES ONE COORDINATE (ADR-0032 §7e, proposal §12.1).
+ * Hand-authored table/RLS/grants in `drizzle/0068_dependency_line_producers.sql`.
+ *
+ * THE GRAIN IS THE COORDINATE, NOT THE LINE, and that is a security property rather than tidiness.
+ * A `dependency_lines` row is `(org, ecosystem, coordinate, major)` and is minted ONLY by a
+ * consumer's manifest, so under per-line grain (a) a producer with no consumers yet had no row to
+ * attach to, and (b) every new major minted a fresh NULL-producer row that the version poll then
+ * handed to a public index — §7b clause 1's dependency confusion, on a daily timer, re-armed at
+ * each major bump with nothing to alert on. Keyed by coordinate, a brand-new major of a declared
+ * coordinate is internal FROM THE INSTANT IT IS MINTED, because there is no per-major field left to
+ * populate.
+ *
+ * IT IS NOT A GRAPH OBJECT, AND THAT IS THE FEDERATION DECISION (proposal §12.4). A `produces`
+ * relationship or a `producedBy` policy effect WOULD federate — `policy` does — and a field outpost
+ * would then hold a declaration with no inventory behind it: a visible assertion nothing can act on.
+ * A projection table cannot make that mistake; it exists only where the inventory does, which since
+ * ADR-0032 §7d is the commander alone.
+ *
+ * DECLARED, NEVER INFERRED. Nothing writes this table except the two verbs in
+ * `routes/dependency-producers.ts`; `inventory-ingestion.ts` does not import it, which is the
+ * enforcement, exactly as `dependency-inventory-repo.ts` not importing `relationships` is the
+ * enforcement for "no `depends_on` edge is minted".
+ */
+export const dependencyLineProducers = pgTable(
+  "dependency_line_producers",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** `npm` | `go` | `maven` | `python` | `oci`. Plain text with no CHECK, exactly as on
+     *  `dependencyLines.ecosystem`: packages/schemas is the only enforcement point. */
+    ecosystem: text("ecosystem").notNull(),
+    /** The ecosystem-native coordinate, VERBATIM and case-preserved — the same bytes
+     *  `dependencyLines.coordinate` holds, because the join between the two is byte equality. */
+    coordinate: text("coordinate").notNull(),
+    /** The producing COMPONENT's graph object id. A `service` is refused by the verb in the first
+     *  cut (ADR-0032 §7e): `listProducedLines` derives a head only from the component a prod
+     *  placement names, so a service-valued declaration would remove the coordinate from
+     *  third-party polling — the harmful half — and derive no head at all — the useful half. */
+    producerObjectId: uuid("producer_object_id")
+      .notNull()
+      .references(() => objects.id),
+    declaredAt: timestamp("declared_at", { withTimezone: true }).notNull().defaultNow(),
+    /** WHO asserted it (principle 6). Taken from the authenticated subject at the route and never
+     *  from the request body — a caller-supplied provenance label is a forgeable one. */
+    declaredByObjectId: uuid("declared_by_object_id")
+      .notNull()
+      .references(() => objects.id)
+  },
+  (table) => [
+    // ONE declaration per coordinate. The org cannot model "we produce @acme/lib@2, upstream
+    // produces @acme/lib@1" — and that refusal is deliberate: that shape means a public index
+    // legitimately answers for a coordinate the org also publishes, which is dependency confusion
+    // with a data model behind it.
+    primaryKey({
+      name: "dependency_line_producers_pk",
+      columns: [table.orgId, table.ecosystem, table.coordinate]
+    }),
+    // "Which coordinates does component X produce?" — the first hop of M21.4's internal-release
+    // derivation, which used to be `dependency_lines_org_producer`.
+    index("dependency_line_producers_org_producer").on(table.orgId, table.producerObjectId)
   ]
 );
 
@@ -1974,6 +2092,146 @@ export const componentDependencies = pgTable(
   ]
 );
 
+/** One entry of {@link dependencyIngestionStamps.manifests} — what a pass established about ONE
+ *  manifest path IN ONE REPOSITORY. Declared here beside the column so the jsonb has a type at
+ *  every read. */
+export interface IngestionStampManifest {
+  /**
+   * THE REPOSITORY THIS ENTRY'S EVIDENCE CAME FROM — which is what makes the array a merge target
+   * rather than something a pass replaces wholesale.
+   *
+   * A pass reads exactly ONE repository, and `source_mappings` is many-per-component: a component
+   * legitimately releases from `acme/widgets` (its `go.mod`) and from `acme/charts` (its
+   * `Dockerfile`). Keyed by `path` alone, a charts pass replaced the entire array and ERASED the
+   * widgets pass's `unreadable` verdict minutes later — state (iii) "manifests unreadable" rendered
+   * as state (ii) "genuinely declares nothing", which is precisely the lie this table was built to
+   * prevent. So the writer replaces only the `(repo, *)` slice it holds evidence over
+   * (`mergeIngestionStamp`), and the component-level `outcome` is computed ACROSS the merged set.
+   */
+  readonly repo: string;
+  /** Repo-relative path, as `component_dependencies.manifest_path` spells it. */
+  readonly path: string;
+  /** `ok` read and parsed; `unreadable` a read or parse that failed THIS TIME and may succeed on
+   *  the next pass; `unsupported` a file SCP structurally cannot read (no parser registered for
+   *  that filename in this build, an LFS pointer, a directory, a binary, an encoding the decoder
+   *  does not implement). The split is by OPERATOR ACTION, which is the test for whether a reason
+   *  deserves its own name (ADR-0032 §7b clause 6). */
+  readonly outcome: "ok" | "unreadable" | "unsupported";
+  /** `component_dependencies` rows THIS manifest's last observation wrote; 0 on an entry that was
+   *  not read and on one whose manifest went away. The row's `rows_written` is the SUM of these
+   *  over the merged set — it has to be, or a second repository's pass would report its own count
+   *  as the whole component's and `ok` + 0 would stop meaning "declares nothing". */
+  readonly rows: number;
+  /** WHEN THE PASS THAT WROTE THIS ENTRY LOOKED, ISO-8601. The only thing that orders two passes
+   *  over the SAME repository: a late-delivered retry of an earlier pass must not replace a newer
+   *  slice (both delivery hops are at-least-once and the ingestion queue is a competing consumer).
+   *  Per entry rather than per row because the row's own `last_attempt_at` is now the newest across
+   *  ALL repositories, which says nothing about whether this repository's slice is stale. */
+  readonly at: string;
+  /** The ingestion's own sentence about this path. Absent on the ordinary `ok` entry. */
+  readonly detail?: string;
+}
+
+/**
+ * ================================================================================================
+ * THE DEPENDENCY INGESTION'S RECEIPT, PER COMPONENT (migration 0065, ADR-0032 §4)
+ * ================================================================================================
+ * `component_dependencies.observed_at` is PER ROW, so a component with ZERO rows carries no
+ * timestamp at all and three different truths produce the same empty list: never ingested;
+ * ingested fine and genuinely declares nothing; ingestion ran and every manifest was unreadable.
+ * The ingestion has always COMPUTED which one — the verdict, the per-manifest skip reason and a
+ * detail are all on `ComponentIngestionOutcome`, the backfill route reports them per component and
+ * the loop logs them — and NOTHING PERSISTED IT, so a reader arriving later has only the absence of
+ * rows to go on and is forced to render "no dependencies" over all three. The third rendered as the
+ * second is a lie told with a straight face: the component is silently unsubscribed from everything
+ * it declares, and the screen says it has nothing to declare.
+ *
+ * ONE ROW PER COMPONENT, UPSERTED. Bounded by the component count, not by the event rate — a pass
+ * updates a row rather than appending one, which is the distinction ADR-0024's 1.44 GB/day
+ * measurement is actually about.
+ *
+ * "NEVER ATTEMPTED" IS THE ABSENCE OF A ROW, never a value: the only writer of "we have never
+ * looked at this component" would be a pass that ran, which is a contradiction. `scp_app` holds no
+ * DELETE grant here for the same reason — deleting a stamp forges that absence.
+ *
+ * WHY NOT THE DECISION THE INGESTION ALREADY WRITES: it writes NO Decision on the refused paths
+ * (not enabled, not addressable), which are exactly the components whose empty list needs
+ * explaining; and it is persist-on-change with the ref, the commit and every timestamp deliberately
+ * excluded, so "when did we last look?" is unanswerable from it BY DESIGN.
+ */
+export const dependencyIngestionStamps = pgTable(
+  "dependency_ingestion_stamps",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** Org-unbound `references(objects.id)` — the form `changes.objectId` and
+     *  `component_dependencies.component_object_id` use. There is NO composite foreign key here and
+     *  that is a finding rather than an omission: `component_dependencies` carries one because a
+     *  row of it points at a `dependency_lines` row and 0061 gave that table a `(org_id, id)`
+     *  UNIQUE constraint expressly so a composite key had something to reference. This table points
+     *  at nothing org-scoped, and `objects` carries no `(org_id, id)` unique constraint to hang one
+     *  on. 0061's barrier-2 residue therefore applies verbatim (drizzle/0065's header states it in
+     *  full, including what a future read route owes). */
+    componentObjectId: uuid("component_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** WHEN THIS PASS LOOKED — the phase-2 read time where a provider was reached, the start of the
+     *  pass where it refused before reaching one. The same clock `component_dependencies.observed_at`
+     *  is stamped from, so a pass's stamp and its rows describe one instant and two overlapping
+     *  passes order identically in both places. */
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }).notNull(),
+    /** `loop` (event-driven, reacting to an accepted change) or `backfill` (an operator ran
+     *  `POST /dependencies/inventory/backfill`) — "is this inventory maintained by the component's
+     *  own releases, or only by whoever last ran a backfill?", two very different freshnesses
+     *  behind one timestamp. Plain text with no CHECK, like `dependencyLines.ecosystem`: the closed
+     *  set is enforced by the union type at the one write door, and `source` is a REQUIRED input of
+     *  `ingestComponentManifests`, so a third producer does not compile until it names itself. */
+    source: text("source").$type<"loop" | "backfill">().notNull(),
+    /** What the component's manifests are KNOWN TO BE, across every repository that feeds it —
+     *  computed over the merged `manifests` set, not reported by whichever pass wrote last. `ok`
+     *  every entry was read; `partial` some read and some not (the mixed case, which `manifests`
+     *  names, and which a component fed by two repositories reaches routinely); `unreadable`
+     *  nothing was read at all; `not_enabled` the gate is closed so nothing is fetched — the empty
+     *  list is correct and is not evidence about the manifests. */
+    outcome: text("outcome").$type<"ok" | "partial" | "unreadable" | "not_enabled">().notNull(),
+    /** The ingestion's own sentence behind `outcome`, and ONLY when the outcome is one a pass
+     *  declared rather than one the merged evidence computed (`not_enabled`, "no repository was
+     *  named"). It exists because `manifests` is keyed BY PATH and those refusals have no path to
+     *  hang an explanation on; where the evidence decides, the per-path details ARE the
+     *  explanation and this is null. */
+    detail: text("detail"),
+    /** `component_dependencies` rows the component's manifests currently account for — the SUM of
+     *  `manifests[].rows` over the merged set, so a pass over one repository cannot report its own
+     *  count as the whole component's. 0 IS LEGAL AND MEANINGFUL: `ok` + 0 is "read fine, genuinely
+     *  declares nothing", the state that could not be expressed before this table. Counts what was
+     *  written, never what was pruned — this describes the observation. */
+    rowsWritten: integer("rows_written").notNull(),
+    /** Per (REPOSITORY, manifest path), sorted. Per path because `manifest_path` is part of
+     *  `component_dependencies`' primary key — one component legitimately declares from several
+     *  manifests, so "one readable, one not" is ordinary rather than hypothetical, and a count
+     *  cannot tell an operator WHICH file to fix. Per REPOSITORY because a pass reads exactly one
+     *  and `source_mappings` is many-per-component: a pass replaces only its own repository's
+     *  slice, so a successful charts release can no longer erase a failed widgets read. `[]` —
+     *  never NULL — states "no manifest is known for this component". */
+    manifests: jsonb("manifests")
+      .$type<IngestionStampManifest[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /** When this component was FIRST attempted. Not derivable from `lastAttemptAt`: "attempted once
+     *  months ago and never since" and "attempted for the first time an hour ago" are different
+     *  operational stories behind the same last-attempt timestamp. */
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    // `orgId` LEADS, so the primary-key index IS both reads — the point lookup ("what happened to
+    // component C?") and the batched one a list view takes over many components at once. No second
+    // index, because there is no second access path.
+    primaryKey({
+      name: "dependency_ingestion_stamps_pk",
+      columns: [table.orgId, table.componentObjectId]
+    })
+  ]
+);
+
 /**
  * ================================================================================================
  * WHAT COMMANDERSCP ITSELF AUTHORED FOR A DEPENDENCY BUMP (migration 0063, ADR-0032 §8/§9)
@@ -2031,6 +2289,12 @@ export const dependencyBumpAuthorships = pgTable(
     /** The pull request SCP opened, read back from the authoring run's own `status().stateRef`. The
      *  merge is addressed to THIS NUMBER, never to the first entry of a provider list. */
     pullRequestNumber: integer("pull_request_number"),
+    /** That pull request's web URL AS THE PROVIDER RETURNED IT (migration 0066). NOT derived from
+     *  `repo` + `pullRequestNumber`: those compose a working link only for github.com, and nothing
+     *  on this row says which provider authored the bump — an outpost-local Gitea (M15) is another
+     *  host AND spells the path `/pulls/`, GitHub Enterprise is another host again. NULL means SCP
+     *  recorded no link; it never means "compose one". */
+    pullRequestUrl: text("pull_request_url"),
     /** Set once the provider confirms the merge — what stops the merge commit's OWN webhook from
      *  re-running the gate and overwriting the audit trail with a refusal for a bump that merged. */
     mergedAt: timestamp("merged_at", { withTimezone: true }),

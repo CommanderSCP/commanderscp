@@ -1,0 +1,63 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  // WHY THIS FILE EXISTS. @scp/airgap's test suite is largely a set of CENSUSES OF THE REST OF THE
+  // REPO: `bundle-images.test.ts` reads `apps/runner-*` to prove every runner the repo builds is
+  // carried by the bundle, reads both charts' values.yaml to prove install.sh names no chart value
+  // that does not exist, and reads DESIGN/README to prove neither restates the image list;
+  // `cosign-bin.test.ts`/`skopeo-bin.test.ts` read the pinned-tool env files, the Dockerfile,
+  // doctor.mjs and the workflows. With only the default (package-scoped) inputs, turbo hashed NONE
+  // of that: adding `apps/runner-ops` changed no file turbo was watching for this package, so
+  // `turbo run test` replayed a cached green and the census that exists precisely to catch a new
+  // runner never ran. A cache hit on the very input a test is about is the same defect as a test
+  // that never asserts.
+  //
+  // `$TURBO_ROOT$` (turbo 2.1+) is what makes an out-of-package input expressible at all. Every
+  // entry below is a file some test in this package actually reads; keep the two in step — if a
+  // test grows a new repo-wide census, its inputs belong here, or that census will pass on a
+  // cached green exactly once and then stay wrong.
+  //
+  // Deliberately NARROW where narrowness is honest: the compose-mode knob check reads exactly one
+  // server module (`executor-bindings-repo.ts`, where all three managed classes read their runner
+  // image env vars), so the whole of apps/server is not an input. Moving that read fails the test
+  // loudly rather than going quietly stale.
+  //
+  // AND THE LIST HAD ALREADY DRIFTED — exactly the failure the paragraph above warns about, found
+  // by a filterless sweep of EVERY package on 2026-08-17 rather than reported by a red test. It
+  // cannot be reported by one: a stale cache is green by construction. Two subjects were read here
+  // and not declared:
+  //
+  //   - `deploy/compose/docker-compose.yml` — `compose-retarget.test.ts` reads the REAL file
+  //     ("catching drift between this module and the real compose file's shape") and
+  //     `repo-paths.test.ts` asserts it exists. Restructuring `services.scp` went unnoticed.
+  //   - `deploy/helm/Chart.yaml` — asserted to exist by `repo-paths.test.ts`; only that chart's
+  //     `values.yaml` was declared.
+  //
+  // Narrow lists buy honesty and cost vigilance, which is an acceptable trade ONLY if the list is
+  // re-derived from the tests rather than appended to from memory. These entries were re-derived:
+  // every `REPO_ROOT`-relative constant in `repo-paths.ts` was enumerated and checked against the
+  // tests that use it. `BUNDLED_HELM_CHART_DIR` and `BUNDLED_WRAPPER` are exported but read by NO
+  // test in this package, which is why `scripts/scp-bundled.sh` is deliberately absent below while
+  // `deploy/helm-bundled/values.yaml` stays (`bundle-images.test.ts` reads that one directly).
+  "tasks": {
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/runner-*/**",
+        "$TURBO_ROOT$/apps/server/src/coordination/executor-bindings-repo.ts",
+        "$TURBO_ROOT$/deploy/compose/docker-compose.yml",
+        "$TURBO_ROOT$/deploy/helm/Chart.yaml",
+        "$TURBO_ROOT$/deploy/helm/values.yaml",
+        "$TURBO_ROOT$/deploy/helm-bundled/values.yaml",
+        "$TURBO_ROOT$/docs/DESIGN.md",
+        "$TURBO_ROOT$/docs/BUILD_AND_TEST.md",
+        "$TURBO_ROOT$/tools/cosign/**",
+        "$TURBO_ROOT$/tools/skopeo/**",
+        "$TURBO_ROOT$/scripts/doctor.mjs",
+        "$TURBO_ROOT$/Dockerfile",
+        "$TURBO_ROOT$/.github/workflows/*.yml"
+      ]
+    }
+  }
+}

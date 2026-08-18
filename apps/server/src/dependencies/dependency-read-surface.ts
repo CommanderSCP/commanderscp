@@ -14,7 +14,10 @@ import { CURSOR_UUID_RE, decodeCursor, encodeCursor } from "../pagination.js";
 import { listBumpAuthorshipsByComponent } from "./bump-authorship-repo.js";
 import { DEPENDENCY_BUMP_DECISION_KIND } from "./bump-dispatch.js";
 import { DEPENDENCY_BUMP_MERGE_DECISION_KIND } from "./bump-gate.js";
-import { listDependencyLinesByIds } from "./dependency-inventory-repo.js";
+import {
+  listDependencyLineProducersForKeys,
+  listDependencyLinesByIds
+} from "./dependency-inventory-repo.js";
 import { DEPENDENCY_INVENTORY_DECISION_KIND } from "./inventory-ingestion.js";
 import {
   mergeComponentIngestionGate,
@@ -49,7 +52,8 @@ import {
  *
  * DIRECT DECLARATIONS ONLY, NO TRAVERSAL, NO RELATIONSHIP — the inventory repo's boundary
  * (ADR-0032 §3/§4/§5) holds here: one keyset page of `component_dependencies`, one batched line
- * hydration, one batched producer-name lookup, one batched Decision lookup per kind. Nothing walks.
+ * hydration, one batched producer-declaration lookup (by coordinate — ADR-0032 §7e) plus one
+ * batched producer-name lookup, one batched Decision lookup per kind. Nothing walks.
  */
 
 // -------------------------------------------------------------------------------------------
@@ -201,14 +205,20 @@ export async function readComponentDependencyInventory(
   const lines = await listDependencyLinesByIds(tx, input.orgId, lineIds);
   const lineById = new Map(lines.map((l) => [l.id, l]));
 
-  // The DECLARED producers' names, one lookup. `producedByObjectId` carries a foreign key, so a
-  // declared producer always names an object; a producer that has since been soft-deleted still
-  // resolves here (the declaration is a stored fact and the name is what it was).
-  const producerIds = [
-    ...new Set(
-      lines.map((l) => l.producedByObjectId).filter((id): id is string => typeof id === "string")
-    )
-  ];
+  // The DECLARED producers, one batched lookup on `dependency_line_producers` — keyed by
+  // (ecosystem, coordinate), the COORDINATE grain ADR-0032 §7e moved the declaration to (0071/0072
+  // dropped `dependency_lines.produced_by_*`): every major line of a declared coordinate is
+  // internal, so a row's producer is its coordinate's declaration. Then the producers' names, one
+  // more lookup. `producerObjectId` carries a foreign key, so a declaration always names an object;
+  // a producer that has since been soft-deleted still resolves here (the declaration is a stored
+  // fact and the name is what it was).
+  const producers = await listDependencyLineProducersForKeys(
+    tx,
+    input.orgId,
+    lines.map((l) => ({ ecosystem: l.ecosystem, coordinate: l.coordinate }))
+  );
+  const producerByKey = new Map(producers.map((p) => [`${p.ecosystem} ${p.coordinate}`, p]));
+  const producerIds = [...new Set(producers.map((p) => p.producerObjectId))];
   const producerNameById = new Map<string, string>();
   if (producerIds.length > 0) {
     const producers = await tx
@@ -226,8 +236,7 @@ export async function readComponentDependencyInventory(
     // resolved above (same table, same transaction) — but a projection that threw on the impossible
     // would make an unrelated row un-listable. Skip and move on.
     if (!line || !subscription) continue;
-    const producerName =
-      line.producedByObjectId !== null ? producerNameById.get(line.producedByObjectId) : undefined;
+    const producer = producerByKey.get(`${line.ecosystem} ${line.coordinate}`) ?? null;
     rows.push({
       line: {
         id: line.id,
@@ -249,8 +258,11 @@ export async function readComponentDependencyInventory(
         latestObservedAt: line.latestObservedAt
       },
       producer:
-        line.producedByObjectId !== null
-          ? { objectId: line.producedByObjectId, name: producerName ?? "" }
+        producer !== null
+          ? {
+              objectId: producer.producerObjectId,
+              name: producerNameById.get(producer.producerObjectId) ?? ""
+            }
           : null,
       // The core's verdict for this line. Not a predicate written here.
       subscription
@@ -316,8 +328,9 @@ async function newestDecisionsBySubject(
 /**
  * One page of the bumps SCP authored for a component, newest first, each joined to its change's
  * name, its line's major, the newest `dependency_bump_dispatch` Decision (delivery + reason) and
- * the newest `dependency_bump_merge` Decision (the second look). `pullRequestUrl` is `null` on
- * every row — nothing server-side stores it, and it is never composed from `repo` + number.
+ * the newest `dependency_bump_merge` Decision (the second look). `pullRequestUrl` is the
+ * provider-returned URL the authorship row stores (`pull_request_url`, M21.7) when one was
+ * recorded, else `null` — never composed from `repo` + number.
  */
 export async function readComponentDependencyBumps(
   tx: TenantTx,
@@ -381,8 +394,9 @@ export async function readComponentDependencyBumps(
       baseBranch: a.baseBranch,
       authoredRef: a.authoredRef,
       pullRequestNumber: a.pullRequestNumber ?? null,
-      // NOT STORED, NOT SYNTHESISED. See the schema doc.
-      pullRequestUrl: null,
+      // READ, NEVER SYNTHESISED: the URL the provider returned, as `recordBumpPullRequest` stored
+      // it; `null` when SCP recorded no link. See the schema doc.
+      pullRequestUrl: a.pullRequestUrl ?? null,
       headCommit: a.headCommit ?? null,
       dispatchedAt: a.createdAt.toISOString(),
       mergedAt: a.mergedAt ? a.mergedAt.toISOString() : null,

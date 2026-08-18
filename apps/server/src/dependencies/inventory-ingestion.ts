@@ -2,6 +2,7 @@ import {
   ManifestParseError,
   parseDockerfile,
   parseGoMod,
+  parseKubernetesImages,
   parsePackageJson,
   parsePomXml,
   parsePyprojectToml,
@@ -23,6 +24,12 @@ import {
   upsertComponentDependency,
   upsertDependencyLine
 } from "./dependency-inventory-repo.js";
+import {
+  recordIngestionStamp,
+  type IngestionStampObservation,
+  type IngestionStampOutcome,
+  type IngestionStampSource
+} from "./ingestion-stamp-repo.js";
 import { resolveComponentIngestionGate } from "./subscription-resolution.js";
 import type { ManifestReader } from "./internal-release-version.js";
 
@@ -129,6 +136,34 @@ import type { ManifestReader } from "./internal-release-version.js";
  *    count describes the PREVIOUS state rather than this observation, and the gate `witness` is one
  *    line the merge happened to be satisfied on. Each is named at its own removal site below; the
  *    rule is that a Decision field must be a function of what the component DECLARES.
+ *
+ * ============================================================================================
+ * AND THE PASS LEAVES A STAMP — BECAUSE AN EMPTY INVENTORY HAS THREE MEANINGS (M21.7, 0065)
+ * ============================================================================================
+ * Everything above describes what a pass WRITES when it finds something. What it finds is often
+ * nothing, and `component_dependencies.observed_at` is per ROW — so a component with no rows
+ * carries no timestamp anywhere and "never ingested", "ingested fine and genuinely declares
+ * nothing" and "ran, and every manifest was unreadable" are the same absence. This function already
+ * computed which one; it now also PERSISTS it, one upserted row per component in
+ * `dependency_ingestion_stamps` ({@link projectIngestionStamp} does the mapping).
+ *
+ * THIS FUNCTION IS WHERE THE STAMP IS WRITTEN, AND THAT IS THE DESIGN, not a convenience. It is the
+ * choke point both producers already go through — the event-driven loop and the operator backfill —
+ * so "did this producer remember to stamp?" is not a question that can be asked of either. A third
+ * producer inherits it, and must name itself through the required `source` input.
+ *
+ * IT IS WRITTEN ON THE REFUSED PATHS TOO, where no Decision is written, because those are precisely
+ * the components whose empty inventory needs explaining. The one path that does NOT stamp is
+ * `superseded`, for a reason stated at that branch.
+ *
+ * AND IT IS WRITTEN AS EVIDENCE ABOUT ONE REPOSITORY, NOT AS THE COMPONENT'S WHOLE STORY. This
+ * function reads one repository per pass and a component is routinely fed by two, so the stamp is
+ * merged per `(repo, path)` and the component-level verdict is recomputed across the merged set
+ * (`mergeIngestionStamp`). The first cut replaced the row wholesale and produced the very lie the
+ * table was built to prevent, twice over: a successful `acme/charts` pass erased a failed
+ * `acme/widgets` read minutes later, and a refusal for a repository the component is not mapped to
+ * overwrote a healthy receipt with `unreadable`. Both are stated where they are fixed — the
+ * `refuse` helper below, and `repo:` on the phase-3 write.
  */
 
 /** The Decision `kind` this module writes — one row per component per distinct inventory outcome. */
@@ -146,6 +181,31 @@ export const DEPENDENCY_INVENTORY_DECISION_KIND = "dependency_inventory_ingestio
  * `Cargo.toml` is absent even though `discovery`'s component-marker list carries it: Rust is not
  * one of ADR-0032 §10's five ecosystems and there is no parser for it. A sixth ecosystem adds a
  * parser and one line here.
+ *
+ * ============================================================================================
+ * `values.yaml` — M21.7, AND WHY EXACTLY ONE NEW BASENAME
+ * ============================================================================================
+ * Most Kubernetes users pin the image their component RUNS in a chart's values file, not in a
+ * `FROM` line, and until this entry existed such an image did not appear in the inventory at all —
+ * which renders as "declares no dependency" rather than "SCP cannot read where you declared it".
+ *
+ * ONE EXACT BASENAME, deliberately (`docs/proposals/kubernetes-image-references.md` §1):
+ *  - "every `.yaml` in the repository" is not a cost we declined, it is a set SCP CANNOT ENUMERATE.
+ *    The git seam has exactly one file verb, `readFileAtRef`; there is no list, no tree and no walk
+ *    (the same measurement `repoManifestScope` records below).
+ *  - every filename in this map is a MULTIPLIER on every probe prefix, against
+ *    {@link MAX_MANIFEST_READS} — which is re-derived below rather than left at its old value.
+ *  - a probed path is a DURABLE IDENTITY KEY (`component_dependencies` is keyed on `manifest_path`)
+ *    and a `not_found` on one is the branch that PRUNES, so guessing paths is unsafe, not merely
+ *    wasteful.
+ * `values.yml` is excluded because Helm itself only ever reads `values.yaml`, so a `values.yml` is
+ * not a chart's values file and treating it as one would be a filename-shaped inference.
+ * `Chart.yaml` is excluded because its `dependencies[].version` names SUBCHARTS from a Helm
+ * repository — a sixth ecosystem, not an image. `kustomization.yaml` is the obvious next basename
+ * and is deliberately not taken in the same round as the first.
+ *
+ * The parser itself is path-agnostic and reads pod specs too, so registering a raw-manifest
+ * basename later is one line here plus an addressability answer — not parser work.
  */
 export const MANIFEST_PARSERS: ReadonlyMap<
   string,
@@ -156,7 +216,8 @@ export const MANIFEST_PARSERS: ReadonlyMap<
   ["package.json", (c: string) => parsePackageJson(c)],
   ["pyproject.toml", (c: string) => parsePyprojectToml(c)],
   ["requirements.txt", (c: string) => parseRequirementsTxt(c)],
-  ["pom.xml", (c: string) => parsePomXml(c)]
+  ["pom.xml", (c: string) => parsePomXml(c)],
+  ["values.yaml", (c: string) => parseKubernetesImages(c)]
 ]);
 
 /** The basename of a repo-relative path, without importing `node:path` semantics (a repo path is
@@ -349,14 +410,19 @@ export function literalRepoFor(repoPatterns: readonly (string | null)[]): string
 
 /**
  * How many provider reads ONE component's ingestion may make. A bound is required because the
- * candidate set is a cross product (prefixes x six filenames) and `source_mappings` is
+ * candidate set is a cross product (prefixes x {@link MANIFEST_PARSERS}) and `source_mappings` is
  * operator-authored — a component with twenty mappings would otherwise dial a user's git provider
- * 126 times per accepted change.
+ * 140 times per accepted change.
  *
- * Truncation is REPORTED (`read_budget_exhausted`) rather than silent: a component whose manifests
- * were not all looked at must not be indistinguishable from one that declares nothing.
+ * RE-DERIVED WHENEVER THE PARSER TABLE GROWS, and that is a rule rather than a courtesy: every new
+ * filename multiplies EVERY prefix, so a constant left alone quietly buys fewer prefixes than it
+ * did. The budget is stated as SIX PREFIXES' worth of the full cross product — six is what 40 bought
+ * against the original six filenames — so M21.7's `values.yaml` moves it from 6x6 to 6x7. A
+ * component over the budget is not broken, but every path past it is frozen at its last-known
+ * contents until the next pass, and the paths are REPORTED by name (`read_budget_exhausted`) rather
+ * than counted: an operator can act on "this manifest was not read", not on "42 were not".
  */
-export const MAX_MANIFEST_READS = 40;
+export const MAX_MANIFEST_READS = 42;
 
 /**
  * The paths this run will ask for, in a stable order.
@@ -429,12 +495,31 @@ export interface SkippedManifest {
   readonly detail: string;
 }
 
-/** One declaration inside a manifest that WAS read, which cannot be placed on a line. */
+/**
+ * One declaration inside a manifest that WAS read, which cannot be placed on a line.
+ *
+ * TWO REASONS, AND THEY CARRY DIFFERENT OPERATOR ACTIONS — which is the only test for whether a
+ * reason deserves its own name (ADR-0032 §7b clause 6):
+ *
+ *  - `no_comparable_version` — the declaration NAMES its dependency and the version text has no
+ *    numeric core to order on (`FROM alpine`, `image: acme/api:latest`, a bare `requests`). Pin a
+ *    parseable version, or accept that this one is not subscribable.
+ *  - `unresolved_declaration` — the manifest declares SOMETHING SCP COULD NOT READ FROM IT: a
+ *    Dockerfile `ARG`-interpolated tag, a Maven `${revision}`, a Helm values `tag:` with no
+ *    repository beside it, a Go-templated value, a value behind a YAML alias. Nothing about pinning
+ *    a version fixes any of those, and telling an operator that a `{{ .Chart.AppVersion }}` "has no
+ *    comparable numeric core" points them at the wrong repair entirely.
+ *
+ * THE SPLIT IS STRUCTURAL — taken from `DeclaredDependency.constraint`, which every parser sets
+ * deliberately — and never from matching the note's prose. That is `manifestStampOutcome`'s own
+ * discipline applied one level down: a reason picked by reading a sentence is a label named after a
+ * string, and any reword breaks it silently.
+ */
 export interface SkippedDeclaration {
   readonly path: string;
   readonly ecosystem: DependencyEcosystem;
   readonly coordinate: string;
-  readonly reason: "no_comparable_version";
+  readonly reason: "no_comparable_version" | "unresolved_declaration";
   readonly detail: string;
 }
 
@@ -443,6 +528,16 @@ export interface IngestedManifest {
   readonly path: string;
   /** How many declarations became `component_dependencies` rows. */
   readonly declared: number;
+  /**
+   * How many declarations this manifest MADE that SCP could not resolve from it — the
+   * `unresolved_declaration` half of {@link SkippedDeclaration}, counted per manifest.
+   *
+   * REQUIRED, not optional, because it is what separates the two meanings of `declared: 0`:
+   * "read fine and genuinely declares nothing" from "read fine and every declaration in it was
+   * unreadable". {@link projectIngestionStamp} maps the second to `unsupported`, and an optional
+   * field would let a future producer reach that branch by forgetting rather than by deciding.
+   */
+  readonly unresolved: number;
   /** Rows removed because this manifest no longer declares them. A PER-RUN count, not a statement
    *  about the component — which is why it is deliberately absent from the Decision (see the
    *  Decision's own note): it depends on the previous state, so an unchanged component would write
@@ -492,6 +587,181 @@ export interface IngestComponentManifestsInput {
    *  operator backfill passes the requesting principal, which is the ONLY way a `group`-scoped
    *  enable could ever contribute (ADR-0032 §6a). */
   readonly actorObjectId?: string;
+  /**
+   * WHICH PRODUCER IS RUNNING THIS PASS, recorded on the per-component ingestion stamp.
+   *
+   * REQUIRED, and deliberately not derived. The two producers differ in exactly one other input
+   * (the backfill passes `actorObjectId`, the loop does not), so `source` could be inferred from
+   * that — which is precisely the provenance-label mistake this repo has already shipped: a label
+   * named after which branch matched goes false the moment the branch covers a second case
+   * (ADR-0030 §2, charter principle 6). A third producer must name itself, and until it does it
+   * does not compile.
+   */
+  readonly source: IngestionStampSource;
+}
+
+/** What one pass established, projected onto the stamp's shape (migration 0065). */
+export interface IngestionStampProjection {
+  readonly outcome: IngestionStampOutcome;
+  /**
+   * THIS PASS'S OWN row count, and deliberately NOT what lands in `dependency_ingestion_stamps.
+   * rows_written`.
+   *
+   * A pass speaks for ONE repository; the column is per COMPONENT and a component is routinely fed
+   * by two. Handing a per-pass total straight to a per-component column is how a one-row
+   * `acme/charts` pass came to report the whole component's inventory as one row, erasing what
+   * `acme/widgets` had contributed. The column is therefore summed at the write door over the
+   * MERGED per-repository entries (each carries its own `rows`), and this number is the pass's
+   * own — the quantity the projection's arithmetic is pinned on, and what a caller reporting on a
+   * single pass means by "rows written".
+   */
+  readonly rowsWritten: number;
+  readonly manifests: readonly IngestionStampObservation[];
+}
+
+/**
+ * IS THIS SKIP A FILE SCP CANNOT READ AT ALL, OR ONE IT FAILED TO READ THIS TIME?
+ *
+ * The split is by OPERATOR ACTION, which is the only test that keeps a reason honest (ADR-0032 §7b
+ * clause 6). `unsupported` means re-running changes nothing — the bytes are there and SCP
+ * structurally does not decode them; `unreadable` means this attempt failed and the next may not.
+ *
+ * `manifest_unparseable` is the one reason covering BOTH causes, because it is pushed by two
+ * branches: a genuinely malformed body (fix the file) and "no parser is registered for this
+ * filename in this build" (nothing to fix). They are told apart STRUCTURALLY — by asking
+ * {@link MANIFEST_PARSERS} the same question the skipping branch asked — never by matching on the
+ * skip's prose, which would be a label named after a sentence.
+ */
+export function manifestStampOutcome(
+  path: string,
+  reason: ManifestSkipReason
+): "unreadable" | "unsupported" {
+  switch (reason) {
+    // The bytes exist and SCP will not decode them. Deterministic in this build.
+    case "lfs_pointer":
+    case "too_large":
+    case "not_a_file":
+    case "not_text":
+    case "unsupported_encoding":
+      return "unsupported";
+    case "manifest_unparseable":
+      return MANIFEST_PARSERS.has(manifestBasename(path)) ? "unreadable" : "unsupported";
+    // A read or a parse that failed THIS TIME: a provider error, a ref that no longer resolves, an
+    // indeterminate not-found, a cut response, a path the budget never reached. Every one of them
+    // can succeed on the next pass, and each already carries its own named reason on the outcome.
+    case "read_failed":
+    case "ref_not_found":
+    case "read_indeterminate":
+    case "incomplete_body":
+    case "read_budget_exhausted":
+      return "unreadable";
+  }
+}
+
+/**
+ * Project a completed pass onto the stamp — pure, so the mapping is testable without a database and
+ * the write door below has nothing to decide.
+ *
+ * `ok` / `partial` / `unreadable` is decided by COUNTING EVIDENCE, not by the verdict:
+ *
+ *  - a manifest in `manifests` is one this pass has POSITIVE evidence about — read and parsed, or
+ *    found gone and pruned to nothing. Both are answers.
+ *  - a manifest in `skipped` is one it does not.
+ *
+ * So no skips at all is `ok`; some of each is `partial` (the mixed case the per-path array exists
+ * for); and only skips is `unreadable`. NEITHER, which is a component whose every probe came back
+ * "not there" with nothing previously known, is `ok` WITH `rowsWritten: 0` — "we looked, and it
+ * genuinely declares nothing". That is the state the whole stamp exists to make expressible, and it
+ * is why the empty case falls to `ok` rather than to `unreadable`.
+ *
+ * ============================================================================================
+ * A MANIFEST WHOSE EVERY DECLARATION IS UNRESOLVED IS `unsupported`, NOT `ok / 0 rows` (M21.7)
+ * ============================================================================================
+ * This was a defect the moment the table shipped, and it has NOTHING TO DO WITH YAML — it is fixed
+ * as a class because fixing only the instance that exposed it is the incomplete-census failure this
+ * repo has shipped before. Every parsed manifest used to map to `outcome: "ok", rows: declared`,
+ * and `declared` counts rows WRITTEN. So:
+ *
+ *   - a `Dockerfile` that is entirely `FROM ${BASE}` stamped `ok / 0 rows`,
+ *   - a `pom.xml` whose every version is `${revision}` stamped `ok / 0 rows`,
+ *   - and now a `values.yaml` of `tag:` keys with no repository would too —
+ *
+ * and `ok / 0 rows` is the table's own words for "we read it and it genuinely declares nothing". It
+ * is the exact lie the stamp exists to prevent, one level further in: the file DECLARED something,
+ * SCP could not read it, and the receipt said there was nothing to read.
+ *
+ * `unsupported` is the right member and it is already in the per-path enum ("a file SCP structurally
+ * cannot read"; re-running changes nothing), so this needs no schema and no migration — it is a
+ * consumer of machinery that was already here. A MIXED manifest stays `ok`, because rows WERE
+ * written; its unresolved declarations are named in the Decision's `declarationsSkipped`, and the
+ * per-path enum has no `partial` to express the middle.
+ */
+export function projectIngestionStamp(input: {
+  readonly manifests: readonly IngestedManifest[];
+  readonly skipped: readonly SkippedManifest[];
+}): IngestionStampProjection {
+  const entries: IngestionStampObservation[] = [
+    ...input.manifests.map((manifest) => {
+      // READ, DECLARED SOMETHING, AND WROTE NOTHING BECAUSE NOTHING IN IT COULD BE RESOLVED.
+      // Structural: it asks the counts, not the reasons' prose.
+      const allUnresolved = manifest.declared === 0 && manifest.unresolved > 0;
+      return {
+        path: manifest.path,
+        outcome: allUnresolved ? ("unsupported" as const) : ("ok" as const),
+        // WHAT WAS WRITTEN, never what was pruned: this describes the observation, and a prune count
+        // is a statement about the previous state. Per entry, because the row's total is the sum
+        // across every repository's slice and only the write door can see all of them.
+        rows: manifest.declared,
+        ...(allUnresolved
+          ? {
+              detail:
+                `this manifest was read and parsed, and all ${manifest.unresolved} of the ` +
+                `declaration(s) in it name a version SCP cannot resolve from the file itself ` +
+                `(an interpolated or templated value, a value behind an alias, or a version with ` +
+                `no dependency named beside it) — it declares dependencies, and none of them ` +
+                `could be recorded`
+            }
+          : manifest.removed
+            ? {
+                detail:
+                  "the manifest is no longer in the repository at this ref, so its declarations were removed"
+              }
+            : {})
+      };
+    }),
+    ...input.skipped.map((skip) => ({
+      path: skip.path,
+      outcome: manifestStampOutcome(skip.path, skip.reason),
+      // NOT READ, so nothing was written for it. Its EXISTING rows are deliberately not counted
+      // here: they are last-known-good from an earlier pass and counting them would let a failed
+      // read report the inventory as freshly confirmed.
+      rows: 0,
+      // The ingestion's own sentence, verbatim. It is the actionable half — WHICH file and WHY —
+      // and it is the reason the array is per path at all.
+      detail: skip.detail
+    }))
+  ].sort((a, b) => (`${a.path}${a.outcome}` < `${b.path}${b.outcome}` ? -1 : 1));
+
+  // COMPUTED FROM THE ENTRIES, not from the manifests/skipped split, so the pass-level verdict and
+  // the per-path evidence cannot disagree — an `unsupported` entry is not a manifest this pass can
+  // claim it read. This is also exactly how `mergeIngestionStamp` recomputes the row across every
+  // repository's slice (`ok` counts entries whose outcome is `ok`), so a pass and the merge that
+  // folds it now answer the same question the same way.
+  const readEntries = entries.filter((entry) => entry.outcome === "ok").length;
+  const outcome: IngestionStampOutcome =
+    entries.length === 0
+      ? "ok"
+      : readEntries === entries.length
+        ? "ok"
+        : readEntries === 0
+          ? "unreadable"
+          : "partial";
+
+  return {
+    outcome,
+    rowsWritten: entries.reduce((sum, entry) => sum + entry.rows, 0),
+    manifests: entries
+  };
 }
 
 /**
@@ -517,9 +787,18 @@ export async function ingestComponentManifests(
   input: IngestComponentManifestsInput
 ): Promise<ComponentIngestionOutcome> {
   const repo = input.repo?.trim();
+  /** WHEN THIS PASS STARTED — the stamp's `last_attempt_at` on the paths that refuse before a
+   *  provider is reached, where there is no read time to use instead. The paths that DO read stamp
+   *  `readAt` (phase 2), so the stamp always carries the moment this pass actually looked. */
+  const attemptAt = new Date();
 
   // -----------------------------------------------------------------------------------------
   // PHASE 1 — the gate FIRST, then what to ask for.
+  //
+  // EVERY REFUSAL IS STAMPED IN THIS SAME TRANSACTION, beside the gate resolution that decided it.
+  // Not in a transaction of its own afterwards: a refusal is the common case on any real estate (an
+  // org-wide backfill refuses for every unsubscribed component), so a second round trip per refused
+  // component would double the transaction count of the whole pass to say "nothing happened".
   // -----------------------------------------------------------------------------------------
   const prepared = await withTenantTx(db, orgId, async (tx) => {
     const gate = await resolveComponentIngestionGate(tx, {
@@ -527,8 +806,68 @@ export async function ingestComponentManifests(
       componentObjectId: input.componentObjectId,
       actorObjectId: input.actorObjectId ?? SYSTEM_ACTOR_ID
     });
-    if (!gate.enabled || repo === undefined || repo === "") {
-      return { gate, proceed: false as const };
+    /**
+     * A refusal, its stamp written before it is returned. The stamp is the ONLY record of these
+     * paths: no Decision is written for them (see below), so without it a refused component is
+     * indistinguishable from one nothing has ever looked at.
+     *
+     * EVERY REFUSAL PASSES `repo: null`, AND THAT IS THE FIX FOR THE WORST THING THIS FUNCTION DID.
+     * None of them reached a provider, so none holds evidence about any repository's manifests —
+     * including the "no mapping names this repository" refusal, where a repository IS named. That
+     * one is the sharp case: an accepted change can target a component from a repo it is not mapped
+     * to, and stamping the refusal as this component's manifest verdict overwrote the good receipt
+     * a real pass had just written, with `unreadable`, on a component whose manifests were fine.
+     * "This repository is not this component's" and "this component's manifests cannot be read" are
+     * different facts, and only the second belongs in a slice. With `null`, the merge replaces
+     * nothing and the standing evidence still decides the outcome.
+     */
+    const refuse = async (
+      verdict: "not_enabled" | "not_addressable",
+      outcome: IngestionStampOutcome,
+      detail: string
+    ): Promise<{ proceed: false; verdict: "not_enabled" | "not_addressable"; detail: string }> => {
+      await recordIngestionStamp(tx, orgId, {
+        componentObjectId: input.componentObjectId,
+        lastAttemptAt: attemptAt,
+        source: input.source,
+        repo: null,
+        outcome,
+        detail,
+        // NOTHING WAS FETCHED on any of these paths, so this pass names no manifest. What the row
+        // ends up reporting is decided by the merge: this verdict where nothing else is known,
+        // and the standing per-repository evidence where there is some.
+        manifests: []
+      });
+      return { proceed: false as const, verdict, detail };
+    };
+
+    if (!gate.enabled) {
+      // NOT FETCHED, and no Decision: a component that is simply not subscribed is the
+      // overwhelmingly common case on any estate, and a Decision per accepted change per component
+      // saying "still not enabled" is write amplification with nothing to learn from row 2 onward
+      // (the same reasoning `internal-release-detection.ts` applies to `no_declared_producer`).
+      // The STAMP is the exception to that argument rather than a contradiction of it: it is ONE
+      // UPSERTED ROW per component, so restating it costs a dead tuple instead of an appended row,
+      // and it is the only thing that can tell an operator this component's empty inventory is
+      // explained by enablement rather than by a manifest nobody could read.
+      return refuse(
+        "not_enabled",
+        "not_enabled",
+        `dependency subscriptions are not enabled for this component (${gate.reason}) — no manifest was fetched`
+      );
+    }
+
+    if (repo === undefined || repo === "") {
+      // ENABLED BUT UNADDRESSABLE — the repo half of the refusal, which cannot be reached before
+      // the gate because "a disabled component is never fetched" is about the gate running FIRST.
+      // Stamped `unreadable`: there was no address to read a manifest at, which is a statement
+      // about this pass's reach and never about what the component declares.
+      return refuse(
+        "not_addressable",
+        "unreadable",
+        "no repo was named for this component, so there is no repository to read its dependency " +
+          "manifests from — nothing was fetched"
+      );
     }
 
     // KNOWN PATHS FROM THIS REPOSITORY ONLY. A row observed in another repo is not evidence about
@@ -545,53 +884,29 @@ export async function ingestComponentManifests(
     ];
     const mappings = await listSourceMappingsForComponents(tx, orgId, [input.componentObjectId]);
     const scope = repoManifestScope(mappings, repo);
+
+    if (!scope.mapped) {
+      // NO MAPPING NAMES THIS REPOSITORY, so this component has no declared presence in it. Reading
+      // it would produce `not_found` at every candidate — which is exactly the "evidence" that used
+      // to prune another repository's rows away. Refused instead, with nothing fetched.
+      return refuse(
+        "not_addressable",
+        "unreadable",
+        `none of this component's source_mappings names the repository '${repo}', so this run has ` +
+          `no declared manifest location in it — nothing was fetched and nothing was pruned`
+      );
+    }
+
     // `repo` travels in the result so everything downstream has it as a `string` rather than
     // re-deriving the narrowing from `proceed`.
     return { gate, proceed: true as const, known, scope, repo };
   });
 
-  if (!prepared.proceed && prepared.gate.enabled) {
-    // ENABLED BUT UNADDRESSABLE — the repo half of the refusal, which cannot be reached before the
-    // gate because "a disabled component is never fetched" is about the gate running FIRST.
-    return {
-      componentObjectId: input.componentObjectId,
-      verdict: "not_addressable",
-      detail:
-        "no repo was named for this component, so there is no repository to read its dependency " +
-        "manifests from — nothing was fetched",
-      manifests: [],
-      skipped: [],
-      declarationsSkipped: [],
-      reads: 0
-    };
-  }
-
   if (!prepared.proceed) {
-    // NOT FETCHED, and nothing recorded. No Decision: a component that is simply not subscribed is
-    // the overwhelmingly common case on any estate, and a row per accepted change per component
-    // saying "still not enabled" is write amplification with nothing to learn from row 2 onward
-    // (the same reasoning `internal-release-detection.ts` applies to `no_declared_producer`).
     return {
       componentObjectId: input.componentObjectId,
-      verdict: "not_enabled",
-      detail: `dependency subscriptions are not enabled for this component (${prepared.gate.reason}) — no manifest was fetched`,
-      manifests: [],
-      skipped: [],
-      declarationsSkipped: [],
-      reads: 0
-    };
-  }
-
-  if (!prepared.scope.mapped) {
-    // NO MAPPING NAMES THIS REPOSITORY, so this component has no declared presence in it. Reading
-    // it would produce `not_found` at every candidate — which is exactly the "evidence" that used
-    // to prune another repository's rows away. Refused instead, with nothing fetched.
-    return {
-      componentObjectId: input.componentObjectId,
-      verdict: "not_addressable",
-      detail:
-        `none of this component's source_mappings names the repository '${repo}', so this run has ` +
-        `no declared manifest location in it — nothing was fetched and nothing was pruned`,
+      verdict: prepared.verdict,
+      detail: prepared.detail,
       manifests: [],
       skipped: [],
       declarationsSkipped: [],
@@ -768,7 +1083,18 @@ export async function ingestComponentManifests(
       newestObservedAt = Math.max(newestObservedAt, Date.parse(row.observedAt));
     }
     if (newestObservedAt > readAt.getTime()) {
-      // NOTHING IS WRITTEN — not the rows, not the prune, and not a Decision. A Decision here would
+      // NOTHING IS WRITTEN — not the rows, not the prune, not a Decision AND NOT A STAMP.
+      //
+      // The stamp is deliberately in that list. It describes WHAT THE INVENTORY IS, and this pass
+      // established nothing about that: its manifests are stale evidence that was not applied. A
+      // stamp here would publish per-path entries counting rows that are not in the table.
+      // (`mergeIngestionStamp` would refuse the slice anyway, because the winner read this same
+      // repository later — but relying on that would make the honest answer an accident of two
+      // guards agreeing rather than a decision made here.)
+      //
+      // "Never attempted is the absence of a row" survives this: being superseded REQUIRES a newer
+      // pass to have written rows for the same component, and that pass stamped.
+      // A Decision here would
       // alternate with the ordinary one for the same component and re-open the persist-on-change
       // guard (`insertDecisionIfChanged` compares against the LATEST row, so alternating verdicts
       // append forever); and there is nothing to explain that the winning pass's Decision does not
@@ -791,6 +1117,8 @@ export async function ingestComponentManifests(
 
     for (const manifest of parsed) {
       const keepLineIds: string[] = [];
+      /** Declarations THIS manifest made that could not be resolved from it — see the stamp. */
+      let unresolvedHere = 0;
       for (const declaration of manifest.declarations) {
         const placed = await placeDeclarationOnLine(tx, orgId, {
           componentObjectId: input.componentObjectId,
@@ -801,15 +1129,24 @@ export async function ingestComponentManifests(
           declaration
         });
         if (placed === null) {
+          // WHICH OF THE TWO, DECIDED STRUCTURALLY. `constraint` is set by the parser that read the
+          // file — never by matching this module against the note's prose, which would be a reason
+          // named after a sentence (see `SkippedDeclaration`).
+          const unresolved = declaration.constraint === "unresolved";
+          if (unresolved) unresolvedHere += 1;
           declarationsSkipped.push({
             path: manifest.path,
             ecosystem: declaration.ecosystem,
             coordinate: declaration.coordinate,
-            reason: "no_comparable_version",
-            detail:
-              `'${declaration.declared ?? "(no version declared)"}' has no comparable numeric core, ` +
-              `so there is no major line to record this declaration against (ADR-0032 §7: skipped ` +
-              `rather than guessed)`
+            reason: unresolved ? "unresolved_declaration" : "no_comparable_version",
+            detail: unresolved
+              ? `this manifest declares a dependency SCP cannot resolve from the file itself` +
+                `${declaration.note === undefined ? "" : ` (${declaration.note})`} — it is reported ` +
+                `rather than guessed at, because a wrong version here becomes a wrong bump ` +
+                `(ADR-0032 §7)`
+              : `'${declaration.declared ?? "(no version declared)"}' has no comparable numeric core, ` +
+                `so there is no major line to record this declaration against (ADR-0032 §7: skipped ` +
+                `rather than guessed)`
           });
           continue;
         }
@@ -828,6 +1165,7 @@ export async function ingestComponentManifests(
       manifests.push({
         path: manifest.path,
         declared: keepLineIds.length,
+        unresolved: unresolvedHere,
         pruned,
         removed: false
       });
@@ -842,7 +1180,8 @@ export async function ingestComponentManifests(
       });
       // A probe that found nothing where nothing was known is not an event. Only a manifest that
       // actually HAD rows and no longer exists is reported.
-      if (pruned > 0) manifests.push({ path, declared: 0, pruned, removed: true });
+      // `unresolved: 0` — a manifest that is GONE declared nothing this pass could fail to read.
+      if (pruned > 0) manifests.push({ path, declared: 0, unresolved: 0, pruned, removed: true });
     }
 
     const sortedManifests = [...manifests].sort((a, b) => (a.path < b.path ? -1 : 1));
@@ -902,6 +1241,33 @@ export async function ingestComponentManifests(
           reason: d.reason
         }))
       }
+    });
+
+    // ============================================================================================
+    // THE STAMP, IN THE SAME TRANSACTION AS THE ROWS IT DESCRIBES
+    // ============================================================================================
+    // Atomicity is the point of writing it here rather than after the transaction commits: a stamp
+    // saying `ok / 0 rows` that survived while the declarations it counted rolled back would be a
+    // receipt for writes that never landed — a lie with a timestamp on it, which is worse than the
+    // silence this table replaces.
+    //
+    // `readAt`, not `now()`: the stamp records WHEN THIS PASS LOOKED, on the same clock the rows'
+    // `observed_at` carries, so the stamp and the inventory cannot disagree about which pass is the
+    // later evidence.
+    const stamp = projectIngestionStamp({ manifests: sortedManifests, skipped: sortedSkipped });
+    await recordIngestionStamp(tx, orgId, {
+      componentObjectId: input.componentObjectId,
+      lastAttemptAt: readAt,
+      source: input.source,
+      // THE REPOSITORY THIS PASS SPEAKS FOR. Its entries replace that repository's slice and no
+      // other: a component fed by `acme/widgets` and `acme/charts` gets one slice each, so a
+      // successful charts pass can no longer erase a failed widgets read — which it did, silently,
+      // turning "manifests unreadable" back into "declares nothing" on the next release.
+      repo: prepared.repo,
+      outcome: stamp.outcome,
+      manifests: stamp.manifests
+      // No `detail`: on this path every explanation is per PATH and lives in `manifests`. The
+      // column exists for the refusals that have no path to hang one on.
     });
 
     return {

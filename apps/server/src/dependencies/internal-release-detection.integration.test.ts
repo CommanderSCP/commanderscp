@@ -30,6 +30,7 @@ import {
 import {
   declareDependencyLineProducer,
   getDependencyLineById,
+  getDependencyLineProducer,
   upsertComponentDependency,
   upsertDependencyLine
 } from "./dependency-inventory-repo.js";
@@ -160,8 +161,11 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
    * The subscriber is a SECOND component that declares the line, plus a policy enabling it at
    * `objectRef` scope. It is not decoration: the derivation refuses to fetch or record for a line
    * nobody subscribes to (ADR-0032 §6, "the ingestion work-list is derived from this resolution"),
-   * and `objectRef` rather than `group` because the job resolves as the system actor, which belongs
-   * to no group (§6a).
+   * and `objectRef` rather than `group` because the authoring guard refuses a group-scoped
+   * `dependencySubscription` effect outright, in both directions (§6a). NOT, as this used to say,
+   * because the job runs as the system actor: group scope's owning half ignores the actor and would
+   * match here if this fixture minted an `owns` edge — which is precisely the unstated, mutable
+   * reach §6a-ii refuses to let a subscription rest on.
    */
   async function lineProducedBy(
     key: DependencyLineKey & { tagPattern?: string },
@@ -170,18 +174,27 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
   ): Promise<string> {
     const lineId = await inOrg(async (tx) => {
       const line = await upsertDependencyLine(tx, org.orgId, key);
+      // The declaration is per COORDINATE since drizzle/0068, so it names no line id — which is
+      // also why it would still be true of a `3` line this fixture never mints.
       await declareDependencyLineProducer(tx, org.orgId, {
-        lineId: line.id,
-        producedByObjectId: producerComponentObjectId,
+        ecosystem: key.ecosystem,
+        coordinate: key.coordinate,
+        producerObjectId: producerComponentObjectId,
         declaredByObjectId: producerComponentObjectId
       });
       return line.id;
     });
 
-    // READ BACK: the producer link is what makes this line internal at all, and a silently-absent
-    // one would make every "nothing was recorded" assertion below pass for the wrong reason.
-    const stored = await inOrg((tx) => getDependencyLineById(tx, org.orgId, lineId));
-    expect(stored?.producedByObjectId, "the DECLARED producer link must have landed").toBe(
+    // READ BACK: the producer declaration is what makes this coordinate internal at all, and a
+    // silently-absent one would make every "nothing was recorded" assertion below pass for the
+    // wrong reason.
+    const stored = await inOrg((tx) =>
+      getDependencyLineProducer(tx, org.orgId, {
+        ecosystem: key.ecosystem,
+        coordinate: key.coordinate
+      })
+    );
+    expect(stored?.producerObjectId, "the DECLARED producer link must have landed").toBe(
       producerComponentObjectId
     );
 
@@ -1048,7 +1061,16 @@ describe("M21.4 internal release detection (ADR-0032 §7)", () => {
       loop = await startInternalReleaseLoop(boss, {
         db: server.deps.db,
         host: recordingHost(),
-        config: server.deps.config
+        // THE POSTURE THE LOOP REQUIRES, STATED BY THE FIXTURE (ADR-0032 §7d). Internal detection is
+        // commander-only and FAIL-CLOSED on an undeclared `SCP_FEDERATION_ROLE`; the harness leaves
+        // that env var unset, so `server.deps.config` alone is a DEFAULTED (undeclared) commander
+        // and this loop would hand back an inert handle without ever creating its queue.
+        config: {
+          ...server.deps.config,
+          role: "all" as const,
+          federationRole: "commander" as const,
+          federationRoleDeclared: true
+        }
       });
     }, 60_000);
 

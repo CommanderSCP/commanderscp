@@ -6,10 +6,13 @@ import { objects, relationships } from "../db/schema.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
+import { containmentChain } from "./containment.js";
 import { computeRelationshipContentHash } from "./content-hash.js";
 import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
+import { policyReachFor, recordGovernanceReachChange } from "../governance/governance-reach.js";
+import { assertMayWriteGovernanceLabels } from "../governance/governance-labels.js";
 import { inArray } from "drizzle-orm";
 
 /**
@@ -104,17 +107,68 @@ const SINGULAR_SIDES: Record<string, { from: boolean; to: boolean }> = {
 };
 
 /**
- * Refuses a `contains` edge that would close a cycle.
+ * Refuses a `contains` edge that would close a containment cycle — **over BOTH containment routes,
+ * because containment has two and this check used to walk one.**
  *
  * Before the `assembly` level, a cycle was IMPOSSIBLE by construction: `contains` only ran
  * `service -> component`, and a component has no children. Widening the type makes A-contains-B,
- * B-contains-A expressible for the first time, and a containment cycle is not a cosmetic problem —
- * `containmentChain` (policy scope, freeze scope, RBAC scope) and the ADR-0029 binding ladder all
- * walk parents, so a cycle is an infinite walk in the code paths that authorize releases.
+ * B-contains-A expressible for the first time.
  *
- * Walks UP from the proposed parent looking for the proposed child. Bounded by the same cap the
- * ladder uses, plus a `seen` set, so a cycle already in the table (written before this check existed,
- * or by privileged surgery) terminates rather than hanging the request that discovers it.
+ * ## What this used to claim, and what was actually true
+ *
+ * The previous wording said a cycle "is an infinite walk in the code paths that authorize releases",
+ * and named `containmentChain` (policy scope, freeze scope, RBAC scope) and the ADR-0029 binding
+ * ladder as the victims. Both halves were wrong, and they were wrong in opposite directions:
+ *
+ *  - **Not infinite.** Every named consumer is bounded. `graph/containment.ts`'s `containmentChain`
+ *    and `authz/resolve.ts`'s `scopeExpandCte` both stop at `CONTAINMENT_WALK_MAX_DEPTH`;
+ *    `coordination/binding-resolution.ts`'s ladder stops at `MAX_ANCESTOR_HOPS` (3). A loop costs
+ *    them iterations, not termination.
+ *  - **Not protected.** `containmentChain` walks `domain_id` AND `contains` (and a placement's pair).
+ *    This function walked `contains` alone, so the MIXED loop — one hop of each — was invisible to
+ *    it and writable through this door. MEASURED before this change, on the real HTTP doors: create
+ *    an assembly A, create a service S with `domainId: A`, then `POST /relationships {contains,
+ *    from: S, to: A}` answered **201**, and `S -> A -> S` was in the table. The `domain_id` door
+ *    refuses exactly that loop (`graph/containment-parent-authz.ts` calls
+ *    `assertRootedContainmentParent`, which checks the WHOLE walk and says so in as many words);
+ *    the edge door did not. One concept, two doors, one of them taught.
+ *
+ * ## What a mixed loop actually costs, since it is not a hang
+ *
+ * It cannot DETACH a row — adding an edge only adds parents, and `domain_id` parents are kept rooted
+ * by their own door, so the org root stays on every chain. What it corrupts is DEPTH.
+ * `containmentChain` re-reaches a looped node at every second iteration, keeps the MAXIMUM raw depth
+ * per id, and then inverts, so the target of the walk can come out at inverted depth 0 — the value
+ * the convention reserves for the org root — with the actual org root ranked BELOW it. Measured on
+ * the loop above: the walk ran to the depth bound and `assertRootedContainmentParent`'s `hops`
+ * (derived from that inverted depth) reported **1**. That matters because the truncation refusal
+ * `hops` feeds exists precisely to fail CLOSED when a walk was cut short and the cycle answer is
+ * therefore unproven — near a loop it silently stops firing. Refusing to write the loop is the
+ * cheapest place to stop that, and it is the place the other door already stops it.
+ *
+ * ## Why `containmentChain` rather than a widened hand-rolled walk
+ *
+ * It is the definition of "what contains this object" that every consumer of this decision reads, so
+ * a route added there (route 4 arrived after route 3) is inherited here instead of drifting away from
+ * here — the exact failure `graph/containment.ts`'s header records paying for twice. It is also a
+ * FIXED one query, where the hand-rolled walk was one round trip PER HOP (1 in the common shape, up
+ * to 32), so the widened check is not paid for in latency on the deep shapes. Its
+ * bound is 10 against a `contains` chain that can be at most two hops deep (`service -> assembly ->
+ * component`; `assembly -> assembly` is refused above), and both `contains` ancestors sit at walk
+ * depth 1 and 2 from `fromId`, so nothing that was in range before is out of range now. It also
+ * skips tombstoned ancestors, matching `scopeExpandCte` — a deleted object is not a container.
+ *
+ * ## Deliberately ONLY the cycle question — not `assertRootedContainmentParent` wholesale
+ *
+ * That function bundles two further refusals onto the same walk, and both would be NEW behaviour
+ * here rather than an invariant: the truncation refusal would reject a `contains` edge under any
+ * container whose own chain sits AT the bound (a ten-hop chain is complete and readable — ADR-0035's
+ * probe proves it — and `routes/containment-move-cycle-and-source-authz.integration.test.ts` attaches
+ * a component to exactly such a container), and the root-reachability refusal would newly reject
+ * edges inside an already-stranded subtree, which is the one place an operator still has to work.
+ * A guard that quietly lowers a documented limit is a behaviour change, not a bug fix. (A container
+ * whose chain is PAST the bound is a different matter: `containmentChain` itself refuses there,
+ * loudly — ADR-0035 — and this door inherits that refusal like every other walk consumer.)
  */
 async function assertNoContainmentCycle(
   tx: TenantTx,
@@ -123,35 +177,17 @@ async function assertNoContainmentCycle(
   toId: string
 ): Promise<void> {
   if (fromId === toId) {
+    // Kept as its own refusal for the message alone: "an object cannot contain itself" is the
+    // diagnosis, where the cycle message below would report the object as its own ancestor.
     throw badRequest("an object cannot contain itself");
   }
-  const seen = new Set<string>([fromId]);
-  let current: string | null = fromId;
-  for (let hop = 0; hop < CONTAINMENT_CYCLE_SCAN_LIMIT && current; hop += 1) {
-    const parent: { fromId: string } | undefined = await tx.query.relationships.findFirst({
-      where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
-        andOp(
-          eqOp(t.orgId, orgId),
-          eqOp(t.typeId, "contains"),
-          eqOp(t.toId, current!),
-          isNullOp(t.deletedAt)
-        )
-    });
-    if (!parent) return;
-    if (parent.fromId === toId) {
-      throw badRequest(
-        `'contains' would create a containment cycle: ${toId} is already an ancestor of ${fromId}`
-      );
-    }
-    if (seen.has(parent.fromId)) return;
-    seen.add(parent.fromId);
-    current = parent.fromId;
+  const chain = await containmentChain(tx, orgId, fromId);
+  if (chain.some((entry) => entry.id === toId)) {
+    throw badRequest(
+      `'contains' would create a containment cycle: ${toId} is already an ancestor of ${fromId}`
+    );
   }
 }
-
-/** Bounded so a pre-existing cycle cannot hang the request that trips over it. Generous relative to
- *  the depth cap of 3 (intermediate-grouping D2) — this is a safety stop, not the product rule. */
-const CONTAINMENT_CYCLE_SCAN_LIMIT = 32;
 
 async function assertCardinality(
   tx: TenantTx,
@@ -212,7 +248,10 @@ export interface CreateRelationshipInput {
   fromId: string;
   toId: string;
   properties?: Record<string, unknown>;
-  /** Mirrors `objects.labels` (schema.ts doc) — IaC applies (`iac/plans-repo.ts`) set the `scp:managed-by`/`scp:stack` markers here. */
+  /** Mirrors `objects.labels` (schema.ts doc). IaC applies (`iac/plans-repo.ts`) set the
+   *  `scp:managed-by`/`scp:stack` markers here, but since drizzle/0068 those are a DESCRIPTIVE
+   *  MIRROR: what an apply prunes on is the server-written `relationships.managed_by_stack` column,
+   *  which this input deliberately cannot set. */
   labels?: Record<string, unknown>;
   /** M6: see `graph/objects-repo.ts`'s `FederationImportContext` doc comment. */
   federationImport?: FederationImportContext;
@@ -225,7 +264,29 @@ export async function createRelationship(
   const type = await requireRelationshipType(tx, input.typeId);
   const properties = input.properties ?? {};
   const labels = input.labels ?? {};
-  validateProperties(type.propertySchema, properties, `rel:${type.id}`);
+  validateProperties(type.propertySchema, properties);
+
+  // THE RESERVED GOVERNANCE LABEL NAMESPACE, on the edge table too — see
+  // `governance/governance-labels.ts`. No governance decision reads a RELATIONSHIP's labels today
+  // (`iac/plans-repo.ts`'s stack-ownership markers are the only reader), and that is exactly why it
+  // is guarded here rather than later: the namespace is worth having only if the sentence "a
+  // `scp.governance/` key was set by an org-root `policy:write` holder" is true of every labels bag
+  // in the system. Left off, the next consumer to read an edge label inherits the same evasion, and
+  // nothing about this file would flag it. Relationships have no update verb (create + soft-delete
+  // only — see `deleteRelationship`), so this create is the complete census of edge-label writes.
+  //
+  // The `federationImport` exemption is the one this repo already applies at both choke points, for
+  // the same reason: `federation/import-repo.ts`'s replay branch has no try/catch, so a throw there
+  // aborts a whole signed bundle rather than one entry.
+  if (!input.federationImport) {
+    await assertMayWriteGovernanceLabels(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      before: {},
+      after: labels,
+      subject: `relationship '${type.id}'`
+    });
+  }
 
   const fromObj = await requireLiveObject(tx, input.orgId, input.fromId, "from");
   const toObj = await requireLiveObject(tx, input.orgId, input.toId, "to");
@@ -257,6 +318,18 @@ export async function createRelationship(
   }
 
   await assertCardinality(tx, input.orgId, type.id, type.cardinality, input.fromId, input.toId);
+
+  // CONTAINMENT ROUTE 2 — a `contains` edge IS a containment parent (`graph/containment.ts` route
+  // 2, walked backwards), so creating one changes which policies reach the CHILD, under
+  // `relationship:write`. That is weaker and differently held than the `policy:write` that authored
+  // those policies — see `governance/governance-reach.ts`.
+  //
+  // The type guard keeps this off every other relationship write in the system: a `member_of`,
+  // `owns`, `places` or `depends_on` create short-circuits on a string comparison and costs nothing.
+  const reachBefore =
+    input.typeId === "contains"
+      ? await policyReachFor(tx, input.orgId, input.toId, input.actorObjectId)
+      : null;
 
   const id = input.id ?? uuidv7();
   const contentHash = computeRelationshipContentHash({
@@ -364,6 +437,19 @@ export async function createRelationship(
     // tell a peer that a domain-local object gained an edge. Same reasoning as M20.2's object case.
     subjectDomainLocal: edgeIsDomainLocal
   });
+  if (reachBefore) {
+    // Subject is the CHILD — see the matching note in `deleteRelationship`.
+    await recordGovernanceReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      subjectObjectId: input.toId,
+      route: "contains",
+      detail: { edgeAction: "create", relationshipId: id, containerObjectId: input.fromId },
+      before: reachBefore,
+      subjectDomainLocal: edgeIsDomainLocal
+    });
+  }
   // Never journaled when either endpoint is local — see M20.2's note in `graph/objects-repo.ts` for
   // why this is a SKIP rather than a stamp-and-filter (a filtered bundle is sparse, and a full-scope
   // receiver refuses a sparse chain).
@@ -480,6 +566,13 @@ export async function deleteRelationship(
     }
   }
 
+  // CONTAINMENT ROUTE 2 — see `createRelationship` for the property. DETACHING is the dangerous
+  // direction of the two: it is what takes an object out from under a `required` gate.
+  const reachBefore =
+    existing.typeId === "contains"
+      ? await policyReachFor(tx, input.orgId, existing.toId, input.actorObjectId)
+      : null;
+
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
     .update(relationships)
@@ -509,6 +602,25 @@ export async function deleteRelationship(
     requestId: input.requestId,
     subjectDomainLocal: edgeIsDomainLocal
   });
+  if (reachBefore) {
+    // Subject is the CHILD (`to_id`) — the object whose governance changed. The edge is the
+    // instrument, not the victim, and an operator searching the audit log for "what happened to this
+    // component" must find this event under the component's id.
+    await recordGovernanceReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      subjectObjectId: existing.toId,
+      route: "contains",
+      detail: {
+        edgeAction: "delete",
+        relationshipId: existing.id,
+        containerObjectId: existing.fromId
+      },
+      before: reachBefore,
+      subjectDomainLocal: edgeIsDomainLocal
+    });
+  }
   if (!input.federationImport && !edgeIsDomainLocal) {
     await appendJournalEntry(tx, {
       orgId: input.orgId,

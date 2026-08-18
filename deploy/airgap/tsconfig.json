@@ -5,5 +5,5 @@
     "rootDir": "src"
   },
   "include": ["src"],
-  "references": [{ "path": "../../packages/cosign" }]
+  "references": [{ "path": "../../packages/source-census" }, { "path": "../../packages/cosign" }]
 }

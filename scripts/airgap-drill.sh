@@ -88,8 +88,15 @@ cleanup() {
 trap cleanup EXIT
 
 SCPD_REF="${AIRGAP_DRILL_SCPD_REF:-scp:dev}"
-RUNNER_IAC_REF="${AIRGAP_DRILL_RUNNER_IAC_REF:-scp-runner-iac:dev}"
 POSTGRES_REF="${AIRGAP_DRILL_POSTGRES_REF:-postgres:16}"
+# The three managed-execution runner images the bundle carries (deploy/airgap/src/bundle-images.ts).
+# Preparing a local source image for each is shared with ansible-drill.sh — read that file's header
+# before changing these, especially the scan stand-in.
+RUNNER_IAC_REF="${AIRGAP_DRILL_RUNNER_IAC_REF:-scp-runner-iac:dev}"
+RUNNER_SCAN_REF="${AIRGAP_DRILL_RUNNER_SCAN_REF:-}"
+RUNNER_DEP_REF="${AIRGAP_DRILL_RUNNER_DEP_REF:-scp-runner-dep:dev}"
+# shellcheck source=scripts/drill-runner-images.sh
+. "${ROOT_DIR}/scripts/drill-runner-images.sh"
 
 # KUBECONFIG isolation + namespace pin (see scripts/kind-drill.sh for the full rationale): this drill
 # can run inside an ARC runner POD living in the homelab k3s, whose ambient in-cluster kubeconfig +
@@ -109,15 +116,15 @@ log "ensuring source images exist locally"
 if ! docker image inspect "$SCPD_REF" >/dev/null 2>&1; then
   [ "$SCPD_REF" = "scp:dev" ] && docker build -t scp:dev . || { echo "missing $SCPD_REF" >&2; exit 1; }
 fi
-docker image inspect "$RUNNER_IAC_REF" >/dev/null 2>&1 || docker build -t "$RUNNER_IAC_REF" apps/runner-iac
 docker image inspect "$POSTGRES_REF" >/dev/null 2>&1 || docker pull "$POSTGRES_REF"
+ensure_runner_source_images # sets BUNDLE_RUNNER_ARGS
 
 log "building @scp/airgap + a REAL signed bundle (ephemeral test cosign key)"
 pnpm --filter @scp/airgap build >/dev/null
 BUNDLE_OUT="${SCRATCH}/bundle-out"
 node deploy/airgap/dist/build-bundle.js \
   --version "$BUNDLE_VERSION" --out-dir "$BUNDLE_OUT" \
-  --scpd-ref "$SCPD_REF" --runner-iac-ref "$RUNNER_IAC_REF" --postgres-ref "$POSTGRES_REF"
+  --scpd-ref "$SCPD_REF" --postgres-ref "$POSTGRES_REF" "${BUNDLE_RUNNER_ARGS[@]}"
 TARBALL="$(find "$BUNDLE_OUT" -name "scp-bundle-${BUNDLE_VERSION}.tar.gz" | head -1)"
 [ -n "$TARBALL" ] || { echo "bundle not produced" >&2; exit 1; }
 

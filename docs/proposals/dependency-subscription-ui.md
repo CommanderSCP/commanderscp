@@ -2,7 +2,7 @@
 
 **Status:** v0.2 — **owner decisions taken 2026-08-16 (§8); building.** Written 2026-08-16 on the `claude/ui-review-worktree-efc42b` branch, which already contains the whole M21 server side (main through #240). Nothing built.
 **Role:** BUILD_AND_TEST.md M21 says only "M21.6 UI — deferred to the end and handed to the UI agent … once API → SDK → CLI are real (principle 3)". This proposal grounds what *is* real, names the read surface that is missing, and lays out the UI as options with recommendations. Every claim below was measured or read by six agents (three grounders + three refuters); citations are file:line at branch tip.
-**Relates to:** [ADR-0032](../adr/0032-dependency-subscriptions.md) (§3a policy effect, §6 enablement chain, §6a group refusal, §7b `latest_*` semantics, §8a–§8f actuator), [ADR-0016 §2a](../adr/0016-scoped-scan-requirement-policies.md) (owning-half group matching — see §7), [ADR-0033](../adr/0033-loud-depth-bound.md), [docs/proposals/dependency-subscriptions.md](dependency-subscriptions.md), GLOSSARY *dependency subscription* / *major line* / *dependency manifest*, charter API-first + principle 6, docs/design-system.md honesty rules, M16.3 offer-the-write rule.
+**Relates to:** [ADR-0032](../adr/0032-dependency-subscriptions.md) (§3a policy effect, §6 enablement chain, §6a group refusal, §7b `latest_*` semantics, §8a–§8f actuator), [ADR-0016 §2a](../adr/0016-scoped-scan-requirement-policies.md) (owning-half group matching — see §7), [ADR-0035](../adr/0035-loud-depth-bound.md), [docs/proposals/dependency-subscriptions.md](dependency-subscriptions.md), GLOSSARY *dependency subscription* / *major line* / *dependency manifest*, charter API-first + principle 6, docs/design-system.md honesty rules, M16.3 offer-the-write rule.
 
 ## 1. What is real today (measured)
 
@@ -105,3 +105,13 @@ The original questions, for the record:
 3. **Enable / opt-out writes in the UI this round** — offer them as policy authoring with refusals rendered (recommended; `policy:write` is admin-only today so most team members will see the named refusal) · read-only UI this round (writes via CLI/IaC only).
 4. **Bump history** — new component-scoped route over authorships + Decisions, with `pullRequestUrl: null` until M21.7 persists it (recommended) · client-side over `GET /changes` (org-read only, no PR at all) · defer bumps.
 5. **Scope this round** — everything in §3–§4 (recommended) · read surface + tab, no writes · tab only against the four existing operations (no inventory rows possible — not recommended).
+
+## 11. Merge note (2026-08-18) — what landed when this branch met M21.7 / ADR-0032 §7d–§7e
+
+The shapes above were written against the 2026-08-16 agreement; the merged tree is the authority and differs in four places, all additive on the wire:
+
+- **`ingestion` is read for real** — `findIngestionStampByComponent` (`dependency_ingestion_stamps`, migration 0065), in the same transaction as the rows. `null` = **never attempted** (the repo's one reading of a missing row). `manifests[]` entries carry `repo` (the stamp is merged **per repository** by its writer), `rows` and `at` beside `path`/`outcome`/`detail?`; the stamp carries a top-level `detail: string | null`. The "not recorded" wording survives only as the UI badge for *stamp null and no Decision* ("not recorded — never attempted").
+- **Both read responses carry a REQUIRED `dependencyManagement`** (`DependencyManagementSchema`, computed by `dependencies/commander-only.ts`'s one predicate). `managedHere: false` ⇒ the rest of the envelope is not to be interpreted; the routes still 200 with unchanged RBAC. The web renders the "managed at the commander" pointer off the wire (beside the role gate); the CLI prints one line and skips the table.
+- **`producer` is read from `dependency_line_producers`** (ADR-0032 §7e — the declaration's grain is the *coordinate*; `dependency_lines.produced_by_*` was dropped in 0072). Wire shape unchanged: `{ objectId, name } | null`.
+- **`pullRequestUrl` is READ** off `dependency_bump_authorships.pull_request_url` (migration 0066 — the provider's own URL, stored by `recordBumpPullRequest`); `null` when none was recorded; still never composed. The web PR cell links to it (external, `noopener`); the CLI prints it in place of `#n`.
+

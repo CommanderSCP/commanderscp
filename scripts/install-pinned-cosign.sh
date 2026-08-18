@@ -26,13 +26,22 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dest_dir="${1:-/usr/local/bin}"
 dest="${dest_dir}/cosign"
 
+# WHERE THE PINNED IMAGE IS PULLED FROM (charter principle 5 — see the note above about "the image
+# pull is still a network fetch on a connected CI runner"). CI now closes that: it points this at the
+# GHCR mirror of EXACTLY `COSIGN_PINNED_IMAGE` (tools/ci-mirror/images.list, mirrored by digest in
+# workflow job 4d), because a `docker create` of a `repo@sha256:…` ref cannot be served by a locally
+# re-tagged image the way a tag can. The fail-closed `cosign version` assertion at the bottom of this
+# script is unchanged and still runs, so the override changes WHERE the bytes come from, never WHICH
+# bytes are accepted.
+cosign_image="${SCP_COSIGN_IMAGE_REF:-${COSIGN_PINNED_IMAGE}}"
+
 sudo_if_needed() {
   if [ -w "${dest_dir}" ]; then "$@"; else sudo "$@"; fi
 }
 
-echo "installing pinned cosign ${COSIGN_PINNED_VERSION} from ${COSIGN_PINNED_IMAGE} -> ${dest}"
+echo "installing pinned cosign ${COSIGN_PINNED_VERSION} from ${cosign_image} -> ${dest}"
 
-cid="$(docker create "${COSIGN_PINNED_IMAGE}")"
+cid="$(docker create "${cosign_image}")"
 trap 'docker rm -f "${cid}" >/dev/null 2>&1 || true' EXIT
 
 tmp="$(mktemp -d)"

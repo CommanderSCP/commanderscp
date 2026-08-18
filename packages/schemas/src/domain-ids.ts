@@ -9,9 +9,11 @@
  *    `originDomainId` (federation provenance), and `changes.importedFromDomain`. Per ADR-0021 D4
  *    the preferred prose term for this tier is **security domain** (CNSSI-4009); `TrustDomainId`
  *    keeps the established `trust domain (partition)` spelling of ADR-0016, which remains valid.
- * 2. **The containment sense** — `objects.domainId`, the ordinary intra-org `domain` **graph object
- *    type** sitting below org in the containment chain (org → containment domain → service →
- *    component). Nothing to do with trust.
+ * 2. **The containment sense** — `objects.domainId`, **the containment parent (any object; a domain
+ *    in the common case)**. The canonical chain is org → containment domain → service → component,
+ *    but the column is a bare `uuid` with no FK and `resolveContainmentParent`
+ *    (`apps/server/src/graph/objects-repo.ts`) applies no type filter, so a `service.id` or a
+ *    `component.id` is accepted and shipped tests pass exactly those. Nothing to do with trust.
  *
  * The two sat nine lines apart on the same `objects` table (`domainId` vs `originDomainId`), both
  * plain `uuid`, so passing one where the other was expected compiled cleanly. Branding makes that
@@ -54,8 +56,14 @@ declare const containmentDomainIdBrand: unique symbol;
 export type TrustDomainId = string & { readonly [trustDomainIdBrand]: true };
 
 /**
- * The id of a **containment domain** — a `domain` graph object, the ordinary intra-org grouping
- * below org in the containment chain. The value in `objects.domainId`. Never a federation identity.
+ * The id of **the containment parent (any object; a domain in the common case)** — the value in
+ * `objects.domainId`. Never a federation identity.
+ *
+ * The brand asserts the SENSE ("this is a containment placement, not a trust identity"), never the
+ * TYPE of the object it names. `objects.domain_id` has no FK (`drizzle/0001_graph_core.sql:32`) and
+ * `resolveContainmentParent` applies no type filter, so a service id or a component id is a valid
+ * `ContainmentDomainId` — and is what several shipped tests pass. Do not write a check, a doc, or a
+ * review comment that assumes a `domain` object here.
  */
 export type ContainmentDomainId = string & { readonly [containmentDomainIdBrand]: true };
 
@@ -70,10 +78,10 @@ export function asTrustDomainId(id: string): TrustDomainId {
 }
 
 /**
- * Assert that an unbranded string is a **containment** domain-object id. Use ONLY at a boundary
- * where the string demonstrably came from a containment-sense source: a graph row, a validated
- * request field naming a `domain` object, or a resolved containment parent. Never use it to convert
- * a `TrustDomainId`.
+ * Assert that an unbranded string is a **containment-sense** id. Use ONLY at a boundary where the
+ * string demonstrably came from a containment-sense source: a graph row, a validated request field
+ * naming a containment parent (any object; a domain in the common case), or a resolved containment
+ * parent. Never use it to convert a `TrustDomainId`.
  */
 export function asContainmentDomainId(id: string): ContainmentDomainId {
   return id as ContainmentDomainId;

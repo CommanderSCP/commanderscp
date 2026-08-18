@@ -1,7 +1,9 @@
 import type { GraphObject } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
-import { badRequest } from "../errors.js";
+import { badRequest, forbidden } from "../errors.js";
+import { hasPermission } from "../authz/resolve.js";
 import { getPeerByIdOrName } from "./peers-repo.js";
+import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { upsertObjectByUrn } from "../graph/objects-repo.js";
 import { FEDERATION_IMPORT_ACTOR_ID } from "./import-repo.js";
 import { isPeerBoundObjectType } from "./outpost-binding.js";
@@ -10,6 +12,10 @@ import {
   assertEnforceableDependencySubscriptionScope,
   assertNoDelegatedDependencyUpdates
 } from "../dependencies/subscription-authoring-guard.js";
+import {
+  assertMayWriteGovernanceLabels,
+  assertSelectorKeysAreGovernanceLabels
+} from "../governance/governance-labels.js";
 
 /**
  * Hand-fill for air-gapped outposts with no bundle transport at all (DESIGN.md §13): "manually
@@ -30,6 +36,22 @@ import {
  */
 export interface HandFillInput {
   orgId: string;
+  /**
+   * The REAL requesting subject, for authorization only — NEVER the write's author. The row is
+   * still written as `FEDERATION_IMPORT_ACTOR_ID` with `provenance: 'manual'`, which is what makes
+   * the reconciliation above work, and what makes the row look like a replica.
+   *
+   * Required rather than optional so a new caller has to decide. TWO authorization checks below
+   * resolve this subject, and both are broken by a defaultable or synthetic value:
+   * `assertGovernanceAuthorityForHandFill` (M21.7) and `assertMayWriteGovernanceLabels`. The
+   * synthetic import actor has no `objects` row and therefore
+   * no role bindings, so resolving IT would answer "no permission" for everyone — which reads as
+   * fail-closed and is really an authorization check that has stopped depending on who is asking,
+   * the exact shape `federation/domain-local.ts` warns about ("inventing a synthetic subject for
+   * those callers, which is how an authorization check quietly becomes a no-op", in the opposite
+   * direction). An authorization check with a defaultable subject is one rename away from a no-op.
+   */
+  actorObjectId: string;
   peerIdOrName: string;
   typeId: string;
   urn: string;
@@ -80,6 +102,61 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
 }
 
 /**
+ * M21.7 (ADR-0032 §6a census amendment) — THE `policy:write` HALF OF THE SAME PROBLEM, CLOSED BEFORE
+ * IT WAS REACHABLE RATHER THAN AFTER.
+ *
+ * The filterless census of free-form-`typeId` write doors (recorded in
+ * `governance/governance-managed-write-doors.integration.test.ts`) found five, and this is the fifth.
+ * The other four are decided: `/objects/{type}` and `/discovery/accept` refuse the governance types
+ * outright, `POST /plans` + apply and `POST /federation/overlays` demand `policy:write`. This one
+ * demanded only `federation:write` and would have written a `policy` row for anyone holding it.
+ *
+ * THIS ONE WAS NOT A LIVE ESCALATION, AND THAT IS EXACTLY WHY IT NEEDED CLOSING. Measured on the
+ * built-in role set: `federation:write` is granted to Administrator and Owner
+ * (`drizzle/0012_federation.sql:218-219`) and `policy:write` to Administrator and Owner
+ * (`drizzle/0010_governance.sql:174-175`) — the same two roles, and the route authorizes
+ * `federation:write` at the ORG ROOT, where an Administrator's `policy:write` also sits. So no actor
+ * reachable through today's API could use this. The safety was a COINCIDENCE between two independent
+ * grant lists in two independent migrations, held in place by nothing: `roles.org_id` exists for
+ * org-defined roles and `authz/resolve.ts` resolves permissions by list membership, so one custom
+ * role with `federation:write` and no `policy:write` turns the coincidence into the overlay hole
+ * again. The whole lesson of this milestone is that the door which is fine today because of a fact
+ * stated somewhere else is the door the next census misses.
+ *
+ * A PERMISSION CHECK, NOT A TYPE REFUSAL — the overlay treatment, not the discovery one. Hand-fill's
+ * REASON FOR EXISTING (DESIGN §13) is an air-gapped outpost with no bundle transport keying in a
+ * commander-origin object by hand, and a commander-distributed global policy is squarely that. So
+ * `policy` must keep working here; what changes is who may do it. Bar is org-root `policy:write`,
+ * matching `federation/overlay-repo.ts`: hand-fill passes no `domainId`, so the row lands at org-root
+ * containment, and `properties` is free-form, so an unscoped policy matching every target in the org
+ * is one of the documents this admits.
+ *
+ * `input.actorObjectId` is the REAL subject and is used for nothing else. The write below still
+ * carries `FEDERATION_IMPORT_ACTOR_ID`, which is the provenance/single-writer machinery the module
+ * doc describes, and is precisely the synthetic subject an authorization check must never be handed.
+ */
+async function assertGovernanceAuthorityForHandFill(
+  tx: TenantTx,
+  input: HandFillInput
+): Promise<void> {
+  if (!isGovernanceManagedObjectType(input.typeId)) return;
+  const ok = await hasPermission(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.actorObjectId,
+    permission: "policy:write",
+    // The org root object's id IS the org id (auth/local-auth.ts `ensureOrgRootObject`).
+    scopeObjectId: input.orgId
+  });
+  if (!ok) {
+    throw forbidden(
+      `object type '${input.typeId}' is governance-managed: hand-filling one requires 'policy:write' ` +
+        `at the organization root (a hand-filled row lands at org-root containment, and an unscoped ` +
+        `policy matches every target in the org) — 'federation:write' alone is not that authority`
+    );
+  }
+}
+
+/**
  * ADR-0032 §6a — THE SECOND CHECK THIS DOOR HAS TO RUN FOR ITSELF, AND IT IS THE SAME REASON AS THE
  * FIRST.
  *
@@ -109,6 +186,7 @@ async function assertHandFillableType(tx: TenantTx, input: HandFillInput): Promi
  */
 export async function handFillObject(tx: TenantTx, input: HandFillInput): Promise<GraphObject> {
   await assertHandFillableType(tx, input);
+  await assertGovernanceAuthorityForHandFill(tx, input);
   assertEnforceableDependencySubscriptionScope({
     typeId: input.typeId,
     properties: input.properties
@@ -120,6 +198,65 @@ export async function handFillObject(tx: TenantTx, input: HandFillInput): Promis
     orgId: input.orgId,
     typeId: input.typeId,
     properties: input.properties
+  });
+  // THE GOVERNANCE-LABEL NAMESPACE — the third and fourth refusals this door has to run for itself,
+  // and it is the same reason as the first two. Hand-fill wears the `federationImport` flag that
+  // exempts `graph/objects-repo.ts`'s choke point, and here that exemption is unearned: this is a
+  // free-form-`typeId`, free-form-`labels` LOCAL operator action reachable by any `federation:write`
+  // holder, with no chain to wedge and no transport to interrupt. Left exempt, one request would
+  // both plant a selector-scoped policy keyed on an ordinary label AND stamp reserved governance
+  // labels without `policy:write` — the whole guard, bypassed at the same door that already had to
+  // close two others.
+  //
+  // The permission check runs against the REQUESTING operator, never the synthetic
+  // `FEDERATION_IMPORT_ACTOR_ID` this function passes to `upsertObjectByUrn` — see `actorObjectId`.
+  assertSelectorKeysAreGovernanceLabels({
+    typeId: input.typeId,
+    properties: input.properties
+  });
+  // WHY `assertPolicyScopeWithinAuthority` IS NOT ALSO CALLED HERE — measured, not assumed, and the
+  // same argument `federation/overlay-repo.ts` records for the sibling door.
+  //
+  // An earlier draft of this change added it, on the reading that hand-fill was a door the check's
+  // three-site census had missed. That was true of the tree it was written against and is no longer
+  // true of this one: `assertGovernanceAuthorityForHandFill` above (M21.7) now refuses every
+  // governance-managed `typeId` unless the REQUESTING operator holds `policy:write` AT THE ORG ROOT.
+  // That is the same bar `assertPolicyScopeWithinAuthority`'s broadest branch (unscoped / selector /
+  // group) asks for, and its narrow `objectRef` branch asks for `policy:write` at-or-above one
+  // object, which an org-root grant satisfies because `authz/resolve.ts`'s `scope_expand` walks
+  // UPWARD. So by the time control reaches here the check can no longer refuse anything — and an
+  // inert authorization guard reads as coverage while providing none, which is strictly worse than
+  // its absence.
+  //
+  // MEASURED: with the call added, deleting it again left the door's refusal test green (it was
+  // `assertGovernanceAuthorityForHandFill` throwing all along), which is the definition of a guard
+  // proved by nothing. The door's real coverage is
+  // `governance/governance-managed-write-doors.integration.test.ts` DOOR 5.
+  //
+  // IF THAT PREMISE CHANGES, THIS COMES BACK: the argument rests entirely on the org-root bar above
+  // being org-root and covering `policy`. Narrow `assertGovernanceAuthorityForHandFill`'s scope or
+  // its type set and the scope check is load-bearing again.
+  //
+  // NOT ADDRESSED HERE, and reported separately: this door still authorizes the WRITE itself with
+  // `federation:write` rather than the `policy:write` that `iac/plans-repo.ts`'s `writePermissionFor`
+  // demands for the same types. Raising that bar is a new decision with its own blast radius (an
+  // air-gapped operator hand-filling commander governance config), not the completion of an existing
+  // one, so it belongs to the owner rather than to this change.
+  await assertMayWriteGovernanceLabels(tx, {
+    orgId: input.orgId,
+    actorObjectId: input.actorObjectId,
+    // A hand-fill is an upsert, so an EXISTING row's governance labels are also reachable here; the
+    // stored value is the honest `before`, and `{}` would silently permit a removal on the update
+    // branch while refusing an identical no-op create.
+    before:
+      ((
+        await tx.query.objects.findFirst({
+          where: (t, { eq: eqOp, and: andOp }) =>
+            andOp(eqOp(t.orgId, input.orgId), eqOp(t.urn, input.urn))
+        })
+      )?.labels as Record<string, unknown> | undefined) ?? {},
+    after: input.labels ?? {},
+    subject: `hand-filled ${input.typeId} '${input.urn}'`
   });
   const peer = await getPeerByIdOrName(tx, input.orgId, input.peerIdOrName);
   const { object } = await upsertObjectByUrn(tx, {

@@ -1081,6 +1081,9 @@ export type CreateObjectData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -2054,6 +2057,9 @@ export type CreateDomainData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -2606,6 +2612,9 @@ export type CreateServiceData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -3158,6 +3167,9 @@ export type CreateAssemblyData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -3710,6 +3722,9 @@ export type CreateDeploymentTargetData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -4262,6 +4277,9 @@ export type CreateTeamData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -4814,6 +4832,9 @@ export type CreateGroupData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -5366,6 +5387,9 @@ export type CreateUserData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -5918,6 +5942,9 @@ export type CreateServiceAccountData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -6799,6 +6826,9 @@ export type CreateComponentData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -10726,6 +10756,9 @@ export type CreatePlanData = {
                 urn: string;
                 typeId: string;
                 name: string;
+                /**
+                 * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                 */
                 domainId?: string | null;
                 properties?: {
                     [key: string]: unknown;
@@ -10770,9 +10803,20 @@ export type CreatePlanData = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            /**
+             * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+             */
             placements?: Array<{
                 componentUrn: string;
                 deploymentTargetUrn: string;
+            }>;
+            /**
+             * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+             */
+            producers?: Array<{
+                producerUrn: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
             }>;
         };
     };
@@ -10834,6 +10878,9 @@ export type CreatePlanResponses = {
                 urn: string;
                 typeId: string;
                 name: string;
+                /**
+                 * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                 */
                 domainId?: string | null;
                 properties?: {
                     [key: string]: unknown;
@@ -10878,9 +10925,20 @@ export type CreatePlanResponses = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            /**
+             * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+             */
             placements?: Array<{
                 componentUrn: string;
                 deploymentTargetUrn: string;
+            }>;
+            /**
+             * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+             */
+            producers?: Array<{
+                producerUrn: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
             }>;
         };
         diff: {
@@ -10953,6 +11011,15 @@ export type CreatePlanResponses = {
                     externalRef: string | null;
                     executionSystemId: string | null;
                 };
+            }>;
+            producers?: Array<{
+                kind: 'dependency-producer';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                producerUrn: string;
+                displacedProducerUrn?: string;
+                reason: string;
             }>;
             summary: {
                 creates: number;
@@ -11031,6 +11098,9 @@ export type GetPlanResponses = {
                 urn: string;
                 typeId: string;
                 name: string;
+                /**
+                 * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                 */
                 domainId?: string | null;
                 properties?: {
                     [key: string]: unknown;
@@ -11075,9 +11145,20 @@ export type GetPlanResponses = {
                 externalRef?: string;
                 executionSystemId?: string;
             }>;
+            /**
+             * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+             */
             placements?: Array<{
                 componentUrn: string;
                 deploymentTargetUrn: string;
+            }>;
+            /**
+             * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+             */
+            producers?: Array<{
+                producerUrn: string;
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
             }>;
         };
         diff: {
@@ -11150,6 +11231,15 @@ export type GetPlanResponses = {
                     externalRef: string | null;
                     executionSystemId: string | null;
                 };
+            }>;
+            producers?: Array<{
+                kind: 'dependency-producer';
+                action: 'create' | 'update' | 'delete' | 'noop';
+                ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                coordinate: string;
+                producerUrn: string;
+                displacedProducerUrn?: string;
+                reason: string;
             }>;
             summary: {
                 creates: number;
@@ -11240,6 +11330,9 @@ export type ApplyPlanResponses = {
                     urn: string;
                     typeId: string;
                     name: string;
+                    /**
+                     * Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {"urn":"urn:scp:checkout-api:policy:deps-checkout-api","typeId":"policy","name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).
+                     */
                     domainId?: string | null;
                     properties?: {
                         [key: string]: unknown;
@@ -11284,9 +11377,20 @@ export type ApplyPlanResponses = {
                     externalRef?: string;
                     executionSystemId?: string;
                 }>;
+                /**
+                 * Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.
+                 */
                 placements?: Array<{
                     componentUrn: string;
                     deploymentTargetUrn: string;
+                }>;
+                /**
+                 * Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author "producers": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.
+                 */
+                producers?: Array<{
+                    producerUrn: string;
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
                 }>;
             };
             diff: {
@@ -11359,6 +11463,15 @@ export type ApplyPlanResponses = {
                         externalRef: string | null;
                         executionSystemId: string | null;
                     };
+                }>;
+                producers?: Array<{
+                    kind: 'dependency-producer';
+                    action: 'create' | 'update' | 'delete' | 'noop';
+                    ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+                    coordinate: string;
+                    producerUrn: string;
+                    displacedProducerUrn?: string;
+                    reason: string;
                 }>;
                 summary: {
                     creates: number;
@@ -12979,6 +13092,9 @@ export type CreatePolicyData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -13531,6 +13647,9 @@ export type CreateControlData = {
         id?: string;
         urn?: string;
         name: string;
+        /**
+         * Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with "lacks '<permission>' at scope '<org-root-uuid>'" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {"name":"deps-checkout-api","domainId":"<component-id>","properties":{"enforcement":"advisory","scope":{"objectRef":"<component-id>"},"effects":[{"dependencySubscription":{"enabled":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.
+         */
         domainId?: string | null;
         properties?: {
             [key: string]: unknown;
@@ -15409,6 +15528,10 @@ export type GetComponentDependencySubscriptionResponses = {
                 delivery?: 'pull_request' | 'auto_merge';
             }>;
         };
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
     };
 };
 
@@ -15485,14 +15608,22 @@ export type ListComponentDependencyInventoryResponses = {
             name: string;
             domainId: string | null;
         };
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
         ingestion?: {
             lastAttemptAt: string;
             source: 'loop' | 'backfill';
             outcome: 'ok' | 'partial' | 'unreadable' | 'not_enabled';
             rowsWritten: number;
+            detail: string | null;
             manifests: Array<{
+                repo: string;
                 path: string;
                 outcome: string;
+                rows: number;
+                at: string;
                 detail?: string;
             }>;
         } | null;
@@ -15646,6 +15777,10 @@ export type ListComponentDependencyBumpsResponses = {
             name: string;
             domainId: string | null;
         };
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
         rows: Array<{
             changeId: string;
             changeName: string;
@@ -15736,6 +15871,17 @@ export type BackfillDependencyInventoryErrors = {
         instance?: string;
         decision_id?: string;
     };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
 };
 
 export type BackfillDependencyInventoryError = BackfillDependencyInventoryErrors[keyof BackfillDependencyInventoryErrors];
@@ -15768,6 +15914,315 @@ export type BackfillDependencyInventoryResponses = {
 };
 
 export type BackfillDependencyInventoryResponse = BackfillDependencyInventoryResponses[keyof BackfillDependencyInventoryResponses];
+
+export type ListDependencyLineProducersData = {
+    body?: never;
+    path?: never;
+    query?: {
+        ecosystem?: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate?: string;
+    };
+    url: '/dependencies/producers';
+};
+
+export type ListDependencyLineProducersErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListDependencyLineProducersError = ListDependencyLineProducersErrors[keyof ListDependencyLineProducersErrors];
+
+export type ListDependencyLineProducersResponses = {
+    /**
+     * Success
+     */
+    200: {
+        producers: Array<{
+            orgId: string;
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            producerObjectId: string;
+            declaredAt: string;
+            declaredByObjectId: string;
+        }>;
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+    };
+};
+
+export type ListDependencyLineProducersResponse = ListDependencyLineProducersResponses[keyof ListDependencyLineProducersResponses];
+
+export type DeclareDependencyLineProducerData = {
+    body: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        producerIdOrUrn: string;
+        dryRun?: boolean;
+    };
+    path?: never;
+    query?: never;
+    url: '/dependencies/producers';
+};
+
+export type DeclareDependencyLineProducerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DeclareDependencyLineProducerError = DeclareDependencyLineProducerErrors[keyof DeclareDependencyLineProducerErrors];
+
+export type DeclareDependencyLineProducerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        action: 'declare' | 'retract';
+        dryRun: boolean;
+        declaration: {
+            orgId: string;
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            producerObjectId: string;
+            declaredAt: string;
+            declaredByObjectId: string;
+        } | null;
+        lines: Array<{
+            lineId: string;
+            major: string;
+            tagPattern: string | null;
+            headBefore: {
+                latestVersion: string | null;
+                latestDigest: string | null;
+                latestObservedAt: string | null;
+            };
+            headCleared: boolean;
+            subscribedComponentObjectIds: Array<string>;
+        }>;
+        openBumpAuthorships: Array<{
+            changeObjectId: string;
+            componentObjectId: string;
+            repo: string;
+            manifestPath: string;
+            fromVersion: string;
+            toVersion: string;
+            pullRequestUrl?: string;
+        }>;
+        decisionId: string | null;
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+    };
+};
+
+export type DeclareDependencyLineProducerResponse = DeclareDependencyLineProducerResponses[keyof DeclareDependencyLineProducerResponses];
+
+export type RetractDependencyLineProducerData = {
+    body: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        dryRun?: boolean;
+    };
+    path?: never;
+    query?: never;
+    url: '/dependencies/producers/retract';
+};
+
+export type RetractDependencyLineProducerErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RetractDependencyLineProducerError = RetractDependencyLineProducerErrors[keyof RetractDependencyLineProducerErrors];
+
+export type RetractDependencyLineProducerResponses = {
+    /**
+     * Success
+     */
+    200: {
+        ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+        coordinate: string;
+        action: 'declare' | 'retract';
+        dryRun: boolean;
+        declaration: {
+            orgId: string;
+            ecosystem: 'npm' | 'go' | 'maven' | 'python' | 'oci';
+            coordinate: string;
+            producerObjectId: string;
+            declaredAt: string;
+            declaredByObjectId: string;
+        } | null;
+        lines: Array<{
+            lineId: string;
+            major: string;
+            tagPattern: string | null;
+            headBefore: {
+                latestVersion: string | null;
+                latestDigest: string | null;
+                latestObservedAt: string | null;
+            };
+            headCleared: boolean;
+            subscribedComponentObjectIds: Array<string>;
+        }>;
+        openBumpAuthorships: Array<{
+            changeObjectId: string;
+            componentObjectId: string;
+            repo: string;
+            manifestPath: string;
+            fromVersion: string;
+            toVersion: string;
+            pullRequestUrl?: string;
+        }>;
+        decisionId: string | null;
+        dependencyManagement: {
+            managedHere: boolean;
+            reason: 'commander' | 'outpost' | 'retrans' | 'role_undeclared';
+        };
+    };
+};
+
+export type RetractDependencyLineProducerResponse = RetractDependencyLineProducerResponses[keyof RetractDependencyLineProducerResponses];
 
 export type ListCampaignsData = {
     body?: never;
@@ -19129,6 +19584,7 @@ export type RunDiscoveryResponses = {
             properties?: {
                 [key: string]: unknown;
             };
+            urn?: string;
         }>;
         relationships: Array<{
             typeId: string;
@@ -19162,6 +19618,7 @@ export type AcceptDiscoveryProposalData = {
                 properties?: {
                     [key: string]: unknown;
                 };
+                urn?: string;
             }>;
             relationships: Array<{
                 typeId: string;
@@ -19248,6 +19705,7 @@ export type BackfillSourceMappingsData = {
                 properties?: {
                     [key: string]: unknown;
                 };
+                urn?: string;
             }>;
             relationships: Array<{
                 typeId: string;

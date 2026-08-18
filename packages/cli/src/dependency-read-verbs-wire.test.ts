@@ -27,11 +27,17 @@ import type {
 const inventoryCalls: { idOrUrn: string; query: unknown }[] = [];
 const bumpsCalls: { idOrUrn: string; query: unknown }[] = [];
 
+/** What the stubbed SDK answers NEXT — a test swaps in a `managedHere: false` envelope, or a
+ *  stamped inventory / a URL-carrying bump, and the action must print off THAT answer. */
+let nextInventory: ComponentDependencyInventoryResponse;
+let nextBumps: ComponentDependencyBumpsResponse;
+
 const COMPONENT_ID = "0198f000-0000-7000-8000-000000000010";
 const LINE_ID = "0198f000-0000-7000-8000-000000000011";
 
 const inventoryResponse: ComponentDependencyInventoryResponse = {
   component: { id: COMPONENT_ID, name: "checkout-api", domainId: null },
+  dependencyManagement: { managedHere: true, reason: "commander" },
   ingestion: null,
   lastIngestionDecision: null,
   componentGate: { enabled: true, reason: "enabled", contributions: [] },
@@ -96,6 +102,7 @@ const inventoryResponse: ComponentDependencyInventoryResponse = {
 
 const bumpsResponse: ComponentDependencyBumpsResponse = {
   component: { id: COMPONENT_ID, name: "checkout-api", domainId: null },
+  dependencyManagement: { managedHere: true, reason: "commander" },
   rows: [
     {
       changeId: "0198f000-0000-7000-8000-000000000020",
@@ -137,11 +144,11 @@ vi.mock("@scp/sdk", () => {
     dependencySubscriptions = {
       inventory: async (idOrUrn: string, query: unknown) => {
         inventoryCalls.push({ idOrUrn, query });
-        return inventoryResponse;
+        return nextInventory;
       },
       bumps: async (idOrUrn: string, query: unknown) => {
         bumpsCalls.push({ idOrUrn, query });
-        return bumpsResponse;
+        return nextBumps;
       }
     };
   }
@@ -165,6 +172,8 @@ beforeAll(async () => {
 beforeEach(async () => {
   inventoryCalls.length = 0;
   bumpsCalls.length = 0;
+  nextInventory = inventoryResponse;
+  nextBumps = bumpsResponse;
   logged = [];
   configDir = await mkdtemp(path.join(tmpdir(), "scp-dep-read-verbs-"));
   process.env.SCP_CONFIG_DIR = configDir;
@@ -196,9 +205,10 @@ describe("scp dependency-subscriptions inventory — the action calls the SDK an
     await run(["inventory", "--component", COMPONENT_ID]);
     expect(inventoryCalls).toEqual([{ idOrUrn: COMPONENT_ID, query: {} }]);
     const out = logged.join("\n");
-    // The envelope FIRST (component; a null stamp is NOT RECORDED, never "no dependencies").
+    // The envelope FIRST (component; a null stamp is NEVER ATTEMPTED, never "no dependencies").
     expect(out).toMatch(/component: checkout-api/);
-    expect(out).toMatch(/ingestion: not recorded/);
+    expect(out).toMatch(/ingestion: never attempted/);
+    expect(out).not.toMatch(/not managed on this instance/);
     expect(out).toMatch(/component gate: enabled/);
     // The rows, off the printer: coordinate verbatim, `-` for a head not observed.
     expect(out).toContain("@acme/lib");
@@ -228,6 +238,60 @@ describe("scp dependency-subscriptions inventory — the action calls the SDK an
     expect(out).toContain("golang.org/x/net");
     expect(out).not.toContain("@acme/lib");
   });
+
+  it("prints the ingestion STAMP line off a stamped answer — ok + 0 rows reads 'no dependencies declared', and the empty-rows note points at it", async () => {
+    nextInventory = {
+      ...inventoryResponse,
+      ingestion: {
+        lastAttemptAt: "2026-08-16T02:00:00.000Z",
+        source: "loop",
+        outcome: "ok",
+        rowsWritten: 0,
+        detail: null,
+        manifests: [
+          {
+            repo: "acme/app",
+            path: "package.json",
+            outcome: "ok",
+            rows: 0,
+            at: "2026-08-16T02:00:00.000Z"
+          }
+        ]
+      },
+      rows: [],
+      nextCursor: null
+    };
+    await run(["inventory", "--component", COMPONENT_ID]);
+    const out = logged.join("\n");
+    expect(out).toContain("ingestion: ok — no dependencies declared (read 1 manifest(s))");
+    expect(out).toContain("acme/app:package.json=ok");
+    expect(out).toMatch(/no rows on record/);
+  });
+
+  it("when the server says dependencies are NOT managed here, prints the component line and the posture and SKIPS the stamp, the gate and the table", async () => {
+    nextInventory = {
+      ...inventoryResponse,
+      dependencyManagement: { managedHere: false, reason: "outpost" }
+    };
+    await run(["inventory", "--component", COMPONENT_ID]);
+    // The SDK was still called — the route answers 200 there; the CLI merely refuses to narrate
+    // an envelope that is not to be interpreted.
+    expect(inventoryCalls).toEqual([{ idOrUrn: COMPONENT_ID, query: {} }]);
+    const out = logged.join("\n");
+    expect(out).toMatch(/component: checkout-api/);
+    expect(out).toContain("dependencies are not managed on this instance (outpost)");
+    expect(out).not.toMatch(/ingestion:/);
+    expect(out).not.toMatch(/component gate:/);
+    expect(out).not.toContain("@acme/lib");
+    expect(out).not.toMatch(/more rows/);
+    // …and --output json still hands back the whole answer, posture included.
+    logged = [];
+    await run(["inventory", "--component", COMPONENT_ID, "--output", "json"]);
+    expect(JSON.parse(logged.join("\n")).dependencyManagement).toEqual({
+      managedHere: false,
+      reason: "outpost"
+    });
+  });
 });
 
 describe("scp dependency-subscriptions bumps — the action calls the SDK and prints off the answer", () => {
@@ -241,6 +305,33 @@ describe("scp dependency-subscriptions bumps — the action calls the SDK and pr
     // Never a composed link.
     expect(out).not.toMatch(/https?:\/\//);
     expect(out).not.toMatch(/more rows/);
+    expect(out).not.toMatch(/not managed on this instance/);
+  });
+
+  it("the PR column prints the STORED URL when the server sent one (in place of `#n`) — still never composed", async () => {
+    nextBumps = {
+      ...bumpsResponse,
+      rows: [{ ...bumpsResponse.rows[0]!, pullRequestUrl: "https://git.example/acme/app/pulls/42" }]
+    };
+    await run(["bumps", "--component", COMPONENT_ID]);
+    const out = logged.join("\n");
+    expect(out).toContain("https://git.example/acme/app/pulls/42");
+    expect(out).not.toContain("#42");
+  });
+
+  it("when the server says dependencies are NOT managed here, prints the component line and the posture and SKIPS the table", async () => {
+    nextBumps = {
+      ...bumpsResponse,
+      dependencyManagement: { managedHere: false, reason: "role_undeclared" }
+    };
+    await run(["bumps", "--component", COMPONENT_ID]);
+    expect(bumpsCalls).toEqual([{ idOrUrn: COMPONENT_ID, query: {} }]);
+    const out = logged.join("\n");
+    expect(out).toContain(`component: checkout-api (${COMPONENT_ID})`);
+    expect(out).toContain("dependencies are not managed on this instance (role_undeclared)");
+    // No table: neither the row's PR number nor the "(no results)" placeholder.
+    expect(out).not.toContain("#42");
+    expect(out).not.toMatch(/no results/);
   });
 
   it("--output json prints the response verbatim (still through the SDK call)", async () => {

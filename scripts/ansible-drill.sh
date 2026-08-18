@@ -52,8 +52,15 @@ trap cleanup EXIT
 
 # Source images to bundle. Defaults reuse whatever scpd image is already around; override via env.
 SCPD_REF="${ANSIBLE_DRILL_SCPD_REF:-scp:dev}"
-RUNNER_IAC_REF="${ANSIBLE_DRILL_RUNNER_IAC_REF:-scp-runner-iac:dev}"
 POSTGRES_REF="${ANSIBLE_DRILL_POSTGRES_REF:-postgres:16}"
+# The three managed-execution runner images the bundle carries (deploy/airgap/src/bundle-images.ts).
+# Preparing a local source image for each is shared with airgap-drill.sh — read that file's header
+# before changing these, especially the scan stand-in.
+RUNNER_IAC_REF="${ANSIBLE_DRILL_RUNNER_IAC_REF:-scp-runner-iac:dev}"
+RUNNER_SCAN_REF="${ANSIBLE_DRILL_RUNNER_SCAN_REF:-}"
+RUNNER_DEP_REF="${ANSIBLE_DRILL_RUNNER_DEP_REF:-scp-runner-dep:dev}"
+# shellcheck source=scripts/drill-runner-images.sh
+. "${ROOT_DIR}/scripts/drill-runner-images.sh"
 
 log "checking prerequisites"
 for bin in docker skopeo cosign ansible-playbook node; do
@@ -70,8 +77,8 @@ if ! docker image inspect "$SCPD_REF" >/dev/null 2>&1; then
     exit 1
   fi
 fi
-docker image inspect "$RUNNER_IAC_REF" >/dev/null 2>&1 || docker build -t "$RUNNER_IAC_REF" apps/runner-iac
 docker image inspect "$POSTGRES_REF" >/dev/null 2>&1 || docker pull "$POSTGRES_REF"
+ensure_runner_source_images # sets BUNDLE_RUNNER_ARGS
 
 log "building @scp/airgap"
 pnpm --filter @scp/airgap build >/dev/null
@@ -82,8 +89,8 @@ node deploy/airgap/dist/build-bundle.js \
   --version "$BUNDLE_VERSION" \
   --out-dir "$BUNDLE_OUT" \
   --scpd-ref "$SCPD_REF" \
-  --runner-iac-ref "$RUNNER_IAC_REF" \
-  --postgres-ref "$POSTGRES_REF"
+  --postgres-ref "$POSTGRES_REF" \
+  "${BUNDLE_RUNNER_ARGS[@]}"
 
 TARBALL="$(find "$BUNDLE_OUT" -name "scp-bundle-${BUNDLE_VERSION}.tar.gz" | head -1)"
 [ -n "$TARBALL" ] || { echo "bundle tarball not produced" >&2; exit 1; }

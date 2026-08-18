@@ -192,7 +192,7 @@ async function groupByDomain(
       SELECT a.start_id, o.id, o.domain_id, o.type_id, a.depth + 1
       FROM objects o
       JOIN ancestry a ON o.id = a.domain_id
-      -- ADR-0033 probe: one past the shared bound. This walk has NO branching (domain_id is a
+      -- ADR-0035 probe: one past the shared bound. This walk has NO branching (domain_id is a
       -- single column), and expansion stops AT the first domain/organization row — so a row
       -- landing at the probe depth proves that start object found no domain within the bound,
       -- not that some second path kept going. Before this, such an object silently VANISHED from

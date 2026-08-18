@@ -72,7 +72,7 @@ import { ensureFederationSelf } from "./self-repo.js";
  *  (4) THE PEER ROW IS THE ANCHOR; THE BINDING IS 1:1 AND OBJECT→PEER ONLY. An `outpost` object must
  *      name an already-paired peer that holds role `outpost` (an unbound `peerDomainId` is a 400) —
  *      OR, since pipeline-substrate-registry-scan.md §10.5 (owner, 2026-08-16), THIS INSTANCE'S OWN
- *      TRUST DOMAIN (`federation_self.domainId`): THE HQ OUTPOST (formerly "the HQ outpost"; GLOSSARY, ADR-0021 D7), the "commander and outpost
+ *      TRUST DOMAIN (`federation_self.domainId`): THE HQ OUTPOST (formerly "co-located"; GLOSSARY, ADR-0021 D7), the "commander and outpost
  *      are one and the same" case, in which every target this instance authors is within an outpost
  *      too — accepted ONLY when `federation_self.role` is `commander` (an outpost's own record is
  *      commander-declared and arrives replicated; a locally authored one would outrank the replica in

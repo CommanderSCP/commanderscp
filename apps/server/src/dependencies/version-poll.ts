@@ -111,16 +111,25 @@ export interface DependencyVersionPollRoleVerdict {
  * federation API, and advisory (config.ts's own doc comment, and M15.4's helm-verify note). A
  * background job that decided whether to reach the internet from tenant-writable data would be
  * exactly the runtime/install-time fork M15.4 declined to create.
+ *
+ * THE BRANCH ORDER IS PART OF THE CONTRACT, NOT A DETAIL OF THIS COPY (M21.7 follow-up, LOW 5).
+ * This body is hand-written rather than delegating to {@link commanderOnlyJobVerdict} because its
+ * refusal TEXT carries a fact a shared string cannot ("dials package registries from an air-gapped
+ * site") — but the VERDICT and the ORDER the axes are tested in are shared. It used to test
+ * federation first, so a deployment misconfigured on more than one axis was sent to a DIFFERENT
+ * setting depending on which job complained: the poll said "federationRole is 'outpost'", the
+ * dispatcher said "SCP_ROLE is 'api'", for one and the same deployment. Process axis FIRST, then
+ * the undeclared case, then the declared non-commander — the order `commanderOnlyJobVerdict`
+ * documents and `commander-only.test.ts` pins across every copy by comparing each multi-axis
+ * refusal against the single-axis refusal it must be identical to.
  */
 export function dependencyVersionPollRoleGuard(
   config: Pick<ServerConfig, "role" | "federationRole" | "federationRoleDeclared">
 ): DependencyVersionPollRoleVerdict {
-  if (config.federationRole !== "commander") {
+  if (config.role !== "all" && config.role !== "worker") {
     return {
       allowed: false,
-      reason:
-        `federationRole is '${config.federationRole}' — the third-party version poll runs on a ` +
-        `commander only. An outpost is frequently air-gapped and must not dial registries on a timer`
+      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
     };
   }
   if (!config.federationRoleDeclared) {
@@ -145,10 +154,12 @@ export function dependencyVersionPollRoleGuard(
         "explicitly (Helm: `federationRole`) to turn it on"
     };
   }
-  if (config.role !== "all" && config.role !== "worker") {
+  if (config.federationRole !== "commander") {
     return {
       allowed: false,
-      reason: `SCP_ROLE is '${config.role}' — background work belongs to an 'all' or 'worker' process`
+      reason:
+        `federationRole is '${config.federationRole}' — the third-party version poll runs on a ` +
+        `commander only. An outpost is frequently air-gapped and must not dial registries on a timer`
     };
   }
   return {
@@ -206,11 +217,13 @@ export async function buildLineWorkList(db: Db, orgId: string): Promise<LineWork
     // THE WORK-LIST IS THE RESOLUTION (property 1 in the module doc). Not filtered afterwards.
     const subscribed = await listSubscribedComponentLines(tx, orgId, {
       // A background tick has no human actor. `SYSTEM_ACTOR_ID` is the same sentinel the reconcile
-      // loop threads into `matchPoliciesForTargets`, and its consequence here is stated rather than
-      // discovered: it is a member of no group, so a `group`-scoped ENABLE does not contribute for
-      // this caller — which is the SAFE direction (§6's "absent never means enabled") and yields
-      // not-enabled, never a spurious poll. The unsafe direction — a group-scoped OPT-OUT failing to
-      // subtract — cannot arise, because ADR-0032 §6a refuses authoring one at all.
+      // loop threads into `matchPoliciesForTargets`. This comment used to draw a conclusion from that
+      // which is FALSE (ADR-0032 §6a-ii): "it is a member of no group, so a `group`-scoped ENABLE
+      // does not contribute for this caller — the SAFE direction". The sentinel's membership is
+      // still nothing, but group scope's OWNING half never reads the actor, so a group-scoped enable
+      // DOES contribute here wherever that group owns something on the component's chain. Neither
+      // direction is therefore inert for this caller; what makes both safe is upstream, not here —
+      // ADR-0032 §6a refuses authoring a group-scoped effect at all, in either direction.
       actorObjectId: SYSTEM_ACTOR_ID
     });
     if (subscribed.length === 0) return [];
@@ -266,6 +279,75 @@ export async function buildLineWorkList(db: Db, orgId: string): Promise<LineWork
  * A REFUSAL is carried, because it is a statement about the world (this index is behind this line's
  * head) that stays true, and therefore compares equal, for as long as it holds.
  */
+/**
+ * THE PLAIN-ENGLISH "WHY NOTHING WAS RECORDED", IN THE TERMS OF THE RULE THAT ACTUALLY REFUSED.
+ *
+ * This used to be one fixed sentence — "a head never moves backwards and never leaves the line it
+ * names" — appended to every refusal. That sentence is TRUE of the version rules and simply not the
+ * rule that fired for an OWNERSHIP refusal: `line_is_internal` is not a statement about the version
+ * at all, and the index's answer may be perfectly ahead of the standing head. A Decision that
+ * explains the wrong rule is worse than one that says nothing, because it is read as the answer
+ * (charter principle 6): an operator reading it would go looking for a version-ordering problem on a
+ * line whose actual problem is that a producer was declared for it.
+ *
+ * THE SWITCH IS EXHAUSTIVE AND HAS NO `default`, which is the standing gate rather than a style: with
+ * `noImplicitReturns`, a new {@link HeadRefusalReason} that nobody explains here does not compile.
+ * MEASURED rather than assumed — adding one reason to that union yields exactly
+ * `version-poll.ts: error TS2366: Function lacks ending return statement`. A `default` arm would
+ * silence that gate and hand the next reason the same wrong explanation this function exists to fix.
+ *
+ * `reasonTree.reason` and `reasonTree.detail` carry the machine-readable name and the door's own
+ * specific text beside this; the three are not redundant — the door's `detail` names the fact (which
+ * producer, which version), this names the RULE.
+ *
+ * EXPORTED for `version-poll.test.ts`, and only because there is no other way in: the refusal that
+ * exposed the defect (`line_is_internal`) needs a declaration to land BETWEEN `buildLineWorkList`
+ * and the write, and `pollOrgDependencyVersions` owns both ends of that window. The rule is pure, so
+ * it is pinned pure — the same split as `evaluateIngressAuthority` (unit) and the race replay
+ * (integration).
+ *
+ * AND THE CALL SITE IS PINNED SEPARATELY, because the pure test is NOT sufficient: restoring the old
+ * fixed sentence at `decisionFor`'s `not_recorded` arm leaves all 16 of that file's cases green
+ * (measured) — a rule proven in isolation while its only consumer is free to ignore it. The pin is
+ * `version-poll.integration.test.ts`'s "the PERSISTED Decision for a line_is_internal refusal
+ * explains OWNERSHIP", which declares a producer from INSIDE the index round trip and reads the
+ * stored text back out of `decisions`.
+ */
+export function norecordFor(reason: HeadRefusalReason): string {
+  switch (reason) {
+    case "line_is_internal":
+      return (
+        "a producer is declared for this coordinate, so its head is derived from the org's own " +
+        "production releases and a public index may not write it — the columns were left alone. " +
+        "This is NOT a statement about the version offered (ADR-0032 §7: dependency confusion)"
+      );
+    case "line_is_third_party":
+    case "line_transferred":
+      // Unreachable from THIS ingress — both are refusals of an `internal` write, and this module
+      // only ever writes as `third_party`. Explained rather than asserted away, because
+      // `HeadRefusalReason` is one type shared by both ingresses and a future third one: an
+      // ownership refusal must never fall through to a version explanation, which is the defect
+      // this function exists to have fixed once.
+      return (
+        "the ingress that offered this head does not own this line, so the columns were left " +
+        "alone — WHO may write a head is decided before WHAT the version is (ADR-0032 §7)"
+      );
+    case "behind_head":
+      return (
+        "the index's answer is BEHIND this line's head, so the columns were left alone — a head " +
+        "never moves backwards (ADR-0032 §7)"
+      );
+    case "different_major_line":
+    case "different_tag_variant":
+    case "major_line_not_comparable":
+    case "version_not_comparable":
+      return (
+        "the index's answer is not a version on this line as it is defined now, so the columns " +
+        "were left alone — a head never leaves the line it names (ADR-0032 §7)"
+      );
+  }
+}
+
 function decisionFor(
   item: LineWorkItem,
   outcome: LineHeadOutcome,
@@ -302,9 +384,7 @@ function decisionFor(
         reason: refusal.reason,
         detail: refusal.detail,
         standingHead: refusal.head,
-        norecord:
-          "the index's answer does not move this line's head, so the columns were left alone — a " +
-          "head never moves backwards and never leaves the line it names (ADR-0032 §7)"
+        norecord: norecordFor(refusal.reason)
       }
     };
   }
@@ -424,11 +504,24 @@ async function pollWork(
           // and its digest move together (an unresolved digest is an explicit `null`, never the
           // previous version's bytes left standing beside a new tag), the head never moves backwards
           // and never leaves the line it names. Whatever it refuses is reported, not swallowed.
-          const head = await recordDependencyLineHead(tx, orgId, {
-            lineId: item.line.id,
-            latestVersion: outcome.head.version,
-            latestDigest: outcome.head.digest
-          });
+          //
+          // `"third_party"` IS NOT DECORATION, AND THE `ThirdPartyLine` BRAND DOES NOT COVER IT.
+          // The brand was minted in `buildLineWorkList`'s transaction, before the registry round
+          // trip above; a `POST /dependencies/producers` landing in that window makes this line
+          // internal, and writing a public head onto it was measured to be PERMANENT (the poll
+          // stops visiting the line and the real internal head is then refused as `behind_head`).
+          // The door re-reads the declaration under its own `FOR UPDATE` and refuses with
+          // `line_is_internal`, which lands in this line's Decision like any other refusal.
+          const head = await recordDependencyLineHead(
+            tx,
+            orgId,
+            {
+              lineId: item.line.id,
+              latestVersion: outcome.head.version,
+              latestDigest: outcome.head.digest
+            },
+            { kind: "third_party" }
+          );
           if (!head.recorded) {
             refusal = {
               reason: head.reason,

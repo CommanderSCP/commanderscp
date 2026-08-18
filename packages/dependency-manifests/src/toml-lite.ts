@@ -3,11 +3,20 @@
  * `pyproject.toml` keeps dependencies in, and nothing more.
  *
  * **Why hand-rolled rather than a dependency.** Charter principle 5 makes air-gap and offline
- * builds first-class ("vendored tooling", no runtime network calls), and this package deliberately
- * has zero third-party dependencies so it can be dropped into an ephemeral runner image without
- * dragging a resolver behind it. There is no TOML parser anywhere in the tree today (checked at
- * HEAD: no `@iarna/toml`, no `smol-toml`, no `toml` in any workspace `package.json`), so using one
- * would mean introducing a new vendored dependency for six table lookups.
+ * builds first-class ("vendored tooling", no runtime network calls), and there is no TOML parser
+ * anywhere in the tree (checked at HEAD: no `@iarna/toml`, no `smol-toml`, no `toml` in any
+ * workspace `package.json`), so using one would mean adding a genuinely new vendored dependency for
+ * six table lookups.
+ *
+ * **AMENDED (M21.7).** This comment used to say the package "deliberately has zero third-party
+ * dependencies so it can be dropped into an ephemeral runner image". Both halves are now qualified:
+ * the package takes exactly one dependency, `yaml`, for `kubernetes-images.ts` (`types.ts` records
+ * the trade and why a hand-rolled YAML subset was refused where a hand-rolled TOML subset was
+ * taken), and the runner image never contained this package at all — `apps/runner-dep/Dockerfile`
+ * is `FROM scratch` plus BusyBox, with no Node runtime. The argument for hand-rolling THIS reader
+ * is unchanged and does not rest on either: a new vendored dependency for six table lookups is a
+ * bad trade, and a line-oriented TOML scanner's failure mode is a missing table rather than a
+ * confidently wrong tree.
  *
  * **What "small" means, precisely.** This reader understands: table headers (`[a.b]`), array-of-table
  * headers (`[[a.b]]`), bare and quoted and dotted keys, basic and literal strings including their

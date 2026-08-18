@@ -24,7 +24,7 @@ import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { objects } from "../db/schema.js";
 import { authorize } from "../authz/resolve.js";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, conflict, forbidden } from "../errors.js";
 import { getObjectByIdOrUrn } from "../graph/objects-repo.js";
 import { listSourceMappingsForComponents } from "../coordination/source-mappings-repo.js";
 import {
@@ -37,6 +37,11 @@ import {
   readComponentDependencyBumps,
   readComponentDependencyInventory
 } from "../dependencies/dependency-read-surface.js";
+import {
+  commanderOnlyFederationVerdict,
+  dependencyManagementOf
+} from "../dependencies/commander-only.js";
+import { findIngestionStampByComponent } from "../dependencies/ingestion-stamp-repo.js";
 
 /**
  * M21.3 — the DEPENDENCY-SUBSCRIPTION ENABLEMENT API (ADR-0032 §3a, §6), API-first per charter
@@ -51,6 +56,32 @@ import {
  *    stated reason for preferring this shape). It leaks nothing across tenants because the row holds
  *    NO per-tenant data at all.
  *
+ *    **IT DELIBERATELY DOES NOT CARRY `dependencyManagement`, AND THAT IS A DECISION** (M21.7
+ *    follow-up census, ADR-0032 §7d). It is the sibling tenant-facing read of the route below, which
+ *    does carry the envelope, so the asymmetry has to be argued rather than left to look like an
+ *    oversight. Two reasons, and they are about SHAPE, not about cost:
+ *
+ *      1. THE ENVELOPE QUALIFIES A DERIVED VERDICT; THIS IS NOT ONE. `dependencyManagement` exists
+ *         because the resolve route computes a real, arithmetically correct verdict out of policies
+ *         that FEDERATED DOWN, and reports it on a deployment where nothing will act on it — an
+ *         answer authored elsewhere and inert here. The unlock is the opposite shape:
+ *         `dependency_subscription_unlock` is a LOCAL singleton table (drizzle/0062) that does not
+ *         federate at all, so this route hands back exactly what an operator set on THIS deployment.
+ *         There is no "true elsewhere, inert here" gap for an envelope to close.
+ *      2. THE ONLY CONSUMER THAT TURNS IT INTO A CLAIM ABOUT A SUBSCRIPTION ALREADY CARRIES IT. The
+ *         unlock UNLOCKS and never activates; it becomes an answer about a component only through
+ *         `resolveDependencySubscription`, whose sole API surface is the route below. Qualifying the
+ *         same posture twice on one request path is how two copies of one fact drift.
+ *
+ *    **THE RESIDUAL, STATED RATHER THAN PAPERED OVER.** Because the unlock does not federate, a
+ *    non-commander deployment's row is INDEPENDENT of the commander's — so a resolve verdict of
+ *    `enabled: false, reason: instance_locked` on a field outpost is a statement about that
+ *    deployment's row, not about what the commander would decide. The envelope already tells the
+ *    reader not to act on the verdict (`managedHere: false`); putting the same envelope on THIS read
+ *    would not close that gap either, because the missing fact is the COMMANDER'S unlock, which this
+ *    deployment does not have and must not invent. Asking the commander is the answer, and that is
+ *    what `managedHere: false` sends a caller to do.
+ *
  *  - **The instance unlock's WRITE is operator-only, and deliberately NOT an RBAC permission.** The
  *    row binds EVERY org on the deployment, so no tenant role — however privileged inside its own
  *    org — may grant it: the write requires the deployment-level `SCP_OPERATOR_TOKEN`
@@ -60,6 +91,10 @@ import {
  *
  *  - **The resolution READ is tenant-facing and authorized like any other read of the component**
  *    (`object:read` at the component's scope, exactly as `GET /components/:idOrUrn/pipeline` does).
+ *    It is deliberately NOT commander-only — a team on an outpost may legitimately ask what their
+ *    subscription resolves to — but the answer is QUALIFIED by a required `dependencyManagement`
+ *    envelope, because on that deployment nothing will ever act on it (ADR-0032 §7d). The backfill
+ *    below, which WRITES, is refused there instead.
  *
  *  - **The INVENTORY backfill (M21.2)** is an org-scoped WRITE (`object:write` at the org): it reads
  *    enabled components' dependency manifests through the plugin host and (re)builds their rows.
@@ -71,7 +106,12 @@ import {
  *    `GET /components/:idOrUrn/dependency-bumps` (every bump SCP authored for the component, joined
  *    to its change name and its dispatch/merge Decisions). Both `object:read` AT THE COMPONENT, both
  *    paged, both resolved AS THE CALLER, both assembled in `dependencies/dependency-read-surface.ts`
- *    from the SAME merge every other consumer uses. Neither writes anything.
+ *    from the SAME merge every other consumer uses. Neither writes anything. BOTH CARRY THE
+ *    REQUIRED `dependencyManagement` ENVELOPE (M21.7, ADR-0032 §7d) from the SAME predicate as the
+ *    resolve route: on a deployment where `managedHere` is false the rest of the envelope is not to
+ *    be interpreted — an empty inventory there is "nothing here ever ingested a manifest", an empty
+ *    bump list "nothing is ever dispatched here". They still answer 200 with unchanged RBAC (they
+ *    are reads; the WRITE below is what refuses).
  *
  * THE SURFACE, ENUMERATED (six operations, all tagged `dependencies`):
  *     GET  /instance/dependency-subscription-unlock          getDependencySubscriptionUnlock
@@ -84,7 +124,7 @@ import {
  * THERE IS NO WRITE PATH FOR A SUBSCRIPTION ITSELF HERE, AND ONE MUST NOT BE ADDED. A dependency
  * subscription IS a `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a) —
  * a team subscribes by authoring a policy at their own component through the EXISTING policy routes
- * (`POST /api/v1/policies`, `scp policy create`) and opts one line back out with a second effect at
+ * (`POST /api/v1/policies`, `scp policy register`) and opts one line back out with a second effect at
  * the same or a deeper scope:
  *
  *     effects: [{ dependencySubscription: { enabled: true } }]
@@ -93,6 +133,44 @@ import {
  * A bespoke create/update/delete here would be a SECOND authoring path for one concept, needing its
  * own versioning, its own journal handling and its own scope semantics — and the two would drift.
  * The absence is the design, not an omission.
+ *
+ * THE WHOLE REQUEST, BECAUSE THE EFFECT ALONE IS NOT ENOUGH TO SUCCEED (ADR-0032 §8g). Naming the
+ * effect and the route, as the paragraph above did on its own until M21.7, omits the one field that
+ * decides whether a COMPONENT TEAM's request is accepted at all — `domainId`. For the team owning
+ * component `11111111-…`:
+ *
+ *     POST /api/v1/policies
+ *     {
+ *       "name": "deps-checkout-api",
+ *       "domainId": "11111111-1111-1111-1111-111111111111",
+ *       "properties": {
+ *         "enforcement": "advisory",
+ *         "scope": { "objectRef": "11111111-1111-1111-1111-111111111111" },
+ *         "effects": [{ "dependencySubscription": { "enabled": true } }]
+ *       }
+ *     }
+ *
+ * The component id appears TWICE and the two occurrences are different questions —
+ * `governance/policy-scope-authz.ts`'s header is the authority: `domainId` is CUSTODY (where the row
+ * is placed, hence who may later PATCH/DELETE it, since both re-check at the row's own id), while
+ * `scope.objectRef` is JURISDICTION (what the policy reaches). Placement bounds reach not at all.
+ *
+ * WHY THE COMPONENT'S OWN ID. Authority expands strictly upward from the scope object
+ * (`authz/resolve.ts`'s `scopeExpandCte`), so the component's id is the one value accepted for ALL
+ * THREE actor shapes — an author whose `policy:write` sits at the component, at its containment
+ * domain, or at the org root. Sending the component's containment DOMAIN instead works only for the
+ * latter two, and so excludes exactly the component-bound team this flow exists for.
+ *
+ * WHAT OMITTING IT DOES. `domainId` is optional and `resolveContainmentParent`
+ * (`graph/objects-repo.ts`) resolves `undefined` to THE ORG ROOT, so the custody `authorize` runs
+ * there and a narrowly-bound author gets `403 subject '<uuid>' lacks 'policy:write' at scope
+ * '<org-root-uuid>'` — a bare uuid for a scope they never asked for, with nothing pointing at the
+ * field they omitted. The refusal is correct; it just does not explain itself, which is why this is
+ * written here, in ADR-0032 §8g, in the proposal, and on `CreateObjectRequestSchema.domainId` rather
+ * than in one of them.
+ *
+ * Pinned by `governance.integration.test.ts`'s CRITICAL #1b case (d) — a component-scoped author
+ * sending exactly this shape gets a 201 — and its cases (a)–(c), which refuse the broader scopes.
  *
  * NOTHING HERE COMPUTES THE AND. Every read handler reads; the merge lives in exactly one place
  * (`dependencies/subscription-resolution.ts`'s `mergeDependencySubscription`), so a UI verdict, a
@@ -302,7 +380,16 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
         });
         return { componentObjectId: component.id, line, resolution };
       });
-      reply.status(200).send(result);
+      // THE VERDICT IS QUALIFIED BY WHETHER ANYTHING HERE WILL ACT ON IT (ADR-0032 §7d, M21.7).
+      //
+      // This route does NOT refuse on an outpost — the resolution is real and correctly computed
+      // from policies that federated down. What is missing is that no dependency job runs on this
+      // deployment, so `enabled: true` here means "the commander would author a bump", never "a bump
+      // will be authored here". An unqualified `enabled` is an answer whose reason is unavailable,
+      // which is charter principle 6 failing rather than being satisfied. Same predicate as the
+      // guards, so the envelope and the refusals can never disagree about the posture.
+      const dependencyManagement = dependencyManagementOf(deps.config);
+      reply.status(200).send({ ...result, dependencyManagement });
     }
   });
 
@@ -324,8 +411,14 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
   // `scope.group` policy is where the two can differ, and that hazard belongs to the matcher.
   //
   // `manifestPath` IS A ROW KEY: one line from two manifests is two rows, as it is in the table's
-  // primary key. `ingestion` (the M21.7 per-attempt stamp) is emitted as `null` — NOT RECORDED —
-  // until `findIngestionStampByComponent` exists on this branch; the M21.7 session owns that read.
+  // primary key. `ingestion` is the M21.7 per-attempt STAMP (`dependency_ingestion_stamps`, read
+  // by `findIngestionStampByComponent` in the SAME transaction as the rows): `null` = NEVER
+  // ATTEMPTED, `ok` + 0 rows = "read fine, declares nothing" — the trichotomy an empty `rows` alone
+  // cannot express, projected as the schema documents.
+  //
+  // QUALIFIED BY `dependencyManagement` (ADR-0032 §7d), from the ONE predicate `commander-only.ts`
+  // exports — the same call the resolve route makes. This route does NOT refuse on an outpost (a
+  // read); it says that nothing here ingests, so an empty page is not "declares nothing".
   // -------------------------------------------------------------------------------------------
   typed.route({
     method: "GET",
@@ -345,7 +438,7 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       openapi: {
         operationId: "listComponentDependencyInventory",
         summary:
-          "List a component's declared dependency inventory — one row per (major line, dependency manifest) with the line's observed head, its declared producer and its resolved dependency subscription for the caller — plus the component-level ingestion gate and the newest ingestion Decision (ADR-0032 §4/§6)",
+          "List a component's declared dependency inventory — one row per (major line, dependency manifest) with the line's observed head, its declared producer and its resolved dependency subscription for the caller — plus the per-component ingestion stamp, the component-level ingestion gate and the newest ingestion Decision, qualified by whether dependency management happens on this deployment (ADR-0032 §4/§6/§7d)",
         tags: ["dependencies"]
       }
     },
@@ -371,18 +464,40 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
           limit: request.query.limit,
           cursor: request.query.cursor
         });
+        // THE STAMP, in the same transaction as the rows it explains. `null` IS "never attempted"
+        // (the repo's one reading of a missing row) and is sent as such — never omitted, so a
+        // consumer can tell "no stamp" from "a server that predates the stamp".
+        const stamp = await findIngestionStampByComponent(tx, auth.orgId, component.id);
         return {
           component: { id: component.id, name: component.name, domainId: component.domainId },
-          // The M21.7 stamp's read (`findIngestionStampByComponent`) does not exist on this branch;
-          // `null` = NOT RECORDED. When it lands, read it here in the same transaction.
-          ingestion: null,
+          ingestion:
+            stamp === null
+              ? null
+              : {
+                  lastAttemptAt: stamp.lastAttemptAt,
+                  source: stamp.source,
+                  outcome: stamp.outcome,
+                  rowsWritten: stamp.rowsWritten,
+                  detail: stamp.detail,
+                  manifests: stamp.manifests.map((m) => ({
+                    repo: m.repo,
+                    path: m.path,
+                    outcome: m.outcome,
+                    rows: m.rows,
+                    at: m.at,
+                    ...(m.detail !== undefined ? { detail: m.detail } : {})
+                  }))
+                },
           lastIngestionDecision: page.lastIngestionDecision,
           componentGate: page.componentGate,
           rows: page.rows,
           nextCursor: page.nextCursor
         };
       });
-      reply.status(200).send(result);
+      // The posture, from the ONE predicate (`dependencyManagementOf`), exactly as the resolve route
+      // attaches it. Computed off config, outside the transaction, like there.
+      const dependencyManagement = dependencyManagementOf(deps.config);
+      reply.status(200).send({ ...result, dependencyManagement });
     }
   });
 
@@ -392,13 +507,15 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
   // THE BUMPS SCP AUTHORED for this component, newest first: `dependency_bump_authorships` (every
   // field server-written) joined to the change's name and to the newest dispatch and merge
   // Decisions. Progress is `pullRequestNumber` / `headCommit` / `mergedAt` / `merge` — never the
-  // change's `state`, which stays `proposed` for a bump's whole life. `pullRequestUrl` is `null`:
-  // nothing stores it, and it is never composed from `repo` + number (the provider is not known
-  // here; a Gitea-authored bump composed as a GitHub link would 404).
+  // change's `state`, which stays `proposed` for a bump's whole life. `pullRequestUrl` is the
+  // provider-returned URL `dependency_bump_authorships.pull_request_url` holds (M21.7, 0066) when
+  // one was recorded, else `null`; it is never composed from `repo` + number (the provider is not
+  // known here; a Gitea-authored bump composed as a GitHub link would 404).
   //
   // Authorized at the component, like the inventory. On an outpost, or on a commander whose
   // federation role was never declared, no bumps are ever dispatched (fail-closed role guards), so
-  // this list is legitimately empty there — a consumer must not render that as "up to date".
+  // this list is legitimately empty there — the required `dependencyManagement` envelope says so
+  // (`managedHere: false`), and a consumer must not render that as "up to date".
   // -------------------------------------------------------------------------------------------
   typed.route({
     method: "GET",
@@ -418,7 +535,7 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
       openapi: {
         operationId: "listComponentDependencyBumps",
         summary:
-          "List the dependency bumps CommanderSCP authored for a component, newest first — each joined to its change name, its dispatch delivery and the newest merge verdict; pullRequestUrl is null until it is persisted (ADR-0032 §8)",
+          "List the dependency bumps CommanderSCP authored for a component, newest first — each joined to its change name, its dispatch delivery and the newest merge verdict; pullRequestUrl is the provider's own URL when one was recorded, else null (never composed); qualified by whether dependency management happens on this deployment (ADR-0032 §7d/§8)",
         tags: ["dependencies"]
       }
     },
@@ -449,7 +566,8 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
           nextCursor: page.nextCursor
         };
       });
-      reply.status(200).send(result);
+      const dependencyManagement = dependencyManagementOf(deps.config);
+      reply.status(200).send({ ...result, dependencyManagement });
     }
   });
 
@@ -472,6 +590,43 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
   // `matchPoliciesForTargets` resolves `scope.group` against the actor and the sentinel is a member
   // of nothing (ADR-0032 §6a), so a human running a backfill sees the same enablement the resolution
   // API reports to them.
+  //
+  // IT IS COMMANDER-ONLY, AND FAIL-CLOSED ON AN UNDECLARED DEPLOYMENT (ADR-0032 §7d, M21.7). This
+  // route is the OPERATOR-TRIGGERED half of the same ingestion the loop performs, so it must not be
+  // the door the loop's guard is walked around: an outpost that can no longer ingest on an accepted
+  // change could otherwise ingest the identical inventory by POSTing here, and the guard would be
+  // decorative. The predicate is `commander-only.ts`'s, shared with the four background jobs, so
+  // the two doors cannot drift.
+  //
+  // ONLY THE FEDERATION AXIS, DELIBERATELY. The jobs additionally require an `all`/`worker`
+  // `SCP_ROLE`; a ROUTE must not, because in the split topology every HTTP request lands on an
+  // `SCP_ROLE=api` process by design — carrying the process axis here would refuse every caller on
+  // a perfectly correct commander. See `commanderOnlyFederationVerdict`'s own doc.
+  //
+  // THAT OMISSION IS PINNED, which it was not when it was written (M21.7 follow-up, MEDIUM 1):
+  // swapping in `commanderOnlyJobVerdict` left tsc clean, every unit test green and all 22 backfill
+  // integration tests green, because every test server in the repo booted at the harness default
+  // `SCP_ROLE=all` — and an `all` process satisfies the process axis, so no fixture could tell the
+  // two verdicts apart. `dependency-subscriptions.integration.test.ts`'s "an api-only process on a
+  // declared commander" block now boots the api half of the split topology and requires a 200, with
+  // an OUTPOST on the same process axis as its negative control.
+  //
+  // WHY 409 AND NOT 400/403/404. This is "right request, wrong place": the body is valid, the
+  // caller may be entirely entitled, and the resource is not hidden — what is wrong is the
+  // DEPLOYMENT the request arrived at. 403 would say the principal lacks permission, which is a
+  // different remedy (grant a role) from the real one (call the commander), and this route already
+  // spends 403 on the authorization failure it really has. 400 would blame the request, which is
+  // well-formed — the sibling `badRequest` below is about THIS PROCESS lacking a plugin host, a
+  // narrower "wrong process" the operator fixes by routing to a worker-capable one, and conflating
+  // the two would send an outpost operator hunting for a plugin host. 404 would deny the route
+  // exists, which is false and unhelpful. 409 Conflict is what this codebase already uses for a
+  // request that conflicts with THE STATE OF THIS INSTANCE rather than with the caller's rights —
+  // `POST /federation/poke`'s "this instance is not configured for poke-mode from peer X"
+  // (routes/federation.ts) is the same shape and the precedent followed here. The detail names why
+  // and says WHERE to run it, because a refusal an operator cannot act on is the same as silence.
+  // Adding a documented 409 to an existing operation is additive under the /v1 oasdiff gate (a
+  // non-success status ADDED is not an ERR-level break; nothing existing is removed and no required
+  // response field becomes optional).
   // -------------------------------------------------------------------------------------------
   typed.route({
     method: "POST",
@@ -483,19 +638,29 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
         400: ProblemSchema,
         401: ProblemSchema,
         403: ProblemSchema,
-        404: ProblemSchema
+        404: ProblemSchema,
+        409: ProblemSchema
       }
     },
     config: {
       openapi: {
         operationId: "backfillDependencyInventory",
         summary:
-          "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4)",
+          "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4). COMMANDER-ONLY: a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409 (ADR-0032 §7d)",
         tags: ["dependencies"]
       }
     },
     handler: async (request, reply) => {
       const auth = await requireAuth(deps, request);
+      // Checked BEFORE the plugin-host fail-close, so an outpost is told the true answer ("run it
+      // on the commander") rather than being sent to find a plugin-host-capable process it should
+      // not be running this on either way. After `requireAuth`, so the route does not become an
+      // unauthenticated oracle for this deployment's federation role.
+      const commander = commanderOnlyFederationVerdict(
+        deps.config,
+        "the dependency-inventory backfill"
+      );
+      if (!commander.allowed) throw conflict(commander.reason);
       const host = deps.pluginHost;
       if (!host) {
         // Reading a manifest is a live plugin call, exactly as `POST /discovery/run` is. `main.ts`
@@ -601,7 +766,11 @@ export function registerDependencySubscriptionRoutes(app: FastifyInstance, deps:
           repo: target.repo ?? undefined,
           ref,
           readManifest,
-          actorObjectId: auth.subjectObjectId
+          actorObjectId: auth.subjectObjectId,
+          // WHICH PRODUCER THIS IS, on the component's ingestion stamp (M21.7, drizzle/0065) — so a
+          // reader can tell "this inventory is maintained by the component's own releases" from
+          // "this inventory is only as fresh as the last time an operator ran a backfill".
+          source: "backfill"
         });
         if (outcome.reads > 0) fetched += 1;
         components.push({

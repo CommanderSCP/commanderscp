@@ -9,8 +9,11 @@ import {
 import {
   INVENTORY_INGESTION_QUEUE,
   inventoryIngestionRoleGuard,
-  inventoryIngestionRouter
+  inventoryIngestionRouter,
+  startInventoryIngestionLoop
 } from "./inventory-ingestion-loop.js";
+import type { Db } from "../db/client.js";
+import type { PluginHost } from "../plugin-host/contract.js";
 
 /**
  * M21.2 — THE FAN-OUT POINT AND THE ROLE GUARD for dependency-inventory ingestion.
@@ -73,41 +76,136 @@ describe("inventoryIngestionRouter", () => {
   });
 });
 
-describe("inventoryIngestionRoleGuard", () => {
-  it("refuses an api process — this is background work", () => {
-    const verdict = inventoryIngestionRoleGuard({ role: "api", federationRole: "commander" });
+/**
+ * THE GUARD, AFTER THE 2026-08-17 REVERSAL (ADR-0032 §7d).
+ *
+ * This block used to assert the OPPOSITE — "RUNS ON EVERY FEDERATION ROLE" and "is not fail-closed
+ * on an UNDECLARED deployment" — and it passed, because the guard really did allow both. Nothing
+ * about ingestion's own mechanics changed; the owner's decision changed which question the guard
+ * answers. A FIELD outpost never ORIGINATES a dependency bump — it RECEIVES the resulting change
+ * down the global pipeline the commander manages — so a field outpost derives no inventory at all.
+ * ("Field" is the qualifier that makes that true: an HQ outpost is the outpost in the COMMANDER'S
+ * OWN trust domain, so its inventory IS the commander's. Every deployment this guard refuses has
+ * DECLARED `SCP_FEDERATION_ROLE=outpost` and is therefore a field outpost — `commander-only.ts`
+ * reads that out of the code.)
+ *
+ * Kept in the same shape `bump-dispatch.test.ts` uses for its role guard, because these two are now
+ * the same guard: all three refusals and the accepted case, one `it` each.
+ */
+describe("inventoryIngestionRoleGuard — commander-only since ADR-0032 §7d", () => {
+  const base = {
+    role: "worker" as const,
+    federationRole: "commander" as const,
+    federationRoleDeclared: true
+  };
+
+  it("allows a background-work process on an explicitly declared commander", () => {
+    expect(inventoryIngestionRoleGuard(base).allowed).toBe(true);
+    expect(inventoryIngestionRoleGuard({ ...base, role: "all" }).allowed).toBe(true);
+  });
+
+  it("refuses an api-only process — background work belongs to all/worker", () => {
+    const verdict = inventoryIngestionRoleGuard({ ...base, role: "api" });
     expect(verdict.allowed).toBe(false);
-    expect(verdict.reason).toContain("SCP_ROLE");
+    expect(verdict.reason).toMatch(/SCP_ROLE/);
   });
 
-  it("allows `all` and `worker`", () => {
-    expect(inventoryIngestionRoleGuard({ role: "all", federationRole: "commander" }).allowed).toBe(
-      true
-    );
-    expect(
-      inventoryIngestionRoleGuard({ role: "worker", federationRole: "commander" }).allowed
-    ).toBe(true);
+  it("is FAIL-CLOSED on an UNDECLARED federation role, which is the branch that regresses silently", () => {
+    // `federationRole` DEFAULTS to `commander` so every pre-M16.3 deployment keeps serving the SPA.
+    // A guard testing only the VALUE therefore allows exactly the population most likely to be an
+    // outpost: one deployed before the setting existed, or from a chart that omits it. This branch
+    // is false on every developer machine and every declared commander, so nothing else catches it.
+    const verdict = inventoryIngestionRoleGuard({ ...base, federationRoleDeclared: false });
+    expect(verdict.allowed).toBe(false);
+    expect(verdict.reason).toMatch(/not declared/);
   });
 
-  it("RUNS ON EVERY FEDERATION ROLE — the difference from the version poll, not a copy of it", () => {
-    // The poll is commander-only because it dials PUBLIC PACKAGE REGISTRIES ON A TIMER, and it is
-    // fail-closed on an undeclared role for that reason. Ingestion initiates no timed egress: it
-    // reacts to this domain's own accepted change and reads through the git binding this domain's
-    // executors already coordinate over. ADR-0032 §3 says each domain derives its own inventory, so
-    // a commander-only guard would leave every outpost's `component_dependencies` empty forever —
-    // which is the same silent inertness this whole milestone exists to fix.
-    for (const federationRole of ["commander", "outpost", "retrans"] as const) {
-      expect(inventoryIngestionRoleGuard({ role: "worker", federationRole }).allowed).toBe(true);
+  it("refuses a declared outpost or retrans, and the reason says WHERE to run it instead", () => {
+    for (const federationRole of ["outpost", "retrans"] as const) {
+      const verdict = inventoryIngestionRoleGuard({ ...base, federationRole });
+      expect(verdict.allowed, federationRole).toBe(false);
+      // The remedy, not just the refusal: an operator reading this log line has to learn that the
+      // answer is "the commander does this", never "your deployment is broken".
+      expect(verdict.reason, federationRole).toMatch(/COMMANDER-ONLY/);
     }
   });
+});
 
-  it("is not fail-closed on an UNDECLARED deployment, and says why in its own reason", () => {
-    // `SCP_FEDERATION_ROLE` defaults to `commander`, so a guard that required an explicit
-    // declaration would be refusing the population most likely to be air-gapped. That refusal is
-    // right for outbound registry traffic and wrong here — the cost of being wrong is an outpost
-    // with a permanently empty inventory, not unexpected egress.
-    const verdict = inventoryIngestionRoleGuard({ role: "worker", federationRole: "commander" });
-    expect(verdict.allowed).toBe(true);
-    expect(verdict.reason).toContain("every federation role");
+// The ROUTER half's wiring census — that the registry pairs `inventoryIngestionRouter` with THIS
+// guard, and what that pairing registers on each deployment shape — already lives in
+// `inventory-ingestion.test.ts`'s "the wiring census" block, and is updated there for §7d rather
+// than duplicated here. A second copy of an identity assertion is a second place to forget.
+
+/**
+ * THE WORKER HALF ACTUALLY CONSULTS THE GUARD — MEASURED, NOT ASSUMED.
+ *
+ * This block exists because deleting `startInventoryIngestionLoop`'s `if (!guard.allowed) return`
+ * left the ENTIRE suite green, integration tests included: every one of them boots the loop as a
+ * declared commander, where the refusal branch is never taken, and the router census only covers
+ * the ROUTER half. So the guard was computed, logged, and structurally ignorable — a guard present
+ * but not consulted, which CLAUDE.md names as this codebase's most common defect.
+ *
+ * A REFUSED ROLE MUST NEVER CREATE THE QUEUE, not merely skip the work inside the handler: a
+ * process that created it would still hold a pg-boss worker for a queue it will never act on, and
+ * an outpost would drain ingestion jobs it is forbidden to perform. Same shape and same reason as
+ * `version-poll.test.ts`'s "a refused role returns an inert handle and NEVER CREATES THE QUEUE".
+ */
+describe("startInventoryIngestionLoop consults the guard before it touches pg-boss", () => {
+  function recordingBoss() {
+    return {
+      createQueue: vi.fn(async () => undefined),
+      work: vi.fn(async () => "worker-id"),
+      send: vi.fn(async () => "job-id")
+    };
+  }
+  const deps = (config: {
+    role: "all" | "api" | "worker";
+    federationRole: "commander" | "outpost" | "retrans";
+    federationRoleDeclared: boolean;
+  }) => ({
+    db: {} as Db,
+    host: {} as PluginHost,
+    config: { ...config, secretsMasterKey: Buffer.alloc(32) }
+  });
+
+  it("REFUSES a declared outpost with an inert handle and NEVER CREATES THE QUEUE", async () => {
+    const boss = recordingBoss();
+    const handle = await startInventoryIngestionLoop(boss as unknown as PgBoss, {
+      ...deps({ role: "worker", federationRole: "outpost", federationRoleDeclared: true })
+    });
+    await handle.stop();
+    expect(boss.createQueue).not.toHaveBeenCalled();
+    expect(boss.work).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES an UNDECLARED deployment, the branch that looks identical to a commander", async () => {
+    const boss = recordingBoss();
+    const handle = await startInventoryIngestionLoop(boss as unknown as PgBoss, {
+      ...deps({ role: "worker", federationRole: "commander", federationRoleDeclared: false })
+    });
+    await handle.stop();
+    expect(boss.createQueue).not.toHaveBeenCalled();
+    expect(boss.work).not.toHaveBeenCalled();
+  });
+
+  it("REFUSES an api process", async () => {
+    const boss = recordingBoss();
+    const handle = await startInventoryIngestionLoop(boss as unknown as PgBoss, {
+      ...deps({ role: "api", federationRole: "commander", federationRoleDeclared: true })
+    });
+    await handle.stop();
+    expect(boss.createQueue).not.toHaveBeenCalled();
+    expect(boss.work).not.toHaveBeenCalled();
+  });
+
+  it("NEGATIVE CONTROL — a declared commander worker DOES create the queue and take a worker", async () => {
+    // Without this the three refusals above are satisfied by a loop that never starts at all.
+    const boss = recordingBoss();
+    const handle = await startInventoryIngestionLoop(boss as unknown as PgBoss, {
+      ...deps({ role: "worker", federationRole: "commander", federationRoleDeclared: true })
+    });
+    await handle.stop();
+    expect(boss.createQueue).toHaveBeenCalledWith(INVENTORY_INGESTION_QUEUE);
+    expect(boss.work).toHaveBeenCalledTimes(1);
   });
 });

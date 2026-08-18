@@ -62,6 +62,9 @@ Audience: a new engineer trying to read the code, and an operator trying to read
 | **control** | An abstract graph object declaring a check; plugins are its bindings | SCP-SPECIFIC |
 | **decision** | The persisted, explainable verdict record every engine judgement writes | SCP-SPECIFIC |
 | **poke / poke-mode** | An optional contentless commander→outpost wake signal | SCP-SPECIFIC |
+| **scan exclusion** | A finding that does not count toward the ceiling, applied before counting — never a waiver on the verdict | QUALIFIED-STANDARD |
+| **exclusion admission** | A tier's declaration that a class of exclusion may have effect at or below it | SCP-SPECIFIC |
+| **scan override request** | An owner-raised request for a standing, expiring exclusion, approved at the tier that set the rule | SCP-SPECIFIC |
 
 ---
 
@@ -327,7 +330,7 @@ A component may have many placements; a deployment target may hold many. **Neith
 - ***deployment target*** — the place as an executor sees it. A placement pairs a component with one.
 - **the casual sense in `apps/server/src/federation/import-repo.ts:163`**, where *"`domainId` is LOCAL PLACEMENT, not authority"* means an imported object's containment parent. Different axis entirely: where an object sits in the org tree, not where software runs.
 
-**In the code — not built yet.** Reserved by [ADR-0026](adr/0026-placements-and-derived-stage-names.md) and specified in [post-import-configuration.md](proposals/post-import-configuration.md). When built: object type `placement`, named `<component>@<deployment-target>`, unique on `(org_id, component, deployment_target)`, and the referent of both `executor_bindings.target_object_id` and `change_wave_targets.target_object_id`.
+**In the code — built.** Reserved by [ADR-0026](adr/0026-placements-and-derived-stage-names.md) D3, specified in [post-import-configuration.md](proposals/post-import-configuration.md), and shipped as object type `placement`, named `<component>@<deployment-target>`, unique on `(org_id, component, deployment_target)`, and the referent of both `executor_bindings.target_object_id` and `change_wave_targets.target_object_id` (migration 0051; `graph/placements-repo.ts`).
 
 Today the same information is carried by **env-suffixed component pairs** — `agentkit-keycloak` and `agentkit-keycloak-prod`, which hold identical `external_ref`s and differ only in which Argo CD they point at. Those are placements wearing a component costume, and they are what the proposal's §6 migrates. Read them as evidence the concept is already load-bearing, not as a naming accident.
 
@@ -492,11 +495,13 @@ How wide that is — how many non-test source lines and files, with the exact co
 
 **Definition.** The `domain` **object type** in the graph — an ordinary intra-org grouping that sits **below** org in the containment chain: org → containment domain → service → [assembly] → component (the [**assembly**](#assembly) rung is optional). It is the "domain" in policy resolution and in the scan-requirement scope chain.
 
+**`objects.domain_id` is NOT restricted to this type, and the column name misleads.** The column holds **the containment parent (any object; a domain in the common case)**. It is a bare `uuid` with **no foreign key and no CHECK** (`apps/server/drizzle/0001_graph_core.sql:32`), and `resolveContainmentParent` (`apps/server/src/graph/objects-repo.ts`) validates only that the id names an object in the same org — **no type filter**. Shipped tests deliberately pass a `service.id` and a `component.id` (`apps/server/src/governance/governance.integration.test.ts`, `apps/server/src/dependencies/subscription-authoring-guard.integration.test.ts:263`), and the RBAC / policy / freeze scope walks accept the chain that results. The `domain` object type is the *intended* occupant of the slot, never an enforced one — [ADR-0026](adr/0026-placements-and-derived-stage-names.md) measured **0 `domain`-type objects** on the live estate. Do not write a check, a doc, or a review comment that assumes a `domain` object here.
+
 **Industry-standard?** No — SCP-specific. It is closest to a folder/organizational-unit concept.
 
 **Not to be confused with:** the **security domain** (the trust tier above org). They are never the same thing. The `scan_requirement_floors` header comment in `apps/server/src/db/schema.ts` records the distinction explicitly — the `tier` literal is spelled `trust_domain`, *never* bare `domain`, "while the `domain` OBJECT TYPE (the containment domain…)" is the below-org grouping — and [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §Terminology exists solely to keep them apart.
 
-**In the code.** Object type `domain`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`; the column is `objects.domain_id` (`apps/server/src/db/schema.ts`); the walk is `apps/server/src/graph/containment.ts` (`containmentChain`), which is org-filtered on every join and rooted at the org root — it **structurally cannot** express any tier above org, which is exactly why the security-domain tier needed a separate instance-scoped table.
+**In the code.** Object type `domain`, seeded in `apps/server/drizzle/0002_rls_rbac_seed.sql`; the column a domain occupies when it *is* the containment parent is `objects.domain_id` (`apps/server/src/db/schema.ts`, which holds any object — see above); the walk is `apps/server/src/graph/containment.ts` (`containmentChain`), which is org-filtered on every join and rooted at the org root — it **structurally cannot** express any tier above org, which is exactly why the security-domain tier needed a separate instance-scoped table.
 
 **Same branded-types caveat as above:** `objects.domainId` and `federation_self.domainId` are both bare `uuid` today.
 
@@ -514,7 +519,13 @@ How wide that is — how many non-test source lines and files, with the exact co
 
 **Optional, and only one level.** Containment is `service → assembly → component` **or** `service → component`; never `assembly → assembly`. `relationships-repo.ts` refuses the nested case outright rather than bounding it, because a depth limit is a number to argue about and a refusal is a rule. The owner's grouping decision (D2) capped the ladder at **three hops**, which one optional level cannot exceed.
 
-**What it inherits for free.** Everything that walks containment. `containmentChain` (`apps/server/src/graph/containment.ts`) matches on the `contains` **edge**, never on the parent's type, so an assembly rung is walked by policy resolution, RBAC scope expansion, freeze scoping, approval scope, and the scan-requirement tier chain with **no code change** — which is why [migration 0055](../apps/server/drizzle/0055_assembly_object_type.sql) touched no resolver. Binding resolution reaches it explicitly through the nearest-wins ancestor ladder of [ADR-0029](adr/0029-containment-ancestor-binding-rung.md).
+**What it inherits for free — and the two places that claim was too broad.** `containmentChain` (`apps/server/src/graph/containment.ts`) matches on the `contains` **edge**, never on the parent's type, so an assembly rung is genuinely *walked* by policy resolution, RBAC scope expansion and freeze scoping with **no code change** — which is why [migration 0055](../apps/server/drizzle/0055_assembly_object_type.sql) touched no resolver.
+
+> **Corrected 2026-08-17 (measured).** This paragraph previously included **approval scope** and **the scan-requirement tier chain** in that list. Traversal reaches both, but each has a *hardcoded rung list* the edge-generic walk does not feed:
+> - **Scan-requirement tier chain.** `tierForObjectType` (`governance/scan-requirements.ts`) switches on `organization`/`domain`/`service` and falls everything else through to `component`. An assembly-anchored ceiling therefore **enforces correctly** (the merge is an order-independent MIN that ignores tier labels) and **misreports its tier**, breaking [ADR-0016](adr/0016-scoped-scan-requirement-policies.md) §5's promise that a block can name the tier that bound it.
+> - **Approval scope.** `APPROVAL_SCOPE_KEYWORDS` (`governance/gate-orchestrator.ts`) has no `assembly` case, so `requireApprovals: {scope: "assembly"}` resolves to null and becomes a **permanently unsatisfiable** required approval — fail-closed, but silently inexpressible.
+>
+> Both are fixed under [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §5 / M22. The general lesson is the one this glossary should carry: *walking* a rung is edge-generic and free; *naming* it is not, and every hardcoded rung list is a place a new container level has to be added by hand. Binding resolution reaches it explicitly through the nearest-wins ancestor ladder of [ADR-0029](adr/0029-containment-ancestor-binding-rung.md).
 
 **What it is not.** Not a **containment domain** (that sits *above* service and is where policy scoping is normally expressed). Not a deployment unit — an assembly is never a wave target; **placements** are still per-component. Not a release unit either: a change is per-component, and rolling "the assembly is blocked" up out of its children would need a rule nobody has chosen, so the service board shows an assembly with a **component count and a link down**, not a status.
 
@@ -798,21 +809,25 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 
 **The enablement chain is three levels and monotone**: the instance level **unlocks and never activates**, the component team flips its own switch, and an individual dependency may be **opted out** — so the deepest level can only ever subtract. Absent never means enabled.
 
-**Not to be confused with:** a **dependency** itself (the thing depended on), the **dependency inventory** (what a component declares, derived per-domain into a projection table), or `depends_on` (a **component-topology** edge feeding the wave toposort — package dependencies deliberately mint none).
+**Not to be confused with:** a **dependency** itself (the thing depended on), the **dependency inventory** (what a component declares, derived **on the commander** into a projection table), or `depends_on` (a **component-topology** edge feeding the wave toposort — package dependencies deliberately mint none).
 
-**In the code.** *(M21, not yet built)* — `dependency_lines` + `component_dependencies` projection tables; the subscription itself is a graph object so it federates ([ADR-0022](adr/0022-outpost-config-authority-split.md) clause 2).
+**In the code.** M21 — done, on `main`. The subscription itself is a `dependencySubscription` **effect on an ordinary `policy` object** ([ADR-0032](adr/0032-dependency-subscriptions.md) §3a — amended from an earlier "new built-in object type" reading), not a bespoke object or relationship type; it federates because `policy` already does, needing no new registration (ADR-0022 clause 2). **There is no `subscribe` verb** — a team authors one through the existing policy routes (`POST /api/v1/policies`, `scp policy register`), carrying `effects: [{ dependencySubscription: { enabled: true } }]`. The inventory — `dependency_lines` + `component_dependencies` — is a separate **projection table** and does not federate (§3).
+
+**Where it runs: the commander, only.** All dependency automation — inventory ingestion, internal release detection, the third-party version poll, the bump dispatcher and the auto-merge gate — is **commander-only** and fail-closed on an undeclared `SCP_FEDERATION_ROLE` ([ADR-0032](adr/0032-dependency-subscriptions.md) §7d, owner decision 2026-08-17). **No *field* outpost runs a dependency job or holds a dependency inventory.** The reason is what the feature is *for*: it pulls from **public** repositories (library versions, CDK versions, base-image versions), which a field outpost has no need to do, because the resulting change is **pushed down the global pipeline the commander manages** — a field outpost *receives* a dependency bump through the ordinary promotion path and never originates one. **Consequence, accepted by the owner and stated rather than implied:** dependencies declared in **domain-specific repositories** — field-outpost-only IaC/CaC the commander never sees — are **out of scope** for dependency subscriptions, as are domain-local releases at a field outpost. Note the split: the **subscription** (a `policy` object) still federates and still reaches a field outpost; only the **jobs** and the tables they write are commander-only.
+
+> **"Field" is load-bearing here, not decoration.** This entry said "**an outpost** runs no dependency job and holds no dependency inventory" until 2026-08-17, and that is too wide in the direction that misleads: an **HQ outpost** is the outpost in the **commander's own** trust domain, so its dependency inventory simply *is* the commander's — the same rows, written by the commander's own jobs. Only a **field outpost**, one in another trust domain, is a second deployment with tables of its own, and it is the only thing the rule above is about. The distinction is read out of the code, not out of the names: `SCP_FEDERATION_ROLE` is one value per deployment, set at install, and the commander-only predicate (`apps/server/src/dependencies/commander-only.ts`) reads **that** and never an `outpost` graph object. It cannot read the object, because an `outpost` object **can** name the commander's own trust domain — that record *is* the HQ outpost, commander-declared under [pipeline-substrate-registry-scan.md §10.5](proposals/pipeline-substrate-registry-scan.md) (`peerDomainId` = `federation_self.domainId`, `peerIsSelf === true`, accepted only from a `commander`-role instance, no `federation_peers` row behind it — `federation/outpost-binding.ts`); every other `outpost` object is bound to an already-paired peer of role `outpost` and is a field outpost. So the object tells you which outpost a record describes; only the install-time role tells you what *this deployment* is — and it is the deployment the rule is about. One practical consequence: every deployment whose `SCP_FEDERATION_ROLE` reads `outpost` **is** a field outpost, which is why a refusal addressed to such a deployment says plain "outpost" and is still exact. The full **HQ outpost** / **field outpost** entries are above ([ADR-0021](adr/0021-terminology.md) D7).
 
 ---
 
 ### dependency manifest — always qualify
 
-**Definition.** The file in a component's **own source** that declares what it depends on: `package.json`, `go.mod`, `pom.xml`, `requirements.txt`/`pyproject.toml`, or a container build file's `FROM` line.
+**Definition.** The file in a component's **own source** that declares what it depends on: `package.json`, `go.mod`, `pom.xml`, `requirements.txt`/`pyproject.toml`, a container build file's `FROM` line, or — since M21.7 — the image a chart's `values.yaml` pins ([ADR-0032 §4b](adr/0032-dependency-subscriptions.md)). That last one is the SAME `oci` dependency as a `FROM`, read out of a different file: SCP records what the component's own repository **declares**, and a values file the repository owns declares an image in exactly the sense a `FROM` does.
 
 **Always qualify.** Bare **"manifest"** in this codebase means the **promotion manifest** — a commander-signed authorization enumerating exactly which artifacts may cross a boundary. The two have nothing to do with each other, and a dependency manifest authorizes nothing.
 
-**Not to be confused with:** the **promotion manifest** (see `manifest`), an **OCI image manifest**, a **Kubernetes manifest**, or an **SBOM** (a full component inventory including the transitive closure — a dependency manifest declares only **direct** dependencies, which is precisely why SCP can store one and deliberately does not store the other, [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md)).
+**Not to be confused with:** the **promotion manifest** (see `manifest`), an **OCI image manifest**, or an **SBOM** (a full component inventory including the transitive closure — a dependency manifest declares only **direct** dependencies, which is precisely why SCP can store one and deliberately does not store the other, [ADR-0013](adr/0013-supply-chain-scan-sbom-manifest.md)). A **Kubernetes manifest** used to be on this list and no longer is, exactly: a chart's `values.yaml` IS a dependency-manifest source for `oci`, while a raw `deployment.yaml` is not — not because its shape is harder (it is the easiest one) but because SCP cannot address a file whose name it cannot enumerate (ADR-0032 §4b clauses 2–3).
 
-**In the code.** *(M21, not yet built)* — read through the `readFileAtRef` `GitProviderAdapter` hook.
+**In the code.** M21 — done, on `main`. Read through the `readFileAtRef` `GitProviderAdapter` hook (`dependencies/manifest-reader.ts`; [ADR-0032](adr/0032-dependency-subscriptions.md) §7a, §7c).
 
 ---
 
@@ -833,6 +848,52 @@ Poke reaches air-gapped domains **via the retrans chain**, hop by hop — the co
 | **"parent" / "child"** for federation roles | **"commander" / "outpost" / "retrans"** | Removed outright, not aliased, by [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md). (The words remain correct for *process* supervision and RBAC containment walks — that is a different concept.) |
 
 **Note on `stage`:** no `stage` entity exists in the schema today, and no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the **code** (this glossary's and ADR-0021's own illustrative examples aside — scope the claim that way so it stays checkable after this branch merges). "Stage" is reserved vocabulary a future entity may fill — the reservation is a decision about what the word will mean, not a claim that the thing is built. The word is, however, *actively in use for the wave sense* in the `/v1` contract today; the `stage` entry describes each sense, and [ADR-0021](adr/0021-terminology.md) Consequences (iii) carries the complete site roster. The grammar's **location segment is optional** (owner decision, 2026-07-24), which makes segment count the disambiguator and therefore makes **hyphen-free segment values** a naming rule — see the `stage` entry.
+
+---
+
+### scan exclusion
+
+**Definition.** An individual scan **finding** that does not count toward the severity ceiling, because a rule someone authorized says it should not. Exclusions are applied **before counting**; they never turn a `fail` verdict into a `pass`.
+
+**Industry-standard?** QUALIFIED — the industry word for the artifact that carries this is **VEX** (Vulnerability Exploitability eXchange). SCP does not consume or emit VEX documents today, and "exclusion" names *our* mechanism rather than claiming that interchange format. If VEX ingestion ever lands it should map onto this concept, not beside it.
+
+**Why not "waiver", "suppression" or "exception".** *Waiver* and *exception* both suggest acting on the **verdict** ("this failure is forgiven"), which is precisely the design [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §2 rejected — a verdict-level waiver hides which finding was tolerated and is invisible at the E6 federation boundary, which identifies a scan outcome purely by shape. *Suppression* implies the finding is hidden; an exclusion is recorded, counted separately, and named in the Decision. The finding still exists and is still reported — it just does not count.
+
+**The two counts.** `severityCounts` continues to mean **what the scanner found**, so every CEL condition already authored against it keeps its meaning. A separate `effectiveSeverityCounts` carries the post-exclusion number, and **only the threshold comparison uses it**.
+
+**Direction, and why it has its own algebra.** A ceiling is *tightening* and merges by per-severity **MIN**; an exclusion is *loosening* and merges by **monotone AND** down the tier chain ([ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §1). Both are order-independent, so the documented containment-domain-vs-service tie stays safe. A matcher miss yields **no** exclusion — the opposite sign from a ceiling, where a miss is already safe.
+
+**In the code — not built yet.** Proposed by [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) and scheduled as M22; nothing in the tree implements it today, and a scan verdict is still four integers with no finding surviving to be excluded.
+
+---
+
+### exclusion admission
+
+**Definition.** A tier's declaration that a **class** of scan exclusion may have effect at or below it. An exclusion clause has effect at tier T only if **every tier from platform down to T** admits its class. Default admission is **empty at every tier**, so with nothing authored the system behaves exactly as it did before exclusions existed.
+
+**Industry-standard?** No — SCP-specific. The nearest neighbours are policy-engine words (*allow-list*, *grant*) that all describe permission given to a **principal**; this describes permission given to a **tier**, which is why neither borrows cleanly.
+
+**Why the word is "admission" and not "permission".** It is a property of a **tier**, not of a person — it says *this kind of loosening is allowed to exist here*, independently of who later authors one. Authority to author the clause is a separate question, answered by `policy:write` at-or-above the scope ([ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §6).
+
+**The invariant it exists for.** A component may author an override it benefits from, at a weaker permission than the one that authored the constraint. Admission is what stops that being a self-grant: the component authors the *override*, never its own *admission*.
+
+**In the code — not built yet.** Proposed by [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §1 and scheduled as M22.2.
+
+---
+
+### scan override request
+
+**Definition.** A request raised by a **component**, **service** or **assembly** owner for a standing scan exclusion beyond what component-declared facts already produce — granted with an **expiry**, per (component × finding).
+
+**Industry-standard?** No — SCP-specific as a term. The underlying practice is the industry's **risk acceptance** / **exception process**; "override request" is the owner's word and is kept because *exception* and *waiver* are both reserved here for acting on a **verdict**, which this deliberately does not do (see `scan exclusion`).
+
+**Approver standing.** The tier that **set the rule** (owner decision, 2026-08-17). A platform-set floor is waivable only at platform; an assembly-set ceiling is waivable at assembly. This needs no new authority model: a bounded `scope.objectRef` naming the tier's object requires `policy:write` at-or-above **that object**, and authority expands strictly upward, so an assembly binding reaches its components and never its siblings or its parent.
+
+**Not an `approval_request`.** That table is change-keyed (`change_object_id NOT NULL`), two-state (`pending|satisfied` — no deny, no expire, no revoke) and engine-materialized with no create API; it cannot express a standing grant. The shape to copy is the `freeze.override` act — mandatory non-empty reason, one high-severity audit event per use.
+
+**Expiry is a read-time window, never a status column.** There is no sweeper in this tree and no `boss.schedule` usage to build one on, so a grant's validity is evaluated when it is read.
+
+**In the code — not built yet.** Proposed by [ADR-0033](adr/0033-scan-exclusions-and-overrides.md) §6a and scheduled as M22.6. There is no override, waiver or risk-acceptance concept in the tree today.
 
 ---
 

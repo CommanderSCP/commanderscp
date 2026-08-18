@@ -1,11 +1,15 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { applyManifestBump, type ManifestBumpSpec } from "./bump-edit.js";
 import {
   BUMP_SPEC,
   DECLARED_MANIFEST_PATHS,
   PACKAGE_JSON_BUMPED,
+  VALUES_BUMP_SPEC,
+  VALUES_YAML_BASE,
+  VALUES_YAML_PATH,
   githubHandler,
   recordingCtx
 } from "./write-test-support.js";
@@ -36,8 +40,11 @@ import {
  *  - no `-e`/`--env`, and the token appears in NO argv — the credential does not cross into the
  *                            runner. This is the half the amendment had to be qualified for, so it
  *                            is the half most worth measuring.
- *  - argv is exactly the five descriptor strings — nothing on that command line can be a file body,
- *                            a host path, or a command.
+ *  - argv is exactly the five descriptor strings — seven for a split shape, where the last two are
+ *                            the M21.7 anchor (a line number and that line's own bytes). Nothing on
+ *                            that command line can be a file body, a host path, or a command; the
+ *                            anchor text is one line the container already holds in the file it was
+ *                            handed, and the shim only ever COMPARES it.
  *  - the ORCHESTRATOR made the provider calls — the credential is used, but on this side of the
  *                            boundary. Asserted positively so "no network in the runner" cannot be
  *                            satisfied by there being no network anywhere.
@@ -49,7 +56,19 @@ interface DockerCall {
 }
 const dockerCalls: DockerCall[] = [];
 /** The bytes the stand-in runner "produces". Set per test; the copy-OUT mock writes them. */
-let editedOutput = PACKAGE_JSON_BUMPED;
+let editedOutput: string | undefined = PACKAGE_JSON_BUMPED;
+/**
+ * THE ARGV-DRIVEN STAND-IN RUNNER, used by the split-shape block below.
+ *
+ * With `editedOutput` set, the mock writes a fixed string and the docker argv is decorative — which
+ * is fine for the hostile-output cases, and useless for proving the orchestrator SENT something.
+ * With it `undefined`, the mock instead reconstructs the bump spec FROM THE `docker create` ARGV,
+ * reads the bytes that were copied in, and applies the reference edit. That is what makes the
+ * anchor's wiring load-bearing: delete the two operands from `runEditorContainer`, or delete the
+ * `locateVersionLine` call that produces them, and the reference edit has no anchor, refuses the
+ * split shape, and a NAMED test below goes red.
+ */
+let copiedInDir: string | undefined;
 
 vi.mock("node:child_process", () => {
   return {
@@ -65,18 +84,54 @@ vi.mock("node:child_process", () => {
         cb(null, { stdout: "dep-container-abc\n", stderr: "" });
         return;
       }
+      if (sub === "cp" && args[2]?.endsWith(":/work/in")) {
+        // `${inDir}/.` — remember where the orchestrator put the bytes it handed the runner.
+        copiedInDir = (args[1] as string).replace(/\/\.$/, "");
+        cb(null, { stdout: "", stderr: "" });
+        return;
+      }
       if (sub === "cp" && args[1]?.includes(":/work/out")) {
         // The copy-OUT step is where the runner's product appears. Writing it here is what makes
         // this a stand-in RUNNER rather than a stub: the orchestrator reads real bytes off disk and
         // puts them through both verifiers, exactly as it would with the real image.
         const dest = args[2] as string;
-        void writeFile(join(dest, "manifest"), editedOutput, "utf8").then(
-          () => cb(null, { stdout: "", stderr: "" }),
+        const produce = async (): Promise<string | undefined> => {
+          if (editedOutput !== undefined) return editedOutput;
+          // The argv tail after the image name: ecosystem, manifestPath, coordinate, fromVersion,
+          // toVersion — and, only for a split shape, anchorLine and anchorText.
+          const createArgs = dockerCalls.find((c) => c.args[0] === "create")?.args ?? [];
+          const trailing = createArgs.slice(
+            createArgs.findIndex((a) => a.startsWith("scp-runner-dep")) + 1
+          );
+          const [ecosystem, manifestPath, coordinate, fromVersion, toVersion, line, text] =
+            trailing;
+          const original = await readFile(join(copiedInDir as string, "manifest"), "utf8");
+          return applyManifestBump(original, {
+            ecosystem: ecosystem as ManifestBumpSpec["ecosystem"],
+            manifestPath: manifestPath as string,
+            coordinate: coordinate as string,
+            fromVersion: fromVersion as string,
+            toVersion: toVersion as string,
+            ...(line !== undefined && text !== undefined
+              ? { anchor: { line: Number(line), text } }
+              : {})
+          });
+        };
+        void produce().then(
+          (bytes) =>
+            bytes === undefined
+              ? // The reference edit REFUSED. A real runner exits 3 here; the orchestrator sees a
+                // failed container, so the mock reports one rather than writing nothing.
+                cb(new Error("scp-runner-dep: no line could be selected for the edit"))
+              : void writeFile(join(dest, "manifest"), bytes, "utf8").then(
+                  () => cb(null, { stdout: "", stderr: "" }),
+                  (err: Error) => cb(err)
+                ),
           (err: Error) => cb(err)
         );
         return;
       }
-      cb(null, { stdout: "", stderr: "" }); // cp-in / start / rm
+      cb(null, { stdout: "", stderr: "" }); // start / rm
     }
   };
 });
@@ -176,6 +231,9 @@ describe("the runner half — no network, no credential, no host", () => {
   });
 
   it("hands the runner exactly the five descriptor strings — nothing that could be a file body", async () => {
+    // FIVE, not seven: this is a CONTIGUOUS npm bump, the coordinate rule finds its own line, and no
+    // anchor is derived. That the pair is appended only when there is one is what makes an image
+    // built before M21.7 receive a byte-identical command line (`run.sh`'s version-skew table).
     const plugin = createManagedDepExecutorPlugin();
     const { ctx } = runCtx();
     await plugin.trigger(ctx, bumpIntent());
@@ -297,5 +355,176 @@ describe("the orchestrator half — it is the side that holds the credential and
     expect(calls.some((c) => c.method === "DELETE" && c.url.endsWith("/installation/token"))).toBe(
       true
     );
+  });
+});
+
+/**
+ * ================================================================================================
+ * M21.7 — THE SPLIT SHAPE, END TO END, AND THE WIRING GATE ON THE ANCHOR
+ * ================================================================================================
+ * Everything below drives the REAL `trigger()` against a chart's `values.yaml` whose coordinate and
+ * version are on different lines. The stand-in runner is argv-driven here (`editedOutput = undefined`),
+ * so it can only produce bytes if the orchestrator actually SENT an anchor — which is the delete-the-
+ * wiring gate this milestone's standing rule asks for:
+ *
+ *   * delete the two operands from `runEditorContainer`'s `docker create` argv → the stand-in runner
+ *     has no anchor, the reference edit refuses, and "authors the bump" below goes red;
+ *   * delete the `locateVersionLine` call in `trigger()` → the spec carries no anchor, the operands
+ *     are not appended, and the same test goes red;
+ *   * delete `verifyManifestBump`'s anchored branch → the runner's bytes are refused and the same
+ *     test goes red with `wrong_declaration_changed`.
+ *
+ * A component built and never installed is this repository's dominant failure, and a suite that
+ * reached `applyManifestBump` directly would be green with all three of those deletions in place.
+ */
+describe("a split-shape Helm image is BUMPED, not merely detected", () => {
+  function valuesIntent(overrides: Record<string, unknown> = {}) {
+    return {
+      kind: "custom" as const,
+      idempotencyKey: `values-${Math.random()}`,
+      parameters: {
+        ecosystem: VALUES_BUMP_SPEC.ecosystem,
+        coordinate: VALUES_BUMP_SPEC.coordinate,
+        manifestPath: VALUES_YAML_PATH,
+        declaredManifestPaths: [VALUES_YAML_PATH],
+        fromVersion: VALUES_BUMP_SPEC.fromVersion,
+        toVersion: VALUES_BUMP_SPEC.toVersion,
+        repo: "acme/widget",
+        baseBranch: "main",
+        changeObjectId: "0198f3c1-1111-7000-8000-000000000002",
+        delivery: "pull_request",
+        ...overrides
+      }
+    };
+  }
+
+  function valuesCtx(base: string = VALUES_YAML_BASE) {
+    const { ctx, calls } = recordingCtx(githubHandler({}, {}, base));
+    return {
+      calls,
+      ctx: {
+        ...ctx,
+        config: {
+          runnerImage: "scp-runner-dep:vetted",
+          workspaceRoot: scratch,
+          appId: "12345",
+          installationId: "67890",
+          privateKeyPem
+        }
+      }
+    };
+  }
+
+  beforeEach(() => {
+    // ARGV-DRIVEN: the stand-in runner reads the docker command line and the copied-in bytes.
+    editedOutput = undefined;
+  });
+
+  it("authors the bump: the anchor reaches the runner and the edited values.yaml is committed", async () => {
+    const plugin = createManagedDepExecutorPlugin();
+    const { ctx, calls } = valuesCtx();
+    const ref = await plugin.trigger(ctx, valuesIntent());
+
+    const status = await plugin.status(ctx, ref);
+    expect(status.detail).not.toMatch(/REFUSED|failed/);
+    expect(status.phase).toBe("succeeded");
+
+    // THE ARGV: seven strings, the last two being the anchor the orchestrator derived. `tag: 1.2.3`
+    // is on line 6 of the fixture, and `repository: acme/api` on line 5 — asserting the NUMBER is
+    // what distinguishes "an anchor was sent" from "the right anchor was sent".
+    const args = createCall()!.args;
+    const trailing = args.slice(args.indexOf("scp-runner-dep:vetted") + 1);
+    expect(trailing).toEqual([
+      "oci",
+      VALUES_YAML_PATH,
+      "acme/api",
+      "1.2.3",
+      "1.2.4",
+      "6",
+      "    tag: 1.2.3"
+    ]);
+
+    // THE BYTES THAT WERE COMMITTED: only the image's own tag moved. `global.imageTag` and
+    // `appVersion` carry the same version text and must be untouched.
+    const write = calls.find((c) => c.method === "PUT" && c.url.includes("/contents/"));
+    const committed = Buffer.from((write?.body as { content: string }).content, "base64").toString(
+      "utf8"
+    );
+    expect(committed).toBe(VALUES_YAML_BASE.replace("    tag: 1.2.3", "    tag: 1.2.4"));
+    expect(committed).toContain("  imageTag: 1.2.3");
+    expect(committed).toContain("appVersion: 1.2.3");
+  });
+
+  it("D2: a split-shape bump is delivered as a PULL REQUEST even when the server granted auto_merge", async () => {
+    // The residual risk is a parser-association bug, and a human on the diff is the control for it.
+    // Asserted on the provider calls, not on a flag: the merge route must not be reached at all.
+    const plugin = createManagedDepExecutorPlugin();
+    const { ctx, calls } = valuesCtx();
+    const ref = await plugin.trigger(
+      ctx,
+      valuesIntent({ delivery: "auto_merge", expectedHeadCommit: "a1b2c3d4".repeat(5) })
+    );
+
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("succeeded");
+    expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/pulls"))).toBe(true);
+    expect(calls.some((c) => c.url.includes("/merge"))).toBe(false);
+    expect(status.detail).toMatch(/not auto-merged/);
+  });
+
+  it("NEGATIVE CONTROL: a CONTIGUOUS bump with auto_merge is still merged — D2 is scoped", async () => {
+    // Without this, the assertion above is satisfied by a plugin that stopped merging anything. The
+    // package.json bump is CONTIGUOUS — the coordinate rule finds its line unaided — so no anchor is
+    // in play, the widening did no work, and the governed grant is actuated as granted.
+    const plugin = createManagedDepExecutorPlugin();
+    const { ctx, calls } = runCtx();
+    const ref = await plugin.trigger(
+      ctx,
+      bumpIntent({ delivery: "auto_merge", expectedHeadCommit: "a1b2c3d4".repeat(5) })
+    );
+    expect((await plugin.status(ctx, ref)).phase).toBe("succeeded");
+    expect(calls.some((c) => c.url.includes("/merge"))).toBe(true);
+  });
+
+  it("REFUSES `anchor_not_derivable` before any container when neither selector has an answer", async () => {
+    // A stale inventory row: the manifest no longer declares `1.2.3` anywhere the parser can bind to
+    // this coordinate. Before this round the run would start a container and come back with "the
+    // runner failed", which reads as a broken image.
+    const plugin = createManagedDepExecutorPlugin();
+    const { ctx, calls } = valuesCtx(
+      "global:\n  imageTag: 1.2.3\napi:\n  image:\n    repository: acme/api\n    tag: 9.9.9\n"
+    );
+    const ref = await plugin.trigger(ctx, valuesIntent());
+
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toContain("anchor_not_derivable");
+    // NO CONTAINER AT ALL, and nothing written.
+    expect(dockerCalls).toHaveLength(0);
+    expect(calls.some((c) => c.method === "PUT" && c.url.includes("/contents/"))).toBe(false);
+  });
+
+  it("REFUSES a runner that edited the wrong image's identical tag, and writes nothing", async () => {
+    // The runner returns a values file where the OTHER declaration's version moved. The anchored
+    // branch of `verifyManifestBump` catches it on the line number; nothing reaches the repository.
+    editedOutput = [
+      "global:",
+      "  imageTag: 1.2.4",
+      "api:",
+      "  image:",
+      "    repository: acme/api",
+      "    tag: 1.2.3",
+      "appVersion: 1.2.3",
+      ""
+    ].join("\n");
+    const plugin = createManagedDepExecutorPlugin();
+    const { ctx, calls } = valuesCtx();
+    const ref = await plugin.trigger(ctx, valuesIntent());
+
+    const status = await plugin.status(ctx, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toContain("anchor_line_not_changed");
+    expect(calls.some((c) => c.method === "PUT" && c.url.includes("/contents/"))).toBe(false);
+    expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/pulls"))).toBe(false);
   });
 });

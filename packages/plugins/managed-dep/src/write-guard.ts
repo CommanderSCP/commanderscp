@@ -3,6 +3,7 @@ import type { DeclaredDependency, DependencyEcosystem } from "@scp/dependency-ma
 import {
   parseDockerfile,
   parseGoMod,
+  parseKubernetesImages,
   parsePackageJson,
   parsePomXml,
   parsePyprojectToml,
@@ -147,6 +148,11 @@ export type RepoWriteRefusalReason =
   | "constraint_kind_changed"
   /** The dependency carries no bumpable version (`unpinned`/`unresolved`). */
   | "unbumpable_constraint"
+  /** The declaration is pinned by a DIGEST as well as a tag, and only the tag moved. A container
+   *  runtime resolves by digest whenever one is present, so the deployed bytes would not change —
+   *  the pull request reads as an upgrade and delivers nothing, and the manifest is left
+   *  self-contradictory (a tag naming one release beside a digest naming another's bytes). */
+  | "digest_pin_not_moved"
   /** The dependency that changed is not the one this subscription is for. */
   | "coordinate_not_expected"
   /** The subscribed coordinate is not declared by this manifest at all. */
@@ -419,12 +425,19 @@ export type ManifestParser = (content: string) => DeclaredDependency[];
  * Two ecosystems need a per-basename decision rather than a per-ecosystem one, which is why this is
  * keyed on the pair: `python` is `pyproject.toml` OR a `requirements*.txt` and those are different
  * parsers with different contracts (`parseRequirementsTxt` is the one export in the package that
- * never throws), and `oci` legitimately spells a Dockerfile four ways.
+ * never throws), and `oci` is spelled FIVE ways by TWO parsers — four Dockerfile spellings read by
+ * `parseDockerfile`, and a chart's `values.yaml` read by `parseKubernetesImages`. That second one is
+ * the reason the table is keyed on (ecosystem, basename) rather than on ecosystem alone: an image
+ * pinned in Helm values and an image pinned in a `FROM` are the same `dependency_lines` row, and
+ * only the file they were read out of differs.
  *
  * Being an ALLOWLIST is the charter clause "never edits a file that declares no dependency" made
  * structural. It is checked in addition to the component's own declared-manifest set, not instead of
- * it: the declared set comes from the inventory projection tables, which are derived, per-domain and
- * high-churn, so a bug or a stale row there must not be able to widen what kind of file SCP writes.
+ * it: the declared set comes from the inventory projection tables, which are derived and high-churn,
+ * so a bug or a stale row there must not be able to widen what kind of file SCP writes. (They were
+ * also described as "per-domain" here, quoting ADR-0032 §3; §7d reverses that — they are derived on
+ * the commander only. It changes nothing about this allowlist's reason for existing, which is that a
+ * DERIVED set must not decide what SCP writes.)
  */
 const MANIFEST_MATCHERS: ReadonlyArray<{
   ecosystem: DependencyEcosystem;
@@ -465,6 +478,20 @@ const MANIFEST_MATCHERS: ReadonlyArray<{
       b.endsWith(".Dockerfile"),
     parser: parseDockerfile,
     spelling: "Dockerfile / Containerfile"
+  },
+  {
+    ecosystem: "oci",
+    // M21.7 SPLIT-SHAPE ROUND. A chart's `values.yaml` was inventoried but deliberately NOT
+    // writable, because `verifyManifestBump`'s clause 3 required the changed line to name the
+    // coordinate and in `image: {repository, tag}` it names it on the line above. That clause now
+    // has an anchored alternative ({@link locateVersionLine}, `bump-edit.ts`'s anchored branch), so
+    // the allowlist opens — and it opens on EXACTLY the basename the ingestion side registers
+    // (`inventory-ingestion.ts`'s manifest-candidate map: `["values.yaml", parseKubernetesImages]`).
+    // Not `values.yml`, not `*-values.yaml`: a path this allowlist admits and the inventory never
+    // reads is a file SCP would write into without ever having declared a dependency in it.
+    matches: (b) => b === "values.yaml",
+    parser: parseKubernetesImages,
+    spelling: "values.yaml"
   }
 ];
 
@@ -497,6 +524,120 @@ export function manifestParserFor(ecosystem: DependencyEcosystem, path: string):
     );
   }
   return matcher.parser;
+}
+
+// -------------------------------------------------------------------------------------------
+// WHICH LINE CARRIES THE DECLARED VERSION — the anchor, derived from the same bytes
+// -------------------------------------------------------------------------------------------
+
+/**
+ * The line a bump must edit, when the coordinate is not written on it.
+ *
+ * DERIVED, NEVER TRANSPORTED. Nothing puts this on the wire, in `intent.parameters`, or in a
+ * database column: it is computed by {@link locateVersionLine} from the manifest bytes the
+ * orchestrator has just read at the base branch, and spent immediately against those same bytes.
+ * A line number captured at INGESTION and spent at ACTUATION would be a number derived from a read
+ * at one ref and applied to a read at another — a confidently wrong edit, which is the failure this
+ * module exists to prevent (`split-shape-image-bumps.md` §2.2).
+ *
+ * `text` is what makes it safe to carry a number at all: it is COMPARED, never emitted. The edited
+ * line is always rebuilt from the file's own bytes, so a wrong or stale descriptor can only cause a
+ * REFUSAL, never a smuggled byte.
+ */
+export interface ManifestVersionAnchor {
+  /** 1-based line number of the declaration's version text, as the registered parser reports it. */
+  readonly line: number;
+  /** The file's own bytes on that line, at derivation time. Compared byte-for-byte before any edit. */
+  readonly text: string;
+}
+
+/**
+ * WHERE IS THIS DECLARATION'S VERSION WRITTEN? — or `undefined`, which is never an error.
+ *
+ * ============================================================================================
+ * WHY THIS IS HERE AND NOT IN `bump-edit.ts`
+ * ============================================================================================
+ * `bump-edit.ts` is a refusal, and its header's central warning is that a per-ecosystem rewriter
+ * "that knew what a valid edit looked like would be a second implementation of the editor". A
+ * LOCATOR is exactly that: it chooses the edit target, and a bug in it makes a wrong edit ACCEPTED
+ * rather than a right one refused. So the structural knowledge stays in this file, which already
+ * owns {@link MANIFEST_MATCHERS} and already parses both sides of every edit — one parser table, one
+ * place, nothing to drift. What crosses into `bump-edit.ts` is DATA (a line number and its text) and
+ * one branch, not a format.
+ *
+ * ============================================================================================
+ * THE FIVE STEPS, AND WHY STEP 4 IS THE ONE THAT MAKES IT HONEST
+ * ============================================================================================
+ *  1. The parser for this (ecosystem, path) — the SAME allowlist entry the verifier will use, so an
+ *     unlisted basename or a lockfile never reaches step 2. Its refusal is swallowed here (this
+ *     function never throws) because `verifyManifestOnlyEdit` re-asks and refuses properly; a
+ *     derivation that threw would turn a missing anchor into a failure mode of its own.
+ *  2. The declarations whose coordinate AND declared version are exactly what the descriptor names.
+ *  3. Exactly one, or NO anchor. Zero means the manifest disagrees with the inventory; more than one
+ *     means the target is ambiguous, and choosing would be a guess about which the subscriber meant.
+ *  4. It reports a line, and THE FILE'S OWN BYTES ON THAT LINE CONTAIN the declared version — else
+ *     no anchor. This is what makes the derivation self-selecting rather than a per-format
+ *     allowlist: `pom-xml.ts` records the line of the `<dependency>` OPEN TAG while the version sits
+ *     several lines below it (the same fact this file's gate-5 comment already turns on), so a Maven
+ *     declaration yields NO anchor and Maven's path cannot change. The anchor exists exactly where
+ *     it is honest, by construction rather than by intention.
+ *
+ *     WHERE THAT LEAVES EACH ECOSYSTEM, enumerated because the useful claim is a map and not a
+ *     slogan — "the working ecosystems are untouched BY CONSTRUCTION" was written here once and was
+ *     false of four of them. AN ANCHOR IS DERIVED for `go` (go.mod), `python`'s `requirements*.txt`
+ *     and `oci`'s Dockerfile: their parsers report the line the version is written on. NO ANCHOR is
+ *     derived for `npm` and `python`'s `pyproject.toml` (steps 3–4: those parsers report no `line`
+ *     at all) or for `maven` (step 4, above). What keeps the first three unchanged is therefore
+ *     clause (c) of `verifyManifestBump` rather than the absence of an anchor: those parsers take
+ *     the coordinate VERBATIM off the same line, so the anchor line names the coordinate too and is
+ *     a candidate of the coordinate rule itself — the veto then admits it only when it is the sole
+ *     candidate, which is the unanchored rule's own condition. The anchor cannot move the edit for
+ *     them, because a line naming the coordinate is never a line the coordinate rule is silent
+ *     about, and silence is the only gap an anchor fills.
+ *  5. It is not a MERGED multi-site entry (`DeclaredDependency.occurrences > 1`). One values file
+ *     can pin `acme/api:1.2.3` in a Deployment and in a CronJob; the parser merges them because the
+ *     inventory row merges, and editing one line would leave the other behind. Refused here rather
+ *     than downstream because it costs no container run and yields a legible reason — gate 5 would
+ *     catch it anyway (one declaration before becomes two after → `dependency_set_changed`), which
+ *     is fail-closed but illegible.
+ *
+ * ABSENCE IS NOT AN ERROR. A caller that gets `undefined` proceeds with the coordinate rule
+ * unchanged; that is why every ecosystem that works today keeps working without a special case.
+ */
+export function locateVersionLine(
+  before: string,
+  spec: {
+    readonly ecosystem: DependencyEcosystem;
+    readonly manifestPath: string;
+    readonly coordinate: string;
+    readonly fromVersion: string;
+  }
+): ManifestVersionAnchor | undefined {
+  let parser: ManifestParser;
+  try {
+    parser = manifestParserFor(spec.ecosystem, spec.manifestPath);
+  } catch {
+    return undefined;
+  }
+  let declarations: DeclaredDependency[];
+  try {
+    declarations = parser(before);
+  } catch {
+    return undefined;
+  }
+  const candidates = declarations.filter(
+    (dep) => dep.coordinate === spec.coordinate && dep.declared === spec.fromVersion
+  );
+  const only = candidates.length === 1 ? candidates[0] : undefined;
+  if (only === undefined) return undefined;
+  // (step 5) A merged multi-site declaration has no single edit site, so it has no anchor.
+  if ((only.occurrences ?? 1) !== 1) return undefined;
+  const line = only.line;
+  if (line === undefined || !Number.isInteger(line) || line < 1) return undefined;
+  const text = before.split("\n")[line - 1];
+  // (step 4) The parser's line must actually carry the version text the edit replaces.
+  if (text === undefined || !text.includes(spec.fromVersion)) return undefined;
+  return { line, text };
 }
 
 /**
@@ -734,10 +875,14 @@ export interface ManifestOnlyEditInput {
  *     scope, declaredIn and line. This is the charter's "never adds or removes a dependency", and
  *     comparing positionally also refuses a REORDER, which is not a version edit either.
  *  6. **Exactly one version differs, and it is the subscribed one**: with an unchanged constraint
- *     KIND, and from a constraint that has a version to change. Refusing a constraint-kind change is
- *     not fussiness: `>=2.0` → `==2.31.0` rewrites a range as a pin, which `types.ts` names as the
+ *     KIND, from a constraint that has a version to change, and — where the declaration is pinned
+ *     TWICE — with its digest moved alongside its tag. Refusing a constraint-kind change is not
+ *     fussiness: `>=2.0` → `==2.31.0` rewrites a range as a pin, which `types.ts` names as the
  *     thing an actuator must not do, and `unpinned` → `pinned` would be ADDING a version the author
- *     never wrote.
+ *     never wrote. The digest clause is the one refusal here that catches an edit which is
+ *     structurally perfect and OPERATIONALLY A NO-OP: `alpine:3.19@sha256:…` and a chart's
+ *     `{tag, digest}` are both resolved BY DIGEST, so moving the tag alone changes the file and not
+ *     the running image (`digest_pin_not_moved`).
  *  7. **The change is confined to the version text**: the one differing region, measured as the span
  *     between the common prefix and the common suffix, must lie inside the dependency's own declared
  *     version text on each side. Gate 3 already refuses two changes on two lines; this refuses two
@@ -896,6 +1041,35 @@ export function verifyManifestOnlyEdit(input: ManifestOnlyEditInput): ManifestEd
     refuse(
       "unbumpable_constraint",
       `scp-managed-dep: '${coordinate}' in '${path}' carries no declared version text on ${fromDeclared === undefined ? "the base" : "the edited"} side`
+    );
+  }
+  // A TAG MOVED WHILE ITS DIGEST STAYED — the bump that silently changes nothing (ADR-0032 §8i).
+  //
+  // Both `oci` spellings can pin twice: `FROM alpine:3.19@sha256:…` in a Dockerfile, and
+  // `{repository, tag, digest}` in a chart's values. Where both are present the digest WINS —
+  // containerd and Docker resolve by digest and the tag becomes a label — so moving the tag alone
+  // leaves the deployed bytes exactly where they were, while the pull request reads as an upgrade
+  // and the manifest now says two different things about which release it wants.
+  //
+  // Refused rather than half-applied, and refused rather than guessed at: the digest for the new
+  // version IS available upstream (`dependency_lines.latest_digest`, resolved by the same poll that
+  // moved `latest_version`), but moving both is a TWO-LINE edit in the split shape, and clause 2 of
+  // `verifyManifestBump` — "exactly ONE line differs" — is a charter-enforcing refusal that does
+  // not get widened to a pair as a side effect of this one. So the tag-only edit is refused with
+  // its own name, which is the "skipped rather than guessed" rule (ADR-0032 §7) applied to an
+  // actuation instead of to a reading. `split-shape-image-bumps.md` §11 carries the follow-up.
+  //
+  // The condition is deliberately "the digest did not move", not "a digest exists": an edit that
+  // moves the tag AND its digest together is a correct bump and is accepted (a named test drives
+  // exactly that literal), and so is a digest-only move.
+  if (
+    before.digest !== undefined &&
+    before.digest === after.digest &&
+    fromDeclared !== toDeclared
+  ) {
+    refuse(
+      "digest_pin_not_moved",
+      `scp-managed-dep: '${coordinate}' in '${path}' is pinned by a digest as well as a tag, and only the tag moved ('${fromDeclared}' -> '${toDeclared}', digest still '${before.digest}'). A container runtime resolves by digest whenever one is present, so this edit would change the manifest and NOT the image that runs — a pull request that reads as an upgrade and delivers nothing. Re-pin the digest for '${toDeclared}' and the tag together, or drop the digest`
     );
   }
 

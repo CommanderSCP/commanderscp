@@ -214,6 +214,10 @@ import {
   // M21.6 — the component-scoped dependency READ surface (inventory + bumps).
   listComponentDependencyInventory as listComponentDependencyInventoryRequest,
   listComponentDependencyBumps as listComponentDependencyBumpsRequest,
+  // ADR-0032 §7e — the producer declaration's authoring surface.
+  declareDependencyLineProducer as declareDependencyLineProducerRequest,
+  retractDependencyLineProducer as retractDependencyLineProducerRequest,
+  listDependencyLineProducers as listDependencyLineProducersRequest,
   pairPeer as pairPeerRequest,
   // M16.2 phase A — E4's narrow peer read/PATCH and E1's `outpost` config object.
   getFederationPeer as getFederationPeerRequest,
@@ -363,6 +367,12 @@ import type {
   // M21.6 — the component-scoped dependency READ surface.
   ComponentDependencyInventoryResponse,
   ComponentDependencyBumpsResponse,
+  // ADR-0032 §7e — the producer declaration's authoring surface.
+  DeclareDependencyLineProducerRequest,
+  RetractDependencyLineProducerRequest,
+  DependencyLineProducerVerbResponse,
+  ListDependencyLineProducersQuery,
+  ListDependencyLineProducersResponse,
   PairPeerRequest,
   // M16.2 phase A — the narrow peer PATCH (E4) + the `outpost` config object (E1).
   UpdateFederationPeerRequest,
@@ -1840,7 +1850,12 @@ export class ScpClient {
     },
     /** Resolve ONE (component, line) pair, with the per-tier `contributions` that decided it — the
      *  explainability surface (charter principle 6: WHICH level turned this off?). The line key
-     *  travels VERBATIM; the coordinate is never slugified on either side. */
+     *  travels VERBATIM; the coordinate is never slugified on either side.
+     *
+     *  READ `dependencyManagement` BEFORE ACTING ON `resolution`. It is required and always present,
+     *  and when `managedHere` is false the verdict is correct but INERT: this deployment is not an
+     *  explicitly declared commander, so no dependency job runs on it and nothing here will ever act
+     *  on an `enabled: true` (ADR-0032 §7d, `DependencyManagementSchema`). */
     resolve: async (
       componentIdOrUrn: string,
       line: DependencyLineKey
@@ -1908,6 +1923,86 @@ export class ScpClient {
         path: { idOrUrn: componentIdOrUrn },
         query
       });
+      return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // THE PRODUCER DECLARATION (ADR-0032 §7e) — which COMPONENT this org declares it publishes a
+  // coordinate from, and therefore which coordinates are INTERNAL.
+  //
+  // It is the switch between two entirely different head ingresses. An internal coordinate's
+  // versions are DERIVED from the org's own production releases; a third-party one's are FETCHED
+  // from a public index. Declaring a coordinate the org does not publish silently stops security
+  // updates reaching every subscriber of it; failing to declare one it does publish hands that
+  // coordinate to a public index, where a stranger's package answering `9.9.9` bumps every
+  // subscriber onto it.
+  //
+  // SO CALL IT WITH `dryRun` FIRST. Both verbs return the BLAST RADIUS — every major line the
+  // coordinate covers, each line's observed head, and the components subscribed to it — and with
+  // `dryRun: true` they compute it and write nothing. That list is unguessable from the request:
+  // you name one coordinate and affect repositories you cannot see.
+  //
+  // WHO MAY CALL THESE: a principal holding `policy:write` AT THE ORG ROOT. Custody of the
+  // producing component is deliberately NOT enough (`governance/policy-scope-authz.ts`'s
+  // precedent — custody of a row is not jurisdiction over what it reaches). The READ needs only
+  // `object:read`.
+  //
+  // THERE IS NO `producerIdOrUrn: null` FORM. Retraction is its own verb, because a nullable field
+  // that switches a call between "declare" and "undeclare" is how an omitted key becomes a
+  // destructive default.
+  // -----------------------------------------------------------------------------------------
+  readonly dependencyProducers = {
+    /**
+     * DECLARE that a component produces this coordinate. Idempotent.
+     *
+     * It CLEARS the observed head of every line the coordinate covers, deliberately: a poisoned
+     * public head would otherwise survive the very declaration that exists to undo it, and internal
+     * detection can never move a head backwards.
+     *
+     * `declaredByObjectId` is NOT a parameter and must not become one — the server stamps the
+     * authenticated subject, because a provenance label the asserter supplies is forgeable.
+     *
+     * A `service` is REFUSED with a 400 in the first cut: head derivation reads the COMPONENT a
+     * production placement names, so a service declaration would do the harmful half (remove the
+     * coordinate from polling) and none of the useful half.
+     */
+    declare: async (
+      req: DeclareDependencyLineProducerRequest
+    ): Promise<DependencyLineProducerVerbResponse> => {
+      const result = await declareDependencyLineProducerRequest({
+        client: this.client,
+        body: req
+      });
+      return unwrap(result);
+    },
+    /**
+     * RETRACT the declaration and return the coordinate to third-party polling.
+     *
+     * It clears the heads too, and this is the direction that matters most: `latestVersion` is an
+     * input to the M22 vendor scan rule, so a head left over from the internal era on a coordinate
+     * that is third-party again could grant a vendor-pass against a version no registry published.
+     *
+     * READ `openBumpAuthorships` IN THE RESPONSE. Those are pull requests SCP already opened in
+     * other teams' repositories. Retraction stops FUTURE triggers only — SCP does not close them,
+     * because asserting it closed a PR it did not close would be a false record.
+     */
+    retract: async (
+      req: RetractDependencyLineProducerRequest
+    ): Promise<DependencyLineProducerVerbResponse> => {
+      const result = await retractDependencyLineProducerRequest({
+        client: this.client,
+        body: req
+      });
+      return unwrap(result);
+    },
+    /** The org's declarations. Narrowable by ecosystem, or to one exact coordinate compared
+     *  VERBATIM. On a field outpost this is EMPTY BY DESIGN — read `dependencyManagement` before
+     *  concluding nothing is declared. */
+    list: async (
+      query: ListDependencyLineProducersQuery = {}
+    ): Promise<ListDependencyLineProducersResponse> => {
+      const result = await listDependencyLineProducersRequest({ client: this.client, query });
       return unwrap(result);
     }
   };

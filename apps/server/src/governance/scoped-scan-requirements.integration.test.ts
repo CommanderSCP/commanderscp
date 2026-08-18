@@ -7,6 +7,7 @@ import type { ScanThresholdContribution } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { mergeScanThresholds } from "./scan-requirements.js";
 import {
+  assertStaysExecuting,
   createOrphanComponent,
   createTestOrg,
   listenTestServer,
@@ -100,14 +101,10 @@ async function waitForControlRun(
   );
 }
 
-async function assertStaysExecuting(
-  admin: ScpClient,
-  changeId: string,
-  graceMs = 3_000
-): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, graceMs));
-  expect((await admin.changes.get(changeId)).state).toBe("executing");
-}
+/** `assertStaysExecuting` now lives in test-support/harness.ts, which replaced this file's copy of
+ *  `sleep(graceMs); expect(state).toBe("executing")` with a positive observation of the reconcile
+ *  loop refusing the wave again. See its doc comment for why the sleep form was flaky by
+ *  construction. */
 
 async function expectApiError(fn: () => Promise<unknown>): Promise<ScpApiError> {
   try {
@@ -397,7 +394,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     expect(runB.detail).toMatch(/exceeds/i);
 
     // The wave never starts, and the block is an audited Decision naming the failed control.
-    await assertStaysExecuting(adminB, changeB.id);
+    await assertStaysExecuting(server, orgB.orgId, changeB.id);
     const explained = await adminB.changes.explain(changeB.id);
     const gateBlock = explained.decisions.find((d) => d.kind === "gate" && d.verdict === "block");
     expect(
@@ -531,7 +528,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       (evidenceErr.thresholdContributors ?? []).some((c) => c.source.includes("floor-conditional"))
     ).toBe(true);
     // The block is a real, audited gate Decision — not merely a control-run status.
-    await assertStaysExecuting(adminErr, changeErr.id);
+    await assertStaysExecuting(server, orgErr.orgId, changeErr.id);
     const explainedErr = await adminErr.changes.explain(changeErr.id);
     expect(
       explainedErr.decisions.some((d) => d.kind === "gate" && d.verdict === "block"),
@@ -631,7 +628,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
       expect(evidence.thresholdSources?.maxHigh).toBe("scoped");
       expect(evidence.thresholdSources?.maxCritical).toBe("config");
       expect((evidence.thresholdContributors ?? []).some((c) => c.tier === "platform")).toBe(true);
-      await assertStaysExecuting(admin, change.id);
+      await assertStaysExecuting(server, org.orgId, change.id);
     }
 
     // ...and every org SEES the same instance floors through the tenant-facing read.
@@ -724,7 +721,7 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
     const run = await waitForControlRun(admin, change.id, control.id, "fail");
     // MIN(0, 999, 999, 999, 999, 999) = 0. A child may only TIGHTEN.
     expect((run.evidence as unknown as ScanEvidenceShape).threshold.maxHigh).toBe(0);
-    await assertStaysExecuting(admin, change.id);
+    await assertStaysExecuting(server, org.orgId, change.id);
   });
 
   it("(d) one tenant's scan-requirement policies never reach another tenant's gate", async () => {

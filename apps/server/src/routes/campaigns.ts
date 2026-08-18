@@ -11,6 +11,7 @@ import {
   RollbackCampaignRequestSchema,
   RollbackCampaignResponseSchema
 } from "@scp/schemas";
+import { resolveDeclaredContainmentParent } from "../graph/containment-parent-authz.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
@@ -51,11 +52,21 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
       const auth = await requireAuth(deps, request);
       const body = request.body;
       const { campaign } = await withTenantTx(deps.db, auth.orgId, async (tx) => {
+        // The declared parent, resolved ONCE and used for both the permission scope and the write
+        // (`graph/containment-parent-authz.ts` — a wire `null` means the org root, never "detach").
+        const declaredParent = await resolveDeclaredContainmentParent(tx, {
+          orgId: auth.orgId,
+          subjectObjectId: auth.subjectObjectId,
+          permission: "object:write",
+          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
+          declared: containmentDomainIdFromWire(body.domainId),
+          current: undefined
+        });
         await authorize(tx, {
           orgId: auth.orgId,
           subjectObjectId: auth.subjectObjectId,
           permission: "object:write",
-          scopeObjectId: body.domainId ?? auth.orgId
+          scopeObjectId: declaredParent ?? auth.orgId
         });
         // Per-target authority is additionally (and separately) enforced INSIDE proposeCampaign —
         // see that function's module doc (M5 security-sensitive surface).
@@ -65,8 +76,7 @@ export function registerCampaignRoutes(app: FastifyInstance, deps: AppDeps): voi
           requestId: request.id,
           id: body.id,
           urn: body.urn,
-          // WIRE BOUNDARY (ADR-0021 D4) — see src/domain-id-edge.ts.
-          domainId: containmentDomainIdFromWire(body.domainId),
+          domainId: declaredParent,
           name: body.name,
           description: body.description,
           labels: body.labels,

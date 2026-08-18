@@ -16,7 +16,7 @@ import {
 } from "@scp/plugin-dependency-index-registries";
 import { createOciIndexPlugin } from "@scp/plugin-dependency-index-oci";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { decisions } from "../db/schema.js";
+import { decisions, outbox } from "../db/schema.js";
 import type {
   DependencyIndexPluginClient,
   PluginHost,
@@ -31,14 +31,20 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import {
+  DEPENDENCY_LINE_HEAD_ADVANCED_EVENT,
   declareDependencyLineProducer,
+  getDependencyLineProducer,
   getDependencyLineById,
+  recordDependencyLineHead,
+  resetLineHead,
+  retractDependencyLineProducer,
   upsertComponentDependency,
   upsertDependencyLine
 } from "./dependency-inventory-repo.js";
 import { buildDependencyIndexFeed, DEPENDENCY_INDEX_FEED_FILE } from "./version-index-feed.js";
 import {
   DEPENDENCY_VERSION_POLL_DECISION_KIND,
+  buildLineWorkList,
   pollOrgDependencyVersions
 } from "./version-poll.js";
 
@@ -694,16 +700,25 @@ esac
     });
     await inOrg((tx) =>
       declareDependencyLineProducer(tx, org.orgId, {
-        lineId: internalLineId,
-        producedByObjectId: subscribed,
+        ecosystem: "npm",
+        coordinate: "@acme/internal-lib",
+        producerObjectId: subscribed,
         declaredByObjectId: subscribed
       })
     );
-    // READ BACK: without the producer link this test proves nothing at all — the line would simply
-    // be third-party and the assertions below would be about a fixture that never applied.
+    // READ BACK: without the producer declaration this test proves nothing at all — the coordinate
+    // would simply be third-party and the assertions below would be about a fixture that never
+    // applied. (`internalLineId` is still asserted on below; it is minted above.)
+    expect(internalLineId).toBeTruthy();
     expect(
-      (await inOrg((tx) => getDependencyLineById(tx, org.orgId, internalLineId)))
-        ?.producedByObjectId
+      (
+        await inOrg((tx) =>
+          getDependencyLineProducer(tx, org.orgId, {
+            ecosystem: "npm",
+            coordinate: "@acme/internal-lib"
+          })
+        )
+      )?.producerObjectId
     ).toBe(subscribed);
 
     // A host that RECORDS every coordinate it is asked about and answers generously — so an
@@ -769,4 +784,464 @@ esac
     const internalRow = await inOrg((tx) => getDependencyLineById(tx, org.orgId, internalLineId));
     expect(internalRow?.latestVersion, "a stranger's 9.9.9 never reached this line").toBeNull();
   });
+
+  // -----------------------------------------------------------------------------------------
+  // (6) THE RACE ACROSS THE TRANSACTION BOUNDARY — rule 0 at the write door
+  // -----------------------------------------------------------------------------------------
+
+  /**
+   * REPLAY OF THE MEASURED RACE, at the seam where the interleaving is exact.
+   *
+   * Test (5) above proves the poll never ASKS about a line that is internal when the work-list is
+   * built. It cannot prove anything about a line that becomes internal AFTERWARDS, and that gap was
+   * not hypothetical — it was measured end to end against this same Postgres:
+   *
+   *   t0  buildLineWorkList (tx1) returns the coordinate as a THIRD-PARTY line
+   *   t1  the producer is declared; the head is confirmed cleared to null
+   *   t2  the poll's own write call lands  -> {"recorded":true,"movement":"advanced"}
+   *       head = 2.99.0, and one `scp.dependency.line_head_advanced` row: THE BUMP FAN-OUT FIRED
+   *   then the line is internal, so buildLineWorkList never visits it again to correct itself,
+   *       and internal detection's real 2.1.0 is refused as `behind_head` — PERMANENTLY WRONG
+   *
+   * WHY THE INTERLEAVING IS DRIVEN AND NOT AWAITED. Both ingresses deliberately do their network
+   * work with NO transaction open, so the window is a real wall-clock gap in production; here it is
+   * produced by calling the three steps in order, which is `boundary-segment.integration.test.ts`'s
+   * precedent ("the deterministic form of the race, driven at the repo seam so the interleaving is
+   * exact"). `recordDependencyLineHead(..., "third_party")` is verbatim what `pollWork` calls —
+   * same function, same arguments — so nothing here is a re-implementation of the path under test.
+   *
+   * MUTATION LOG — applied, watched fail, reverted, watched pass:
+   * | Mutation | Result |
+   * |---|---|
+   * | delete rule 0 from `recordDependencyLineHead` (the pre-fix state) | BOTH tests below FAIL: the public 2.99.0 records and advances, one outbox row appears, and the internal 2.1.0 is then refused `behind_head` |
+   * | keep rule 0 but read the declaration BEFORE the `FOR UPDATE` | still passes here (this is a same-connection replay), which is why the ordering argument lives in `recordDependencyLineHead`'s header rather than in an assertion |
+   */
+  it("a declare landing mid-poll REFUSES the in-flight public head, fires no bump, and leaves the line fixable", async () => {
+    const coordinate = `@acme/race-declare-${uuidv7().slice(0, 8)}`;
+    const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
+
+    // t0 — THE POLL'S OWN WORK-LIST, before anything is declared. This is the transaction whose
+    // `ThirdPartyLine` brand used to be the only barrier, and it genuinely holds this line: without
+    // that the refusal below would be about a line the poll never intended to write.
+    const work = await buildLineWorkList(server.deps.db, org.orgId);
+    const item = work.find((w) => w.line.id === lineId);
+    expect(item, "t0: the poll must have picked this line up as THIRD-PARTY").toBeDefined();
+
+    // t1 — the declaration lands in the window, exactly as the two producer verbs write it: the
+    // declaration and `resetLineHead` for every line of the coordinate, in ONE transaction.
+    await inOrg(async (tx) => {
+      await declareDependencyLineProducer(tx, org.orgId, {
+        ecosystem: "npm",
+        coordinate,
+        producerObjectId: subscribed,
+        declaredByObjectId: subscribed
+      });
+      await resetLineHead(tx, org.orgId, lineId);
+    });
+
+    const outboxBefore = await headAdvancedRows(lineId);
+
+    // t2 — the poll's write call, with the answer it fetched at t0.
+    const refused = await inOrg((tx) =>
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: "2.99.0", latestDigest: null },
+        { kind: "third_party" }
+      )
+    );
+    expect(refused.recorded, "the public head must be REFUSED, not written").toBe(false);
+    if (refused.recorded) throw new Error("unreachable");
+    expect(refused.reason).toBe("line_is_internal");
+    expect(refused.detail).toMatch(/producer is declared/);
+    expect(refused.line.latestVersion, "the column was left alone").toBeNull();
+
+    // AND NO FAN-OUT. The event is emitted at the write door, so a refusal that still emitted would
+    // author bump PRs in other teams' repositories onto a stranger's version — the damage the head
+    // column is only the record of.
+    expect(
+      (await headAdvancedRows(lineId)).length,
+      "a refused head emits no line_head_advanced event"
+    ).toBe(outboxBefore.length);
+
+    // …AND THE LINE IS STILL FIXABLE, which is the half that made the original defect permanent:
+    // the poll no longer visits an internal line, so if 2.99.0 had landed nothing would ever have
+    // corrected it and the org's real 2.1.0 would be refused as `behind_head` forever.
+    const internal = await inOrg((tx) =>
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        // `subscribed` IS the component the declare at t1 named, so this is the ingress the line now
+        // belongs to — the success direction that keeps the refusal above about the ingress split.
+        { lineId, latestVersion: "2.1.0", latestDigest: null },
+        { kind: "internal", producerObjectId: subscribed }
+      )
+    );
+    expect(internal.recorded, "the legitimate internal head records").toBe(true);
+    if (!internal.recorded) throw new Error("unreachable");
+    expect(internal.movement).toBe("advanced");
+    expect(internal.line.latestVersion).toBe("2.1.0");
+    expect(
+      (await headAdvancedRows(lineId)).length,
+      "…and THAT advance does fan out, so the absence above is about the refusal"
+    ).toBe(outboxBefore.length + 1);
+
+    // The fact that made it unrecoverable, asserted rather than described: the poll's work-list no
+    // longer contains the line, so nothing in that ingress could have corrected a bad head.
+    const workAfter = await buildLineWorkList(server.deps.db, org.orgId);
+    expect(workAfter.map((w) => w.line.id)).not.toContain(lineId);
+  });
+
+  /**
+   * THE SAME RACE WITH THE ARROW REVERSED — a RETRACTION landing mid-flight of an internal-release
+   * derivation. `internal-release-detection.ts` reads the producer in phase 1, fetches the
+   * producer's manifest from a git provider in phase 2 with NO transaction open, and writes in
+   * phase 3; a retract in that window used to let the org's own version land on a coordinate that
+   * is third-party again.
+   *
+   * IT IS THE WORSE-READING DIRECTION, not the tidier one (`resetLineHead`'s header): a stale
+   * internal head on a third-party coordinate wedges the poll behind a version no registry ever
+   * published, AND `latest_version` is an input to the M22 vendor scan rule, so it can grant a scan
+   * pass against evidence the world never produced.
+   */
+  it("a retract landing mid-derivation REFUSES the in-flight internal head, and the public head then records", async () => {
+    const coordinate = `@acme/race-retract-${uuidv7().slice(0, 8)}`;
+    const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
+    await inOrg((tx) =>
+      declareDependencyLineProducer(tx, org.orgId, {
+        ecosystem: "npm",
+        coordinate,
+        producerObjectId: subscribed,
+        declaredByObjectId: subscribed
+      })
+    );
+    // FIXTURE READ-BACK: the line is genuinely internal at the moment the derivation starts, so the
+    // refusal below is about the retraction and not about a declaration that never landed.
+    expect(
+      (
+        await inOrg((tx) =>
+          getDependencyLineProducer(tx, org.orgId, { ecosystem: "npm", coordinate })
+        )
+      )?.producerObjectId
+    ).toBe(subscribed);
+
+    // The retraction lands mid-flight, as the retract verb writes it: the delete plus the clearing,
+    // in one transaction.
+    await inOrg(async (tx) => {
+      await retractDependencyLineProducer(tx, org.orgId, { ecosystem: "npm", coordinate });
+      await resetLineHead(tx, org.orgId, lineId);
+    });
+
+    const outboxBefore = await headAdvancedRows(lineId);
+    const refused = await inOrg((tx) =>
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: "2.7.0", latestDigest: null },
+        { kind: "internal", producerObjectId: subscribed }
+      )
+    );
+    expect(refused.recorded).toBe(false);
+    if (refused.recorded) throw new Error("unreachable");
+    expect(refused.reason).toBe("line_is_third_party");
+    expect(refused.line.latestVersion).toBeNull();
+    expect((await headAdvancedRows(lineId)).length).toBe(outboxBefore.length);
+
+    // POSITIVE CONTROL: the ingress that DOES own the line now writes it, so the refusal is about
+    // who was asking and not about a door that has stopped writing.
+    const polled = await inOrg((tx) =>
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: "2.3.1", latestDigest: null },
+        { kind: "third_party" }
+      )
+    );
+    expect(polled.recorded).toBe(true);
+    if (!polled.recorded) throw new Error("unreachable");
+    expect(polled.line.latestVersion).toBe("2.3.1");
+  });
+
+  /**
+   * THE SAME RACE ONE LEVEL FINER — a TRANSFER, not a retraction.
+   *
+   * The two tests above prove rule 0 refuses an ingress writing to a line of the wrong CATEGORY.
+   * They cannot prove anything about the wrong MEMBER of the right category, and that gap was the
+   * previous fix's own bug: `evaluateIngressAuthority` took `{ hasDeclaredProducer: boolean }` and
+   * `recordDependencyLineHead` supplied it as `declaration !== null`, so the door asked "is a
+   * producer declared?" and never "is THIS producer declared?".
+   *
+   * A TRANSFER IS AN ORDINARY, SUPPORTED ACT, which is why this is not an exotic interleaving:
+   * `POST /dependencies/producers` upserts, and the last commit added `displacedProducerObjectId`
+   * to that route's Decision precisely because coordinates move between components. Measured at
+   * this seam before the fix:
+   *
+   *   t0  declare -> P; P's internal detection reads the declaration in phase 1
+   *   t1  declare -> Q  (the transfer; the verb clears the head, as both verbs do)
+   *   t2  P's in-flight phase-3 write lands
+   *       {"recorded":true,"movement":"advanced","detail":"'2.9.9' is the first head observed…"}
+   *       outbox: line_head_advanced -> bump PRs into every subscriber's repo, onto P's version
+   *   then Q's genuine 2.4.0 is refused `behind_head` FOREVER — the poll never visits a declared
+   *       line, backward movement is refused, and no API resets `latest_version`.
+   *
+   * DRIVEN, NOT AWAITED, for the same reason as (6): the window is a real wall-clock gap in
+   * production (phase 2 fetches a manifest out of a user repo with no transaction open), and
+   * `recordDependencyLineHead(..., { kind: "internal", producerObjectId })` is verbatim what
+   * `internal-release-detection.ts:526` calls with `item.identity.producerComponentObjectId`.
+   *
+   * MUTATION LOG — applied, watched fail, reverted, watched pass:
+   * | Mutation | Result |
+   * |---|---|
+   * | revert the identity check — drop the transfer arm, which is all `{ hasDeclaredProducer: boolean }` could express | THIS test FAILS at the first assertion, and the pre-fix state past that point was MEASURED rather than described: `{"recorded":true,"movement":"advanced","detail":"'2.9.9' is the first head observed on this line"}`, outbox delta **+1** (`line_head_advanced` fired), and Q's genuine `2.4.0` then `{"recorded":false,"reason":"behind_head"}` — permanently, since the poll never visits a declared line. The other two race tests in this block STAY GREEN, which is why this case had to be written separately |
+   * | keep the identity but report the refusal as `line_is_third_party` | FAILS on the reason assertion only: the write is refused, but the Decision then asserts the coordinate is third-party when it is internal and owned by Q |
+   */
+  it("a TRANSFER landing mid-derivation REFUSES the FORMER producer's head, and the NEW producer's records", async () => {
+    const coordinate = `@acme/race-transfer-${uuidv7().slice(0, 8)}`;
+    const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
+    // Q is a SECOND, REAL component. Without it this test could only compare a component against
+    // itself, which is the very comparison the boolean form got right.
+    const q = await createOrphanComponent(admin, `race-transfer-new-producer-${uuidv7()}`);
+
+    // t0 — the coordinate is P's (`subscribed`). P's derivation reads this in phase 1 and then
+    // leaves the transaction to fetch a manifest.
+    await inOrg((tx) =>
+      declareDependencyLineProducer(tx, org.orgId, {
+        ecosystem: "npm",
+        coordinate,
+        producerObjectId: subscribed,
+        declaredByObjectId: subscribed
+      })
+    );
+    // FIXTURE READ-BACK: the line is genuinely P's at the moment the derivation starts, so the
+    // refusal below is about the transfer and not about a declaration that never landed.
+    expect(
+      (
+        await inOrg((tx) =>
+          getDependencyLineProducer(tx, org.orgId, { ecosystem: "npm", coordinate })
+        )
+      )?.producerObjectId
+    ).toBe(subscribed);
+
+    // t1 — THE TRANSFER, exactly as the declare verb writes it: the upsert (which displaces P) plus
+    // `resetLineHead` for every line of the coordinate, in ONE transaction.
+    await inOrg(async (tx) => {
+      await declareDependencyLineProducer(tx, org.orgId, {
+        ecosystem: "npm",
+        coordinate,
+        producerObjectId: q.id,
+        declaredByObjectId: q.id
+      });
+      await resetLineHead(tx, org.orgId, lineId);
+    });
+    // AND THE COORDINATE IS STILL INTERNAL — the fact that makes this case distinct from the retract
+    // test above, and the reason a boolean saw nothing wrong here.
+    expect(
+      (
+        await inOrg((tx) =>
+          getDependencyLineProducer(tx, org.orgId, { ecosystem: "npm", coordinate })
+        )
+      )?.producerObjectId,
+      "the transfer must leave a declaration standing, naming Q"
+    ).toBe(q.id);
+
+    const outboxBefore = await headAdvancedRows(lineId);
+
+    // t2 — P's phase-3 write, with the version it resolved at t0.
+    const refused = await inOrg((tx) =>
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: "2.9.9", latestDigest: null },
+        { kind: "internal", producerObjectId: subscribed }
+      )
+    );
+    expect(refused.recorded, "the FORMER producer's head must be REFUSED, not written").toBe(false);
+    if (refused.recorded) throw new Error("unreachable");
+    expect(refused.reason).toBe("line_transferred");
+    expect(refused.detail).toContain(q.id);
+    expect(refused.detail).toContain(subscribed);
+    expect(refused.line.latestVersion, "the column was left alone").toBeNull();
+
+    // AND NO FAN-OUT. The bump event is emitted at the write door, so a refusal that still emitted
+    // would author PRs in other teams' repositories onto a version the coordinate's own publisher
+    // did not release — the head column is only the record of that damage.
+    expect(
+      (await headAdvancedRows(lineId)).length,
+      "a refused head emits no line_head_advanced event"
+    ).toBe(outboxBefore.length);
+
+    // …AND Q'S GENUINE RELEASE THEN RECORDS. This is the half that made the defect permanent: had
+    // P's 2.9.9 landed, Q's 2.4.0 would be BEHIND it and refused forever, with no poll to correct
+    // the line (it is internal) and no API to reset the column.
+    const legit = await inOrg((tx) =>
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: "2.4.0", latestDigest: null },
+        { kind: "internal", producerObjectId: q.id }
+      )
+    );
+    expect(legit.recorded, "the new producer's head records").toBe(true);
+    if (!legit.recorded) throw new Error("unreachable");
+    expect(legit.movement).toBe("advanced");
+    expect(legit.line.latestVersion).toBe("2.4.0");
+    expect(
+      (await headAdvancedRows(lineId)).length,
+      "…and THAT advance does fan out, so the absence above is about the refusal"
+    ).toBe(outboxBefore.length + 1);
+
+    // THE SUCCESS DIRECTION, CHECKED EXPLICITLY: the rule refuses a MISMATCH, not every internal
+    // write. Q writing again to a line still declared to Q must still record — without this the
+    // refusal above is satisfied by a door that has simply stopped writing internal heads.
+    const again = await inOrg((tx) =>
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: "2.5.0", latestDigest: null },
+        { kind: "internal", producerObjectId: q.id }
+      )
+    );
+    expect(again.recorded).toBe(true);
+    if (!again.recorded) throw new Error("unreachable");
+    expect(again.line.latestVersion).toBe("2.5.0");
+  });
+
+  /**
+   * THE REFUSAL'S EXPLANATION, READ BACK OUT OF THE `decisions` TABLE — the CALL SITE, not the
+   * helper.
+   *
+   * `norecordFor` is pinned pure in `version-poll.test.ts`, and that unit case is necessary and not
+   * sufficient: restoring the ONE FIXED SENTENCE this function replaced ("a head never moves
+   * backwards and never leaves the line it names") at the call site left 352 tests green. A rule
+   * proven in isolation while its only consumer is free to ignore it is the same shape as a guard
+   * nobody exercises — the explanation the operator actually reads comes from `decisionFor`, and
+   * nothing asserted what `decisionFor` put there.
+   *
+   * SO THE DECLARE LANDS INSIDE THE REAL POLL, not at the repo seam. `pollOrgDependencyVersions`
+   * builds its work-list in one transaction, does the index round trip with NO transaction open, and
+   * writes in another — so a host whose `listVersions` declares the producer occupies exactly the
+   * window the race replay above drives by hand, with the difference that this one goes on to write
+   * the Decision. That is the only way to read the persisted text of a `line_is_internal` refusal.
+   *
+   * MUTATION — applied, watched fail, reverted, watched pass:
+   * | Mutation | Measured |
+   * |---|---|
+   * | `norecord: norecordFor(refusal.reason)` -> the old fixed sentence at the `not_recorded` call site | this case fails on BOTH halves: the ownership sentence is absent, and the version sentence is present on a refusal that is not about the version |
+   */
+  it("the PERSISTED Decision for a line_is_internal refusal explains OWNERSHIP, not version ordering", async () => {
+    const coordinate = `@acme/norecord-call-site-${uuidv7().slice(0, 8)}`;
+    const lineId = await declare(subscribed, { ecosystem: "npm", coordinate, major: "2" });
+
+    // The declaration lands DURING the poll, from inside the index round trip — the same window the
+    // replay above drives at the repo seam, entered here through the code under test.
+    let declaredDuringPoll = false;
+    const declaringHost: PluginHost = {
+      async start() {},
+      async stop() {},
+      async stopInstances() {},
+      gitFileRead: () => {
+        throw new Error("not wired");
+      },
+      executor: () => {
+        throw new Error("not wired");
+      },
+      control: () => {
+        throw new Error("not wired");
+      },
+      discovery: () => {
+        throw new Error("not wired");
+      },
+      notification: () => {
+        throw new Error("not wired");
+      },
+      federationTransport: () => {
+        throw new Error("not wired");
+      },
+      dependencyIndex(): DependencyIndexPluginClient {
+        return {
+          listVersions: async (query) => {
+            if (query.coordinate !== coordinate) {
+              // Every OTHER line in this org's work-list answers nothing, so this tick writes one
+              // `not_recorded` verdict and nothing else that could be mistaken for it.
+              return {
+                status: "unavailable" as const,
+                reason: "not_configured" as const,
+                detail: "this host answers only the coordinate under test"
+              };
+            }
+            if (!declaredDuringPoll) {
+              declaredDuringPoll = true;
+              await inOrg(async (tx) => {
+                await declareDependencyLineProducer(tx, org.orgId, {
+                  ecosystem: "npm",
+                  coordinate,
+                  producerObjectId: subscribed,
+                  declaredByObjectId: subscribed
+                });
+                await resetLineHead(tx, org.orgId, lineId);
+              });
+            }
+            return { status: "available" as const, versions: [{ version: "2.99.0" }] };
+          },
+          resolveDigest: async () => ({
+            status: "unavailable" as const,
+            reason: "not_configured" as const,
+            detail: "no digests here"
+          }),
+          describeIndex: async () => ({ ecosystem: "npm" as const, reportsDigest: false })
+        };
+      }
+    };
+
+    const results = await pollOrgDependencyVersions(server.deps.db, org.orgId, {
+      host: declaringHost,
+      env: { ...AIRGAP_ENV, SCP_DEPENDENCY_INDEX_NPM_URL: "https://npm.internal" }
+    });
+
+    // The fixture APPLIED, and it produced a real refusal of the shape this case is about — without
+    // both of these the assertions below would pass on a Decision that was never written.
+    expect(declaredDuringPoll, "the declaration must have landed inside the poll").toBe(true);
+    const polled = results.find((r) => r.lineId === lineId);
+    expect(polled?.headRefusedReason).toBe("line_is_internal");
+
+    const [row] = await inOrg((tx) =>
+      tx
+        .select()
+        .from(decisions)
+        .where(
+          and(
+            eq(decisions.orgId, org.orgId),
+            eq(decisions.subjectId, lineId),
+            eq(decisions.kind, DEPENDENCY_VERSION_POLL_DECISION_KIND)
+          )
+        )
+    );
+    expect(row?.verdict).toBe("not_recorded");
+    const reasonTree = row?.reasonTree as { reason?: string; norecord?: string };
+    expect(reasonTree.reason).toBe("line_is_internal");
+
+    // THE TEXT ITSELF. Positive: it explains the rule that actually fired. Negative: it does NOT
+    // explain the version rules, which are true of this poll and simply not why nothing was
+    // recorded — an operator reading that would go looking for a version-ordering problem on a line
+    // whose head is perfectly ahead of the standing one.
+    expect(reasonTree.norecord).toMatch(/a producer is declared for this coordinate/);
+    expect(reasonTree.norecord).toMatch(/dependency confusion/);
+    expect(reasonTree.norecord).not.toMatch(/never moves backwards/);
+    expect(reasonTree.norecord).not.toMatch(/never leaves the line it names/);
+  });
+
+  async function headAdvancedRows(lineId: string) {
+    return inOrg((tx) =>
+      tx
+        .select({ id: outbox.id })
+        .from(outbox)
+        .where(
+          and(
+            eq(outbox.orgId, org.orgId),
+            eq(outbox.type, DEPENDENCY_LINE_HEAD_ADVANCED_EVENT),
+            eq(outbox.subject, lineId)
+          )
+        )
+    );
+  }
 });

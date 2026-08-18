@@ -192,9 +192,9 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
   });
 
   // -----------------------------------------------------------------------------------------
-  // AT THE BOUND — the ADR-0033 loudness contract, flipped DELIBERATELY from this test's first
+  // AT THE BOUND — the ADR-0035 loudness contract, flipped DELIBERATELY from this test's first
   // life as a hazard pin (M21 crossover, 2026-08-13). Every recursive walk shares one bound
-  // (CONTAINMENT_WALK_MAX_DEPTH, six census sites), and before ADR-0033 each STOPPED EXPANDING
+  // (CONTAINMENT_WALK_MAX_DEPTH, six census sites), and before ADR-0035 each STOPPED EXPANDING
   // silently: authz refused deep domain creates with a permission-shaped 403 naming neither
   // depth nor bound, while a component created under the deepest allowed domain got a chain
   // whose depth inversion presented a mid-level domain at "org root" — org-scoped required
@@ -203,7 +203,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
   // with the depth named. This test pins that contract from the operator's side.
   // -----------------------------------------------------------------------------------------
 
-  it("AT THE BOUND (ADR-0033): deep creates refuse with the DEPTH named, and a chain that would truncate refuses instead of relabeling", async () => {
+  it("AT THE BOUND (ADR-0035): deep creates refuse with the DEPTH named, and a chain that would truncate refuses instead of relabeling", async () => {
     // CONTROL first — a shallow nesting, well under the bound: the convention holds and the org
     // root genuinely sits at index 0. Without this, the deep case could "pass" against a harness
     // where the convention never held at all (vacuous-test discipline).
@@ -227,7 +227,7 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     ).toBe("organization");
     expect(control.some((r) => r.id === shallowTop.id)).toBe(true);
 
-    // Nest domains until the API refuses. Pre-ADR-0033 this refusal was a permission-shaped 403
+    // Nest domains until the API refuses. Pre-ADR-0035 this refusal was a permission-shaped 403
     // ("subject … lacks 'object:write' at scope …") naming neither depth nor bound — an operator
     // met it and debugged RBAC. Now the deny-path probe (authz/resolve.ts
     // assertDenyNotTruncated) converts a refusal it cannot vouch for into the loud depth error.
@@ -257,16 +257,22 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
         : String(refusal);
     expect(
       refusalDetail,
-      "ADR-0033: the refusal must NAME the depth bound, not masquerade as a missing role"
+      "ADR-0035: the refusal must NAME the depth bound, not masquerade as a missing role"
     ).toContain("supported containment depth");
-    expect(refusalDetail).toContain("ADR-0033");
+    expect(refusalDetail).toContain("ADR-0035");
     expect(domains.length).toBeGreaterThanOrEqual(8);
 
     // The other half of the old hazard: a component created under the deepest allowed domain used
     // to get a silently truncated chain whose inversion presented a mid-level domain as the org
-    // root. Now the chain read REFUSES instead of relabeling — walk back from the deepest domain:
-    // every component whose chain would exceed the bound must throw the depth error, and the
-    // deepest one whose chain FITS must still produce the honest shape (organization at index 0).
+    // root. Now NOTHING is silent — walk back from the deepest domain: every component whose chain
+    // would exceed the bound is refused LOUDLY, naming the depth, and the deepest one whose chain
+    // FITS must still produce the honest shape (organization at index 0). WHERE the loud refusal
+    // lands moved with M22 (#244): the create of a component under a service writes a `contains`
+    // edge, and M22's governance-reach capture walks the NEW component's chain in that same
+    // transaction — so a component whose chain would exceed the bound is refused AT CREATE (the
+    // walk's own ADR-0035 refusal, before an unreadable row can exist) rather than created and then
+    // refused on read. Either arm is the loudness contract; a SILENT create-then-read (a chain that
+    // comes back shortened) is what this must never see again.
     const deepSvc = await admin.services.create({ name: uniq("svc-deep") });
     let sawDepthRefusal = false;
     let honestChain: Awaited<ReturnType<typeof containmentChain>> | null = null;
@@ -281,8 +287,17 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
           service: deepSvc.id,
           domainId: candidate.id
         });
-      } catch {
-        continue; // create itself refused at this depth — step up.
+      } catch (e) {
+        // The create itself refused at this depth — it must be the LOUD depth refusal (the authz
+        // deny-probe's, or the reach capture's walk), never a permission-shaped 403 or a silent
+        // success. Step up afterwards.
+        const text =
+          e instanceof ScpApiError ? JSON.stringify(e.problem ?? e.message) : String(e);
+        expect(text, `create under domains[${i}] refused for a reason other than depth`).toContain(
+          "supported containment depth"
+        );
+        sawDepthRefusal = true;
+        continue;
       }
       try {
         honestChain = await withTenantTx(server.deps.db, org.orgId, (tx) =>
@@ -299,9 +314,8 @@ describe("nested containment domains (outpost-ui.md §5(b), owner decision 2026-
     }
     expect(
       sawDepthRefusal,
-      "at least one deep component's chain must REFUSE — if none did, either the bound rose " +
-        "(update the six sites together) or components stopped being creatable at depth, which " +
-        "changes what this test protects"
+      "at least one deep component must be REFUSED loudly (at create, or on the chain read) — if " +
+        "none was, the bound rose without this test being updated: move all six census sites together"
     ).toBe(true);
     expect(honestChain, "some shallower component must still resolve a complete chain").not.toBeNull();
     expect(

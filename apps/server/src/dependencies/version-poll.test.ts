@@ -6,8 +6,10 @@ import {
   DEPENDENCY_VERSION_POLL_QUEUE,
   dependencyVersionPollIntervalSeconds,
   dependencyVersionPollRoleGuard,
+  norecordFor,
   startDependencyVersionPollLoop
 } from "./version-poll.js";
+import type { HeadRefusalReason } from "./line-head.js";
 
 /**
  * THE ROLE GUARD (ADR-0032 §7, BUILD_AND_TEST.md M21.4).
@@ -49,8 +51,18 @@ describe("dependencyVersionPollRoleGuard", () => {
         federationRole: "outpost",
         ...DECLARED
       });
-      expect(verdict.allowed).toBe(false);
-      expect(verdict.reason).toMatch(/air-gapped/);
+      expect(verdict.allowed, role).toBe(false);
+      // The air-gap sentence is THIS capability's own reason for the FEDERATION axis, so it belongs
+      // to the federation branch and only to it. On an `api` process the guard refuses on the
+      // PROCESS axis first (M21.7 follow-up, LOW 5 — all three hand-written copies now test the
+      // axes in one order, so a given misconfiguration sends an operator to ONE setting rather than
+      // to whichever one the job that complained happened to check first); telling that operator
+      // about air-gaps would be naming the wrong remedy.
+      if (role === "api") {
+        expect(verdict.reason, role).toMatch(/SCP_ROLE/);
+      } else {
+        expect(verdict.reason, role).toMatch(/air-gapped/);
+      }
     }
   });
 
@@ -190,5 +202,73 @@ describe("startDependencyVersionPollLoop", () => {
     expect(boss.createQueue).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE);
     expect(boss.work).toHaveBeenCalledTimes(1);
     expect(boss.send).toHaveBeenCalledWith(DEPENDENCY_VERSION_POLL_QUEUE, {});
+  });
+});
+
+/**
+ * THE DECISION'S PLAIN-ENGLISH EXPLANATION MUST NAME THE RULE THAT ACTUALLY REFUSED (principle 6).
+ *
+ * The defect this pins was one fixed sentence — "a head never moves backwards and never leaves the
+ * line it names" — appended to EVERY `not_recorded` verdict. It is true of the version rules and it
+ * is not the rule that fires for an OWNERSHIP refusal: `line_is_internal` says the coordinate has a
+ * declared producer, which is not a statement about the version at all, and the index's answer may
+ * have been perfectly ahead of the standing head. An operator reading that Decision goes looking for
+ * a version-ordering problem on a line whose actual problem is a declaration — a Decision that
+ * explains the wrong rule is worse than one that says nothing.
+ *
+ * MUTATION LOG — applied, watched fail, reverted, watched pass:
+ * | Mutation | Result |
+ * |---|---|
+ * | restore the single fixed sentence for every reason (the pre-fix state) | TWO failures — the ownership case, and "`behind_head` and `different_major_line` do not share one sentence either". The second is the collapse one step smaller, and it falls out of the same mutation |
+ * | give the ownership reasons the version wording and vice versa | TWO failures, one per grouped case: the mapping is pinned in BOTH directions, so "the strings merely differ" does not satisfy it |
+ */
+describe("norecordFor — the refusal's explanation follows the refusal", () => {
+  /** Every reason the door can return, spelled out. A literal list, not `Object.keys` of anything:
+   *  the point is that a NEW reason has to be added here by hand and then explained. */
+  const OWNERSHIP: HeadRefusalReason[] = [
+    "line_is_internal",
+    "line_is_third_party",
+    "line_transferred"
+  ];
+  const VERSION: HeadRefusalReason[] = [
+    "behind_head",
+    "different_major_line",
+    "different_tag_variant",
+    "major_line_not_comparable",
+    "version_not_comparable"
+  ];
+
+  it("an OWNERSHIP refusal is NOT explained by the head-movement rule", () => {
+    for (const reason of OWNERSHIP) {
+      const text = norecordFor(reason);
+      expect(text, reason).not.toMatch(/never moves backwards/);
+      expect(text, reason).not.toMatch(/never leaves the line it names/);
+      // …and it says what DID refuse: who may write, rather than what the version is.
+      expect(text, reason).toMatch(/declared|own this line|does not own/);
+    }
+  });
+
+  it("a VERSION refusal still IS — the negative control, without which the above is satisfied by silence", () => {
+    expect(norecordFor("behind_head")).toMatch(/never moves backwards/);
+    for (const reason of VERSION.filter((r) => r !== "behind_head")) {
+      expect(norecordFor(reason), reason).toMatch(/never leaves the line it names/);
+    }
+  });
+
+  it("`behind_head` and `different_major_line` do not share one sentence either", () => {
+    // The two version rules are two different facts — "your answer is older than the head" and
+    // "your answer is not on this line" — and merging them was the same collapse one step smaller.
+    expect(norecordFor("behind_head")).not.toBe(norecordFor("different_major_line"));
+  });
+
+  it("every reason cites the rule it is applying", () => {
+    // WHAT THIS DOES NOT DO, stated so nobody reads it as the exhaustiveness gate: the two lists
+    // above are hand-maintained, so a NEW `HeadRefusalReason` is not covered here at all. What
+    // covers it is the compiler — `norecordFor`'s switch has no `default:` arm and the package sets
+    // `noImplicitReturns`, so an unexplained reason fails to build. That gate lives in the source,
+    // not in this file, and adding a `default:` arm would silently remove it.
+    for (const reason of [...OWNERSHIP, ...VERSION]) {
+      expect(norecordFor(reason), reason).toMatch(/ADR-0032 §7/);
+    }
   });
 });

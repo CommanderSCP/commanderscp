@@ -645,3 +645,106 @@ describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a 
     });
   });
 });
+
+describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
+  /**
+   * A producer declaration says "this component's production releases are where this coordinate's
+   * versions come from" — the coordinate stops being polled against its public index.
+   *
+   * THE COLLECTION IS OMITTED WHEN EMPTY, exactly like the three above it — and that omission MEANS
+   * SOMETHING DIFFERENT server-side, which is the point of the last case here. For every other
+   * collection absent and empty both prune; for this one absent means UNMANAGED and prunes nothing
+   * (owner ruling 2026-08-17). The consequence a construct author hits is that deleting your only
+   * `producesDependency(...)` call retracts nothing, and that is what the last case pins so nobody
+   * "fixes" `synth()` to emit `producers: []` — which WOULD retract it, silently, on the next apply
+   * of every stack that ever declared one.
+   *
+   * | Mutation | Result |
+   * |---|---|
+   * | emit `producers: []` instead of omitting it when empty | "…omits the collection when empty…" FAILS, and so does the pre-C1 shape test above |
+   * | sort producers by declaration order instead of `(ecosystem, coordinate)` | "sorts on (ecosystem, coordinate)…" FAILS |
+   * | have `producesDependency` push a decl directly instead of delegating to the stack | no test fails — the two spellings are required to converge, which the sugar-equivalence case asserts |
+   */
+  function fixture(stackName: string) {
+    const app = new App();
+    const stack = new Stack(app, stackName);
+    const service = new Service(stack, "billing", { name: "Billing" });
+    const component = new Component(stack, "api", { name: "API", service });
+    return { stack, service, component };
+  }
+
+  it("component.producesDependency lands in the manifest and survives schema validation", () => {
+    const { stack, component } = fixture("producer-basic");
+    component.producesDependency({ ecosystem: "npm", coordinate: "@acme/lib" });
+    const manifest = stack.synth();
+    expect(manifest.producers).toEqual([
+      { producerUrn: component.urn, ecosystem: "npm", coordinate: "@acme/lib" }
+    ]);
+    expect(() => DesiredStateManifestSchema.parse(manifest)).not.toThrow();
+  });
+
+  it("carries the coordinate VERBATIM — never slugified, never lowercased", () => {
+    // `@acme/Lib`, `acme/lib` and `acme-lib` all collapse to one URN slug and are three different
+    // packages. A manifest that normalised here would declare a producer for the wrong one.
+    const { stack, component } = fixture("producer-verbatim");
+    component.producesDependency({ ecosystem: "go", coordinate: "github.com/Acme/Lib" });
+    component.producesDependency({ ecosystem: "oci", coordinate: "docker.io/library/alpine" });
+    // Sorted by ECOSYSTEM first, so `go` precedes `oci` regardless of declaration order.
+    expect(stack.synth().producers?.map((p) => p.coordinate)).toEqual([
+      "github.com/Acme/Lib",
+      "docker.io/library/alpine"
+    ]);
+  });
+
+  it("the sugar and the stack-level form produce the IDENTICAL manifest", () => {
+    const a = fixture("producer-sugar");
+    a.component.producesDependency({ ecosystem: "npm", coordinate: "@acme/lib" });
+    const b = fixture("producer-sugar"); // same stack name, so the URNs match
+    b.stack.addDependencyProducer(b.component, { ecosystem: "npm", coordinate: "@acme/lib" });
+    expect(a.stack.synth()).toEqual(b.stack.synth());
+  });
+
+  it("accepts a component referenced by URN, for one outside this program", () => {
+    const { stack } = fixture("producer-external");
+    const external = "urn:scp:other-stack:component:legacy";
+    stack.addDependencyProducer(external, { ecosystem: "python", coordinate: "acme-lib" });
+    expect(stack.synth().producers?.[0]?.producerUrn).toBe(external);
+  });
+
+  it("sorts on (ecosystem, coordinate) — the identity — so declaration order never changes the bytes", () => {
+    const one = fixture("producer-order");
+    one.component.producesDependency({ ecosystem: "npm", coordinate: "@acme/b" });
+    one.component.producesDependency({ ecosystem: "npm", coordinate: "@acme/a" });
+    one.component.producesDependency({ ecosystem: "go", coordinate: "github.com/acme/z" });
+    const two = fixture("producer-order");
+    two.component.producesDependency({ ecosystem: "go", coordinate: "github.com/acme/z" });
+    two.component.producesDependency({ ecosystem: "npm", coordinate: "@acme/a" });
+    two.component.producesDependency({ ecosystem: "npm", coordinate: "@acme/b" });
+    expect(JSON.stringify(one.stack.synth())).toBe(JSON.stringify(two.stack.synth()));
+    expect(one.stack.synth().producers?.map((p) => `${p.ecosystem} ${p.coordinate}`)).toEqual([
+      "go github.com/acme/z",
+      "npm @acme/a",
+      "npm @acme/b"
+    ]);
+  });
+
+  it("omits the collection when empty — and THAT is why deleting your only declaration retracts nothing", () => {
+    // Do not "fix" this to emit `producers: []`. An empty array is a PRESENT collection, which the
+    // server reads as "I manage producers and declare none" and therefore PRUNES; an absent key
+    // means UNMANAGED. Emitting `[]` here would make every stack that ever dropped a
+    // `producesDependency(...)` call retract that coordinate back to a public index on the next
+    // apply — the accepted cost documented on `Stack.addDependencyProducer` runs in this direction
+    // precisely so the catastrophic one cannot.
+    const { stack, component } = fixture("producer-none");
+    const withDeclaration = (() => {
+      component.producesDependency({ ecosystem: "npm", coordinate: "@acme/lib" });
+      return stack.synth();
+    })();
+    expect(withDeclaration.producers).toHaveLength(1);
+
+    const { stack: bare } = fixture("producer-none");
+    const manifest = bare.synth();
+    expect(manifest.producers).toBeUndefined();
+    expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
+  });
+});

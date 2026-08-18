@@ -192,6 +192,9 @@ importers:
       '@scp/plugin-testkit':
         specifier: workspace:*
         version: link:../../packages/plugin-testkit
+      '@scp/source-census':
+        specifier: workspace:*
+        version: link:../../packages/source-census
       '@testcontainers/postgresql':
         specifier: ^10.14.0
         version: 10.28.0
@@ -314,6 +317,9 @@ importers:
         specifier: ^2.9.0
         version: 2.9.0
     devDependencies:
+      '@scp/source-census':
+        specifier: workspace:*
+        version: link:../../packages/source-census
       '@types/node':
         specifier: ^22.10.0
         version: 22.20.1
@@ -359,6 +365,10 @@ importers:
         version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
 
   packages/dependency-manifests:
+    dependencies:
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
     devDependencies:
       '@scp/schemas':
         specifier: workspace:*
@@ -623,6 +633,9 @@ importers:
       '@scp/plugin-testkit':
         specifier: workspace:*
         version: link:../../plugin-testkit
+      '@scp/source-census':
+        specifier: workspace:*
+        version: link:../../source-census
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -658,6 +671,9 @@ importers:
       '@scp/plugin-testkit':
         specifier: workspace:*
         version: link:../../plugin-testkit
+      '@scp/source-census':
+        specifier: workspace:*
+        version: link:../../source-census
       typescript:
         specifier: ~5.8.0
         version: 5.8.3
@@ -813,6 +829,18 @@ importers:
       '@hey-api/openapi-ts':
         specifier: ^0.99.0
         version: 0.99.0(magicast@0.3.5)(typescript@5.8.3)
+      typescript:
+        specifier: ~5.8.0
+        version: 5.8.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(happy-dom@20.11.1)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.0)(yaml@2.9.0)
+
+  packages/source-census:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
       typescript:
         specifier: ~5.8.0
         version: 5.8.3

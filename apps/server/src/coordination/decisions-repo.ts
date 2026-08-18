@@ -99,6 +99,41 @@ export async function listDecisions(
 }
 
 /**
+ * The dedupe/idempotence probe AS A BUILDER, for the same reason {@link latestBlockDecisionQuery}
+ * is one: the bound it carries is a property of the PLAN, so the only test worth having `EXPLAIN`s
+ * the query this module actually runs rather than a hand-copied approximation that would keep
+ * passing while the real one drifted off drizzle/0044's index.
+ *
+ * {@link latestDecisionForSubjectKind} is the only caller in `src/`; the plan assertion in
+ * `decision-dedupe-read-bound.integration.test.ts` is the other.
+ */
+export function latestDecisionForSubjectKindQuery(
+  tx: TenantTx,
+  orgId: string,
+  subjectId: string,
+  kind: string
+) {
+  return (
+    tx
+      .select()
+      .from(decisions)
+      .where(
+        and(
+          eq(decisions.orgId, orgId),
+          eq(decisions.subjectId, subjectId),
+          eq(decisions.kind, kind)
+        )
+      )
+      // The `id` tiebreak is not decoration and it is not only about the answer: drizzle/0044's index
+      // must carry it too, or the index supplies only a PREFIX of this order, every plan using it
+      // needs a sort node, and the planner prefers `decisions_org_kind_created` — which supplies the
+      // whole order sortlessly and then filters `subject_id` off the heap across the ORG. drizzle/0069.
+      .orderBy(desc(decisions.createdAt), desc(decisions.id))
+      .limit(1)
+  );
+}
+
+/**
  * The MOST RECENT decision of one `kind` about one subject, or `undefined`. A targeted single-row
  * read for callers on the reconcile hot path that must not pull a change's whole Decision history
  * every tick just to ask "did I already record this verdict?" (see `pre-deploy-gate.ts`'s
@@ -114,14 +149,7 @@ export async function latestDecisionForSubjectKind(
   subjectId: string,
   kind: string
 ): Promise<Decision | undefined> {
-  const rows = await tx
-    .select()
-    .from(decisions)
-    .where(
-      and(eq(decisions.orgId, orgId), eq(decisions.subjectId, subjectId), eq(decisions.kind, kind))
-    )
-    .orderBy(desc(decisions.createdAt), desc(decisions.id))
-    .limit(1);
+  const rows = await latestDecisionForSubjectKindQuery(tx, orgId, subjectId, kind);
   return rows[0] ? toDecision(rows[0]) : undefined;
 }
 

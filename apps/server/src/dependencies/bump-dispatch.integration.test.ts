@@ -55,6 +55,7 @@ import {
 } from "./bump-dispatch.js";
 import { DEPENDENCY_DELEGATION_DECISION_KIND } from "./delegation-detection.js";
 import { BUMP_SOURCE_KIND } from "./bump-actuator.js";
+import { readBumpAuthorship } from "./bump-authorship-repo.js";
 
 /**
  * M21.5 — THE BUMP IS ACTUALLY DISPATCHED, THROUGH THE REAL PATH (ADR-0032 §8/§9).
@@ -131,10 +132,21 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
    *  fail. The `beforeEach` below resets them and the assertions now name the change. */
   const controlEvaluations: { instanceId: string; changeId: unknown; commitSha: unknown }[] = [];
   /** The pull request the fake provider reports the authoring run opened, per change — the number
-   *  `status().stateRef` carries back and the server records. `undefined` for a change the fixture
-   *  wants to leave with no recorded pull request. */
-  const openedPullRequests = new Map<string, number>();
+   *  AND the URL `status().stateRef` carries back and the server records. `undefined` for a change
+   *  the fixture wants to leave with no recorded pull request. */
+  const openedPullRequests = new Map<string, { number: number; url: string }>();
   let nextPullRequestNumber = 100;
+  /**
+   * The web URL the fixture PROVIDER hands back for a pull request it opened.
+   *
+   * DELIBERATELY NOT A GITHUB URL, and that is the whole point of the column it feeds
+   * (migration 0066): this is an outpost-local Gitea (M15), so it is a different HOST and it spells
+   * the path `/pulls/` where github.com spells `/pull/`. A consumer composing a link from `repo` +
+   * `pull_request_number` would emit `https://github.com/<repo>/pull/<n>`, which 404s here — so an
+   * assertion that this exact string reached the database cannot be satisfied by a synthesiser.
+   */
+  const providerPullRequestUrl = (repo: string, number: number): string =>
+    `https://gitea.dc1.internal/${repo}/pulls/${number}`;
   /** What the fixture `github-check` control answers. Mutable so a test can say what "the
    *  component's own checks" reported, and FOR WHICH COMMIT. */
   let controlOutcome: ControlOutcome = { status: "expired", evidence: {} };
@@ -150,6 +162,9 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
    *  egress refusal all look like from the server's side of the plugin-host RPC. */
   const repoReadFailures = new Map<string, string>();
   const startedInstances: string[] = [];
+  /** The CONFIG each instance was started with, not just its id — `startedInstances` alone cannot
+   *  see what the server actually handed the plugin, which is where the runtime binary lives. */
+  const startedConfigs: { id: string; config: Record<string, unknown> }[] = [];
   const stoppedInstances: string[] = [];
 
   const inOrg = <T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> =>
@@ -174,6 +189,7 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     controlEvaluations.length = 0;
     fileReads.length = 0;
     startedInstances.length = 0;
+    startedConfigs.length = 0;
     stoppedInstances.length = 0;
   });
 
@@ -183,7 +199,10 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     };
     return {
       async start(instances) {
-        for (const i of instances) startedInstances.push(i.id);
+        for (const i of instances) {
+          startedInstances.push(i.id);
+          startedConfigs.push({ id: i.id, config: (i.config ?? {}) as Record<string, unknown> });
+        }
       },
       async stop() {},
       async stopInstances(ids) {
@@ -197,14 +216,20 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
             const params = (intent.parameters ?? {}) as {
               action?: string;
               changeObjectId?: string;
+              repo?: string;
             };
-            // AN AUTHORING RUN OPENS A PULL REQUEST, and the number is the only place it exists.
-            // The server reads it back off `status().stateRef` and records it, because the merge is
-            // ADDRESSED to it rather than found by listing — so a fixture that reported no number
-            // would make every merge below unreachable.
+            // AN AUTHORING RUN OPENS A PULL REQUEST, and this run's outcome is the only place its
+            // number and its URL exist. The server reads both back off `status().stateRef` and
+            // records them: the merge is ADDRESSED to the number rather than found by listing (so a
+            // fixture reporting no number would make every merge below unreachable), and the URL is
+            // unrecoverable afterwards because nothing on the row says which provider this was.
             if (params.action !== "merge" && params.changeObjectId) {
               if (!openedPullRequests.has(params.changeObjectId)) {
-                openedPullRequests.set(params.changeObjectId, nextPullRequestNumber++);
+                const number = nextPullRequestNumber++;
+                openedPullRequests.set(params.changeObjectId, {
+                  number,
+                  url: providerPullRequestUrl(params.repo ?? "", number)
+                });
               }
             }
             return { externalId: `managed-dep::${intent.idempotencyKey}` };
@@ -216,13 +241,20 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
               return { phase: mergeRunPhase, detail: "fixture" };
             }
             const changeObjectId = ref.externalId.replace("managed-dep::", "");
-            const pullRequestNumber = openedPullRequests.get(changeObjectId);
+            const opened = openedPullRequests.get(changeObjectId);
             return {
               phase: "succeeded" as const,
               detail: "fixture",
-              ...(pullRequestNumber === undefined
+              ...(opened === undefined
                 ? {}
-                : { stateRef: { commitSha: "fixture", pullRequestNumber, merged: false } })
+                : {
+                    stateRef: {
+                      commitSha: "fixture",
+                      pullRequestNumber: opened.number,
+                      pullRequestUrl: opened.url,
+                      merged: false
+                    }
+                  })
             };
           },
           abort: async () => ({ aborted: false, detail: "fixture" }),
@@ -471,11 +503,14 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
   /** Move the line's head through the ONE write door, exactly as both M21.4 ingresses do. */
   async function advanceHead(lineId: string, version: string): Promise<void> {
     const outcome = await inOrg((tx) =>
-      recordDependencyLineHead(tx, org.orgId, {
-        lineId,
-        latestVersion: version,
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId, latestVersion: version, latestDigest: null },
+        // No producer is declared for these fixtures' coordinates, so the third-party ingress is
+        // the one that owns them — the same argument `version-poll.ts` passes.
+        { kind: "third_party" }
+      )
     );
     expect(outcome.recorded, `the head should have moved to ${version}`).toBe(true);
   }
@@ -524,11 +559,12 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     // third-party line every day, and a job per restatement is a job per dependency per day for
     // work already done.
     await inOrg((tx) =>
-      recordDependencyLineHead(tx, org.orgId, {
-        lineId: fixture.lineId,
-        latestVersion: "1.4.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId: fixture.lineId, latestVersion: "1.4.0", latestDigest: null },
+        { kind: "third_party" }
+      )
     );
     expect((await outboxRowsFor(fixture.lineId)).length).toBe(afterAdvance.length);
   }, 60_000);
@@ -604,6 +640,66 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
     const verdicts = await decisionsOfKind(DEPENDENCY_BUMP_DECISION_KIND, change!.objectId);
     expect(verdicts).toHaveLength(1);
     expect(verdicts[0]?.verdict).toBe("dispatched");
+  }, 120_000);
+
+  /**
+   * ==============================================================================================
+   * THE LINK IS CAPTURED HERE OR NOWHERE (migration 0066, M21.7 item C)
+   * ==============================================================================================
+   * 0064 recorded `repo` and `pull_request_number` and no URL, on the reasoning that the two
+   * compose one. They compose one for github.com. They compose a 404 for an outpost-local Gitea
+   * (M15) — a different host, and `/pulls/` rather than `/pull/` — and for GitHub Enterprise, and
+   * nothing on the authorship row records which provider authored the bump. So the URL the provider
+   * itself returned has to be persisted at the one moment it exists: the authoring run's outcome.
+   *
+   * This test enters through the SAME production seam as the rest of the file — head write door ->
+   * outbox -> router -> queue -> loop -> dispatch -> phase 5 -> `recordBumpPullRequest` — and never
+   * calls the repo function. Delete the URL from phase 5's read of `status().stateRef`, or delete
+   * the phase-5 write entirely, and this goes red.
+   */
+  it("records the pull request URL THE PROVIDER RETURNED, on the real authoring path", async () => {
+    const fixture = await subscribedComponent();
+    await advanceHead(fixture.lineId, "1.4.0");
+    await relayHeadAdvance(fixture.lineId);
+
+    const change = await waitUntil(async () => (await bumpChangesFor(fixture.repo))[0], {
+      describe: "the dispatcher to record its bump change",
+      timeoutMs: 60_000,
+      intervalMs: 200
+    });
+    const authorship = await waitUntil(
+      async () => {
+        const row = await inOrg((tx) => readBumpAuthorship(tx, org.orgId, change.objectId));
+        // Waiting on the URL specifically, not on the row: the row exists from phase 3, so waiting
+        // on it would return before phase 5 had run and the assertions below would race.
+        return row?.pullRequestUrl === undefined ? undefined : row;
+      },
+      {
+        describe: "phase 5 to record the pull request the authoring run opened",
+        timeoutMs: 60_000,
+        intervalMs: 200
+      }
+    );
+
+    const opened = openedPullRequests.get(change.objectId);
+    expect(
+      opened,
+      "the fixture provider must have opened a pull request for this change"
+    ).toBeDefined();
+    expect(authorship.pullRequestNumber).toBe(opened!.number);
+
+    // ANCHORED ON A LITERAL, NOT ON `opened.url`. Reading the expectation out of the same fixture
+    // that produced the value makes the assertion move with the fixture, which is this repo's
+    // "green for the wrong reason" shape — change the fixture's host and nothing fails. Spelled out
+    // here, changing it DOES fail.
+    expect(authorship.pullRequestUrl).toBe(
+      `https://gitea.dc1.internal/${fixture.repo}/pulls/${opened!.number}`
+    );
+    // AND THE SYNTHESIS IS NOT THE ANSWER — the exact link a consumer would have composed from the
+    // two columns 0064 already had, stated so that composing one can never pass this test.
+    expect(authorship.pullRequestUrl).not.toBe(
+      `https://github.com/${fixture.repo}/pull/${opened!.number}`
+    );
   }, 120_000);
 
   it("REDELIVERY dispatches against the SAME change — one branch, one pull request", async () => {
@@ -1091,7 +1187,18 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       expect(merge.intent.idempotencyKey).toBe(`${changeObjectId}:merge:${BUMP_COMMIT}`);
 
       // (3) THE VERDICT IS EXPLAINABLE (charter principle 6).
-      const verdicts = await decisionsOfKind(DEPENDENCY_BUMP_MERGE_DECISION_KIND, changeObjectId);
+      // WAITED FOR, not read straight after the merge intent. `recordMergeVerdict` is deliberately
+      // written AFTER the provider attempt and in its OWN transaction (bump-gate.ts — "a Decision
+      // that recorded 'merge authorised' and then [failed] ... leaves the merge unrecorded"), so the
+      // intent appearing does NOT imply the Decision has landed. Reading it synchronously passed on
+      // timing and failed on a loaded CI shard.
+      const verdicts = await waitUntil(
+        async () => {
+          const found = await decisionsOfKind(DEPENDENCY_BUMP_MERGE_DECISION_KIND, changeObjectId);
+          return found.length > 0 ? found : undefined;
+        },
+        { describe: "the dependency_bump_merge Decision for this change" }
+      );
       expect(verdicts).toHaveLength(1);
       expect(verdicts[0]!.verdict).toBe("merged");
     }, 180_000);
@@ -1470,6 +1577,47 @@ describe("M21.5 the bump dispatcher: a head advances and a bump is authored (Tes
       // credential and config resolution are unchanged.
       const bindingOf = (id: string) => id.split(":")[1];
       expect(new Set(dep.map(bindingOf)).size).toBe(1);
+    }, 180_000);
+
+    /**
+     * ============================================================================================
+     * THE OPERATOR'S CONTAINER RUNTIME REACHES THE RUNNER THIS PATH STARTS (2026-08-16)
+     * ============================================================================================
+     * `@scp/plugin-managed-dep` runs `execFile(config.dockerBinary ?? "docker", …)`, and
+     * `SCP_MANAGED_RUNNER_DOCKER_BINARY` is how an operator points that at podman — the sanctioned
+     * runtime on the RHEL/air-gapped estates this class ships into (docs/container-runtimes.md).
+     *
+     * ASSERTED HERE, SEPARATELY FROM THE BINDING PATH, because this class has two ways of being
+     * constructed and this is the one that runs. `routes/executors.integration.test.ts` covers
+     * `resolveExecutorPluginInstance`, the path taken only for a `managed-dep` binding an operator
+     * makes BY HAND; ordinary dispatch never touches it — `managed-dep-instance.ts` builds the
+     * instance itself from `managedDepServerSettings()`. When the runtime knob was first wired,
+     * both of this class's paths were missed while its two sibling classes were wired correctly, so
+     * an operator on podman got a silent hardcoded `docker` for every ordinary bump. A test on the
+     * binding path alone would have stayed green through exactly that.
+     *
+     * The value is deliberately NOT `"docker"`: asserting the fallback would pass whether or not
+     * anything was injected at all.
+     */
+    it("hands the operator's container runtime to the runner it starts", async () => {
+      const saved = process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY;
+      process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY = "/usr/bin/operator-chosen-runtime";
+      try {
+        await authoredAndPushed();
+
+        const dep = startedConfigs.filter((i) => i.id.startsWith("managed-dep:"));
+        // Non-vacuity: an empty list would make the loop below assert nothing at all.
+        expect(dep.length).toBeGreaterThan(0);
+        for (const started of dep) {
+          expect(
+            started.config.dockerBinary,
+            `${started.id} was started with a runtime the operator did not choose`
+          ).toBe("/usr/bin/operator-chosen-runtime");
+        }
+      } finally {
+        if (saved === undefined) delete process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY;
+        else process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY = saved;
+      }
     }, 180_000);
 
     /**

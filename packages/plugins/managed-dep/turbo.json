@@ -1,0 +1,29 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  // WHY THIS FILE EXISTS — see `packages/plugins/managed-scan/turbo.json` for the measurement and
+  // `deploy/airgap/turbo.json` for the original write-up. Short version: a census whose subject is
+  // outside its own package is invisible to turbo's default (package-scoped) input hashing, so
+  // editing the thing the census is ABOUT leaves the census cached green and never run.
+  //
+  // This package's out-of-package censuses are the four charter clauses that are properties of the
+  // `scp-runner-dep` IMAGE — "never runs a package manager", "the runner contains no package
+  // manager" and their two siblings. `runner-image.test.ts` reads `apps/runner-dep/Dockerfile` and
+  // `run.sh` and the `tools/busybox/pin.env` drift gate; `runner-shim.test.ts` EXECUTES
+  // `apps/runner-dep/run.sh`. Without the inputs below, adding a toolchain to that Dockerfile
+  // changes no file turbo watches for this package, so the clauses go unchecked.
+  //
+  // NARROW, and honestly so: unlike managed-scan's repo-wide containment sweep, every census here
+  // names exactly two directories. If a test in this package grows a census over anything else, its
+  // input belongs here — or that census passes on a cached green exactly once and then stays wrong.
+  "tasks": {
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/apps/runner-dep/**",
+        "$TURBO_ROOT$/tools/busybox/**"
+      ]
+    }
+  }
+}

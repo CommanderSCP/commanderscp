@@ -984,12 +984,23 @@ describe("discover() (DiscoveryPlugin)", () => {
       pathPattern: "service-a/**"
     });
 
+    // `contains`, SERVICE -> COMPONENT — the registered membership edge (migration 0021), NOT the
+    // `part_of` this plugin used to emit: no migration registers that, so accept answered every
+    // proposal carrying one with a 404 and the discovery relationship channel never worked.
     expect(proposal.relationships).toHaveLength(1);
     expect(proposal.relationships[0]).toEqual({
-      typeId: "part_of",
-      fromUrn: `urn:scp:component:github:${config.owner}/${config.repo}/service-a`,
-      toUrn: `urn:scp:service:github:${config.owner}/${config.repo}`
+      typeId: "contains",
+      fromUrn: `urn:scp:service:github:${config.owner}/${config.repo}`,
+      toUrn: `urn:scp:component:github:${config.owner}/${config.repo}/service-a`
     });
+
+    // The endpoints must be the ALIASES the proposed objects declare, asserted BY REFERENCE to
+    // those objects rather than as a third copy of the literal. Restating the strings would let a
+    // plugin change its URN scheme in one of the two places and stay green — and an endpoint that
+    // names no proposed object is exactly the 404 (`object '...' not found`) that made this edge
+    // unimportable even once its type was right.
+    expect(proposal.relationships[0]?.fromUrn).toBe(services[0]?.urn);
+    expect(proposal.relationships[0]?.toUrn).toBe(components[0]?.urn);
   });
 
   it("proposes ONLY the Service object (no components) when the repo root listing returns no marker-containing directories", async () => {

@@ -35,6 +35,7 @@ let createImpl: (req: CreateObjectRequest) => Promise<unknown> = async (req) => 
 let inventoryImpl = () => inventoryFixture({ rows: [rowFixture()] });
 let bumpsImpl: () => Promise<unknown> = async () => ({
   component: COMPONENT,
+  dependencyManagement: { managedHere: true, reason: "commander" },
   rows: [bumpFixture()],
   nextCursor: null
 });
@@ -346,7 +347,12 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
       expect(document.body.textContent).not.toContain("No bumps yet.");
       view.unmount();
     } finally {
-      bumpsImpl = async () => ({ component: COMPONENT, rows: [bumpFixture()], nextCursor: null });
+      bumpsImpl = async () => ({
+        component: COMPONENT,
+        dependencyManagement: { managedHere: true, reason: "commander" },
+        rows: [bumpFixture()],
+        nextCursor: null
+      });
     }
   });
 
@@ -356,6 +362,39 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
       const view = await renderPage();
       expect(inDocument("inventory-empty")?.getAttribute("data-kind")).toBe("not-recorded");
       expect(document.body.textContent).not.toContain("No dependencies");
+      view.unmount();
+    } finally {
+      inventoryImpl = () => inventoryFixture({ rows: [rowFixture()] });
+    }
+  });
+
+  it("the SERVER's `dependencyManagement.managedHere: false` renders the 'managed at the commander' pointer WITH the stated reason — on a commander-role client, with rows in the answer (the wire is the authority; the rest of the envelope is not interpreted)", async () => {
+    inventoryImpl = () =>
+      inventoryFixture({
+        dependencyManagement: { managedHere: false, reason: "role_undeclared" },
+        rows: [rowFixture()]
+      });
+    try {
+      createCalls.length = 0;
+      readCalls.length = 0;
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
+      });
+      const view = render(
+        <QueryClientProvider client={queryClient}>
+          <ComponentDependenciesPage />
+        </QueryClientProvider>
+      );
+      await waitUntil(
+        () => inDocument("dependencies-managed-at-commander") !== null,
+        "the pointer to render off the wire"
+      );
+      expect(inDocument("dependencies-managed-reason")?.textContent).toContain("role_undeclared");
+      // The read WAS issued (the role gate let it through); the answer's posture is what decided.
+      expect(readCalls.some((c) => c.startsWith(`inventory:${COMPONENT.id}:`))).toBe(true);
+      // Nothing of the envelope below the posture is rendered: no rows, no enable offer.
+      expect(inDocument("enable-open")).toBeNull();
+      expect(document.body.textContent).not.toContain("@acme/lib");
       view.unmount();
     } finally {
       inventoryImpl = () => inventoryFixture({ rows: [rowFixture()] });

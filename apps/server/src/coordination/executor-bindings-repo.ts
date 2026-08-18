@@ -657,10 +657,17 @@ export function managedRunnerSettings(): { dockerBinary: string } {
 export function managedDepServerSettings(): {
   runnerImage: string | undefined;
   workspaceRoot: string;
+  dockerBinary: string;
 } {
   return {
     runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
-    workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep")
+    workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep"),
+    // THE OPERATOR'S RUNTIME, and it belongs in THIS function rather than only at the binding
+    // injection site below, because this class has TWO construction paths and the binding one is
+    // the rare one: `dependencies/managed-dep-instance.ts` builds the ordinary, binding-free
+    // dispatch. Returning it here is what makes both paths read the same knob — the alternative,
+    // which is what shipped, is a setting that silently applies to some of the runs.
+    dockerBinary: managedRunnerDockerBinary()
   };
 }
 
@@ -822,6 +829,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     // No `networkMode` — see `managedDepServerSettings`. The plugin uses a literal.
     serverInjected.workspaceRoot = settings.workspaceRoot;
+    serverInjected.dockerBinary = settings.dockerBinary;
   }
 
   return {

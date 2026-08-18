@@ -170,7 +170,11 @@ infrastructure, not a working end-to-end path yet**: `packages/plugins/managed-i
 implementation launches the runner via `docker create`/`docker cp`/`docker start` (a host Docker
 socket), which does not work unmodified inside a standard Kubernetes pod — and this chart
 deliberately does not paper over that by mounting a host Docker socket (a real container-escape
-risk). Mode 2 is fully functional under docker-compose/VM deployments today. Wiring the plugin to
+risk). Mode 2 works under docker-compose/VM deployments today — with the two operator steps that
+shape makes possible and Kubernetes does not: giving the `scp` container a docker CLI (the scpd
+image ships none; `SCP_MANAGED_RUNNER_DOCKER_BINARY` points at the one you mount) and a reachable
+Docker daemon. Neither is arranged for you; the shipped compose file mounts no socket. Wiring the
+plugin to
 launch Kubernetes Jobs via the API (using the RBAC + template this chart already ships) is tracked
 follow-up work. `managedIac.enabled` defaults to `false`.
 
@@ -270,6 +274,18 @@ currently provisions the scan-DB PVC (`scanDbCache`) for a scanner it cannot sta
 managed-DEP runner is NOT in that list: `managedDep.runnerImage` reaches
 `SCP_MANAGED_DEP_RUNNER_IMAGE`, because a class that cannot be switched on by any shipped
 deployment is a class whose charter clauses are enforced by nothing — ADR-0032 §8e.)
+
+**Corrected 2026-08-17 (M21.7).** "Reaches the env var" is not "can run", and the distinction was
+being blurred here. **No managed-execution runner — iac, scan or dep — can be launched by this
+chart at all**, whatever its values say. All three orchestrator plugins launch their runner with the
+docker CLI (`docker create` / `docker cp` / `docker start`): a pod has no docker socket, this chart
+deliberately mounts none, the scpd image ships no docker binary, and no Kubernetes-native launch
+mode exists yet (`templates/runner-iac.yaml`, "HONEST SCOPE"). So `managedDep.runnerImage` buys a
+failure at dispatch rather than a failure at config, and `managedIac.enabled` renders an RBAC +
+Job-template on-ramp nothing consumes. Managed execution runs on a compose/VM deployment today —
+which is why the air-gap `install.sh` prints the pinned runner refs under `--mode helm` as an
+inventory and prescribes no knob there: there is none to prescribe, and an instruction that
+silently does nothing is worse than silence.
 
 ## Other known gaps (honestly flagged, not silently worked around)
 

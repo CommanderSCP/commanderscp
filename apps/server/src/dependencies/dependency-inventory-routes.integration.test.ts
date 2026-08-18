@@ -58,9 +58,15 @@ import { resolveComponentIngestionGate } from "./subscription-resolution.js";
  *     to watch it die, then restored.
  *  4. `componentGate` EQUALS the ingestion gate — the same `resolveComponentIngestionGate` answer for
  *     the same actor, not a re-derivation.
- *  5. `ingestion` IS `null` (the M21.7 stamp's read does not exist on this branch) and
- *     `lastIngestionDecision` is `null` UNTIL an ingested pass writes one — then it carries that
- *     Decision's id and manifest paths.
+ *  5. `ingestion` IS THE M21.7 STAMP, read in the same transaction: `null` (never attempted) and a
+ *     null `lastIngestionDecision` UNTIL an ingested pass writes both — then the stamp carries the
+ *     pass's outcome/source/rows and its per-repo `manifests[]`, and the Decision its id and
+ *     manifest paths. Mutation: `ingestion: null` hard-coded in the route → the ingested case RED.
+ *  5a. BOTH responses carry `dependencyManagement` from `dependencyManagementOf(config)` — on this
+ *     file's DECLARED commander `{ managedHere: true, reason: "commander" }`, and on an UNDECLARED
+ *     server (a second harness) `{ managedHere: false, reason: "role_undeclared" }` with the same
+ *     200 and the same RBAC (the reads do not refuse; the envelope qualifies). Mutation: drop the
+ *     spread from either route → the response serializer refuses the missing required field.
  *  6. RBAC IS AT THE COMPONENT: a Viewer bound at the component 200s, a principal bound nowhere near
  *     it 403s, an unknown component 404s. This is the property that makes the inventory reachable to
  *     a component team at all (`GET /changes` / `GET /decisions` are org-scoped and would 403 them).
@@ -77,7 +83,9 @@ import { resolveComponentIngestionGate } from "./subscription-resolution.js";
  *     row; both byte-equal to THEIR OWN resolve(). Mutated once (actor → SYSTEM sentinel in
  *     `dependency-read-surface.ts`): this pin RED, everything else green; restored.
  *  9. BUMPS: rows are joined to the change name and to the newest merge Decision (drop the join and
- *     the test dies — mutated once), `pullRequestUrl` is `null` on every row, newest dispatch first,
+ *     the test dies — mutated once), `pullRequestUrl` is READ off the authorship row (the URL the
+ *     provider returned, stored by `recordBumpPullRequest`) — present on the row that has one, `null`
+ *     on the row that does not, never composed — newest dispatch first,
  *     the dispatch Decision's delivery is read (not the tenant-writable `source_ref`), and RBAC is
  *     at the component.
  *
@@ -186,7 +194,9 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
   }
 
   beforeAll(async () => {
-    server = await listenTestServer();
+    // A DECLARED commander: the envelope's `managedHere: true` arm. The undeclared arm gets its own
+    // server in (1) below.
+    server = await listenTestServer({ federationRole: "commander" });
     org = await createTestOrg(server, "dep-read-surface");
     admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
     const [adminRow] = await server.deps.db
@@ -209,19 +219,27 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
     await declare(component, lineWanted, "services/api/package.json", "^1.1.0");
     lineOptedOutId = await declare(component, lineOptedOut, "package.json", "^1.0.0");
 
-    // A DECLARED producer on the wanted line, and an OBSERVED head — so `producer` and `head` are
-    // asserted against stored facts rather than against nulls that would pass for the wrong reason.
+    // A DECLARED producer on the wanted COORDINATE (ADR-0032 §7e — the grain is the coordinate,
+    // `dependency_line_producers`, not the line), and an OBSERVED head — so `producer` and `head`
+    // are asserted against stored facts rather than against nulls that would pass for the wrong
+    // reason. The opted-out line's coordinate (`acme-lib`, the slug-colliding spelling) is NOT
+    // declared: a producer read that matched by URN slug instead of by verbatim coordinate would
+    // show a producer on that row too.
     await inOrg(async (tx) => {
       await declareDependencyLineProducer(tx, org.orgId, {
-        lineId: lineWantedId,
-        producedByObjectId: producerComponent,
+        ecosystem: lineWanted.ecosystem,
+        coordinate: lineWanted.coordinate,
+        producerObjectId: producerComponent,
         declaredByObjectId: actorObjectId
       });
-      const head = await recordDependencyLineHead(tx, org.orgId, {
-        lineId: lineWantedId,
-        latestVersion: "1.4.0",
-        latestDigest: null
-      });
+      // The head is written by the INTERNAL ingress naming the declared producer — the coordinate
+      // is declared, so a third-party (poll) write would be refused (`line-head.ts`).
+      const head = await recordDependencyLineHead(
+        tx,
+        org.orgId,
+        { lineId: lineWantedId, latestVersion: "1.4.0", latestDigest: null },
+        { kind: "internal", producerObjectId: producerComponent }
+      );
       expect(head.recorded, "the observed-head fixture must have taken").toBe(true);
     });
 
@@ -241,14 +259,56 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
   // (1) DELETE-THE-WIRING — both routes answer through the app
   // -----------------------------------------------------------------------------------------
   describe("(1) the routes are registered", () => {
-    it("GET /components/{id}/dependency-inventory answers 200 through the app", async () => {
-      const { status } = await getInventory(component, org.adminToken);
+    it("GET /components/{id}/dependency-inventory answers 200 through the app, carrying the REQUIRED dependencyManagement envelope", async () => {
+      const { status, body } = await getInventory(component, org.adminToken);
       expect(status).toBe(200);
+      expect(body.dependencyManagement).toEqual({ managedHere: true, reason: "commander" });
     });
 
-    it("GET /components/{id}/dependency-bumps answers 200 through the app", async () => {
-      const { status } = await getBumps(component, org.adminToken);
+    it("GET /components/{id}/dependency-bumps answers 200 through the app, carrying the REQUIRED dependencyManagement envelope", async () => {
+      const { status, body } = await getBumps(component, org.adminToken);
       expect(status).toBe(200);
+      expect(body.dependencyManagement).toEqual({ managedHere: true, reason: "commander" });
+    });
+
+    it("on a deployment that does NOT manage dependencies (undeclared role) both reads still answer 200 with the same RBAC — the envelope says `managedHere: false`, and the rest is not to be interpreted", async () => {
+      // A second harness with NO SCP_FEDERATION_ROLE: `dependencyManagementOf` reads the fail-closed
+      // `role_undeclared` (the branch whose config VALUE reads 'commander' — labelling from the value
+      // alone would say the opposite of the truth). Same predicate as the resolve route and the
+      // backfill's 409, so the three cannot disagree about the posture.
+      const undeclared = await listenTestServer();
+      try {
+        const uOrg = await createTestOrg(undeclared, "dep-read-undeclared");
+        const uAdmin = new ScpClient({ baseUrl: undeclared.baseUrl, token: uOrg.adminToken });
+        const c = (await createOrphanComponent(uAdmin, `undeclared-${uuidv7()}`)).id;
+        const inv = await undeclared.app.inject({
+          method: "GET",
+          url: `/api/v1/components/${c}/dependency-inventory`,
+          headers: { authorization: `Bearer ${uOrg.adminToken}` }
+        });
+        expect(inv.statusCode, inv.body).toBe(200);
+        const invBody = inv.json() as ComponentDependencyInventoryResponse;
+        expect(invBody.dependencyManagement).toEqual({
+          managedHere: false,
+          reason: "role_undeclared"
+        });
+        // Structurally empty AND never attempted — which the envelope tells a reader not to read as
+        // "declares nothing".
+        expect(invBody.rows).toEqual([]);
+        expect(invBody.ingestion).toBeNull();
+        const bumps = await undeclared.app.inject({
+          method: "GET",
+          url: `/api/v1/components/${c}/dependency-bumps`,
+          headers: { authorization: `Bearer ${uOrg.adminToken}` }
+        });
+        expect(bumps.statusCode, bumps.body).toBe(200);
+        expect((bumps.json() as ComponentDependencyBumpsResponse).dependencyManagement).toEqual({
+          managedHere: false,
+          reason: "role_undeclared"
+        });
+      } finally {
+        await undeclared.close();
+      }
     });
   });
 
@@ -352,7 +412,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       expect(bareRead.body.rows).toEqual([]);
     });
 
-    it("`ingestion` is null (stamp not on this branch) and `lastIngestionDecision` is null until an ingested pass writes one", async () => {
+    it("`ingestion` (the M21.7 stamp) and `lastIngestionDecision` are both null until an ingested pass writes them — then the stamp reads the pass's outcome, source, rows and per-repo manifests, in the same read", async () => {
       const before = await getInventory(component, org.adminToken);
       expect(before.body.ingestion).toBeNull();
       expect(before.body.lastIngestionDecision).toBeNull();
@@ -402,13 +462,31 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
         repo: REPO,
         ref: RESOLVED_COMMIT,
         readManifest,
-        actorObjectId
+        actorObjectId,
+        source: "backfill"
       });
       expect(outcome.verdict).toBe("ingested");
 
       const after = await getInventory(ingested, org.adminToken);
       expect(after.status).toBe(200);
-      expect(after.body.ingestion).toBeNull();
+      // THE STAMP, as the write door recorded it: this pass (a backfill) read the repo, wrote one
+      // row, and its per-repo slice names the manifest it read.
+      expect(after.body.ingestion).not.toBeNull();
+      expect(after.body.ingestion).toMatchObject({
+        source: "backfill",
+        outcome: "ok",
+        rowsWritten: 1
+      });
+      expect(after.body.ingestion!.lastAttemptAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      const readEntry = after.body.ingestion!.manifests.find(
+        (m) => m.path === "svc/api/package.json"
+      );
+      expect(readEntry, "the read manifest is in the stamp's slice").toMatchObject({
+        repo: REPO,
+        outcome: "ok",
+        rows: 1
+      });
+      expect(readEntry!.at).toBe(after.body.ingestion!.lastAttemptAt);
       expect(after.body.lastIngestionDecision).not.toBeNull();
       expect(after.body.lastIngestionDecision!.decisionId).toMatch(/^[0-9a-f-]{36}$/);
       expect(after.body.lastIngestionDecision!.manifestPathsRead).toEqual(["svc/api/package.json"]);
@@ -594,9 +672,15 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
             )
           )
       );
-      // The older bump: opened as #41, merged; the newer: open, no PR yet.
+      // The older bump: opened as #41 WITH the provider's URL, merged; the newer: open, no PR yet.
       await inOrg(async (tx) => {
-        await recordBumpPullRequest(tx, org.orgId, olderChange, 41);
+        await recordBumpPullRequest(
+          tx,
+          org.orgId,
+          olderChange,
+          41,
+          "https://git.example.test/acme/bumpable/pull/41"
+        );
         await markBumpMerged(tx, org.orgId, olderChange);
         // A superseded merge verdict, then the one that stands — the read must pick the NEWEST.
         await insertDecision(tx, {
@@ -629,7 +713,7 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       });
     });
 
-    it("lists newest-first, joined to the change name and the newest merge Decision; pullRequestUrl is null", async () => {
+    it("lists newest-first, joined to the change name and the newest merge Decision; pullRequestUrl is READ off the row — the stored provider URL, else null", async () => {
       const { status, body } = await getBumps(bumped, org.adminToken);
       expect(status).toBe(200);
       expect(body.component.id).toBe(bumped);
@@ -671,8 +755,11 @@ describe("M21.6 dependency read surface — inventory + bumps routes", () => {
       expect(newer.delivery).toBe("pull_request");
       expect(newer.deliveryReason).toBe("first look is always a pull request");
 
-      // NOT STORED, NOT SYNTHESISED — on every row, PR number or not.
-      for (const row of body.rows) expect(row.pullRequestUrl).toBeNull();
+      // READ, NEVER SYNTHESISED: the older row carries exactly the URL the provider returned (as
+      // `recordBumpPullRequest` stored it); the newer row, with no PR recorded, is `null` — not a
+      // link composed from `repo` + number.
+      expect(older.pullRequestUrl).toBe("https://git.example.test/acme/bumpable/pull/41");
+      expect(newer.pullRequestUrl).toBeNull();
       expect(body.nextCursor).toBeNull();
     });
 

@@ -306,6 +306,40 @@ for name in $BUNDLE_IMAGE_NAMES; do
 done
 echo
 
+# =================================================================================================
+# THE MANAGED-EXECUTION RUNNERS — WHICH LEVER EXISTS IN WHICH MODE
+# =================================================================================================
+# All three runners (`scp-runner-iac`, `scp-runner-scan`, `scp-runner-dep`) ride every bundle
+# (deploy/airgap/src/bundle-images.ts explains why unconditionally), and the generic
+# BUNDLE_IMAGE_NAMES loops above have already verified, pushed and digest-re-confirmed every one of
+# them. None of them is switched on by this script. What each mode's step-4 block prints below is
+# HOW TO SWITCH ONE ON, and that differs by mode because THE LEVER DIFFERS BY MODE:
+#
+#   compose (and VM: scp.platform's Ansible role drives `--mode compose`) — the runners CAN run
+#     here. The orchestrator plugins launch each one with the docker CLI (`docker create` /
+#     `docker cp` / `docker start`), which is the launch mechanism DESIGN §12 describes for this
+#     shape, and each class's knob is an env var on the `scp` service. Two operator steps, both
+#     named in the block below: set the env var, and give the container a reachable Docker daemon
+#     (the shipped compose file mounts no socket, and mounting one is a container-escape decision
+#     that is the operator's to make, not this script's).
+#
+#   helm — there is NO lever, so the block prints an INVENTORY and says so. The plugins have no
+#     Kubernetes-native launch mode yet (helm/templates/runner-iac.yaml "HONEST SCOPE"), a pod has
+#     no docker socket, and `SCP_MANAGED_SCAN_RUNNER_IMAGE` has no chart value at all
+#     (helm/README.md "Still NOT settable"). Until M21.7 this block printed
+#     `SCP_MANAGED_SCAN_RUNNER_IMAGE=<ref>` under helm as if it were an instruction: an operator
+#     could follow it exactly and nothing would happen, with no error — the failure mode this
+#     script exists to prevent, since the far side of an air gap is where a silent no-op costs the
+#     most. `bundle-images.test.ts` now holds every knob this script names against the levers that
+#     mode actually has.
+#
+# WHY THIS SCRIPT NEVER SETS THEM ITSELF, in either mode: for managed-scan and managed-dep the
+# image setting IS the class's on/off control (ADR-0032 §8e — managedDep has no separate `enabled`
+# flag; `_helpers.tpl` gates the whole block on a non-empty image), and managed-dep WRITES to a
+# user's repository. An air-gapped install must not silently switch on a repository-write actuator
+# that a connected install of the same chart leaves off. That is the difference between "the
+# operator cannot enable it" (the M21.7 bug: no image existed offline at all) and "the operator has
+# not enabled it" (a choice, which is what these defaults are for).
 echo "== step 4/4: deploying (mode: $MODE) =="
 if [[ "$MODE" == "helm" ]]; then
   # Built directly from REGISTRY/name/BUNDLE_VERSION/digest — NOT by re-splitting the combined
@@ -378,6 +412,37 @@ if [[ "$MODE" == "helm" ]]; then
   echo "   tag). This bundle still ships the eval postgres image (${POSTGRES_EVAL_RETARGETED_REF:-n/a})"
   echo "   in case you wire that up yourself; install.sh does not do it for you."
 
+  # ---- The managed-execution runners under HELM: pushed and pinned, and NOT STARTABLE HERE ----
+  #
+  # See the "WHICH LEVER EXISTS IN WHICH MODE" comment above step 4 for why this mode prints an
+  # inventory instead of an activation instruction. Short version: under Kubernetes there is no
+  # lever to hand the operator. The one thing this block must never do is name a knob that does
+  # nothing — an instruction that silently no-ops is worse than silence, because the operator gets
+  # no error to tell them it didn't take.
+  if [[ -n "${SCP_RUNNER_IAC_DIGEST:-}" || -n "${SCP_RUNNER_SCAN_DIGEST:-}" || -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
+    echo
+    echo "   MANAGED-EXECUTION RUNNERS: verified, pushed to your registry and digest-pinned above —"
+    echo "   but NOT STARTABLE BY THIS CHART, and there is no chart value that changes that. The"
+    echo "   orchestrator plugins launch a runner with the docker CLI (docker create/cp/start)"
+    echo "   against a host Docker daemon; a Kubernetes pod has none, and this chart deliberately"
+    echo "   mounts no docker socket (helm/templates/runner-iac.yaml 'HONEST SCOPE', helm/README.md)."
+    echo "   managedIac.enabled renders the env vars and the Job-template on-ramp, but nothing in"
+    echo "   this chart launches a container; managedScan has no chart value at all. Run managed"
+    echo "   execution on a compose/VM instance (install.sh --mode compose) until the plugins grow a"
+    echo "   Kubernetes-native launch mode. The pinned refs, so you can wire one up yourself:"
+    if [[ -n "${SCP_RUNNER_IAC_DIGEST:-}" ]]; then
+      echo "     scp-runner-iac   ${RUNNER_IAC_REF}"
+    fi
+    if [[ -n "${SCP_RUNNER_SCAN_DIGEST:-}" ]]; then
+      echo "     scp-runner-scan  ${SCP_RUNNER_SCAN_RETARGETED_REF:-${REGISTRY}/scp-runner-scan:${BUNDLE_VERSION}@${SCP_RUNNER_SCAN_DIGEST}}"
+    fi
+    if [[ -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
+      echo "     scp-runner-dep   ${SCP_RUNNER_DEP_RETARGETED_REF:-${REGISTRY}/scp-runner-dep:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_DIGEST}}"
+      echo "                      (this class WRITES to your repositories — ADR-0032 §8)"
+    fi
+    echo
+  fi
+
   echo "   helm ${HELM_ARGS[*]}"
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "   [dry-run] not running helm upgrade --install (bundled backends this bundle would enable: ${#BUNDLED_APPLY[@]})"
@@ -413,6 +478,41 @@ else
     -e "s#__POSTGRES_IMAGE_REF__#${POSTGRES_REF}#g" \
     "${SCRIPT_DIR}/compose/docker-compose.airgap.yml" > "$OUT_COMPOSE"
   echo "   wrote $OUT_COMPOSE"
+
+  # ---- The managed-execution runners under COMPOSE/VM: the mode where they CAN run ----
+  #
+  # See the "WHICH LEVER EXISTS IN WHICH MODE" comment above step 4. This is the shape DESIGN §12
+  # describes `docker run` as the launch mechanism for, so unlike helm mode there is a real knob to
+  # hand the operator: an env var on the `scp` service, per class. The two container prerequisites
+  # are printed WITH it and not left implied — the scpd image ships no docker CLI and the shipped
+  # compose file mounts no socket, so an image ref set without them is the same silent no-op in a
+  # different costume, which is the whole defect this block was rewritten to stop committing.
+  if [[ -n "${SCP_RUNNER_IAC_DIGEST:-}" || -n "${SCP_RUNNER_SCAN_DIGEST:-}" || -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
+    echo
+    echo "   MANAGED-EXECUTION RUNNERS pushed to your registry but NOT enabled. Each class's image"
+    echo "   setting IS its on/off control, and in this mode that setting is an environment variable"
+    echo "   on the 'scp' service in $(basename "$OUT_COMPOSE") — add it there and re-run"
+    echo "   'docker compose up -d'. Exact pinned refs:"
+    if [[ -n "${SCP_RUNNER_IAC_DIGEST:-}" ]]; then
+      echo "     scp-runner-iac   SCP_MANAGED_IAC_RUNNER_IMAGE=${SCP_RUNNER_IAC_RETARGETED_REF:-${REGISTRY}/scp-runner-iac:${BUNDLE_VERSION}@${SCP_RUNNER_IAC_DIGEST}}"
+    fi
+    if [[ -n "${SCP_RUNNER_SCAN_DIGEST:-}" ]]; then
+      echo "     scp-runner-scan  SCP_MANAGED_SCAN_RUNNER_IMAGE=${SCP_RUNNER_SCAN_RETARGETED_REF:-${REGISTRY}/scp-runner-scan:${BUNDLE_VERSION}@${SCP_RUNNER_SCAN_DIGEST}}"
+    fi
+    if [[ -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
+      echo "     scp-runner-dep   SCP_MANAGED_DEP_RUNNER_IMAGE=${SCP_RUNNER_DEP_RETARGETED_REF:-${REGISTRY}/scp-runner-dep:${BUNDLE_VERSION}@${SCP_RUNNER_DEP_DIGEST}}"
+      echo "                      (this class WRITES to your repositories — ADR-0032 §8)"
+    fi
+    echo "   TWO PREREQUISITES, or none of the above starts anything — both are yours to decide,"
+    echo "   because both widen what the 'scp' container can do to its host:"
+    echo "     1. a docker CLI inside the container. The scpd image ships none; mount one and point"
+    echo "        SCP_MANAGED_RUNNER_DOCKER_BINARY=/path/to/docker at it."
+    echo "     2. a reachable Docker daemon (a mounted /var/run/docker.sock, or DOCKER_HOST) — each"
+    echo "        runner is launched with docker create / docker cp / docker start."
+    echo "   Without both, the image ref is set and no runner can be launched."
+    echo
+  fi
+
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "   [dry-run] not running docker compose up"
   else

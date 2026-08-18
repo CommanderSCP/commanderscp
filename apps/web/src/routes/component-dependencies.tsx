@@ -74,9 +74,15 @@ import { decisionIdOf } from "../components/decision/decision-format";
  *   - `head.latestVersion: null` renders as `—` "not observed yet" — never "nothing newer".
  *   - `producer` renders only when DECLARED; nothing is inferred from a coordinate.
  *   - an empty inventory is NEVER "No dependencies" unless an ingestion record says the manifests
- *     were read and declared none. `ingestion: null` beside `lastIngestionDecision: null` is
- *     "status not recorded" (amber `unknown`), because the wire cannot distinguish never-attempted
- *     from not-recorded.
+ *     were read and declared none. The M21.7 STAMP (`ingestion`) is the trichotomy: `null` is
+ *     never attempted; `ok` + 0 rows is "No dependencies declared — read N manifests"; `partial` /
+ *     `unreadable` list every manifest (repo:path) with its outcome; `not_enabled` says the gate was
+ *     closed. `null` beside a null `lastIngestionDecision` renders amber `unknown` ("not recorded —
+ *     never attempted").
+ *   - the server's REQUIRED `dependencyManagement` envelope (ADR-0032 §7d) is the authority: when
+ *     `managedHere` is false the page renders the same "managed at the commander" pointer the role
+ *     gate renders (with the server's reason) and interprets nothing else — an empty inventory there
+ *     is "nothing here ever ingested", not "declares nothing".
  *
  * WRITES ARE OFFERED, REFUSALS RENDERED (M16.3 rule; owner decision §8 Q3). There is no
  * permission introspection, so the enable and opt-out offers render for every viewer and the
@@ -671,8 +677,8 @@ export function InventoryEmptyState({
           {n > 0 ? (
             <ul className="font-mono text-xs text-slate-600" data-testid="inventory-manifest-list">
               {stamp.manifests.map((m) => (
-                <li key={m.path}>
-                  {m.path} — {m.outcome}
+                <li key={`${m.repo}:${m.path}`}>
+                  {m.repo}:{m.path} — {m.outcome}
                 </li>
               ))}
             </ul>
@@ -694,8 +700,8 @@ export function InventoryEmptyState({
         >
           <ul className="font-mono text-xs" data-testid="inventory-manifest-list">
             {stamp.manifests.map((m) => (
-              <li key={m.path}>
-                {m.path} — {m.outcome}
+              <li key={`${m.repo}:${m.path}`}>
+                {m.repo}:{m.path} — {m.outcome}
                 {m.detail ? `: ${m.detail}` : ""}
               </li>
             ))}
@@ -755,16 +761,18 @@ export function InventoryEmptyState({
       </div>
     );
   }
-  // Neither a stamp nor a Decision: UNKNOWN. Not "never attempted" (a refused or unreadable pass
-  // writes no Decision, and the stamp is not on record), and never "no dependencies".
+  // Neither a stamp nor a Decision: NEVER ATTEMPTED. Since M21.7 every pass that runs writes a
+  // stamp (`ingestion-stamp-repo.ts`: `null` means "never attempted" and nothing else) — and this
+  // branch is reached only when the server also said dependencies ARE managed here (a
+  // `managedHere: false` answer never gets this far). Still never "no dependencies".
   return (
     <div className="flex flex-col gap-2" data-testid="inventory-empty" data-kind="not-recorded">
       <Badge
         variant="unknown"
         icon={CircleHelp}
-        title="No ingestion attempt is on record for this component, so whether it declares dependencies is not known here."
+        title="No ingestion attempt is on record for this component — never attempted (every pass that runs leaves a stamp) — so whether it declares dependencies is not known here."
       >
-        Ingestion status not recorded
+        Ingestion status not recorded — never attempted
       </Badge>
       {howToIngest}
     </div>
@@ -888,9 +896,16 @@ function bumpProgress(bump: ComponentDependencyBump): React.JSX.Element {
  *  to bump the GLOBAL repos, and outposts receive the result down the promotion pipeline — so an
  *  outpost holds no dependency inventory and dispatches no bumps. A stated pointer, not an empty
  *  page that would read as "no dependencies". Provider-free; role is a PARAMETER. */
-export function ManagedAtCommanderNotice(): React.JSX.Element {
+export function ManagedAtCommanderNotice({
+  reason
+}: {
+  /** The server's own `dependencyManagement.reason` when the pointer is rendered off the WIRE
+   *  (`managedHere: false`) rather than off the role gate — stated, so an operator can tell an
+   *  outpost from an undeclared role (different remedies). */
+  reason?: string;
+} = {}): React.JSX.Element {
   return (
-    <Card data-testid="dependencies-managed-at-commander">
+    <Card data-testid="dependencies-managed-at-commander" data-reason={reason}>
       <CardHeader>
         <CardTitle>Dependencies</CardTitle>
       </CardHeader>
@@ -899,6 +914,14 @@ export function ManagedAtCommanderNotice(): React.JSX.Element {
           Dependency subscriptions are managed at the commander. Version bumps are authored there
           and reach this outpost through the promotion pipeline; this site holds no dependency
           inventory of its own.
+          {reason ? (
+            <>
+              {" "}
+              <span data-testid="dependencies-managed-reason">
+                (This deployment reports: dependency management is not run here — {reason}.)
+              </span>
+            </>
+          ) : null}
         </p>
       </CardContent>
     </Card>
@@ -918,7 +941,11 @@ export function BumpsSection({
         <CardTitle>Bumps</CardTitle>
       </CardHeader>
       <CardContent>
-        {instanceRole !== "commander" ? (
+        {instanceRole !== "commander" ||
+        (bumps.status === "ok" && bumps.data.dependencyManagement.managedHere === false) ? (
+          // The role gate, AND the server's own word (`dependencyManagement`, ADR-0032 §7d): a bump
+          // list from a deployment that does not manage dependencies is empty by construction and
+          // must not read as "no bumps yet".
           <p className="text-sm text-slate-600" data-testid="bumps-not-commander">
             Bumps are dispatched by the commander.
           </p>
@@ -976,7 +1003,8 @@ export function BumpsSection({
                         href={b.pullRequestUrl}
                         className={cn("rounded underline", focusRing)}
                         target="_blank"
-                        rel="noreferrer"
+                        rel="noopener noreferrer"
+                        data-testid="bump-pr-link"
                       >
                         #{b.pullRequestNumber}
                       </a>
@@ -1325,6 +1353,14 @@ export function ComponentDependenciesPage(): React.JSX.Element {
   }
   const inventory = inventoryQuery.data;
   if (!inventory) return <p className="text-sm text-slate-500">No dependency inventory yet.</p>;
+  // THE SERVER IS THE AUTHORITY (ADR-0032 §7d, M21.7): `dependencyManagement` is computed by the
+  // deployment's own commander-only predicate. When it says dependencies are not managed here, the
+  // rest of the envelope is not to be interpreted — the same pointer the role gate renders, plus the
+  // server's stated reason. Defensive beside the role gate above: a mis-set web-side role must never
+  // turn "nothing here ever ingested" into an empty inventory page.
+  if (inventory.dependencyManagement.managedHere === false) {
+    return <ManagedAtCommanderNotice reason={inventory.dependencyManagement.reason} />;
+  }
 
   const unlock: ReadState<DependencySubscriptionUnlock> = unlockQuery.error
     ? { status: "error", error: unlockQuery.error }

@@ -443,12 +443,9 @@ export function getSharedCelSandbox(): CelSandbox {
   return sharedSandbox;
 }
 
-/** Test-only: replaces the shared sandbox (e.g. with a shorter timeout) and returns the previous
- *  one so a test can restore it. */
-export function setSharedCelSandboxForTest(
-  sandbox: CelSandbox | undefined
-): CelSandbox | undefined {
-  const previous = sharedSandbox;
-  sharedSandbox = sandbox;
-  return previous;
-}
+// A `setSharedCelSandboxForTest()` "test-only" swap stood here with ZERO callers, including tests —
+// every suite that wants a tuned sandbox constructs its own `CelSandbox` directly instead. Removed
+// as part of the census that fixed the id-keyed property-schema validator cache: an exported
+// reset/replace function with no caller is the exact tell that let that bug survive a green suite,
+// because it reads as an installed seam. Tests that need to swap the shared instance should add it
+// back TOGETHER WITH the caller.

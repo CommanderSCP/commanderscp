@@ -571,6 +571,14 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     expect(ok.pluginModule).toBe("managed-iac");
   });
 
+  /** Restore an env var to its prior state. `process.env.X = undefined` stores the STRING
+   *  `"undefined"`, which would leak a bogus runtime path into every later test in this file, so an
+   *  absent original must be `delete`d rather than assigned. */
+  function restoreEnv(key: string, previous: string | undefined): void {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
+
   // CRITICAL #1 defence in depth: even a binding whose stored config was somehow populated with a
   // malicious networkMode (bypassing the route validation) has it OVERRIDDEN by the server's own
   // settings when the instance is provisioned — proven by calling resolveExecutorPluginInstance
@@ -588,11 +596,19 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
     const savedEnv = {
       image: process.env.SCP_MANAGED_IAC_RUNNER_IMAGE,
       net: process.env.SCP_MANAGED_IAC_NETWORK_MODE,
-      root: process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT
+      root: process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT,
+      // The fourth server-governed knob. It was previously left AMBIENT while the assertion below
+      // pinned the literal `"docker"` — so this test failed on any host that had actually
+      // configured a runtime (`SCP_MANAGED_RUNNER_DOCKER_BINARY=podman`), which is exactly the
+      // RHEL/air-gapped deployment shape the setting exists for. Controlled here like its three
+      // siblings, and set to a value that is NOT the default so the assertion proves the value was
+      // INJECTED FROM THE KNOB rather than passing vacuously against the fallback.
+      runner: process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY
     };
     process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = "scp-runner-iac:vetted-server-pinned";
     process.env.SCP_MANAGED_IAC_NETWORK_MODE = "none";
     process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT = "/srv/scp/managed-iac";
+    process.env.SCP_MANAGED_RUNNER_DOCKER_BINARY = "/usr/bin/operator-chosen-runtime";
     try {
       const resolved = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
         // Insert a binding whose config carries MALICIOUS server-field values (the repo layer
@@ -618,11 +634,102 @@ describe("M7: executor/notification bindings, secrets, plugin manifests, discove
       expect(typeof cfg.statePath).toBe("string"); // durable dedup path always injected (MAJOR #4)
       // Defence in depth for the key that is now refused AND injected: `dockerBinary` selects the
       // executable this plugin `execFile`s, so the write-door schema is no longer its only guard.
-      expect(cfg.dockerBinary).toBe("docker");
+      // Asserted against the OPERATOR'S value, not the `"docker"` fallback — see `savedEnv.runner`.
+      expect(cfg.dockerBinary).toBe("/usr/bin/operator-chosen-runtime");
     } finally {
       process.env.SCP_MANAGED_IAC_RUNNER_IMAGE = savedEnv.image;
       process.env.SCP_MANAGED_IAC_NETWORK_MODE = savedEnv.net;
       process.env.SCP_MANAGED_IAC_WORKSPACE_ROOT = savedEnv.root;
+      restoreEnv("SCP_MANAGED_RUNNER_DOCKER_BINARY", savedEnv.runner);
+    }
+  });
+
+  /**
+   * ============================================================================================
+   * THE OPERATOR'S RUNTIME REACHES *EVERY* MANAGED EXECUTOR — the knob, measured (2026-08-16)
+   * ============================================================================================
+   * `SCP_MANAGED_RUNNER_DOCKER_BINARY` selects the executable every managed executor `execFile`s.
+   * It exists for two reasons, and both are load-bearing:
+   *
+   *  1. DEPLOYMENT. Regulated, air-gapped and FedRAMP/IL estates are largely RHEL, where a Docker
+   *     daemon is frequently disallowed and rootless podman is the sanctioned runtime. Rootless
+   *     podman is verified against the real runners (docs/container-runtimes.md) — but ONLY for the
+   *     executors the setting actually reaches.
+   *  2. DEFENCE IN DEPTH. Injecting it server-side means a future regression in the write-door gate
+   *     downgrades from remote code execution to an accepted-but-inert config key (see
+   *     `managedRunnerDockerBinary`'s doc). That argument holds only where the injection happens.
+   *
+   * WHY THIS IS A LOOP OVER AN ENUMERATED LIST rather than one more assertion in the test above.
+   * The injection is written once PER MODULE, as a separate `if (pluginModule === …)` arm, so the
+   * property is only ever as complete as the last person to add a managed class remembered to make
+   * it. When this test was written that had already failed: `managed-iac` and `managed-scan` set
+   * `dockerBinary`, and `managed-dep` — added later, and which `execFile`s
+   * `config.dockerBinary ?? "docker"` exactly like its siblings — did not, on ANY of its three
+   * construction paths. An operator setting the knob got podman for two executors and a silent
+   * `docker` for the third: on a podman-only host, dependency bumps fail while everything else
+   * works, and the second defence above is simply absent for that class.
+   *
+   * Adding a fourth managed executor therefore fails HERE until it is wired, which is the point —
+   * the list is the census, and a census with no entry for a module is how the third one was missed.
+   */
+  it("server-injects the operator's runtime binary into EVERY managed executor module", async () => {
+    const { withTenantTx } = await import("../db/tenant-tx.js");
+    const { upsertExecutorBinding, resolveExecutorPluginInstance } =
+      await import("../coordination/executor-bindings-repo.js");
+
+    /** Every charter-enumerated managed class, with the env var that enables it. A managed executor
+     *  absent from this list is a managed executor nothing checks. */
+    const MANAGED_MODULES = [
+      { module: "managed-iac", imageEnv: "SCP_MANAGED_IAC_RUNNER_IMAGE" },
+      { module: "managed-scan", imageEnv: "SCP_MANAGED_SCAN_RUNNER_IMAGE" },
+      { module: "managed-dep", imageEnv: "SCP_MANAGED_DEP_RUNNER_IMAGE" }
+    ] as const;
+
+    const RUNTIME = "/usr/bin/operator-chosen-runtime";
+    const saved = new Map<string, string | undefined>();
+    const setEnv = (key: string, value: string): void => {
+      if (!saved.has(key)) saved.set(key, process.env[key]);
+      process.env[key] = value;
+    };
+
+    const org = await createTestOrg(server, "managed-runner-binary");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    try {
+      setEnv("SCP_MANAGED_RUNNER_DOCKER_BINARY", RUNTIME);
+      for (const { imageEnv } of MANAGED_MODULES) setEnv(imageEnv, "vetted-runner:server-pinned");
+
+      for (const { module } of MANAGED_MODULES) {
+        // A component each: the binding is UNIQUE per (org, target, type), so three modules on one
+        // component would contend for the same slot rather than all being resolvable.
+        const component = await createTestComponent(admin, {
+          name: `comp-${randomUUID().slice(0, 8)}`
+        });
+
+        const resolved = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+          await upsertExecutorBinding(tx, {
+            orgId: org.orgId,
+            targetObjectId: component.id,
+            pluginModule: module,
+            pluginInstanceId: `inst-${randomUUID().slice(0, 8)}`,
+            // The tenant's own attempt at choosing the executable, to prove the server value WINS
+            // rather than merely filling a gap.
+            config: { dockerBinary: "/tmp/tenant-chosen-binary" }
+          });
+          return resolveExecutorPluginInstance(tx, {
+            orgId: org.orgId,
+            targetObjectId: component.id,
+            masterKey: server.deps.config.secretsMasterKey
+          });
+        });
+
+        const cfg = (resolved?.instanceConfig.config ?? {}) as Record<string, unknown>;
+        expect(cfg.dockerBinary, `${module} did not receive the operator's runtime binary`).toBe(
+          RUNTIME
+        );
+      }
+    } finally {
+      for (const [key, previous] of saved) restoreEnv(key, previous);
     }
   });
 

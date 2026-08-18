@@ -1,5 +1,6 @@
 /**
- * `@scp/dependency-manifests` — the five manifest parsers behind ADR-0032's dependency inventory.
+ * `@scp/dependency-manifests` — the manifest parsers behind ADR-0032's dependency inventory: the
+ * five language/image manifests, plus the Kubernetes/Helm image reader M21.7 added.
  *
  * Every export here is a **pure function of a string**. No file system, no network, no registry, no
  * package manager, no lockfile. That is a deliberate architectural property, not an accident of
@@ -11,8 +12,10 @@
  *   projection-table representation of the inventory; these functions structurally cannot breach it.
  * - ADR-0032 §8 — **manifest-only edits, no lockfile resolution.** Invoking a package manager is
  *   tooling execution and fails gate 5 of ADR-0002's six-gate test. Nothing here can invoke one.
- * - Charter principle 5 — **air-gap first-class.** Zero third-party dependencies (the TOML and XML
- *   subsets are hand-rolled in `toml-lite.ts`/`pom-xml.ts`), so this package runs anywhere.
+ * - Charter principle 5 — **air-gap first-class.** The TOML and XML subsets are hand-rolled
+ *   (`toml-lite.ts`/`pom-xml.ts`); the ONE third-party dependency is `yaml`, taken deliberately in
+ *   M21.7 and recorded as a spent property in `types.ts` — it was already in the lockfile with no
+ *   transitive dependencies of its own, so the offline install set did not grow by a package.
  *
  * These parsers also mint no graph edges of any kind, which is ADR-0032 §5 holding by construction:
  * package dependencies must never become `depends_on`, because that relationship type is the wave
@@ -30,6 +33,7 @@
  * | `parseDockerfile`       | no `FROM` instruction                                             |
  * | `parsePyprojectToml`    | no TOML entries at all                                            |
  * | `parsePomXml`           | malformed XML; no `<project>` root                                |
+ * | `parseKubernetesImages` | invalid YAML; NO MAPPING at any document root (a 404 body IS YAML) |
  * | `parseRequirementsTxt`  | **never throws** — the format has no required construct to miss   |
  *
  * This is deliberate and is the reason the package exists in this shape: "this component declares
@@ -60,7 +64,13 @@ export { ManifestParseError } from "./types.js";
 export { compareVersions, parseComparableVersion, parseImageTagVersion } from "./version.js";
 
 export { parseGoMod } from "./go-mod.js";
-export { parseDockerfile } from "./dockerfile.js";
+export { parseDockerfile, splitImageRef } from "./dockerfile.js";
+/**
+ * The Kubernetes/Helm image reader (M21.7). Same `oci` ecosystem as `parseDockerfile` — an image
+ * pinned in a chart's `values.yaml` is the same dependency line as the same image pinned in a
+ * `FROM`, read out of a different file. See `docs/proposals/kubernetes-image-references.md`.
+ */
+export { parseKubernetesImages } from "./kubernetes-images.js";
 export { parsePackageJson } from "./package-json.js";
 export { parsePyprojectToml, parseRequirementsTxt, parsePep508 } from "./python.js";
 export { parsePomXml } from "./pom-xml.js";

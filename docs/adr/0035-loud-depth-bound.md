@@ -1,4 +1,4 @@
-# ADR-0033: The shared containment depth bound is loud — walks refuse past it instead of truncating silently
+# ADR-0035: The shared containment depth bound is loud — walks refuse past it instead of truncating silently
 
 **Status:** Accepted (owner instruction 2026-08-13: "please do both", after the measured escalation below)
 **Relates to:** [ADR-0026](0026-placements-and-derived-stage-names.md) (the failure shape this prevents: 11 dormant `required` prod gates, a fail-open service-scoped freeze), the nested-domains decision ([outpost-ui.md §5(b)](../proposals/outpost-ui.md), owner 2026-08-13), M21 dependency subscriptions (second consumer of `containmentChain` via `governance/scan-requirements.ts`), charter principle 6 (explainability).
@@ -24,7 +24,7 @@ Two live consequences, both reproduced through the public API once nested contai
 1. **One constant.** `CONTAINMENT_WALK_MAX_DEPTH = 10` (`graph/containment.ts`), imported by all six sites. Raising capacity is a one-line change there and only there; a raise editing any single site is the six-copies bug this ends.
 2. **The probe.** Each walk recurses to `WALK_TRUNCATION_PROBE_DEPTH = MAX + 1`. A row landing at the probe depth proves the walk was *cut*, not complete — the one fact silent truncation destroyed.
 3. **Refusal, with an asymmetry that matters.** A **positive** found within the bound is always valid (a reached binding, a proven membership) and is never disturbed. Only the **negative** can be fabricated by a cut walk, so only negatives convert: `containmentChain` and `groupByDomain` throw `walkDepthExceeded` (409, one shared message shape naming the bound and ADR); `isMemberOf` throws only on *no-match with a still-expanding frontier*; `hasPermission`/`hasRoleAtScope` probe **only after** computing a nothing-found refusal (the hot allow-path pays nothing) and convert it — every caller of those two inherits loudness, present and future. An explicit `deny` binding is a real reached binding and stays a plain false.
-4. **Fail-closed stays fail-closed, but honest.** Deep writes still refuse; the refusal now says *"exceeds the supported containment depth (10 hops, ADR-0033) … a grant may exist beyond the bound"* instead of impersonating a missing role.
+4. **Fail-closed stays fail-closed, but honest.** Deep writes still refuse; the refusal now says *"exceeds the supported containment depth (10 hops, ADR-0035) … a grant may exist beyond the bound"* instead of impersonating a missing role.
 
 ## Alternatives considered
 

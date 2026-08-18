@@ -30,7 +30,16 @@ import {
   type ControlRunRow
 } from "../governance/controls-repo.js";
 import { resolveScannersForType } from "../governance/scanner-registry.js";
-import { resolveEffectiveScanThreshold } from "../governance/scan-requirements.js";
+import {
+  resolveEffectiveScanThreshold,
+  readInstanceScanFloors
+} from "../governance/scan-requirements.js";
+import {
+  evaluateScanCoverage,
+  mergeInstanceFloor,
+  MANAGED_SCAN_CONTROL_OBJECT_ID,
+  type SeverityCeiling
+} from "./scan-evidence.js";
 import { readScanDbStatus } from "../governance/scan-db.js";
 import {
   managedRunnerSettings,
@@ -85,17 +94,24 @@ const execFileAsync = promisify(execFile);
  * commander's SYSTEM managed-scan control identity.
  *
  * WHY a fixed synthetic id rather than a tenant-created `control` graph object: `control_runs`
- * `control_object_id` has NO foreign key to `objects` (db/schema.ts), and E6 identifies a scan
- * outcome PURELY by `ScanEvidenceSchema.safeParse(evidence)` — never by which control produced it
- * (promotion-repo.ts's gate). So the managed promotion scan step, which is a first-class step of the
- * commander's own promotion process rather than a tenant-bound control, tags its rows with this one
- * stable, deployment-wide synthetic id. It is org-agnostic (control_runs rows are org-scoped by
- * `org_id`, so the same synthetic control id under different orgs never collides) and resolves to a
- * null URN in the export's control-outcome projection (tolerated, promotion-repo.ts) — its purpose
- * is to mark provenance ("this outcome came from the commander's managed scan step"), not to be a
- * graph object.
+ * `control_object_id` has NO foreign key to `objects` (db/schema.ts). So the managed promotion scan
+ * step, which is a first-class step of the commander's own promotion process rather than a
+ * tenant-bound control, tags its rows with this one stable, deployment-wide synthetic id. It is
+ * org-agnostic (control_runs rows are org-scoped by `org_id`, so the same synthetic control id under
+ * different orgs never collides) and resolves to a null URN in the export's control-outcome
+ * projection (tolerated, promotion-repo.ts).
+ *
+ * IT IS NOW LOAD-BEARING, WHICH IT WAS NOT WHEN IT WAS WRITTEN. This comment used to say the id's
+ * "purpose is to mark provenance, not to be a graph object", and that E6 "identifies a scan outcome
+ * PURELY by `ScanEvidenceSchema.safeParse(evidence)` — never by which control produced it". The
+ * second half was an accurate description of a defect: shape-identification let any control that
+ * could emit a ScanEvidence-shaped bag authorize a cross-boundary crossing. E6 now identifies an
+ * outcome by its PRODUCER, and THIS ID is half of that test (`scan-evidence.ts`
+ * `isScanEvidenceProducer`) — so the id is part of an authorization rule, and changing it changes
+ * what the boundary accepts. Defined in `scan-evidence.ts` and re-exported here so every existing
+ * import keeps resolving; the admission rule must not import the module whose behaviour it governs.
  */
-export const MANAGED_SCAN_CONTROL_OBJECT_ID = "00000000-5ca4-4000-8000-000000000001";
+export { MANAGED_SCAN_CONTROL_OBJECT_ID };
 
 /**
  * The `ScanMethod`s the `scp-runner-scan` image can actually run — the server-side twin of the
@@ -156,15 +172,24 @@ export interface ManagedScanRunner {
   scan(req: ManagedScanRequest): Promise<ManagedScanResult>;
 }
 
-// --- The E6 short-circuit predicate (identical to promotion-repo.ts's gate check) ---------------
+// --- The E6 short-circuit predicate (THE SAME CODE as promotion-repo.ts's gate check) ------------
 
-/** True iff `run` is a passing, digest-bound scan outcome covering `digest` — the EXACT predicate
- *  E6 applies, so "already covered" here means "E6 will accept it" there (both ingresses tie). */
-function isCoveringScanOutcome(run: ControlRunRow, digest: string): boolean {
-  if (run.status !== "pass") return false;
-  const parsed = ScanEvidenceSchema.safeParse(run.evidence);
-  if (!parsed.success) return false;
-  return parsed.data.digestMatch === true && parsed.data.artifactDigest === digest;
+/**
+ * True iff `digest` is already covered by an outcome E6 WILL ACCEPT — so a short-circuit here can
+ * never suppress the scan that the gate then demands.
+ *
+ * This used to be a hand-maintained copy of the gate's predicate, documented as "the EXACT predicate
+ * E6 applies". It now CALLS the gate's predicate. Two copies of an authorization rule that must
+ * agree, kept in step by a comment, is the shape this repo's census rule exists to catch; and here
+ * the two copies had to agree for a safety reason, not a tidiness one — a short-circuit looser than
+ * the gate skips the managed scan and then refuses the export for having no scan.
+ */
+function isCoveringScanOutcome(
+  runs: readonly ControlRunRow[],
+  digest: string,
+  instanceFloor: SeverityCeiling
+): boolean {
+  return evaluateScanCoverage({ digest, runs, instanceFloor }).covered;
 }
 
 // --- Artifact + pull-ref resolution from the change's sourceRef ----------------------------------
@@ -325,6 +350,9 @@ export async function runPromotionScanStep(
     if (digests.length === 0) return null; // metadata-only promotion — nothing to scan.
 
     const existingRuns = await listControlRunsForChange(tx, input.orgId, change.id);
+    // The same operator floor E6 will apply — read here so the short-circuit and the gate reach the
+    // same verdict on the same rows (see `isCoveringScanOutcome`).
+    const instanceFloor = mergeInstanceFloor(await readInstanceScanFloors(tx));
     const executorType = executorTypeOf(change as { properties: Record<string, unknown> });
     const methods = await resolveScannersForType(tx, executorType);
 
@@ -348,8 +376,9 @@ export async function runPromotionScanStep(
 
     const planned: PlannedScan[] = [];
     for (const digest of digests) {
-      // (a) SHORT-CIRCUIT — org-pipeline (or any prior) passing digest-bound evidence wins.
-      if (existingRuns.some((r) => isCoveringScanOutcome(r, digest))) continue;
+      // (a) SHORT-CIRCUIT — CURRENT org-pipeline (or prior managed) passing digest-bound evidence
+      // wins. "Current" is the word that changed: a superseded pass no longer suppresses the scan.
+      if (isCoveringScanOutcome(existingRuns, digest, instanceFloor)) continue;
       // (b) scanner selection — an unassigned type yields no methods ⇒ no managed evidence.
       if (methods.length === 0) continue;
       planned.push({

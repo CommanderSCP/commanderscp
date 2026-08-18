@@ -163,6 +163,16 @@ const MAX_ANCESTOR_HOPS = 3;
 /**
  * The component a wave target is about, whichever shape the target takes: a COMPONENT under legacy
  * compilation, or a PLACEMENT under stage-shaped compilation — the shape the estate actually runs.
+ *
+ * LIVE-FILTERED, like every other hop on this walk and like its exact twin. `containsParentOf` just
+ * below filters both the edge and the parent; `governance/gate-orchestrator.ts`'s `governanceSubjectOf`
+ * performs the IDENTICAL placement->component hop with `isNull(deleted_at)` on it. This one did not,
+ * and the asymmetry meant a tombstoned wave target still yielded a component and the whole
+ * service/assembly/org binding ladder was walked from it — a dead object resolving a live executor.
+ * The drive path now refuses such a target before it ever gets here (`reconcile.ts`'s liveness gate),
+ * so this is defence in depth rather than the load-bearing fix; it is here because the PROPERTY was
+ * "a resolver that turns a wave target into something drivable without asserting the object is live",
+ * and one instance of a property is not the property.
  */
 async function componentOfTarget(
   tx: TenantTx,
@@ -170,7 +180,8 @@ async function componentOfTarget(
   targetObjectId: string
 ): Promise<string | null> {
   const target = await tx.query.objects.findFirst({
-    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, targetObjectId), eqOp(t.orgId, orgId))
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.id, targetObjectId), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
   });
   if (!target) return null;
   if (target.typeId !== "placement") return targetObjectId;

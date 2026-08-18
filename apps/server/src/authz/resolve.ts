@@ -99,7 +99,7 @@ export interface PermissionCheck {
 function scopeExpandCte(
   orgId: string,
   scopeObjectId: string,
-  // ADR-0033: the shared bound by default; the truncation PROBE passes one-past-the-bound so a
+  // ADR-0035: the shared bound by default; the truncation PROBE passes one-past-the-bound so a
   // deny can be told apart from a walk that was cut. Callers other than the probe never override.
   maxDepth: number = CONTAINMENT_WALK_MAX_DEPTH
 ) {
@@ -131,13 +131,22 @@ function scopeExpandCte(
         ON parent_o.id = p.parent_id
        AND parent_o.org_id = ${orgId}
        AND parent_o.deleted_at IS NULL
-      WHERE p.parent_id IS NOT NULL AND se.depth < ${maxDepth}
+      -- The SAME bound graph/containment.ts's walk uses, imported rather than re-typed: these two
+      -- walks are hand-synced on their routes (see the header), and a bound that drifted would let
+      -- a scope be governed at a depth authority cannot reach. The member_of SUBJECT walks below
+      -- are a different concept and keep their own literal. ADR-0035: the truncation PROBE passes
+      -- one-past-the-bound through maxDepth; nothing else overrides it.
+      -- (No backticks in this comment: it lives inside a JS template literal.)
+      -- sql.raw, not a bound parameter: an untyped $n compared against a recursive CTE's derived
+      -- depth column is where PostgreSQL cannot infer a type. maxDepth is a module constant either
+      -- way, never caller input.
+      WHERE p.parent_id IS NOT NULL AND se.depth < ${sql.raw(String(maxDepth))}
     )
   `;
 }
 
 /**
- * ADR-0033 — the deny-path truncation probe, and why it runs only on deny.
+ * ADR-0035 — the deny-path truncation probe, and why it runs only on deny.
  *
  * An ALLOW found within the bound is always valid: the binding was reached, the grant is real.
  * A DENY is the direction that can lie — "no binding reached" is indistinguishable from "the
@@ -206,7 +215,7 @@ export async function hasPermission(tx: TenantTx, check: PermissionCheck): Promi
   const effects = result.rows.map((r) => r.effect);
   if (effects.includes("deny")) return false;
   if (effects.includes("allow")) return true;
-  // ADR-0033: no binding reached at all — the one outcome a truncated walk can fabricate.
+  // ADR-0035: no binding reached at all — the one outcome a truncated walk can fabricate.
   // (An explicit deny above is a REAL binding that was reached; only the nothing-found case is
   // converted. Every caller inherits this, which is the point: false-by-depth must not exist.)
   await assertDenyNotTruncated(
@@ -274,7 +283,7 @@ export async function hasRoleAtScope(tx: TenantTx, check: RoleCheck): Promise<bo
   const effects = result.rows.map((r) => r.effect);
   if (effects.includes("deny")) return false;
   if (effects.includes("allow")) return true;
-  // ADR-0033, same conversion as hasPermission: a quorum member silently vanishing because the
+  // ADR-0035, same conversion as hasPermission: a quorum member silently vanishing because the
   // walk was cut is a quorum that fails mysteriously; erroring here fails the gate closed AND
   // says why.
   await assertDenyNotTruncated(

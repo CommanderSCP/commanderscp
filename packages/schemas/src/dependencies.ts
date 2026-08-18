@@ -97,28 +97,23 @@ export const DependencyLineSchema = z.object({
    */
   tagPattern: z.string().nullable(),
   /**
-   * The component/service this org DECLARES produces this line. `null` = third-party.
+   * THE PRODUCER LINK IS NOT ON THIS ROW ANY MORE (ADR-0032 §7e, proposal §12.1).
    *
-   * DECLARED, NEVER INFERRED (ADR-0032 §7, ADR-0030 §2). Nothing reads a coordinate, a repo name or
-   * a registry host and concludes "this one is ours". A label named after WHAT MATCHED goes false
-   * the moment the matcher covers a second case — already shipped once in this repo, in a Decision
-   * where it had been wrong since before the level that exposed it (charter principle 6). Discovery
-   * may PROPOSE the link; an operator accepts it.
+   * It used to be `producedByObjectId` + its two companions here, which made the declaration PER
+   * MAJOR LINE. "Component X publishes `@acme/lib`" is a fact about the COORDINATE, true across
+   * every major X ever cut, and the mismatch was not cosmetic: lines are minted only by a
+   * CONSUMER's manifest, so every new major minted a fresh row with a NULL producer, honestly
+   * third-party by default, and `buildLineWorkList` then handed the org's own coordinate to a
+   * PUBLIC INDEX — ADR-0032 §7b clause 1's dependency-confusion catastrophe, re-armed silently at
+   * each major bump. The declaration now lives in `dependency_line_producers`, keyed
+   * `(orgId, ecosystem, coordinate)`, so a new major of a declared coordinate is internal FROM THE
+   * INSTANT IT IS MINTED because there is no per-major field left to populate.
    *
-   * What keeps inference out is that `UpsertDependencyLineInputSchema` HAS NO PRODUCER FIELD — the
-   * capability is absent from the ingestion verb rather than guarded on it. The database's
-   * `dependency_lines_internal_is_declared` CHECK is the weaker complement: it ties this column,
-   * `producedByDeclaredAt` and `producedByDeclaredByObjectId` together so none of the three can be
-   * written without the other two, which refuses a raw-SQL half-write. It does NOT make the declarer
-   * a human — that is `DeclareLineProducerInput`'s call sites and the route's authz (0060 header).
+   * DO NOT ADD IT BACK AS A CACHE. Stamping it at mint time from the declaration table closes the
+   * same hole, but it puts a producer write back inside the ingestion verb and so deletes
+   * "declared, never inferred" — the property this whole feature exists to protect. Read
+   * {@link isInternalDependencyLine} with a `DependencyLineProducer | null` obtained by joining.
    */
-  producedByObjectId: z.string().uuid().nullable(),
-  producedByDeclaredAt: z.string().nullable(),
-  /** Which principal declared the producer link — principle 6: "who asserted this line is internal?"
-   *  must be answerable. `null` when no producer is declared, and NEVER null beside a non-null
-   *  `producedByObjectId`: the CHECK above binds all three, and the column carries a foreign key, so
-   *  the answer can be neither absent nor a uuid that names nothing. */
-  producedByDeclaredByObjectId: z.string().uuid().nullable(),
   /**
    * The head of the line as last OBSERVED (written by M21.4 detection, never by manifest ingestion —
    * a component declaring `1.2.0` says nothing about what the line's head is).
@@ -138,13 +133,41 @@ export const DependencyLineSchema = z.object({
 });
 export type DependencyLine = z.infer<typeof DependencyLineSchema>;
 
-/** True iff the line has a DECLARED producer. The one place "internal" is decided — read from the
- *  declared link, never derived from `coordinate`. Kept as a function so no call site is tempted to
- *  re-derive it from a name (ADR-0032 §7). */
-export function isInternalDependencyLine(
-  line: Pick<DependencyLine, "producedByObjectId">
-): boolean {
-  return line.producedByObjectId !== null;
+/**
+ * The DECLARATION that an org produces one COORDINATE — the row of `dependency_line_producers`
+ * (ADR-0032 §7e, proposal §12.1). Identity is `(orgId, ecosystem, coordinate)`; the row's EXISTENCE
+ * is the declaration, so a half-written one is unrepresentable rather than refused by a CHECK.
+ *
+ * It is a PROJECTION TABLE ROW AND NOT A GRAPH OBJECT, and that is a FEDERATION decision, not a
+ * storage-convenience one (§12.4). A `produces` relationship or a `producedBy` policy effect would
+ * federate, and a field outpost would then hold a declaration with no inventory behind it — a
+ * visible assertion nothing can act on, the exact "true elsewhere, inert here" shape
+ * `dependencyManagement` exists to close.
+ */
+export const DependencyLineProducerSchema = z.object({
+  orgId: z.string().uuid(),
+  ecosystem: DependencyEcosystemSchema,
+  coordinate: DependencyCoordinateSchema,
+  /** The producing COMPONENT's graph object id. A `service` is refused in the first cut — see
+   *  {@link DeclareDependencyLineProducerRequestSchema}. */
+  producerObjectId: z.string().uuid(),
+  declaredAt: z.string(),
+  /** Which principal asserted this coordinate is ours — principle 6. Taken from the AUTHENTICATED
+   *  SUBJECT at the route, never from the request body: a caller-supplied field here is a forgeable
+   *  provenance label, which is the failure charter principle 6 already caught once in this repo. */
+  declaredByObjectId: z.string().uuid()
+});
+export type DependencyLineProducer = z.infer<typeof DependencyLineProducerSchema>;
+
+/** True iff the coordinate has a DECLARED producer. The one place "internal" is decided — read from
+ *  the declared row, never derived from `coordinate`. Kept as a function so no call site is tempted
+ *  to re-derive it from a name (ADR-0032 §7).
+ *
+ *  It takes the DECLARATION, not the line, since M22's regrain: internal-ness is a property of the
+ *  coordinate and a line row carries no producer field at all. A caller that has only a line must
+ *  join, which is what makes a brand-new major of a declared coordinate internal immediately. */
+export function isInternalDependencyLine(declaration: DependencyLineProducer | null): boolean {
+  return declaration !== null;
 }
 
 /**
@@ -210,22 +233,6 @@ export const UpsertDependencyLineInputSchema = DependencyLineKeySchema.extend({
   tagPattern: z.string().max(256).optional()
 });
 export type UpsertDependencyLineInput = z.infer<typeof UpsertDependencyLineInputSchema>;
-
-/**
- * The separate, operator-driven verb that makes a line INTERNAL. Kept apart from
- * `UpsertDependencyLineInput` on purpose: if ingestion could pass a producer alongside a coordinate
- * it observed, "declared, never inferred" would survive only as long as every ingestion call site
- * remembered to leave it unset. Splitting the verb removes the capability instead of guarding it.
- */
-export const DeclareLineProducerInputSchema = z.object({
-  lineId: z.string().uuid(),
-  /** The producing component/service graph object, or `null` to retract the declaration and return
-   *  the line to third-party. */
-  producedByObjectId: z.string().uuid().nullable(),
-  /** The principal making the declaration (principle 6). */
-  declaredByObjectId: z.string().uuid()
-});
-export type DeclareLineProducerInput = z.infer<typeof DeclareLineProducerInputSchema>;
 
 /** Upsert input for one declaration read out of one dependency manifest. */
 export const UpsertComponentDependencyInputSchema = z.object({
@@ -540,7 +547,7 @@ export const DEFAULT_DEPENDENCY_SUBSCRIPTION_DELIVERY: DependencySubscriptionDel
 // THERE IS NO SUBSCRIPTION-WRITE SHAPE HERE, ON PURPOSE. A dependency subscription IS a
 // `dependencySubscription` effect on an ordinary `policy` object (ADR-0032 §3a), so it is authored,
 // listed, versioned and federated through the EXISTING policy surface
-// (`CreatePolicyRequestSchema` / `scp policy create`). A bespoke create/update/delete shape here
+// (`CreateObjectRequestSchema` / `scp policy register`). A bespoke create/update/delete shape here
 // would be a second authoring path for one concept — it would need its own versioning, its own
 // journal handling and its own scope semantics, and the two would drift. Do not add one.
 // ===========================================================================================
@@ -581,6 +588,80 @@ export type PutDependencySubscriptionUnlockRequest = z.infer<
 >;
 
 /**
+ * WHICH DEPLOYMENT SHAPE ANSWERED, in the vocabulary of `SCP_FEDERATION_ROLE` — plus the one value
+ * that is NOT a role.
+ *
+ * `role_undeclared` IS ITS OWN VALUE AND IS NEVER FOLDED INTO `commander`. That is the whole point
+ * of carrying a reason rather than a bare boolean. `config.federationRole` DEFAULTS to `commander`
+ * when `SCP_FEDERATION_ROLE` is unset, so an outpost that predates the setting, or a chart that
+ * omits it, reads as a commander on the value alone — and dependency automation FAILS CLOSED there
+ * (ADR-0032 §7d, `apps/server/src/dependencies/commander-only.ts`). A reader handed `commander` for
+ * that deployment would be told the opposite of the truth: it looks like the place work happens, and
+ * it is precisely the place nothing will run. It is a distinct value so the remedy is distinct too —
+ * an outpost's operator calls the commander, an undeclared deployment's operator sets one env var.
+ */
+export const DependencyManagementReasonSchema = z.enum([
+  /** An EXPLICITLY declared commander. The one shape that manages dependencies. */
+  "commander",
+  /** A declared outpost. It RECEIVES bumps down the global pipeline; it never originates one. */
+  "outpost",
+  /** A declared retrans (CDS-boundary relay). It originates nothing either. */
+  "retrans",
+  /** `SCP_FEDERATION_ROLE` was never set, so nobody has said what this deployment is. Fail-closed. */
+  "role_undeclared"
+]);
+export type DependencyManagementReason = z.infer<typeof DependencyManagementReasonSchema>;
+
+/**
+ * DOES DEPENDENCY MANAGEMENT ACTUALLY HAPPEN ON THE DEPLOYMENT THAT ANSWERED THIS REQUEST?
+ *
+ * ============================================================================================
+ * WHEN `managedHere` IS FALSE, THE REST OF THE ENVELOPE IS NOT TO BE INTERPRETED
+ * ============================================================================================
+ * All dependency automation is COMMANDER-ONLY (ADR-0032 §7d): a FIELD outpost runs no dependency job
+ * and holds no dependency inventory, because the point of the feature is to pull from PUBLIC
+ * repositories and the resulting change is pushed down the global pipeline the commander manages.
+ * ("Field" is load-bearing, not decoration: an HQ outpost is the outpost in the COMMANDER'S OWN
+ * trust domain, so its inventory simply IS the commander's. Nothing on this wire can be one, which
+ * is why the values below need no fourth member — a `reason` of `outpost` means the answering
+ * deployment DECLARED `SCP_FEDERATION_ROLE=outpost`, and that is a field outpost by construction.
+ * `apps/server/src/dependencies/commander-only.ts` reads the distinction out of the code.)
+ * So on any deployment where `managedHere` is false:
+ *
+ *   - inventory-shaped answers are STRUCTURALLY EMPTY — not "this component declares nothing", but
+ *     "nothing here ever ingested a dependency manifest, and nothing ever will";
+ *   - a RESOLVE verdict is still computed, and it is still arithmetically correct FOR THIS
+ *     DEPLOYMENT: the policy tiers it merges federated down from the commander. But NOTHING ON THIS
+ *     DEPLOYMENT WILL ACT ON IT. An `enabled: true` here does not mean a bump will be authored here;
+ *     it means a bump would be authored on the commander, for a subscription that also resolves
+ *     there. Nor is it a prediction of the commander's answer: the INSTANCE UNLOCK conjunct is a
+ *     local singleton row that does NOT federate, so `enabled: false, reason: instance_locked` here
+ *     says this deployment is locked and says nothing about whether the commander is. Ask the
+ *     commander — which is what a `managedHere: false` is telling a caller to do.
+ *
+ * That gap is the reason this envelope is REQUIRED rather than advisory. Answering `enabled` where
+ * nothing acts on it is charter principle 6 FAILING — an answer whose reason is unavailable — and
+ * the honest sentence is not "enabled"/"disabled" but "enabled, and not managed here, because this
+ * deployment is an outpost". `reason` is what lets a caller write that sentence without a second
+ * round trip and without inferring a posture from a hostname.
+ *
+ * `managedHere` is the FEDERATION axis only, deliberately, and so it is a fact about the DEPLOYMENT
+ * rather than about the process that served the request. In the split topology every HTTP request
+ * lands on an `SCP_ROLE=api` process while the jobs drain on a `worker`; a `managedHere` that also
+ * read the process axis would tell every caller of a perfectly correct commander that dependencies
+ * are not managed there. See `commanderOnlyFederationVerdict` for that argument in full.
+ */
+export const DependencyManagementSchema = z.object({
+  /** True iff dependency automation RUNS on this deployment — i.e. it is an explicitly declared
+   *  commander. False means no job here will ever act on the answer beside it. */
+  managedHere: z.boolean(),
+  /** WHY. Always `commander` exactly when `managedHere` is true; one of the three refusals
+   *  otherwise, each with a different remedy. */
+  reason: DependencyManagementReasonSchema
+});
+export type DependencyManagement = z.infer<typeof DependencyManagementSchema>;
+
+/**
  * The answer to "is THIS component subscribed to THIS line, and why?" — the resolution plus the
  * inputs it was computed for, so the response stands alone in a log or a Decision.
  *
@@ -597,7 +678,17 @@ export type PutDependencySubscriptionUnlockRequest = z.infer<
 export const DependencySubscriptionResolutionResponseSchema = z.object({
   componentObjectId: z.string().uuid(),
   line: DependencyLineKeySchema,
-  resolution: DependencySubscriptionResolutionSchema
+  resolution: DependencySubscriptionResolutionSchema,
+  /**
+   * WHETHER ANYTHING HERE WILL EVER ACT ON `resolution`. REQUIRED, because a caller that could
+   * receive the verdict without it is exactly the caller this closes the hole for: the answer alone
+   * is unqualified, and on an outpost it is unqualified in the direction that reads as "yes, this is
+   * running". Adding a required response property to this operation was measured against the
+   * vendored oasdiff at the merge base and is not an ERR (nothing existing is removed and no
+   * required property became optional) — the same shape `/components/{idOrUrn}/pipeline` already
+   * carries. See {@link DependencyManagementSchema} for what a `false` does and does not mean.
+   */
+  dependencyManagement: DependencyManagementSchema
 });
 export type DependencySubscriptionResolutionResponse = z.infer<
   typeof DependencySubscriptionResolutionResponseSchema
@@ -727,6 +818,163 @@ export type BackfillDependencyInventoryResponse = z.infer<
   typeof BackfillDependencyInventoryResponseSchema
 >;
 
+/**
+ * The COORDINATE half of a producer declaration — the natural key of `dependency_line_producers`,
+ * and the query shape of the read.
+ *
+ * The coordinate travels in the BODY or the QUERY, never a path segment: coordinates contain `/`,
+ * `@` and `:` (`github.com/acme/lib`, `@acme/lib`, `docker.io/library/alpine`), so path-segmenting
+ * one is a trap. `GET /components/:idOrUrn/dependency-subscription` already makes this choice.
+ */
+export const DependencyLineProducerKeySchema = z.object({
+  ecosystem: DependencyEcosystemSchema,
+  coordinate: DependencyCoordinateSchema
+});
+export type DependencyLineProducerKey = z.infer<typeof DependencyLineProducerKeySchema>;
+
+/**
+ * The separate, operator-driven verb that makes a COORDINATE internal. Kept apart from
+ * `UpsertDependencyLineInput` on purpose: if ingestion could pass a producer alongside a coordinate
+ * it observed, "declared, never inferred" would survive only as long as every ingestion call site
+ * remembered to leave it unset. Splitting the verb removes the capability instead of guarding it.
+ *
+ * THERE IS NO `declaredByObjectId` HERE, AND THERE MUST NOT BE. Principle 6 asks WHO asserted this,
+ * and an answer the asserter typed is not an answer. The route stamps the authenticated subject.
+ */
+export const DeclareDependencyLineProducerRequestSchema = DependencyLineProducerKeySchema.extend({
+  /**
+   * The producing COMPONENT's graph object id or URN.
+   *
+   * A `service` IS REFUSED IN THE FIRST CUT (ADR-0032 §7e, proposal §12.2), and the refusal is not
+   * pedantry: `listProducedLines` derives a head only from the COMPONENT a prod placement names, so
+   * a service-valued declaration derives no head at all while still removing the coordinate from
+   * third-party polling — it does the harmful half silently and not the useful half.
+   */
+  producerIdOrUrn: z.string().min(1).max(512),
+  /** Compute and return the blast radius, write NOTHING. Not a nicety: it is the only way a
+   *  declarer sees WHOSE repositories they are about to affect before they affect them. */
+  dryRun: z.boolean().optional()
+});
+export type DeclareDependencyLineProducerRequest = z.infer<
+  typeof DeclareDependencyLineProducerRequestSchema
+>;
+
+/** Retract a declaration and return the coordinate to third-party polling. Same blast-radius report
+ *  and the same `dryRun`, because a retraction changes exactly as much as a declaration does. */
+export const RetractDependencyLineProducerRequestSchema = DependencyLineProducerKeySchema.extend({
+  dryRun: z.boolean().optional()
+});
+export type RetractDependencyLineProducerRequest = z.infer<
+  typeof RetractDependencyLineProducerRequestSchema
+>;
+
+/**
+ * One line the declaration (or retraction) covers, and what it did to that line's head.
+ *
+ * THE HEAD IS CLEARED BY BOTH VERBS, and the reason is a security one rather than a tidiness one
+ * (§12.3.2, and stronger since M22). `latest_version` is not only the poll's backward-movement
+ * floor: the M22 vendor rule grants a scan PASS when a component sits on the latest of its major
+ * line. A head left over from the internal era, on a coordinate that is third-party again, can
+ * therefore grant a vendor-pass against a version no registry ever published. In the other
+ * direction a poisoned public head (the stranger's `9.9.9`) would survive the very declaration that
+ * exists to undo it, and internal detection could never move the head back down to the org's real
+ * `2.1.0` — `recordDependencyLineHead` refuses backward movement.
+ */
+export const DependencyProducerLineImpactSchema = z.object({
+  lineId: z.string().uuid(),
+  major: DependencyMajorLineSchema,
+  tagPattern: z.string().nullable(),
+  /** The head as it stood BEFORE this verb ran — the value that was cleared, so an operator can see
+   *  what was discarded rather than only that something was. */
+  headBefore: z.object({
+    latestVersion: z.string().nullable(),
+    latestDigest: z.string().nullable(),
+    latestObservedAt: z.string().nullable()
+  }),
+  /** False when the line had no observed head to clear — an honest no-op, not a silent skip. */
+  headCleared: z.boolean(),
+  /** WHOSE REPOSITORIES THIS REACHES. The declarer names one coordinate and affects a set of
+   *  components they cannot see from the request; this list is that set. Sorted. */
+  subscribedComponentObjectIds: z.array(z.string().uuid())
+});
+export type DependencyProducerLineImpact = z.infer<typeof DependencyProducerLineImpactSchema>;
+
+/**
+ * A bump SCP already authored that is still open at the moment of a retraction.
+ *
+ * IT IS REPORTED AND NEVER TOUCHED. A dispatched bump has left SCP: it is a pull request in another
+ * team's repository, or — under `auto_merge` — a commit on their branch. Closing or rewriting these
+ * rows would assert SCP closed a PR it did not close. Retraction stops FUTURE triggers only, and
+ * this list is what an operator takes away to go and close them (§12.3.2).
+ */
+export const DependencyProducerOpenBumpSchema = z.object({
+  changeObjectId: z.string().uuid(),
+  componentObjectId: z.string().uuid(),
+  repo: z.string(),
+  manifestPath: z.string(),
+  fromVersion: z.string(),
+  toVersion: z.string(),
+  /** As the provider returned it. Absent means SCP recorded no link — never "compose one". */
+  pullRequestUrl: z.string().optional()
+});
+export type DependencyProducerOpenBump = z.infer<typeof DependencyProducerOpenBumpSchema>;
+
+/**
+ * What a declare or a retract reports back — THE BLAST RADIUS, which is why this is a verb and not
+ * a field write (§12.3, ADR-0031 §6's grounds 1 and 3; ground 2, one-way-ness, does not transfer).
+ */
+export const DependencyLineProducerVerbResponseSchema = z.object({
+  ecosystem: DependencyEcosystemSchema,
+  coordinate: DependencyCoordinateSchema,
+  /** `declare` | `retract`. Echoed so a stored response stands alone. */
+  action: z.enum(["declare", "retract"]),
+  /** True when nothing was written. */
+  dryRun: z.boolean(),
+  /** The declaration as it now stands — `null` after a retraction, and `null` on a `dryRun` retract
+   *  because the report describes the state the caller ASKED FOR. */
+  declaration: DependencyLineProducerSchema.nullable(),
+  /** Every major line of this coordinate the verb covers, with what happened to its head. EMPTY is
+   *  a legitimate and common answer: a producer may be declared before any consumer's manifest has
+   *  minted a line, which is exactly what per-coordinate grain makes representable. */
+  lines: z.array(DependencyProducerLineImpactSchema),
+  /** Open bumps in flight at this moment (retract only, and only when not a dry run). */
+  openBumpAuthorships: z.array(DependencyProducerOpenBumpSchema),
+  /** The Decision this verb recorded, or `null` on a dry run — principle 6's `decision_id`. */
+  decisionId: z.string().uuid().nullable(),
+  dependencyManagement: DependencyManagementSchema
+});
+export type DependencyLineProducerVerbResponse = z.infer<
+  typeof DependencyLineProducerVerbResponseSchema
+>;
+
+/** The read. Optionally narrowed to one ecosystem, or to one exact coordinate. */
+export const ListDependencyLineProducersQuerySchema = z.object({
+  ecosystem: DependencyEcosystemSchema.optional(),
+  /** VERBATIM byte equality, never a prefix or a slug — `@acme/lib` and `acme-lib` are two
+   *  coordinates that share a URN slug and must not share an answer. */
+  coordinate: DependencyCoordinateSchema.optional()
+});
+export type ListDependencyLineProducersQuery = z.infer<
+  typeof ListDependencyLineProducersQuerySchema
+>;
+
+export const ListDependencyLineProducersResponseSchema = z.object({
+  producers: z.array(DependencyLineProducerSchema),
+  dependencyManagement: DependencyManagementSchema
+});
+export type ListDependencyLineProducersResponse = z.infer<
+  typeof ListDependencyLineProducersResponseSchema
+>;
+
+/** What the repo verb takes. `declaredByObjectId` is present HERE and absent from the request
+ *  schema above — the route supplies it from the authenticated subject. */
+export interface DeclareLineProducerInput {
+  ecosystem: DependencyEcosystem;
+  coordinate: string;
+  producerObjectId: string;
+  declaredByObjectId: string;
+}
+
 // ===========================================================================================
 // M21.6 — THE READ SURFACE (docs/proposals/dependency-subscription-ui.md §3.1/§3.2; owner
 // decisions §8 Q1/Q4, 2026-08-16).
@@ -749,13 +997,21 @@ export type BackfillDependencyInventoryResponse = z.infer<
 //     resolution GET returns for the same actor and line — produced by the same merge, from the
 //     same gathered candidates — never a per-row recomputation, and `componentGate` is the SAME
 //     `ComponentIngestionGate` ingestion runs. A UI reads these; it derives nothing.
-//  2. `null` IS "NOT RECORDED", NEVER "NOTHING". `ingestion: null` is "no ingestion attempt is on
-//     record", NEVER "no dependencies"; `head.latestVersion: null` is "not observed", never "nothing
-//     newer"; `producer: null` is "no producer declared" (third-party OR undeclared — the stored fact
-//     cannot say which); `pullRequestUrl: null` is "not stored". An empty `rows` beside a null
-//     `ingestion` and a null `lastIngestionDecision` is UNKNOWN, and a consumer must render it so.
+//  2. `null` IS "NOT RECORDED", NEVER "NOTHING". `ingestion: null` is "NEVER ATTEMPTED" (the stamp
+//     table's one reading of a missing row — `ingestion-stamp-repo.ts`), NEVER "no dependencies";
+//     `head.latestVersion: null` is "not observed", never "nothing newer"; `producer: null` is "no
+//     producer declared" (third-party OR undeclared — the stored fact cannot say which);
+//     `pullRequestUrl: null` is "not stored". An empty `rows` beside a null `ingestion` and a null
+//     `lastIngestionDecision` is UNKNOWN, and a consumer must render it so.
 //  3. THE COORDINATE TRAVELS VERBATIM in every field that carries one, as everywhere else in this
 //     file.
+//  4. BOTH RESPONSES ARE QUALIFIED BY A REQUIRED `dependencyManagement` (ADR-0032 §7d, M21.7 —
+//     `DependencyManagementSchema` above, computed by the ONE predicate `commander-only.ts`
+//     exports). When `managedHere` is false the REST OF THE ENVELOPE IS NOT TO BE INTERPRETED:
+//     the routes still answer 200 with the same RBAC, but an empty inventory there is "nothing here
+//     ever ingested a manifest and nothing ever will", not "declares nothing", and an empty bump
+//     list is "no bump is ever dispatched here", not "up to date". A consumer renders the pointer to
+//     the commander and nothing else.
 // ===========================================================================================
 
 /**
@@ -782,22 +1038,42 @@ export type ComponentDependencyReadSubject = z.infer<typeof ComponentDependencyR
 
 /**
  * The per-component ingestion STAMP — "when did ingestion last ATTEMPT this component, and what
- * happened", including the attempts that write no Decision (`not_enabled`, unreadable). Being built
- * by the M21.7 session (persistence + `findIngestionStampByComponent`); the shape here is the one
- * agreed with them on 2026-08-16. Until that read exists on this branch the route emits `null`,
- * which means NOT RECORDED — a consumer that reads `null` as "never attempted" or as "no
- * dependencies" is wrong on both counts.
+ * happened", including the attempts that write no Decision (`not_enabled`, unreadable). READ from
+ * `dependency_ingestion_stamps` (M21.7, migration 0065; `ingestion-stamp-repo.ts`'s
+ * `findIngestionStampByComponent`), one row per component, merged per REPOSITORY by its writer —
+ * which is why every `manifests[]` entry names its `repo`: a component fed by two repositories
+ * carries both slices, and the component-level `outcome` / `rowsWritten` are computed ACROSS them.
+ *
+ * THE TRICHOTOMY THIS EXISTS TO BREAK. With no stamp (`ingestion: null`) the component was NEVER
+ * ATTEMPTED. `outcome: "ok"` with `rowsWritten: 0` is "read fine, genuinely declares nothing" —
+ * the state an empty inventory could not express before. `partial` / `unreadable` are "ingestion
+ * ran and some / every manifest could not be read", with the per-file verdicts in `manifests[]`.
+ * `not_enabled` is "the gate was closed; nothing was fetched". A consumer renders these
+ * differently and never collapses an empty `rows` into "no dependencies" without the stamp.
  */
 export const ComponentDependencyIngestionStampSchema = z.object({
   lastAttemptAt: z.string(),
-  /** What ran it: the accepted-change loop, or an operator backfill. */
+  /** What ran it: the accepted-change loop, or an operator backfill. The LATEST attempt's. */
   source: z.enum(["loop", "backfill"]),
   outcome: z.enum(["ok", "partial", "unreadable", "not_enabled"]),
+  /** Summed across every repository's slice — a fact about the COMPONENT. 0 with `ok` is legal
+   *  and meaningful. */
   rowsWritten: z.number().int().nonnegative(),
+  /** The stamp's own sentence about the LATEST attempt (a closed gate's reason, a refusal), or
+   *  `null` when the per-file entries are the explanation. */
+  detail: z.string().nullable(),
   manifests: z.array(
     z.object({
+      /** The repository this entry's evidence came from — the merge key. */
+      repo: z.string(),
       path: z.string(),
+      /** `ok` | `unreadable` | `unsupported` as the writer spells it (`IngestionStampManifest`);
+       *  carried as a string so a future outcome word does not break a reader. */
       outcome: z.string(),
+      /** `component_dependencies` rows this manifest's last observation wrote. */
+      rows: z.number().int().nonnegative(),
+      /** When the pass that wrote this entry looked, ISO-8601. */
+      at: z.string(),
       detail: z.string().optional()
     })
   )
@@ -911,9 +1187,12 @@ export type ComponentDependencyInventoryRow = z.infer<typeof ComponentDependency
 
 export const ComponentDependencyInventoryResponseSchema = z.object({
   component: ComponentDependencyReadSubjectSchema,
-  /** The M21.7 ingestion stamp when it exists on the deployment; `null` = NOT RECORDED. Optional
-   *  on the wire only so a deployment predating the stamp's read path can omit it; this route
-   *  always sends it (as `null` until the stamp lands). NEVER read as "no dependencies". */
+  /** WHETHER DEPENDENCY MANAGEMENT HAPPENS ON THIS DEPLOYMENT (rule 4 above). Required. When
+   *  `managedHere` is false the fields below are not to be interpreted. */
+  dependencyManagement: DependencyManagementSchema,
+  /** The M21.7 ingestion stamp; `null` = NEVER ATTEMPTED (no row — `findIngestionStampByComponent`).
+   *  Optional on the wire only so a deployment predating the stamp's read path can omit it; this
+   *  route always sends it. NEVER read as "no dependencies" — see the stamp's own doc. */
   ingestion: ComponentDependencyIngestionStampSchema.nullable().optional(),
   /** `null` = no `dependency_inventory_ingestion` Decision is on record for this component. */
   lastIngestionDecision: ComponentDependencyLastIngestionDecisionSchema.nullable(),
@@ -959,10 +1238,12 @@ export const ComponentDependencyBumpSchema = z.object({
   /** The pull request SCP opened; `null` until the authoring run reported one. */
   pullRequestNumber: z.number().int().nullable(),
   /**
-   * ALWAYS `null` TODAY, and typed rather than omitted so the slot exists when M21.7 persists the
-   * URL the plugin already returns. NEVER SYNTHESISED from `repo` + `pullRequestNumber`: the
-   * provider is not known here (a Gitea-authored bump composed as a GitHub URL would 404), and a
-   * guessed link is a fabricated record. A consumer links only when this is non-null.
+   * The pull request's web URL AS THE PROVIDER RETURNED IT, read off
+   * `dependency_bump_authorships.pull_request_url` (M21.7, migration 0066); `null` when SCP recorded
+   * no link (a row written before the column existed, an authoring run whose outcome carried no
+   * readable `html_url`). NEVER SYNTHESISED from `repo` + `pullRequestNumber`: the provider is not
+   * known here (a Gitea-authored bump composed as a GitHub URL would 404), and a guessed link is a
+   * fabricated record. A consumer links only when this is non-null.
    */
   pullRequestUrl: z.string().nullable(),
   /** The commit SCP's own branch is at; `null` until the authored push is observed back. */
@@ -999,6 +1280,9 @@ export type ComponentDependencyBump = z.infer<typeof ComponentDependencyBumpSche
 
 export const ComponentDependencyBumpsResponseSchema = z.object({
   component: ComponentDependencyReadSubjectSchema,
+  /** WHETHER DEPENDENCY MANAGEMENT HAPPENS ON THIS DEPLOYMENT (rule 4 above). Required. When
+   *  `managedHere` is false, `rows` is not to be interpreted (nothing is ever dispatched there). */
+  dependencyManagement: DependencyManagementSchema,
   /** Newest dispatch first. */
   rows: z.array(ComponentDependencyBumpSchema),
   nextCursor: z.string().nullable()

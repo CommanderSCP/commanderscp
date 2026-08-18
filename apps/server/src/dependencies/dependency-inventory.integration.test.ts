@@ -18,12 +18,18 @@ import {
 } from "../test-support/harness.js";
 import {
   declareDependencyLineProducer,
+  getDependencyLineById,
   getDependencyLineByKey,
+  getDependencyLineProducer,
   listComponentDependencies,
   listComponentsDeclaringLine,
   listDependencyLinesByIds,
+  listDependencyLinesForCoordinate,
+  listThirdPartyDependencyLinesByIds,
   pruneComponentDependencies,
   recordDependencyLineHead,
+  resetLineHead,
+  retractDependencyLineProducer,
   upsertComponentDependency,
   upsertDependencyLine
 } from "./dependency-inventory-repo.js";
@@ -120,9 +126,17 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     );
     expect(line.coordinate).toBe("github.com/acme/lib");
     expect(line.major).toBe("v1");
-    // Third-party until DECLARED otherwise (ADR-0032 §7). Absent never means internal.
-    expect(line.producedByObjectId).toBeNull();
-    expect(line.producedByDeclaredAt).toBeNull();
+    // Third-party until DECLARED otherwise (ADR-0032 §7). Absent never means internal — and since
+    // drizzle/0068 the line row carries no producer field at all, so "third-party" is the ABSENCE
+    // OF A ROW in `dependency_line_producers` for this coordinate.
+    expect(
+      await inA((tx) =>
+        getDependencyLineProducer(tx, orgA.orgId, {
+          ecosystem: "go",
+          coordinate: "github.com/acme/lib"
+        })
+      )
+    ).toBeNull();
     // `tag_pattern` is `oci`-only and is normalised to NULL for the language ecosystems.
     expect(line.tagPattern).toBeNull();
 
@@ -410,89 +424,94 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     );
   });
 
-  it("the producer link is a separate verb, is retractable, and cannot be half-written", async () => {
+  it("the producer declaration is a separate verb on a separate table, is retractable, and cannot be half-written", async () => {
     const producer = await componentIn(clientA, "publisher");
-    const line = await inA((tx) =>
-      upsertDependencyLine(tx, orgA.orgId, {
-        ecosystem: "maven",
-        coordinate: "com.acme:internal-lib",
-        major: "3"
-      })
-    );
-    // NEGATIVE CONTROL: ingestion alone never makes a line internal (ADR-0032 §7 — declared, never
-    // inferred). The coordinate here is as "internal-looking" as a name can be and it changes nothing.
-    expect(line.producedByObjectId).toBeNull();
+    const key = { ecosystem: "maven", coordinate: "com.acme:internal-lib" } as const;
+    const line = await inA((tx) => upsertDependencyLine(tx, orgA.orgId, { ...key, major: "3" }));
+    expect(line.id).toBeTruthy();
+    // NEGATIVE CONTROL: ingestion alone never makes a coordinate internal (ADR-0032 §7 — declared,
+    // never inferred). The coordinate here is as "internal-looking" as a name can be and it changes
+    // nothing.
+    expect(await inA((tx) => getDependencyLineProducer(tx, orgA.orgId, key))).toBeNull();
 
     const declared = await inA((tx) =>
       declareDependencyLineProducer(tx, orgA.orgId, {
-        lineId: line.id,
-        producedByObjectId: producer,
+        ...key,
+        producerObjectId: producer,
         declaredByObjectId: adminObjectIdA
       })
     );
-    expect(declared.producedByObjectId).toBe(producer);
-    expect(declared.producedByDeclaredAt).not.toBeNull();
+    expect(declared.producerObjectId).toBe(producer);
+    expect(declared.declaredByObjectId).toBe(adminObjectIdA);
+    expect(declared.declaredAt).not.toBeNull();
 
-    const retracted = await inA((tx) =>
-      declareDependencyLineProducer(tx, orgA.orgId, {
-        lineId: line.id,
-        producedByObjectId: null,
-        declaredByObjectId: adminObjectIdA
-      })
+    // IT IS KEYED BY COORDINATE, NOT BY LINE — the whole point of drizzle/0068. A SECOND major of
+    // the same coordinate, minted afterwards by some consumer's manifest, is covered by the SAME
+    // declaration with no second act. Under the old per-line column that new row's producer was
+    // NULL and the version poll handed the org's own package to a public index.
+    const newMajor = await inA((tx) =>
+      upsertDependencyLine(tx, orgA.orgId, { ...key, major: "4" })
     );
-    expect(retracted.producedByObjectId).toBeNull();
-    // The declaration timestamp is cleared WITH the link — a stale "declared at" beside a null
-    // producer would read as evidence a human had asserted something they had retracted.
-    expect(retracted.producedByDeclaredAt).toBeNull();
-    expect(retracted.producedByDeclaredByObjectId).toBeNull();
+    expect(newMajor.id).not.toBe(line.id);
+    const coveredLines = await inA((tx) => listDependencyLinesForCoordinate(tx, orgA.orgId, key));
+    expect(coveredLines.map((l) => l.major).sort()).toEqual(["3", "4"]);
+    expect(
+      await inA((tx) => listThirdPartyDependencyLinesByIds(tx, orgA.orgId, [line.id, newMajor.id])),
+      "NEITHER major of a declared coordinate may be handed to the third-party poll"
+    ).toEqual([]);
 
-    // The database refuses a HALF-WRITTEN producer link even from raw SQL. Note what this does and
-    // does not buy (0060's "INTERNAL vs THIRD-PARTY" header): the capability that is MISSING rather
-    // than guarded is ingestion's — `UpsertDependencyLineInput` has no producer field. This CHECK is
-    // the weaker half; it catches a raw-SQL or future-verb half-write, not a non-human caller of
-    // `declareDependencyLineProducer`, which always stamps all three columns.
+    const retracted = await inA((tx) => retractDependencyLineProducer(tx, orgA.orgId, key));
+    expect(retracted?.producerObjectId).toBe(producer);
+    // The row is GONE: its existence IS the declaration, so there is no half-state to leave behind
+    // — no stale "declared at" beside a null producer, which would read as evidence a human had
+    // asserted something they had retracted.
+    expect(await inA((tx) => getDependencyLineProducer(tx, orgA.orgId, key))).toBeNull();
+    // ...and both majors are pollable again, which is what retraction MEANS.
+    expect(
+      (
+        await inA((tx) =>
+          listThirdPartyDependencyLinesByIds(tx, orgA.orgId, [line.id, newMajor.id])
+        )
+      ).length
+    ).toBe(2);
+    // Retracting again is a no-op that says so, rather than throwing on the second operator who
+    // reaches for it.
+    expect(await inA((tx) => retractDependencyLineProducer(tx, orgA.orgId, key))).toBeNull();
+
+    // A HALF-WRITTEN DECLARATION IS UNREPRESENTABLE, not refused by a CHECK. `0061`'s
+    // `dependency_lines_internal_is_declared` existed only because three columns hung off a row
+    // that existed for another reason; here the row's existence is the declaration and every column
+    // is NOT NULL, so raw SQL cannot store one either.
     const raw = await RawScpAppClient.connect();
     await raw.setOrgContext(orgA.orgId);
     await expect(
-      raw.query("UPDATE dependency_lines SET produced_by_object_id = $1 WHERE id = $2", [
-        producer,
-        line.id
-      ])
-    ).rejects.toThrow(/dependency_lines_internal_is_declared/i);
-
-    // A link with a timestamp but NO DECLARING PRINCIPAL is refused too. Without the second conjunct
-    // of the CHECK this row would store cleanly, and `produced_by_declared_by_object_id`'s own
-    // COMMENT — "which principal asserted this line is internal?" must be answerable — would be
-    // false while every constraint passed.
-    await expect(
       raw.query(
-        `UPDATE dependency_lines
-            SET produced_by_object_id = $1, produced_by_declared_at = now()
-          WHERE id = $2`,
-        [producer, line.id]
+        `INSERT INTO dependency_line_producers
+           (org_id, ecosystem, coordinate, producer_object_id, declared_by_object_id)
+         VALUES ($1, 'maven', 'com.acme:half-written', $2, NULL)`,
+        [orgA.orgId, producer]
       )
-    ).rejects.toThrow(/dependency_lines_internal_is_declared/i);
+    ).rejects.toThrow(/not[- ]null/i);
 
-    // ...and a FABRICATED principal is refused by the foreign key, so the answer cannot be a uuid
-    // that names nothing either. NULL and "made up" are the two ways the question goes unanswerable.
+    // ...and a FABRICATED principal is refused by the foreign key, so "which principal asserted
+    // this coordinate is ours" cannot be answered with a uuid that names nothing either. NULL and
+    // "made up" are the two ways the question goes unanswerable.
     await expect(
       raw.query(
-        `UPDATE dependency_lines
-            SET produced_by_object_id = $1, produced_by_declared_at = now(),
-                produced_by_declared_by_object_id = $2
-          WHERE id = $3`,
-        [producer, uuidv7(), line.id]
+        `INSERT INTO dependency_line_producers
+           (org_id, ecosystem, coordinate, producer_object_id, declared_by_object_id)
+         VALUES ($1, 'maven', 'com.acme:fabricated', $2, $3)`,
+        [orgA.orgId, producer, uuidv7()]
       )
     ).rejects.toThrow(/foreign key/i);
 
-    // NEGATIVE CONTROL for all three rejections: the SAME raw statement with a real principal
-    // succeeds, so the failures above are the constraints doing work and not a malformed statement.
+    // NEGATIVE CONTROL for both rejections: the SAME raw statement with a real principal succeeds,
+    // so the failures above are the constraints doing work and not a malformed statement.
     const accepted = await raw.query(
-      `UPDATE dependency_lines
-          SET produced_by_object_id = $1, produced_by_declared_at = now(),
-              produced_by_declared_by_object_id = $2
-        WHERE id = $3`,
-      [producer, adminObjectIdA, line.id]
+      `INSERT INTO dependency_line_producers
+         (org_id, ecosystem, coordinate, producer_object_id, declared_by_object_id)
+       VALUES ($1, 'maven', 'com.acme:accepted', $2, $3)`,
+      [orgA.orgId, producer, adminObjectIdA]
     );
     expect(accepted.rowCount).toBe(1);
     await raw.close();
@@ -522,19 +541,27 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // vacuous shape where a test is green for the wrong reason.
     const declared = await inA((tx) =>
       declareDependencyLineProducer(tx, orgA.orgId, {
-        lineId: line.id,
-        producedByObjectId: producer,
+        ecosystem: "oci",
+        coordinate: "registry.internal/base/node",
+        producerObjectId: producer,
         declaredByObjectId: adminObjectIdA
       })
     );
-    expect(declared.producedByObjectId).toBe(producer);
+    expect(declared.producerObjectId).toBe(producer);
 
     const observed = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "22.6.0-alpine",
-        latestDigest: "sha256:" + "b".repeat(64)
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "22.6.0-alpine",
+          latestDigest: "sha256:" + "b".repeat(64)
+        },
+        // The ingress names the SAME component the declaration above names — the success direction
+        // of `line_transferred`. Point it at any other component and this write is refused.
+        { kind: "internal", producerObjectId: producer }
+      )
     );
     expect(
       observed.recorded,
@@ -548,12 +575,20 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(observed.line.coordinate).toBe("registry.internal/base/node");
     expect(observed.line.major).toBe("22");
     expect(observed.line.tagPattern).toBe("-alpine");
-    // ...and so is the producer link, all three columns of it. Registry observation and operator
-    // declaration are different ingresses (ADR-0032 §7); the observation's SET list reaching
-    // `produced_by_*` is a one-key edit that no constraint and no type would catch.
-    expect(observed.line.producedByObjectId).toBe(producer);
-    expect(observed.line.producedByDeclaredAt).toBe(declared.producedByDeclaredAt);
-    expect(observed.line.producedByDeclaredByObjectId).toBe(adminObjectIdA);
+    // ...and so is the producer declaration. Registry observation and operator declaration are
+    // different ingresses (ADR-0032 §7), and since drizzle/0068 they are different TABLES — which
+    // is a stronger separation than the old disjoint SET list, because widening `latest_*`'s writer
+    // by one key can no longer reach the declaration at all. Asserted rather than assumed: the two
+    // could still be conflated by a future verb that wrote both.
+    const stillDeclared = await inA((tx) =>
+      getDependencyLineProducer(tx, orgA.orgId, {
+        ecosystem: "oci",
+        coordinate: "registry.internal/base/node"
+      })
+    );
+    expect(stillDeclared?.producerObjectId).toBe(producer);
+    expect(stillDeclared?.declaredAt).toBe(declared.declaredAt);
+    expect(stillDeclared?.declaredByObjectId).toBe(adminObjectIdA);
   });
 
   it("declaring a producer AFTER the head was observed cannot clobber the observation", async () => {
@@ -583,49 +618,68 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
 
     // OBSERVATION FIRST — this is the state the declaration must leave alone.
     const written = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "22.7.0",
-        latestDigest: digest
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "22.7.0",
+          latestDigest: digest
+        },
+        { kind: "third_party" }
+      )
     );
     expect(written.recorded).toBe(true);
     if (!written.recorded) throw new Error("unreachable");
     const observed = written.line;
     expect(observed.latestObservedAt).not.toBeNull();
 
+    const coord = {
+      ecosystem: "oci",
+      coordinate: "registry.internal/base/declare-after-observe"
+    } as const;
     const declared = await inA((tx) =>
       declareDependencyLineProducer(tx, orgA.orgId, {
-        lineId: line.id,
-        producedByObjectId: producer,
+        ...coord,
+        producerObjectId: producer,
         declaredByObjectId: adminObjectIdA
       })
     );
-    // NEGATIVE CONTROL: the declaration genuinely landed on this row, so the three surviving
-    // observation fields below are not "the update matched nothing".
-    expect(declared.producedByObjectId).toBe(producer);
-    expect(declared.producedByDeclaredAt).not.toBeNull();
+    // NEGATIVE CONTROL: the declaration genuinely landed, so the three surviving observation fields
+    // below are not "the write matched nothing".
+    expect(declared.producerObjectId).toBe(producer);
+    expect(declared.declaredAt).not.toBeNull();
 
-    // All THREE observation columns survive — the trio moves together (0061:215-221), so pinning
-    // only `latest_version` would leave a SET list that nulls the digest and the timestamp green.
-    expect(declared.latestVersion).toBe("22.7.0");
-    expect(declared.latestDigest).toBe(digest);
-    expect(declared.latestObservedAt).toBe(observed.latestObservedAt);
+    // All THREE observation columns survive the REPO VERB — the trio moves together (0061:215-221),
+    // so pinning only `latest_version` would leave a writer that nulls the digest and the timestamp
+    // green.
+    const afterDeclare = await inA((tx) => getDependencyLineById(tx, orgA.orgId, line.id));
+    expect(afterDeclare?.latestVersion).toBe("22.7.0");
+    expect(afterDeclare?.latestDigest).toBe(digest);
+    expect(afterDeclare?.latestObservedAt).toBe(observed.latestObservedAt);
 
-    // RETRACTION runs the same SET list down its other branch (`retracting`,
-    // dependency-inventory-repo.ts:204). Un-marking a line internal is no more entitled to erase the
-    // registry's observation than marking it was.
-    const retracted = await inA((tx) =>
-      declareDependencyLineProducer(tx, orgA.orgId, {
-        lineId: line.id,
-        producedByObjectId: null,
-        declaredByObjectId: adminObjectIdA
-      })
-    );
-    expect(retracted.producedByObjectId).toBeNull();
-    expect(retracted.latestVersion).toBe("22.7.0");
-    expect(retracted.latestDigest).toBe(digest);
-    expect(retracted.latestObservedAt).toBe(observed.latestObservedAt);
+    // AND THIS IS WHERE THE PROPERTY CHANGED SHAPE RATHER THAN WEAKENING (ADR-0032 §7e).
+    // Declaring a producer DOES clear the head — that is deliberate, because a poisoned public head
+    // would otherwise survive the declaration that exists to undo it. But the clearing is a
+    // SEPARATE, NAMED writer (`resetLineHead`) that the two verbs in `routes/dependency-producers.ts`
+    // call explicitly. The repo verb above still writes only the declaration, so the "one writer of
+    // the latest_* trio" property is intact with exactly one documented exception rather than
+    // dissolved into whichever function happened to need it.
+    const reset = await inA((tx) => resetLineHead(tx, orgA.orgId, line.id));
+    expect(reset.cleared).toBe(true);
+    expect(reset.before.latestVersion).toBe("22.7.0");
+    const cleared = await inA((tx) => getDependencyLineById(tx, orgA.orgId, line.id));
+    expect(cleared?.latestVersion).toBeNull();
+    expect(cleared?.latestDigest).toBeNull();
+    expect(cleared?.latestObservedAt).toBeNull();
+    // NEGATIVE CONTROL: a second reset reports it cleared NOTHING, so `cleared` is about the row
+    // and is not hardcoded true.
+    expect((await inA((tx) => resetLineHead(tx, orgA.orgId, line.id))).cleared).toBe(false);
+
+    // RETRACTION is likewise only the declaration's business at this layer.
+    const retracted = await inA((tx) => retractDependencyLineProducer(tx, orgA.orgId, coord));
+    expect(retracted?.producerObjectId).toBe(producer);
+    expect(await inA((tx) => getDependencyLineProducer(tx, orgA.orgId, coord))).toBeNull();
   });
 
   // MUTATION LOG for the two tests below — applied, watched fail, reverted, watched pass:
@@ -648,11 +702,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       })
     );
     const withDigest = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.0",
-        latestDigest: digest
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.0",
+          latestDigest: digest
+        },
+        { kind: "third_party" }
+      )
     );
     expect(withDigest.recorded).toBe(true);
     if (!withDigest.recorded) throw new Error("unreachable");
@@ -661,11 +720,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // RE-OBSERVING THE SAME VERSION with no digest keeps the one already resolved FOR THAT VERSION —
     // it is still true, and discarding it would lose a fact for nothing.
     const restated = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.0",
+          latestDigest: null
+        },
+        { kind: "third_party" }
+      )
     );
     expect(restated.recorded).toBe(true);
     if (!restated.recorded) throw new Error("unreachable");
@@ -675,11 +739,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // ADVANCING with no digest CLEARS it. This is the whole defect: `3.20.1` is not those bytes, and
     // a row saying it is, is a false statement in an audit record.
     const advanced = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.1",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.1",
+          latestDigest: null
+        },
+        { kind: "third_party" }
+      )
     );
     expect(advanced.recorded).toBe(true);
     if (!advanced.recorded) throw new Error("unreachable");
@@ -691,11 +760,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // observation having none rather than about advances losing digests.
     const next = "sha256:" + "e".repeat(64);
     const advancedWithDigest = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.2",
-        latestDigest: next
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.2",
+          latestDigest: next
+        },
+        { kind: "third_party" }
+      )
     );
     expect(advancedWithDigest.recorded).toBe(true);
     if (!advancedWithDigest.recorded) throw new Error("unreachable");
@@ -714,21 +788,31 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
       })
     );
     const head = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "1.10.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "1.10.0",
+          latestDigest: null
+        },
+        { kind: "third_party" }
+      )
     );
     expect(head.recorded).toBe(true);
 
     // A HOTFIX ON AN OLDER MINOR of the same line. A real release, and not this line's head.
     const behind = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "1.9.10",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "1.9.10",
+          latestDigest: null
+        },
+        { kind: "third_party" }
+      )
     );
     expect(behind.recorded).toBe(false);
     if (behind.recorded) throw new Error("unreachable");
@@ -737,11 +821,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
 
     // A RELEASE FROM ANOTHER LINE, refused for its own reason.
     const offLine = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "2.0.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "2.0.0",
+          latestDigest: null
+        },
+        { kind: "third_party" }
+      )
     );
     expect(offLine.recorded).toBe(false);
     if (offLine.recorded) throw new Error("unreachable");
@@ -750,11 +839,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     // POSITIVE CONTROL: a genuinely newer release on the line still lands, so the two refusals are
     // about the versions and not about a door that refuses everything.
     const ahead = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "1.11.0",
-        latestDigest: null
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "1.11.0",
+          latestDigest: null
+        },
+        { kind: "third_party" }
+      )
     );
     expect(ahead.recorded).toBe(true);
     if (!ahead.recorded) throw new Error("unreachable");
@@ -778,17 +872,23 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     const line = await inA((tx) => upsertDependencyLine(tx, orgA.orgId, key));
     const declared = await inA((tx) =>
       declareDependencyLineProducer(tx, orgA.orgId, {
-        lineId: line.id,
-        producedByObjectId: producer,
+        ecosystem: key.ecosystem,
+        coordinate: key.coordinate,
+        producerObjectId: producer,
         declaredByObjectId: adminObjectIdA
       })
     );
     const written = await inA((tx) =>
-      recordDependencyLineHead(tx, orgA.orgId, {
-        lineId: line.id,
-        latestVersion: "3.20.1",
-        latestDigest: "sha256:" + "c".repeat(64)
-      })
+      recordDependencyLineHead(
+        tx,
+        orgA.orgId,
+        {
+          lineId: line.id,
+          latestVersion: "3.20.1",
+          latestDigest: "sha256:" + "c".repeat(64)
+        },
+        { kind: "internal", producerObjectId: producer }
+      )
     );
     expect(written.recorded).toBe(true);
     if (!written.recorded) throw new Error("unreachable");
@@ -805,10 +905,16 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     expect(reingested.tagPattern).toBe("-alpine");
 
     // The operator's declaration survives an ingestion run. If it did not, a nightly manifest sweep
-    // would quietly return every internal line to third-party.
-    expect(reingested.producedByObjectId).toBe(producer);
-    expect(reingested.producedByDeclaredAt).toBe(declared.producedByDeclaredAt);
-    expect(reingested.producedByDeclaredByObjectId).toBe(adminObjectIdA);
+    // would quietly return every internal coordinate to third-party.
+    const survivingDeclaration = await inA((tx) =>
+      getDependencyLineProducer(tx, orgA.orgId, {
+        ecosystem: key.ecosystem,
+        coordinate: key.coordinate
+      })
+    );
+    expect(survivingDeclaration?.producerObjectId).toBe(producer);
+    expect(survivingDeclaration?.declaredAt).toBe(declared.declaredAt);
+    expect(survivingDeclaration?.declaredByObjectId).toBe(adminObjectIdA);
     // ...and so does M21.4's observation. A component declaring `3.18` says nothing about the head
     // of the line, so ingestion must not be able to overwrite what the registry poll recorded.
     expect(reingested.latestVersion).toBe("3.20.1");
@@ -1281,5 +1387,62 @@ describe("dependency inventory substrate (ADR-0032, migration 0060)", () => {
     //   - What actually discourages that route is the contract, not this test: no shape in
     //     `packages/schemas/src/dependencies.ts` returns a LINE's own dependencies, so there is
     //     nothing to loop into without adding one — which is a review-time decision, deliberately.
+  });
+});
+
+/**
+ * ================================================================================================
+ * THE LIVE DATABASE'S OWN DESCRIPTION OF THE TABLE AGREES WITH §7d (M21.7 follow-up, LOW 6)
+ * ================================================================================================
+ * `drizzle/0061` ended `dependency_lines`'s COMMENT with "Does NOT federate; each domain derives its
+ * own." ADR-0032 §7d (2026-08-17) reverses the second half: all dependency automation is
+ * commander-only, so no domain but the commander derives anything here and an EMPTY inventory on an
+ * outpost is the correct state.
+ *
+ * WHY A TEST AND NOT JUST A MIGRATION. This is the exact artefact CLAUDE.md's census rule warns
+ * about — a well-written comment that talks the next reader into deleting a guard. An operator
+ * running `\d+ dependency_lines` on an outpost, or an engineer reading the catalog while wondering
+ * why the ingestion loop refuses there, meets ONE authoritative-looking sentence, and it used to say
+ * the guard was wrong. 0061 is merged and cannot be edited in place, so `drizzle/0066` restates it —
+ * and this asserts the RESTATEMENT REACHED THE DATABASE rather than only the file, which is the
+ * difference between a migration that is written and a migration that is journalled and applied.
+ *
+ * Read over the RAW `scp_app` connection: the catalog is what an operator sees, not what the ORM
+ * believes.
+ */
+describe("dependency_lines' COMMENT (drizzle/0066 — the §7d restatement is APPLIED, not just written)", () => {
+  it("carries the §7d reversal, with 0061's clause quoted and MARKED rather than left standing", async () => {
+    const raw = await RawScpAppClient.connect();
+    try {
+      const result = await raw.query<{ comment: string | null }>(
+        "SELECT obj_description('dependency_lines'::regclass, 'pg_class') AS comment"
+      );
+      const comment = result.rows[0]?.comment ?? "";
+      // Anti-vacuity first: a dropped or never-applied comment is an empty string, and every
+      // "does not contain" assertion below would pass over it.
+      expect(comment.length).toBeGreaterThan(200);
+      expect(comment).toContain("ADR-0032");
+
+      // THE REVERSED CLAUSE APPEARS EXACTLY ONCE AND ONLY IN ITS MARKED FORM. It is quoted rather
+      // than deleted, per the ADR-0026 D4 convention this milestone's docs follow — an original
+      // clause is preserved verbatim beside what overturned it, never silently rewritten, because a
+      // reader who remembers the old rule has to be able to find out what happened to it. But a
+      // `\d+` reader sees one paragraph with no section headings, so the quote MUST NOT be able to
+      // drift away from its marker: this asserts the two as one string, which is the only form in
+      // which the sentence is safe to leave in the catalog.
+      const marked = '0061 said "each domain derives its own" and that half is REVERSED';
+      expect(comment).toContain(marked);
+      expect(comment.split("each domain derives its own").length - 1).toBe(1);
+      // The half that was NOT reversed is still there (§3's projection-table argument is what
+      // justifies the principle-2 bend, and dropping it would overcorrect)...
+      expect(comment).toContain("Does NOT federate");
+      // ...and what replaced it says where the rows live and what an empty table on an outpost
+      // MEANS, because "not each domain" alone does not tell an operator whether to worry.
+      expect(comment).toMatch(/COMMANDER ONLY/i);
+      expect(comment).toContain("EMPTY on an outpost");
+      expect(comment).toContain("§7d");
+    } finally {
+      await raw.close();
+    }
   });
 });

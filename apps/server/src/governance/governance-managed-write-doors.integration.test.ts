@@ -1,0 +1,1200 @@
+import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, isNull } from "drizzle-orm";
+import {
+  createTestOrg,
+  createTestUser,
+  listenTestServer,
+  type ListeningTestServer,
+  type TestOrg,
+  type TestUser
+} from "../test-support/harness.js";
+import { withTenantTx } from "../db/tenant-tx.js";
+import { objects, roleBindings, roles } from "../db/schema.js";
+import { GOVERNANCE_MANAGED_OBJECT_TYPE_IDS } from "./governance-managed-types.js";
+
+/**
+ * THE `policy:write` DOOR CENSUS — every write door that takes a CALLER-SUPPLIED `typeId`.
+ *
+ * ================================================================================================
+ * THE PROPERTY
+ * ================================================================================================
+ * `policy:write` is a DELIBERATELY SEPARATE permission from `object:write`: `0010_governance.sql`
+ * grants it to Administrator and Owner only, while Operator and Approver hold `object:write` and
+ * never `policy:write`. Two checks make that split mean something, and they are a PAIR — every
+ * door that installs one must install the other:
+ *
+ *   (1) the permission itself — a `policy`/`control` write needs `policy:write`, not `object:write`
+ *       (`governance/governance-managed-types.ts`'s `isGovernanceManagedObjectType`); and
+ *   (2) `governance/policy-scope-authz.ts`'s `assertPolicyScopeWithinAuthority` — a policy's
+ *       DECLARED `properties.scope` is bound to the author's own authority, so a component-scoped
+ *       author cannot publish an org-wide policy (CRITICAL #1b).
+ *
+ * Any door that reaches `createObject`/`updateObject`/`upsertObjectByUrn` with a `typeId` the
+ * CALLER chose can mint a `policy` — and a `policy` with no `scope` matches everything in the org
+ * (`governance/policy-resolve.ts`'s `listPolicyCandidates` selects every live `policy` row and the
+ * unscoped ones match every target). So an unguarded door of that shape is an org-wide governance
+ * write handed to whoever holds plain `object:write`.
+ *
+ * ================================================================================================
+ * THE FULL CENSUS (M21.7 — filterless, measured not read; recorded in ADR-0032 §6a)
+ * ================================================================================================
+ * FIVE doors take a `typeId` the caller chose. Three were wrong, and all three for the same reason:
+ * their guard sets were assembled by censusing a DIFFERENT sibling (peer-bound config, pair-bound
+ * identity, service membership), so the governance guard those censuses were modelled on is the one
+ * none of them went looking for.
+ *
+ *  # DOOR                                    typeId from         BEFORE             AFTER (M21.7)
+ *  1 POST /federation/overlays               body.typeId         object:write ONLY  + policy:write @org root
+ *  2 POST /discovery/accept                  proposal.objects[]  object:write ONLY  + type refused outright
+ *  3 {POST,PATCH,PUT,DELETE} /objects/{type} path param          type refused       unchanged (measured)
+ *  4 POST /plans + /plans/{id}/apply         manifest.objects[]  policy:write+scope unchanged (measured)
+ *  5 POST /federation/hand-fill              body.typeId         federation:write   + policy:write @org root
+ *
+ * DOORS 1 AND 2 WERE LIVE. An Operator — plain `object:write` at the org root, `policy:write`
+ * nowhere — POSTed `{typeId:"policy", properties:{enforcement:"required", effects:[{requireApprovals:
+ * {count:99, fromRole:"Owner", scope:"organization"}}]}}` and got 201 from each: twice over, a live
+ * org-wide policy demanding an unmeetable quorum. On the overlay door
+ * `assertPolicyOverlayOnlyAddsStrictness` never even ran — it is gated on base AND overlay both being
+ * `policy`, and the base was a service.
+ *
+ * DOOR 5 WAS NOT LIVE, and closing it anyway is the point. `federation:write`
+ * (`0012_federation.sql:218-219`) and `policy:write` (`0010_governance.sql:174-175`) both land on
+ * Administrator and Owner, so nothing reachable through today's API holds one without the other —
+ * safety by coincidence between two grant lists in two unrelated migrations, undone by a single
+ * org-defined role. Its case below builds that role rather than trusting the accident.
+ *
+ * THREE REMEDIES, TWO SHAPES, chosen by whether the type must stay serviceable at that door:
+ *   - OVERLAY and HAND-FILL keep serving `policy` and take the PERMISSION. DESIGN §13 makes both
+ *     canonical: an overlay locally annotating a commander-distributed global policy, and an
+ *     air-gapped outpost keying a commander-origin object in by hand. Refusing the type would delete
+ *     the feature and leave `assertPolicyOverlayOnlyAddsStrictness` dead.
+ *   - DISCOVERY refuses the TYPE, for every caller including one holding `policy:write`: no plugin
+ *     proposes governance documents, and a proposal carries no scope for the binding to bind.
+ *
+ * Journal replay (`federation/import-repo.ts`) is deliberately NOT a door: `typeId` arrives from a
+ * signature- and chain-verified bundle, and its `object_upsert` branch has no try/catch, so one
+ * refusal aborts a whole signed bundle (ADR-0032 §6a). A hostile peer is a PAIRING problem.
+ *
+ * ================================================================================================
+ * WHAT THIS FILE ASSERTS
+ * ================================================================================================
+ *  - EVERY door, including the ones already closed — "listed as closed" is not "measured closed",
+ *    and the doors found open here had been listed. Each refusal case asserts the SPECIFIC violation
+ *    (status + the named permission or type in the detail) and that NOTHING was written; each door
+ *    with a permission remedy also has a control proving the fix did not simply close the door.
+ *  - THE PROPERTY over the whole door table at once, and over `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS`
+ *    rather than over today's two type names — because per-door cases are precisely how this
+ *    survived: DOOR 2's block was censused for the peer-bound guard and never re-asked for this one,
+ *    and DOOR 5 was "listed" by a case that only proved an Operator could not reach it.
+ *  - THE CENSUS ITSELF, by source scan (second `describe`, in three layers: the choke point's
+ *    exported write surface, everything that writes the `objects` table at all, and every
+ *    runtime-valued `typeId` handed to that surface). Nothing above goes red when a SIXTH door
+ *    appears, and a census never re-run is the property behind every finding here. That describe
+ *    also states what it still CANNOT see, because a completeness test that over-claims is worse
+ *    than none — it stops the next person looking.
+ *  - THE SCAN ITSELF, by a fourth case running the layer-3 walker over synthetic sources. That
+ *    exists because round 1's statement of what the scan could not see was PROSE, and the prose was
+ *    wrong: it claimed an unreadable call "fails safe by construction", and a one-line call proved
+ *    otherwise the next day. What a scan can and cannot see is now a test, not a paragraph.
+ */
+
+/** An UNSCOPED, `required` policy: org-wide blast radius with an unmeetable approval quorum. */
+const ORG_WIDE_POLICY_PROPERTIES = {
+  enforcement: "required",
+  effects: [{ requireApprovals: { count: 99, fromRole: "Owner", scope: "organization" } }]
+} as const;
+
+describe("policy:write door census: a caller-supplied typeId cannot mint governance objects (Testcontainers)", () => {
+  let server: ListeningTestServer;
+  let org: TestOrg;
+  /** `object:write` + `relationship:write` at the org root, and NO `policy:write` anywhere. */
+  let operator: TestUser;
+  /**
+   * A REAL, PAIRED commander peer for the hand-fill cases — and the fixture is load-bearing.
+   *
+   * These cases originally passed `peer: randomUUID()`, a peer that does not exist. `handFillObject`
+   * runs `assertGovernanceAuthorityForHandFill` BEFORE `getPeerByIdOrName`, so the refusal under test
+   * still fired — but the case's "nothing was written" half was VACUOUS: with no such peer the write
+   * could not have happened whatever the guard did, and unwiring the guard turned the case red with
+   * a 404 about the peer rather than letting the policy row land. Green (and red) for a reason
+   * unrelated to what the case claims. With a real peer, the ONLY thing standing between the
+   * request and a live org-wide `policy` row is the guard, which is the whole point of the case.
+   */
+  let handFillPeer: string;
+
+  beforeAll(async () => {
+    server = await listenTestServer();
+    org = await createTestOrg(server, "gov-doors");
+    operator = await createTestUser(server, org, [{ role: "Operator", scope: org.orgId }]);
+    handFillPeer = await pairCommanderPeer();
+  }, 180_000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  /** Live rows of a governance type in this org with this name — "nothing was written". */
+  async function governanceRowsByName(typeId: string, name: string) {
+    return withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ id: objects.id, properties: objects.properties })
+        .from(objects)
+        .where(
+          and(
+            eq(objects.orgId, org.orgId),
+            eq(objects.typeId, typeId),
+            eq(objects.name, name),
+            isNull(objects.deletedAt)
+          )
+        )
+    );
+  }
+
+  const policyRowsByName = (name: string) => governanceRowsByName("policy", name);
+
+  async function post(url: string, token: string, payload: unknown) {
+    return server.app.inject({
+      method: "POST",
+      url,
+      headers: { authorization: `Bearer ${token}` },
+      payload: payload as Record<string, unknown>
+    });
+  }
+
+  /**
+   * A subject holding `federation:write` at the org root and NOT `policy:write` — the actor no
+   * BUILT-IN role can express (both permissions land on Administrator and Owner and nowhere else),
+   * built here through the org-defined-role mechanism `roles.org_id` exists for. This is the shape
+   * that turns DOOR 5's coincidence into the overlay hole, so the guard is tested against it rather
+   * than against the role table's current accident.
+   */
+  async function createFederationOnlyUser(): Promise<TestUser> {
+    // Viewer, purely so the harness mints the auth row and a live token; `object:read` is not any
+    // part of what is under test and grants no write anywhere.
+    const user = await createTestUser(server, org, [{ role: "Viewer", scope: org.orgId }]);
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const roleId = randomUUID();
+      await tx.insert(roles).values({
+        id: roleId,
+        orgId: org.orgId,
+        name: `federation-only-${randomUUID().slice(0, 8)}`,
+        permissions: ["federation:write"]
+      });
+      await tx.insert(roleBindings).values({
+        id: randomUUID(),
+        orgId: org.orgId,
+        subjectId: user.objectId,
+        roleId,
+        scopeObjectId: org.orgId,
+        effect: "allow"
+      });
+    });
+    return user;
+  }
+
+  /** Pairs a `commander` peer, so a hand-fill can actually reach `upsertObjectByUrn`. */
+  async function pairCommanderPeer(): Promise<string> {
+    const domainId = randomUUID();
+    const { publicKey } = generateKeyPairSync("ed25519");
+    const res = await post("/api/v1/federation/peers", org.adminToken, {
+      domainId,
+      name: `gov-doors-cmdr-${domainId.slice(0, 8)}`,
+      role: "commander",
+      publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64")
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    return domainId;
+  }
+
+  /** A plain, non-governance base object for an overlay to annotate. */
+  async function createBaseService(): Promise<string> {
+    const res = await post("/api/v1/objects/service", org.adminToken, {
+      name: `gov-doors-base-${randomUUID().slice(0, 8)}`
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    return (res.json() as { id: string }).id;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // DOOR 1 — the federation overlay. THE HOLE.
+  // -------------------------------------------------------------------------------------------
+
+  it("DOOR 1: an Operator cannot mint an org-wide policy through the overlay route", async () => {
+    const base = await createBaseService();
+    const name = `overlay-escalation-${randomUUID().slice(0, 8)}`;
+
+    const res = await post("/api/v1/federation/overlays", operator.token, {
+      base,
+      typeId: "policy",
+      name,
+      properties: ORG_WIDE_POLICY_PROPERTIES
+    });
+
+    expect(res.statusCode, res.body).toBe(403);
+    // The SPECIFIC violation: the missing permission, named. Not a count, not the prose.
+    expect(res.body).toMatch(/policy:write/);
+    expect(
+      await policyRowsByName(name),
+      "a refusal that still stored the row is not a refusal"
+    ).toHaveLength(0);
+  });
+
+  it("DOOR 1 (control): an Administrator CAN still overlay a policy — the door did not close", async () => {
+    // DESIGN §13's canonical overlay case is annotating a commander-distributed global policy, and
+    // `assertPolicyOverlayOnlyAddsStrictness` exists only for policy-over-policy overlays. Without
+    // this case, DOOR 1 above is satisfied by an overlay route that refuses `policy` outright.
+    const basePolicy = await post("/api/v1/policies", org.adminToken, {
+      name: `gov-doors-base-policy-${randomUUID().slice(0, 8)}`,
+      properties: { enforcement: "advisory" }
+    });
+    expect(basePolicy.statusCode, basePolicy.body).toBe(201);
+    const name = `overlay-legitimate-${randomUUID().slice(0, 8)}`;
+
+    const res = await post("/api/v1/federation/overlays", org.adminToken, {
+      base: (basePolicy.json() as { id: string }).id,
+      typeId: "policy",
+      name,
+      properties: { enforcement: "required" }
+    });
+
+    expect(res.statusCode, res.body).toBe(201);
+    expect(await policyRowsByName(name)).toHaveLength(1);
+  });
+
+  it("DOOR 1 (org-root authority): narrow policy:write does not carry — the guard asks at the ORG ROOT", async () => {
+    // ============================================================================================
+    // THIS CASE WAS RE-AIMED IN M21.7. It was written as "the overlay route also runs
+    // `assertPolicyScopeWithinAuthority`", asserting `/org-wide policy/` — that string belongs to
+    // that function — with a narrow Administrator (`Administrator` at one service, nothing at the
+    // org root) as the actor. Both halves were wrong, and MEASURED wrong, not argued wrong:
+    //
+    //  1. That actor never reached either governance guard. The route's PRE-EXISTING org-root
+    //     check refuses it first — observed detail: "subject '…' lacks 'object:write' at scope
+    //     '<orgId>'". So the case was green-able by code that had no governance guard at all.
+    //  2. `assertPolicyScopeWithinAuthority` would be INERT AS AUTHORIZATION on this path anyway,
+    //     which is why `federation/overlay-repo.ts` deliberately does not call it. It has exactly
+    //     two branches: the `scope.objectRef` branch wants `policy:write` at-or-above that object,
+    //     and the broader branch (unscoped / selector / group) wants it at the org root. The
+    //     overlay guard already demands org-root `policy:write`, and `authz/resolve.ts`'s
+    //     `scope_expand` walks UPWARD from the checked scope — so an org-root grant satisfies a
+    //     check at any descendant. Everyone who passes the overlay guard passes both branches.
+    //     (Its one non-authorization behaviour, a 400 for a `scope.objectRef` that resolves to
+    //     nothing, is not what this case was for; a dangling ref matches no target and fails safe.)
+    //
+    // What the case is now: the guard's SCOPE, which is the part of it a mutation can silently
+    // weaken. Swap `scopeObjectId: input.orgId` in `createOverlay` for the base object's id and the
+    // Operator case above stays green while this one goes red. The actor therefore holds
+    // `object:write` AT THE ORG ROOT (so it clears the route check and actually reaches the guard)
+    // and `policy:write` only at one service — authority to author governance SOMEWHERE, which is
+    // not authority to author it at the org-root containment every overlay is created under.
+    // ============================================================================================
+    const base = await createBaseService();
+    const narrowPolicyAuthor = await createTestUser(server, org, [
+      { role: "Operator", scope: org.orgId },
+      { role: "Administrator", scope: base }
+    ]);
+    const name = `overlay-narrow-authority-${randomUUID().slice(0, 8)}`;
+
+    const res = await post("/api/v1/federation/overlays", narrowPolicyAuthor.token, {
+      base,
+      typeId: "policy",
+      name,
+      properties: ORG_WIDE_POLICY_PROPERTIES
+    });
+
+    expect(res.statusCode, res.body).toBe(403);
+    // The SPECIFIC violation, and the part that distinguishes this case from the one above: the
+    // refusal must name the permission AND that it is wanted at the organization root.
+    expect(res.body).toMatch(/policy:write/);
+    expect(res.body).toMatch(/organization root/);
+    expect(await policyRowsByName(name)).toHaveLength(0);
+  });
+
+  it("DOOR 1 (control): a non-governance overlay still needs only object:write", async () => {
+    // Without this, DOOR 1 is equally satisfied by an overlay route that demands `policy:write`
+    // for EVERY type — which would break the feature for every ordinary annotation.
+    const base = await createBaseService();
+    const res = await post("/api/v1/federation/overlays", operator.token, {
+      base,
+      typeId: "service",
+      name: `overlay-ordinary-${randomUUID().slice(0, 8)}`
+    });
+    expect(res.statusCode, res.body).toBe(201);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // DOOR 2 — discovery accept. THE SECOND HOLE.
+  // -------------------------------------------------------------------------------------------
+
+  it("DOOR 2: an Operator cannot mint an org-wide policy through a hand-written discovery proposal", async () => {
+    const name = `discovery-escalation-${randomUUID().slice(0, 8)}`;
+
+    const res = await post("/api/v1/discovery/accept", operator.token, {
+      proposal: {
+        objects: [{ typeId: "policy", name, properties: ORG_WIDE_POLICY_PROPERTIES }],
+        relationships: []
+      }
+    });
+
+    expect(res.statusCode, res.body).toBe(403);
+    // The SPECIFIC violation: the refused type is NAMED, and the reason is the governance gate.
+    // `/policies/` alone would also be satisfied by the peer-bound refusal's prose.
+    expect(res.body).toMatch(/'policy' objects/);
+    expect(res.body).toMatch(/policy:write/);
+    expect(await policyRowsByName(name)).toHaveLength(0);
+  });
+
+  it("DOOR 2 (control): an ordinary discovery proposal is still accepted", async () => {
+    const name = `discovery-ordinary-${randomUUID().slice(0, 8)}`;
+    const res = await post("/api/v1/discovery/accept", operator.token, {
+      proposal: { objects: [{ typeId: "service", name }], relationships: [] }
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    expect((res.json() as { createdObjectIds: string[] }).createdObjectIds).toHaveLength(1);
+  });
+
+  it("DOOR 2: an ADMIN cannot smuggle one either — the type is refused, not the permission", async () => {
+    // Discovery is an IMPORT surface: nothing discovers governance documents, and a proposal
+    // carries no scope binding for `assertPolicyScopeWithinAuthority` to bind. So the refusal here
+    // is about the TYPE and must hold for every caller, including one who legitimately holds
+    // `policy:write`. If it is ever relaxed into a permission check, this case goes red.
+    const name = `discovery-admin-${randomUUID().slice(0, 8)}`;
+    const res = await post("/api/v1/discovery/accept", org.adminToken, {
+      proposal: {
+        objects: [{ typeId: "control", name, properties: { category: "security" } }],
+        relationships: []
+      }
+    });
+    expect(res.statusCode, res.body).toBe(403);
+    expect(res.body).toMatch(/'control' objects/);
+    // Nothing was written for the OTHER governance type either.
+    expect(await governanceRowsByName("control", name)).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // DOOR 3 — the generic `/objects/{type}` family. Listed as closed; MEASURED closed, all verbs.
+  // -------------------------------------------------------------------------------------------
+
+  it("DOOR 3: every write verb of /objects/{type} refuses the governance types", async () => {
+    const cases: Array<{ method: "POST" | "PATCH" | "PUT" | "DELETE"; url: string }> = [
+      { method: "POST", url: "/api/v1/objects/policy" },
+      { method: "PATCH", url: `/api/v1/objects/policy/${randomUUID()}` },
+      { method: "PUT", url: "/api/v1/objects/policy/urn:scp:x:policy:y" },
+      { method: "DELETE", url: `/api/v1/objects/policy/${randomUUID()}` },
+      { method: "POST", url: "/api/v1/objects/control" }
+    ];
+    for (const c of cases) {
+      const res = await server.app.inject({
+        method: c.method,
+        url: c.url,
+        headers: { authorization: `Bearer ${operator.token}` },
+        payload: c.method === "DELETE" ? undefined : { name: "generic-door", properties: {} }
+      });
+      expect(res.statusCode, `${c.method} ${c.url}: ${res.body}`).toBe(403);
+      expect(res.body).toMatch(/governance-managed/);
+    }
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // DOOR 4 — IaC plan + apply. Listed as closed; MEASURED closed.
+  // -------------------------------------------------------------------------------------------
+
+  it("DOOR 4: IaC apply refuses an Operator's manifest that declares a policy, and writes nothing", async () => {
+    const stackName = `gov-doors-${randomUUID().slice(0, 8)}`;
+    const name = `iac-escalation-${randomUUID().slice(0, 8)}`;
+    // `POST /plans` takes `{manifest: {...}}` (`CreatePlanRequestSchema`, packages/schemas/src/
+    // iac.ts). Spelling the manifest fields at the top level made the route answer 400 for the
+    // SHAPE, so the case never reached the door it names — red, but for the wrong reason.
+    const plan = await post("/api/v1/plans", operator.token, {
+      manifest: {
+        stackName,
+        objects: [
+          {
+            urn: `urn:scp:${stackName}:policy:smuggled`,
+            typeId: "policy",
+            name,
+            properties: ORG_WIDE_POLICY_PROPERTIES
+          }
+        ],
+        relationships: []
+      }
+    });
+    expect(plan.statusCode, plan.body).toBe(201);
+
+    const apply = await post(
+      `/api/v1/plans/${(plan.json() as { id: string }).id}/apply`,
+      operator.token,
+      {}
+    );
+    expect(apply.statusCode, apply.body).toBe(403);
+    expect(apply.body).toMatch(/policy:write/);
+    expect(await policyRowsByName(name)).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // DOOR 5 — federation hand-fill.
+  // -------------------------------------------------------------------------------------------
+
+  it("DOOR 5: hand-fill is out of an Operator's reach entirely — it needs federation:write", async () => {
+    const name = `handfill-escalation-${randomUUID().slice(0, 8)}`;
+    const res = await post("/api/v1/federation/hand-fill", operator.token, {
+      peer: handFillPeer,
+      typeId: "policy",
+      urn: `urn:scp:${org.orgId}:policy:${name}`,
+      name,
+      properties: ORG_WIDE_POLICY_PROPERTIES
+    });
+    expect(res.statusCode, res.body).toBe(403);
+    expect(res.body).toMatch(/federation:write/);
+    expect(await policyRowsByName(name)).toHaveLength(0);
+  });
+
+  it("DOOR 5: federation:write is not governance authority — a policy hand-fill still needs policy:write", async () => {
+    // ============================================================================================
+    // THE DOOR THE CENSUS FOUND OPEN WITHOUT AN ATTACKER TO WALK THROUGH IT (M21.7).
+    //
+    // The case above only shows an Operator cannot reach hand-fill at all. It says nothing about
+    // the actor who CAN, and hand-fill takes a free-form `typeId` and free-form `properties` —
+    // the overlay shape exactly. Before the fix it wrote a `policy` for anyone with
+    // `federation:write`.
+    //
+    // No BUILT-IN role can demonstrate that, and the reason is the point: `federation:write` is
+    // granted to Administrator and Owner (`0012_federation.sql:218-219`) and `policy:write` to
+    // Administrator and Owner (`0010_governance.sql:174-175`) — the same two roles, so every actor
+    // reachable through today's API who holds one holds the other. The door was safe by COINCIDENCE
+    // between two grant lists in two unrelated migrations, with nothing holding them together;
+    // `roles.org_id` exists for org-defined roles, and one of those with `federation:write` and no
+    // `policy:write` is all it takes. This case builds exactly that role, so the guard is proven to
+    // FIRE rather than merely to be present.
+    //
+    // THE PEER IS REAL (`handFillPeer`), and that is the other half. With the nonexistent peer this
+    // case shipped with, the "nothing was written" assertion below could not have failed whatever
+    // the guard did — the write was unreachable regardless — and unwiring the guard turned the case
+    // red with a 404 about the peer instead of letting the row land. Measured with the real peer:
+    // deleting the `assertGovernanceAuthorityForHandFill` call from `handFillObject` fails this case
+    // on `expected 201 to be 403`, with the org-wide `policy` row live in `objects`.
+    // ============================================================================================
+    const federationOnly = await createFederationOnlyUser();
+    for (const typeId of GOVERNANCE_MANAGED_OBJECT_TYPE_IDS) {
+      const name = `handfill-${typeId}-${randomUUID().slice(0, 8)}`;
+      const res = await post("/api/v1/federation/hand-fill", federationOnly.token, {
+        peer: handFillPeer,
+        typeId,
+        urn: `urn:scp:${org.orgId}:${typeId}:${name}`,
+        name,
+        properties: ORG_WIDE_POLICY_PROPERTIES
+      });
+      expect(res.statusCode, `${typeId}: ${res.body}`).toBe(403);
+      expect(res.body).toMatch(/policy:write/);
+      expect(await governanceRowsByName(typeId, name)).toHaveLength(0);
+    }
+  });
+
+  it("DOOR 5 (control): an Administrator's policy hand-fill still lands the row", async () => {
+    // Without this, DOOR 5 above is satisfied by refusing `policy` at hand-fill outright — which
+    // would delete the feature's reason for existing (DESIGN §13: an air-gapped outpost with no
+    // bundle transport keys in a commander-origin object by hand, and a commander-distributed
+    // global policy is squarely that).
+    //
+    // This case used to name a peer that does not exist and assert only `not.toBe(403)` — satisfied
+    // by the 404 the missing peer produces, i.e. by a hand-fill route that is broken for every
+    // caller. With `handFillPeer` it asserts the write ACTUALLY COMPLETES, which is the claim the
+    // control is making. `provenance: 'manual'` is asserted because that is what makes a later
+    // signed bundle reconcile over the row (`handfill-repo.ts` module doc) — a 201 that stored an
+    // ordinary locally-authored policy would be a different feature.
+    const name = `handfill-authorized-${randomUUID().slice(0, 8)}`;
+    const res = await post("/api/v1/federation/hand-fill", org.adminToken, {
+      peer: handFillPeer,
+      typeId: "policy",
+      urn: `urn:scp:${org.orgId}:policy:${name}`,
+      name,
+      properties: ORG_WIDE_POLICY_PROPERTIES
+    });
+    expect(res.statusCode, res.body).toBe(201);
+    expect((res.json() as { provenance?: string }).provenance).toBe("manual");
+    expect(await policyRowsByName(name)).toHaveLength(1);
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // THE PROPERTY, ASSERTED ACROSS EVERY DOOR AT ONCE — not door by door.
+  //
+  // The cases above are per-door and each names its own reason, which is what makes a failure
+  // readable. But per-door cases are exactly how this hole survived: DOOR 2 was censused for the
+  // PEER-BOUND guard and never re-asked for the governance one, and DOOR 5 was listed with a case
+  // that only proved an Operator could not reach it. So the property gets its own statement, over
+  // the door table and over `GOVERNANCE_MANAGED_OBJECT_TYPE_IDS` rather than over the two type
+  // names we happen to have today — add a third governance type and this widens by itself.
+  // -------------------------------------------------------------------------------------------
+
+  it("PROPERTY: no door with a caller-supplied typeId writes a governance object without policy:write", async () => {
+    const federationOnly = await createFederationOnlyUser();
+
+    /** Every door whose `typeId` comes from the request, with the WEAKEST actor that reaches it. */
+    const doors: Array<{
+      door: string;
+      run: (typeId: string, name: string) => Promise<{ statusCode: number; body: string }>;
+    }> = [
+      {
+        door: "POST /api/v1/federation/overlays",
+        run: async (typeId, name) =>
+          post("/api/v1/federation/overlays", operator.token, {
+            base: await createBaseService(),
+            typeId,
+            name,
+            properties: ORG_WIDE_POLICY_PROPERTIES
+          })
+      },
+      {
+        door: "POST /api/v1/discovery/accept",
+        run: (typeId, name) =>
+          post("/api/v1/discovery/accept", operator.token, {
+            proposal: {
+              objects: [{ typeId, name, properties: ORG_WIDE_POLICY_PROPERTIES }],
+              relationships: []
+            }
+          })
+      },
+      {
+        door: "POST /api/v1/objects/{type}",
+        run: (typeId, name) =>
+          post(`/api/v1/objects/${typeId}`, operator.token, {
+            name,
+            properties: ORG_WIDE_POLICY_PROPERTIES
+          })
+      },
+      {
+        door: "POST /api/v1/plans + /apply",
+        run: async (typeId, name) => {
+          const stackName = `gov-prop-${randomUUID().slice(0, 8)}`;
+          const plan = await post("/api/v1/plans", operator.token, {
+            manifest: {
+              stackName,
+              objects: [
+                {
+                  urn: `urn:scp:${stackName}:${typeId}:smuggled`,
+                  typeId,
+                  name,
+                  properties: ORG_WIDE_POLICY_PROPERTIES
+                }
+              ],
+              relationships: []
+            }
+          });
+          expect(plan.statusCode, plan.body).toBe(201);
+          return post(
+            `/api/v1/plans/${(plan.json() as { id: string }).id}/apply`,
+            operator.token,
+            {}
+          );
+        }
+      },
+      {
+        door: "POST /api/v1/federation/hand-fill",
+        run: (typeId, name) =>
+          // A REAL peer: with a nonexistent one this door's `stored it anyway` check below is
+          // unfalsifiable, because the write is unreachable whatever the guard does.
+          post("/api/v1/federation/hand-fill", federationOnly.token, {
+            peer: handFillPeer,
+            typeId,
+            urn: `urn:scp:${org.orgId}:${typeId}:${name}`,
+            name,
+            properties: ORG_WIDE_POLICY_PROPERTIES
+          })
+      }
+    ];
+
+    for (const { door, run } of doors) {
+      for (const typeId of GOVERNANCE_MANAGED_OBJECT_TYPE_IDS) {
+        const name = `prop-${randomUUID().slice(0, 8)}`;
+        const res = await run(typeId, name);
+        expect(res.statusCode, `${door} accepted a '${typeId}': ${res.body}`).toBe(403);
+        expect(
+          await governanceRowsByName(typeId, name),
+          `${door} refused a '${typeId}' and stored it anyway`
+        ).toHaveLength(0);
+      }
+    }
+  });
+});
+
+/**
+ * THE COMPLETENESS HALF OF THE CENSUS — the part that was missing, and the reason the two holes
+ * existed at all.
+ *
+ * Every behavioural case above tests a door someone thought to list. Nothing above goes red when a
+ * SIXTH door appears, and "a census written for a sibling guard, never re-run for this one" is
+ * precisely how DOOR 1 and DOOR 2 shipped open. So the census itself is machine-checked, in three
+ * layers, each of which fails by FILE NAME on the thing the layer below it cannot see:
+ *
+ *  LAYER 1 — THE CHOKE POINT'S EXPORTED SURFACE. `graph/objects-repo.ts` is where every local write
+ *    lands, and layer 3's scan can only look for calls to functions it knows the names of. So the
+ *    names are not hardcoded: this layer enumerates the module's exported callables and requires
+ *    the set to equal a REVIEWED classification, then layer 3 builds its pattern from the entries
+ *    classified `WRITE`. A new exported write wrapper there — the shape that used to be invisible,
+ *    because the whole file was exempt and its internal delegation `input.typeId` was already an
+ *    accepted expression — now fails here by name, and once classified `WRITE` every call site of
+ *    it anywhere in the tree comes into layer 3's scan. The classification is not taken on trust
+ *    either: every function that touches the `objects` table directly is DERIVED from the source
+ *    and must be classified `WRITE`, so a direct writer cannot be filed as read-only.
+ *
+ *  LAYER 2 — RAW WRITES THAT SKIP THE CHOKE POINT ENTIRELY. Layers 1 and 3 are both anchored on
+ *    `graph/objects-repo.ts`; a module that reached for drizzle (or raw SQL) against the `objects`
+ *    table itself would be outside both. So every file that writes that table is enumerated and
+ *    must equal a reviewed table, with the reason each non-choke-point one cannot mint a type.
+ *
+ *  LAYER 3 — THE DOORS. Every call to the choke point's write surface whose `typeId` argument is
+ *    NOT a string literal — i.e. every site where the type is chosen at runtime — must equal a
+ *    REVIEWED table. A new such call site anywhere fails with the file and the expression, which
+ *    forces the governance question to be asked for it. The table is per SITE, not per expression:
+ *    every entry carries `×<how many call sites in that file spell it that way>`, so a SECOND door
+ *    in a file the census already lists is a diff even when it is spelled exactly like the first.
+ *    That count is a round-2 repair; `scanRuntimeTypeIdWriteSites`'s own doc comment records what
+ *    the `Set<string>` it replaced was measured hiding.
+ *
+ * A string literal is exempt because the type is then fixed at the call site: `createObject({typeId:
+ * "component"})` can never produce a `policy` no matter what the request says. Everything else is in
+ * the table, including the internal and import-channel sites, each with the reason it is safe —
+ * "not listed" and "listed as safe" have to be different states or the table is just a filter.
+ *
+ * `deleteObject` IS one of the write names, and its absence was a hole: the scan used to name
+ * `createObject`/`updateObject`/`upsertObjectByUrn` only, so a door that DELETED a governance object
+ * with a caller-supplied `typeId` passed it silently. Removing a `required` policy is exactly as
+ * governance-relevant as installing one. Adding it surfaced `iac/plans-repo.ts`'s apply-delete branch
+ * (`entry.typeId`), which is accounted for below — `prepareApplyChecks` demands
+ * `writePermissionFor(entry.typeId)` for every non-`noop` action, delete included.
+ *
+ * Deliberately NOT filtered to `routes/`: three of the five doors (`overlay-repo`, `handfill-repo`,
+ * `plans-repo`) live under `federation/` and `iac/`, and a filter is where the next instance hides.
+ *
+ * ================================================================================================
+ * WHAT THESE THREE LAYERS STILL CANNOT SEE — stated because a completeness test that over-claims is
+ * worse than none, since it stops the next person looking.
+ * ================================================================================================
+ *  - WHETHER AN EXPRESSION IS CALLER-SUPPLIED. The scan reports the `typeId` EXPRESSION; only a
+ *    human can say whether `OUTPOST_OBJECT_TYPE_ID` is a constant and `input.typeId` is a request
+ *    field. That is the reviewing this test forces, not the reviewing it performs.
+ *  - A CALL WHOSE `typeId` THE WALKER CANNOT RESOLVE. This bullet used to claim such a call "reads
+ *    as the empty expression … so it FAILS rather than passing … fails safe by construction". THAT
+ *    WAS FALSE, and false in the direction that matters. Measured on the real tree (2026-08-17, not
+ *    argued — the walker was run against a mutated `graph/placements-repo.ts`): the old walker took
+ *    the first `typeId:` LINE within 30 lines below the call, which need not have belonged to that
+ *    call at all. A one-line `await deleteObject(tx, { ...base, typeId: input.typeId, idOrUrn })`
+ *    inserted above the existing literal-typed delete resolved to `"placement"` — a literal,
+ *    therefore skipped — and this describe stayed GREEN with a new caller-supplied door in the tree.
+ *    The empty expression only occurred when no `typeId:` line at all appeared before the walk
+ *    stopped; the same mutation moved 20 lines up, where nothing followed it, did go red.
+ *    THE WALKER WAS FIXED RATHER THAN THE SENTENCE SOFTENED (`resolveTypeIdArgument`): it reads the
+ *    call's OWN argument object, starting at the call itself so a single-line call is seen, with
+ *    bracket-depth tracking so a nested object's `typeId` cannot be mistaken for the argument's. A
+ *    matched call therefore has exactly two outcomes — its own `typeId` expression, or the literal
+ *    `<no typeId found>`, which no reviewed table contains and which fails loudly. None of that is
+ *    asserted in prose here: `LAYER 3 (self-test)` runs the walker over synthetic sources holding
+ *    each spelling, so weakening it turns a NAMED case red.
+ *  - A CALL THE WALKER NEVER MATCHES, which is the blind spot that remains. The write surface is
+ *    found by NAME, so an aliased import (`import { createObject as mintObject }`) or a dynamic
+ *    dispatch (`writers[kind](…)`) is invisible to all of layer 3 — not reported as unresolved,
+ *    simply not seen. The self-test pins that as a known limit with a fixture, so it is a measured
+ *    hole rather than a remembered one. LAYER 1 is the partial backstop: a new write surface AT the
+ *    choke point still fails there by name, whatever its call sites are spelled like.
+ *  - RELATIONSHIP writes, and every non-`objects` table. Out of scope: a `policy` is an object row.
+ */
+describe("policy:write door census: the CENSUS is complete (source scan, no DB)", () => {
+  /**
+   * LAYER 1's reviewed table: every exported callable of `graph/objects-repo.ts`, classified.
+   *
+   * `WRITE` entries become layer 3's scan pattern. Add an export to that module and this test names
+   * it; classify it `WRITE` and every call site of it in the tree joins the door census.
+   */
+  const REVIEWED_OBJECTS_REPO_EXPORTS: Record<string, "WRITE" | "read-only"> = {
+    // The four write doors of the choke point. All four touch the `objects` table directly, which
+    // the test re-derives from the source rather than believing this table.
+    createObject: "WRITE",
+    updateObject: "WRITE",
+    upsertObjectByUrn: "WRITE",
+    deleteObject: "WRITE",
+    // Readers and pure helpers — none of them can produce or amend a row.
+    canonicalJson: "read-only",
+    findObjectByIdOrUrnAnyType: "read-only",
+    getObjectByIdOrUrn: "read-only",
+    getObjectByIdOrUrnAnyType: "read-only",
+    getOrgRootObjectId: "read-only",
+    isUuid: "read-only",
+    journalEntryKindFor: "read-only",
+    listObjects: "read-only",
+    resolveContainmentParent: "read-only",
+    resolveDomainId: "read-only",
+    toGraphObject: "read-only"
+  };
+
+  /** LAYER 2's reviewed table: file → why a write to the `objects` table there cannot mint a type. */
+  const REVIEWED_OBJECT_TABLE_WRITERS: Record<string, string> = {
+    "graph/objects-repo.ts": "the choke point itself — layers 1 and 3 are about exactly this file",
+    // Sets `updated_at` on one existing campaign row for round-robin fairness. No insert, no
+    // `type_id` in the `set`, and the row is selected by id.
+    "coordination/campaign-reconcile.ts": "updatedAt bump on an existing row",
+    // Clears `domain_local` / `domain_local_inherited_from` on one existing row (M20.7). Same shape.
+    "federation/publish-domain-local.ts": "clears the domain-local columns on an existing row",
+    // Sets `managed_by_stack` on rows an IaC apply DECLARES (drizzle/0068). Same shape as the two
+    // above: no insert, no `type_id` in the `set`, and the rows are selected by an id list the
+    // caller already resolved. It is a raw write on purpose — the column is not federated content
+    // and must not allocate a journal sequence or a revision, so routing it through the choke point
+    // would be wrong, not merely unnecessary.
+    //
+    // WHY IT IS SAFE IS NOT "IT CANNOT MINT A TYPE" ALONE — this column decides which rows an apply
+    // DELETES, so being outside the choke point deserves the second sentence. It is unreachable from
+    // any request: nothing in `objects-repo.ts`'s inputs, no route, and no schema can express it, so
+    // it moves only when `iac/plans-repo.ts`'s apply moves it, on ids that apply already authorized
+    // per entry. That is the entire point of moving stack ownership out of tenant-writable `labels`.
+    "iac/stack-ownership.ts":
+      "sets managed_by_stack on already-resolved ids; no insert, no type_id",
+    // Raw SQL, and the ONE instance of that class in the tree — listed rather than filtered out
+    // precisely because a raw statement is what layers 1 and 3 are structurally blind to. It is a
+    // developer load-generator (not wired into any route or worker) and its `type_id` is the SQL
+    // literal `'service'`, so no caller chooses it.
+    "load-test/graph-scale.ts": "raw bulk INSERT in the load generator, type_id literal 'service'"
+  };
+
+  /**
+   * LAYER 3's reviewed table: file → the `typeId` expressions it passes to a write, with why.
+   *
+   * `×N` is the number of CALL SITES in that file spelling it that way, and it is part of the
+   * assertion: a second site is a diff even when it reuses the first one's expression. Bump a count
+   * only after asking the governance question of the NEW site — the reason it is written down.
+   */
+  const REVIEWED_RUNTIME_TYPEID_WRITE_SITES: Record<string, string[]> = {
+    // ---- THE FIVE DOORS: `typeId` comes from the request body or path. -----------------------
+    // DOOR 1 — `policy:write` at the org root (M21.7).
+    "federation/overlay-repo.ts": ["input.overlayTypeId ×1"],
+    // DOOR 2 — governance types refused outright (M21.7).
+    "routes/executors.ts": ["proposedObject.typeId ×1"],
+    // DOOR 3 — governance types refused outright (`assertNotGovernanceManagedObjectType`), on every
+    // verb including DELETE — which is what the four sites are: create, update, upsert-by-URN,
+    // delete, all spelled `type`, and all four of them one entry until this table went per-site.
+    "routes/objects-generic.ts": ["type ×4"],
+    // DOOR 4 — `writePermissionFor` demands `policy:write` for every non-`noop` action, plus the
+    // declared-scope binding on create/update. `entry.typeId` is the apply-DELETE branch;
+    // `target.typeId` is the create and the update.
+    "iac/plans-repo.ts": ["entry.typeId ×1", "target.typeId ×2"],
+    // DOOR 5 — `policy:write` at the org root (M21.7).
+    "federation/handfill-repo.ts": ["input.typeId ×1"],
+
+    // ---- NOT DOORS: the type is runtime-valued but no CALLER chooses it. ---------------------
+    // A fixed `typeId` per registry, closed over from `TypedRegistryConfig`; never a route param.
+    // The governance registries ARE the legitimate door — they carry `writePermission:
+    // 'policy:write'` and, for `policy`, `assertPolicyScopeWithinAuthority`. Four sites, one per
+    // verb, the same shape as DOOR 3.
+    "routes/typed-registries.ts": ["typeId ×4"],
+    // The `OUTPOST_OBJECT_TYPE_ID` constant — a literal behind a name — at the create, the delete
+    // and both updates.
+    "federation/outposts-repo.ts": ["OUTPOST_OBJECT_TYPE_ID ×4"],
+    // Journal replay. `typeId` comes from a signature- and chain-verified bundle, not a caller, and
+    // `existing.typeId` is re-read from the row being updated. Deliberately exempt from local write
+    // guards: `object_upsert` has no try/catch, so one refusal aborts a whole signed bundle
+    // (ADR-0032 §6a). A hostile peer is a PAIRING problem, not a permission one.
+    "federation/import-repo.ts": ["existing.typeId ×1", "typeId ×2"],
+    // The choke point's own internal delegation: `upsertObjectByUrn` hands the input it was given to
+    // `createObject` on the insert path and to `updateObject` on the replace path — hence ×2, both
+    // inside that one function. NARROWED from the wholesale file exemption this used to be: only
+    // these already-reviewed expressions are accepted, and layer 1 is what fires when a NEW write
+    // surface appears in this file rather than a new expression inside an existing one.
+    "graph/objects-repo.ts": ["input.typeId ×2"]
+  };
+
+  /** `graph/objects-repo.ts` relative to the scan root — the anchor all three layers share. */
+  const CHOKE_POINT = "graph/objects-repo.ts";
+
+  /** The real tree, as `scanRuntimeTypeIdWriteSites` also takes it from the self-test's fixtures. */
+  let sources: ScannedSource[];
+
+  beforeAll(async () => {
+    const { readdir, readFile } = await import("node:fs/promises");
+    const { fileURLToPath } = await import("node:url");
+    const nodePath = await import("node:path");
+    const srcRoot = nodePath.resolve(nodePath.dirname(fileURLToPath(import.meta.url)), "..");
+
+    const files: string[] = [];
+    async function walk(dir: string): Promise<void> {
+      for (const entry of await readdir(dir, { withFileTypes: true })) {
+        const full = nodePath.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules" || entry.name === "dist") continue;
+          // `test-support` mints fixtures, not doors; `.test.ts` is not shipped code.
+          if (entry.name === "test-support") continue;
+          await walk(full);
+        } else if (entry.name.endsWith(".ts") && !entry.name.includes(".test.")) {
+          files.push(full);
+        }
+      }
+    }
+    await walk(srcRoot);
+    sources = await Promise.all(
+      files.map(async (file) => ({
+        rel: nodePath.relative(srcRoot, file),
+        lines: (await readFile(file, "utf8")).split("\n")
+      }))
+    );
+  });
+
+  /** A comment line is not code; every layer skips them so prose cannot trip or silence a scan. */
+  const isComment = (line: string) => {
+    const t = line.trimStart();
+    return t.startsWith("*") || t.startsWith("//") || t.startsWith("/*");
+  };
+
+  /** One source file as a scan sees it: path relative to the scan root, and its lines. */
+  type ScannedSource = { rel: string; lines: string[] };
+
+  /** What LAYER 3 reports for a matched call whose `typeId` argument it could not resolve. */
+  const NO_TYPEID = "<no typeId found>";
+
+  /** How far past a call's first line the walker will look for the end of its argument list. */
+  const CALL_WALK_LIMIT = 40;
+
+  /**
+   * Resolves the `typeId` ARGUMENT of the write call beginning at `lines[i]`, column `from`.
+   *
+   * It walks the call character by character, tracking bracket depth, and accepts a `typeId` key
+   * only at the depth of the call's own argument object — `write(tx, { HERE })`. Two consequences,
+   * both of them the point:
+   *
+   *  - it starts AT the call, so `write(tx, { orgId, typeId: input.typeId })` on one line is read;
+   *  - a `typeId` in a NESTED object, or in a later unrelated statement, is not mistaken for it.
+   *
+   * The line-based walker this replaces did neither, and it did not fail when it missed — it took
+   * the first `typeId:` line within 30 lines below the call, whoever's it was. Measured 2026-08-17:
+   * a one-line `deleteObject(tx, { ...base, typeId: input.typeId, idOrUrn })` added to
+   * `graph/placements-repo.ts` resolved to the `"placement"` literal of the NEXT call and was
+   * dropped as a literal — a new caller-supplied door, and LAYER 3 green.
+   *
+   * When the argument object closes without a `typeId` (built elsewhere, spread in), the answer is
+   * `NO_TYPEID`, which is in no reviewed table and so fails loudly. The one thing that gets past is
+   * a call this never matches at all — see the self-test's `aliased-import.ts`.
+   */
+  function resolveTypeIdArgument(lines: string[], i: number, from: number): string {
+    let depth = 0;
+    let opened = false;
+    /** Non-null once the `typeId:` key is found: the value being accumulated. */
+    let value: string | null = null;
+    let valueDepth = 0;
+    for (let j = i; j < Math.min(i + CALL_WALK_LIMIT, lines.length); j += 1) {
+      const line = lines[j]!;
+      if (value !== null && j > i) value += " ";
+      let k = j === i ? from : 0;
+      while (k < line.length) {
+        const ch = line[k]!;
+        if (ch === "/" && line[k + 1] === "/") break; // the rest of the line is a comment
+        if (ch === '"' || ch === "'" || ch === "`") {
+          // A quoted string is opaque: brackets and `//` inside it are text, not structure.
+          const start = k;
+          k += 1;
+          while (k < line.length && line[k] !== ch) k += line[k] === "\\" ? 2 : 1;
+          k += 1;
+          if (value !== null) value += line.slice(start, k);
+          continue;
+        }
+        const opens = ch === "(" || ch === "{" || ch === "[";
+        const closes = ch === ")" || ch === "}" || ch === "]";
+        if (value !== null) {
+          // Reading the value: it ends at the `,` or `}` that is at ITS OWN depth, so
+          // `typeId: pickType(a, b),` is one expression rather than two.
+          if (opens) valueDepth += 1;
+          else if (closes) {
+            if (valueDepth === 0) return value.trim();
+            valueDepth -= 1;
+          } else if (ch === "," && valueDepth === 0) return value.trim();
+          value += ch;
+          k += 1;
+          continue;
+        }
+        if (opens) {
+          depth += 1;
+          opened = true;
+          k += 1;
+          continue;
+        }
+        if (closes) {
+          depth -= 1;
+          k += 1;
+          if (opened && depth <= 0) return NO_TYPEID; // the call closed and never named a type
+          continue;
+        }
+        if (
+          depth === 2 &&
+          line.startsWith("typeId", k) &&
+          !/[A-Za-z0-9_$]/.test(line[k - 1] ?? " ")
+        ) {
+          const after = line.slice(k + "typeId".length);
+          const key = /^\s*:/.exec(after);
+          if (key) {
+            value = "";
+            valueDepth = 0;
+            k += "typeId".length + key[0].length;
+            continue;
+          }
+          // `{ …, typeId, … }` — the shorthand, including as the last property of a line.
+          if (/^\s*[,}]/.test(after) || after.trim() === "") return "typeId";
+        }
+        k += 1;
+      }
+    }
+    return NO_TYPEID;
+  }
+
+  /**
+   * LAYER 3's measurement, extracted from the test that uses it so the SELF-TEST can run it over
+   * synthetic sources. Returns file → `<typeId expression> ×<call sites spelling it that way>`,
+   * with string-literal types dropped (a literal cannot be chosen by a caller).
+   *
+   * PER SITE, NOT PER EXPRESSION. This collected into a `Set<string>` keyed on `(file, expression)`
+   * until 2026-08-17, so a second unguarded write in an already-listed file, spelled like the first,
+   * was invisible — measured by adding a whole extra `createObject(tx, { … typeId: input.typeId … })`
+   * to `federation/handfill-repo.ts`, the very file whose door this census had just closed, and
+   * watching LAYER 3 stay green. Thirteen of the tree's twenty-three write sites were hidden behind
+   * ten deduped entries at the time.
+   */
+  function scanRuntimeTypeIdWriteSites(
+    scanned: ScannedSource[],
+    writeNames: string[]
+  ): Record<string, string[]> {
+    const writeCall = new RegExp(String.raw`\b(?:${writeNames.join("|")})\s*\(`);
+    // A function's own DECLARATION is not a call site; without this the walker reads the parameter
+    // list and reports noise like `string;` as a `typeId` expression.
+    const writeDeclaration = new RegExp(
+      String.raw`^\s*(?:export\s+)?(?:async\s+)?function\s+(?:${writeNames.join("|")})\s*\(`
+    );
+    const perFile = new Map<string, Map<string, number>>();
+    for (const { rel, lines } of scanned) {
+      for (let i = 0; i < lines.length; i += 1) {
+        if (isComment(lines[i]!)) continue;
+        if (writeDeclaration.test(lines[i]!)) continue;
+        const call = writeCall.exec(lines[i]!);
+        if (!call) continue;
+        const expr = resolveTypeIdArgument(lines, i, call.index);
+        if (/^"[a-z0-9-]+"$/.test(expr)) continue; // a literal type cannot be chosen by a caller
+        const counts = perFile.get(rel) ?? new Map<string, number>();
+        counts.set(expr, (counts.get(expr) ?? 0) + 1);
+        perFile.set(rel, counts);
+      }
+    }
+    return Object.fromEntries(
+      [...perFile.entries()]
+        .map(([rel, counts]) => [
+          rel,
+          [...counts.entries()].map(([expr, n]) => `${expr} ×${n}`).sort()
+        ])
+        .sort(([a], [b]) => (a as string).localeCompare(b as string))
+    );
+  }
+
+  /**
+   * LAYER 1's measurement, shared with layer 3: the choke point's exported callables, and which of
+   * its top-level functions write the `objects` table directly.
+   */
+  function scanChokePoint(): { exported: Set<string>; directWriters: Set<string> } {
+    const file = sources.find((s) => s.rel === CHOKE_POINT);
+    expect(file, `${CHOKE_POINT} was not found by the scan — the anchor moved`).toBeDefined();
+    const exported = new Set<string>();
+    const directWriters = new Set<string>();
+    let enclosing: string | null = null;
+    for (const line of file!.lines) {
+      const declared = /^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/.exec(line);
+      if (declared) enclosing = declared[1]!;
+      const exportedFn = /^export\s+(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(/.exec(line);
+      if (exportedFn) exported.add(exportedFn[1]!);
+      const exportedConst = /^export\s+(?:const|let|var)\s+([A-Za-z0-9_$]+)\b/.exec(line);
+      if (exportedConst) exported.add(exportedConst[1]!);
+      // `export { canonicalJson };` — a re-export is an exported surface like any other.
+      const reExport = /^export\s*\{([^}]*)\}/.exec(line);
+      if (reExport) {
+        for (const part of reExport[1]!.split(",")) {
+          const name = part
+            .trim()
+            .split(/\s+as\s+/)
+            .pop()
+            ?.trim();
+          if (name) exported.add(name);
+        }
+      }
+      if (!isComment(line) && /\.(?:insert|update|delete)\(objects\)/.test(line) && enclosing) {
+        directWriters.add(enclosing);
+      }
+    }
+    return { exported, directWriters };
+  }
+
+  const sortedNames = (names: Iterable<string>) => [...names].sort();
+
+  it("LAYER 1: the choke point's exported surface is the reviewed one, and every direct writer is classified WRITE", () => {
+    const { exported, directWriters } = scanChokePoint();
+
+    // A NEW export here means a new write surface at the choke point — the case the whole-file
+    // exemption used to swallow. Classify it in `REVIEWED_OBJECTS_REPO_EXPORTS`: `WRITE` puts every
+    // call site of it into LAYER 3's scan, `read-only` states that it cannot produce a row.
+    expect(sortedNames(exported)).toEqual(sortedNames(Object.keys(REVIEWED_OBJECTS_REPO_EXPORTS)));
+
+    // And the classification is measured, not trusted: anything that touches the `objects` table
+    // itself must be a `WRITE`, so a direct writer cannot be filed away as a reader.
+    const misfiled = sortedNames(directWriters).filter(
+      (name) => REVIEWED_OBJECTS_REPO_EXPORTS[name] !== "WRITE"
+    );
+    expect(
+      misfiled,
+      "these functions write the `objects` table but are not classified WRITE"
+    ).toEqual([]);
+    expect(
+      directWriters.size,
+      "no function in the choke point writes the `objects` table — the derivation is measuring nothing"
+    ).toBeGreaterThan(0);
+  });
+
+  it("LAYER 2: nothing outside the reviewed set writes the objects table at all", () => {
+    // Both other layers are anchored on `graph/objects-repo.ts`. A module that went straight at the
+    // table — drizzle builder or raw SQL — would be outside both, so it is enumerated here.
+    const tableWrite =
+      /\.(?:insert|update|delete)\(objects\)|\b(?:insert\s+into|update|delete\s+from)\s+objects\b/i;
+    const writers = new Set<string>();
+    for (const { rel, lines } of sources) {
+      for (const line of lines) {
+        if (isComment(line)) continue;
+        if (tableWrite.test(line)) writers.add(rel);
+      }
+    }
+    expect(sortedNames(writers)).toEqual(sortedNames(Object.keys(REVIEWED_OBJECT_TABLE_WRITERS)));
+  });
+
+  it("LAYER 3: every runtime-valued typeId write site is one the census accounted for", () => {
+    expect(
+      sources.length,
+      "the scan found no source files — it is not scanning anything"
+    ).toBeGreaterThan(100);
+
+    const { exported, directWriters } = scanChokePoint();
+    // THE PATTERN IS DERIVED, NOT HARDCODED. Three names used to be spelled here, which is why
+    // `deleteObject` was missing for as long as it was. The write surface comes from LAYER 1's
+    // reviewed classification, unioned with anything measured to write the table — so even if the
+    // classification were wrong, a direct writer still pulls its call sites into this scan.
+    const writeNames = sortedNames(
+      new Set([
+        ...Object.entries(REVIEWED_OBJECTS_REPO_EXPORTS)
+          .filter(([name, kind]) => kind === "WRITE" && exported.has(name))
+          .map(([name]) => name),
+        ...directWriters
+      ])
+    );
+    expect(
+      writeNames,
+      "the derived write surface is empty — this scan would match nothing"
+    ).not.toEqual([]);
+    const normalize = (table: Record<string, string[]>) =>
+      Object.fromEntries(
+        Object.entries(table)
+          .map(([f, s]) => [f, sortedNames(s)] as const)
+          .sort(([a], [b]) => a.localeCompare(b))
+      );
+    // A NEW entry — a new file, a new expression, or a HIGHER `×N` on one already listed — means a
+    // new write door whose type a caller may choose. Do not append it to the table: run the
+    // governance question against it first (`isGovernanceManagedObjectType`: refuse the type, or
+    // demand `policy:write`), then record the answer above.
+    expect(normalize(scanRuntimeTypeIdWriteSites(sources, writeNames))).toEqual(
+      normalize(REVIEWED_RUNTIME_TYPEID_WRITE_SITES)
+    );
+  });
+
+  it("LAYER 3 (self-test): the walker sees each spelling of a write, and says so when it cannot", () => {
+    // ============================================================================================
+    // THE LAYER THAT WATCHES LAYER 3. Every claim this file makes about what the scan can and cannot
+    // see is asserted HERE, against synthetic sources, because the alternative is a comment — and a
+    // comment claiming this walker "fails safe by construction" is exactly what shipped in M21.7
+    // round 1 and was measured false the next day. Weaken the walker and a NAMED case goes red.
+    //
+    // The KNOWN LIMIT at the bottom asserts the walker's actual, unhappy behaviour. It is a change
+    // detector on purpose: improve the walker and it goes red, which is the prompt to move the limit
+    // out of the header. What it must never become is silence.
+    // ============================================================================================
+    const src = (rel: string, lines: string[]): ScannedSource => ({ rel, lines });
+    const fixtures: ScannedSource[] = [
+      // The ordinary spelling, and the one every real door in the tree uses today.
+      src("multi-line.ts", [
+        "  const created = await createObject(tx, {",
+        "    orgId: input.orgId,",
+        "    typeId: input.typeId,",
+        "    name: input.name",
+        "  });"
+      ]),
+      // THE MUTATION THAT PROVED THE OLD CLAIM FALSE: the whole call on the call line. The old
+      // walker started at the NEXT line and never looked here.
+      src("same-line.ts", [
+        "  await deleteObject(tx, { ...base, typeId: input.typeId, idOrUrn });"
+      ]),
+      src("same-line-shorthand.ts", ["  await createObject(tx, { orgId, typeId, name });"]),
+      // A nested object's `typeId` is not the call's. The old walker took whichever came first.
+      src("nested-literal-first.ts", [
+        "  await createObject(tx, {",
+        '    properties: mapProperties({ typeId: "service" }),',
+        "    typeId: input.typeId,",
+        "    name",
+        "  });"
+      ]),
+      // The value is an expression containing a comma — one expression, not two.
+      src("call-expression-value.ts", [
+        "  await createObject(tx, {",
+        "    typeId: pickType(input.a, input.b),",
+        "    name",
+        "  });"
+      ]),
+      // TWO sites, one expression: the `Set<string>` this replaced reported a single entry.
+      src("two-sites.ts", [
+        "  await createObject(tx, { orgId, typeId: input.typeId, name });",
+        "  await createObject(tx, {",
+        "    orgId,",
+        "    typeId: input.typeId,",
+        "    name",
+        "  });"
+      ]),
+      // Not doors: a literal type, and a call that is only prose.
+      src("literal.ts", [
+        "  await createObject(tx, {",
+        '    typeId: "component",',
+        "    name",
+        "  });"
+      ]),
+      src("commented-out.ts", ["  // await createObject(tx, { typeId: input.typeId });"]),
+      // UNRESOLVED, both flavours: the argument object is built elsewhere, or spread in. Neither is
+      // silently dropped — both report `NO_TYPEID`, which is in no reviewed table.
+      src("built-elsewhere.ts", ["  await createObject(tx, buildInput(request));"]),
+      src("spread-only.ts", ["  await createObject(tx, { ...buildInput(request) });"]),
+      // KNOWN LIMIT: the write surface is matched BY NAME, so a rename at the import hides the call
+      // from the scan entirely. LAYER 1 is the partial backstop — a new write surface at the choke
+      // point fails there whatever its call sites look like — but a rename of an EXISTING one does
+      // not, and this is where that hole is written down.
+      src("aliased-import.ts", [
+        "  import { createObject as mintObject } from '../graph/objects-repo.js';",
+        "  await mintObject(tx, { orgId, typeId: input.typeId });"
+      ])
+    ];
+
+    expect(scanRuntimeTypeIdWriteSites(fixtures, ["createObject", "deleteObject"])).toEqual({
+      "multi-line.ts": ["input.typeId ×1"],
+      "same-line.ts": ["input.typeId ×1"],
+      "same-line-shorthand.ts": ["typeId ×1"],
+      "nested-literal-first.ts": ["input.typeId ×1"],
+      "call-expression-value.ts": ["pickType(input.a, input.b) ×1"],
+      "two-sites.ts": ["input.typeId ×2"],
+      "built-elsewhere.ts": [`${NO_TYPEID} ×1`],
+      "spread-only.ts": [`${NO_TYPEID} ×1`]
+      // `literal.ts`, `commented-out.ts` — correctly absent, no caller chooses those types.
+      // `aliased-import.ts` — absent, and that one is the KNOWN LIMIT above, not a pass.
+    });
+
+    // AND THE OTHER HALF OF "fails loudly": reporting `NO_TYPEID` only fails LAYER 3 for as long as
+    // no reviewed table has learned to accept it. The day someone silences an unresolvable site by
+    // pasting it into the table instead of spelling the call so it can be read, this says so.
+    expect(
+      Object.entries(REVIEWED_RUNTIME_TYPEID_WRITE_SITES)
+        .flatMap(([file, entries]) => entries.map((entry) => `${file}: ${entry}`))
+        .filter((entry) => entry.includes(NO_TYPEID)),
+      "an unresolvable write site was reviewed as acceptable — unresolvable no longer fails LAYER 3"
+    ).toEqual([]);
+  });
+});

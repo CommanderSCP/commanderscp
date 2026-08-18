@@ -14,6 +14,8 @@ import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagin
 // Value import back into relationships-repo. Not a runtime cycle: relationships-repo imports only a
 // TYPE from here (`FederationImportContext`), which erases at compile time.
 import { deleteRelationship } from "./relationships-repo.js";
+// No runtime cycle: containment.ts imports only drizzle, the tenant tx type and errors.
+import { assertRootedContainmentParent } from "./containment.js";
 import { computeObjectContentHash } from "./content-hash.js";
 import { deriveUrn } from "./urn.js";
 import { requireObjectType } from "./type-registry-repo.js";
@@ -27,8 +29,19 @@ import {
   assertEnforceableDependencySubscriptionScope,
   assertNoDelegatedDependencyUpdates
 } from "../dependencies/subscription-authoring-guard.js";
+import { assertMayUndeclareRegionMembership } from "../coordination/region-membership-guard.js";
+import {
+  assertMayWriteGovernanceLabels,
+  assertSelectorKeysAreGovernanceLabels
+} from "../governance/governance-labels.js";
 import type { JournalEntryKind } from "@scp/schemas";
 import { canonicalJson } from "../util/canonical-json.js";
+import {
+  countContainmentDependents,
+  policyReachFor,
+  recordContainerDeletionReachChange,
+  recordGovernanceReachChange
+} from "../governance/governance-reach.js";
 
 /**
  * M6 single-writer authority (DESIGN.md §13 — SECURITY-SENSITIVE, M6 PR body flag): "every object
@@ -218,10 +231,28 @@ export async function resolveContainmentParent(
   }
   // The org root itself (bootstrap): no parent, so nothing to inherit.
   if (domainId === null) return { id: null, urn: null, domainLocal: false };
+  // A SOFT-DELETED PARENT IS NOT A PARENT, and this filter is the difference between a contained
+  // row and an unreachable one. `authz/resolve.ts`'s `scopeExpandCte` joins
+  // `parent_o.deleted_at IS NULL` on every hop, so an object parented under a tombstone has its
+  // scope expansion terminate at itself — exactly the state `domain_id IS NULL` produced, reached
+  // through a different value. Measured before this filter existed: `DELETE /domains/{d}` then
+  // `PATCH /services/{s} {domainId: d}` returned 200, and the org-root admin's own next GET of that
+  // service 403'd with "lacks 'object:read'", permanently. Policy still governs the row either way
+  // (matching reads `properties.scope`, never placement), so the outcome is a governed object
+  // nobody can read, edit, move back or delete.
+  //
+  // Applied here rather than at the doors on purpose: it needs no subject and gives the same answer
+  // for every caller, which is this codebase's test for an INVARIANT (see
+  // `federation/domain-local.ts`'s "authorization at the door, invariant at the repo"). The
+  // federation import path is unaffected — `resolveImportDomainId` already filters `deleted_at` and
+  // falls back to `undefined`, so a replica whose parent is locally tombstoned lands at the org root
+  // rather than being refused.
   const parent = await tx.query.objects.findFirst({
-    where: (t, { eq: eqOp, and: andOp }) => andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId))
+    where: (t, { eq: eqOp, and: andOp, isNull: isNullOp }) =>
+      andOp(eqOp(t.id, domainId), eqOp(t.orgId, orgId), isNullOp(t.deletedAt))
   });
-  if (!parent) throw badRequest(`domainId '${domainId}' does not reference an object in this org`);
+  if (!parent)
+    throw badRequest(`domainId '${domainId}' does not reference a live object in this org`);
   return { id: domainId, urn: parent.urn, domainLocal: parent.domainLocal };
 }
 
@@ -229,7 +260,7 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   const type = await requireObjectType(tx, input.typeId);
   const properties = input.properties ?? {};
   const labels = input.labels ?? {};
-  validateProperties(type.propertySchema, properties, type.id);
+  validateProperties(type.propertySchema, properties);
 
   const containmentParent = await resolveContainmentParent(tx, input.orgId, input.domainId);
   const domainId = containmentParent.id;
@@ -254,6 +285,80 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
   }
 
   const id = input.id ?? uuidv7();
+
+  // THE ROOT-REACHABILITY INVARIANT, on the CREATE half of the same choke point `updateObject`
+  // carries it on (see the long comment there, and `graph/containment.ts` for the three refusals).
+  //
+  // It was installed on the MOVE path only, and the reasoning that left creates out was "a fresh id
+  // cannot already be an ancestor of the parent". That is true, and it covers exactly the refusals
+  // that ASK about the child's id — the CYCLE, and the truncation refusal that exists only to make
+  // the cycle answer sound. It says nothing about the third, which is a property of the PARENT's
+  // chain: the parent does not itself reach the org root, because an ancestor was soft-deleted.
+  // Hence `childIsNew` — refusal 3 alone, and see `containment.ts` for why running the other two on
+  // a create would be a new refusal rather than an invariant (it lowers a documented nesting limit).
+  //
+  // MEASURED on the real doors before this call existed, not reasoned about: soft-delete a domain,
+  // then `POST /services {domainId: <a service still inside it>}` answered **201**, and the ORG-ROOT
+  // ADMIN's own GET, PATCH and DELETE of the new row all answered **403 — permanently**, while the
+  // principal bound inside the stranded subtree could see it and had nowhere to move it to. That is
+  // byte-for-byte the unreachable row the move path refuses, produced through a different verb.
+  //
+  // AT THE REPO, for the same reason the update half is: `iac/plans-repo.ts`'s `executePlanDiff`
+  // calls `createObject` DIRECTLY through its own drained check list and never touches
+  // `graph/containment-parent-authz.ts`, so a fix at the door helper alone ships INERT for IaC apply
+  // — which is a second, independent create door and was measured writing the unreachable row
+  // happily. It needs no subject, and gives every caller the same answer, which is this codebase's
+  // test for an invariant (`federation/domain-local.ts`: authorization at the door, invariant at the
+  // repo).
+  //
+  // `domainId === null` is the org root's OWN create (bootstrap) — it has no parent whose chain
+  // could be broken.
+  //
+  // `domainId === input.orgId` — the ORG ROOT as the parent — is skipped because the call is a
+  // PROVABLE no-op there, not because it is cheap enough to be worth risking. All three refusals are
+  // decided before the query returns:
+  //
+  //   - refusals 1 and 2 (cycle, and the truncation that backs it) do not run at all on a create:
+  //     `childIsNew` is true, which is the whole point of that flag (see `containment.ts`).
+  //   - refusal 3 asks `ids.has(orgId)` over `containmentChain(orgId, orgId)`, and that walk seeds
+  //     itself with the target row at depth 0. The org root IS the target, so it is in the set no
+  //     matter what the recursive term finds — the answer cannot be anything but "rooted", however
+  //     the graph above it is shaped.
+  //
+  // That is why the guard is `!== orgId` and not a broader "shallow parents are fine": for any OTHER
+  // parent the walk is load-bearing (it is what caught the soft-deleted-ancestor create measured
+  // below), and the moment the org root is not seeded at depth 0 this reasoning stops holding.
+  //
+  // It is not a micro-optimisation on a cold path either. `createObject` defaults an unnamed
+  // `domainId` to the org root, so this is the MAJORITY create shape, and the M1 DoD drives 5,000
+  // sequential creates against a 180s budget. MEASURED on this machine (500 iterations, warmed,
+  // inside one transaction against the Testcontainers PostgreSQL):
+  //
+  //   isolated `assertRootedContainmentParent(parent = org root)`   0.93-1.04 ms/call
+  //   end-to-end default `createObject`, before                          11.35 ms/create
+  //   end-to-end default `createObject`, after (3 runs)          8.04 / 9.10 / 9.30 ms/create
+  //
+  // — a ~1 ms round trip removed from an ~11 ms create, for an answer that was fixed in advance.
+  // The isolated figure is the honest one: it is the query that stops being issued. The end-to-end
+  // spread is wider than 1 ms in both directions, so read it as corroboration, not as the measurement.
+  //
+  // Every other create still pays one bounded recursive-CTE round trip; unlike the update
+  // half there is no "unchanged re-apply" to guard against, because a create always writes a parent.
+  //
+  // `federationImport` is exempt, exactly as it is on the update half and for the same reason: an
+  // imported row's parent comes from `resolveImportDomainId`, which already filters tombstones and
+  // falls back to the org root, and `federation/import-repo.ts`'s `object_upsert` branch has no
+  // try/catch — one refusal here would abort a whole signed bundle and wedge that channel over a row
+  // this domain does not own. The receiving domain also has no standing to referee the containment
+  // its authoring domain chose.
+  if (!input.federationImport && domainId !== null && domainId !== input.orgId) {
+    await assertRootedContainmentParent(tx, {
+      orgId: input.orgId,
+      childId: id,
+      parentId: domainId,
+      childIsNew: true
+    });
+  }
 
   // M16.2 phase A (E1) — clause (4) of the authority-split rule, at the ONE choke point every LOCAL
   // write door funnels through (see `federation/outpost-binding.ts` for the rule and for why it is
@@ -316,6 +421,23 @@ export async function createObject(tx: TenantTx, input: CreateObjectInput): Prom
       orgId: input.orgId,
       typeId: input.typeId,
       properties
+    });
+    // THE RESERVED GOVERNANCE LABEL NAMESPACE — the THIRD and FOURTH refusals at this choke point,
+    // here for the identical reason the two above are, against the identical `federationImport`
+    // census, and closed at the identical other caller (`federation/handfill-repo.ts`).
+    //
+    // A selector-scoped policy's match key must be out of its own subject's write reach, in both
+    // directions: the DOCUMENT may only key on a reserved label, and the reserved LABEL may only be
+    // written by org-root `policy:write`. Installing either half alone leaves the evasion — a
+    // namespace nobody is required to use, or a required namespace anyone may edit. See
+    // `governance/governance-labels.ts`.
+    assertSelectorKeysAreGovernanceLabels({ typeId: input.typeId, properties });
+    await assertMayWriteGovernanceLabels(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      before: {},
+      after: labels,
+      subject: `${input.typeId} '${input.name}'`
     });
   }
 
@@ -703,7 +825,7 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
   const type = await requireObjectType(tx, input.typeId);
   const nextProperties = (input.properties ?? existing.properties) as Record<string, unknown>;
   const nextLabels = (input.labels ?? existing.labels) as Record<string, unknown>;
-  validateProperties(type.propertySchema, nextProperties, type.id);
+  validateProperties(type.propertySchema, nextProperties);
 
   // M16.2 phase A (E1) — the UPDATE half of the same choke point (see `createObject` above). An
   // update that rewrites `properties` must not be able to re-point the binding at an unpaired peer,
@@ -743,10 +865,167 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
       typeId: input.typeId,
       properties: nextProperties
     });
+    // THE UPDATE HALF of the governance-label namespace, and the half that actually closes the
+    // reported evasion — the attack is an EDIT, not a create. `nextLabels` vs `existing.labels` is a
+    // DELTA over the stored row, deliberately, and it is a delta rather than a check on the request
+    // field for two reasons at once: a PATCH that never mentions `labels` must stay free (the delta
+    // is empty, so no permission is even resolved), and a full-replacement PUT that OMITS a
+    // governance label is a REMOVAL and must be refused (the delta is not empty). Those two are the
+    // same bytes on the wire and only the stored row can tell them apart.
+    //
+    // Ordered FIRST of the three because it is the cheapest: the selector check is pure and
+    // synchronous, and the label check resolves a permission only when the delta is non-empty — so
+    // a refused write never pays for the region walk below it.
+    assertSelectorKeysAreGovernanceLabels({
+      typeId: input.typeId,
+      properties: nextProperties
+    });
+    await assertMayWriteGovernanceLabels(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      before: existing.labels as Record<string, unknown>,
+      after: nextLabels,
+      subject: `${input.typeId} '${existing.urn}'`
+    });
+    // M15.6 / ADR-0017 §3 — the UPDATE half of the un-declaration guard, checked against
+    // `nextProperties` (the value about to be STORED) beside the two above and for the same reason:
+    // `updateObject` replaces `properties` wholesale, so a full-replacement PUT that merely OMITS
+    // `region` deletes it, and omission is the whole attack. See `region-membership-guard.ts` for
+    // the measured evasion this closes and why the bar is org-root `object:write`.
+    //
+    // INDEPENDENT of the governance-label guards above: that pair keys on `labels`, this one on
+    // `properties.region`/`properties.environment`. Same property (a match key writable by its own
+    // subject), different key, different bar — neither subsumes the other.
+    await assertMayUndeclareRegionMembership(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      objectId: existing.id,
+      before: existing.properties as Record<string, unknown>,
+      after: nextProperties
+    });
   }
 
   const nextName = input.name ?? existing.name;
   const nextDomainId = input.domainId === undefined ? existing.domainId : input.domainId;
+
+  // THE TWO SUBJECT-FREE INVARIANTS BEHIND AN EXISTING ROW'S CONTAINMENT-PARENT WRITE, at the one
+  // place it happens: the parent must still EXIST AND BE LIVE IN THIS ORG (the first call in the
+  // block), and the row must still REACH THE ORG ROOT afterwards (the second). They are separate
+  // questions with separate refusals — see the first call's comment for why the walk does not
+  // subsume the liveness check, which is precisely the assumption that left the liveness half
+  // uninstalled here for four rounds of work on this code.
+  //
+  // `upsertObjectByUrn`'s update branch delegates here; its only other `domain_id` write is
+  // the federation hand-fill id replacement, which is `federationImport`-only and exempt below.
+  //
+  // At the REPO rather than at the doors on purpose — the doctrine `containment-parent-authz.ts`
+  // states and `federation/domain-local.ts` argues: authorization at the door, invariant at the
+  // repo. It needs no subject and gives every caller the same answer, and — decisively —
+  // `iac/plans-repo.ts` reaches this function through its own drained check list without ever
+  // calling that helper. A door-only cycle refusal ships INERT for IaC apply, which is the second
+  // copy of this decision and was measured writing the cycle happily
+  // (`routes/containment-move-cycle-and-source-authz.integration.test.ts` pins both doors).
+  //
+  // Guarded on an actual CHANGE, so an unchanged re-apply pays no recursive-CTE round trip, and
+  // exempt for `federationImport`: an imported row's parent comes from `resolveImportDomainId`,
+  // which already falls back to the org root, and a refusal here would abort a whole peer bundle
+  // over a row this domain does not own.
+  if (!input.federationImport && nextDomainId !== null && nextDomainId !== existing.domainId) {
+    // THE VALIDATION HALF OF THIS WRITE — "does this id still name a LIVE object in this org?" —
+    // and it belongs FIRST, ahead of the walk below, for two independent reasons.
+    //
+    // `createObject` has always resolved its parent through this function; `updateObject` never
+    // did. It took `input.domainId` and put it on the column. `containment-parent-authz.ts`'s
+    // module doc has named this split from the day it was written — "what the repo owns is the
+    // invariant half: `resolveContainmentParent` (called from here) is what rejects a `domainId`
+    // naming an object outside the org, and `createObject` still resolves the default parent for
+    // itself" — and the update half of that sentence was never installed.
+    //
+    // WHY THE WALK BELOW IS NOT THIS CHECK, which is what made it survive four rounds of work on
+    // this exact code. `assertRootedContainmentParent` walks `containmentChain(parentId)`, and that
+    // walk deliberately does NOT filter `deleted_at` on its SEED row — "the TARGET itself is not
+    // filtered — governance may legitimately be evaluated over a deleted object", which is correct
+    // for its own purpose. The consequence here is that a TOMBSTONED parent seeds the walk, climbs
+    // to the org root through its own still-live ancestors, and is pronounced rooted. The two
+    // functions ask genuinely different questions and only one of them asks this one.
+    //
+    // MEASURED on the real doors before this call existed, not reasoned about. `POST /plans`
+    // resolves a manifest's `domainId` ONCE, at plan-compute time, and PERSISTS the resolved id in
+    // the plan's diff; `POST /plans/{id}/apply` is a separate request that replays that stored
+    // pointer through this function without ever calling the door helper. Soft-delete the parent in
+    // the window between them and apply answered **200**, the row landed under the tombstone, and
+    // the ORG-ROOT ADMIN's own next GET, PATCH and DELETE of it all answered **403 — permanently**
+    // (`authz/resolve.ts`'s `scopeExpandCte` joins `parent_o.deleted_at IS NULL` on every hop, so
+    // the row's scope expansion terminates at itself). That is byte-for-byte the unrecoverable state
+    // this column's guards exist to prevent, and `resolveContainmentParent`'s own comment records
+    // being paid for once already through `PATCH /services/{s}`.
+    //
+    // The same TOCTOU on the CREATE branch of apply is already refused — because `createObject`
+    // re-validates at APPLY time by calling this function. The asymmetry WAS the bug.
+    //
+    // FIRST, AND CHEAP. This is one PK-indexed SELECT; the walk below is a bounded recursive CTE
+    // (~1 ms measured on this machine). Ordering the narrow refusal ahead of the broad walk is how
+    // the guards on this path have been sequenced since they were installed, and it also produces
+    // the RIGHT diagnostic: a dead parent reported as "does not reference a live object" rather than
+    // as the walk's "does not itself reach the org root", which would send an operator to repair an
+    // ancestor that is fine.
+    //
+    // GATED ON A CHANGE, WHICH IS ALSO THE FAIL DIRECTION — worth separating from the cost argument
+    // the outer guard makes, because they happen to agree here and do not always. A row that is
+    // ALREADY parented under a tombstone (grandfathered, or planted before this call existed) can
+    // still be written, including by a full-replacement PUT that restates the parent it has: that
+    // resolves to `nextDomainId === existing.domainId` and never reaches this check. That is
+    // deliberate and is the opposite choice from ADR-0032 §6a's guard a few lines above, which
+    // checks the value about to be STORED precisely so a grandfathered row becomes un-editable until
+    // it is fixed. The difference is what "fixed" costs: an unenforceable policy document can be
+    // rewritten by its author, whereas a detached row's only remaining principal is one bound
+    // directly at it, and refusing its writes would take away the last handle anyone has on it.
+    // Refuse NEW detachments; never brick an existing one further.
+    //
+    // The return value is discarded on purpose: the refusal is the whole point. The resolved id is
+    // `nextDomainId` by construction for any non-null argument, and the `domainLocal` half is a
+    // CREATE-only concern (ADR-0031 §2 — locality is immutable on an update, and `updateObject`
+    // reads it from the ROW, never from the request).
+    //
+    // FEDERATION IMPORT IS EXEMPT, and here the exemption is PROVABLY INERT rather than a hole —
+    // worth stating, because an exemption whose safety is only asserted is where the next one hides.
+    // `import-repo.ts`'s `object_upsert` branch obtains its `domainId` from `resolveImportDomainId`,
+    // which runs the identical `deleted_at IS NULL` filter and falls back to `undefined` (the org
+    // root) for anything else, so an import can only ever arrive here with `undefined` or an id
+    // already shown to be live and in-org — this guard could never fire for it. The exemption is
+    // therefore kept for consistency with every sibling guard in this function, and because that
+    // branch has NO try/catch: a refusal raised mid-bundle aborts a peer's whole signed journal and
+    // wedges that channel over a row this domain does not own and has no standing to referee. If
+    // `resolveImportDomainId` ever stops filtering tombstones, IT is the place to fix that — not
+    // here, where the blast radius is a peer's entire sync rather than one entry.
+    await resolveContainmentParent(tx, input.orgId, nextDomainId);
+
+    await assertRootedContainmentParent(tx, {
+      orgId: input.orgId,
+      childId: existing.id,
+      parentId: nextDomainId
+    });
+  }
+
+  // CONTAINMENT ROUTE 1 — a `domain_id` MOVE changes which policies reach this object, under
+  // `object:write`, which is weaker and differently held than the `policy:write` that authored them.
+  // See `governance/governance-reach.ts` for the property and why the recording lives at this choke
+  // point rather than at the ~18 route handlers that admit `domainId`.
+  //
+  // The `!==` guard is what keeps this off the ordinary write path: a PATCH that never mentions
+  // `domainId`, and a full-replacement PUT restating the parent the row already has, both resolve to
+  // `nextDomainId === existing.domainId` and cost NOTHING — no query, no walk. Only a genuine move
+  // pays. Creates are not instrumented at all: a new object has no prior reach to have changed.
+  const containmentMove =
+    nextDomainId !== existing.domainId
+      ? {
+          from: existing.domainId,
+          to: nextDomainId,
+          before: await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)
+        }
+      : null;
+
   const nextVersion = existing.version + 1;
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   const nextProvenance = input.federationImport
@@ -800,6 +1079,22 @@ export async function updateObject(tx: TenantTx, input: UpdateObjectInput): Prom
     // on an update body, so `row` is the only truth.
     subjectDomainLocal: row.domainLocal
   });
+
+  // AFTER the row is written and after its own `${typeId}.update` event, so the reach is computed
+  // against the moved row (this transaction sees its own uncommitted write) and the audit chain
+  // reads in causal order: the field changed, then this is what the change cost.
+  if (containmentMove) {
+    await recordGovernanceReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      subjectObjectId: existing.id,
+      route: "domain_id",
+      detail: { fromDomainId: containmentMove.from, toDomainId: containmentMove.to },
+      before: containmentMove.before,
+      subjectDomainLocal: row.domainLocal
+    });
+  }
   // See the identical note in `createObject` — never re-journal an imported row's own history, and
   // never allocate a journal sequence to a domain-local object (M20.2, ADR-0031 §2 as corrected).
   if (!input.federationImport && !row.domainLocal) {
@@ -989,6 +1284,19 @@ export async function upsertObjectByUrn(
     const nextProperties = input.properties ?? {};
     const nextLabels = input.labels ?? {};
     const nextVersion = existing.version + 1;
+    // CONTAINMENT ROUTE 1, SECOND WRITE SITE. This branch deliberately does NOT delegate to
+    // `updateObject` (see the `subjectDomainLocal` note below), so it needs its own capture for
+    // exactly the reason it needs its own audit stamp — and a recorder installed at one of two
+    // write sites for one concept is this repo's most-repeated defect (CLAUDE.md's census rule).
+    //
+    // Reached only by signed-journal replay reconciling a hand-filled shadow onto its authoritative
+    // id, so the actor is the federation import subject rather than a tenant — which is precisely
+    // why it is worth recording: a peer's reconciliation can re-parent a local row, and that must be
+    // as visible as a local operator doing it.
+    const reachBefore =
+      nextDomainId !== existing.domainId
+        ? await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)
+        : null;
     const afterHash = computeObjectContentHash({
       id: input.id,
       orgId: input.orgId,
@@ -1033,6 +1341,25 @@ export async function upsertObjectByUrn(
       // objects-table census exists to catch.
       subjectDomainLocal: row.domainLocal
     });
+    if (reachBefore) {
+      // `row.id` — the AUTHORITATIVE id this branch just moved the row onto, not the placeholder the
+      // reach was captured under. The record must name the id every later reference will use.
+      await recordGovernanceReachChange(tx, {
+        orgId: input.orgId,
+        actorObjectId: input.actorObjectId,
+        requestId: input.requestId,
+        subjectObjectId: row.id,
+        route: "domain_id",
+        detail: {
+          fromDomainId: existing.domainId,
+          toDomainId: nextDomainId,
+          handFillReconciliation: true,
+          previousObjectId: existing.id
+        },
+        before: reachBefore,
+        subjectDomainLocal: row.domainLocal
+      });
+    }
     return { object: toGraphObject(row), created: false };
   }
 
@@ -1117,6 +1444,31 @@ export async function deleteObject(
     }
   }
 
+  // M15.6 / ADR-0017 §3 — the DELETE half of the un-declaration guard. Removing the ROW withdraws
+  // the target from its multi-region environment just as surely as blanking `properties.region`
+  // does, and it was the third measured evasion vector: `readDeclaredRegionMembership` filters
+  // `deleted_at IS NULL`, so soft-deleting a region target that a proposed change already names
+  // makes the gate stop firing and the wave target dispatch against the shared default executor.
+  //
+  // FIRST, ahead of the route-1 orphan guard and the containment-reach capture below, for the reason that capture itself was
+  // placed after `assertRootedContainmentParent` in `updateObject`: a REFUSAL should not pay for
+  // work whose only consumer is the write it refuses. This check is read-only and short-circuits on
+  // `typeId !== 'deployment-target'`, so it costs nothing on the ordinary path, while the reach
+  // capture below runs two recursive containment walks. Ordering them the other way would make
+  // every refused un-declaration pay for a reach diff that is then thrown away with the
+  // transaction. Neither guard reads the other's state — one authorizes, one observes — so the
+  // order is purely a cost decision, and both still run strictly BEFORE the tombstone.
+  if (!input.federationImport) {
+    await assertMayUndeclareRegionMembership(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      typeId: input.typeId,
+      objectId: existing.id,
+      before: existing.properties as Record<string, unknown>,
+      after: null
+    });
+  }
+
   // ---------------------------------------------------------------------------------------------
   // ROUTE-1 ORPHAN GUARD: a tombstoned domain parent makes its `domain_id` children permanently
   // unadministrable, so a delete that would do that is refused — not cascaded, not tolerated.
@@ -1164,6 +1516,20 @@ export async function deleteObject(
       );
     }
   }
+
+  // CONTAINMENT ROUTE 3 — TOMBSTONING A CONTAINER, which writes no containment field and yet
+  // detaches everything beneath it (every route in `graph/containment.ts` skips a deleted ANCESTOR).
+  //
+  // Captured BEFORE the tombstone, and that ordering is the whole of it. The edge cascade further
+  // down re-uses `deleteRelationship`, whose own route-2 recorder runs AFTER this row is already
+  // tombstoned — so its before-reach has lost this container too and its diff is empty. The cascade
+  // therefore records NOTHING on this path, which is why the container case is instrumented here
+  // rather than assumed covered by the edges it deletes.
+  const dependentCount = await countContainmentDependents(tx, input.orgId, existing.id);
+  const containerReach =
+    dependentCount > 0
+      ? await policyReachFor(tx, input.orgId, existing.id, input.actorObjectId)
+      : null;
 
   const nextRevision = input.federationImport?.revision ?? existing.revision + 1;
   await tx
@@ -1245,6 +1611,18 @@ export async function deleteObject(
     // M20.2 (ADR-0031 §2) — the delete's audit segment, paired with the tombstone stamp below.
     subjectDomainLocal: existing.domainLocal
   });
+  if (containerReach) {
+    await recordContainerDeletionReachChange(tx, {
+      orgId: input.orgId,
+      actorObjectId: input.actorObjectId,
+      requestId: input.requestId,
+      containerObjectId: existing.id,
+      containerTypeId: input.typeId,
+      dependentCount,
+      reach: containerReach,
+      subjectDomainLocal: existing.domainLocal
+    });
+  }
   // `!existing.domainLocal` — M20.2 (ADR-0031 §2 as corrected): the tombstone is allocated no
   // sequence either, so a domain-local object's DELETION is as invisible as its existence. This is
   // the easiest of the three to overlook, because a tombstone "carries no data" — but its payload

@@ -8,7 +8,14 @@ import type {
 } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changes, controlRuns, objects } from "../db/schema.js";
-import { MANAGED_SCAN_CONTROL_OBJECT_ID } from "../federation/promotion-scan-step.js";
+import {
+  MANAGED_SCAN_CONTROL_OBJECT_ID,
+  evaluateScanCoverage,
+  isScanEvidenceProducer,
+  mergeInstanceFloor,
+  type ScanRunLike
+} from "../federation/scan-evidence.js";
+import { readInstanceScanFloors } from "../governance/scan-requirements.js";
 import { promotionExportsOf } from "../federation/boundary-bundle-ref.js";
 
 /**
@@ -34,9 +41,10 @@ import { promotionExportsOf } from "../federation/boundary-bundle-ref.js";
  * The exporter's set is VERBATIM (no normalization — the bundle and the gate carry the digest as
  * tracked).
  *
- * `evaluatePromotionScanGate` is the E6 predicate itself (moved here from `promotion-repo.ts`,
- * unchanged), so `artifact.exportGate` is a READ-ONLY re-run of the exact check the export applies,
- * not a re-implementation that could drift from it.
+ * `artifact.exportGate` is a READ-ONLY re-run of the E6 predicate the export applies —
+ * `evaluateScanCoverage` in `federation/scan-evidence.ts`, THE rule (producer identity, latest answer
+ * wins, instance floor), imported and applied per substantive digest exactly as `promotion-repo.ts`
+ * applies it. Not a re-implementation that could drift from it; this module holds no rule of its own.
  */
 
 /** The ORIGIN's two `sourceRef` keys under which a change tracks its OCI digest(s), in read order.
@@ -122,44 +130,6 @@ export function artifactSetOfSourceRef(sourceRef: unknown): ArtifactRef[] {
   return artifactSet;
 }
 
-/**
- * M17.3 (E6) EXPORT SCAN GATE — the boundary re-check (defense in depth). For EACH SUBSTANTIVE
- * artifact (everything in `artifacts[]` EXCEPT `type: "blob"` — the SBOM is the scan's OUTPUT, not a
- * scanned input, so it is EXEMPT) there MUST exist a control run for this change whose evidence
- * parses as `ScanEvidenceSchema` with the run `status === "pass"`, `digestMatch === true`, and a
- * scanned `artifactDigest` EQUAL to the artifact's promoted digest (M17.1 digest binding). This is
- * UNIVERSAL and fail-closed: a MISSING scan refuses exactly like a FAILED one, whether or not a
- * scan-requirement policy was ever bound. Control runs carry no plugin-id column, so a scan outcome
- * is identified purely by `ScanEvidenceSchema.safeParse(evidence)`. This NEVER runs a scan
- * (coordinate-not-execute) — it only re-verifies existence + digest-binding of an outcome an
- * execution system already produced.
- */
-export function evaluatePromotionScanGate(
-  substantiveArtifacts: ArtifactRef[],
-  controlOutcomes: Array<{ status: string; evidence: Record<string, unknown> }>
-): { ok: true } | { ok: false; reason: string; artifactType: string; artifactDigest: string } {
-  for (const artifact of substantiveArtifacts) {
-    const passing = controlOutcomes.some((outcome) => {
-      if (outcome.status !== "pass") return false;
-      const parsed = ScanEvidenceSchema.safeParse(outcome.evidence);
-      if (!parsed.success) return false;
-      return parsed.data.digestMatch === true && parsed.data.artifactDigest === artifact.digest;
-    });
-    if (!passing) {
-      return {
-        ok: false,
-        artifactType: artifact.type,
-        artifactDigest: artifact.digest,
-        reason:
-          `export refused: substantive artifact ${artifact.type}:${artifact.digest} has no passing, ` +
-          `digest-bound scan outcome — every cross-boundary artifact must carry a passing scan whose ` +
-          `scanned digest matches (fail-closed, M17.3 E6)`
-      };
-    }
-  }
-  return { ok: true };
-}
-
 /** One candidate change, as the pick reads it. */
 interface ChangeCandidate {
   id: string;
@@ -239,10 +209,13 @@ async function pickArtifactChange(
 }
 
 /**
- * The scan rows of ONE change, reduced to the NEWEST per (scanner, scanned digest). Every
- * `control_runs` row whose evidence parses as `ScanEvidenceSchema` counts — the org-pipeline
- * `scan-result-control` and the commander's managed step alike (E6 identifies a scan the same
- * way); `managed` is READ off `controlObjectId` (the synthetic id), the one discriminator there is.
+ * The scan rows of ONE change, reduced to the NEWEST per (scanner, scanned digest) for DISPLAY, plus
+ * the RAW `control_runs` rows (`ScanRunLike`) the E6 rule reads. The display list takes every row
+ * whose evidence parses as `ScanEvidenceSchema` — it shows what rows the change holds; `managed` is
+ * READ off `controlObjectId` (the synthetic id). The GATE does not identify a scan that way: it is
+ * decided by `evaluateScanCoverage` over the raw rows, which admits a row by WHAT PRODUCED IT
+ * (`plugin_module` / the managed step's id — `scan-evidence.ts` property 1), so a row that merely
+ * looks like scan evidence appears in `scans[]` and still counts for nothing at the gate.
  */
 async function scanRunsForChange(
   tx: TenantTx,
@@ -250,12 +223,13 @@ async function scanRunsForChange(
   changeObjectId: string
 ): Promise<{
   scans: ComponentPipelineScanRunSummary[];
-  outcomes: Array<{ status: string; evidence: Record<string, unknown> }>;
+  runs: ScanRunLike[];
 }> {
   const rows = await tx
     .select({
       id: controlRuns.id,
       controlObjectId: controlRuns.controlObjectId,
+      pluginModule: controlRuns.pluginModule,
       status: controlRuns.status,
       evidence: controlRuns.evidence,
       gateRef: controlRuns.gateRef,
@@ -265,14 +239,20 @@ async function scanRunsForChange(
     .where(and(eq(controlRuns.orgId, orgId), eq(controlRuns.changeObjectId, changeObjectId)))
     .orderBy(desc(controlRuns.createdAt), desc(controlRuns.id));
 
-  const outcomes: Array<{ status: string; evidence: Record<string, unknown> }> = [];
+  const runs: ScanRunLike[] = rows.map((row) => ({
+    id: row.id,
+    controlObjectId: row.controlObjectId,
+    pluginModule: row.pluginModule ?? null,
+    status: row.status,
+    evidence: (row.evidence ?? {}) as Record<string, unknown>,
+    createdAt: row.createdAt
+  }));
   const scans: ComponentPipelineScanRunSummary[] = [];
   const seen = new Set<string>();
   for (const row of rows) {
     const evidence = (row.evidence ?? {}) as Record<string, unknown>;
     const parsed = ScanEvidenceSchema.safeParse(evidence);
     if (!parsed.success) continue;
-    outcomes.push({ status: row.status, evidence });
     const ev = parsed.data;
     const key = `${ev.scanner}|${ev.artifactDigest}`;
     if (seen.has(key)) continue; // newest-first ⇒ the first seen IS the newest
@@ -292,7 +272,7 @@ async function scanRunsForChange(
       managed: row.controlObjectId === MANAGED_SCAN_CONTROL_OBJECT_ID
     });
   }
-  return { scans, outcomes };
+  return { scans, runs };
 }
 
 /**
@@ -332,18 +312,28 @@ export async function artifactFactsForComponent(
     else unknownFields.push("sbom:unparseable");
   }
 
-  const { scans, outcomes } = await scanRunsForChange(tx, orgId, pick.id);
+  const { scans, runs } = await scanRunsForChange(tx, orgId, pick.id);
 
-  // E6, read-only. `not_run` is "no scan evidence exists for this change at all" — distinct from
-  // `fail`, which is "evidence exists and does not cover every substantive artifact with a passing,
-  // digest-bound row". The predicate is the exporter's own, not a copy.
+  // E6, read-only. `not_run` is "nothing scan-like exists on this change at all" — no row from an
+  // admitted scan-evidence producer AND no row whose evidence even parses as a scan verdict —
+  // distinct from `fail`, which is "something is there and it does not cover every substantive
+  // artifact with a CURRENT, digest-bound, floor-satisfying outcome from an ADMITTED producer". The
+  // predicate is the exporter's own (`evaluateScanCoverage`, applied per substantive digest with the
+  // same instance floor `promotion-repo.ts` reads), not a copy: a row an unadmitted producer wrote
+  // (e.g. `webhook-control` echoing a scan-shaped payload) may show in `scans[]` and still reads
+  // `fail` here, exactly as the export would refuse it.
   const substantive = artifactSet.filter((a) => a.type !== "blob");
-  const exportGate: ComponentPipelineArtifact["exportGate"] =
-    outcomes.length === 0
-      ? "not_run"
-      : evaluatePromotionScanGate(substantive, outcomes).ok
-        ? "pass"
-        : "fail";
+  let exportGate: ComponentPipelineArtifact["exportGate"];
+  if (scans.length === 0 && !runs.some(isScanEvidenceProducer)) {
+    exportGate = "not_run";
+  } else {
+    const instanceFloor = mergeInstanceFloor(await readInstanceScanFloors(tx));
+    exportGate = substantive.every(
+      (a) => evaluateScanCoverage({ digest: a.digest, runs, instanceFloor }).covered
+    )
+      ? "pass"
+      : "fail";
+  }
 
   const stamped = promotionExportsOf(pick.sourceRef);
   if (stamped.unparseable > 0) unknownFields.push("promotionExports:unparseable");

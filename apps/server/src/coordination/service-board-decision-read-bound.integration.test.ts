@@ -15,7 +15,8 @@ import {
   decisionRowsTouched,
   indexesInPlan,
   preferIndexPlans,
-  refreshDecisionStats
+  refreshDecisionStats,
+  sortNodesInPlan
 } from "./test-support/decision-read-counters.js";
 
 /**
@@ -50,6 +51,38 @@ import {
  * unbounded read it replaced). drizzle/0046's PARTIAL index (`… WHERE verdict = 'block'`) is what
  * makes it O(1): the descent finds no entry for that (org, subject) at all. MUTATION-PROVEN:
  * `DROP INDEX decisions_org_subject_block_created` takes that test from 1 row touched to 401.
+ *
+ * WHAT THIS SUITE WAS NOT MEASURING, UNTIL drizzle/0069 (2026-08-17). It went red in CI on two
+ * unrelated branches ten hours apart with the IDENTICAL number — `expected 804 to be less than or
+ * equal to 10` — and passed on a plain re-run both times. 804 is every row this fixture's
+ * `decisions` table holds, so it was never a marginal drift: the read was walking the whole ORG's
+ * decision stream, which is exactly the pathology drizzle/0046 exists to prevent. The cause is a
+ * PLAN FLIP, and what decides it is whether `decisions` has COLUMN STATISTICS:
+ *
+ *   - The suite seeds and measures within ~1.7 s, so `pg_statistic` is normally still EMPTY. Every
+ *     equality is costed at `DEFAULT_EQ_SEL`, ~1 row is estimated to match, the sortless rival
+ *     index is priced at its full length, and the partial index wins. Green — for a reason that
+ *     has nothing to do with the index being right for the read.
+ *   - When autoanalyze happens to fire inside that window, the estimate becomes ~200 matching rows,
+ *     the rival is repriced at 1/200th, and the plan flips to `decisions_org_created` with
+ *     `subject_id`/`verdict` as a heap filter. 802 rows removed by filter. Red.
+ *
+ * Two things follow, and both are fixed here rather than papered over. FIRST, the bound is right
+ * and the plan was wrong: 0046's index stops at `created_at DESC` while the read orders by
+ * `created_at DESC, id DESC`, so it can only ever be used underneath a sort node whose startup cost
+ * `LIMIT 1` cannot amortise — see drizzle/0069 for the plans. SECOND, this suite could not have
+ * caught that, because `refreshDecisionStats` ran its `ANALYZE` on the tenant transaction, whose
+ * `scp_app` role cannot analyze a table it does not own; PostgreSQL warned and skipped, and the
+ * helper written to remove exactly this variance had never done anything. It now analyzes over the
+ * owner connection and throws if `pg_statistic` is still empty afterwards, so every arm below
+ * measures the regime a live instance is permanently in.
+ *
+ * MUTATION-PROVEN, 2026-08-17, both directions:
+ *   - drizzle/0069 reverted to the pre-0069 index keys -> `expected 804 to be less than or equal
+ *     to 10` on EVERY run, plus `expected [ 'decisions_org_created' ] to include
+ *     'decisions_org_subject_block_created'`. The CI failure, on demand.
+ *   - that revert PLUS `refreshDecisionStats` returned to its old no-op -> all three arms GREEN.
+ *     That is the suite as it stood, and it is why an 80x overshoot looked like a flake.
  */
 describe("service board: the per-row Decision read is bounded, not the change's whole history", () => {
   let server: TestServer;
@@ -160,6 +193,10 @@ describe("service board: the per-row Decision read is bounded, not the change's 
   });
 
   it("reads O(1) rows out of `decisions` per board row, whatever the change's history holds — and still reports the LATEST block", async () => {
+    // MEASURE THE REGIME PRODUCTION IS IN, not the one a freshly-seeded table happens to start in.
+    // See `refreshDecisionStats`: with `pg_statistic` empty the planner picks the right index for
+    // the wrong reason, so a bound measured there proves nothing about a live instance.
+    await refreshDecisionStats();
     const { board, touched, seeded } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       // The row the board must report: the newest `block` for this change.
       const latest = await tx.execute(sql`
@@ -184,31 +221,47 @@ describe("service board: the per-row Decision read is bounded, not the change's 
     expect(row?.attention.blocked).toBe(true);
     expect(row?.attention.decisionId).toBe(seeded);
 
-    // (b) THE BOUND. Measured: 2. One probe returns the matching row, and the counter also charges
-    // the next index entry the backward scan steps onto before the LIMIT stops it — so a small
-    // constant, not zero, is the floor. `<= 10` leaves headroom for that and for a board with a few
-    // components, while the unbounded read charges every Decision the change holds (measured 401 for
-    // SEEDED_DECISIONS=400 plus the change's `transition` row — once PER BOARD ROW).
+    // (b) THE BOUND. Measured: 1 with statistics present and drizzle/0069 applied — one index
+    // descent to the newest block entry, and `LIMIT 1` stops there. (It was 2 in the
+    // no-statistics regime this suite used to measure, where the same index was reached through an
+    // `Incremental Sort` that pulls an extra entry.) `<= 10` leaves headroom for that and for a
+    // board with a few components, while the unbounded read charges every Decision the change holds
+    // (measured 401 for SEEDED_DECISIONS=400 plus the change's `transition` row — once PER BOARD
+    // ROW).
     expect(touched).toBeGreaterThan(0);
     expect(touched).toBeLessThanOrEqual(10);
     expect(touched).toBeLessThan(SEEDED_DECISIONS);
   });
 
   it("the never-blocked probe is SERVED BY drizzle/0046's partial index — named, so a plan flip says which index it flipped to", async () => {
-    // ADDED after this suite went red once in CI ("expected 804 to be less than or equal to 10")
-    // and passed on a plain re-run of the SAME commit. The row count below is the honest
-    // measurement, but when it fails it reports a bare number: it does not say which index served
-    // the read instead, so the investigation restarts from nothing. This arm names it.
+    // ADDED after this suite went red in CI ("expected 804 to be less than or equal to 10") and
+    // passed on a plain re-run of the SAME commit. The row count below is the honest measurement,
+    // but when it fails it reports a bare number: it does not say which index served the read
+    // instead, so the investigation restarts from nothing. This arm names it.
     //
     // It explains the BUILDER `latestBlockDecisionForSubject` itself runs — not a re-typed copy,
     // which would keep passing while the real query drifted off the index.
-    const plan = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+    //
+    // WHY THIS ARM PASSED WHILE THE ROW COUNT FAILED, in the CI run that diagnosed all this: both
+    // arms called `refreshDecisionStats` and NEITHER analyzed anything (it ran on the tenant
+    // transaction, whose `scp_app` role cannot analyze a table it does not own — PostgreSQL warns
+    // and skips). So the statistics state was not controlled by the suite at all; it was whatever
+    // autoanalyze had done by then, and it changed BETWEEN the two arms. With the helper now
+    // analyzing for real, both arms measure the same, permanent, production regime.
+    await refreshDecisionStats();
+    const { plan, sorts } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       await preferIndexPlans(tx);
-      await refreshDecisionStats(tx);
-      return indexesInPlan(tx, latestBlockDecisionQuery(tx, org.orgId, healthyChangeObjectId));
+      const query = latestBlockDecisionQuery(tx, org.orgId, healthyChangeObjectId);
+      return { plan: await indexesInPlan(tx, query), sorts: await sortNodesInPlan(tx, query) };
     });
 
     expect(plan).toContain("decisions_org_subject_block_created");
+    // THE HALF THE NAME CANNOT ASSERT. A prefix-keyed index is still usable for ACCESS under an
+    // `Incremental Sort`, so it appears in the plan by name while supplying only part of the order —
+    // which is exactly what the pre-0069 index did, and exactly the state this suite used to call
+    // green. `LIMIT 1` cannot amortise a sort node's startup cost, so "no sort node" is the property
+    // that makes this a single seek. See `sortNodesInPlan`.
+    expect(sorts).toEqual([]);
     // The general index is what a flipped plan falls back to. `toContain` on an ARRAY is exact
     // element equality, not substring — so this does NOT reject the partial index above, whose name
     // happens to start with the same characters. Do not "fix" it into a substring check.
@@ -229,16 +282,20 @@ describe("service board: the per-row Decision read is bounded, not the change's 
   });
 
   it("reads O(1) rows for a change that NEVER blocked, whose whole history it would otherwise have to walk to say so", async () => {
+    // THE ARM THAT WENT RED IN CI, TWICE, ON UNRELATED BRANCHES, WITH THE IDENTICAL NUMBER:
+    // `expected 804 to be less than or equal to 10` — 804 being every row this fixture's
+    // `decisions` table holds, i.e. the org-wide walk drizzle/0046 exists to prevent, not a
+    // marginal drift. It is not a timing flake and it is not noise: it is a PLAN FLIP that fires
+    // whenever the planner has real statistics, which every live instance permanently does and a
+    // freshly-seeded test table normally does not. `refreshDecisionStats` puts this suite in that
+    // regime deliberately (and, since it now actually works, on every run) so the bound is a
+    // detector rather than a coin toss. drizzle/0069 is what makes it hold there — closing both
+    // ordering indexes with the `id DESC` tiebreak their `ORDER BY` asks for, so the partial index
+    // needs no sort node above it and is cheaper than the sortless rival at every statistics state.
+    await refreshDecisionStats();
     const { board, touched } = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const service = await getObjectByIdOrUrnAnyType(tx, org.orgId, healthyServiceId);
       await preferIndexPlans(tx);
-      // Seeded rows are written and measured in the same run, which races autovacuum's
-      // asynchronous analyze — so the planner can cost this read from stale or default estimates,
-      // and its index choice can differ run to run on IDENTICAL data. That is the only mechanism
-      // that plausibly explains the one observed CI failure passing on re-run. Removing the
-      // variance is cheap; see `refreshDecisionStats` for the honest caveat that the flip was never
-      // reproduced locally, so this is variance reduction rather than a diagnosed fix.
-      await refreshDecisionStats(tx);
       const before = await decisionRowsTouched(tx);
       const built = await buildServiceBoard(tx, org.orgId, service);
       const after = await decisionRowsTouched(tx);
@@ -252,10 +309,12 @@ describe("service board: the per-row Decision read is bounded, not the change's 
     expect(row?.attention.decisionId).toBeNull();
 
     // (b) THE BOUND, which here is the WHOLE POINT: answering "nothing blocked this" must not cost
-    // the change's history. Measured 1 (the partial index holds no entry for this subject, so the
-    // descent stops at the first non-matching one). Dropping
-    // `decisions_org_subject_block_created` takes this to 401 — every row, discarded by a heap
-    // filter, to return `undefined`.
+    // the change's history — and, when the plan flips, does not cost the change's history but the
+    // ORG's. Measured 0 with drizzle/0069: the partial index holds no entry for this (org, subject)
+    // at all, so the descent returns without charging one. Dropping
+    // `decisions_org_subject_block_created` takes this to 401 — every row the change holds,
+    // discarded by a heap filter, to return `undefined`. Reverting only its `id DESC` tiebreak
+    // takes it to 804 — every row the ORG holds, which is the CI failure this suite is named for.
     expect(touched).toBeLessThanOrEqual(10);
     expect(touched).toBeLessThan(SEEDED_DECISIONS);
   });

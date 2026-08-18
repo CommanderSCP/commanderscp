@@ -355,8 +355,43 @@ export interface FederationTransportPlugin {
 // DiscoveryPlugin (DESIGN.md §11) — M7 implements (GitHub repo/topology scan).
 // -------------------------------------------------------------------------------------------
 
+/**
+ * THE MEMBERSHIP EDGE A DISCOVERY PLUGIN EMITS IS `contains`, POINTING SERVICE -> COMPONENT.
+ *
+ * Read this before writing `part_of` — it is the intuitive spelling, all three in-tree git plugins
+ * shipped it, and it has never once landed a row.
+ *
+ * `docs/proposals/service-component-model.md` §2 considered `component --part_of--> service` and
+ * REJECTED it; the owner accepted `contains` (decision 1), and it landed as migration `0021`.
+ * `part_of` is registered by no migration, so `POST /discovery/accept` answered every proposal
+ * carrying one with `404 relationship type 'part_of' is not registered` — the whole discovery
+ * relationship channel, dead from the day it was written, behind a green suite (every end-to-end
+ * discovery test sent `relationships: []` at the accept step).
+ *
+ * The direction is FORCED, not stylistic. Cardinality `one_to_many` constrains the *to* side to one
+ * live incoming edge, which is exactly "each component has at most one service"; migration 0022's
+ * partial unique index on `(org_id, to_id)` enforces the same thing at the database. Reverse the
+ * edge and both mean the opposite. And `contains` is what the engine actually walks —
+ * `graph/containment.ts` route 2 walks it BACKWARDS to reach a component's service, which is what
+ * puts a service on the containment chain that policy scope, RBAC scope expansion, domain
+ * inheritance and pipeline resolution are all derived from. An edge of any other name is a row no
+ * consumer reads: an import that returns 201 and leaves the component governed by nothing.
+ *
+ * `service -> assembly -> component` is legal too (migration `0055`): `contains` accepts
+ * `{service, assembly} -> {assembly, component}`, so a plugin that learns to propose the middle rung
+ * needs no new edge type.
+ */
 export interface DiscoveryProposal {
-  objects: Array<{ typeId: string; name: string; properties?: Record<string, unknown> }>;
+  objects: Array<{
+    typeId: string;
+    name: string;
+    properties?: Record<string, unknown>;
+    /** Proposal-local alias this object is referenced by in `relationships[].fromUrn`/`toUrn`.
+     *  Required in practice for any edge between two PROPOSED objects: accept mints the stored URN
+     *  from the org id and a server-side slug rule, so a plugin cannot name its own objects without
+     *  it. See `@scp/schemas`'s `DiscoveryProposalObjectSchema.urn`. */
+    urn?: string;
+  }>;
   relationships: Array<{ typeId: string; fromUrn: string; toUrn: string }>;
   /** Optional executor bindings to create at accept (M12 P3b) — `objectName` references one of
    *  `objects` by name, so an imported object can be wired to an execution-system in one step. */

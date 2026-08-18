@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { DependencyEcosystem } from "@scp/schemas";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
@@ -9,6 +9,7 @@ import { SYSTEM_ACTOR_ID } from "../coordination/system-actor.js";
 import {
   listComponentDependencies,
   listComponentsDeclaringLine,
+  listDependencyLineProducersForComponents,
   recordDependencyLineHead
 } from "./dependency-inventory-repo.js";
 import type { HeadRefusalReason } from "./line-head.js";
@@ -64,15 +65,27 @@ import {
  * the free-text `rollback_trigger_reason`, which is an English sentence a refactor can change.
  *
  * ============================================================================================
- * DOMAIN-LOCAL CHANGES ARE DOMAIN-VISIBLE ONLY. STATED, NOT WORKED AROUND.
+ * DOMAIN-LOCAL CHANGES ARE OUT OF SCOPE. STATED, NOT WORKED AROUND.
  * ============================================================================================
  * A domain-local change does not journal (`transition.ts:337-360`, ADR-0031): its `change_status`
  * entry is deliberately withheld, because "the commander doesn't need to know when these deploy
- * out" is exactly what domain-locality means. The head this module records for such a release is
- * therefore a fact in THIS domain's `dependency_lines` and travels nowhere — a subscriber in
- * another domain will not learn of it. That is ADR-0031's design, and ADR-0032 §7 records it as a
- * known consequence ("stated, not discovered later"). Nothing here tries to route around it: a
- * feature that federated what locality withheld would defeat the locality decision, not extend it.
+ * out" is exactly what domain-locality means. Until 2026-08-17 this module ran on every federation
+ * role, so the head it recorded for such a release was a fact in THAT domain's `dependency_lines`
+ * that travelled nowhere — "domain-visible only", the consequence ADR-0032 §7 records.
+ *
+ * SINCE ADR-0032 §7d (owner decision, 2026-08-17) THIS MODULE RUNS ON THE COMMANDER ONLY, so the
+ * statement is now stronger: a domain-local release at a FIELD outpost reaches no detection at all,
+ * and its head is recorded NOWHERE. That is the same class as §7d clause 1's field-outpost-only
+ * repositories and is accepted on the same terms — a field outpost never ORIGINATES a bump, it
+ * receives the resulting change down the global pipeline the commander manages. Nothing here tries
+ * to route around it: a feature that federated what locality withheld would defeat the locality
+ * decision, not extend it.
+ *
+ * "FIELD" IS THE QUALIFIER THAT MAKES THIS TRUE (ADR-0032 §7d's vocabulary note). A domain-local
+ * change in the COMMANDER'S OWN trust domain — the HQ outpost, which is not a second deployment but
+ * this process (`dependencies/commander-only.ts` reads that out of the code) — never journals
+ * either, but it does not need to: this module runs here, over those rows, so its head IS recorded.
+ * The loss is confined to domains the commander is not.
  *
  * ============================================================================================
  * WHAT KEEPS THIS FROM WRITING 1.44 GB/DAY
@@ -101,11 +114,15 @@ import {
  * `listComponentsDeclaringLine` (M21.2's reverse lookup). The AND is not re-expressed here; this
  * module cannot disagree with a UI verdict because it does not compute one.
  *
- * THAT IS ALSO WHY THE GROUP-SCOPE GUARD CHANGED. This job resolves as {@link SYSTEM_ACTOR_ID},
- * which is a sentinel with NO `objects` row (`coordination/system-actor.ts:9`) and therefore a
- * member of no group — so `matchPoliciesForTargets` never returns a `scope.group` policy for it and
- * a group-scoped ENABLE is INERT here while reading `enabled` in the API for a human team member.
- * See `subscription-authoring-guard.ts` and ADR-0032 §6a.
+ * THAT IS ALSO WHY THE GROUP-SCOPE GUARD CHANGED — though NOT for the reason this comment used to
+ * give. It said a group-scoped ENABLE is INERT here because this job resolves as
+ * {@link SYSTEM_ACTOR_ID}, a sentinel with NO `objects` row (`coordination/system-actor.ts:9`) and
+ * therefore a member of no group. The membership fact is still true; the conclusion is FALSE
+ * (ADR-0032 §6a-ii). `matchPoliciesForTargets` also matches a group-scoped policy through its
+ * OWNING half, which never reads the actor (`governance/policy-resolve.ts:313`, `:150-173`), so such
+ * a policy DOES contribute here wherever the group owns something on the component's chain. What the
+ * guard actually refuses is a reach nobody declared: membership plus mutable `owns` edges, in place
+ * of what the author wrote. See `subscription-authoring-guard.ts` and ADR-0032 §6a-ii.
  */
 
 /** The Decision `kind` this module writes. One kind, one subject (the change), one row per run. */
@@ -498,11 +515,32 @@ export async function detectInternalReleases(
       // the same function, that the third-party poll is subject to. This module deliberately holds
       // no second copy of any of them, which is why a `1.9.9` hotfix landing after `1.10.0` is
       // refused here rather than silently walking the head backwards.
-      const head = await recordDependencyLineHead(tx, orgId, {
-        lineId: item.group.line.id,
-        latestVersion: item.agreed.version,
-        latestDigest: item.agreed.digest
-      });
+      //
+      // AND IT DECIDES WHETHER THIS INGRESS STILL OWNS THE LINE. Phase 1 read the declaration; the
+      // manifest fetch in phase 2 happens with NO transaction open, so a `POST
+      // /dependencies/producers/retract` can land in between and this phase-3 write would otherwise
+      // put the org's own version onto a coordinate that is third-party again — the direction
+      // `resetLineHead`'s header calls a security fix rather than a wedge fix, because
+      // `latest_version` is an M22 vendor-rule input. The `internal` ingress is what lets the door
+      // refuse it (`line_is_third_party`), and the refusal is reported as a skip like every other.
+      //
+      // AND IT NAMES THE PRODUCER THIS RELEASE WAS DERIVED FROM. `producerComponentObjectId` is
+      // phase 1's own answer — the component `listProducedLines` matched this line's declaration to
+      // — carried down here rather than recomputed. Without it the door could only ask "is this
+      // coordinate internal?", which a TRANSFER (`POST /dependencies/producers` over an existing
+      // declaration) leaves true while making this component the WRONG writer: its version would
+      // become the head, fan bump PRs into every subscriber's repo, and wedge the new producer's
+      // genuine release behind `behind_head` with no way back.
+      const head = await recordDependencyLineHead(
+        tx,
+        orgId,
+        {
+          lineId: item.group.line.id,
+          latestVersion: item.agreed.version,
+          latestDigest: item.agreed.digest
+        },
+        { kind: "internal", producerObjectId: item.identity.producerComponentObjectId }
+      );
       if (!head.recorded) {
         item.skipped.push({ ...item.identity, reason: head.reason, detail: head.detail });
         continue;
@@ -727,19 +765,33 @@ function observedImagesOf(observed: unknown): string[] {
 }
 
 /**
- * The lines each released component is the DECLARED producer of — one indexed read over
- * `dependency_lines.produced_by_object_id`.
+ * The lines each released component is the DECLARED producer of — TWO indexed reads since
+ * drizzle/0068, because the declaration moved off the line row and onto the COORDINATE.
+ *
+ * Hop 1 is `dependency_line_producers_org_producer` ("which coordinates does component X
+ * produce?"), replacing the partial index the old column carried. Hop 2 narrows
+ * `dependency_lines` by `(org_id, ecosystem, coordinate)` — a PREFIX of the existing
+ * `dependency_lines_identity` — so no index was added to make this work.
+ *
+ * THE REGRAIN IS WHY THIS IS RIGHT NOW AND WAS NOT BEFORE. Under the per-line column, a component
+ * that had declared `@acme/lib` and then cut a `3.0.0` derived NO head for the freshly minted `3`
+ * line: that row's producer was NULL because nobody had re-declared it, and the version poll
+ * cheerfully fetched the org's own coordinate from a public index. Keyed by coordinate, every major
+ * is here from the instant a consumer's manifest mints it.
  *
  * DECLARED, NEVER INFERRED (ADR-0032 §7, ADR-0030 §2). Nothing here looks at the component's name,
- * its repo, or the registry a coordinate points at. `produced_by_object_id` is written only by
- * `declareDependencyLineProducer`, which is a separate verb from ingestion precisely so that this
- * link cannot arrive as a side effect of observing a manifest.
+ * its repo, or the registry a coordinate points at. `dependency_line_producers` is written only by
+ * the two verbs in `routes/dependency-producers.ts`, and `inventory-ingestion.ts` does not import
+ * the table at all — that absence is the enforcement, not this comment.
  *
- * SINGLE HOP, AND ONLY THE COMPONENT. The producer link may name a component OR a service, and this
- * derivation asks only about the component the placement names — it does not walk up to that
- * component's service or down to a service's components. ADR-0032 §3's "nothing in the dependency
- * path may expose a transitive traversal" is what justifies the whole projection-table
- * representation; a containment walk here would spend it.
+ * SINGLE HOP THROUGH THE GRAPH, AND ONLY THE COMPONENT. This derivation asks only about the
+ * component the placement names; it does not walk up to that component's service or down to a
+ * service's components. A SERVICE-VALUED declaration would therefore derive no head at all, which
+ * is exactly why the declare verb REFUSES a service in the first cut (ADR-0032 §7e) instead of
+ * accepting one that silently does only the harmful half — removing the coordinate from the
+ * third-party poll — and none of the useful half. ADR-0032 §3's "nothing in the dependency path may
+ * expose a transitive traversal" is what justifies the projection-table representation at all; a
+ * containment walk here would spend it.
  */
 async function listProducedLines(
   tx: TenantTx,
@@ -749,30 +801,56 @@ async function listProducedLines(
   const componentObjectIds = [...new Set(releases.map((r) => r.componentObjectId))];
   if (componentObjectIds.length === 0) return [];
 
+  const declarations = await listDependencyLineProducersForComponents(
+    tx,
+    orgId,
+    componentObjectIds
+  );
+  if (declarations.length === 0) return [];
+
+  // MATCHED AS A PAIR, deliberately. The coordinate is compared VERBATIM and carries no ecosystem
+  // in itself, so narrowing on `coordinate IN (...)` alone would let an `npm` declaration claim an
+  // `oci` line that happens to spell the same string.
   const rows = await tx
     .select({
       id: dependencyLines.id,
       ecosystem: dependencyLines.ecosystem,
       coordinate: dependencyLines.coordinate,
-      major: dependencyLines.major,
-      producedByObjectId: dependencyLines.producedByObjectId
+      major: dependencyLines.major
     })
     .from(dependencyLines)
     .where(
       and(
         eq(dependencyLines.orgId, orgId),
-        inArray(dependencyLines.producedByObjectId, componentObjectIds)
+        or(
+          ...declarations.map((d) =>
+            and(
+              eq(dependencyLines.ecosystem, d.ecosystem),
+              eq(dependencyLines.coordinate, d.coordinate)
+            )
+          )
+        )
       )
     )
     .orderBy(dependencyLines.id);
 
+  // ` ` as the joiner, not a space or a colon: an ecosystem is one of five literals and a
+  // coordinate is arbitrary user bytes, so any separator that can appear IN a coordinate could make
+  // two different pairs share a key.
+  const keyOf = (ecosystem: string, coordinate: string) => `${ecosystem} ${coordinate}`;
+  const producerOf = new Map(
+    declarations.map((d) => [keyOf(d.ecosystem, d.coordinate), d.producerObjectId])
+  );
+
   const out: ProducedLineGroup[] = [];
   for (const row of rows) {
+    const producerObjectId = producerOf.get(keyOf(row.ecosystem, row.coordinate));
+    if (producerObjectId === undefined) continue;
     // ONE GROUP PER LINE, carrying every place that released it — never one entry per (line, place).
     // A line has one head, so the places are evidence to be weighed together; a flat pair list made
     // each place write the head in turn and let the last one, ordered by UUID, win.
     const forThisLine = releases
-      .filter((release) => release.componentObjectId === row.producedByObjectId)
+      .filter((release) => release.componentObjectId === producerObjectId)
       .sort((a, b) => (a.deploymentTargetObjectId < b.deploymentTargetObjectId ? -1 : 1));
     if (forThisLine.length === 0) continue;
     out.push({
@@ -802,10 +880,12 @@ async function listProducedLines(
  * into `listSubscribedComponentLines`, which applies `mergeDependencySubscription` itself. The AND
  * is not restated here, so this gate cannot disagree with what a UI or a Decision reports.
  *
- * THE ACTOR IS THE SYSTEM SENTINEL, and that has a consequence worth naming at the call site: it is
- * a member of no group, so a `group`-scoped `dependencySubscription` effect NEVER contributes for
- * this job. ADR-0032 §6a is amended for exactly this reason and the authoring guard now refuses
- * group scope in both directions.
+ * THE ACTOR IS THE SYSTEM SENTINEL, and the consequence worth naming at the call site is NOT the one
+ * that used to be written here ("it is a member of no group, so a `group`-scoped effect NEVER
+ * contributes for this job"). That is false — group scope's owning half ignores the actor, so such an
+ * effect contributes wherever the group owns something on the chain (ADR-0032 §6a-ii). The real
+ * consequence: whether it contributes is decided by ownership data this job never looks at and the
+ * author never wrote, which is why the authoring guard refuses group scope in both directions.
  */
 async function lineHasSubscriber(tx: TenantTx, orgId: string, lineId: string): Promise<boolean> {
   const declaring = await listComponentsDeclaringLine(tx, orgId, lineId);

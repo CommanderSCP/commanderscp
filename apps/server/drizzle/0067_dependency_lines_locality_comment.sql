@@ -1,0 +1,22 @@
+-- ============================================================================================
+-- M21.7 follow-up (ADR-0032 §7d, owner decision 2026-08-17) — RESTATE ONE COMMENT. NO SCHEMA CHANGE.
+-- ============================================================================================
+-- `drizzle/0061` gave `dependency_lines` a COMMENT ending "Does NOT federate; each domain derives
+-- its own." §7d reverses the second half: ALL dependency automation is COMMANDER-ONLY, so no domain
+-- but the commander derives anything here. 0061 is merged and must not be edited in place, and a
+-- COMMENT is not something a reader can check against the code — `\d+ dependency_lines` on an
+-- outpost is where an operator meets it, and there it reads as a licence to expect rows.
+--
+-- WHY THIS IS WORTH A MIGRATION AT ALL, rather than a note somewhere a reader might not be. It is
+-- exactly the artefact CLAUDE.md's census rule warns about: a well-written comment that talks the
+-- next reader into deleting a guard. Someone finding the commander-only guard on the ingestion loop
+-- and this sentence in the database has one authoritative-looking statement on each side, and the
+-- database's is the one that looks like ground truth. The cost is one `COMMENT ON` — no DDL, no
+-- lock beyond the catalog row, nothing to roll back.
+--
+-- The FIRST half is unchanged and is repeated deliberately: "a projection table, it does not
+-- federate" is what justifies the principle-2 bend (ADR-0032 §3), and only the per-domain half was
+-- overturned. `apps/server/src/db/schema.ts`'s `dependencyLines` doc says the same thing in the same
+-- terms; the two are meant to be read as one statement.
+COMMENT ON TABLE dependency_lines IS
+  'ADR-0032 §3: the identity of ONE MAJOR LINE of one dependency. A projection table, not a graph object — package coordinates are not representable as URNs (graph/urn.ts collapses @acme/lib and acme-lib to one slug). Identity is (org_id, ecosystem, coordinate, major); the coordinate is stored ecosystem-native and verbatim. Does NOT federate. WRITTEN ON THE COMMANDER ONLY (ADR-0032 §7d, 2026-08-17): 0061 said "each domain derives its own" and that half is REVERSED — all dependency automation is commander-only, an outpost never originates a bump but receives the resulting change down the global pipeline, so these rows are expected to be EMPTY on an outpost and that is correct, not a sync failure.';

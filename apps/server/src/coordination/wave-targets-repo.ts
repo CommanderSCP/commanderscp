@@ -3,6 +3,7 @@ import type { ExecutionStatus } from "@scp/plugin-api";
 import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
+import { WAVE_TARGET_TOMBSTONED_STATUS } from "./target-liveness.js";
 
 /**
  * DB access `coordination/reconcile.ts` needs around `change_wave_targets`/`change_waves` beyond
@@ -311,26 +312,34 @@ export function observedStateFrom(
 }
 
 /**
- * Terminalize a wave target on the dedicated `no_executor` status (M12 — fail-closed on a masking
- * executor-binding gap; docs/adr/0006): the target holds at least one real executor binding but NONE
- * for the purpose this wave rolls, so fake-succeeding it would hide a misconfiguration. A DISTINCT
- * terminal value (not `failed`) so `scp change explain`/the UI can name the actual cause, mirroring
- * `campaign_waves`' purpose-built `blocked`.
+ * Terminalize a wave target that reconcile REFUSED to drive, on a dedicated per-cause status. A
+ * DISTINCT terminal value (never `failed`) so `scp change explain`/the UI can name the actual cause,
+ * mirroring `campaign_waves`' purpose-built `blocked`. Two causes exist today, and the status is a
+ * PARAMETER rather than a literal precisely so a second cause could not be smuggled in under the
+ * first one's name:
+ *
+ *  * `no_executor` (M12, docs/adr/0006) — the target holds at least one real executor binding but
+ *    NONE for the purpose this wave rolls, so fake-succeeding it would hide a misconfiguration.
+ *  * `target_deleted` (`target-liveness.ts`) — the OBJECT the wave target names has been tombstoned
+ *    (or the half of a placement's pair it depends on has), so there is nothing live to release to.
+ *    Reporting that as a binding gap would be the provenance-label mistake: a label named after the
+ *    branch that happened to match rather than after what is true.
  *
  * Guarded on `status IN ('pending','triggering')` and RETURNING so the caller emits the block
  * Decision + hash-chained audit event EXACTLY ONCE: a later reconcile tick that finds the target
- * already `no_executor` gets `false` back and appends nothing to the audit chain (idempotency). The
+ * already terminalized gets `false` back and appends nothing to the audit chain (idempotency). The
  * trigger-claim advisory lock (`triggerWaveTarget`) already serializes callers; this guard is the
  * durable backstop that keeps the once-only property true regardless.
  */
-export async function markWaveTargetNoExecutor(
+export async function terminalizeRefusedWaveTarget(
   tx: TenantTx,
   orgId: string,
-  targetId: string
+  targetId: string,
+  status: "no_executor" | typeof WAVE_TARGET_TOMBSTONED_STATUS
 ): Promise<boolean> {
   const result = await tx
     .update(changeWaveTargets)
-    .set({ status: "no_executor", lastObservedAt: new Date(), updatedAt: new Date() })
+    .set({ status, lastObservedAt: new Date(), updatedAt: new Date() })
     .where(
       and(
         eq(changeWaveTargets.orgId, orgId),
@@ -343,17 +352,32 @@ export async function markWaveTargetNoExecutor(
 }
 
 /**
- * Wave-target statuses that RECORD AN OUTCOME — something was actually attempted at that place and
- * this row says how it went. The set is `reconcile.ts`'s per-target loop read the other way round:
- * every branch that `continue`s WITHOUT incrementing `nonTerminalTargets` (`succeeded`, `failed`,
- * `aborted`, `no_executor`) is here, and every branch that increments it (`pending`, `triggering`,
- * `triggered`, `observing`) is not.
+ * Wave-target statuses that RECORD AN OUTCOME — something was actually settled at that place and
+ * this row says how. The set is `reconcile.ts`'s per-target loop read the other way round: every
+ * branch that `continue`s WITHOUT incrementing `nonTerminalTargets` (`succeeded`, `failed`,
+ * `aborted`, `no_executor`, `target_deleted`) is here, and every branch that increments it
+ * (`pending`, `triggering`, `triggered`, `observing`) is not. THE TWO LISTS ARE ONE LIST, and adding
+ * a terminal status to only one of them is how a wave gets kept alive forever by a row nothing will
+ * ever come back for — so a new status goes in both or in neither.
  *
  * A terminal row is believable no matter what became of the change that produced it: cancelling a
  * change after its deploy succeeded does not un-deploy it, and a `failed` row is an accurate account
  * of a real attempt whether or not anyone is still tending the change.
+ *
+ * `target_deleted` is included on the same footing as `no_executor`, and for the same reason its
+ * neighbour is: a dependant must not be released past a dependency whose own release AT THIS PLACE
+ * was refused. It is the one member of this set that records a NON-attempt — nothing was handed to an
+ * executor — but "settled, and never coming back" is what this set is actually about, and a
+ * tombstone is the most permanent settlement there is: nothing in the platform un-deletes an object,
+ * so the refusal cannot clear on its own the way a binding gap can be fixed.
  */
-const TERMINAL_WAVE_TARGET_STATUSES: string[] = ["succeeded", "failed", "aborted", "no_executor"];
+const TERMINAL_WAVE_TARGET_STATUSES: string[] = [
+  "succeeded",
+  "failed",
+  "aborted",
+  "no_executor",
+  WAVE_TARGET_TOMBSTONED_STATUS
+];
 
 /**
  * Does a change in this state still STAND BEHIND its NON-terminal wave targets — is something

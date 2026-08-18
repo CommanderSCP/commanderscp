@@ -1,0 +1,100 @@
+-- ===========================================================================================
+-- 0044 AND 0046 WERE NEVER USED BY THE READS THEY WERE BUILT FOR — THE ORDER-BY TIEBREAK IS NOT
+-- IN THEM, SO NEITHER INDEX CAN SUPPLY THE QUERY'S SORT ORDER, AND THE PLANNER PREFERS AN INDEX
+-- THAT CAN.
+--
+-- WHAT WENT WRONG, IN ONE LINE. Both reads end `ORDER BY created_at DESC, id DESC LIMIT 1`. Both
+-- indexes stop at `created_at DESC`. An index that supplies only a PREFIX of the requested sort
+-- order can still be used, but only underneath a sort node (`Incremental Sort`, presorted key
+-- `created_at`) — and a sort node has a STARTUP cost, which is precisely the cost `LIMIT 1` cannot
+-- amortise away. A rival index that supplies the FULL order sortlessly — `decisions_org_created`
+-- (org_id, created_at, id) from 0007, or `decisions_org_kind_created` (org_id, kind, created_at, id)
+-- from 0056 — is therefore costed at `startup + (total-startup)/estimated_matches`, which goes to
+-- nearly nothing as soon as the planner believes a match is a few rows away. It then wins, applies
+-- the columns it does not carry as a HEAP FILTER, and walks the ORG's whole decision stream.
+--
+-- schema.ts stated the opposite in as many words — "0044 leaves `id` out … its query is a `LIMIT 1`
+-- where a tiebreak cannot change the answer". True about the ANSWER, and irrelevant: the tiebreak's
+-- job in the index is not to change the row, it is to make the index a legal sort path. Left out, it
+-- is the reason the index is not used at all.
+--
+-- HOW IT SURFACED. `service-board-decision-read-bound.integration.test.ts` measures rows touched by
+-- the board's block probe and bounds them at 10. It failed twice in CI on unrelated branches with
+-- the identical number — `expected 804 to be less than or equal to 10`, 804 being every row in the
+-- fixture's `decisions` table — and passed on a plain re-run both times. It is not a timing flake.
+-- The suite seeds its rows and measures within ~1.7 s, so the table normally still has NO column
+-- statistics when the read runs; with no statistics the planner falls back to DEFAULT_EQ_SEL
+-- (0.005) per equality, estimates ~1 matching row, prices the sortless walk at its full length, and
+-- picks the partial index. When AUTOANALYZE happens to win the race and land real statistics inside
+-- that window, the estimate jumps to ~200 matching rows, the sortless walk is repriced at 1/200th,
+-- and the plan flips. The test was measuring the no-statistics regime; production is never in it.
+--
+-- MEASURED, PostgreSQL 16, the suite's own fixture (802 rows, 2 subjects), `enable_seqscan = off`
+-- exactly as the suite sets it, probing a change that has NEVER blocked:
+--
+--   no statistics (what CI usually sees, and what made this look like a flake)
+--     Limit  (cost=8.30..8.33 rows=1) (actual rows=0)
+--       ->  Incremental Sort   Presorted Key: created_at
+--             ->  Index Scan using decisions_org_subject_block_created
+--     Buffers: shared hit=11        Execution Time: 0.046 ms
+--
+--   after ANALYZE (what every live instance has, always)
+--     Limit  (cost=0.28..0.85 rows=1) (actual rows=0)
+--       ->  Index Scan Backward using decisions_org_created
+--             Filter: ((subject_id = …) AND (verdict = 'block'))
+--             Rows Removed by Filter: 802          <-- the 804
+--     Buffers: shared hit=819       Execution Time: 0.151 ms
+--
+--   after ANALYZE, with this migration applied
+--     Limit  (cost=0.27..0.57 rows=1) (actual rows=0)
+--       ->  Index Scan using decisions_org_subject_block_created
+--     Buffers: shared read=2        Execution Time: 0.018 ms
+--
+-- The same flip, same cause, on 0044's read (`latestDecisionForSubjectKind`, the persist-on-change
+-- dedupe probe and `pre-deploy-gate.ts`'s idempotence check, once per parked change per ~2 s tick):
+-- with statistics it abandons `decisions_org_subject_kind_created` for `decisions_org_kind_created`
+-- and filters `subject_id` off the heap — `Rows Removed by Filter: 400` on the same fixture, i.e.
+-- O(every row of that KIND in the ORG) instead of O(1). Both are fixed here, because both are the
+-- same defect: an ordering-index built without the ordering's tiebreak.
+--
+-- HONEST SCOPE OF THE HAZARD. The flip is a COST MARGIN, not a shape rule. Re-measured at 200,000
+-- rows / 20 subjects the planner still prefers the partial index — the sortless rival's estimate is
+-- bad enough there to lose despite the sort node. So this did not necessarily mean a slow board on
+-- the 12M-row homelab distribution 0046 was measured against, and this migration does not claim it
+-- did. What it means is that 0046's and 0044's bounds were held by a margin that the planner
+-- re-prices on every statistics refresh, in an org whose distribution it cannot control — few
+-- subjects, or a block-heavy period, tips it, and the failure mode when it tips is the ORG-WIDE walk
+-- those migrations exist to prevent. With the tiebreak the partial index is a plain `Index Scan`
+-- with no sort node above it, so it is cheaper than the rival at EVERY statistics state, at both
+-- scales measured. The bound stops being a bet.
+--
+-- WHY REBUILD IN PLACE RATHER THAN ADD A SIXTH AND SEVENTH INDEX. The new keys are strict supersets
+-- of the old ones: anything `(org_id, subject_id, created_at DESC)` could serve,
+-- `(org_id, subject_id, created_at DESC, id DESC)` serves identically. Keeping both would pay the
+-- insert cost twice on an insert-only, insert-heavy table for no read that wants the shorter key.
+-- The names are kept BYTE-IDENTICAL because the plan assertion in
+-- `service-board-decision-read-bound.integration.test.ts` names them, and because an operator
+-- reading `pg_indexes` after an upgrade should not have to work out which one replaced which.
+--
+-- LOCKING. `DROP INDEX` + `CREATE INDEX` run inside drizzle's migration transaction, so the swap is
+-- atomic — no window in which the read has no index. `CREATE INDEX` (not `CONCURRENTLY`, which
+-- cannot run in a transaction) holds an ordinary `SHARE` lock: reads continue, WRITES to `decisions`
+-- block for the build. Same window 0044 and 0046 already took, and the same escape hatch — an
+-- operator who cannot take it can build both indexes by hand under their final names with
+-- `CREATE INDEX CONCURRENTLY` + a rename before upgrading, and the `IF NOT EXISTS` below will find
+-- them.
+-- ===========================================================================================
+
+-- 0046's index: the service board's block probe.
+DROP INDEX IF EXISTS "decisions_org_subject_block_created";
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decisions_org_subject_block_created"
+  ON "decisions" USING btree ("org_id", "subject_id", "created_at" DESC, "id" DESC)
+  WHERE "verdict" = 'block';
+--> statement-breakpoint
+
+-- 0044's index: the reconcile hot path's dedupe / idempotence probe.
+DROP INDEX IF EXISTS "decisions_org_subject_kind_created";
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decisions_org_subject_kind_created"
+  ON "decisions" USING btree ("org_id", "subject_id", "kind", "created_at" DESC, "id" DESC);

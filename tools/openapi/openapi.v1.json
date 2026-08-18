@@ -3605,6 +3605,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -7418,6 +7419,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -9637,6 +9639,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -11856,6 +11859,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -14075,6 +14079,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -16294,6 +16299,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -18513,6 +18519,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -20732,6 +20739,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -22951,6 +22959,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -27338,6 +27347,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -42710,6 +42720,7 @@
                               "maxLength": 500
                             },
                             "domainId": {
+                              "description": "Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {\"urn\":\"urn:scp:checkout-api:policy:deps-checkout-api\",\"typeId\":\"policy\",\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).",
                               "anyOf": [
                                 {
                                   "type": "string",
@@ -42918,6 +42929,7 @@
                         }
                       },
                       "placements": {
+                        "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                         "type": "array",
                         "items": {
                           "type": "object",
@@ -42934,6 +42946,40 @@
                           "required": [
                             "componentUrn",
                             "deploymentTargetUrn"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "producers": {
+                        "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "producerUrn": {
+                              "type": "string",
+                              "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                            },
+                            "ecosystem": {
+                              "type": "string",
+                              "enum": [
+                                "npm",
+                                "go",
+                                "maven",
+                                "python",
+                                "oci"
+                              ]
+                            },
+                            "coordinate": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            }
+                          },
+                          "required": [
+                            "producerUrn",
+                            "ecosystem",
+                            "coordinate"
                           ],
                           "additionalProperties": false
                         }
@@ -43008,6 +43054,7 @@
                                 "maxLength": 500
                               },
                               "domainId": {
+                                "description": "Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {\"urn\":\"urn:scp:checkout-api:policy:deps-checkout-api\",\"typeId\":\"policy\",\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).",
                                 "anyOf": [
                                   {
                                     "type": "string",
@@ -43216,6 +43263,7 @@
                           }
                         },
                         "placements": {
+                          "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                           "type": "array",
                           "items": {
                             "type": "object",
@@ -43232,6 +43280,40 @@
                             "required": [
                               "componentUrn",
                               "deploymentTargetUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              }
+                            },
+                            "required": [
+                              "producerUrn",
+                              "ecosystem",
+                              "coordinate"
                             ],
                             "additionalProperties": false
                           }
@@ -43662,6 +43744,62 @@
                               "action",
                               "targetUrn",
                               "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "dependency-producer"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "displacedProducerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "ecosystem",
+                              "coordinate",
+                              "producerUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -43956,6 +44094,7 @@
                                 "maxLength": 500
                               },
                               "domainId": {
+                                "description": "Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {\"urn\":\"urn:scp:checkout-api:policy:deps-checkout-api\",\"typeId\":\"policy\",\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).",
                                 "anyOf": [
                                   {
                                     "type": "string",
@@ -44164,6 +44303,7 @@
                           }
                         },
                         "placements": {
+                          "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                           "type": "array",
                           "items": {
                             "type": "object",
@@ -44180,6 +44320,40 @@
                             "required": [
                               "componentUrn",
                               "deploymentTargetUrn"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              }
+                            },
+                            "required": [
+                              "producerUrn",
+                              "ecosystem",
+                              "coordinate"
                             ],
                             "additionalProperties": false
                           }
@@ -44610,6 +44784,62 @@
                               "action",
                               "targetUrn",
                               "type",
+                              "reason"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "producers": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "const": "dependency-producer"
+                              },
+                              "action": {
+                                "type": "string",
+                                "enum": [
+                                  "create",
+                                  "update",
+                                  "delete",
+                                  "noop"
+                                ]
+                              },
+                              "ecosystem": {
+                                "type": "string",
+                                "enum": [
+                                  "npm",
+                                  "go",
+                                  "maven",
+                                  "python",
+                                  "oci"
+                                ]
+                              },
+                              "coordinate": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 512
+                              },
+                              "producerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "displacedProducerUrn": {
+                                "type": "string",
+                                "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                              },
+                              "reason": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "action",
+                              "ecosystem",
+                              "coordinate",
+                              "producerUrn",
                               "reason"
                             ],
                             "additionalProperties": false
@@ -44907,6 +45137,7 @@
                                     "maxLength": 500
                                   },
                                   "domainId": {
+                                    "description": "Containment parent for this object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. On a CREATE, apply authorizes the type's write permission AT THE RESOLVED PARENT, so a narrowly-bound author who omits it is checked at the org root and the apply is refused for a scope the manifest never named. On an UPDATE of an object that currently lives inside a container, omitting it is a MOVE OUT to the org root rather than 'leave it where it is' — authorized at the container the object is LEAVING, not at the org root, so it is not refused for the applier who owns that container. Send the deepest object you hold write authority over. Worked example — a component team declaring a dependency subscription (ADR-0032 §8g) puts its OWN COMPONENT id here: {\"urn\":\"urn:scp:checkout-api:policy:deps-checkout-api\",\"typeId\":\"policy\",\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice on purpose: domainId is CUSTODY (where the row lives), scope.objectRef is JURISDICTION (what the policy reaches).",
                                     "anyOf": [
                                       {
                                         "type": "string",
@@ -45115,6 +45346,7 @@
                               }
                             },
                             "placements": {
+                              "description": "Placements this stack declares. A PRESENT collection is authoritative and prunes; an ABSENT one is the same as an empty one and prunes too (Stack.synth() omits an empty collection). Note that 'producers' deliberately does NOT follow this rule — read its own description.",
                               "type": "array",
                               "items": {
                                 "type": "object",
@@ -45131,6 +45363,40 @@
                                 "required": [
                                   "componentUrn",
                                   "deploymentTargetUrn"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "producers": {
+                              "description": "Dependency-line producer declarations (ADR-0032 §7e). UNLIKE every other collection here, an ABSENT 'producers' key means UNMANAGED and prunes NOTHING — retracting a declaration returns a coordinate the org publishes to a public index on a poll timer, so a forgotten key must not re-arm dependency confusion. A PRESENT collection IS authoritative over its members: removing an entry prunes that declaration, and a present-but-empty array prunes every declaration on a component this stack owns. Because Stack.synth() omits an empty collection, @scp/iac cannot retract the LAST declaration — use POST /dependencies/producers/retract (which also reports the bumps already in flight), or hand-author \"producers\": []. Ownership follows the producer COMPONENT; a plan that would take a coordinate from a producer this stack does not own is refused.",
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "producerUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "ecosystem": {
+                                    "type": "string",
+                                    "enum": [
+                                      "npm",
+                                      "go",
+                                      "maven",
+                                      "python",
+                                      "oci"
+                                    ]
+                                  },
+                                  "coordinate": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 512
+                                  }
+                                },
+                                "required": [
+                                  "producerUrn",
+                                  "ecosystem",
+                                  "coordinate"
                                 ],
                                 "additionalProperties": false
                               }
@@ -45561,6 +45827,62 @@
                                   "action",
                                   "targetUrn",
                                   "type",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "producers": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "const": "dependency-producer"
+                                  },
+                                  "action": {
+                                    "type": "string",
+                                    "enum": [
+                                      "create",
+                                      "update",
+                                      "delete",
+                                      "noop"
+                                    ]
+                                  },
+                                  "ecosystem": {
+                                    "type": "string",
+                                    "enum": [
+                                      "npm",
+                                      "go",
+                                      "maven",
+                                      "python",
+                                      "oci"
+                                    ]
+                                  },
+                                  "coordinate": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 512
+                                  },
+                                  "producerUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "displacedProducerUrn": {
+                                    "type": "string",
+                                    "pattern": "^urn:scp:[a-z0-9-]+:[a-z0-9_-]+:[a-zA-Z0-9._~:/-]+$"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "action",
+                                  "ecosystem",
+                                  "coordinate",
+                                  "producerUrn",
                                   "reason"
                                 ],
                                 "additionalProperties": false
@@ -52611,6 +52933,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -54830,6 +55153,7 @@
                     "maxLength": 500
                   },
                   "domainId": {
+                    "description": "Containment parent for the new object — an object id, not a URN. OMITTING IT DEFAULTS TO THE ORG ROOT. The create is authorized with the type's write permission AT THE RESOLVED PARENT, and PATCH/DELETE later re-check at the row's own id, so this field decides both where the row is placed and who may change it afterwards. Authority expands strictly UPWARD from the scope object, so send the DEEPEST object you hold write authority over: a narrowly-bound author who omits this is checked at the org root and refused with \"lacks '<permission>' at scope '<org-root-uuid>'\" — a scope they never named, in a message that does not mention this field. Worked example — a component team authoring a dependency subscription (ADR-0032 §8g) sends THEIR OWN COMPONENT's id, which is accepted whether their policy:write sits at the component, at its containment domain, or at the org root (sending the component's containment DOMAIN instead would work only for the latter two): POST /api/v1/policies {\"name\":\"deps-checkout-api\",\"domainId\":\"<component-id>\",\"properties\":{\"enforcement\":\"advisory\",\"scope\":{\"objectRef\":\"<component-id>\"},\"effects\":[{\"dependencySubscription\":{\"enabled\":true}}]}}. The id appears twice because the two are different questions: domainId is CUSTODY (where the row lives, hence who may later edit or delete it), scope.objectRef is JURISDICTION (what the policy reaches) — placement bounds reach not at all.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -62114,12 +62438,35 @@
                         "contributions"
                       ],
                       "additionalProperties": false
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
                     }
                   },
                   "required": [
                     "componentObjectId",
                     "line",
-                    "resolution"
+                    "resolution",
+                    "dependencyManagement"
                   ],
                   "additionalProperties": false
                 }
@@ -62305,7 +62652,7 @@
     "/components/{idOrUrn}/dependency-inventory": {
       "get": {
         "operationId": "listComponentDependencyInventory",
-        "summary": "List a component's declared dependency inventory — one row per (major line, dependency manifest) with the line's observed head, its declared producer and its resolved dependency subscription for the caller — plus the component-level ingestion gate and the newest ingestion Decision (ADR-0032 §4/§6)",
+        "summary": "List a component's declared dependency inventory — one row per (major line, dependency manifest) with the line's observed head, its declared producer and its resolved dependency subscription for the caller — plus the per-component ingestion stamp, the component-level ingestion gate and the newest ingestion Decision, qualified by whether dependency management happens on this deployment (ADR-0032 §4/§6/§7d)",
         "tags": [
           "dependencies"
         ],
@@ -62382,6 +62729,28 @@
                       ],
                       "additionalProperties": false
                     },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    },
                     "ingestion": {
                       "anyOf": [
                         {
@@ -62411,15 +62780,36 @@
                               "minimum": 0,
                               "maximum": 9007199254740991
                             },
+                            "detail": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "manifests": {
                               "type": "array",
                               "items": {
                                 "type": "object",
                                 "properties": {
+                                  "repo": {
+                                    "type": "string"
+                                  },
                                   "path": {
                                     "type": "string"
                                   },
                                   "outcome": {
+                                    "type": "string"
+                                  },
+                                  "rows": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "at": {
                                     "type": "string"
                                   },
                                   "detail": {
@@ -62427,8 +62817,11 @@
                                   }
                                 },
                                 "required": [
+                                  "repo",
                                   "path",
-                                  "outcome"
+                                  "outcome",
+                                  "rows",
+                                  "at"
                                 ],
                                 "additionalProperties": false
                               }
@@ -62439,6 +62832,7 @@
                             "source",
                             "outcome",
                             "rowsWritten",
+                            "detail",
                             "manifests"
                           ],
                           "additionalProperties": false
@@ -62940,6 +63334,7 @@
                   },
                   "required": [
                     "component",
+                    "dependencyManagement",
                     "lastIngestionDecision",
                     "componentGate",
                     "rows",
@@ -63129,7 +63524,7 @@
     "/components/{idOrUrn}/dependency-bumps": {
       "get": {
         "operationId": "listComponentDependencyBumps",
-        "summary": "List the dependency bumps CommanderSCP authored for a component, newest first — each joined to its change name, its dispatch delivery and the newest merge verdict; pullRequestUrl is null until it is persisted (ADR-0032 §8)",
+        "summary": "List the dependency bumps CommanderSCP authored for a component, newest first — each joined to its change name, its dispatch delivery and the newest merge verdict; pullRequestUrl is the provider's own URL when one was recorded, else null (never composed); qualified by whether dependency management happens on this deployment (ADR-0032 §7d/§8)",
         "tags": [
           "dependencies"
         ],
@@ -63203,6 +63598,28 @@
                         "id",
                         "name",
                         "domainId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
                       ],
                       "additionalProperties": false
                     },
@@ -63408,6 +63825,7 @@
                   },
                   "required": [
                     "component",
+                    "dependencyManagement",
                     "rows",
                     "nextCursor"
                   ],
@@ -63595,7 +64013,7 @@
     "/dependencies/inventory/backfill": {
       "post": {
         "operationId": "backfillDependencyInventory",
-        "summary": "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4)",
+        "summary": "Read enabled components' dependency manifests and (re)build their inventory — the backfill for components that have not released since being enabled (ADR-0032 §4). COMMANDER-ONLY: a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409 (ADR-0032 §7d)",
         "tags": [
           "dependencies"
         ],
@@ -63888,6 +64306,1375 @@
             }
           },
           "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/dependencies/producers": {
+      "post": {
+        "operationId": "declareDependencyLineProducer",
+        "summary": "Declare that a component produces one dependency coordinate — the ONE way a coordinate becomes internal, so its versions are derived from the org's own production releases instead of a public index (ADR-0032 §7e). Requires 'policy:write' at the ORG ROOT: the declaration changes behaviour for every component in the org that depends on the coordinate. Returns the blast radius; `dryRun` returns it without writing. COMMANDER-ONLY: a deployment whose SCP_FEDERATION_ROLE is not an explicitly declared 'commander' answers 409",
+        "tags": [
+          "dependencies"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "ecosystem": {
+                    "type": "string",
+                    "enum": [
+                      "npm",
+                      "go",
+                      "maven",
+                      "python",
+                      "oci"
+                    ]
+                  },
+                  "coordinate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "producerIdOrUrn": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "ecosystem",
+                  "coordinate",
+                  "producerIdOrUrn"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ecosystem": {
+                      "type": "string",
+                      "enum": [
+                        "npm",
+                        "go",
+                        "maven",
+                        "python",
+                        "oci"
+                      ]
+                    },
+                    "coordinate": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "declare",
+                        "retract"
+                      ]
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "declaration": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "orgId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "ecosystem": {
+                              "type": "string",
+                              "enum": [
+                                "npm",
+                                "go",
+                                "maven",
+                                "python",
+                                "oci"
+                              ]
+                            },
+                            "coordinate": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "producerObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "declaredAt": {
+                              "type": "string"
+                            },
+                            "declaredByObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          },
+                          "required": [
+                            "orgId",
+                            "ecosystem",
+                            "coordinate",
+                            "producerObjectId",
+                            "declaredAt",
+                            "declaredByObjectId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "lineId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "major": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "tagPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "headBefore": {
+                            "type": "object",
+                            "properties": {
+                              "latestVersion": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestDigest": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestObservedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "latestVersion",
+                              "latestDigest",
+                              "latestObservedAt"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "headCleared": {
+                            "type": "boolean"
+                          },
+                          "subscribedComponentObjectIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          }
+                        },
+                        "required": [
+                          "lineId",
+                          "major",
+                          "tagPattern",
+                          "headBefore",
+                          "headCleared",
+                          "subscribedComponentObjectIds"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "openBumpAuthorships": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "changeObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "componentObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "manifestPath": {
+                            "type": "string"
+                          },
+                          "fromVersion": {
+                            "type": "string"
+                          },
+                          "toVersion": {
+                            "type": "string"
+                          },
+                          "pullRequestUrl": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "changeObjectId",
+                          "componentObjectId",
+                          "repo",
+                          "manifestPath",
+                          "fromVersion",
+                          "toVersion"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "decisionId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "ecosystem",
+                    "coordinate",
+                    "action",
+                    "dryRun",
+                    "declaration",
+                    "lines",
+                    "openBumpAuthorships",
+                    "decisionId",
+                    "dependencyManagement"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "get": {
+        "operationId": "listDependencyLineProducers",
+        "summary": "List this org's declared dependency-line producers — which components the org declares it publishes which coordinates from (ADR-0032 §7e). Narrowable by ecosystem, or to one exact coordinate (compared VERBATIM). Read the `dependencyManagement` envelope: on a field outpost this list is empty BY DESIGN, because declarations live at the commander",
+        "tags": [
+          "dependencies"
+        ],
+        "parameters": [
+          {
+            "name": "ecosystem",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "enum": [
+                "npm",
+                "go",
+                "maven",
+                "python",
+                "oci"
+              ]
+            }
+          },
+          {
+            "name": "coordinate",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "producers": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "orgId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "ecosystem": {
+                            "type": "string",
+                            "enum": [
+                              "npm",
+                              "go",
+                              "maven",
+                              "python",
+                              "oci"
+                            ]
+                          },
+                          "coordinate": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 512
+                          },
+                          "producerObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "declaredAt": {
+                            "type": "string"
+                          },
+                          "declaredByObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          }
+                        },
+                        "required": [
+                          "orgId",
+                          "ecosystem",
+                          "coordinate",
+                          "producerObjectId",
+                          "declaredAt",
+                          "declaredByObjectId"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "producers",
+                    "dependencyManagement"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/dependencies/producers/retract": {
+      "post": {
+        "operationId": "retractDependencyLineProducer",
+        "summary": "Retract a producer declaration and return the coordinate to third-party polling (ADR-0032 §7e). Clears every covered line's observed head — a head the org's own releases put there would otherwise wedge the line, and is a security-gate input. Reports the bumps still in flight, which SCP does NOT close. Requires 'policy:write' at the ORG ROOT. COMMANDER-ONLY (409 elsewhere)",
+        "tags": [
+          "dependencies"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object",
+                "properties": {
+                  "ecosystem": {
+                    "type": "string",
+                    "enum": [
+                      "npm",
+                      "go",
+                      "maven",
+                      "python",
+                      "oci"
+                    ]
+                  },
+                  "coordinate": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
+                  },
+                  "dryRun": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "ecosystem",
+                  "coordinate"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "ecosystem": {
+                      "type": "string",
+                      "enum": [
+                        "npm",
+                        "go",
+                        "maven",
+                        "python",
+                        "oci"
+                      ]
+                    },
+                    "coordinate": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    "action": {
+                      "type": "string",
+                      "enum": [
+                        "declare",
+                        "retract"
+                      ]
+                    },
+                    "dryRun": {
+                      "type": "boolean"
+                    },
+                    "declaration": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "orgId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "ecosystem": {
+                              "type": "string",
+                              "enum": [
+                                "npm",
+                                "go",
+                                "maven",
+                                "python",
+                                "oci"
+                              ]
+                            },
+                            "coordinate": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            },
+                            "producerObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "declaredAt": {
+                              "type": "string"
+                            },
+                            "declaredByObjectId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          },
+                          "required": [
+                            "orgId",
+                            "ecosystem",
+                            "coordinate",
+                            "producerObjectId",
+                            "declaredAt",
+                            "declaredByObjectId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "lines": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "lineId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "major": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "tagPattern": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "headBefore": {
+                            "type": "object",
+                            "properties": {
+                              "latestVersion": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestDigest": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "latestObservedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "latestVersion",
+                              "latestDigest",
+                              "latestObservedAt"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "headCleared": {
+                            "type": "boolean"
+                          },
+                          "subscribedComponentObjectIds": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            }
+                          }
+                        },
+                        "required": [
+                          "lineId",
+                          "major",
+                          "tagPattern",
+                          "headBefore",
+                          "headCleared",
+                          "subscribedComponentObjectIds"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "openBumpAuthorships": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "changeObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "componentObjectId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "repo": {
+                            "type": "string"
+                          },
+                          "manifestPath": {
+                            "type": "string"
+                          },
+                          "fromVersion": {
+                            "type": "string"
+                          },
+                          "toVersion": {
+                            "type": "string"
+                          },
+                          "pullRequestUrl": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "changeObjectId",
+                          "componentObjectId",
+                          "repo",
+                          "manifestPath",
+                          "fromVersion",
+                          "toVersion"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "decisionId": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "format": "uuid",
+                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "dependencyManagement": {
+                      "type": "object",
+                      "properties": {
+                        "managedHere": {
+                          "type": "boolean"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "commander",
+                            "outpost",
+                            "retrans",
+                            "role_undeclared"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "managedHere",
+                        "reason"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "ecosystem",
+                    "coordinate",
+                    "action",
+                    "dryRun",
+                    "declaration",
+                    "lines",
+                    "openBumpAuthorships",
+                    "decisionId",
+                    "dependencyManagement"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$schema": "https://json-schema.org/draft/2020-12/schema",
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "default": "about:blank",
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "detail": {
+                      "type": "string"
+                    },
+                    "instance": {
+                      "type": "string"
+                    },
+                    "decision_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "409": {
             "description": "Error",
             "content": {
               "application/problem+json": {
@@ -77090,6 +78877,10 @@
                               "type": "string"
                             },
                             "additionalProperties": {}
+                          },
+                          "urn": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "required": [
@@ -77371,6 +79162,10 @@
                                 "type": "string"
                               },
                               "additionalProperties": {}
+                            },
+                            "urn": {
+                              "type": "string",
+                              "minLength": 1
                             }
                           },
                           "required": [
@@ -77706,6 +79501,10 @@
                                 "type": "string"
                               },
                               "additionalProperties": {}
+                            },
+                            "urn": {
+                              "type": "string",
+                              "minLength": 1
                             }
                           },
                           "required": [

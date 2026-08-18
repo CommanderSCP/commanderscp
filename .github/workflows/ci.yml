@@ -30,8 +30,10 @@ name: CI
 # shards rather than after them; and job 9's toolchain image is content-hash cached in GHCR (9a), so
 # the multi-GB build happens only when the Dockerfile or lockfile actually changes.
 #
-# Job 4d (testcontainer-images) is a prerequisite of integration-shard that mirrors
-# postgres/nats/registry off Docker Hub, not a gate itself.
+# Job 4d (mirror-images) is a prerequisite of integration-shard that mirrors every third-party image
+# the test tier touches off Docker Hub / quay.io, not a gate itself. Its list lives in
+# tools/ci-mirror/images.list and is applied by scripts/ci-mirror.sh — read the manifest's header
+# before adding an image anywhere in the test tier.
 #
 # RUNNERS: GitHub-hosted `ubuntu-latest` throughout (previously two homelab ARC self-hosted labels,
 # `homelab-commanderscp-linux-general` and `homelab-commanderscp-linux-docker-build`). The old split
@@ -77,6 +79,14 @@ jobs:
       # It runs FIRST because it is the cheapest of the three and its failure is the most trivially
       # fixable — `pnpm format` and commit. A contributor should not wait out a typecheck to be
       # told about whitespace.
+      #
+      # `nul-census` runs ahead of even that. It is sub-second, and it is wired HERE rather than left
+      # as a root script for the reason the paragraph above documents: a root script referenced by no
+      # workflow is a check that does not exist. It reports when the set of tracked files containing
+      # literal NUL bytes changes — those files are invisible to `grep -rn` and `rg`, which drop them
+      # from a recursive search silently (no output, exit 1), so the set has to stay known and
+      # committed rather than remembered. See BUILD_AND_TEST.md §4.4b.
+      - run: pnpm nul-census
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
@@ -283,71 +293,34 @@ jobs:
           build_and_push "$SCP_RUNNER_DEP_IMAGE_REF" apps/runner-dep
 
   testcontainer-images:
-    name: "4d. Mirror Testcontainer images to GHCR (postgres, nats, registry, minio)"
-    # Job 5 below starts postgres:16, nats:2.10, and registry:2 directly via Testcontainers
-    # (PostgreSqlContainer/GenericContainer in apps/server's integration suites — e.g.
-    # event-bus.integration.test.ts, promotion-scan-step.integration.test.ts,
-    # retrans-relay.integration.test.ts) — a live `docker pull` from Docker Hub, unauthenticated,
-    # on every shard of every run. Docker Hub's anonymous-pull rate limit / occasional registry
-    # timeouts intermittently red job 5 — the REQUIRED integration gate — for a reason that has
-    # nothing to do with the code under test.
+    name: "4d. Mirror every third-party test image to GHCR (tools/ci-mirror/images.list)"
+    # Job 5 below starts postgres:16, nats:2.10, registry:2, minio and Keycloak via Testcontainers,
+    # pushes alpine/debian/oraclelinux scan subjects with skopeo, and installs a digest-pinned
+    # skopeo and cosign out of quay.io/ghcr.io — every one of them a live pull from a registry we
+    # do not control, on the REQUIRED integration gate, on every shard of every run. Docker Hub's
+    # anonymous-pull rate limit and occasional registry outages red job 5 for a reason that has
+    # nothing to do with the code under test. MEASURED over ~31 days of history: 3 of 23 failing
+    # integration-shard jobs (~13%) were external-registry failures, on PR branches AND on `main`.
     #
     # Same "pull/build once, publish to GHCR, reuse" shape as job 4c (runner-images) and job 9a
-    # (ci-image), but for third-party images we don't build: mirror each upstream tag to GHCR
-    # under a fixed path, keyed by the tag itself (postgres:16 only ever means one thing, unlike
-    # the runner images' content-hash tags, whose content we control and rebuild on change).
-    # First sighting of a tag is a genuine Docker Hub pull (published here); every run after that
-    # is a GHCR pull, same registry/credentials as the rest of this workflow already uses.
+    # (ci-image), but for third-party images we don't build.
     #
-    # This job only MIRRORS the bytes into GHCR. Job 5's own steps below re-tag the mirrored image
-    # back to the exact literal string the test code passes to `new GenericContainer(...)` —
-    # Testcontainers only pulls an image it doesn't already find locally, so a pre-seeded local tag
-    # makes its own pull a no-op. Nothing in apps/ changes; the test files keep referencing
-    # "postgres:16" etc. unmodified.
-    #
-    # CAVEAT: this mirrors whatever single-arch manifest `ubuntu-latest` (amd64) pulls, not the
-    # upstream multi-arch index — fine today (every job in this workflow runs on `ubuntu-latest`),
-    # but an arm64 self-hosted runner would need its own mirror pass.
+    # THE LIST IS NOT HERE. It was, and it was ALSO in job 5 below, with nothing forcing the two
+    # copies to agree — which is how MinIO came to be mirrored by this job but never re-tagged by
+    # that one, and how three whole classes of pull (skopeo subjects, the Keycloak fixture, the
+    # pinned CLI tools) were never in either. One manifest, `tools/ci-mirror/images.list`, is now
+    # read by one script, `scripts/ci-mirror.sh`, which both jobs run. Read the manifest's header
+    # for the format, the digest-pinning rationale and how each kind of consumer reaches the mirror.
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
+      - uses: actions/checkout@v4
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Mirror each upstream tag to GHCR, once per tag
-        run: |
-          set -uo pipefail
-          mirror() {
-            upstream="$1"
-            repo="${upstream%%:*}"
-            tag="${upstream##*:}"
-            mirror_ref="ghcr.io/commanderscp/mirror/${repo}:${tag}"
-            # An ORG-namespaced repo ("minio/minio") is already fully qualified under docker.io;
-            # only a single-segment OFFICIAL image ("postgres") lives under the implicit
-            # `library/` namespace. Prefixing `library/` unconditionally — as this did before
-            # minio was added — makes `docker pull docker.io/library/minio/minio` a 404.
-            case "$repo" in
-              */*) src="docker.io/${upstream}" ;;
-              *)   src="docker.io/library/${upstream}" ;;
-            esac
-            if docker pull "$mirror_ref" >/dev/null 2>&1; then
-              echo "cache hit: $mirror_ref already mirrored."
-            else
-              echo "cache miss: mirroring $src -> $mirror_ref"
-              docker pull "$src"
-              docker tag "$src" "$mirror_ref"
-              docker push "$mirror_ref"
-            fi
-          }
-          mirror postgres:16
-          mirror nats:2.10
-          mirror registry:2
-          # `federation/delivery-s3.integration.test.ts` starts MinIO via GenericContainer inside
-          # the sharded suite — it was missed when this job was written, so the REQUIRED integration
-          # gate still had one live Docker Hub pull on its path, which is the exact failure mode
-          # this job exists to remove.
-          mirror minio/minio:RELEASE.2025-04-22T22-12-26Z
+      - name: Mirror every manifest entry to GHCR, keyed on its upstream digest
+        run: scripts/ci-mirror.sh push
 
   prod-audit:
     name: "5y. Prod dependency audit (pnpm audit --prod, GHCR-mirrored advisory snapshot)"
@@ -529,10 +502,18 @@ jobs:
       contents: read
       packages: read
     env:
-      # THE LAST UNMIRRORED DOCKER HUB PULL ON THE REQUIRED GATE'S PATH. Testcontainers starts a
-      # `testcontainers/ryuk` reaper sidecar by default, pulled from Docker Hub on every shard of
-      # every run — so job 4d's mirror closed the postgres/nats/registry/minio holes while this one
-      # stayed open, and a Hub timeout could still red 5z for a reason unrelated to the code.
+      # A Docker Hub pull on the required gate's path that is closed by DISABLING, not mirroring.
+      # Testcontainers starts a `testcontainers/ryuk` reaper sidecar by default, pulled from Docker
+      # Hub on every shard of every run.
+      #
+      # CORRECTION (2026-08-17): this comment used to open "THE LAST UNMIRRORED DOCKER HUB PULL ON
+      # THE REQUIRED GATE'S PATH". It was not, and the claim outlived four whole classes of pull it
+      # overlooked: the alpine/debian/oraclelinux scan subjects skopeo fetched straight from
+      # docker.io, the quay.io Keycloak fixture Testcontainers started for the OIDC suite, and the
+      # quay.io/ghcr.io images the two pinned-CLI installers `docker create`. A well-written comment
+      # naming a hazard is a signal to sweep, not evidence it was handled (CLAUDE.md, "census by
+      # property"). The sweep is now `tools/ci-mirror/images.list` plus the two gates named there —
+      # so no future note has to be believed on its word.
       #
       # DISABLED rather than mirrored, deliberately: ryuk exists to garbage-collect leaked
       # containers on a LONG-LIVED host. A GitHub-hosted runner is a single-use VM destroyed when
@@ -552,6 +533,16 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: latest
+      # FIRST, before anything that pulls an image. Everything below this point — the two pinned CLI
+      # installers, the runner-image pulls, and the whole Testcontainers/skopeo test tier — is served
+      # from the GHCR mirror job 4d populated, and `seed` is what makes that true: it re-tags each
+      # mirrored image to the literal string its consumer names, and exports the env vars the
+      # consumers that cannot be served by a local tag read (SCP_TEST_SUBJECT_REGISTRY,
+      # SCP_SKOPEO_IMAGE_REF, SCP_COSIGN_IMAGE_REF). See tools/ci-mirror/images.list.
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Seed every mirrored image and point the non-taggable consumers at the mirror
+        run: scripts/ci-mirror.sh seed
       - name: Install the PINNED cosign (the same binary the scp image ships)
         # PINNED, not `sigstore/cosign-installer@v3` (M17.3 E1). Two reasons the unpinned network
         # installer had to go: (1) it installed whatever cosign it felt like, so CI validated a
@@ -596,26 +587,24 @@ jobs:
       # instead of building. (Local dev, with these env vars unset, still legacy-builds as before.)
       - name: Compute the content-hash runner image tags (same formula as the publish job)
         run: scripts/runner-image-tags.sh >> "$GITHUB_ENV"
-      - name: Log in to GHCR and pull the pre-built runner images
+      - name: Pull the pre-built runner images
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker pull "$SCP_RUNNER_SCAN_IMAGE_REF"
           docker pull "$SCP_RUNNER_IAC_IMAGE_REF"
           docker pull "$SCP_RUNNER_DEP_IMAGE_REF"
-      # Pull the Testcontainer images (job 4d) from GHCR and re-tag them back to the literal
-      # strings the integration suites pass to `new GenericContainer(...)` /
-      # `new PostgreSqlContainer(...)` — Testcontainers only pulls an image it can't already find
-      # locally, so this makes its own pull step a no-op and keeps the suite off Docker Hub.
-      - name: Pull mirrored Testcontainer images and re-tag as the names the tests reference
-        run: |
-          set -uo pipefail
-          for upstream in postgres:16 nats:2.10 registry:2 minio/minio:RELEASE.2025-04-22T22-12-26Z; do
-            repo="${upstream%%:*}"
-            tag="${upstream##*:}"
-            mirror_ref="ghcr.io/commanderscp/mirror/${repo}:${tag}"
-            docker pull "$mirror_ref"
-            docker tag "$mirror_ref" "$upstream"
-          done
+      # ENFORCEMENT, not decoration. Everything the test tier needs is now local or on GHCR, so from
+      # here to the end of the job Docker Hub and quay.io resolve to 127.0.0.1. An image pull that
+      # still depends on an outside registry CANNOT pass — on any run, on a good day for Docker Hub
+      # as much as a bad one — instead of passing until the next 502. That is the difference between
+      # "CI runs offline" as a checked property and as an aspiration (charter principle 5).
+      #
+      # Deliberately narrow: it denies exactly the registries tools/ci-mirror/images.list mirrors,
+      # derived FROM that manifest, and never ghcr.io. Everything a runner legitimately needs from
+      # the network — checkout, the npm registry, apt, the Helm installer — has already happened in
+      # the steps above. If this step ever makes a job red, the fix is to mirror the image it
+      # revealed, not to move this step down.
+      - name: Deny the mirrored upstream registries for the rest of the job
+        run: scripts/ci-mirror.sh blackhole
       # LEVER 2: `--shard=i/2` (turbo forwards args after `--` to every test:integration task —
       # @scp/server, @scp/plugin-managed-iac AND @scp/plugin-managed-dep; every config passes
       # `--passWithNoTests`, so the

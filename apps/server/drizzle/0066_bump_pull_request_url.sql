@@ -1,0 +1,76 @@
+-- ===========================================================================================
+-- M21.7 — `dependency_bump_authorships.pull_request_url`: THE LINK, AS THE PROVIDER GAVE IT
+-- (ADR-0032 §8/§9, item C)
+--
+-- ===========================================================================================
+-- WHY A COLUMN AND NOT A DERIVATION
+--
+-- 0064 records `repo` and `pull_request_number`, and for GitHub those two compose a working link:
+-- `https://github.com/{repo}/pull/{number}`. That derivation is true of exactly one provider and
+-- the row does not say which provider it came from.
+--
+--   * M15 gives every outpost a LOCAL Gitea, so a bump can be authored against
+--     `https://gitea.dc1.internal/{repo}/pulls/{number}` — a different HOST, and a different PATH
+--     SEGMENT (`pulls`, not `pull`).
+--   * GitHub Enterprise Server is `https://github.acme.example/...`, not `github.com`.
+--   * Nothing in this table, and nothing on the change, records which git provider authored the
+--     bump: the provider is a property of the component's executor binding at the time of the
+--     dispatch, and a binding is mutable afterwards.
+--
+-- So a consumer synthesising a GitHub URL would emit a link that 404s for every Gitea-authored and
+-- every Enterprise-authored bump, and would emit it CONFIDENTLY. The URL the provider itself
+-- returned is the only honest answer, and this column is where it goes.
+--
+-- ===========================================================================================
+-- NULLABLE, AND ABSENT MEANS "NOT RECORDED" — NEVER A FABRICATED LINK
+--
+-- Every row written before this migration has no URL, and a backfill could only synthesise one from
+-- `repo` + `pull_request_number` — which is the very derivation this column exists because it is
+-- wrong. There is deliberately no DEFAULT and no backfill: a NULL here says "SCP did not record a
+-- link for this bump", which a consumer must render as the absence of a link rather than as a link
+-- it invented. That is the same rule 0065 states for the absence of an ingestion stamp.
+--
+-- Two live states also produce NULL and both are honest:
+--   * the authoring run's `status().stateRef` carried no `pullRequestUrl` — the plugin degrades a
+--     provider response whose `html_url` it cannot read to the empty string (`readPullRequest` in
+--     `packages/plugins/managed-dep/src/repo-write.ts`), and the server declines to store that;
+--   * the value it carried was not an absolute http(s) URL, which the server refuses rather than
+--     stores (`recordBumpPullRequest`). A stored value that a consumer must sanitise before use is
+--     a hazard shipped to every consumer; a refused one is a missing link.
+--
+-- ===========================================================================================
+-- NOT INDEXED, DELIBERATELY
+--
+-- Nothing looks a bump up BY its URL and nothing ever should: the addressable identity of a bump is
+-- `(org_id, change_object_id)`, and the merge is addressed to `pull_request_number`. This column is
+-- read out of a row already found by one of those, so an index on it would cost writes and serve no
+-- query.
+--
+-- ===========================================================================================
+-- WHY 0066, AND THE `when`
+--
+-- 0065 is this branch's highest applied entry; its `when` is 1788115137000 and this entry's is
+-- 1788117137000 — STRICTLY GREATER, which is the only comparison drizzle makes. It gates on `when`
+-- alone and SILENTLY SKIPS an entry whose `when` does not exceed what a database has already
+-- applied (no error, no warning; the failure surfaces later as a missing column). `idx` orders the
+-- array and never gates. 0061's header records the three-way collision that taught this, and
+-- `db/journal-ordering.test.ts` guards the file. This `when` sits inside the block claimed for this
+-- branch (1788116000000-1788119999999), above every peer branch's in-flight value, so a merge in
+-- either order still applies.
+--
+-- ===========================================================================================
+-- NO RLS OR GRANT CHANGES
+--
+-- A column inherits its table's policy and grants. `dependency_bump_authorships` already carries
+-- the `org_isolation` policy with BOTH `USING` and `WITH CHECK`, ENABLE + FORCE, and
+-- SELECT/INSERT/UPDATE-but-never-DELETE for `scp_app` (0064). Nothing here widens any of that, and
+-- in particular this migration adds NO new writer: the one door that writes a pull request onto an
+-- authorship row is `recordBumpPullRequest`, called from the authoring dispatch's phase 5.
+-- ===========================================================================================
+
+ALTER TABLE "dependency_bump_authorships"
+  ADD COLUMN IF NOT EXISTS "pull_request_url" text;
+--> statement-breakpoint
+
+COMMENT ON COLUMN dependency_bump_authorships.pull_request_url IS
+  'The pull request''s web URL AS THE PROVIDER RETURNED IT, recorded beside the number it names. Not derived: repo + number composes a working link only for github.com, and nothing on this row records which provider authored the bump — an outpost-local Gitea (M15) is a different host AND spells the path /pulls/, and GitHub Enterprise is a different host again. NULL means SCP recorded no link (a row from before this column, a provider response with no readable html_url, or a value that was not an absolute http(s) URL); it never means "compose one".';

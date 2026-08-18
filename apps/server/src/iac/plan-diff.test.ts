@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   computePlanDiff,
   duplicateProjectionDeclarations,
+  invalidProducerDeclarations,
   isStackManaged,
   managedLabels,
   uncontainedComponentCreates,
   unownedProjectionDeclarations,
+  unresolvedProducerUrn,
   type PlanDiffSnapshot,
   type ResolvedManifest
 } from "./plan-diff.js";
@@ -26,7 +28,9 @@ function emptySnapshot(): PlanDiffSnapshot {
     existingRelationships: [],
     managedSourceMappings: [],
     managedExecutorBindings: [],
-    managedPlacements: []
+    managedPlacements: [],
+    managedDependencyProducers: [],
+    existingDependencyProducers: []
   };
 }
 
@@ -47,7 +51,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
 
     const diff = computePlanDiff(manifest, emptySnapshot());
@@ -89,7 +94,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -99,14 +105,17 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: "0198f2a0-0000-7000-8000-000000000001",
           properties: { tier: "critical" },
-          labels: managedLabels(STACK) // already carries what the plan would merge in
+          labels: managedLabels(STACK), // already carries what the plan would merge in
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -134,7 +143,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -144,14 +154,17 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: null,
           properties: { tier: "critical" },
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -177,7 +190,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -187,14 +201,17 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Billing API",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -209,7 +226,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -219,14 +237,17 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Decommissioned",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -251,7 +272,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
@@ -261,7 +283,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Unrelated",
           domainId: null,
           properties: {},
-          labels: managedLabels("some-other-stack")
+          labels: managedLabels("some-other-stack"),
+          managedByStack: "some-other-stack"
         },
         {
           urn: unmanagedUrn,
@@ -269,14 +292,17 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Hand Created",
           domainId: null,
           properties: {},
-          labels: {} // no scp:managed-by label at all
+          labels: {}, // no scp:managed-by label at all
+          managedByStack: null
         }
       ],
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -293,7 +319,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
 
     const diff = computePlanDiff(manifest, emptySnapshot());
@@ -319,7 +346,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const existingObj = (urn: string) => ({
       urn,
@@ -327,7 +355,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       name: urn,
       domainId: null,
       properties: {},
-      labels: {}
+      labels: {},
+      managedByStack: null
     });
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [existingObj(fromUrn), existingObj(toUrn)],
@@ -335,7 +364,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       existingRelationships: [],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -354,7 +385,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [],
@@ -362,7 +394,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       existingRelationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -388,7 +422,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [],
@@ -396,7 +431,9 @@ describe("iac/plan-diff: computePlanDiff", () => {
       existingRelationships: [{ typeId: "depends_on", fromUrn, toUrn }],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -450,7 +487,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
       relationships: [{ typeId: "depends_on", fromUrn: createUrn, toUrn: keepUrn }],
       sourceMappings: [],
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
 
     const snapshot: PlanDiffSnapshot = {
@@ -461,7 +499,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Keep",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         },
         {
           urn: updateUrn,
@@ -469,7 +508,8 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Update Me",
           domainId: null,
           properties: { v: 1 },
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         },
         {
           urn: pruneUrn,
@@ -477,14 +517,17 @@ describe("iac/plan-diff: computePlanDiff", () => {
           name: "Prune Me",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [{ typeId: "depends_on", fromUrn: pruneUrn, toUrn: keepUrn }],
       existingRelationships: [{ typeId: "depends_on", fromUrn: pruneUrn, toUrn: keepUrn }],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
 
     const diff = computePlanDiff(manifest, snapshot);
@@ -519,7 +562,8 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
         relationships,
         sourceMappings: [],
         executorBindings: [],
-        placements: []
+        placements: [],
+        producers: null
       },
       snapshot
     );
@@ -554,14 +598,17 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
           name: SVC,
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ],
       managedRelationships: [{ typeId: "contains", fromUrn: SVC, toUrn: COMP }],
       existingRelationships: [{ typeId: "contains", fromUrn: SVC, toUrn: COMP }],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
     const diff = diffOf([obj(COMP, "component"), obj(SVC, "service")], [], snapshot);
     expect(diff.relationships.some((r) => r.typeId === "contains" && r.action === "delete")).toBe(
@@ -575,13 +622,23 @@ describe("iac/plan-diff: uncontainedComponentCreates (strict create-in-service, 
     // verb, so an update needs no contains edge.
     const snapshot: PlanDiffSnapshot = {
       existingObjects: [
-        { urn: COMP, typeId: "component", name: "old", domainId: null, properties: {}, labels: {} }
+        {
+          urn: COMP,
+          typeId: "component",
+          name: "old",
+          domainId: null,
+          properties: {},
+          labels: {},
+          managedByStack: null
+        }
       ],
       managedRelationships: [],
       existingRelationships: [],
       managedSourceMappings: [],
       managedExecutorBindings: [],
-      managedPlacements: []
+      managedPlacements: [],
+      managedDependencyProducers: [],
+      existingDependencyProducers: []
     };
     const diff = diffOf([{ ...obj(COMP, "component"), name: "renamed" }], [], snapshot);
     expect(diff.objects[0]?.action).toBe("update");
@@ -608,14 +665,27 @@ describe("iac/plan-diff: isStackManaged / managedLabels", () => {
     expect(managedLabels("my-stack")).toEqual({ "scp:managed-by": "iac", "scp:stack": "my-stack" });
   });
 
-  it("isStackManaged is true only for an exact stack-name match", () => {
-    expect(isStackManaged(managedLabels("my-stack"), "my-stack")).toBe(true);
-    expect(isStackManaged(managedLabels("my-stack"), "other-stack")).toBe(false);
-    expect(isStackManaged({}, "my-stack")).toBe(false);
+  it("isStackManaged is true only for an exact stack-name match on the SERVER-WRITTEN column", () => {
+    expect(isStackManaged("my-stack", "my-stack")).toBe(true);
+    expect(isStackManaged("my-stack", "other-stack")).toBe(false);
     expect(isStackManaged(null, "my-stack")).toBe(false);
-    expect(
-      isStackManaged({ "scp:managed-by": "not-iac", "scp:stack": "my-stack" }, "my-stack")
-    ).toBe(false);
+    expect(isStackManaged(undefined, "my-stack")).toBe(false);
+    // Not a prefix/`startsWith` test, and not case-folded: a stack literally named `my-stack-2`
+    // must not inherit `my-stack`'s prune pool.
+    expect(isStackManaged("my-stack-2", "my-stack")).toBe(false);
+    expect(isStackManaged("My-Stack", "my-stack")).toBe(false);
+    expect(isStackManaged("", "my-stack")).toBe(false);
+  });
+
+  it("the marker LABELS no longer decide anything — the predicate cannot even be handed them", () => {
+    // drizzle/0068. This is a compile-time property expressed as a runtime assertion: the only
+    // argument `isStackManaged` accepts is the column, so the label pair that used to BE ownership
+    // now reaches it only as the plain string it wraps — and the wrapper object is not assignable.
+    // If someone widens the signature back to a labels map, the `@ts-expect-error` below stops
+    // erroring and this test fails, which is the point of writing it here rather than in prose.
+    const labels = managedLabels("my-stack");
+    // @ts-expect-error a labels map is not an ownership value
+    expect(isStackManaged(labels, "my-stack")).toBe(false);
   });
 });
 
@@ -655,7 +725,8 @@ describe("iac/plan-diff: source mappings (C1)", () => {
       relationships: [],
       sourceMappings,
       executorBindings: [],
-      placements: []
+      placements: [],
+      producers: null
     };
   }
 
@@ -821,7 +892,8 @@ describe("iac/plan-diff: executor bindings (C1)", () => {
       relationships: [],
       placements: [],
       sourceMappings: [],
-      executorBindings
+      executorBindings,
+      producers: null
     };
   }
 
@@ -966,7 +1038,8 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
         relationships: [],
         sourceMappings,
         executorBindings,
-        placements: []
+        placements: [],
+        producers: null
       },
       snapshot
     );
@@ -1000,7 +1073,8 @@ describe("iac/plan-diff: unownedProjectionDeclarations (C1 ownership guard)", ()
           name: "API",
           domainId: null,
           properties: {},
-          labels: managedLabels(STACK)
+          labels: managedLabels(STACK),
+          managedByStack: STACK
         }
       ]
     });
@@ -1030,6 +1104,7 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
     sourceMappings: [],
     executorBindings: [],
     placements: [],
+    producers: null,
     ...over
   });
 
@@ -1084,6 +1159,248 @@ describe("iac/plan-diff: duplicateProjectionDeclarations (C1)", () => {
     expect(
       duplicateProjectionDeclarations(
         base({ executorBindings: [bindingOn, { ...bindingOn, type: "image" }] })
+      )
+    ).toEqual([]);
+  });
+});
+
+/**
+ * PRODUCER DECLARATIONS (ADR-0032 §7e) — the one collection where ABSENT and EMPTY differ.
+ *
+ * The type carries the ruling (`ResolvedManifest.producers` is `T[] | null`, not `T[]`), so the
+ * first two cases below are what that type is FOR: `null` must skip the block entirely and `[]` must
+ * prune. A mutation that maps absent to `[]` in `plans-repo.ts` cannot be caught here — it is caught
+ * in `iac-dependency-producers.integration.test.ts` — so these cases pin the ENGINE's half and that
+ * file pins the wiring's.
+ */
+describe("iac/plan-diff: dependency producers", () => {
+  const COMP = "urn:scp:billing-platform:component:lib";
+  const OTHER = "urn:scp:billing-platform:component:other";
+  const FOREIGN = "urn:scp:other-stack:component:theirs";
+
+  const manifest = (over: Partial<ResolvedManifest> = {}): ResolvedManifest => ({
+    stackName: STACK,
+    objects: [],
+    relationships: [],
+    sourceMappings: [],
+    executorBindings: [],
+    placements: [],
+    producers: null,
+    ...over
+  });
+
+  const declaration = (producerUrn: string, coordinate = "@acme/lib") => ({
+    producerUrn,
+    ecosystem: "npm" as const,
+    coordinate
+  });
+
+  it("ABSENT (null) emits NO producers key at all and prunes nothing, even with a standing declaration", () => {
+    const diff = computePlanDiff(manifest({ producers: null }), {
+      ...emptySnapshot(),
+      managedDependencyProducers: [declaration(COMP)]
+    });
+    // Absent, not `[]`: the stored plan records "this stack manages no producer declarations",
+    // which is a different statement from "manages them, nothing to do".
+    expect(diff.producers).toBeUndefined();
+    expect(diff.summary).toEqual({ creates: 0, updates: 0, deletes: 0, noops: 0 });
+  });
+
+  it("PRESENT AND EMPTY prunes every declaration on a component this stack owns — the deliberate escape hatch", () => {
+    const diff = computePlanDiff(manifest({ producers: [] }), {
+      ...emptySnapshot(),
+      managedDependencyProducers: [declaration(COMP)]
+    });
+    expect(diff.producers?.map((p) => p.action)).toEqual(["delete"]);
+    expect(diff.producers?.[0]?.producerUrn).toBe(COMP);
+    expect(diff.summary.deletes).toBe(1);
+  });
+
+  it("a present collection is AUTHORITATIVE OVER ITS MEMBERS: removing B from [A, B] deletes B and noops A", () => {
+    const a = declaration(COMP, "@acme/a");
+    const b = declaration(COMP, "@acme/b");
+    const diff = computePlanDiff(manifest({ producers: [a] }), {
+      ...emptySnapshot(),
+      managedDependencyProducers: [a, b],
+      existingDependencyProducers: [a]
+    });
+    expect(diff.producers?.map((p) => [p.coordinate, p.action])).toEqual([
+      ["@acme/a", "noop"],
+      ["@acme/b", "delete"]
+    ]);
+  });
+
+  it("a coordinate with no live declaration is a CREATE; the same one re-declared is a NOOP", () => {
+    const d = declaration(COMP);
+    expect(
+      computePlanDiff(manifest({ producers: [d] }), emptySnapshot()).producers?.map((p) => p.action)
+    ).toEqual(["create"]);
+    expect(
+      computePlanDiff(manifest({ producers: [d] }), {
+        ...emptySnapshot(),
+        managedDependencyProducers: [d],
+        existingDependencyProducers: [d]
+      }).producers?.map((p) => p.action)
+    ).toEqual(["noop"]);
+  });
+
+  it("re-pointing a coordinate is an UPDATE naming the displaced producer — never a create, and never delete+create", () => {
+    const diff = computePlanDiff(manifest({ producers: [declaration(OTHER)] }), {
+      ...emptySnapshot(),
+      managedDependencyProducers: [declaration(COMP)],
+      existingDependencyProducers: [declaration(COMP)]
+    });
+    // ONE entry. Identity is the coordinate and the table upserts, so a delete plus a create would
+    // be two entries against one primary key whose apply order decides the outcome.
+    expect(diff.producers).toHaveLength(1);
+    expect(diff.producers?.[0]).toMatchObject({
+      action: "update",
+      producerUrn: OTHER,
+      displacedProducerUrn: COMP
+    });
+    expect(diff.summary).toEqual({ creates: 0, updates: 1, deletes: 0, noops: 0 });
+  });
+
+  it("a live declaration OUTSIDE this stack's prune pool still surfaces as an update — the transfer that deletes no row", () => {
+    // The foreign producer is absent from `managedDependencyProducers` (it is not this stack's) but
+    // present in `existingDependencyProducers` (the coordinate really is taken). Reading only the
+    // scoped pool would report `create` and let apply steal it silently.
+    const diff = computePlanDiff(manifest({ producers: [declaration(COMP)] }), {
+      ...emptySnapshot(),
+      existingDependencyProducers: [declaration(FOREIGN)]
+    });
+    expect(diff.producers?.[0]).toMatchObject({
+      action: "update",
+      displacedProducerUrn: FOREIGN
+    });
+  });
+
+  it("a coordinate declared twice collapses to ONE entry, and is reported as a duplicate", () => {
+    const m = manifest({ producers: [declaration(COMP), declaration(OTHER)] });
+    expect(computePlanDiff(m, emptySnapshot()).producers).toHaveLength(1);
+    expect(duplicateProjectionDeclarations(m)).toEqual([`producer npm '@acme/lib' (-> ${OTHER})`]);
+  });
+});
+
+describe("iac/plan-diff: invalidProducerDeclarations", () => {
+  const COMP = "urn:scp:billing-platform:component:lib";
+  const FOREIGN = "urn:scp:other-stack:component:theirs";
+
+  const objectEntry = (urn: string, typeId: string, action: "create" | "delete" = "create") => ({
+    kind: "object" as const,
+    action,
+    urn,
+    typeId,
+    reason: "fixture"
+  });
+
+  const producerEntry = (over: Record<string, unknown> = {}) => ({
+    kind: "dependency-producer" as const,
+    action: "create" as const,
+    ecosystem: "npm" as const,
+    coordinate: "@acme/lib",
+    producerUrn: COMP,
+    reason: "fixture",
+    ...over
+  });
+
+  const diffWith = (objects: ReturnType<typeof objectEntry>[], producers: unknown[]) =>
+    ({
+      objects,
+      relationships: [],
+      producers,
+      summary: { creates: 0, updates: 0, deletes: 0, noops: 0 }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any;
+
+  it("accepts a declaration on a component this stack declares", () => {
+    expect(
+      invalidProducerDeclarations(diffWith([objectEntry(COMP, "component")], [producerEntry()]))
+    ).toEqual([]);
+  });
+
+  it("refuses a producer this stack does not manage", () => {
+    const offenders = invalidProducerDeclarations(
+      diffWith([], [producerEntry({ producerUrn: FOREIGN })])
+    );
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toContain("this stack does not manage");
+  });
+
+  it("refuses a SERVICE-valued producer, and says why rather than only that it is the wrong type", () => {
+    const offenders = invalidProducerDeclarations(
+      diffWith([objectEntry(COMP, "service")], [producerEntry()])
+    );
+    expect(offenders).toHaveLength(1);
+    // The wording IS the requirement here (owner ruling, ADR-0032 §7e) — pinned for the same reason
+    // the typed route's service arm is: a generic "wrong type" message is indistinguishable from it.
+    expect(offenders[0]).toMatch(/first cut/i);
+    expect(offenders[0]).toMatch(/polling/i);
+  });
+
+  it("refuses a producer of any other non-component type, naming what was found", () => {
+    const offenders = invalidProducerDeclarations(
+      diffWith([objectEntry(COMP, "deployment-target")], [producerEntry()])
+    );
+    expect(offenders[0]).toContain("deployment-target");
+  });
+
+  it("refuses DISPLACING a producer belonging to another stack, even when the destination is owned", () => {
+    const offenders = invalidProducerDeclarations(
+      diffWith(
+        [objectEntry(COMP, "component")],
+        [producerEntry({ action: "update", displacedProducerUrn: FOREIGN })]
+      )
+    );
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toContain(FOREIGN);
+  });
+
+  it("ALLOWS displacing a producer this stack is DELETING in the same plan — a delete entry proves ownership", () => {
+    // The ordinary "component OLD is replaced by NEW, and the coordinate moves with it" manifest.
+    // Keying the displacement check on non-delete entries alone would refuse it.
+    const NEW = "urn:scp:billing-platform:component:new";
+    expect(
+      invalidProducerDeclarations(
+        diffWith(
+          [objectEntry(NEW, "component"), objectEntry(COMP, "component", "delete")],
+          [
+            producerEntry({
+              action: "update",
+              producerUrn: NEW,
+              displacedProducerUrn: COMP
+            })
+          ]
+        )
+      )
+    ).toEqual([]);
+  });
+
+  it("refuses a displacement whose holder cannot be NAMED, with its own remedy rather than the other stack's", () => {
+    // A tombstoned producer component leaves its declaration standing and resolves to no URN, so the
+    // snapshot carries `unresolvedProducerUrn`. It gets its own branch rather than failing the
+    // membership test: the fixture below puts the sentinel IN `diff.objects`, which a real URN could
+    // legitimately be (a manifest still naming the deleted component diffs it as a `create`) — and
+    // membership alone would then wave the overwrite through on precisely the plan to refuse.
+    const stranded = unresolvedProducerUrn("01a012aa-b584-75cd-a938-3e92263538df");
+    const offenders = invalidProducerDeclarations(
+      diffWith(
+        [objectEntry(COMP, "component"), objectEntry(stranded, "component")],
+        [producerEntry({ action: "update", displacedProducerUrn: stranded })]
+      )
+    );
+    expect(offenders).toHaveLength(1);
+    expect(offenders[0]).toContain("no longer resolves");
+    // The remedy is the RETRACT verb, because there is no stack to hand the coordinate back to; the
+    // other-stack message would send an operator looking for a manifest that does not exist.
+    expect(offenders[0]).toContain("retract");
+    expect(offenders[0]).not.toContain("this stack does not manage");
+  });
+
+  it("exempts a DELETE entry from the producer-type and ownership checks — the prune pool is already scoped", () => {
+    expect(
+      invalidProducerDeclarations(
+        diffWith([objectEntry(COMP, "component", "delete")], [producerEntry({ action: "delete" })])
       )
     ).toEqual([]);
   });

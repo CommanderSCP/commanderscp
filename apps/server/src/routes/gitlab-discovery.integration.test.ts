@@ -1,7 +1,7 @@
 import { createServer, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { ScpClient } from "@scp/sdk";
 import {
@@ -11,7 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { changeSourceEvents } from "../db/schema.js";
+import { changeSourceEvents, objects, relationships } from "../db/schema.js";
 import { processChangeSourceEvents } from "../coordination/webhook-processor.js";
 
 /**
@@ -190,21 +190,42 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → acce
     expect(sourceMapping?.pathPattern).toBe("service-a/**");
     expect(proposal.relationships).toEqual([
       {
-        typeId: "part_of",
-        fromUrn: `urn:scp:component:gitlab:${projectPath}/service-a`,
-        toUrn: `urn:scp:service:gitlab:${projectPath}`
+        typeId: "contains",
+        fromUrn: `urn:scp:service:gitlab:${projectPath}`,
+        toUrn: `urn:scp:component:gitlab:${projectPath}/service-a`
       }
     ]);
 
-    // 2) ACCEPT — the only path that writes. Turn the component's carried sourceMapping into a
-    //    sourceMappings[] entry so the import self-reports (the transform a UI/CLI review does).
+    // 2) ACCEPT — the only path that writes. Carry the proposal's objects AND ITS RELATIONSHIPS
+    //    through, and turn the component's carried sourceMapping into a sourceMappings[] entry so
+    //    the import self-reports (the transform a UI/CLI review does).
+    //
+    //    THIS STEP USED TO SEND `relationships: []` — see the matching note in
+    //    `gitea-discovery.integration.test.ts` and the census in
+    //    `routes/discovery-relationship-import.integration.test.ts`. Asserting the proposal contains
+    //    an edge and then importing a proposal containing none is how a dead write path stayed green.
+    //
+    //    Both objects are renamed at review time while `relationships` is passed VERBATIM: that only
+    //    works because an endpoint names the object's proposal-local `urn` ALIAS, not its name.
     const uniqueName = `${component.name}-${randomUUID().slice(0, 8)}`;
+    const uniqueServiceName = `${services[0]!.name}-${randomUUID().slice(0, 8)}`;
     const accept = await admin.discovery.accept({
       proposal: {
         objects: [
-          { typeId: "component", name: uniqueName, properties: component.properties ?? {} }
+          {
+            typeId: "service",
+            name: uniqueServiceName,
+            urn: services[0]!.urn,
+            properties: services[0]!.properties ?? {}
+          },
+          {
+            typeId: "component",
+            name: uniqueName,
+            urn: component.urn,
+            properties: component.properties ?? {}
+          }
         ],
-        relationships: [],
+        relationships: proposal.relationships,
         sourceMappings: [
           {
             objectName: uniqueName,
@@ -215,9 +236,39 @@ describe("M15.3b: gitlab-discovery import loop (BYO GitLab → proposal → acce
         ]
       }
     });
-    expect(accept.createdObjectIds).toHaveLength(1);
+    expect(accept.createdObjectIds).toHaveLength(2);
     expect(accept.createdSourceMappingIds).toHaveLength(1);
-    const componentId = accept.createdObjectIds[0]!;
+    expect(accept.createdRelationshipIds).toHaveLength(1);
+
+    // The ROW ITSELF, read from the TABLE (never `GET /relationships`) — a returned id is not a row.
+    const edges = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({
+          typeId: relationships.typeId,
+          fromId: relationships.fromId,
+          toId: relationships.toId
+        })
+        .from(relationships)
+        .where(eq(relationships.id, accept.createdRelationshipIds[0]!))
+    );
+    expect(edges).toHaveLength(1);
+    expect(edges[0]!.typeId).toBe("contains");
+
+    const importedObjects = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ id: objects.id, typeId: objects.typeId, name: objects.name })
+        .from(objects)
+        .where(inArray(objects.id, accept.createdObjectIds))
+    );
+    const importedService = importedObjects.find((o) => o.typeId === "service")!;
+    const importedComponent = importedObjects.find((o) => o.typeId === "component")!;
+    expect(importedService.name).toBe(uniqueServiceName);
+    expect(importedComponent.name).toBe(uniqueName);
+    // Direction: `contains` is service -> component, which `graph/containment.ts` walks backwards.
+    expect(edges[0]!.fromId).toBe(importedService.id);
+    expect(edges[0]!.toId).toBe(importedComponent.id);
+
+    const componentId = importedComponent.id;
 
     // 3) The imported component's gitlab source_mapping exists and is listable under 'gitlab'.
     const mappings = await admin.changeSources.listMappings("gitlab");

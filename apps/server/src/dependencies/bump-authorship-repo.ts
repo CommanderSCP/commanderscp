@@ -52,6 +52,16 @@ export interface BumpAuthorship {
   headCommit?: string;
   /** The pull request SCP opened. `undefined` until the authoring run reports one. */
   pullRequestNumber?: number;
+  /**
+   * That pull request's web URL, AS THE PROVIDER RETURNED IT (migration 0066).
+   *
+   * `undefined` means SCP RECORDED NO LINK — a row written before the column existed, an authoring
+   * run whose outcome carried no readable `html_url`, or a value that was not an absolute http(s)
+   * URL. It NEVER means "compose one from `repo` and `pullRequestNumber`": that composition is true
+   * of github.com and of nothing else, and this row does not record which provider authored the
+   * bump. See {@link recordBumpPullRequest}.
+   */
+  pullRequestUrl?: string;
   /** When the provider confirmed the merge. `undefined` while the bump is still open. */
   mergedAt?: Date;
 }
@@ -89,6 +99,7 @@ function toAuthorship(row: Row): BumpAuthorship {
     ...(typeof row.pullRequestNumber === "number"
       ? { pullRequestNumber: row.pullRequestNumber }
       : {}),
+    ...(row.pullRequestUrl ? { pullRequestUrl: row.pullRequestUrl } : {}),
     ...(row.mergedAt ? { mergedAt: row.mergedAt } : {})
   };
 }
@@ -176,6 +187,39 @@ export async function findOpenBumpAuthorship(
 }
 
 /**
+ * Every OPEN bump SCP authored for one coordinate — what a producer retraction reports and CANNOT
+ * recall (ADR-0032 §7e, proposal §12.3.2).
+ *
+ * READ-ONLY, DELIBERATELY, and the caller must do nothing else with the result. A dispatched bump
+ * has left SCP: it is a pull request in another team's repository, or under `auto_merge` a commit on
+ * their branch. Closing or rewriting these rows would make SCP assert it closed a PR it did not
+ * close — a false record, which is worse than an open one. Retraction stops FUTURE triggers only;
+ * this list exists so an operator has the set to go and close by hand.
+ *
+ * `merged_at IS NULL` is what "open" means, the same predicate `findOpenBumpAuthorship` uses.
+ * Matched on `(ecosystem, coordinate)` as a PAIR: a coordinate carries no ecosystem in itself.
+ */
+export async function listOpenBumpAuthorshipsForCoordinate(
+  tx: TenantTx,
+  orgId: string,
+  key: { ecosystem: string; coordinate: string }
+): Promise<BumpAuthorship[]> {
+  const rows = await tx
+    .select()
+    .from(dependencyBumpAuthorships)
+    .where(
+      and(
+        eq(dependencyBumpAuthorships.orgId, orgId),
+        eq(dependencyBumpAuthorships.ecosystem, key.ecosystem),
+        eq(dependencyBumpAuthorships.coordinate, key.coordinate),
+        sql`${dependencyBumpAuthorships.mergedAt} is null`
+      )
+    )
+    .orderBy(dependencyBumpAuthorships.changeObjectId);
+  return rows.map(toAuthorship);
+}
+
+/**
  * The bump whose OWN branch head is `commit` in `repo`, or `undefined` — the CI-conclusion
  * correlation route (GitHub's `workflow_run` names a commit and no ref).
  *
@@ -237,29 +281,92 @@ export async function recordBumpHeadCommit(
 }
 
 /**
- * Record the pull request the authoring run reported opening.
+ * A provider-supplied web URL this table is willing to STORE, or `undefined`.
  *
- * WRITE-ONCE, and the `is null` predicate is the control rather than a convenience: the number is
- * what the merge is addressed to, so a later run must not be able to re-point it at a different pull
- * request. A retry of the same bump converges on the same branch and therefore on the same pull
- * request, so re-stating it is redundant rather than necessary; a DIFFERENT number arriving later is
- * the case this refuses to honour.
+ * The value arrives as `html_url` out of a provider's JSON body, relayed through the plugin's
+ * `status().stateRef`. Three things are therefore true of it and each is a reason this exists:
+ *
+ *   * IT MAY BE ABSENT OR EMPTY. `packages/plugins/managed-dep/src/repo-write.ts`'s
+ *     `readPullRequest` degrades an `html_url` it cannot read to `""`, deliberately, because every
+ *     one of ITS callers compares that field rather than displaying it. Storing `""` here would
+ *     turn "the provider told us nothing" into a value a consumer has to special-case, when the
+ *     column already has a way to say it: NULL.
+ *   * IT IS NOT A SCHEME WE CHOSE. The only consumer of this column is something rendering a link,
+ *     and a `javascript:` or `data:` href is script execution in whatever renders it. Refusing any
+ *     scheme but http/https AT THE WRITE DOOR is what lets every reader treat the column as safe,
+ *     rather than each reader remembering to sanitise it. Sanitising in n readers is the shape this
+ *     repo keeps paying for; refusing in the one writer is not.
+ *   * IT IS UNBOUNDED. `text` has no length limit, so a hostile or broken provider response would
+ *     be stored whole. 2048 is past every real forge URL and short of anything worth storing.
+ *
+ * Refused values are recorded as NOTHING, never as a repaired or synthesised value: an absent link
+ * is a missing feature, an invented one is a lie with a working underline.
+ *
+ * The provider's OWN string is returned (trimmed), not `new URL(...).href` — normalising would
+ * silently re-spell a URL the provider issued, and the column's contract is what the provider
+ * returned.
+ */
+function storableProviderUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.length > 2048) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+  return trimmed;
+}
+
+/**
+ * Record the pull request the authoring run reported opening — its NUMBER, and the URL the provider
+ * returned for it.
+ *
+ * WRITE-ONCE, and the predicate is the control rather than a convenience: the number is what the
+ * merge is addressed to, so a later run must not be able to re-point it at a different pull request.
+ * A retry of the same bump converges on the same branch and therefore on the same pull request, so
+ * re-stating it is redundant rather than necessary; a DIFFERENT number arriving later is the case
+ * this refuses to honour — and it refuses the URL that came with it too, since a link that names a
+ * different pull request from the number beside it is worse than no link.
+ *
+ * THE ONE CASE THE PREDICATE DELIBERATELY ADMITS is a re-statement of the SAME number carrying a URL
+ * for a row that has none: a row written before migration 0066, or one whose first authoring run got
+ * a provider response with no readable `html_url` (that plugin's 201 path degrades it to `""`, and
+ * its 422 retry path re-reads the pull request and usually does have one). Filling the URL in cannot
+ * re-point anything — the number is already fixed and is being compared, not overwritten — so the
+ * narrower "number is null" predicate would only have meant the link stayed missing forever. Once
+ * BOTH are recorded the statement matches no row and writes nothing at all, which is what keeps a
+ * redelivery from costing a dead tuple per hop (ADR-0024).
+ *
+ * THE URL IS NEVER SYNTHESISED. `repo` + `pullRequestNumber` composes a working link for github.com
+ * and for nothing else, and this row does not record which provider authored the bump — see
+ * {@link BumpAuthorship.pullRequestUrl} and migration 0066.
  */
 export async function recordBumpPullRequest(
   tx: TenantTx,
   orgId: string,
   changeObjectId: string,
-  pullRequestNumber: number
+  pullRequestNumber: number,
+  pullRequestUrl?: unknown
 ): Promise<void> {
   if (!Number.isInteger(pullRequestNumber) || pullRequestNumber <= 0) return;
+  const url = storableProviderUrl(pullRequestUrl);
+  // Either disjunct guarantees the SET is safe: the first because the row has no number yet, the
+  // second because the number it has is the one being written. Without a URL to contribute, the
+  // second disjunct would match rows there is nothing to write to, so it is not offered.
+  const writable = url
+    ? sql`(${dependencyBumpAuthorships.pullRequestNumber} is null or (${dependencyBumpAuthorships.pullRequestNumber} = ${pullRequestNumber} and ${dependencyBumpAuthorships.pullRequestUrl} is null))`
+    : sql`${dependencyBumpAuthorships.pullRequestNumber} is null`;
   await tx
     .update(dependencyBumpAuthorships)
-    .set({ pullRequestNumber, updatedAt: new Date() })
+    .set({ pullRequestNumber, ...(url ? { pullRequestUrl: url } : {}), updatedAt: new Date() })
     .where(
       and(
         eq(dependencyBumpAuthorships.orgId, orgId),
         eq(dependencyBumpAuthorships.changeObjectId, changeObjectId),
-        sql`${dependencyBumpAuthorships.pullRequestNumber} is null`
+        writable
       )
     );
 }
