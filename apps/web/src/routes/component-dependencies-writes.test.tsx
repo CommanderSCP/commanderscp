@@ -163,6 +163,18 @@ describe("the wired-up Dependencies tab is a COMMANDER-site page", () => {
       expect(document.body.textContent).toContain(
         "Dependency subscriptions are managed at the commander"
       );
+      // The pointer names a topology ONLY when the client's role stated it: an outpost is told
+      // "this outpost"; a retrans or an undeclared role is NOT an outpost and is told "this
+      // deployment" (a topology nobody stated must not be named).
+      if (role === "outpost") {
+        expect(document.body.textContent).toContain("reach this outpost through");
+        expect(document.body.textContent).not.toContain("this deployment holds");
+      } else {
+        expect(document.body.textContent).toContain(
+          "this deployment holds no dependency inventory"
+        );
+        expect(document.body.textContent).not.toContain("this outpost");
+      }
       expect(inDocument("enable-open")).toBeNull();
       expect(readCalls).toEqual([]);
       view.unmount();
@@ -390,6 +402,9 @@ describe("the wired-up Dependencies tab writes ordinary policies through client.
         "the pointer to render off the wire"
       );
       expect(inDocument("dependencies-managed-reason")?.textContent).toContain("role_undeclared");
+      // An undeclared role is not an outpost: the sentence must not name one.
+      expect(document.body.textContent).not.toContain("this outpost");
+      expect(document.body.textContent).toContain("this deployment holds no dependency inventory");
       // The read WAS issued (the role gate let it through); the answer's posture is what decided.
       expect(readCalls.some((c) => c.startsWith(`inventory:${COMPONENT.id}:`))).toBe(true);
       // Nothing of the envelope below the posture is rendered: no rows, no enable offer.

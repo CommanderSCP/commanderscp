@@ -897,13 +897,22 @@ function bumpProgress(bump: ComponentDependencyBump): React.JSX.Element {
  *  outpost holds no dependency inventory and dispatches no bumps. A stated pointer, not an empty
  *  page that would read as "no dependencies". Provider-free; role is a PARAMETER. */
 export function ManagedAtCommanderNotice({
-  reason
+  reason,
+  role
 }: {
   /** The server's own `dependencyManagement.reason` when the pointer is rendered off the WIRE
    *  (`managedHere: false`) rather than off the role gate — stated, so an operator can tell an
    *  outpost from an undeclared role (different remedies). */
   reason?: string;
+  /** The client's own `instanceRole` when the pointer is rendered off the ROLE GATE (no read was
+   *  issued, so there is no wire reason). Only ever a non-commander role here. */
+  role?: string;
 } = {}): React.JSX.Element {
+  // Name the topology ONLY when someone stated it. "This outpost" is true when the server's reason
+  // or the client's role says `outpost`; a retrans or an undeclared role is NOT an outpost, and
+  // saying so would name a topology nobody stated (the undeclared-role remedy is one env var at
+  // THIS deployment, not a call to the commander).
+  const isOutpost = reason === "outpost" || (reason === undefined && role === "outpost");
   return (
     <Card data-testid="dependencies-managed-at-commander" data-reason={reason}>
       <CardHeader>
@@ -912,8 +921,11 @@ export function ManagedAtCommanderNotice({
       <CardContent>
         <p className="text-sm text-slate-600">
           Dependency subscriptions are managed at the commander. Version bumps are authored there
-          and reach this outpost through the promotion pipeline; this site holds no dependency
-          inventory of its own.
+          and reach{" "}
+          {isOutpost
+            ? "this outpost through the promotion pipeline; this site holds"
+            : "field outposts through the promotion pipeline; this deployment holds"}{" "}
+          no dependency inventory of its own.
           {reason ? (
             <>
               {" "}
@@ -1340,7 +1352,7 @@ export function ComponentDependenciesPage(): React.JSX.Element {
   if (!idOrUrn) return <p className="text-sm text-red-600">Not found.</p>;
   // Commander-only feature (owner rule 2026-08-17): any other install-time role gets the pointer,
   // whatever the reads would have said. Read from `instanceRole`, never inferred from data.
-  if (instanceRole !== "commander") return <ManagedAtCommanderNotice />;
+  if (instanceRole !== "commander") return <ManagedAtCommanderNotice role={instanceRole} />;
   if (inventoryQuery.isLoading) return <Skeleton className="h-24 w-full" />;
   if (inventoryQuery.error) {
     return (
