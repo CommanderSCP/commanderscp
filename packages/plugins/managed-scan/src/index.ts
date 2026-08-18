@@ -12,6 +12,8 @@ import type {
   TriggerIntent
 } from "@scp/plugin-api";
 import {
+  MANAGED_RUN_TIMEOUT_MAX_MS,
+  MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
   toRunnerRunId,
   withRecordedOutcome,
@@ -387,7 +389,17 @@ export const manifest: PluginManifest = {
     type: "object",
     additionalProperties: false,
     properties: {
-      timeoutMs: { type: "integer", minimum: 1000, default: DEFAULT_TIMEOUT_MS }
+      // BOUNDED AT BOTH ENDS (M23.3). The `maximum` is the half that was missing: with only a
+      // floor, a tenant could set 2^31 and make the runner unkillable by its own timeout AND
+      // unbound the plugin-host RPC budget derived from it. Enforced at every write door by
+      // `validatePluginConfig` (Ajv honours `maximum`), and clamped again host-side for rows
+      // stored before the ceiling existed.
+      timeoutMs: {
+        type: "integer",
+        minimum: MANAGED_RUN_TIMEOUT_MIN_MS,
+        maximum: MANAGED_RUN_TIMEOUT_MAX_MS,
+        default: DEFAULT_TIMEOUT_MS
+      }
     }
   }
 };

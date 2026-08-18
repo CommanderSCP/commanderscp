@@ -73,6 +73,7 @@ import type {
   PluginHost,
   PluginHostInstanceConfig
 } from "./contract.js";
+import { resolveCallPolicy } from "./call-policy.js";
 import {
   encodeMessage,
   isErrorResponse,
@@ -102,7 +103,16 @@ const DEFAULT_SUBPROCESS_ENTRY_PATH = path.resolve(
 );
 
 export interface PluginHostOptions {
-  /** Per-call RPC budget (ms), including any wait-for-ready + one transparent retry. Default 10s. */
+  /**
+   * The HANG DETECTOR: per-call RPC budget (ms), including any wait-for-ready + one transparent
+   * retry. Default 10s.
+   *
+   * NOT A UNIVERSAL BUDGET SINCE M23.3. It applies to every method that is supposed to be fast, and
+   * a managed executor's `trigger` — the one method that legitimately runs a container to completion
+   * — derives its own from the instance's resolved `timeoutMs` instead (`call-policy.ts`). Do not
+   * "fix" a slow managed run by raising this: doing so blinds the host to a wedged `status()` on
+   * every plugin in the product, which is the thing this number is for.
+   */
   callTimeoutMs?: number;
   /** First restart delay after a crash (ms), doubled per consecutive crash. Default 200ms. */
   restartBackoffBaseMs?: number;
@@ -659,6 +669,13 @@ export class SubprocessPluginHost implements PluginHost {
         // A timeout means the plugin is hung, not necessarily crashed — kill it so the normal
         // exit handler reclaims it and restart-with-backoff kicks in, converting "hung forever"
         // into "will come back". `sendOnce`'s caller (`call`) still only sees a timeout error.
+        //
+        // THIS SIGKILL IS WHY THE BUDGET HAS TO BE PER-METHOD (M23.3). There is no `finally` here
+        // and there cannot be one: the cleanup that matters lives in the CHILD (the runner
+        // launcher's `rm -f`, `withRecordedOutcome`, managed-iac's `saveState`) and SIGKILL runs
+        // none of it. So the only defence is to never let this fire while a legitimate managed run
+        // is in progress — see `call-policy.ts`'s grace, which exists to guarantee the plugin's own
+        // inner `execFile` timeout is the one that wins.
         instance.child?.kill("SIGKILL");
         reject(
           new Error(
@@ -678,12 +695,32 @@ export class SubprocessPluginHost implements PluginHost {
    * for the respawned instance and retries exactly once more per crash, as long as time remains.
    * This is what makes `contract.ts`'s "callers never see a dead subprocess, only a
    * slower/retried call" true rather than aspirational.
+   *
+   * WITH ONE EXCLUSION, M23.3: a managed executor's `trigger` is NOT retried. It is not idempotent
+   * from here — its ledger entry is written only after the run completes, so a retry re-enters a
+   * `tofu apply` that may still be in flight, and the retry's container name (derived from the same
+   * `idempotencyKey`) collides with the first run's and gets it torn down. That crash belongs to
+   * `reconcile.ts`, which has the Decision record and the backoff; it must not be swallowed here.
    */
   private async call(instanceId: string, method: string, params?: unknown): Promise<unknown> {
     const instance = this.instances.get(instanceId);
     if (!instance) throw new Error(`no plugin instance configured with id '${instanceId}'`);
 
-    const deadline = Date.now() + this.opts.callTimeoutMs;
+    // PER-METHOD, NOT ONE NUMBER FOR EVERYTHING (M23.3). `opts.callTimeoutMs` stays the 10s HANG
+    // DETECTOR for `observe`/`status`/`abort`/`evaluate`/`send`/… — it is meaningful precisely
+    // because those are supposed to be fast. A managed executor's `trigger` is the one method that
+    // legitimately blocks for minutes (the charter's scoped execution exception runs its container
+    // synchronously), so its budget is derived from that instance's own resolved `timeoutMs` and its
+    // transparent crash-retry is switched OFF. See `call-policy.ts` for the measured consequences of
+    // the uniform 10s this replaces — an orphaned runner holding live credentials, and a second
+    // `tofu apply` issued while the first was still applying.
+    const policy = resolveCallPolicy({
+      module: instance.config.module,
+      config: instance.config.config,
+      method,
+      hangDetectorMs: this.opts.callTimeoutMs
+    });
+    const deadline = Date.now() + policy.budgetMs;
     for (;;) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
@@ -711,7 +748,11 @@ export class SubprocessPluginHost implements PluginHost {
       try {
         return await this.sendOnce(instance, method, params, remainingAfterReady);
       } catch (err) {
-        if (err instanceof PluginInstanceCrashedError && Date.now() < deadline) {
+        if (
+          err instanceof PluginInstanceCrashedError &&
+          policy.retryOnCrash &&
+          Date.now() < deadline
+        ) {
           // Give the exit handler's scheduled restart a moment to actually spawn before looping
           // back to waitForReady — otherwise the loop can spin on `instance.child === undefined`.
           await sleep(Math.min(10, Math.max(0, deadline - Date.now())));

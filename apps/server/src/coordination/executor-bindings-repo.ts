@@ -10,6 +10,7 @@ import { isUniqueViolation } from "../db/pg-errors.js";
 import { resolveSecretRefs } from "../secrets/secrets-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import type { PluginHostInstanceConfig, PluginModule } from "../plugin-host/contract.js";
+import { assertManagedTimeoutSchemas } from "../plugin-host/call-policy.js";
 import { assertEveryModuleHasManifest } from "../plugin-host/plugin-manifests.js";
 
 /** Stable plugin-instance id for an execution-system-backed binding — every binding that references
@@ -449,6 +450,23 @@ export const KNOWN_EXECUTOR_MODULES: PluginModule[] = [
  * running. Adding a module below without a manifest now fails at BOOT, naming the module.
  */
 assertEveryModuleHasManifest(KNOWN_EXECUTOR_MODULES, "KNOWN_EXECUTOR_MODULES");
+
+/**
+ * AND THE SECOND PROPERTY OF THE SAME MANIFEST, checked in the same place and at the same moment,
+ * because the first one on its own is not enough (M23.3).
+ *
+ * `assertEveryModuleHasManifest` above answers "may this module's config be validated at all". This
+ * answers "is the one tenant-settable number in that config BOUNDED" — and for the three managed
+ * classes it is load-bearing twice over: the plugin's `execFile` timeout is what stops a wedged
+ * runner, and the plugin HOST derives that module's `trigger` RPC budget from the very same bounds
+ * (`plugin-host/call-policy.ts`). All three shipped `{ type: "integer", minimum: 1000 }` with no
+ * ceiling, so a tenant with plain `object:write` on a Component could set 2^31 and remove both.
+ *
+ * Beside the allowlist, at module load, for the reason the assertion above it is: a missing ceiling
+ * is a defect the moment it is committed, and deleting one degrades SILENTLY (that module's trigger
+ * reverts to the 10s hang detector that SIGKILLs a live `tofu apply`) rather than failing anything.
+ */
+assertManagedTimeoutSchemas();
 
 /**
  * Exported (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6, "create-time module allowlist"): until

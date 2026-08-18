@@ -72,6 +72,41 @@ const execFileAsync = promisify(execFile);
  * in that same change — {@link RunnerLauncherConfig} is where the field will land.
  */
 
+// ==================================================================================================
+// THE TENANT-SETTABLE RUN BUDGET — its floor, its default-bearing ceiling, and why a ceiling exists.
+// ==================================================================================================
+
+/**
+ * The bounds every managed executor's tenant-settable `timeoutMs` must lie within, declared ONCE
+ * here because all three managed plugins depend on this package and each publishes the same
+ * `configSchema` property.
+ *
+ * WHY A MAXIMUM IS NOT HYGIENE. All three plugins run their container SYNCHRONOUSLY inside
+ * `trigger()`, and `apps/server/src/plugin-host/host.ts` sizes that RPC's budget from this very
+ * number (`managed-call-budget.ts`). A `timeoutMs` with `{ minimum: 1000 }` and no maximum — which
+ * is what all three manifests shipped — therefore had two distinct consequences, and the second is
+ * the one that made this a defect rather than a smell:
+ *
+ *   1. The runner itself becomes unkillable BY ITS OWN TIMEOUT. `execFile`'s `timeout` is the only
+ *      thing that stops a wedged `docker start -a`, and a tenant with plain `object:write` on a
+ *      Component could set 2^31 ms (24.9 days) and remove it.
+ *   2. The plugin-host budget derived from it becomes unbounded too, which would replace one bad
+ *      failure mode (a 10s SIGKILL through a live `tofu apply`) with another (an RPC that never
+ *      returns and an executor instance whose single-threaded `subprocess-entry.ts` head-of-line
+ *      blocks every `status()`/`observe()`/`abort()` for weeks).
+ *
+ * The ceiling is what makes the budget COMPUTABLE — an upper bound on how long a managed run may
+ * legitimately still be in flight is the predicate an orphan sweep needs, and there is no such
+ * predicate while a run may claim any duration it likes.
+ *
+ * ONE HOUR is chosen against the defaults it must not squeeze: managed-iac and managed-scan default
+ * to 10 minutes and managed-dep to 5, so the ceiling is 6x the largest default — room for a genuinely
+ * slow `tofu apply` or a full-filesystem Trivy scan, and still a bound.
+ */
+export const MANAGED_RUN_TIMEOUT_MIN_MS = 1_000;
+/** See {@link MANAGED_RUN_TIMEOUT_MIN_MS}. One hour. */
+export const MANAGED_RUN_TIMEOUT_MAX_MS = 60 * 60_000;
+
 /** One `docker cp` of a host directory's CONTENTS into the container (the trailing `/.`). */
 export interface RunnerCopyIn {
   /** HOST directory. Its contents are copied, not the directory itself. */
