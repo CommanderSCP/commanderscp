@@ -46,7 +46,9 @@ import { registerExecutorRoutes } from "./routes/executors.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerDoctorRoutes } from "./routes/doctor.js";
 import { registerInstanceScanFloorRoutes } from "./routes/instance-scan-floors.js";
+import { registerInstanceScanExclusionAdmissionRoutes } from "./routes/instance-scan-exclusion-admissions.js";
 import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js";
+import { registerScanOverrideGrantRoutes } from "./routes/scan-override-grants.js";
 import { registerScanDbRoutes } from "./routes/scan-db.js";
 import { registerDependencySubscriptionRoutes } from "./routes/dependency-subscriptions.js";
 import { registerDependencyProducerRoutes } from "./routes/dependency-producers.js";
@@ -232,6 +234,9 @@ export async function buildApp(
   }
   registerGovernanceRoutes(app, deps);
   registerInstanceScanFloorRoutes(app, deps); // M17.5 instance-scoped scan floors (ADR-0016)
+  // M22.9 instance-scoped exclusion admissions (ADR-0033 §1/§7a) — the `platform` and
+  // `trust_domain` rungs of the monotone AND, which no policy can ever contribute.
+  registerInstanceScanExclusionAdmissionRoutes(app, deps);
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)
   registerDependencySubscriptionRoutes(app, deps); // M21.3 instance unlock + (component, line) enablement resolution (ADR-0032 §6)
@@ -242,6 +247,7 @@ export async function buildApp(
   // `dependency-producers.integration.test.ts`'s "WIRING" case red rather than merely removing a
   // convenience.
   registerDependencyProducerRoutes(app, deps);
+  registerScanOverrideGrantRoutes(app, deps); // M22.6 standing, expiring scan override grants (ADR-0033 §6a)
   // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN.md §9.5) — coordinate many
   // Changes over the same M3/M4 machinery; no new engine, see coordination/campaign-status.ts.
   registerCampaignRoutes(app, deps);

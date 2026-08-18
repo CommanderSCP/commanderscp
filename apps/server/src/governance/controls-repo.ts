@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import type { ControlOutcomeStatus } from "@scp/plugin-api";
 import type { TenantTx } from "../db/tenant-tx.js";
@@ -127,6 +127,12 @@ export interface ControlRunRow {
    * request rather than an unattended merge.
    */
   pluginModule: string | null;
+  /** M22.8 — WHICH GATE CROSSING this run authorized. Already stored (`NOT NULL` since M4) and
+   *  already the cache key since M22.0a; declared on the row type so `listControlRunsForChange`'s
+   *  caller can project it. Typed loosely because `select()` returns the column verbatim and the
+   *  DB's CHECK, not this interface, is what constrains it. */
+  gateKind: string;
+  gateRef: Record<string, unknown>;
   createdAt: Date;
 }
 
@@ -153,8 +159,68 @@ export async function insertControlRun(
   return row as unknown as ControlRunRow;
 }
 
-/** The most recent run of `controlObjectId` against `changeObjectId`, regardless of gate — used
- *  both to decide "has this already run" and to surface the outcome to `governance/evaluate.ts`. */
+/**
+ * M22.0a (ADR-0033 §10) — the most recent run of `controlObjectId` against `changeObjectId` **FOR A
+ * SPECIFIC GATE CROSSING**.
+ *
+ * WHY GATE IDENTITY IS PART OF THE KEY. `latestControlRun` below ignores the gate entirely, so ONE
+ * run satisfied every gate that change would ever face. The deciding run is normally the reconcile
+ * PREWARM, made while the change sits in `validating`; that single row then answered the accept
+ * edge AND every subsequent `wave_boundary` gate in every wave, including the production wave, for
+ * the rest of the change's life. A control outcome is evidence that a PARTICULAR crossing was
+ * authorized, not a permanent property of the change.
+ *
+ * That was tolerable while a control verdict could only get *stricter* over time. It stops being
+ * tolerable with ADR-0033: an exclusion grant carries an EXPIRY, so a 7-day grant resolved during
+ * validation would otherwise still authorize a production wave three weeks after it lapsed. This is
+ * the "verify the lever, not just the signal" failure in its purest form — the grant is readable
+ * and nothing re-reads it.
+ *
+ * THIS DOES NOT BREAK THE PREWARM -> ACCEPT-EDGE PATH, and that is not luck: prewarm writes
+ * `gateKind: "lifecycle_edge"` with `gateRef: {fromState: "validating", toState: "accepted"}`
+ * (gate-orchestrator.ts), and the accept-edge gate passes `{fromState: ctx.fromState, toState:
+ * ctx.toState}` — byte-identical for that transition. The accept gate still finds prewarm's run.
+ * What no longer matches is a WAVE boundary, whose `gateRef` is `{topologyObjectId, waveIndex}` —
+ * exactly the crossing that must be re-decided.
+ *
+ * `gate_ref` is compared as `jsonb`, whose equality is over the normalized binary form, so key
+ * ORDER in the caller's object is irrelevant and no canonicalization is needed here.
+ *
+ * COST, STATED PLAINLY: a change with N waves now produces up to N+1 runs per control rather than
+ * one. That is the correct semantics — each crossing is authorized on its own evidence — and for
+ * `github-check` the `EXPIRED_RECHECK_INTERVAL_MS` cooldown still bounds the external call rate.
+ */
+export async function latestControlRunForGate(
+  tx: TenantTx,
+  orgId: string,
+  changeObjectId: string,
+  controlObjectId: string,
+  gateKind: "lifecycle_edge" | "wave_boundary",
+  gateRef: Record<string, unknown>
+): Promise<ControlRunRow | undefined> {
+  const rows = await tx
+    .select()
+    .from(controlRuns)
+    .where(
+      and(
+        eq(controlRuns.orgId, orgId),
+        eq(controlRuns.changeObjectId, changeObjectId),
+        eq(controlRuns.controlObjectId, controlObjectId),
+        eq(controlRuns.gateKind, gateKind),
+        sql`${controlRuns.gateRef} = ${JSON.stringify(gateRef)}::jsonb`
+      )
+    )
+    .orderBy(desc(controlRuns.createdAt))
+    .limit(1);
+  return rows[0] as unknown as ControlRunRow | undefined;
+}
+
+/** The most recent run of `controlObjectId` against `changeObjectId`, regardless of gate.
+ *
+ *  PREFER `latestControlRunForGate` for any AUTHORIZATION decision — see its doc for why keying
+ *  without the gate let one run authorize every later crossing. This gate-agnostic form remains for
+ *  surfacing "what happened to this control on this change at all", where the newest outcome across
+ *  every gate is the intended answer. */
 export async function latestControlRun(
   tx: TenantTx,
   orgId: string,

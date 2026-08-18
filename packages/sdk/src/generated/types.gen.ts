@@ -6613,6 +6613,117 @@ export type GetComponentPipelineResponses = {
 
 export type GetComponentPipelineResponse = GetComponentPipelineResponses[keyof GetComponentPipelineResponses];
 
+export type GetComponentScanRequirementsData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/components/{idOrUrn}/scan-requirements';
+};
+
+export type GetComponentScanRequirementsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetComponentScanRequirementsError = GetComponentScanRequirementsErrors[keyof GetComponentScanRequirementsErrors];
+
+export type GetComponentScanRequirementsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        componentId: string;
+        componentUrn: string;
+        representedTiers: Array<'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component'>;
+        threshold: {
+            threshold: {
+                maxCritical?: number;
+                maxHigh?: number;
+                maxMedium?: number;
+                maxLow?: number;
+            };
+            contributors: Array<{
+                tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+                source: string;
+                objectTypeId?: string;
+                threshold: {
+                    maxCritical?: number;
+                    maxHigh?: number;
+                    maxMedium?: number;
+                    maxLow?: number;
+                };
+            }>;
+        } | null;
+        admittedExclusionClasses: Array<{
+            class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+            admittedBy: Array<{
+                tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+                source: string;
+            }>;
+            effectiveAtTiers: Array<'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component'>;
+        }>;
+        exclusionClauses: Array<{
+            clause: {
+                class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+                vulnerabilityId?: string;
+                pkgName?: string;
+                purl?: string;
+                findingClass?: string;
+                declaredFact?: string;
+                declaredValue?: string;
+                reason?: string;
+            };
+            tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+            source: string;
+            admittedBy: Array<{
+                tier: 'platform' | 'trust_domain' | 'org' | 'containment_domain' | 'service' | 'assembly' | 'component';
+                source: string;
+            }>;
+        }>;
+        unevaluatedConditions: Array<{
+            policyObjectId: string;
+            policyVersion: number;
+            name: string;
+            condition: string;
+        }>;
+    };
+};
+
+export type GetComponentScanRequirementsResponse = GetComponentScanRequirementsResponses[keyof GetComponentScanRequirementsResponses];
+
 export type ListComponentsData = {
     body?: never;
     path?: never;
@@ -11758,6 +11869,10 @@ export type ExplainChangeResponses = {
             detail: string | null;
             decisionId: string | null;
             createdAt: string;
+            gateKind?: 'lifecycle_edge' | 'wave_boundary';
+            gateRef?: {
+                [key: string]: unknown;
+            };
         }>;
         waitStatus: {
             waiting: boolean;
@@ -13886,12 +14001,90 @@ export type ListChangeControlRunsResponses = {
             detail: string | null;
             decisionId: string | null;
             createdAt: string;
+            gateKind?: 'lifecycle_edge' | 'wave_boundary';
+            gateRef?: {
+                [key: string]: unknown;
+            };
         }>;
         nextCursor: string | null;
     };
 };
 
 export type ListChangeControlRunsResponse = ListChangeControlRunsResponses[keyof ListChangeControlRunsResponses];
+
+export type ListControlRunFindingsData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: {
+        cursor?: string;
+        limit?: number;
+    };
+    url: '/control-runs/{id}/findings';
+};
+
+export type ListControlRunFindingsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListControlRunFindingsError = ListControlRunFindingsErrors[keyof ListControlRunFindingsErrors];
+
+export type ListControlRunFindingsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            vulnerabilityId?: string;
+            pkgName?: string;
+            installedVersion?: string;
+            fixedVersion?: string;
+            class?: string;
+            target?: string;
+            severity: 'critical' | 'high' | 'medium' | 'low';
+            purl?: string;
+            ordinal: number;
+            retentionClass: 'E' | 'O';
+        }>;
+        nextCursor: string | null;
+        findingsRecord: 'full' | 'truncated' | 'unsupported' | null;
+    };
+};
+
+export type ListControlRunFindingsResponse = ListControlRunFindingsResponses[keyof ListControlRunFindingsResponses];
 
 export type ListApprovalsData = {
     body?: never;
@@ -14553,6 +14746,114 @@ export type PutInstanceScanFloorResponses = {
 };
 
 export type PutInstanceScanFloorResponse = PutInstanceScanFloorResponses[keyof PutInstanceScanFloorResponses];
+
+export type ListInstanceScanExclusionAdmissionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/scan-exclusion-admissions';
+};
+
+export type ListInstanceScanExclusionAdmissionsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListInstanceScanExclusionAdmissionsError = ListInstanceScanExclusionAdmissionsErrors[keyof ListInstanceScanExclusionAdmissionsErrors];
+
+export type ListInstanceScanExclusionAdmissionsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            tier: 'platform' | 'trust_domain';
+            class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+            origin: 'local' | 'federated';
+            note: string | null;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListInstanceScanExclusionAdmissionsResponse = ListInstanceScanExclusionAdmissionsResponses[keyof ListInstanceScanExclusionAdmissionsResponses];
+
+export type PutInstanceScanExclusionAdmissionsData = {
+    body: {
+        origin: 'local' | 'federated';
+        classes: Array<'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override'>;
+        note?: string | null;
+    };
+    path: {
+        tier: 'platform' | 'trust_domain';
+    };
+    query?: never;
+    url: '/instance/scan-exclusion-admissions/{tier}';
+};
+
+export type PutInstanceScanExclusionAdmissionsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutInstanceScanExclusionAdmissionsError = PutInstanceScanExclusionAdmissionsErrors[keyof PutInstanceScanExclusionAdmissionsErrors];
+
+export type PutInstanceScanExclusionAdmissionsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            tier: 'platform' | 'trust_domain';
+            class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+            origin: 'local' | 'federated';
+            note: string | null;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type PutInstanceScanExclusionAdmissionsResponse = PutInstanceScanExclusionAdmissionsResponses[keyof PutInstanceScanExclusionAdmissionsResponses];
 
 export type ListScannerAssignmentsData = {
     body?: never;
@@ -15590,6 +15891,423 @@ export type RetractDependencyLineProducerResponses = {
 };
 
 export type RetractDependencyLineProducerResponse = RetractDependencyLineProducerResponses[keyof RetractDependencyLineProducerResponses];
+
+export type ListScanOverrideGrantsData = {
+    body?: never;
+    path?: never;
+    query: {
+        component: string;
+    };
+    url: '/scan-override-grants';
+};
+
+export type ListScanOverrideGrantsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListScanOverrideGrantsError = ListScanOverrideGrantsErrors[keyof ListScanOverrideGrantsErrors];
+
+export type ListScanOverrideGrantsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            id: string;
+            urn: string;
+            name: string;
+            status: 'requested' | 'approved' | 'denied' | 'revoked';
+            componentId: string;
+            vulnerabilityId: string;
+            pkgName: string | null;
+            tierObjectId: string;
+            reason: string;
+            expiresAt: string | null;
+            decidedByActorId: string | null;
+            decidedAt: string | null;
+            decisionReason: string | null;
+            requestedByActorId: string;
+            createdAt: string;
+        }>;
+    };
+};
+
+export type ListScanOverrideGrantsResponse = ListScanOverrideGrantsResponses[keyof ListScanOverrideGrantsResponses];
+
+export type CreateScanOverrideGrantData = {
+    body: {
+        componentId: string;
+        vulnerabilityId: string;
+        pkgName?: string;
+        tierObjectId: string;
+        reason: string;
+    };
+    path?: never;
+    query?: never;
+    url: '/scan-override-grants';
+};
+
+export type CreateScanOverrideGrantErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type CreateScanOverrideGrantError = CreateScanOverrideGrantErrors[keyof CreateScanOverrideGrantErrors];
+
+export type CreateScanOverrideGrantResponses = {
+    /**
+     * Success
+     */
+    201: {
+        id: string;
+        urn: string;
+        name: string;
+        status: 'requested' | 'approved' | 'denied' | 'revoked';
+        componentId: string;
+        vulnerabilityId: string;
+        pkgName: string | null;
+        tierObjectId: string;
+        reason: string;
+        expiresAt: string | null;
+        decidedByActorId: string | null;
+        decidedAt: string | null;
+        decisionReason: string | null;
+        requestedByActorId: string;
+        createdAt: string;
+    };
+};
+
+export type CreateScanOverrideGrantResponse = CreateScanOverrideGrantResponses[keyof CreateScanOverrideGrantResponses];
+
+export type ApproveScanOverrideGrantData = {
+    body: {
+        expiresAt: string;
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/scan-override-grants/{id}/approve';
+};
+
+export type ApproveScanOverrideGrantErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ApproveScanOverrideGrantError = ApproveScanOverrideGrantErrors[keyof ApproveScanOverrideGrantErrors];
+
+export type ApproveScanOverrideGrantResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        urn: string;
+        name: string;
+        status: 'requested' | 'approved' | 'denied' | 'revoked';
+        componentId: string;
+        vulnerabilityId: string;
+        pkgName: string | null;
+        tierObjectId: string;
+        reason: string;
+        expiresAt: string | null;
+        decidedByActorId: string | null;
+        decidedAt: string | null;
+        decisionReason: string | null;
+        requestedByActorId: string;
+        createdAt: string;
+    };
+};
+
+export type ApproveScanOverrideGrantResponse = ApproveScanOverrideGrantResponses[keyof ApproveScanOverrideGrantResponses];
+
+export type DenyScanOverrideGrantData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/scan-override-grants/{id}/deny';
+};
+
+export type DenyScanOverrideGrantErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DenyScanOverrideGrantError = DenyScanOverrideGrantErrors[keyof DenyScanOverrideGrantErrors];
+
+export type DenyScanOverrideGrantResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        urn: string;
+        name: string;
+        status: 'requested' | 'approved' | 'denied' | 'revoked';
+        componentId: string;
+        vulnerabilityId: string;
+        pkgName: string | null;
+        tierObjectId: string;
+        reason: string;
+        expiresAt: string | null;
+        decidedByActorId: string | null;
+        decidedAt: string | null;
+        decisionReason: string | null;
+        requestedByActorId: string;
+        createdAt: string;
+    };
+};
+
+export type DenyScanOverrideGrantResponse = DenyScanOverrideGrantResponses[keyof DenyScanOverrideGrantResponses];
+
+export type RevokeScanOverrideGrantData = {
+    body: {
+        reason: string;
+    };
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/scan-override-grants/{id}/revoke';
+};
+
+export type RevokeScanOverrideGrantErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type RevokeScanOverrideGrantError = RevokeScanOverrideGrantErrors[keyof RevokeScanOverrideGrantErrors];
+
+export type RevokeScanOverrideGrantResponses = {
+    /**
+     * Success
+     */
+    200: {
+        id: string;
+        urn: string;
+        name: string;
+        status: 'requested' | 'approved' | 'denied' | 'revoked';
+        componentId: string;
+        vulnerabilityId: string;
+        pkgName: string | null;
+        tierObjectId: string;
+        reason: string;
+        expiresAt: string | null;
+        decidedByActorId: string | null;
+        decidedAt: string | null;
+        decisionReason: string | null;
+        requestedByActorId: string;
+        createdAt: string;
+    };
+};
+
+export type RevokeScanOverrideGrantResponse = RevokeScanOverrideGrantResponses[keyof RevokeScanOverrideGrantResponses];
 
 export type ListCampaignsData = {
     body?: never;

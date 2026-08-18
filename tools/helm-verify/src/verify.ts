@@ -1431,6 +1431,7 @@ function main(): void {
       "SCP_FEDERATION_SYNC_INTERVAL_SECONDS",
       "SCP_FEDERATION_SYNC_SPARSE_INTERVAL_SECONDS",
       "SCP_OPERATOR_TOKEN",
+      "SCP_OPERATOR_DATABASE_URL",
       "SCP_ARTIFACT_OCI_REGISTRY_HOSTS",
       "SCP_ARTIFACT_BLOB_BASE_URLS",
       "SCP_ARTIFACT_INSECURE_HOSTS",
@@ -1503,30 +1504,78 @@ function main(): void {
     );
     console.log(`  enabled render: every knob present + correct on BOTH Deployments`);
 
-    // The operator token is a secretKeyRef, never a literal — a token rendered as a plain env
-    // VALUE would sit in the Deployment spec for anyone with `get deploy`.
+    // ----------------------------------------------------------------------------------------
+    // THE OPERATOR WRITE SURFACE NEEDS *TWO* THINGS, AND THIS CHART ONLY EVER RENDERED THE FIRST.
+    //
+    // M22.9 R3. The chart rendered SCP_OPERATOR_TOKEN and nothing else, so an `operatorApi.enabled`
+    // install produced a pod that AUTHORIZED the operator and then could not execute: the four PUT
+    // handlers open their own connection, api/worker pods hold no admin DATABASE_URL by design
+    // (`commanderscp.adminDbEnv` is included by migrations-job.yaml alone), and `scp_app` holds
+    // SELECT only on the four instance-scoped tables. The write dialed config.ts's
+    // `localhost:5432` fallback INSIDE the pod and 500'd on ECONNREFUSED. Nothing was red: the
+    // pod was healthy, the render was green, and the integration suite could not see it because
+    // its DATABASE_URL is the Testcontainers SUPERUSER, which bypasses both the grant and the RLS
+    // barrier. For M22 the consequence was total — `scan_exclusion_admissions` stayed empty, and
+    // an empty admissions table fails the exclusion AND at its top rung for EVERY clause on the
+    // deployment, so the whole shipped dimension was inert.
+    //
+    // `assertOperatorCredentialPairing` below is the standing guard, and it is deliberately
+    // stronger than "assert the var is present in this one render": it asserts the two vars are
+    // present together or absent together on EVERY doc set this block renders. A future change
+    // that reintroduces the token without the connection cannot render green under any values.
+    // ----------------------------------------------------------------------------------------
+    function assertOperatorCredentialPairing(docs: K8sDoc[], what: string): void {
+      for (const suffix of ["-api", "-worker"]) {
+        const token = envOf(docs, suffix, "SCP_OPERATOR_TOKEN");
+        const dbUrl = envOf(docs, suffix, "SCP_OPERATOR_DATABASE_URL");
+        assert(
+          (token === undefined) === (dbUrl === undefined),
+          `[${envLabel}] ${what}: the ${suffix.slice(1)} Deployment carries SCP_OPERATOR_${token ? "TOKEN" : "DATABASE_URL"} but not SCP_OPERATOR_${token ? "DATABASE_URL" : "TOKEN"} — the operator write door needs BOTH (the token authorizes the caller; the connection is what lets the server execute the write). A pod with only the token 503s on every operator write`
+        );
+      }
+    }
+    assertOperatorCredentialPairing(defaultDocs, "default render");
+    assertOperatorCredentialPairing(onDocs, "every-knob-on render");
+
+    // Both are secretKeyRefs, never literals — either one rendered as a plain env VALUE would sit
+    // in the Deployment spec for anyone with `get deploy` (a shared secret, and a DB password).
     const opDocs = renderChart(releaseName, [
       "--set",
       "operatorApi.enabled=true",
       "--set",
-      "appSecrets.existingSecret=scp-operator"
+      "appSecrets.existingSecret=scp-operator",
+      "--set",
+      "operatorApi.databaseUrlSecret=scp-operator-db"
     ]);
+    assertOperatorCredentialPairing(opDocs, "operatorApi.enabled render");
     for (const suffix of ["-api", "-worker"]) {
       const found = envOf(opDocs, suffix, "SCP_OPERATOR_TOKEN");
       assert(
         found?.value === undefined && found?.valueFrom?.secretKeyRef?.name === "scp-operator",
         `[${envLabel}] SCP_OPERATOR_TOKEN must be a secretKeyRef (never a literal value) on the ${suffix.slice(1)} Deployment`
       );
+      const dbUrl = envOf(opDocs, suffix, "SCP_OPERATOR_DATABASE_URL");
+      assert(
+        dbUrl?.value === undefined &&
+          dbUrl?.valueFrom?.secretKeyRef?.name === "scp-operator-db" &&
+          dbUrl?.valueFrom?.secretKeyRef?.key === "SCP_OPERATOR_DATABASE_URL",
+        `[${envLabel}] SCP_OPERATOR_DATABASE_URL must be a secretKeyRef into operatorApi.databaseUrlSecret on the ${suffix.slice(1)} Deployment, got ${JSON.stringify(dbUrl)}`
+      );
     }
 
-    // FAIL-FAST GUARDS — both must REFUSE to render. A typo'd role or an operator token with no
-    // Secret behind it would otherwise surface as a healthy-looking install that misbehaves at
-    // runtime (a 400 from /discovery/run; a pod crash-looping on a missing secret key).
+    // FAIL-FAST GUARDS — all three must REFUSE to render. A typo'd role, an operator token with no
+    // Secret behind it, or an enabled write surface with no database connection would otherwise
+    // surface as a healthy-looking install that misbehaves at runtime (a 400 from /discovery/run;
+    // a pod crash-looping on a missing secret key; a 503 on every operator write).
     for (const [args, what] of [
       [["--set", "api.role=worker"], "api.role=worker"],
       [
         ["--set", "operatorApi.enabled=true"],
         "operatorApi.enabled with no appSecrets.existingSecret"
+      ],
+      [
+        ["--set", "operatorApi.enabled=true", "--set", "appSecrets.existingSecret=scp-operator"],
+        "operatorApi.enabled with no operatorApi.databaseUrlSecret"
       ]
     ] as [string[], string][]) {
       let rendered = false;
@@ -1538,7 +1587,9 @@ function main(): void {
       }
       assert(!rendered, `[${envLabel}] ${what} must FAIL the render, not be silently ignored`);
     }
-    console.log(`  operator token is a secretKeyRef; both fail-fast guards refuse to render`);
+    console.log(
+      `  operator token + database URL are paired secretKeyRefs; all three fail-fast guards refuse to render`
+    );
   }
 
   // Size-regression guard: the MAIN chart's Helm release Secret must stay under Kubernetes' 1 MB

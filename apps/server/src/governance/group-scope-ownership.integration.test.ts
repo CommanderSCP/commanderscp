@@ -296,7 +296,13 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     // Before the owning half this ceiling silently dropped out of the per-severity MIN for anyone
     // outside the group, leaving the M17.5 gate LOOSER than the operator authored — no error, no
     // log, the gate simply permitted more.
-    await groupScopedPolicy("owner-half-scan-ceiling", [{ scanThreshold: { maxHigh: 0 } }]);
+    await groupScopedPolicy("owner-half-scan-ceiling", [
+      { scanThreshold: { maxHigh: 0 } },
+      // M22.8: a scan ceiling must name the control it constrains. This suite exercises the
+      // MATCHER and the pure resolver, never a gate, so it names the same non-uuid reference the
+      // rest of the file uses — unresolvable, therefore not provably inert, therefore admitted.
+      { requireControls: ["security-scan"] }
+    ]);
 
     const resolved = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const matched = await matchPoliciesForTargets(tx, {
@@ -325,7 +331,10 @@ describe("group scope: the OWNING-subject half (ADR-0016 §2a)", () => {
     // the org root (as the acting half does, having no anchor of its own) would report an ORG-tier
     // ceiling for a SERVICE-tier requirement, breaking ADR-0016 §5's promise that a blocked
     // promotion can show which tier set the binding severity floor.
-    await groupScopedPolicy("owner-half-tier-label", [{ scanThreshold: { maxMedium: 3 } }]);
+    await groupScopedPolicy("owner-half-tier-label", [
+      { scanThreshold: { maxMedium: 3 } },
+      { requireControls: ["security-scan"] }
+    ]);
 
     const resolved = await withTenantTx(server.deps.db, org.orgId, async (tx) => {
       const matched = await matchPoliciesForTargets(tx, {

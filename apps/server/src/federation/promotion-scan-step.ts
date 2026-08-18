@@ -6,30 +6,41 @@ import { join } from "node:path";
 import {
   ScanEvidenceSchema,
   ScanSeverityCountsSchema,
+  applyScanExclusions,
+  capScanFindings,
+  effectiveSeverityCountsAfterExclusions,
+  parseTrivyFindings,
+  scanFindingsRecordFor,
+  severityCountsFromFindings,
   ExecutorTypeSchema,
   usesTrivyDb,
+  type CappedScanFindings,
+  type ScanFinding,
   type ScanMethod,
   type ScanSeverityCounts,
   type ScanThreshold,
   type EffectiveScanThreshold,
   type ScanDbSource,
   type ScanDbStalenessClass,
-  type ScanDbThresholdFired
+  type ScanDbThresholdFired,
+  type EffectiveScanExclusions
 } from "@scp/schemas";
 import { resolveSkopeo } from "@scp/cosign";
 import { ociLayout as airgapOciLayout } from "@scp/airgap";
 import { createManagedScanExecutorPlugin } from "@scp/plugin-managed-scan";
 import type { PluginContext } from "@scp/plugin-api";
 import type { Db } from "../db/client.js";
-import { withTenantTx } from "../db/tenant-tx.js";
+import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { getChange } from "../coordination/changes-repo.js";
 import {
   insertControlRun,
   listControlRunsForChange,
   type ControlRunRow
 } from "../governance/controls-repo.js";
+import { persistScanFindings } from "../governance/scan-findings-repo.js";
 import { resolveScannersForType } from "../governance/scanner-registry.js";
 import {
+  resolveEffectiveScanExclusionsForTargets,
   resolveEffectiveScanThreshold,
   readInstanceScanFloors
 } from "../governance/scan-requirements.js";
@@ -39,7 +50,12 @@ import {
   MANAGED_SCAN_CONTROL_OBJECT_ID,
   type SeverityCeiling
 } from "./scan-evidence.js";
+import { resolveFiredPoliciesForTargets } from "../governance/gate-orchestrator.js";
+import type { MatchedPolicy } from "../governance/policy-model.js";
+import type { FiredPolicy } from "../governance/evaluate.js";
+import { getSharedCelSandbox, type CelSandbox } from "../governance/cel-sandbox.js";
 import { readScanDbStatus } from "../governance/scan-db.js";
+import { scanExclusionSetHash } from "../governance/scan-exclusion-actuator.js";
 import {
   managedRunnerSettings,
   managedScanServerSettings
@@ -63,10 +79,14 @@ import {
  * it does not touch the gate.
  *
  * PER ARTIFACT (proposal §13.3):
- *   (a) SHORT-CIRCUIT — if a VALID org-pipeline `control_runs` scan outcome already covers this
- *       digest (status `pass` + `ScanEvidenceSchema` valid + `digestMatch` + `artifactDigest`
- *       match — the exact E6 predicate), SKIP the managed run: org evidence wins, the D1 alternate
- *       ingress, and the runner is never invoked.
+ *   (a) SHORT-CIRCUIT — if a covering org-pipeline (or prior managed) `control_runs` scan outcome
+ *       already covers this digest, SKIP the managed run: org evidence wins, the D1 alternate
+ *       ingress, and the runner is never invoked. "Covering" is not enumerated here on purpose —
+ *       this list used to spell it as "status `pass` + `ScanEvidenceSchema` valid + `digestMatch` +
+ *       `artifactDigest` match, the exact E6 predicate", which stopped being the whole rule the
+ *       moment E6 grew producer admission, supersession, the instance floor and (M22.9) exclusion-set
+ *       currency. It is ONE function, `evaluateScanCoverage` in `scan-evidence.ts`, and that module
+ *       doc is where the rule is stated.
  *   (b) SCANNER SELECTION — `resolveScannersForType(the artifact's ExecutorType)` → methods. If
  *       EMPTY, NO managed evidence is produced (fail-closed: E6 will refuse — we never fabricate a
  *       pass for an unassigned type).
@@ -152,6 +172,18 @@ export interface ManagedScanReport {
   scannedDigest: string;
   scannerVersion: string;
   severityCounts: ScanSeverityCounts;
+  /**
+   * M22.1b (ADR-0033 §7) — the per-finding detail the counts were derived from, retained so it can
+   * be PERSISTED (`scan_findings`). Every rule in ADR-0033 is a rule about a finding, and until this
+   * field existed a verdict reaching the server was four integers.
+   *
+   * ABSENT when the runner produced no per-finding material — which is the ordinary case for
+   * OpenSCAP, whose XCCDF rule-results have no package, no purl, no `FixedVersion` and no `Class`.
+   * Absence is NOT what refuses an OpenSCAP finding set, though: `persistScanFindings` refuses on
+   * the METHOD, before it looks at this field, so a runner that one day handed findings alongside
+   * `openscap` still records `unsupported` rather than quietly gaining an exclusion surface.
+   */
+  findings?: readonly ScanFinding[];
   /** M13.3b-ii — the scanner DB this verdict was produced against (trivy only; OpenSCAP uses baked
    *  SSG). Surfaced into the ScanEvidence so a Decision can explain the DB's provenance + freshness.
    *  Only a scannable DB (`fresh`/`warn`) yields a report at all — a hard-fail/missing/corrupt DB
@@ -186,9 +218,14 @@ export interface ManagedScanRunner {
 function isCoveringScanOutcome(
   runs: readonly ControlRunRow[],
   digest: string,
-  instanceFloor: SeverityCeiling
+  instanceFloor: SeverityCeiling,
+  /** M22.9 — the exclusion set in force on THIS pass; a covering pass judged under any other one is
+   *  not covering. Passed unconditionally (never conditionally spread): `undefined` here is the
+   *  meaningful value "no clause is in force now", and a run stamped with a hash must not survive
+   *  the withdrawal of every clause that produced it. */
+  expectedExclusionSetHash: string | undefined
 ): boolean {
-  return evaluateScanCoverage({ digest, runs, instanceFloor }).covered;
+  return evaluateScanCoverage({ digest, runs, instanceFloor, expectedExclusionSetHash }).covered;
 }
 
 // --- Artifact + pull-ref resolution from the change's sourceRef ----------------------------------
@@ -331,6 +368,116 @@ interface DepositRow {
   detail: string;
   method: ScanMethod;
   digest: string;
+  /** M22.1b — the findings to project into `scan_findings` once this deposit has a control-run id.
+   *  Carried on the deposit rather than re-derived in phase C, because phase B is where the scan
+   *  actually happened. */
+  capped: CappedScanFindings | undefined;
+  /** M22.2 — which of them an admitted clause excluded, so phase C writes those rows at ADR-0024
+   *  retention class `E` (accepted-risk evidence) rather than `O` (telemetry). */
+  excludedOrdinals: number[];
+}
+
+/**
+ * THE EXCLUSION SET IN FORCE FOR A CHANGE — one resolution, because the export path now has TWO
+ * consumers of the answer and a difference between them is indistinguishable from a withdrawn
+ * waiver.
+ *
+ * The step below resolves the set to APPLY it (exclude-before-counting, phase B) and stamps
+ * `scanExclusionSetHash` onto every verdict it deposits. `promotion-repo.ts`'s E6 gate resolves it to
+ * CHECK that a cached verdict was judged under it (M22.9). If the two assembled their inputs
+ * separately — a target list read differently, a firing set resolved from a different CEL pass, a
+ * different actor — the two hashes would differ for a reason nobody authored, and EVERY export of a
+ * change carrying an exclusion would refuse `stale_exclusion_set` forever. That is the failure this
+ * function exists to make unreachable; the alternative considered was a second copy of these
+ * ~20 lines in `promotion-repo.ts`, kept in step by a comment.
+ *
+ * `matches`/`fired` come back with the answer because the CEILING dimension resolves off the SAME
+ * firing set (below) — re-running the CEL evaluation to obtain it a second time would be both a
+ * wasted worker round-trip and a second chance for the two dimensions to disagree.
+ *
+ * ===================================================================================
+ * M22.2 — THE FIRING SET, FOR REAL. This used to be `firedPolicies: []`.
+ *
+ * An empty firing set admits the instance-level floors (platform/trust_domain, always read) plus the
+ * fail-closed default, and NOTHING authored at org, containment domain, service, assembly or
+ * component. That was a documented follow-on and it was defensible while the only dimension was a
+ * TIGHTENING — the 0/0 default already refuses any Critical or High, so a missing scoped ceiling
+ * could only ever make this step stricter than the gate.
+ *
+ * It stops being defensible the moment a LOOSENING exists. An exclusion resolved by the lifecycle
+ * gate would be invisible here, so the commander's own managed scan would count findings the gate had
+ * agreed not to count — the two paths disagreeing about the same artifact at exactly the boundary
+ * where evidence is FROZEN into a signed bundle and the E6 export gate reads it. So both dimensions
+ * resolve off the SAME firing set the gate would compute.
+ *
+ * THIS IS A BEHAVIOUR CHANGE FOR THE CEILING TOO, and in both directions — stated rather than buried.
+ * A scoped policy that sets `maxHigh: 5` now applies here, where before this step used the 0/0
+ * default; a scoped policy that sets `maxHigh: 0` now applies where before nothing did. Convergence
+ * with the lifecycle gate is the point: two verdicts about one artifact must not be produced under
+ * two different rules.
+ *
+ * The sandbox is a THUNK. `new CelSandbox()` spawns its worker pool in the constructor, and
+ * `resolveFiredPolicies` calls `evaluate` only for a contributor that actually carries a `condition`
+ * — so an org whose policies have no conditions spins up no worker threads.
+ * ===================================================================================
+ *
+ * RESOLVED AS THE ACTOR WHO IS CROSSING THE BOUNDARY, which is a real and accepted limitation: an
+ * exclusion policy scoped to an ACTING GROUP resolves differently for the exporter than it did for
+ * the engineer whose gate run stamped the evidence, and the difference reads here as a moved set.
+ * The consequence is a refusal (or a re-scan), never a crossing — the direction a boundary check is
+ * allowed to be wrong in.
+ */
+export async function resolveScanExclusionsForChange(
+  tx: TenantTx,
+  input: {
+    orgId: string;
+    change: { id: string; properties: Record<string, unknown>; emergency: boolean };
+    actorObjectId: string;
+  },
+  /** Test seam ONLY — see `runPromotionScanStep`. */
+  sandbox?: Pick<CelSandbox, "evaluate">
+): Promise<{
+  targetObjectIds: string[];
+  matches: MatchedPolicy[];
+  fired: FiredPolicy[];
+  exclusions: EffectiveScanExclusions | undefined;
+  /** `undefined` when nothing was admitted — the value that keeps a deployment with no authored
+   *  exclusion byte-identical to pre-M22 at both consumers. */
+  exclusionSetHash: string | undefined;
+}> {
+  const targetObjectIds = Array.isArray(input.change.properties.targets)
+    ? (input.change.properties.targets as unknown[]).filter(
+        (t): t is string => typeof t === "string"
+      )
+    : [];
+  const lazySandbox: Pick<CelSandbox, "evaluate"> = {
+    evaluate: (expression, context) =>
+      (sandbox ?? getSharedCelSandbox()).evaluate(expression, context)
+  };
+  const { matches, fired } = await resolveFiredPoliciesForTargets(tx, lazySandbox, {
+    orgId: input.orgId,
+    changeObjectId: input.change.id,
+    targetObjectIds,
+    actorObjectId: input.actorObjectId,
+    emergency: input.change.emergency,
+    now: new Date()
+  });
+  // Resolved server-side rather than threaded through a plugin context: the managed producer has no
+  // plugin to thread one to — it parses the Trivy result itself in phase B.
+  const exclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
+    orgId: input.orgId,
+    targetObjectIds,
+    actorObjectId: input.actorObjectId,
+    matches,
+    firedPolicies: fired
+  });
+  return {
+    targetObjectIds,
+    matches,
+    fired,
+    exclusions,
+    exclusionSetHash: scanExclusionSetHash(exclusions)
+  };
 }
 
 /**
@@ -343,7 +490,10 @@ interface DepositRow {
 export async function runPromotionScanStep(
   db: Db,
   input: RunPromotionScanStepInput,
-  runner: ManagedScanRunner
+  runner: ManagedScanRunner,
+  /** Test seam ONLY. Production passes nothing and the shared sandbox is constructed on first use
+   *  (and only if a policy contributor actually carries a CEL `condition`). */
+  sandbox?: Pick<CelSandbox, "evaluate">
 ): Promise<void> {
   // Phase A (tx, read-only): gather the plan — which artifacts still need a managed scan, with what
   // methods, and the effective threshold. Pure DB; no subprocess runs while a connection is held.
@@ -360,29 +510,33 @@ export async function runPromotionScanStep(
     const executorType = executorTypeOf(change as { properties: Record<string, unknown> });
     const methods = await resolveScannersForType(tx, executorType);
 
-    const targetObjectIds = Array.isArray((change.properties as Record<string, unknown>).targets)
-      ? ((change.properties as Record<string, unknown>).targets as unknown[]).filter(
-          (t): t is string => typeof t === "string"
-        )
-      : [];
-    // Reuse the M17.5 six-tier resolver. `firedPolicies: []` applies the instance-level floors
-    // (platform/trust_domain, always read) plus the fail-closed default (any Critical/High fails);
-    // scoped org/service/component scan-requirement POLICY ceilings are enforced authoritatively for
-    // org-pipeline evidence by the normal lifecycle gate (gate-orchestrator.ts). Tightening the
-    // managed step to also evaluate fired scoped policies is a documented follow-on — safe because
-    // the fail-closed default already refuses any Critical/High.
+    // M22.2 + M22.9 — the firing set and the exclusion dimension, resolved through the function the
+    // E6 gate now calls too, so the set this step APPLIES and the set that gate CHECKS against are
+    // built from one assembly of inputs (see `resolveScanExclusionsForChange`).
+    const { targetObjectIds, matches, fired, exclusions, exclusionSetHash } =
+      await resolveScanExclusionsForChange(
+        tx,
+        { orgId: input.orgId, change, actorObjectId: input.actorObjectId },
+        sandbox
+      );
+
     const effective = await resolveEffectiveScanThreshold(tx, {
       orgId: input.orgId,
       targetObjectIds,
       actorObjectId: input.actorObjectId,
-      firedPolicies: []
+      matches,
+      firedPolicies: fired
     });
 
     const planned: PlannedScan[] = [];
     for (const digest of digests) {
       // (a) SHORT-CIRCUIT — CURRENT org-pipeline (or prior managed) passing digest-bound evidence
-      // wins. "Current" is the word that changed: a superseded pass no longer suppresses the scan.
-      if (isCoveringScanOutcome(existingRuns, digest, instanceFloor)) continue;
+      // wins. "Current" is the word that changed: a superseded pass no longer suppresses the scan,
+      // and (M22.9) neither does one judged under an exclusion set that has since moved — which is
+      // why the hash is resolved ABOVE this loop rather than at the deposit below. Computed after
+      // the short-circuit it could only ever stamp what this pass believed, never re-open a pass an
+      // expired grant had paid for.
+      if (isCoveringScanOutcome(existingRuns, digest, instanceFloor, exclusionSetHash)) continue;
       // (b) scanner selection — an unassigned type yields no methods ⇒ no managed evidence.
       if (methods.length === 0) continue;
       planned.push({
@@ -396,12 +550,17 @@ export async function runPromotionScanStep(
         methods
       });
     }
-    return { changeId: change.id, planned, effective };
+    return { changeId: change.id, planned, effective, exclusions, exclusionSetHash };
   });
 
   if (!plan || plan.planned.length === 0) return;
 
   const { threshold, source } = applyThreshold(plan.effective);
+  // M22.7 — hashed ONCE for the whole step: every deposit below was produced under the one set phase
+  // A resolved, so a per-deposit recomputation could only ever introduce a way for them to differ.
+  // M22.9 moved the hashing itself INTO phase A (the short-circuit needs it); this reads that one
+  // value rather than re-deriving it, for the same reason.
+  const exclusionSetHash = plan.exclusionSetHash;
 
   // Phase B (no tx): pull + scan each planned artifact per method. Subprocesses (skopeo/docker) run
   // here, never while a pooled DB connection is held (the codebase-wide invariant, promotion-repo.ts).
@@ -425,8 +584,34 @@ export async function runPromotionScanStep(
       const { report } = result;
       const scannedDigest = normalizeSha256Digest(report.scannedDigest) ?? report.scannedDigest;
       const digestMatch = scannedDigest === subject.digest;
+      // WHAT THE SCANNER FOUND — unchanged, and it keeps that meaning (operators author CEL
+      // conditions against `evidence.severityCounts.*`).
       const severityCounts = ScanSeverityCountsSchema.parse(report.severityCounts);
-      const overThreshold = breaches(severityCounts, threshold);
+
+      // M22.1b — cap the set that will be persisted, and let ONE pure function decide the marker
+      // that goes on the evidence here and the rows that go into `scan_findings` in phase C. The
+      // marker cannot be produced by the writer, because it must be on the `control_runs` row at
+      // INSERT time while the rows need that row's id; deriving both from `scanFindingsRecordFor`
+      // is what keeps "evidence says full, the table says otherwise" unreachable.
+      const capped = report.findings ? capScanFindings(report.findings) : undefined;
+      const findingsRecord = scanFindingsRecordFor(method, capped);
+
+      // M22.2 — EXCLUDE BEFORE COUNTING (ADR-0033 §2), through the SAME pure function the
+      // `scan-result-control` plugin uses, so the two verdict producers cannot diverge about what a
+      // clause means.
+      //
+      // `findingsRecord` gates it, and this is where the OpenSCAP guarantee actually lands: an
+      // `openscap` verdict carries `unsupported`, so every exclusion is refused BECAUSE OF WHAT
+      // SCANNED — recorded positively in evidence — never because the finding array happened to be
+      // empty. ADR-0033's consequences list requires exactly that distinction be explicit.
+      const applied = applyScanExclusions(capped?.findings ?? [], plan.exclusions, findingsRecord);
+      const effectiveCounts = effectiveSeverityCountsAfterExclusions(
+        severityCounts,
+        applied,
+        capped?.findings ?? []
+      );
+      // ONLY the threshold comparison reads the post-exclusion number.
+      const overThreshold = breaches(effectiveCounts, threshold);
       const status: "pass" | "fail" = digestMatch && !overThreshold ? "pass" : "fail";
 
       const evidence = ScanEvidenceSchema.parse({
@@ -436,6 +621,22 @@ export async function runPromotionScanStep(
         expectedDigest: subject.digest,
         digestMatch,
         severityCounts,
+        ...(findingsRecord ? { findingsRecord } : {}),
+        // Written ONLY when the gate resolved at least one admitted clause, so a deployment with
+        // nothing authored deposits a byte-identical evidence document to pre-M22.2.
+        ...(applied.evidence
+          ? { effectiveSeverityCounts: effectiveCounts, exclusions: applied.evidence }
+          : {}),
+        // M22.7 — the SAME stamp `control-runner.ts` puts on a plugin-produced verdict, from the same
+        // pure function, so the two verdict producers describe an exclusion set identically.
+        //
+        // THIS COMMENT USED TO SAY "NO ACTUATOR READS IT HERE YET" — true when written, false since
+        // M22.9. Both readers now exist and both are on the export path: this step's short-circuit
+        // (`isCoveringScanOutcome`) and the E6 export gate (`promotion-repo.ts`), which is what makes
+        // ADR-0033's "an override's expiry is not trustworthy at that boundary until it lands" land.
+        // Recording the hash from M22.7 is why that fix was a comparison rather than a re-scan of
+        // history — every stamped run was already describable.
+        ...(exclusionSetHash ? { exclusionSetHash } : {}),
         threshold,
         thresholdSource: source,
         ...(plan.effective ? { thresholdContributors: plan.effective.contributors } : {}),
@@ -453,6 +654,15 @@ export async function runPromotionScanStep(
 
       // Surface a soft-stale (WARN) DB in the deposited detail so the Decision reads it (owner
       // 2026-07-24: a warn scans but is never silent).
+      // Name the exclusions in the deposited detail — a verdict that reads "within threshold" while
+      // a loosening decided it is exactly the coarse, unexplained waiver ADR-0033 §2 rejected.
+      const exclusionNote = applied.evidence
+        ? applied.evidence.refused
+          ? ` [exclusions REFUSED: ${applied.evidence.refused}]`
+          : applied.evidence.appliedCount > 0
+            ? ` [${applied.evidence.appliedCount} exclusion(s) applied; scanner found critical=${severityCounts.critical}, high=${severityCounts.high}, medium=${severityCounts.medium}, low=${severityCounts.low}]`
+            : ""
+        : "";
       const dbWarn =
         report.scanDb && report.scanDb.staleness === "warn"
           ? ` [scan DB WARN: ${report.scanDb.source}, ${report.scanDb.ageHours?.toFixed(1) ?? "?"}h old, past soft max]`
@@ -460,8 +670,8 @@ export async function runPromotionScanStep(
       const detail = !digestMatch
         ? `managed-scan (${method}): digest mismatch — scanned ${scannedDigest}, promoting ${subject.digest}${dbWarn}`
         : overThreshold
-          ? `managed-scan (${method}): verdict exceeds threshold — critical=${severityCounts.critical}, high=${severityCounts.high}, medium=${severityCounts.medium}, low=${severityCounts.low}${dbWarn}`
-          : `managed-scan (${method}): within threshold for ${scannedDigest} (critical=${severityCounts.critical}, high=${severityCounts.high})${dbWarn}`;
+          ? `managed-scan (${method}): verdict exceeds threshold — critical=${effectiveCounts.critical}, high=${effectiveCounts.high}, medium=${effectiveCounts.medium}, low=${effectiveCounts.low}${exclusionNote}${dbWarn}`
+          : `managed-scan (${method}): within threshold for ${scannedDigest} (critical=${effectiveCounts.critical}, high=${effectiveCounts.high})${exclusionNote}${dbWarn}`;
 
       deposits.push({
         changeObjectId: plan.changeId,
@@ -469,7 +679,9 @@ export async function runPromotionScanStep(
         evidence: evidence as unknown as Record<string, unknown>,
         detail,
         method,
-        digest: subject.digest
+        digest: subject.digest,
+        capped,
+        excludedOrdinals: applied.excludedOrdinals
       });
     }
   }
@@ -479,7 +691,7 @@ export async function runPromotionScanStep(
   // Phase C (tx, write): deposit the managed-scan control_runs rows the UNCHANGED E6 gate reads next.
   await withTenantTx(db, input.orgId, async (tx) => {
     for (const d of deposits) {
-      await insertControlRun(tx, {
+      const run = await insertControlRun(tx, {
         orgId: input.orgId,
         controlObjectId: MANAGED_SCAN_CONTROL_OBJECT_ID,
         changeObjectId: d.changeObjectId,
@@ -492,6 +704,18 @@ export async function runPromotionScanStep(
         // id with no `control_bindings` row, so there is no module that produced them. NULL is the
         // honest answer and is what keeps a caller asking "what kind of evidence is this?" able to
         // tell a commander scan deposit apart from a bound plugin's verdict.
+      });
+      // M22.1b (ADR-0033 §7) — project the findings the counts were derived from, in the SAME
+      // transaction as the verdict they explain. `persistScanFindings` refuses on the METHOD for a
+      // scanner family that cannot carry findings, so this call is made unconditionally: an
+      // `openscap` deposit reaching it records `unsupported` rather than being skipped here, which
+      // is the difference between a stated refusal and a silent absence.
+      await persistScanFindings(tx, {
+        orgId: input.orgId,
+        controlRunId: run.id,
+        method: d.method,
+        capped: d.capped,
+        excludedOrdinals: d.excludedOrdinals
       });
     }
   });
@@ -673,6 +897,9 @@ export function createServerManagedScanRunner(db?: Db): ManagedScanRunner {
             scannedDigest: req.digest,
             scannerVersion: parsed.scannerVersion,
             severityCounts: parsed.severityCounts,
+            // M22.1b — the per-finding detail travels with the counts it produced. Present for every
+            // trivy-family method; structurally absent for openscap (see `ParsedOscap.findings`).
+            ...(parsed.findings ? { findings: parsed.findings } : {}),
             ...(scanDbInfo ? { scanDb: scanDbInfo } : {})
           }
         };
@@ -713,11 +940,13 @@ function pluginCtx(runnerImage: string, networkMode: string): PluginContext {
 
 interface ParsedTrivy {
   severityCounts: ScanSeverityCounts;
+  /** M22.1b — the entries the counts were derived from, retained so `scan_findings` can persist
+   *  them. `severityCounts` stays exactly `severityCountsFromFindings(findings)`, so the two can
+   *  never disagree and no operator-visible number moves. */
+  findings: ScanFinding[];
   scannedDigest: string | undefined;
   scannerVersion: string;
 }
-
-const SEVERITIES = ["critical", "high", "medium", "low"] as const;
 
 /** Distil Trivy's native result JSON into the four ScanSeverityCounts + the digest it scanned +
  *  version. Total and defensive — a malformed/partial document degrades to zero counts (a broken
@@ -725,26 +954,19 @@ const SEVERITIES = ["critical", "high", "medium", "low"] as const;
  *  scan, so this path only ever sees a real result). Mirrors scan-result-control's parsing across
  *  the plugin/server boundary (a plugin cannot import server code, and vice versa). */
 export function parseTrivyResult(raw: unknown, versionText?: string): ParsedTrivy {
-  const counts = { critical: 0, high: 0, medium: 0, low: 0 };
   const doc = (raw ?? {}) as {
     Results?: unknown;
     Metadata?: { ImageID?: unknown; RepoDigests?: unknown };
     ArtifactName?: unknown;
   };
-  const results = doc.Results;
-  if (Array.isArray(results)) {
-    for (const result of results) {
-      const vulns = (result as { Vulnerabilities?: unknown }).Vulnerabilities;
-      if (!Array.isArray(vulns)) continue;
-      for (const v of vulns) {
-        const sev = (v as { Severity?: unknown }).Severity;
-        if (typeof sev !== "string") continue;
-        const key = sev.toLowerCase();
-        if ((SEVERITIES as readonly string[]).includes(key))
-          counts[key as (typeof SEVERITIES)[number]] += 1;
-      }
-    }
-  }
+  // M22.1 — the counting loop that used to live here read `.Severity` and threw the vulnerability
+  // object away, byte-for-byte mirroring `scan-result-control`'s `countSeverities` across the
+  // plugin/server boundary. Both now derive from ONE parse in `@scp/schemas`, because ADR-0033
+  // needs both to retain per-finding detail and two hand-synced loops is how one gets fixed and the
+  // other does not. Counts are numerically unchanged — `parseTrivyFindings` retains exactly the
+  // entries this loop counted.
+  const findings = parseTrivyFindings(doc);
+  const counts = severityCountsFromFindings(findings);
   const candidates: string[] = [];
   const repoDigests = doc.Metadata?.RepoDigests;
   if (Array.isArray(repoDigests))
@@ -766,7 +988,7 @@ export function parseTrivyResult(raw: unknown, versionText?: string): ParsedTriv
     }
     return "unknown";
   })();
-  return { severityCounts: counts, scannedDigest, scannerVersion: version };
+  return { severityCounts: counts, findings, scannedDigest, scannerVersion: version };
 }
 
 async function parseTrivyResultFile(path: string): Promise<ParsedTrivy> {
@@ -809,6 +1031,12 @@ async function parseTrivyResultFile(path: string): Promise<ParsedTrivy> {
 
 interface ParsedOscap {
   severityCounts: ScanSeverityCounts;
+  /** M22.1b — `never`, not "empty". An XCCDF rule-result has no package, no purl, no `FixedVersion`
+   *  and no `Class`, so there is no per-finding material for an exclusion to match on and no way to
+   *  invent one. Typed as `never` so an attempt to populate it is a COMPILE error rather than a
+   *  runtime surprise — but note the enforcement that matters is `persistScanFindings` refusing on
+   *  the METHOD, which holds even for a caller that never sees this type. */
+  findings?: never;
   /** An ARF carries no image digest (the runner scanned an extracted rootfs), so always undefined —
    *  the digest binding is the server-verified PULL, not the scanner's self-report (see the runner). */
   scannedDigest: undefined;

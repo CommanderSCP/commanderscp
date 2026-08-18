@@ -2,7 +2,6 @@ import { timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
-import pg from "pg";
 import {
   ProblemSchema,
   PutScannerAssignmentRequestSchema,
@@ -16,6 +15,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
+import { withOperatorDb } from "./operator-db.js";
 
 /**
  * M13.3a — the SCANNER-ASSIGNMENT REGISTRY's API surface (ADR-0020 §2, proposal §13.3), API-first
@@ -32,10 +32,16 @@ import { forbidden } from "../errors.js";
  *  - **WRITE is operator-only, and deliberately NOT an RBAC permission.** These assignments bind
  *    EVERY org on the deployment; a tenant admin must never author them. So no role can grant it: the
  *    write requires the deployment-level `SCP_OPERATOR_TOKEN` (config.operatorToken), presented as
- *    `x-scp-operator-token`, and executes over the ADMIN connection because the request-serving
- *    `scp_app` role holds no write grant on the table and no write RLS policy exists for it
- *    (drizzle/0035 — two independent barriers, mirrored from 0029). Unset token ⇒ the surface is
- *    CLOSED (403), never a fallback to a tenant credential.
+ *    `x-scp-operator-token`, and executes over the `scp_operator` connection (`withOperatorDb`)
+ *    because the request-serving `scp_app` role holds no write grant on the table and no write RLS
+ *    policy existed for it at all (drizzle/0035 — two independent barriers, mirrored from 0029;
+ *    0076 adds the operator role as the one principal both barriers admit). Unset token ⇒ the
+ *    surface is CLOSED (403), never a fallback to a tenant credential.
+ *
+ *    THAT LINE USED TO READ "the ADMIN connection", AND THE CODE MATCHED IT, AND BOTH WERE WRONG ON
+ *    the shape it mattered on: api/worker pods hold no admin credential (the chart gives
+ *    `DATABASE_URL` to the migrations Job alone), so the write dialed `config.databaseUrl`'s
+ *    `localhost:5432` fallback inside its own pod. `routes/operator-db.ts` has the full account.
  */
 
 interface AssignmentRow extends Record<string, unknown> {
@@ -149,9 +155,8 @@ export function registerScannerAssignmentRoutes(app: FastifyInstance, deps: AppD
       // De-duplicate while preserving that Zod already proved every element is a valid ScanMethod.
       const methods = [...new Set(body.methods)];
 
-      const pool = new pg.Pool({ connectionString: deps.config.databaseUrl, max: 1 });
-      try {
-        const result = await pool.query<AssignmentRow>(
+      await withOperatorDb(deps.config, "scanner assignments", async (client) => {
+        const result = await client.query<AssignmentRow>(
           `INSERT INTO scanner_assignments (executor_type, methods, updated_at)
            VALUES ($1, $2::jsonb, now())
            ON CONFLICT (executor_type) DO UPDATE SET
@@ -161,9 +166,7 @@ export function registerScannerAssignmentRoutes(app: FastifyInstance, deps: AppD
           [body.executorType, JSON.stringify(methods)]
         );
         reply.status(200).send(toApi(result.rows[0]!));
-      } finally {
-        await pool.end();
-      }
+      });
     }
   });
 }

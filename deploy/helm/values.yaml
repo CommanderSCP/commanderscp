@@ -187,9 +187,40 @@ appSecrets:
 # therefore REQUIRES `appSecrets.existingSecret` — an operator-created Secret carrying the key
 # named above. Rendering fails fast if you enable it without one, rather than producing a pod
 # that crash-loops on a missing secret key.
+#
+# IT ALSO REQUIRES A DATABASE CONNECTION, and that is not the same requirement as the token.
+# The token authorizes the CALLER; `databaseUrlSecret` is what lets the server actually EXECUTE the
+# write. api/worker pods deliberately hold no admin credential (only the migrations Job does), and
+# the request-serving `scp_app` role holds SELECT only on the four instance-scoped tables — by
+# design, in two independent layers (grants + RLS). So the write needs a third role, `scp_operator`,
+# whose privilege shape apps/server/drizzle/0076 creates: NOSUPERUSER, NOBYPASSRLS, and
+# INSERT/UPDATE/DELETE on exactly `scan_requirement_floors`, `scanner_assignments`,
+# `scan_db_staleness_policy` and `scan_exclusion_admissions`.
+#
+# WHY THIS IS A SECRET YOU CREATE, not a chart-generated one like the app/pgboss URLs. Those two
+# work generated because `migrate-bin.ts` sets their passwords at install time from the very URLs
+# the chart wrote. There is no such provisioner for `scp_operator` yet, so a chart-generated
+# password would name a role that cannot log in. Until that lands, give the role a login once
+# against your admin connection and put the resulting URL in a Secret:
+#
+#     ALTER ROLE scp_operator WITH LOGIN PASSWORD '<pick one>';
+#     kubectl create secret generic scp-operator-db \
+#       --from-literal=SCP_OPERATOR_DATABASE_URL='postgres://scp_operator:<pick one>@<host>:5432/scp'
+#
+# Enabling the surface without this fails the RENDER. That is deliberate and it is the fix for a
+# real regression: the chart used to grant the token and not the connection, which produced a
+# healthy-looking install whose every operator write 500'd — and for M22 that left the entire scan-
+# exclusion dimension silently inert (an empty admissions table fails the top rung of the exclusion
+# AND for every clause on the deployment). tools/helm-verify asserts both halves render together.
 # -------------------------------------------------------------------------------------------
 operatorApi:
   enabled: false
+  # Secret carrying the `scp_operator` connection string. Same shape as
+  # `oidc.existingSecretClientSecret` — deliberately NOT folded into `postgres.existingSecret`, so
+  # enabling this surface does not force you to take over management of the chart-generated
+  # postgres Secret as well.
+  databaseUrlSecret: ""
+  databaseUrlSecretKey: SCP_OPERATOR_DATABASE_URL
 
 eventBus:
   # postgres (default, zero extra dependency) | nats (DESIGN §8 — optional JetStream backend).

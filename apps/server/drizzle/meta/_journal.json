@@ -512,6 +512,34 @@
       "when": 1788133000000,
       "tag": "0072_drop_dependency_lines_produced_by",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1788133001000,
+      "tag": "0073_scan_findings",
+      "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1788133002000,
+      "tag": "0074_scan_exclusion_admissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1788133003000,
+      "tag": "0075_scan_declarations_and_override_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1788133004000,
+      "tag": "0076_operator_write_role",
+      "breakpoints": true
     }
   ]
 }

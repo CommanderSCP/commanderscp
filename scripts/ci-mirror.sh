@@ -183,6 +183,13 @@ case "${mode}" in
       # installers take their image ref from here. Their fail-closed version assertion still runs.
       echo "SCP_SKOPEO_IMAGE_REF=${skopeo_ref}"
       echo "SCP_COSIGN_IMAGE_REF=${cosign_ref}"
+      # Consumer form 4: a DIGEST-PINNED `FROM` in the root Dockerfile. Neither a local re-tag nor a
+      # ref an installer reads can serve it — `FROM …@sha256:…` resolves at the registry — so the
+      # image build took its bytes from quay.io LIVE until these two were exported. The names are the
+      # Dockerfile's own ARGs, and `deploy/compose/docker-compose.yml` declares them in pass-through
+      # form so an unset value falls back to the Dockerfile default rather than to an empty string.
+      echo "SKOPEO_IMAGE=${skopeo_ref}"
+      echo "COSIGN_IMAGE=${cosign_ref}"
       # skopeo (containers/image) reads Docker's own credential file when pointed at it. The mirror
       # packages are public today, so this is belt-and-braces — it is what keeps the subject pulls
       # working if a mirror package is ever created private.

@@ -19,7 +19,7 @@ import {
  * covered. Both call `evaluateScanCoverage`.
  *
  * ============================================================================================
- * THREE PROPERTIES THIS FIXES, ALL OF THEM AT A CROSS-BOUNDARY AUTHORIZATION GATE
+ * FOUR PROPERTIES THIS FIXES, ALL OF THEM AT A CROSS-BOUNDARY AUTHORIZATION GATE
  * ============================================================================================
  *
  * **1. A SCAN OUTCOME IS IDENTIFIED BY ITS PRODUCER, NEVER BY THE SHAPE OF ITS EVIDENCE.** The gate
@@ -66,6 +66,19 @@ import {
  *
  * **With no floor authored — the default on every deployment — this check constrains nothing and the
  * gate's behaviour is byte-identical to before it existed.**
+ *
+ * **4. A VERDICT IS ONLY CURRENT WHILE THE EXCLUSION SET IT WAS JUDGED UNDER IS** (M22.9,
+ * ADR-0033 §10 — added after properties 1-3, at the boundary they left open). Property 2 makes the
+ * newest answer win, which catches a re-scan that FAILED. It does not catch the case where nothing
+ * re-ran at all: an override grant expires or is revoked, NO ROW CHANGES — expiry is a read-time
+ * window in the resolver, since ADR-0033 rejected a status-flipping sweeper — and the covering
+ * `pass` keeps authorizing crossings under a waiver that no longer exists. Both producers already
+ * stamped `evidence.exclusionSetHash` for exactly this comparison and until this check NOTHING read
+ * it on the export path: a new promotion of the same digest found the covering pass, re-scanned
+ * nothing, and `promotion-repo.ts` accepted that row into the SIGNED BUNDLE. The caller resolves the
+ * set in force NOW and passes its hash; a run judged under any other set refuses. The asymmetry
+ * around an absent hash on either side is enumerated at the check inside {@link
+ * evaluateScanCoverage}.
  *
  * ============================================================================================
  * WHAT THIS IS STILL NOT
@@ -233,11 +246,20 @@ function breachesInstanceFloor(
   return breached;
 }
 
+/**
+ * ADDITIVE ONLY. This union is a server-internal type: it reaches an operator through a refusal
+ * Decision's `inputContext.refusalCode`, which is `additionalProperties: {}` free-form jsonb in
+ * `tools/openapi/openapi.v1.json` (verified — no member of this union appears in that file, in
+ * `@scp/schemas`, or in `apps/web`). So a new member needs no `pnpm gen` and cannot trip the oasdiff
+ * gate; what it DOES reach is a CLI/UI rendering `code` verbatim, which is why members are added and
+ * never renamed or repurposed.
+ */
 export type ScanCoverageRefusalCode =
   | "no_scan_outcome"
   | "not_passing"
   | "malformed_evidence"
   | "not_digest_bound"
+  | "stale_exclusion_set"
   | "below_instance_floor";
 
 export type ScanCoverage =
@@ -251,18 +273,27 @@ export type ScanCoverage =
 
 /**
  * Does `digest` carry a current, digest-bound, floor-satisfying scan outcome from an admitted
- * producer? THE rule — see the module doc for why each of the four narrowings exists.
+ * producer? THE rule — see the module doc for why each of the five narrowings exists.
  *
  * FAIL-CLOSED IN EVERY DIRECTION: no admitted producer, a producer whose newest answer is anything
- * but `pass`, evidence that no longer parses, a verdict bound to a different artifact, or counts
- * above the operator's floor all refuse. "Absent never means passed."
+ * but `pass`, evidence that no longer parses, a verdict bound to a different artifact, a verdict
+ * judged under an exclusion set that is no longer in force, or counts above the operator's floor all
+ * refuse. "Absent never means passed."
  */
 export function evaluateScanCoverage(args: {
   digest: string;
   runs: readonly ScanRunLike[];
   instanceFloor: SeverityCeiling;
+  /**
+   * M22.9 — the hash of the exclusion set the CALLER resolved as in force right now
+   * (`scanExclusionSetHash`, `governance/scan-exclusion-actuator.ts`), or `undefined` when it
+   * resolved none. Optional so this stays byte-identical for a caller that has not opted in AND for
+   * the deployments M22.2 promised nothing to: `undefined !== undefined` is false, so nothing
+   * resolved + nothing recorded refuses nothing. Every other combination refuses — see the check.
+   */
+  expectedExclusionSetHash?: string;
 }): ScanCoverage {
-  const { digest, runs, instanceFloor } = args;
+  const { digest, runs, instanceFloor, expectedExclusionSetHash } = args;
 
   const admitted = runs.filter(isScanEvidenceProducer);
   const aboutThisArtifact = admitted.filter((run) => subjectDigestOf(run) === digest);
@@ -335,6 +366,46 @@ export function evaluateScanCoverage(args: {
           controlRunId: run.id,
           scannedDigest: evidence.artifactDigest,
           digestMatch: evidence.digestMatch
+        }
+      };
+    }
+    // M22.9 (ADR-0033 §10) — IS THIS VERDICT STILL JUDGED UNDER THE SET THAT IS IN FORCE NOW?
+    //
+    // BEFORE THE FLOOR CHECK ON PURPOSE. The counts the floor reads are a product of the exclusion
+    // set (and the ADR-0033 §2 note below makes that literal once `effectiveSeverityCounts` is what
+    // gets compared), so "which set was this judged under" has to be settled before any number
+    // derived from it is believed. AFTER the digest binding, because a verdict about a different
+    // artifact is not a stale answer to this question — it is not an answer to it at all.
+    //
+    // THE ASYMMETRY IS `scan-exclusion-actuator.ts`'s, deliberately the same expression rather than
+    // a paraphrase of it — the stamp, the re-run trigger and this gate must mean one thing by "the
+    // set changed". Five combinations, and only the first two cross:
+    //   * neither side has a hash → NO REFUSAL. Nothing authored, nothing recorded: byte-identical
+    //     to before this check existed, which is M22.2's promise to every untouched deployment.
+    //   * both, equal            → the set has not moved; the verdict stands.
+    //   * both, different        → a grant was approved, revoked, edited, or expired out of the
+    //     read-time window. The verdict was judged under a set nobody is standing behind now.
+    //   * caller has one, the run has none → REFUSE. A pre-M22.7 run predates stamping, and clauses
+    //     ARE in force now. The honest reading is "unknown", and fail-closed is the entire point of
+    //     a boundary re-check — it costs a re-scan, never an unearned crossing.
+    //   * the run has one, the caller none → REFUSE. Every clause has since been withdrawn, so the
+    //     verdict was judged under a strictly looser set than the one in force.
+    if (evidence.exclusionSetHash !== expectedExclusionSetHash) {
+      return {
+        covered: false,
+        code: "stale_exclusion_set",
+        reason:
+          `the current scan outcome for ${digest} from control ${run.controlObjectId} was produced ` +
+          `under a DIFFERENT scan-exclusion set than the one in force now — an override grant that ` +
+          `has since expired, been revoked or been edited cannot authorize this crossing ` +
+          `(ADR-0033 §10, fail-closed). Re-evaluating the change re-scans it under the current set`,
+        detail: {
+          question: key,
+          controlRunId: run.id,
+          // Both sides, so an operator reading the Decision can tell "the set moved" from "this run
+          // predates stamping entirely" without going to the row.
+          recordedExclusionSetHash: evidence.exclusionSetHash ?? null,
+          expectedExclusionSetHash: expectedExclusionSetHash ?? null
         }
       };
     }

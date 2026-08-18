@@ -30,10 +30,17 @@ name: CI
 # shards rather than after them; and job 9's toolchain image is content-hash cached in GHCR (9a), so
 # the multi-GB build happens only when the Dockerfile or lockfile actually changes.
 #
-# Job 4d (mirror-images) is a prerequisite of integration-shard that mirrors every third-party image
-# the test tier touches off Docker Hub / quay.io, not a gate itself. Its list lives in
-# tools/ci-mirror/images.list and is applied by scripts/ci-mirror.sh — read the manifest's header
-# before adding an image anywhere in the test tier.
+# Job 4d (mirror-images) is a prerequisite of integration-shard AND every E2E job (7, 8, 8b-8d, 9)
+# — not a gate itself — that mirrors every third-party image the test tier touches off Docker Hub /
+# quay.io. Its list lives in tools/ci-mirror/images.list and is applied by scripts/ci-mirror.sh —
+# read the manifest's header before adding an image anywhere in the test tier. Every E2E job below
+# runs `.github/actions/mirror-seed` (checkout, then setup where the job has one, THEN this, before
+# any image pull/build) for the same reason integration-shard does: the root Dockerfile's
+# digest-pinned `FROM ${SKOPEO_IMAGE}` / `${COSIGN_IMAGE}` resolves at the registry on every
+# `docker compose build`, and on 2026-08-18 the pinned skopeo digest was deleted upstream —
+# 404-ing that FROM and red-ing all six E2E jobs in ~20s, every run, permanently (the digest is not
+# coming back). `seed` exports SKOPEO_IMAGE/COSIGN_IMAGE (the Dockerfile's own ARG names) pointing
+# at the GHCR mirror instead; deploy/compose/docker-compose.yml passes them through as build args.
 #
 # RUNNERS: GitHub-hosted `ubuntu-latest` throughout (previously two homelab ARC self-hosted labels,
 # `homelab-commanderscp-linux-general` and `homelab-commanderscp-linux-docker-build`). The old split
@@ -680,33 +687,52 @@ jobs:
     # swap this — and every e2e-* job below — had to name the `homelab-…-docker-build` label, because
     # the other homelab label had no daemon at all; there is now only one label and the "which runner
     # and why" note on each of these jobs is purely historical.)
+    #
+    # Also needs `testcontainer-images` (4d) and runs `.github/actions/mirror-seed` before
+    # `pnpm build` — see the "Job 4d" paragraph near the top of this file. Without it, `docker
+    # compose build`'s `FROM ${SKOPEO_IMAGE}` pulls straight from quay.io and 404s on the now-deleted
+    # pin.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests]
+    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mirror-seed
       - run: pnpm build
       - run: bash scripts/e2e-m0.sh
 
   e2e-m4:
     name: "8. E2E (M4 governance golden path)"
-    # Same as e2e-m0: needs a real Docker daemon (compose).
+    # Same as e2e-m0: needs a real Docker daemon (compose), and needs testcontainer-images (4d) +
+    # runs mirror-seed before `pnpm build` for the same quay.io-mirror reason.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests]
+    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mirror-seed
       - run: pnpm build
       - run: bash scripts/e2e-m4.sh
 
   e2e-m5:
     name: "8b. E2E (M5 campaigns & initiatives golden path)"
-    # Same as e2e-m0/e2e-m4: needs a real Docker daemon (compose).
+    # Same as e2e-m0/e2e-m4: needs a real Docker daemon (compose), and needs testcontainer-images
+    # (4d) + runs mirror-seed before `pnpm build` for the same quay.io-mirror reason.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests]
+    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mirror-seed
       - run: pnpm build
       - run: bash scripts/e2e-m5.sh
 
@@ -717,17 +743,31 @@ jobs:
     # isolated scpd+postgres pairs on separate Docker networks with no shared network at all
     # (DESIGN.md §13's "no network path exists between the domains" requirement, enforced
     # structurally by Docker's own network isolation, not a firewall rule).
+    #
+    # Also needs testcontainer-images (4d) + runs mirror-seed before `pnpm build`, same as the other
+    # E2E jobs. KNOWN GAP, not fixed here (out of this file's scope): unlike
+    # deploy/compose/docker-compose.yml, deploy/compose/docker-compose.federation.yml's
+    # domain-a-scp/domain-b-scp `build:` blocks declare no `args:` at all, so SKOPEO_IMAGE/
+    # COSIGN_IMAGE being set in this job's environment does not yet reach that Dockerfile build —
+    # it still resolves the dead quay.io default until docker-compose.federation.yml also declares
+    # `args: [SKOPEO_IMAGE, COSIGN_IMAGE]` in pass-through form for both `scp` services.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests]
+    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mirror-seed
       - run: pnpm build
       - run: bash scripts/e2e-m6.sh
 
   e2e-m7:
     name: "8d. E2E (M7 real executor integrations golden path)"
-    # Same as e2e-m0/e2e-m4/e2e-m5/e2e-m6: needs a real Docker daemon (compose).
+    # Same as e2e-m0/e2e-m4/e2e-m5/e2e-m6: needs a real Docker daemon (compose), and needs
+    # testcontainer-images (4d) + runs mirror-seed before `pnpm build` for the same quay.io-mirror
+    # reason.
     # HONEST SCOPE (see scripts/e2e-m7.sh's own header comment): this
     # proves the M7 API/CLI surface end to end — webhook HMAC signature verification (fail-closed),
     # executor/notification binding CRUD, the plugin-manifest catalog, and discovery's
@@ -736,10 +776,14 @@ jobs:
     # GitHub/ArgoCD/Terraform wire-format coverage comes from each plugin's deterministic
     # nock-fixture suite (unit-tests job) plus the opt-in nightly-live-sandbox.yml workflow.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests]
+    needs: [static-checks, codegen-drift, unit-tests, testcontainer-images]
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mirror-seed
       - run: pnpm build
       - run: bash scripts/e2e-m7.sh
 
@@ -800,13 +844,22 @@ jobs:
     # Same as e2e-m0: needs a real Docker daemon (compose). This is ALSO the one and only consumer
     # of the `tools/ci-image` artifact the `ci-image` job (9a) publishes — consumed by an explicit
     # `docker run` below, not a job-level `container:`.
+    #
+    # Also needs testcontainer-images (4d) and runs mirror-seed right after checkout, for the same
+    # quay.io-mirror reason as every other E2E job — but getting the exported vars where they need
+    # to be is NOT the same here: scripts/e2e-web.sh's `docker compose build` runs INSIDE the nested
+    # `docker run` below (Docker-outside-of-Docker), not directly in this step's shell, so
+    # $GITHUB_ENV alone does not reach it — see the `-e SKOPEO_IMAGE -e COSIGN_IMAGE` forwarding on
+    # that `docker run` invocation and its own comment.
     runs-on: ubuntu-latest
-    needs: [static-checks, codegen-drift, unit-tests, ci-image]
+    needs: [static-checks, codegen-drift, unit-tests, ci-image, testcontainer-images]
     permissions:
       contents: read
       packages: read
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/mirror-seed
 
       - name: Compute the same toolchain image tag as the ci-image job
         id: img
@@ -859,10 +912,24 @@ jobs:
       # the same shape the local verification used. It is still unproven on this specific runner
       # until this job actually runs here; if it fails, the docker.sock mount and `--network host`
       # are the first two things to look at.
+      #
+      # `-e SKOPEO_IMAGE -e COSIGN_IMAGE`: the `mirror-seed` step above exported these into THIS
+      # step's own shell via $GITHUB_ENV, but scripts/e2e-web.sh's `docker compose build` runs
+      # inside the container this `docker run` starts, not in this shell — $GITHUB_ENV never
+      # reaches a container's environment, only later steps of the same runner job. `-e NAME` with
+      # no value forwards the value from the invoking shell (this one), which is exactly what's
+      # needed for docker-compose.yml's pass-through `build.args` to pick up the mirror ref instead
+      # of the Dockerfile's dead quay.io default. No extra `docker login` is needed inside the
+      # container: the `FROM ${SKOPEO_IMAGE}`/`${COSIGN_IMAGE}` pull is issued to the RUNNER's
+      # daemon (Docker-outside-of-Docker, via the socket mount below), already authenticated by
+      # `mirror-seed`'s GHCR login — and ci-mirror.sh's own comment records that the mirror
+      # packages are public today regardless.
       - name: Run compose-stack Playwright E2E inside the baked CI runner image (zero network)
         run: |
           docker run --rm \
             --network host \
+            -e SKOPEO_IMAGE \
+            -e COSIGN_IMAGE \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$(pwd):/workspace" -w /workspace \
             "${{ steps.img.outputs.ref }}" \

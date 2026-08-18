@@ -223,11 +223,29 @@ since those three differ between the migrations Job and the api/worker Deploymen
 {{- if not .Values.appSecrets.existingSecret }}
 {{- fail "operatorApi.enabled requires appSecrets.existingSecret — the operator token must come from a Secret you create and can read (the chart-generated secret never contains it)" }}
 {{- end }}
+{{- /* THE TOKEN AND THE CONNECTION ARE ONE DELIVERABLE, AND THIS BLOCK IS WHERE THAT IS ENFORCED.
+       Before M22.9 R3 this rendered the token alone. A pod holding SCP_OPERATOR_TOKEN and no
+       database credential passes the door's AUTH check and then cannot execute: the four PUT
+       handlers open their own connection, api/worker pods hold no admin DATABASE_URL (that is
+       `commanderscp.adminDbEnv`, included by migrations-job.yaml and nothing else), so the write
+       dialed config.ts's `localhost:5432` fallback INSIDE the pod and 500'd on ECONNREFUSED. The
+       whole M22 exclusion dimension was inert on every Helm install as a result — the admissions
+       table stayed empty, and an empty admissions table fails the exclusion AND at its top rung for
+       every clause on the deployment. Rendering the two together, in one `if`, is what makes
+       "granted the token but not the connection" unrepresentable; tools/helm-verify asserts it. */}}
+{{- if not .Values.operatorApi.databaseUrlSecret }}
+{{- fail "operatorApi.enabled requires operatorApi.databaseUrlSecret — the operator write doors need a connection authenticating as the `scp_operator` role (apps/server/drizzle/0076); without it the API grants the token and then 503s on every write. See deploy/helm/README.md 'Operator write surface'" }}
+{{- end }}
 - name: SCP_OPERATOR_TOKEN
   valueFrom:
     secretKeyRef:
       name: {{ include "commanderscp.appSecretsName" . }}
       key: {{ .Values.appSecrets.existingSecretKeys.operatorToken }}
+- name: SCP_OPERATOR_DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.operatorApi.databaseUrlSecret }}
+      key: {{ .Values.operatorApi.databaseUrlSecretKey }}
 {{- end }}
 {{- if .Values.artifactChannel.ociRegistryHosts }}
 {{- /* ADR-0019 §4 — the APPLICATION half of the two-layer egress model. The NETWORK half is

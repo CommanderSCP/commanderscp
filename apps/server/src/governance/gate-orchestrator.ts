@@ -2,14 +2,16 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "./cel-sandbox.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
-import { resolvePolicies } from "./policy-model.js";
+import { resolvePolicies, type MatchedPolicy } from "./policy-model.js";
 import {
   buildCelContext,
   evaluateFiredPolicies,
   resolveFiredPolicies,
+  type FiredPolicy,
   type PolicyEvaluationContext
 } from "./evaluate.js";
 import { ensureControlRuns, readExistingControlOutcomes } from "./control-runner.js";
+import { scanExclusionSetChangedForGate } from "./scan-exclusion-actuator.js";
 import { materializeApprovalRequest, quorumStatus } from "./approvals-repo.js";
 import { activeFreezesForScopes, type FreezeRow } from "./freezes-repo.js";
 import { hasPermission } from "../authz/resolve.js";
@@ -20,8 +22,11 @@ import {
 } from "../graph/containment.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 import { getChangeRow } from "../coordination/changes-repo.js";
-import { resolveEffectiveScanThreshold } from "./scan-requirements.js";
-import type { EffectiveScanThreshold } from "@scp/schemas";
+import {
+  resolveEffectiveScanExclusionsForTargets,
+  resolveEffectiveScanThreshold
+} from "./scan-requirements.js";
+import type { EffectiveScanExclusions, EffectiveScanThreshold } from "@scp/schemas";
 
 /**
  * The orchestrator every gate check (lifecycle-edge AND wave-boundary) funnels through — where
@@ -231,15 +236,37 @@ async function graphFactsFor(tx: TenantTx, orgId: string, targetObjectId: string
 }
 
 /** Scope-KIND keyword → the `object_types.id` an ancestor of that kind carries. `organization`
- *  is special-cased to the org root object below (whose id === orgId). */
-const APPROVAL_SCOPE_KEYWORDS: Record<string, "organization" | "domain" | "service" | "component"> =
-  {
-    organization: "organization",
-    org: "organization",
-    domain: "domain",
-    service: "service",
-    component: "component"
-  };
+ *  is special-cased to the org root object below (whose id === orgId).
+ *
+ *  `assembly` ADDED 2026-08-17 (M22.0, ADR-0033 §5). It is a real container rung (migration 0055,
+ *  `CONTAINER_TYPES = ["service","assembly"]`, legal chain `service -> assembly -> component`) that
+ *  shipped AFTER this map was written. `containmentChain` walks it for free — it matches on the
+ *  `contains` EDGE, never on the parent's type — but `nearestAncestorOfKind` below can only find a
+ *  kind this map names, so `requireApprovals: {scope: "assembly"}` resolved to `null` and became a
+ *  PERMANENTLY UNSATISFIABLE required approval: fail-closed, but silently inexpressible, and
+ *  prewarm never materialized the request so no human could vote it through either.
+ *
+ *  THIS ENTRY IS A LOOSENING FOR EXISTING DATA, and is the one line in M22.0 that is not
+ *  behaviour-neutral. Any `requireApprovals: {scope: "assembly"}` authored before today blocks
+ *  unconditionally; afterwards it becomes satisfiable by the authored quorum. That is the author's
+ *  declared intent finally taking effect rather than a regression — but an operator whose change has
+ *  been parked behind an inexpressible approval will see it become approvable, so it is called out
+ *  here and in the PR rather than shipped quietly.
+ *
+ *  WALKING a rung is edge-generic and free; NAMING one is not. This map and
+ *  `governance/scan-requirements.ts`'s `tierForObjectType` are the two hardcoded rung lists that
+ *  migration 0055 silently missed. A third container level must revisit both. */
+const APPROVAL_SCOPE_KEYWORDS: Record<
+  string,
+  "organization" | "domain" | "service" | "assembly" | "component"
+> = {
+  organization: "organization",
+  org: "organization",
+  domain: "domain",
+  service: "service",
+  assembly: "assembly",
+  component: "component"
+};
 
 /**
  * Resolves a `requireApprovals.scope` value (MAJOR #5). DESIGN §10.1's own example writes a scope
@@ -365,6 +392,7 @@ function buildControlContext(input: {
   artifactDigest?: string | undefined;
   commitSha?: string | undefined;
   scanThreshold?: EffectiveScanThreshold | undefined;
+  scanExclusions?: EffectiveScanExclusions | undefined;
 }): Record<string, unknown> {
   return {
     changeId: input.changeId,
@@ -372,8 +400,246 @@ function buildControlContext(input: {
     ...(input.gateRef ? { gateRef: input.gateRef } : {}),
     ...(input.artifactDigest ? { artifactDigest: input.artifactDigest } : {}),
     ...(input.commitSha ? { commitSha: input.commitSha } : {}),
-    ...(input.scanThreshold ? { scanThreshold: input.scanThreshold } : {})
+    ...(input.scanThreshold ? { scanThreshold: input.scanThreshold } : {}),
+    ...(input.scanExclusions ? { scanExclusions: input.scanExclusions } : {})
   };
+}
+
+/**
+ * M22.2 (ADR-0033 §11) — the resolved exclusion set, shaped for the gate's DECISION `inputContext`.
+ *
+ * The RULE and the EXCEPTION TO IT belong in the same Decision. M22.0 put the ceiling there
+ * precisely so no exception could later hide inside evidence; landing the exclusion dimension
+ * without also landing it here would re-open that hole one increment after closing it.
+ *
+ * This records what the gate ADMITTED, not what was ultimately APPLIED — the application happens
+ * inside the control, against findings this function has never seen, and lands in
+ * `control_runs.evidence.exclusions`. Both halves are needed: "which loosenings were in force" is a
+ * governance fact about the change, "which findings they touched" is a fact about one scan.
+ *
+ * SAME DETERMINISM RULE AS `scanThresholdForDecision`, and for the same measured reason:
+ * `restatesDecision` canonicalises key order but PRESERVES array order, so an unsorted array defeats
+ * `insertDecisionIfChanged` and re-opens the 1.44 GB/day write amplification. The resolver already
+ * returns `clauses` sorted by content; every entry here is rebuilt with a FIXED key order and
+ * carries no timestamp, no row id, and nothing else that varies between two identical evaluations.
+ */
+function scanExclusionsForDecision(
+  resolved: EffectiveScanExclusions | undefined
+): { scanExclusions: Record<string, unknown> } | undefined {
+  if (!resolved || resolved.clauses.length === 0) return undefined;
+  return {
+    scanExclusions: {
+      clauses: resolved.clauses.map((c) => ({
+        class: c.clause.class,
+        tier: c.tier,
+        source: c.source,
+        ...(c.clause.vulnerabilityId ? { vulnerabilityId: c.clause.vulnerabilityId } : {}),
+        ...(c.clause.pkgName ? { pkgName: c.clause.pkgName } : {}),
+        ...(c.clause.purl ? { purl: c.clause.purl } : {}),
+        ...(c.clause.findingClass ? { findingClass: c.clause.findingClass } : {}),
+        ...(c.clause.reason ? { reason: c.clause.reason } : {}),
+        admittedBy: c.admittedBy.map((a) => ({ tier: a.tier, source: a.source }))
+      })),
+      // M22.4 — the FACTS the vendor rule was resolved against, not just the clause that invoked it.
+      // "Passed because the component is on the latest of that major line" is only auditable if the
+      // Decision says WHICH lines were at their head when the gate looked; a clause alone would say
+      // that a rule was in force and nothing about what it found. Present only when a
+      // `vendor_latest` clause survived, and already content-sorted by the resolver — no timestamp
+      // and no row id, so two identical evaluations still compare equal.
+      ...(resolved.vendorLatest
+        ? {
+            vendorLatest: {
+              baseImageAtLatest: resolved.vendorLatest.baseImageAtLatest,
+              packageKeys: resolved.vendorLatest.packageKeys
+            }
+          }
+        : {}),
+      // M22.5 (ADR-0033 §6 guard 2) — THE DECLARED VALUE, VERBATIM. This is the guard that makes
+      // D2's accepted escalation seam auditable: a reader of this Decision sees "component X
+      // asserted `egress: none`", not merely that a `declared_fact` clause was in force. It is also
+      // the only defence available against the residual hazard D2 cannot remove — the declaration is
+      // read live from a tenant-writable bag and can be flipped for the duration of one gate — since
+      // pinning the value here makes the flip visible after the fact.
+      ...(resolved.declaredFacts && resolved.declaredFacts.declarations.length > 0
+        ? {
+            declaredFacts: resolved.declaredFacts.declarations.map((d) => ({
+              key: d.key,
+              value: d.value
+            }))
+          }
+        : {}),
+      // M22.6 (ADR-0033 §11) — every applied exclusion must name "its clause, admitting tier,
+      // AUTHORITY and EXPIRY". The clause and the admitting tier are above; the authority and the
+      // expiry are here, and they are facts about the grant rather than about the policy that
+      // admitted its class. `expiresAt` is a STORED value, so two identical evaluations still
+      // compare equal and write suppression holds.
+      ...(resolved.approvedOverrides && resolved.approvedOverrides.grants.length > 0
+        ? {
+            approvedOverrides: resolved.approvedOverrides.grants.map((g) => ({
+              grantObjectId: g.grantObjectId,
+              vulnerabilityId: g.vulnerabilityId,
+              ...(g.pkgName ? { pkgName: g.pkgName } : {}),
+              tierObjectId: g.tierObjectId,
+              // M22.6 (D3) — the DERIVED tier of that object, not the id the requester wrote down.
+              // The id alone told an auditor which object was named; the tier is what the grant was
+              // actually measured at, and the pair is what makes "under authority of X" checkable.
+              grantTier: g.tier,
+              expiresAt: g.expiresAt
+            }))
+          }
+        : {}),
+      // M22.6 (D3) — THE BAR, and every grant it refused. Recorded whether or not any grant survived,
+      // because "no exclusion applied" and "a live grant was refused for authority" are different
+      // facts and only the second one tells an operator why their approved waiver did nothing. Both
+      // are content-only and already sorted by the resolver, so write suppression still holds.
+      ...(resolved.approvedOverrides?.requiredTier
+        ? { overrideRequiredTier: resolved.approvedOverrides.requiredTier }
+        : {}),
+      ...(resolved.approvedOverrides?.refusedForAuthority &&
+      resolved.approvedOverrides.refusedForAuthority.length > 0
+        ? {
+            overridesRefusedForAuthority: resolved.approvedOverrides.refusedForAuthority.map(
+              (r) => ({
+                grantObjectId: r.grantObjectId,
+                ...(r.tier ? { tier: r.tier } : {}),
+                reason: r.reason
+              })
+            )
+          }
+        : {})
+    }
+  };
+}
+
+/**
+ * M22.0 (ADR-0033 §11; charter principle 6) — the resolved scan ceiling, shaped for the gate's
+ * DECISION `inputContext`.
+ *
+ * WHY THIS EXISTS. Until now the effective threshold and its contributing tiers went ONLY into
+ * `control_runs.evidence`. ADR-0016 §5 promised that "a blocked promotion can show which tier set
+ * the binding severity floor", and that promise was honoured in evidence and BROKEN in the Decision
+ * an operator actually resolves by `decision_id`. ADR-0033 adds a way to EXCLUDE findings from that
+ * comparison, so the rule has to be in the Decision BEFORE any exception can hide inside it —
+ * otherwise a verdict explains neither the rule nor the exception to it.
+ *
+ * DETERMINISM IS LOAD-BEARING, NOT TIDINESS. `decisions-repo.ts`'s `restatesDecision` canonicalises
+ * object KEY order but deliberately PRESERVES array order, and `matchPoliciesForTargets` returns
+ * contributors in unordered-scan insertion order — which can differ between two evaluations that
+ * resolved identically. An unsorted array here would therefore defeat `insertDecisionIfChanged` and
+ * re-open the measured 1.44 GB/day Decision write amplification (ADR-0024 §D0) on the busiest path
+ * in the system. So: every entry is built with a FIXED key order and the array is sorted by its own
+ * serialization, giving a total order that depends only on content.
+ *
+ * FOR THE SAME REASON, NOTHING HERE MAY CARRY A TIMESTAMP, a duration, a row id, or any other value
+ * that varies between two evaluations of the same inputs. If you add a field, ask first whether two
+ * identical gate evaluations would produce it identically.
+ */
+function scanThresholdForDecision(
+  resolved: EffectiveScanThreshold | undefined
+): { scanThreshold: Record<string, unknown> } | undefined {
+  if (!resolved) return undefined;
+  const contributors = resolved.contributors
+    .map((c) => ({
+      tier: c.tier,
+      source: c.source,
+      ...(c.objectTypeId ? { objectTypeId: c.objectTypeId } : {}),
+      threshold: c.threshold
+    }))
+    .map((entry) => ({ entry, key: JSON.stringify(entry) }))
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .map(({ entry }) => entry);
+  return { scanThreshold: { effective: resolved.threshold, contributors } };
+}
+
+/**
+ * M22.2 — WHICH POLICIES FIRE FOR A CHANGE'S TARGETS, as a callable, for the ONE consumer outside
+ * this file that needs it: the commander's promotion scan step.
+ *
+ * WHY IT EXISTS. `federation/promotion-scan-step.ts` resolved its scan ceiling with
+ * `firedPolicies: []` — a hardcoded empty firing set, which admits the instance floors and NOTHING
+ * from org, containment domain, service, assembly or component. Its own comment called that a
+ * documented follow-on, and it was defensible while the only dimension was a TIGHTENING (the
+ * fail-closed 0/0 default already refuses any Critical or High). It stops being defensible the
+ * moment a LOOSENING exists: an exclusion admitted by the lifecycle gate would be invisible to the
+ * commander's managed scan, so the two paths would disagree about the same artifact at exactly the
+ * boundary where evidence is FROZEN into a signed bundle.
+ *
+ * WHAT IT SHARES, AND WHAT IT IS NOT. Every step below is the same function `evaluateGovernanceGate`
+ * calls, in the same order — `matchPoliciesForTargets`, `resolvePolicies`, the emergency-policy
+ * substitution, `governanceSubjectOf`/`graphFactsFor`, `buildCelContext`, `resolveFiredPolicies`.
+ * Nothing is reimplemented. It is deliberately NOT a gate: it evaluates no controls, materializes no
+ * approvals, checks no freeze, and writes no Decision. It answers one question — "which contributors
+ * are in force for these targets right now" — so a non-gate consumer can resolve scan requirements
+ * against the same firing set the gate would.
+ *
+ * THE SANDBOX IS LAZY BY CONTRACT. `resolveFiredPolicies` takes `Pick<CelSandbox, "evaluate">` and
+ * calls it ONLY for a contributor that actually carries a `condition`, so a caller may pass a thunk
+ * that constructs the shared sandbox on first use. That matters: `new CelSandbox()` spawns its
+ * worker pool EAGERLY in the constructor, and the promotion scan step must not spin up worker
+ * threads for an org whose policies carry no conditions at all.
+ */
+export async function resolveFiredPoliciesForTargets(
+  tx: TenantTx,
+  sandbox: Pick<CelSandbox, "evaluate">,
+  input: {
+    orgId: string;
+    changeObjectId: string;
+    targetObjectIds: string[];
+    actorObjectId: string;
+    emergency: boolean;
+    now: Date;
+  }
+): Promise<{ matches: MatchedPolicy[]; fired: FiredPolicy[] }> {
+  const matches = await matchPoliciesForTargets(tx, {
+    orgId: input.orgId,
+    targetObjectIds: input.targetObjectIds,
+    actorObjectId: input.actorObjectId
+  });
+  let effectivePolicies = resolvePolicies(matches);
+  // Same substitution the gate makes (DESIGN §10.3): an emergency change follows the CONFIGURED
+  // emergency policies, and an org that configured none evaluates nothing. Omitting this here would
+  // have made the managed scan the one path an emergency change could not relax — a divergence in
+  // the opposite direction from the one this function exists to close.
+  if (input.emergency) {
+    const emergencyPolicies = effectivePolicies.filter((p) => p.emergencyPolicy);
+    effectivePolicies = emergencyPolicies;
+  }
+
+  const primaryTarget = input.targetObjectIds[0];
+  const primarySubject = primaryTarget
+    ? await governanceSubjectOf(tx, input.orgId, primaryTarget)
+    : undefined;
+  const subjectObject = primarySubject
+    ? await getObjectByIdOrUrnAnyType(tx, input.orgId, primarySubject).catch(() => null)
+    : null;
+  const graphFacts = primarySubject
+    ? await graphFactsFor(tx, input.orgId, primarySubject)
+    : { ownerIds: [], dependentIds: [], domainIds: [] };
+  const celContext = buildCelContext({
+    change: {
+      id: input.changeObjectId,
+      emergency: input.emergency,
+      targets: input.targetObjectIds,
+      sourceKind: null,
+      correlationKey: null
+    },
+    subject: subjectObject
+      ? {
+          id: subjectObject.id,
+          typeId: subjectObject.typeId,
+          name: subjectObject.name,
+          labels: subjectObject.labels
+        }
+      : null,
+    graph: graphFacts,
+    controlOutcomes: {},
+    approvals: {},
+    time: input.now.toISOString(),
+    actor: { id: input.actorObjectId }
+  });
+
+  const fired = await resolveFiredPolicies(sandbox, effectivePolicies, celContext);
+  return { matches, fired };
 }
 
 /**
@@ -483,18 +749,50 @@ export async function prewarmGovernanceForChange(
       // cannot tighten anything here either.
       firedPolicies: fired
     });
+    // M22.2 — the exclusion dimension, threaded through the SAME conditional-context mechanism.
+    //
+    // THIS SITE IS THE ONE THAT MATTERS MOST and it is easy to miss: the prewarm's run is the one
+    // that gets CACHED and later READ by the host-less accept edge (`readExistingControlOutcomes`).
+    // Threading exclusions only at the evaluate site below would leave the accept edge consuming a
+    // verdict computed without them — the loosening would appear to work at a wave boundary and
+    // silently not exist at the edge a human actually clicks.
+    const scanExclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
+      orgId: input.orgId,
+      targetObjectIds: input.targetObjectIds,
+      actorObjectId: input.actorObjectId,
+      matches,
+      // FIRED ONLY, and never the ceiling's key set: an unevaluable condition must yield NO
+      // exclusion (ADR-0033 §4 — the opposite sign from `ceilingContributorKeys`).
+      firedPolicies: fired
+    });
+    // M22.7 (ADR-0033 §10) — THE ACTUATOR, at the site whose run is CACHED and later read by the
+    // host-less accept edge. Without it a grant approved after this change's controls first ran is
+    // inert on this change forever: `ensureControlRun` returns the cached outcome and the plugin is
+    // never asked again. Re-resolving is not enough on its own — the resolved set has to be able to
+    // INVALIDATE the cached verdict, which is what `force` does.
+    const gateRef = { fromState: "validating", toState: "accepted" };
+    const force = await scanExclusionSetChangedForGate(tx, {
+      orgId: input.orgId,
+      changeObjectId: input.changeObjectId,
+      controlObjectIds: allControlIds,
+      gateKind: "lifecycle_edge",
+      gateRef,
+      exclusions: scanExclusions
+    });
     await ensureControlRuns(tx, host, {
       orgId: input.orgId,
       changeObjectId: input.changeObjectId,
       controlObjectIds: allControlIds,
       gateKind: "lifecycle_edge",
-      gateRef: { fromState: "validating", toState: "accepted" },
+      gateRef,
+      force,
       context: buildControlContext({
         changeId: input.changeObjectId,
         targetObjectIds: input.targetObjectIds,
         artifactDigest,
         commitSha,
-        scanThreshold
+        scanThreshold,
+        scanExclusions
       })
     });
   }
@@ -628,6 +926,66 @@ export async function evaluateGovernanceGate(
   const allControlIds = [
     ...new Set(fired.filter((fp) => fp.fired).flatMap((fp) => fp.requireControls))
   ];
+  // M17.5 — the six-tier most-restrictive-wins scan ceiling, resolved from the SAME `matches` this
+  // gate already computed (ADR-0016 §4 design A), and from the FIRED set only: a contributor whose
+  // condition evaluated false contributes no ceiling, exactly as it contributes no requireControls.
+  //
+  // M22.0 — HOISTED so it can be used TWICE: threaded to the scan control exactly as before, AND
+  // recorded in this gate's Decision below.
+  //
+  // RESOLVED UNCONDITIONALLY, not just when a plugin host is present. The first cut of this kept it
+  // inside the `host` ternary, reasoning that this added no work to the per-tick reconcile path.
+  // The reasoning was right and the placement was wrong, and a mutation-tested suite caught it: the
+  // `validating -> accepted` edge runs with `host: null` (routes/changes.ts), so a change BLOCKED AT
+  // THE ACCEPT EDGE by a failed scan control got a Decision carrying no ceiling at all — which is
+  // precisely the operator-facing surface ADR-0016 §5's promise is about. Half-kept, on the half
+  // that matters most.
+  //
+  // The cost objection does not survive contact with where the two paths actually run. The host-ful
+  // path (the wave-boundary gate) is the per-tick one and resolved this already, so it is unchanged.
+  // The host-less paths are the accept edge and `POST /policy-evaluate` — both driven by an API
+  // call, neither on a reconcile tick. So this buys back the promise for one resolution per accept
+  // attempt, and adds nothing to the path that produced the 1.44 GB/day incident.
+  const effectiveScanThreshold = await resolveEffectiveScanThreshold(tx, {
+    orgId: ctx.orgId,
+    targetObjectIds: ctx.targetObjectIds,
+    actorObjectId: ctx.actorObjectId,
+    matches,
+    firedPolicies: fired
+  });
+
+  // M22.2 — resolved beside the ceiling, and UNCONDITIONALLY for the same reason M22.0 hoisted the
+  // ceiling out of the `host` ternary: the `validating -> accepted` edge runs with `host: null`, and
+  // a Decision that named the rule but not the exceptions in force would be exactly half an
+  // explanation on the surface an operator resolves by `decision_id`.
+  const effectiveScanExclusions = await resolveEffectiveScanExclusionsForTargets(tx, {
+    orgId: ctx.orgId,
+    targetObjectIds: ctx.targetObjectIds,
+    actorObjectId: ctx.actorObjectId,
+    matches,
+    firedPolicies: fired
+  });
+
+  // M22.7 — the actuator at the EVALUATE site. This is a SECOND call site, not a duplicate: the
+  // prewarm's run authorizes the host-less accept edge, this one authorizes a wave boundary, and
+  // M22.0a keys them separately on purpose — so a wave parked for days behind a failing scan is
+  // exactly the case where a grant approved in the meantime has to take effect. Wiring only one of
+  // the two is the precise mistake M22.2's measured mutation M-2 found in the threading itself.
+  //
+  // Resolved even when `host` is null (it costs one indexed read per accept attempt and nothing on a
+  // reconcile tick) so the `force` below is computed from the same expression on both branches; the
+  // host-less branch cannot run a control at all, so it simply never uses it.
+  const scanExclusionsChanged = host
+    ? await scanExclusionSetChangedForGate(tx, {
+        orgId: ctx.orgId,
+        changeObjectId: ctx.changeObjectId,
+        controlObjectIds: allControlIds,
+        gateKind: ctx.gateKind,
+        gateRef: ctx.gateRef,
+        exclusions: effectiveScanExclusions
+      })
+    : false;
+
   const controlOutcomes = host
     ? await ensureControlRuns(tx, host, {
         orgId: ctx.orgId,
@@ -635,6 +993,7 @@ export async function evaluateGovernanceGate(
         controlObjectIds: allControlIds,
         gateKind: ctx.gateKind,
         gateRef: ctx.gateRef,
+        force: scanExclusionsChanged,
         context: buildControlContext({
           changeId: ctx.changeObjectId,
           targetObjectIds: ctx.targetObjectIds,
@@ -643,20 +1002,16 @@ export async function evaluateGovernanceGate(
           // M10.4 — the change's real source commit, for `github-check` (same threading discipline
           // as `artifactDigest`).
           commitSha: await resolveChangeCommitSha(tx, ctx.orgId, ctx.changeObjectId),
-          // M17.5 — the six-tier most-restrictive-wins scan ceiling, resolved from the SAME
-          // `matches` this gate already computed (ADR-0016 §4 design A).
-          scanThreshold: await resolveEffectiveScanThreshold(tx, {
-            orgId: ctx.orgId,
-            targetObjectIds: ctx.targetObjectIds,
-            actorObjectId: ctx.actorObjectId,
-            matches,
-            // ...and from the FIRED set only — a contributor whose condition evaluated false
-            // contributes no ceiling, exactly as it contributes no requireControls.
-            firedPolicies: fired
-          })
+          scanThreshold: effectiveScanThreshold,
+          scanExclusions: effectiveScanExclusions
         })
       })
-    : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds);
+    : await readExistingControlOutcomes(tx, ctx.orgId, ctx.changeObjectId, allControlIds, {
+        // M22.0a — read the run made for THIS crossing. Without the gate, the host-less accept edge
+        // would happily read a wave-boundary run (or vice versa) and treat it as authorization.
+        gateKind: ctx.gateKind,
+        gateRef: ctx.gateRef
+      });
 
   const approvals: PolicyEvaluationContext["approvals"] = {};
   for (const fp of fired) {
@@ -698,7 +1053,9 @@ export async function evaluateGovernanceGate(
       effectivePolicyCount: effectivePolicies.length,
       firedPolicyCount: fired.filter((fp) => fp.fired).length,
       ...(emergencyNote ? { emergency: emergencyNote } : {}),
-      ...(freezeOverrides.length > 0 ? { freezeOverrides } : {})
+      ...(freezeOverrides.length > 0 ? { freezeOverrides } : {}),
+      ...(scanThresholdForDecision(effectiveScanThreshold) ?? {}),
+      ...(scanExclusionsForDecision(effectiveScanExclusions) ?? {})
     },
     reasonTree: { ...result.reasonTree, ...(emergencyNote ? { emergencyNote } : {}) },
     freezeOverrides: freezeOverrides.length > 0 ? freezeOverrides : undefined

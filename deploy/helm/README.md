@@ -251,16 +251,16 @@ from Helm until this chart grows a value for it. That was a standing gap through
 below now exist, and `tools/helm-verify` asserts each one **both ways** (absent on a default render,
 present and correct when enabled) so the next one cannot be forgotten silently.
 
-| Values key                     | Env                                                                       | Notes                                                                                    |
-| ------------------------------ | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `federation.sync.*`            | `SCP_FEDERATION_SYNC_LOOP` + cadences                                     | M14.0/M14.4 live-pull. Off by default.                                                   |
-| `federation.relay.inbox.*`     | `SCP_INBOX_LOOP`, tick interval                                           | M13.1a staging-node ingest. Off by default.                                              |
-| `federation.relay.autoRelay.*` | `SCP_RETRANS_AUTO_RELAY` + interval/attempts/lease                        | M13.1b unattended byte egress. Off by default; belongs on the **low-side** retrans only. |
-| `artifactChannel.*`            | `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` / `_BLOB_BASE_URLS` / `_INSECURE_HOSTS` | ADR-0019 §4. Fail-closed when unset.                                                     |
-| `operatorApi.enabled`          | `SCP_OPERATOR_TOKEN` (secretKeyRef)                                       | Requires `appSecrets.existingSecret`; render fails fast without it.                      |
-| `internalBaseUrl`              | `SCP_INTERNAL_BASE_URL`                                                   | How this instance names itself to a human — the CLI device-login URL.                    |
-| `api.role`                     | `SCP_ROLE` on the api pods                                                | `api` (default) or `all`.                                                                |
-| `managedDep.*`                 | `SCP_MANAGED_DEP_RUNNER_IMAGE` / `_WORKSPACE_ROOT`                        | M21.5 dependency-bump actuator. Empty image (default) = OFF, fail-closed at dispatch.    |
+| Values key                     | Env                                                                       | Notes                                                                                                                      |
+| ------------------------------ | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `federation.sync.*`            | `SCP_FEDERATION_SYNC_LOOP` + cadences                                     | M14.0/M14.4 live-pull. Off by default.                                                                                     |
+| `federation.relay.inbox.*`     | `SCP_INBOX_LOOP`, tick interval                                           | M13.1a staging-node ingest. Off by default.                                                                                |
+| `federation.relay.autoRelay.*` | `SCP_RETRANS_AUTO_RELAY` + interval/attempts/lease                        | M13.1b unattended byte egress. Off by default; belongs on the **low-side** retrans only.                                   |
+| `artifactChannel.*`            | `SCP_ARTIFACT_OCI_REGISTRY_HOSTS` / `_BLOB_BASE_URLS` / `_INSECURE_HOSTS` | ADR-0019 §4. Fail-closed when unset.                                                                                       |
+| `operatorApi.*`                | `SCP_OPERATOR_TOKEN` + `SCP_OPERATOR_DATABASE_URL` (both secretKeyRefs)   | Requires `appSecrets.existingSecret` **and** `operatorApi.databaseUrlSecret`; render fails fast without either. See below. |
+| `internalBaseUrl`              | `SCP_INTERNAL_BASE_URL`                                                   | How this instance names itself to a human — the CLI device-login URL.                                                      |
+| `api.role`                     | `SCP_ROLE` on the api pods                                                | `api` (default) or `all`.                                                                                                  |
+| `managedDep.*`                 | `SCP_MANAGED_DEP_RUNNER_IMAGE` / `_WORKSPACE_ROOT`                        | M21.5 dependency-bump actuator. Empty image (default) = OFF, fail-closed at dispatch.                                      |
 
 **Still NOT settable, and why.** The retrans **byte plumbing** — `SCP_RELAY_OUT_DIR` / `IN_DIR` /
 `BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`, and the `SCP_DELIVERY_ROOTS`
@@ -286,6 +286,51 @@ Job-template on-ramp nothing consumes. Managed execution runs on a compose/VM de
 which is why the air-gap `install.sh` prints the pinned runner refs under `--mode helm` as an
 inventory and prescribes no knob there: there is none to prescribe, and an instruction that
 silently does nothing is worse than silence.
+
+### Operator write surface — the token is only half of it (M22.9)
+
+`operatorApi.enabled` opens four instance-scoped write endpoints (scan floors, scanner assignments,
+the scan-DB staleness policy, and the scan-exclusion admissions ADR-0033 §7a requires). Enabling it
+needs **two** secrets, and the second one is not optional:
+
+| What                        | Where                                                                          | Why it is separate                                                                           |
+| --------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `SCP_OPERATOR_TOKEN`        | `appSecrets.existingSecret`, key `appSecrets.existingSecretKeys.operatorToken` | Authorizes the **caller**. A human must be able to read it, so the chart never generates it. |
+| `SCP_OPERATOR_DATABASE_URL` | `operatorApi.databaseUrlSecret`, key `operatorApi.databaseUrlSecretKey`        | Lets the server **execute** the write.                                                       |
+
+**Why a third database credential exists at all.** `api`/`worker` pods deliberately hold no admin
+`DATABASE_URL` (only the migrations Job does — see "Hardened defaults"), and the request-serving
+`scp_app` role holds `SELECT` only on those four tables, enforced twice over: no write GRANT, and
+RLS with no write policy. That is by design — instance config must not be writable by the role that
+serves tenant traffic. `apps/server/drizzle/0076` therefore creates `scp_operator`: `NOSUPERUSER`,
+`NOBYPASSRLS`, and `INSERT`/`UPDATE`/`DELETE` on exactly those four tables and nothing else.
+
+**One-time setup.** Unlike `scp_app`/`scp_pgboss`, whose passwords `migrate-bin.js` sets at install
+time, `scp_operator` has no boot-time provisioner yet, so give it a login once against your admin
+connection _after the first `helm upgrade` has run migrations_:
+
+```sql
+ALTER ROLE scp_operator WITH LOGIN PASSWORD '<pick one>';
+```
+
+```sh
+kubectl create secret generic scp-operator-db \
+  --from-literal=SCP_OPERATOR_DATABASE_URL='postgres://scp_operator:<pick one>@<host>:5432/scp'
+helm upgrade ... --set operatorApi.enabled=true \
+  --set appSecrets.existingSecret=<yours> \
+  --set operatorApi.databaseUrlSecret=scp-operator-db
+```
+
+**What this replaced, and why it is called out rather than quietly fixed.** The chart used to render
+the token alone. The resulting install looked entirely healthy — pods ready, render green — and
+every operator write returned a bare 500: the handlers opened `config.databaseUrl`, which with no
+`DATABASE_URL` in the pod falls back to `postgres://scp:scp@localhost:5432/scp`, so they dialed
+127.0.0.1 inside their own pod. For M22 that was total: `scan_exclusion_admissions` stayed empty on
+every Helm deployment, and an empty admissions table fails the exclusion AND at its top rung for
+every clause, so the whole shipped exclusion dimension was inert. The API now answers a **503 naming
+the missing credential** instead of a 500, and the chart refuses to render the half-configured
+shape at all — `tools/helm-verify` asserts both the pairing and the refusal, and both assertions
+were confirmed to fail when the fix is removed.
 
 ## Other known gaps (honestly flagged, not silently worked around)
 
