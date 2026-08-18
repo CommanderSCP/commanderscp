@@ -74763,6 +74763,10 @@
                               "type": "string"
                             },
                             "additionalProperties": {}
+                          },
+                          "urn": {
+                            "type": "string",
+                            "minLength": 1
                           }
                         },
                         "required": [
@@ -75044,6 +75048,10 @@
                                 "type": "string"
                               },
                               "additionalProperties": {}
+                            },
+                            "urn": {
+                              "type": "string",
+                              "minLength": 1
                             }
                           },
                           "required": [
@@ -75379,6 +75387,10 @@
                                 "type": "string"
                               },
                               "additionalProperties": {}
+                            },
+                            "urn": {
+                              "type": "string",
+                              "minLength": 1
                             }
                           },
                           "required": [

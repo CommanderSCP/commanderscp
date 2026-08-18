@@ -37,7 +37,11 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { authorize } from "../authz/resolve.js";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
-import { createObject, getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
+import {
+  createObject,
+  findObjectByIdOrUrnAnyType,
+  getObjectByIdOrUrnAnyType
+} from "../graph/objects-repo.js";
 import { isPeerBoundObjectType } from "../federation/outpost-binding.js";
 import { isGovernanceManagedObjectType } from "../governance/governance-managed-types.js";
 import { containmentDomainIdFromWire } from "../domain-id-edge.js";
@@ -1014,6 +1018,38 @@ export function registerExecutorRoutes(app: FastifyInstance, deps: AppDeps): voi
           createdObjectIds.push(created.id);
           urnToId.set(created.urn, created.id);
           nameToId.set(proposedObject.name, created.id); // for proposal bindings (M12 P3b)
+
+          // THE PROPOSAL-LOCAL ALIAS — the link that lets a proposal's relationships name its own
+          // objects (`DiscoveryProposalObjectSchema.urn`). A plugin cannot predict `created.urn`
+          // (it is `urn:scp:{orgId}:{typeId}:{slug(name)}`), so before this every plugin-proposed
+          // edge 404'd on endpoint lookup — the second half of the defect that kept the discovery
+          // relationship channel from ever working.
+          // `!== created.urn` so a caller that declares the canonical URN is a no-op rather than a
+          // self-collision reported as "two proposed objects declare the same urn".
+          if (proposedObject.urn !== undefined && proposedObject.urn !== created.urn) {
+            // Refused, not last-write-wins. An alias is an identity WITHIN this request, and two
+            // objects answering to one name makes which object an edge landed on depend on array
+            // order — a mis-wire that returns 201 and is invisible afterwards.
+            if (urnToId.has(proposedObject.urn)) {
+              throw conflict(
+                `two proposed objects declare the same urn '${proposedObject.urn}' — a proposal's ` +
+                  `relationships could not say which one they mean`
+              );
+            }
+            // An alias may not shadow a LIVE object either. `urnToId` is consulted before the graph
+            // lookup below, so a colliding alias would silently redirect an edge that names a real
+            // object onto a brand-new one. Both endpoints are authorized either way, so this is not
+            // an escalation — it is a wrong answer delivered as a success, which is worse to debug.
+            const shadowed = await findObjectByIdOrUrnAnyType(tx, auth.orgId, proposedObject.urn);
+            if (shadowed) {
+              throw conflict(
+                `proposed object '${proposedObject.name}' declares urn '${proposedObject.urn}', ` +
+                  `which already names the live object '${shadowed.id}' — a relationship naming it ` +
+                  `would silently bind to the new object instead of the existing one`
+              );
+            }
+            urnToId.set(proposedObject.urn, created.id);
+          }
         }
 
         const createdRelationshipIds: string[] = [];

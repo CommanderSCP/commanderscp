@@ -18829,6 +18829,7 @@ export type RunDiscoveryResponses = {
             properties?: {
                 [key: string]: unknown;
             };
+            urn?: string;
         }>;
         relationships: Array<{
             typeId: string;
@@ -18862,6 +18863,7 @@ export type AcceptDiscoveryProposalData = {
                 properties?: {
                     [key: string]: unknown;
                 };
+                urn?: string;
             }>;
             relationships: Array<{
                 typeId: string;
@@ -18948,6 +18950,7 @@ export type BackfillSourceMappingsData = {
                 properties?: {
                     [key: string]: unknown;
                 };
+                urn?: string;
             }>;
             relationships: Array<{
                 typeId: string;

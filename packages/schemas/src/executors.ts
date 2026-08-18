@@ -357,10 +357,32 @@ export type PluginManifestListResponse = z.infer<typeof PluginManifestListRespon
 export const DiscoveryProposalObjectSchema = z.object({
   typeId: z.string(),
   name: z.string(),
-  properties: z.record(z.string(), z.unknown()).optional()
+  properties: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * The PROPOSAL-LOCAL name this object is referenced by in `relationships[].fromUrn`/`toUrn` — an
+   * alias, not the URN the object will be stored under.
+   *
+   * Without it the two halves of a proposal cannot refer to each other, and that was not a
+   * theoretical gap: a proposed object carries only `typeId`/`name`, while accept mints
+   * `urn:scp:{orgId}:{typeId}:{slug(name)}` (`graph/urn.ts`) — a string a plugin cannot compute,
+   * because it contains an org id the plugin has no business knowing and a slug rule that lives
+   * server-side. So every plugin-proposed edge named endpoints that resolved to nothing. MEASURED
+   * before this field existed, on the gitea plugin's real `discover()` output pushed through the
+   * real accept door: `404 object 'urn:scp:component:gitea:acme/widgets/service-a' not found`.
+   *
+   * DELIBERATELY AN ALIAS RATHER THAN THE STORED URN. Accept is a HUMAN REVIEW step — the UI/CLI
+   * flow renames proposed objects before accepting them (both end-to-end discovery tests do exactly
+   * that). An endpoint reference derived from the name would break under precisely the edit the
+   * review exists to make; an alias the reviewer never touches survives it.
+   *
+   * Batch-local, and enforced so: accept refuses a proposal whose declared alias already names a
+   * live object, and refuses two proposed objects declaring the same one.
+   */
+  urn: z.string().min(1).optional()
 });
 export const DiscoveryProposalRelationshipSchema = z.object({
   typeId: z.string(),
+  /** Either a pre-existing object's real id/URN, or the `urn` alias a proposed object declares. */
   fromUrn: z.string(),
   toUrn: z.string()
 });
