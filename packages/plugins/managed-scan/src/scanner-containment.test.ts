@@ -174,7 +174,15 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
       offenders.map((o) => `${o.path}: ${o.hits[0]!.trim()}`),
       "only apps/runner-scan/run.sh may execute a scanner; the orchestrator launches `docker`, never a scanner"
     ).toEqual([]);
-  });
+    // 30 s, NOT the 5 s default, and NOT because the assertion is slow to decide — because this one
+    // `it` READS ~1189 TRACKED FILES off disk (the sweep is repo-wide on purpose; see turbo.json).
+    // Standalone it finishes in ~230 ms. Under a full-repo `turbo run test`, with every other
+    // package's vitest workers competing for the same disk, it intermittently crossed 5000 ms and
+    // failed — a flake with nothing wrong with it, which is the kind that gets "fixed" by narrowing
+    // the sweep until the gate passes vacuously. The budget is widened; the sweep is not narrowed,
+    // and NOTHING THIS TEST ASSERTS IS WEAKENED — same candidate set, same >50 floor, same
+    // `toEqual([])`. If it ever takes 30 s the machine is the problem, not this file.
+  }, 30_000);
 
   it("apps/runner-scan/run.sh DOES execute both scanners, including the machine-image arm", () => {
     const hits = invocationHits(read("apps/runner-scan/run.sh"));
