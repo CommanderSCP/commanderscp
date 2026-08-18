@@ -63,6 +63,28 @@ import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js"
  *             BUILT `@scp/schemas`, so a source-only edit to that package is invisible here. Any
  *             future mutation of `packages/schemas` must rebuild before it is measured; the unit
  *             suite caught this one immediately, which is why both exist.
+ * MUTATIONS RUN for the D3 review round (2026-08-18, cases O7-O11). Baseline: 15 passed.
+ *
+ *   M-9   the authority bar grants every candidate (`applyOverrideAuthorityBar`'s two refusals)
+ *           -> 2 failed (O7, O9) + 3 in `scan-override-authority.test.ts`.
+ *   M-10  `requiredOverrideApprovalTier` always returns the bottom rung
+ *           -> 3 failed (O7, O8, O9). O8 fails on the RECORDED bar, which is why the bar is in the
+ *              Decision and not only in the filter.
+ *   M-11  `attachApprovedOverrides` derives the bar from NO ceiling
+ *           -> 3 failed here (O7, O8, O9) + A9 in `scan-exclusion-actuator.integration.test.ts`.
+ *   M-12  DELETE `assertOverrideTierStanding` at the RAISE route
+ *           -> 1 failed (O10), and only O10.
+ *   M-13  DELETE the instance-floor refusal at APPROVE
+ *           -> 1 failed (O11), and only O11.
+ *   M-14  the DECIDE route's `updateObject` passes `scanOverrideGrantDecision: false`
+ *           -> 1 failed (O1). THE ANTI-VACUITY MUTATION for the internal bypass: without it the flag
+ *              could have been dead code and every refusal above would still have looked correct.
+ *   M-15  `scanExclusionsForDecision` stops recording `overrideRequiredTier` /
+ *         `overridesRefusedForAuthority`
+ *           -> 4 failed (O1, O7, O8, O9).
+ *   M-16  `scanExclusionsForDecision` stops recording the grant's DERIVED `grantTier`
+ *           -> 1 failed (O1).
+ *
  *   M-8  drop `declaredFacts` and `approvedOverrides` from `scanExclusionsForDecision`
  *          -> 2 failed (D1, O1). The exclusion applies and the Decision cannot explain why.
  *

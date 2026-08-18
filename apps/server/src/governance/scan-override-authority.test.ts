@@ -15,6 +15,17 @@ import { requiredOverrideApprovalTier, scanRequirementTierOrder } from "./scan-r
  * afterwards only for PRESENCE. Since `scopeExpandCte` expands UPWARD, naming a LOWER object strictly
  * WIDENED the approver set — a service lead could approve away a platform-set `maxCritical: 0` and
  * the audit trail would truthfully record "under authority of '<service>'".
+ *
+ * MUTATIONS RUN (2026-08-18), each applied ALONE against a passing suite and reverted by an exact
+ * inverse edit. Baseline: 8 passed. MEASURED, not predicted.
+ *
+ *   U-1  `applyOverrideAuthorityBar` grants EVERY candidate (both refusal branches disabled)
+ *          -> 3 failed here, plus O7 and O9 at the real gate. The whole objection, undone.
+ *   U-2  `requiredOverrideApprovalTier` iterates an empty contributor list (always `component`)
+ *          -> 2 failed here, plus O7, O8 and O9 at the real gate.
+ *   U-3  an off-chain `tierObjectId` falls open to `"component"` instead of being refused
+ *          -> 1 failed ("NOT ON THE CHAIN"). The fail-open an absent map lookup invites, and the one
+ *             a reviewer is most likely to write while "tidying up a nullable".
  */
 
 /** `TIER_ORDER.indexOf`, taken from the module that owns the order rather than restated here — a

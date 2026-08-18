@@ -99,6 +99,32 @@ import { GOVERNANCE_MANAGED_OBJECT_TYPE_IDS } from "./governance-managed-types.j
  *    exists because round 1's statement of what the scan could not see was PROSE, and the prose was
  *    wrong: it claimed an unreadable call "fails safe by construction", and a one-line call proved
  *    otherwise the next day. What a scan can and cannot see is now a test, not a paragraph.
+ *
+ * ================================================================================================
+ * MUTATIONS RUN (2026-08-18, the grant cases). Baseline: 7 passed. MEASURED, not predicted.
+ * ================================================================================================
+ * CASE NAMES ARE THE POST-REBASE ONES. These mutations were run against the M22 draft of this file,
+ * where the grant cases were numbered DOOR 2b/2c/2d against a three-door scheme; they are named here
+ * by the door they actually drive in THIS file's five-door scheme. The mapping is
+ * 2b -> 4b, 2c -> 4c, 2d -> DOORS 1+5. Nothing was re-measured for the rename — only relabelled.
+ *
+ *   W-1  DELETE `assertScanOverrideGrantNotSelfDecided` from `createObject`
+ *          -> 2 failed (DOOR 4b, DOORS 1+5). NOTE WHAT SURVIVED: DOOR 4 above stayed green, because
+ *             it drives an `object:write`-only actor who is refused on AUTHORITY before the repo
+ *             layer is reached. The permission mapping and the field guard are different defences
+ *             and only one of them was ever tested.
+ *   W-2  DELETE it from `updateObject`
+ *          -> 1 failed (DOOR 4c), and only DOOR 4c. The update half is the strictly worse hole — it
+ *             flips an already-DENIED grant to `approved` — and it has its own case for that reason.
+ *   W-3  DELETE the explicit call in `federation/handfill-repo.ts`
+ *          -> 1 failed (DOORS 1+5), and only that case. Hand-fill wears the `federationImport` flag
+ *             that exempts the choke point, so it is the one door a choke-point install does NOT
+ *             cover.
+ *   W-4  the guard checks `status` but ignores the four bare decision fields
+ *          -> 1 failed (DOOR 4b). `expiresAt` with no approval is a window nobody opened.
+ *   W-5  the APPROVE route stops re-deriving standing (hardcoded `component` tier)
+ *          -> 1 failed (DOOR 4b's trailing approve case). The raise route's check cannot cover a
+ *             grant that never passed through the raise route.
  */
 
 /** An UNSCOPED, `required` policy: org-wide blast radius with an unmeetable approval quorum. */

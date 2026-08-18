@@ -76,6 +76,20 @@ import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js"
  *          -> 1 failed (A4). Every deployment that authored no exclusion would start writing a key it
  *             never had into evidence that is copied verbatim into signed promotion bundles.
  *
+ * MUTATIONS RUN for A9/A10 (M22.6 review round, 2026-08-18). Baseline: 10 passed.
+ *
+ *   M-8  the D3 authority bar reads NO ceiling (`requiredOverrideApprovalTier(undefined)` in
+ *        `scan-requirements.ts`'s `attachApprovedOverrides`)
+ *          -> 4 failed: A9 here, plus O7/O8/O9 in
+ *             `scan-declared-override-exclusions.integration.test.ts`. ONE deletion, both producers —
+ *             which is the whole reason that resolution lives in the resolver rather than being
+ *             threaded in from each gate site (see that function's docblock for the measurement that
+ *             forced the change).
+ *   M-9  the EARLIER, threaded design: `ceiling: undefined` at the PREWARM call site only
+ *          -> before A9/A10 existed, NOTHING failed anywhere. That is why this pair is here: every
+ *             case in the M22.5/M22.6 gate file is driven through the EVALUATE site, so the cached
+ *             run the host-less accept edge reads was completely unguarded and completely green.
+ *
  * Instance-scoped `scan_exclusion_admissions` rows are GLOBAL to the deployment and the integration
  * suite runs `singleFork` against ONE shared Postgres, so a row left behind would silently admit
  * loosenings in every later suite. They are cleared in an `afterEach` that runs regardless of
