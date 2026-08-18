@@ -46,6 +46,7 @@ import { registerExecutorRoutes } from "./routes/executors.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerDoctorRoutes } from "./routes/doctor.js";
 import { registerInstanceScanFloorRoutes } from "./routes/instance-scan-floors.js";
+import { registerInstanceScanExclusionAdmissionRoutes } from "./routes/instance-scan-exclusion-admissions.js";
 import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js";
 import { registerScanOverrideGrantRoutes } from "./routes/scan-override-grants.js";
 import { registerScanDbRoutes } from "./routes/scan-db.js";
@@ -233,6 +234,9 @@ export async function buildApp(
   }
   registerGovernanceRoutes(app, deps);
   registerInstanceScanFloorRoutes(app, deps); // M17.5 instance-scoped scan floors (ADR-0016)
+  // M22.9 instance-scoped exclusion admissions (ADR-0033 §1/§7a) — the `platform` and
+  // `trust_domain` rungs of the monotone AND, which no policy can ever contribute.
+  registerInstanceScanExclusionAdmissionRoutes(app, deps);
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)
   registerDependencySubscriptionRoutes(app, deps); // M21.3 instance unlock + (component, line) enablement resolution (ADR-0032 §6)

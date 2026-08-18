@@ -116,6 +116,9 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
   let server: ListeningTestServer;
   let trivy: TrivySource;
   let adminPool: pg.Pool;
+  /** An ordinary tenant principal carrying the deployment operator token to the M22.9 admission
+   *  route — the production write door for the two instance rungs. */
+  let operator: ScpClient;
 
   beforeAll(async () => {
     trivy = await startTrivySource();
@@ -129,18 +132,29 @@ describe("M22.4 the vendor rule (D1) — on the latest of a major line, at the r
         maxRestartBackoffMs: 300
       }
     });
-    // Operator-write / tenant-read with no write route yet (M22.8 owes it), so the fixture writes
-    // over the ADMIN connection — the same connection a production operator write would use. That
-    // the GATE can read what it cannot write is proven incidentally by every test below.
+    // The ADMIN connection is kept for TEARDOWN and for the rows this feature does not own. It is
+    // no longer how an admission is authored — see `admitAtInstance` below (M22.9).
     adminPool = new pg.Pool({ connectionString: testDatabaseUrl() });
+    const bootstrap = await createTestOrg(server, "admission-operator");
+    operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   }, 180_000);
 
+  /**
+   * THE PRODUCTION WRITE DOOR (M22.9). This used to `INSERT INTO scan_exclusion_admissions` over the
+   * admin pool, which made the suite green while the two instance rungs every clause requires — and
+   * that NO policy can ever contribute — had no writer outside these tests. The whole exclusion
+   * dimension was inert on a real deployment. It now goes through
+   * `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment operator token,
+   * exactly as an operator would; delete that route's registration in `app.ts` and every admitting
+   * test in this file dies. The PUT is a whole-set REPLACE, so this unions with what is already
+   * admitted rather than clobbering an earlier call in the same test.
+   */
   async function admitVendorLatest() {
-    for (const tier of ["platform", "trust_domain"]) {
-      await adminPool.query(
-        `INSERT INTO scan_exclusion_admissions (tier, class) VALUES ($1, 'vendor_latest')
-           ON CONFLICT (tier, class, origin) DO NOTHING`,
-        [tier]
+    for (const tier of ["platform", "trust_domain"] as const) {
+      await operator.instanceScanExclusionAdmissions.put(
+        tier,
+        { origin: "local", classes: ["vendor_latest"] },
+        OPERATOR_TOKEN
       );
     }
   }

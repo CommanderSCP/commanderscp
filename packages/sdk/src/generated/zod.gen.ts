@@ -5205,6 +5205,42 @@ export const zPutInstanceScanFloorResponse = z.object({
 /**
  * Success
  */
+export const zListInstanceScanExclusionAdmissionsResponse = z.object({
+    items: z.array(z.object({
+        tier: z.enum(['platform', 'trust_domain']),
+        class: z.enum([
+            'no_fix_available',
+            'vendor_latest',
+            'declared_fact',
+            'approved_override'
+        ]),
+        origin: z.enum(['local', 'federated']),
+        note: z.string().nullable(),
+        updatedAt: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zPutInstanceScanExclusionAdmissionsResponse = z.object({
+    items: z.array(z.object({
+        tier: z.enum(['platform', 'trust_domain']),
+        class: z.enum([
+            'no_fix_available',
+            'vendor_latest',
+            'declared_fact',
+            'approved_override'
+        ]),
+        origin: z.enum(['local', 'federated']),
+        note: z.string().nullable(),
+        updatedAt: z.string()
+    }))
+});
+
+/**
+ * Success
+ */
 export const zListScannerAssignmentsResponse = z.object({
     items: z.array(z.object({
         executorType: z.enum([

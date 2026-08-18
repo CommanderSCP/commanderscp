@@ -130,12 +130,25 @@ describe("M22.8 component scan-requirements read surface", () => {
     });
   }
 
+  /**
+   * THE PRODUCTION WRITE DOOR (M22.9). This used to `INSERT INTO scan_exclusion_admissions` over the
+   * admin pool, which made the suite green while the two instance rungs every clause requires — and
+   * that NO policy can ever contribute — had no writer outside these tests. It now goes through
+   * `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment operator token, so
+   * this read surface is tested against admissions an operator could actually have authored. The
+   * PUT is a whole-set REPLACE, so this unions with what is already admitted.
+   */
   async function admitAtInstance(tiers: Array<"platform" | "trust_domain">, cls: string) {
     for (const tier of tiers) {
-      await adminPool.query(
-        `INSERT INTO scan_exclusion_admissions (tier, class) VALUES ($1, $2)
-           ON CONFLICT (tier, class, origin) DO NOTHING`,
-        [tier, cls]
+      const current = await operator.instanceScanExclusionAdmissions.list();
+      const classes = new Set(
+        current.filter((a) => a.tier === tier && a.origin === "local").map((a) => a.class)
+      );
+      classes.add(cls as (typeof current)[number]["class"]);
+      await operator.instanceScanExclusionAdmissions.put(
+        tier,
+        { origin: "local", classes: [...classes] },
+        OPERATOR_TOKEN
       );
     }
   }

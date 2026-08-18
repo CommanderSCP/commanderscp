@@ -44,6 +44,7 @@ import type {
   ImportBundleRequest,
   // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
   InstanceScanFloor,
+  InstanceScanExclusionAdmission,
   ScanDbStatus,
   RefreshScanDbResponse,
   LoadScanDbResponse,
@@ -499,6 +500,26 @@ export function instanceScanFloorRow(item: InstanceScanFloor): Record<string, st
     maxMedium: isAbsent(item.maxMedium) ? "-" : String(item.maxMedium),
     maxLow: isAbsent(item.maxLow) ? "-" : String(item.maxLow),
     note: item.note ?? ""
+  };
+}
+
+/**
+ * One instance-scoped exclusion admission as a table row (`scp scan-exclusion-admissions list`) —
+ * same lift, same reason as `instanceScanFloorRow`.
+ *
+ * THE FABRICATION `isAbsent` STOPS HERE is the reverse of the floor's: an admission row's mere
+ * EXISTENCE is the grant, so there is no value to print `undefined` in — but `note` is nullable and
+ * a literal `null` in an operator's audit column reads as a value somebody authored.
+ */
+export function instanceScanExclusionAdmissionRow(
+  item: InstanceScanExclusionAdmission
+): Record<string, string> {
+  return {
+    tier: item.tier,
+    class: item.class,
+    origin: item.origin,
+    note: isAbsent(item.note) ? "" : String(item.note),
+    updatedAt: isAbsent(item.updatedAt) ? "-" : String(item.updatedAt)
   };
 }
 
@@ -3518,6 +3539,110 @@ export function buildProgram(): Command {
           operatorToken
         );
         printResult(floor, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
+  // -------------------------------------------------------------------------------------
+  // instance scan-exclusion-admissions (M22.9 — ADR-0033 §1, §7a). The two ABOVE-org rungs of the
+  // exclusion dimension's monotone AND: a clause authored at any tier has effect only if EVERY
+  // represented tier strictly above it admits that clause's CLASS, and `platform` + `trust_domain`
+  // are ALWAYS represented. No policy can contribute those two — a policy anchors at a graph object
+  // and the containment chain is org-rooted — so with this table empty (the shipped default) every
+  // exclusion clause on the deployment is inert. This command is how an operator changes that.
+  //
+  // The five org-and-below rungs are NOT here and need nothing: they admit through the ordinary
+  // `scanExclusion` policy effect (`scp policy create ... {"scanExclusion":{"admit":[...]}}`).
+  //
+  // `set` REPLACES the admitted set for the tier — `--class` given zero times REVOKES every
+  // admission at that tier, which is the withdrawal path.
+  // -------------------------------------------------------------------------------------
+  const scanAdmissionsCmd = program
+    .command("scan-exclusion-admissions")
+    .description(
+      "Instance-scoped scan-exclusion admissions (ADR-0033) — the platform + trust-domain rungs that gate every exclusion clause beneath them"
+    );
+
+  scanAdmissionsCmd
+    .command("list")
+    .description(
+      "List the exclusion classes this deployment admits (an EMPTY list means every exclusion clause anywhere on this deployment is inert)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const admissions = await client.instanceScanExclusionAdmissions.list();
+      printResult(admissions, opts.output, (raw) =>
+        instanceScanExclusionAdmissionRow(raw as (typeof admissions)[number])
+      );
+    });
+
+  scanAdmissionsCmd
+    .command("set")
+    .description(
+      "REPLACE the exclusion classes admitted at one instance tier (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; omitting --class entirely revokes every admission at that tier)"
+    )
+    .requiredOption(
+      "--tier <tier>",
+      "platform|trust-domain (the partition tier, not the intra-org containment domain)"
+    )
+    .option(
+      "--class <class...>",
+      "no_fix_available|vendor_latest|declared_fact|approved_override (repeatable; the WHOLE admitted set for this tier)"
+    )
+    .option("--origin <origin>", "local|federated", "local")
+    .option("--note <text>", "free-text note recorded with the admission")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          tier: string;
+          class?: string[];
+          origin: "local" | "federated";
+          note?: string;
+        }
+      ) => {
+        const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+        if (!operatorToken) {
+          throw new Error(
+            "SCP_OPERATOR_TOKEN is not set — an admission opens a loosening for every org on the deployment, so authoring one requires the deployment operator token, not your tenant login."
+          );
+        }
+        // Accept the friendlier `trust-domain` on the command line, but send the canonical
+        // `trust_domain` literal — never bare `domain` (ADR-0016 / ADR-0033 terminology).
+        const tier = opts.tier === "trust-domain" ? "trust_domain" : opts.tier;
+        if (tier !== "platform" && tier !== "trust_domain") {
+          throw new Error(`--tier must be 'platform' or 'trust-domain' (got '${opts.tier}')`);
+        }
+        const allowed = [
+          "no_fix_available",
+          "vendor_latest",
+          "declared_fact",
+          "approved_override"
+        ] as const;
+        const classes = opts.class ?? [];
+        for (const cls of classes) {
+          if (!(allowed as readonly string[]).includes(cls)) {
+            // Refused here as well as by the route and the table's CHECK, for 0066's stated reason:
+            // a typo'd class is an admission the operator believes they granted and that admits
+            // nothing, with the clause beneath it silently inert.
+            throw new Error(`--class must be one of ${allowed.join("|")} (got '${cls}')`);
+          }
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const admissions = await client.instanceScanExclusionAdmissions.put(
+          tier,
+          {
+            origin: opts.origin,
+            classes: classes as InstanceScanExclusionAdmission["class"][],
+            note: opts.note
+          },
+          operatorToken
+        );
+        printResult(admissions, opts.output, (raw) =>
+          instanceScanExclusionAdmissionRow(raw as (typeof admissions)[number])
+        );
       }
     );
 

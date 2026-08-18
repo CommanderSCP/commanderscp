@@ -147,6 +147,9 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
   let server: ListeningTestServer;
   let trivy: TrivySource;
   let adminPool: pg.Pool;
+  /** An ordinary tenant principal carrying the deployment operator token to the M22.9 admission
+   *  route — the production write door for the two instance rungs. */
+  let operator: ScpClient;
 
   beforeAll(async () => {
     trivy = await startTrivySource();
@@ -160,18 +163,34 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
         maxRestartBackoffMs: 300
       }
     });
-    // `scan_exclusion_admissions` is operator-write / tenant-read with no write route yet (M22.8
-    // owes it), so the fixture writes it over the ADMIN connection — the connection a production
-    // operator write would use. Every gate below then READS these rows as `scp_app`.
+    // The ADMIN connection is kept for TEARDOWN and for the rows this feature does not own. It is
+    // no longer how an admission is authored — see `admitAtInstance` below (M22.9).
     adminPool = new pg.Pool({ connectionString: testDatabaseUrl() });
+    const bootstrap = await createTestOrg(server, "admission-operator");
+    operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   }, 180_000);
 
+  /**
+   * THE PRODUCTION WRITE DOOR (M22.9). This used to `INSERT INTO scan_exclusion_admissions` over the
+   * admin pool, which made the suite green while the two instance rungs every clause requires — and
+   * that NO policy can ever contribute — had no writer outside these tests. The whole exclusion
+   * dimension was inert on a real deployment. It now goes through
+   * `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment operator token,
+   * exactly as an operator would; delete that route's registration in `app.ts` and every admitting
+   * test in this file dies. The PUT is a whole-set REPLACE, so this unions with what is already
+   * admitted rather than clobbering an earlier call in the same test.
+   */
   async function admitAtInstance(cls: string) {
-    for (const tier of ["platform", "trust_domain"]) {
-      await adminPool.query(
-        `INSERT INTO scan_exclusion_admissions (tier, class) VALUES ($1, $2)
-           ON CONFLICT (tier, class, origin) DO NOTHING`,
-        [tier, cls]
+    for (const tier of ["platform", "trust_domain"] as const) {
+      const current = await operator.instanceScanExclusionAdmissions.list();
+      const classes = new Set(
+        current.filter((a) => a.tier === tier && a.origin === "local").map((a) => a.class)
+      );
+      classes.add(cls as (typeof current)[number]["class"]);
+      await operator.instanceScanExclusionAdmissions.put(
+        tier,
+        { origin: "local", classes: [...classes] },
+        OPERATOR_TOKEN
       );
     }
   }

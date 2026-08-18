@@ -14673,6 +14673,114 @@ export type PutInstanceScanFloorResponses = {
 
 export type PutInstanceScanFloorResponse = PutInstanceScanFloorResponses[keyof PutInstanceScanFloorResponses];
 
+export type ListInstanceScanExclusionAdmissionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/scan-exclusion-admissions';
+};
+
+export type ListInstanceScanExclusionAdmissionsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListInstanceScanExclusionAdmissionsError = ListInstanceScanExclusionAdmissionsErrors[keyof ListInstanceScanExclusionAdmissionsErrors];
+
+export type ListInstanceScanExclusionAdmissionsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            tier: 'platform' | 'trust_domain';
+            class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+            origin: 'local' | 'federated';
+            note: string | null;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type ListInstanceScanExclusionAdmissionsResponse = ListInstanceScanExclusionAdmissionsResponses[keyof ListInstanceScanExclusionAdmissionsResponses];
+
+export type PutInstanceScanExclusionAdmissionsData = {
+    body: {
+        origin: 'local' | 'federated';
+        classes: Array<'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override'>;
+        note?: string | null;
+    };
+    path: {
+        tier: 'platform' | 'trust_domain';
+    };
+    query?: never;
+    url: '/instance/scan-exclusion-admissions/{tier}';
+};
+
+export type PutInstanceScanExclusionAdmissionsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutInstanceScanExclusionAdmissionsError = PutInstanceScanExclusionAdmissionsErrors[keyof PutInstanceScanExclusionAdmissionsErrors];
+
+export type PutInstanceScanExclusionAdmissionsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        items: Array<{
+            tier: 'platform' | 'trust_domain';
+            class: 'no_fix_available' | 'vendor_latest' | 'declared_fact' | 'approved_override';
+            origin: 'local' | 'federated';
+            note: string | null;
+            updatedAt: string;
+        }>;
+    };
+};
+
+export type PutInstanceScanExclusionAdmissionsResponse = PutInstanceScanExclusionAdmissionsResponses[keyof PutInstanceScanExclusionAdmissionsResponses];
+
 export type ListScannerAssignmentsData = {
     body?: never;
     path?: never;

@@ -199,6 +199,9 @@ import {
   // M17.5 (ADR-0016) — instance-scoped scan-requirement floors.
   listInstanceScanFloors as listInstanceScanFloorsRequest,
   putInstanceScanFloor as putInstanceScanFloorRequest,
+  // M22.9 (ADR-0033 §1/§7a) — instance-scoped exclusion admissions.
+  listInstanceScanExclusionAdmissions as listInstanceScanExclusionAdmissionsRequest,
+  putInstanceScanExclusionAdmissions as putInstanceScanExclusionAdmissionsRequest,
   // M22.6 (ADR-0033 §6a) — standing, expiring scan override grants.
   createScanOverrideGrant as createScanOverrideGrantRequest,
   listScanOverrideGrants as listScanOverrideGrantsRequest,
@@ -358,6 +361,8 @@ import type {
   InitFederationRequest,
   FederationPeer,
   InstanceScanFloor,
+  InstanceScanExclusionAdmission,
+  PutInstanceScanExclusionAdmissionsRequest,
   ScanOverrideGrant,
   CreateScanOverrideGrantRequest,
   ApproveScanOverrideGrantRequest,
@@ -1807,6 +1812,36 @@ export class ScpClient {
         headers: { "x-scp-operator-token": operatorToken }
       });
       return unwrap(result);
+    }
+  };
+
+  // -----------------------------------------------------------------------------------------
+  // M22.9: instance-scoped scan-exclusion admissions (ADR-0033 §1, §7a) — the `platform` and
+  // `trust_domain` rungs of the monotone AND. NO POLICY CAN EVER CONTRIBUTE THESE TWO
+  // (`tierForObjectType` maps graph object types and `containmentChain` is org-rooted), so without
+  // this surface every exclusion clause on a deployment fails the AND at the top rung and the whole
+  // dimension is inert. The five org-and-below rungs admit through the ordinary `scanExclusion`
+  // policy effect and are NOT here. The twin of `instanceScanFloors`, on purpose.
+  // -----------------------------------------------------------------------------------------
+  readonly instanceScanExclusionAdmissions = {
+    list: async (): Promise<InstanceScanExclusionAdmission[]> => {
+      const result = await listInstanceScanExclusionAdmissionsRequest({ client: this.client });
+      return unwrap(result).items;
+    },
+    /** REPLACE the admitted class set at one instance tier — `classes: []` is the revocation.
+     *  `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN`; no tenant role can grant this. */
+    put: async (
+      tier: "platform" | "trust_domain",
+      req: PutInstanceScanExclusionAdmissionsRequest,
+      operatorToken: string
+    ): Promise<InstanceScanExclusionAdmission[]> => {
+      const result = await putInstanceScanExclusionAdmissionsRequest({
+        client: this.client,
+        path: { tier },
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result).items;
     }
   };
 

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ScpClient } from "@scp/sdk";
+import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ScanEvidence } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { controlRuns, scanFindings } from "../db/schema.js";
@@ -143,6 +143,10 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
   let server: ListeningTestServer;
   let trivy: TrivySource;
   let adminPool: pg.Pool;
+  /** An ordinary tenant principal, used ONLY to carry the deployment operator token to
+   *  `PUT /instance/scan-exclusion-admissions/{tier}` — the production write door for the two
+   *  instance rungs (M22.9). Every admission below is authored through it. */
+  let operator: ScpClient;
 
   beforeAll(async () => {
     trivy = await startTrivySource();
@@ -156,20 +160,42 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
         maxRestartBackoffMs: 300
       }
     });
-    // `scan_exclusion_admissions` is operator-write / tenant-read with NO write route yet (the read
-    // + write surface lands in M22.8), so the fixture writes it over the ADMIN connection — which is
-    // exactly the connection a production operator write would use. Doing it this way also proves
-    // the RUNTIME role can READ what it cannot write, since every gate below reads these rows as
-    // `scp_app`.
+    // The ADMIN connection is kept for the STORAGE-CONTRACT tests below (G9/G10 assert the CHECK
+    // constraints and the two write barriers directly) and for teardown. It is NO LONGER how an
+    // admission is authored: `admitAtInstance` now goes through the production route, for the
+    // reason M22.9 exists — an integration suite that INSERTs the precondition itself proves
+    // nothing about whether an operator can ever create one.
     adminPool = new pg.Pool({ connectionString: testDatabaseUrl() });
+    const bootstrap = await createTestOrg(server, "excl-operator");
+    operator = new ScpClient({ baseUrl: server.baseUrl, token: bootstrap.adminToken });
   }, 180_000);
 
+  /**
+   * THE PRODUCTION WRITE DOOR, and the reason this helper looks the way it does.
+   *
+   * Every admitting test in this file used to `INSERT INTO scan_exclusion_admissions` over the admin
+   * pool. That made the suite green while the `platform`/`trust_domain` rungs — which every clause
+   * in ADR-0033 §1's monotone AND requires, and which NO policy can ever contribute — had no writer
+   * outside these tests. The exclusion dimension was built, tested and INERT on any real deployment.
+   *
+   * So this now calls `PUT /api/v1/instance/scan-exclusion-admissions/{tier}` with the deployment
+   * operator token, exactly as an operator would. Delete that route's registration in `app.ts` and
+   * every admitting test in this file dies at its first line.
+   *
+   * The PUT is a whole-set REPLACE, so the helper unions with what is already admitted (read back
+   * through the route's own GET) rather than clobbering an earlier call in the same test.
+   */
   async function admitAtInstance(tiers: Array<"platform" | "trust_domain">, cls: string) {
     for (const tier of tiers) {
-      await adminPool.query(
-        `INSERT INTO scan_exclusion_admissions (tier, class) VALUES ($1, $2)
-           ON CONFLICT (tier, class, origin) DO NOTHING`,
-        [tier, cls]
+      const current = await operator.instanceScanExclusionAdmissions.list();
+      const classes = new Set(
+        current.filter((a) => a.tier === tier && a.origin === "local").map((a) => a.class)
+      );
+      classes.add(cls as (typeof current)[number]["class"]);
+      await operator.instanceScanExclusionAdmissions.put(
+        tier,
+        { origin: "local", classes: [...classes] },
+        OPERATOR_TOKEN
       );
     }
   }
@@ -805,6 +831,201 @@ describe("M22.2 scan exclusions — admitted top-down, applied before counting",
         `INSERT INTO scan_exclusion_admissions (tier, class) VALUES ('domain', 'no_fix_available')`
       )
     ).rejects.toThrow();
+  });
+
+  // ===========================================================================================
+  // M22.9 — THE OPERATOR WRITE DOOR ITSELF.
+  //
+  // Everything above admits through `PUT /instance/scan-exclusion-admissions/{tier}`, so the whole
+  // file already dies if that route disappears. These cases pin the door's OWN properties: who may
+  // open it, what a write actually stores, and that withdrawal works — none of which a gate test
+  // can tell you, because a gate only ever observes the admitted state.
+  // ===========================================================================================
+
+  async function expectApiError(fn: () => Promise<unknown>): Promise<ScpApiError> {
+    try {
+      await fn();
+    } catch (err) {
+      if (err instanceof ScpApiError) return err;
+      throw err;
+    }
+    throw new Error("expected an ScpApiError, but the call succeeded");
+  }
+
+  function admissionRows(tier: string) {
+    return adminPool
+      .query<{ tier: string; class: string; origin: string; note: string | null }>(
+        `SELECT tier, class, origin, note FROM scan_exclusion_admissions
+          WHERE tier = $1 ORDER BY class`,
+        [tier]
+      )
+      .then((r) => r.rows);
+  }
+
+  it("E1: the operator PUT writes the ROW, and any tenant principal can read it back", async () => {
+    const written = await operator.instanceScanExclusionAdmissions.put(
+      "platform",
+      { origin: "local", classes: ["no_fix_available", "vendor_latest"], note: "secops 2026-Q3" },
+      OPERATOR_TOKEN
+    );
+    expect(written.map((a) => a.class).sort()).toEqual(["no_fix_available", "vendor_latest"]);
+
+    // ASSERT THE ROW, not the response: a 200 that stored nothing would leave every clause on the
+    // deployment inert while the API said otherwise.
+    const rows = await admissionRows("platform");
+    expect(rows).toEqual([
+      { tier: "platform", class: "no_fix_available", origin: "local", note: "secops 2026-Q3" },
+      { tier: "platform", class: "vendor_latest", origin: "local", note: "secops 2026-Q3" }
+    ]);
+
+    // The READ is tenant-facing (charter principle 6): a loosening a tenant cannot author must
+    // still be one they can inspect. This client holds no operator token at all.
+    const org = await createTestOrg(server, "excl-admission-read");
+    const tenant = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const seen = await tenant.instanceScanExclusionAdmissions.list();
+    expect(
+      seen
+        .filter((a) => a.tier === "platform")
+        .map((a) => a.class)
+        .sort()
+    ).toEqual(["no_fix_available", "vendor_latest"]);
+  });
+
+  it("E2: the PUT REPLACES the set, so an empty class list is the WITHDRAWAL path", async () => {
+    await operator.instanceScanExclusionAdmissions.put(
+      "trust_domain",
+      { origin: "local", classes: ["no_fix_available", "declared_fact"] },
+      OPERATOR_TOKEN
+    );
+    expect((await admissionRows("trust_domain")).map((r) => r.class)).toEqual([
+      "declared_fact",
+      "no_fix_available"
+    ]);
+
+    // Narrowing: `declared_fact` is DROPPED because it is absent from the new set. An additive verb
+    // would leave it in force here — which is the direction of mistake that matters for a loosening.
+    await operator.instanceScanExclusionAdmissions.put(
+      "trust_domain",
+      { origin: "local", classes: ["no_fix_available"] },
+      OPERATOR_TOKEN
+    );
+    expect((await admissionRows("trust_domain")).map((r) => r.class)).toEqual(["no_fix_available"]);
+
+    // ...and the total withdrawal.
+    const empty = await operator.instanceScanExclusionAdmissions.put(
+      "trust_domain",
+      { origin: "local", classes: [] },
+      OPERATOR_TOKEN
+    );
+    expect(empty).toEqual([]);
+    expect(await admissionRows("trust_domain")).toEqual([]);
+  });
+
+  it("E3: no tenant role can admit anything — the operator token is the only key, and a refusal stores nothing", async () => {
+    const org = await createTestOrg(server, "excl-admission-authz");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+
+    // The most privileged principal inside an org, presenting no operator token.
+    const wrong = await expectApiError(() =>
+      admin.instanceScanExclusionAdmissions.put(
+        "platform",
+        { origin: "local", classes: ["approved_override"] },
+        "not-the-operator-token"
+      )
+    );
+    expect(wrong.status).toBe(403);
+    expect(await admissionRows("platform")).toEqual([]);
+
+    // An admission opens a loosening for EVERY org on the deployment, so this is deliberately not
+    // an RBAC permission that any role could ever carry.
+    const empty = await expectApiError(() =>
+      admin.instanceScanExclusionAdmissions.put(
+        "platform",
+        { origin: "local", classes: ["approved_override"] },
+        ""
+      )
+    );
+    expect(empty.status).toBe(403);
+    expect(await admissionRows("platform")).toEqual([]);
+  });
+
+  it("E4: THE INSTALLATION PROOF — the same clause is inert until an operator admits its class THROUGH THE ROUTE, and applies once they do", async () => {
+    // This is the blocking finding this increment closes, expressed as a single causal test. The
+    // ONLY thing that differs between the blocking half and the passing half is one production API
+    // call. Nothing here writes `scan_exclusion_admissions`; delete the route registration in
+    // `app.ts` and the second half can never happen.
+    const org = await createTestOrg(server, "excl-install");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const { component } = await buildChain(admin, "install");
+
+    await exclusionPolicy(admin, "clause-install", org.orgId, {
+      exclude: { class: "no_fix_available", pkgName: "openssl" }
+    });
+    const control = await scanControl(admin, org, {
+      suffix: "excl-install",
+      sev: ["HIGH"],
+      fix: ["n"],
+      pkg: ["openssl"]
+    });
+    await requireScanControl(admin, "gate-install", component.id, control.id);
+
+    // 1. NOTHING ADMITTED — the shipped default of every deployment. The clause exists, is authored
+    //    at the org, and has no effect whatever, because `platform` and `trust_domain` are always
+    //    represented and neither admits its class.
+    expect(await operator.instanceScanExclusionAdmissions.list()).toEqual([]);
+    const before = await admin.changes.propose({
+      name: "excl-install-before",
+      targets: [component.id]
+    });
+    const blocked = await waitForControlRun(admin, before.id, control.id, "fail");
+    expect((blocked.evidence as unknown as ScanEvidence).severityCounts.high).toBe(1);
+    expect(blocked.evidence).not.toHaveProperty("effectiveSeverityCounts");
+
+    // 2. THE OPERATOR ACTS — the production surface, the deployment operator token, both rungs.
+    for (const tier of ["platform", "trust_domain"] as const) {
+      await operator.instanceScanExclusionAdmissions.put(
+        tier,
+        { origin: "local", classes: ["no_fix_available"] },
+        OPERATOR_TOKEN
+      );
+    }
+
+    // 3. The same clause, the same component, the same finding — now excluded before counting.
+    const after = await admin.changes.propose({
+      name: "excl-install-after",
+      targets: [component.id]
+    });
+    const passed = await waitForControlRun(admin, after.id, control.id, "pass");
+    const evidence = passed.evidence as unknown as ScanEvidence;
+    expect(evidence.severityCounts.high).toBe(1);
+    expect(evidence.effectiveSeverityCounts?.high).toBe(0);
+    expect(evidence.exclusions?.appliedCount).toBe(1);
+    // The clause the operator's admission let through is the one that was authored, at its own
+    // tier — so the passing verdict traces to the org-tier clause AND to the two instance rows,
+    // rather than to some other loosening that happened to be live.
+    expect(evidence.exclusions?.clauseCount).toBe(1);
+    expect(evidence.exclusions?.applied[0]).toMatchObject({
+      class: "no_fix_available",
+      tier: "org",
+      severity: "high",
+      pkgName: "openssl"
+    });
+
+    // 4. AND THE WITHDRAWAL IS REAL — revoke through the same door and the next change blocks
+    //    again. A one-way admission would make step 2 unfalsifiable.
+    for (const tier of ["platform", "trust_domain"] as const) {
+      await operator.instanceScanExclusionAdmissions.put(
+        tier,
+        { origin: "local", classes: [] },
+        OPERATOR_TOKEN
+      );
+    }
+    const revoked = await admin.changes.propose({
+      name: "excl-install-revoked",
+      targets: [component.id]
+    });
+    const blockedAgain = await waitForControlRun(admin, revoked.id, control.id, "fail");
+    expect(blockedAgain.evidence).not.toHaveProperty("effectiveSeverityCounts");
   });
 
   it("G10: the RUNTIME role can READ admissions and can NEVER write them", async () => {

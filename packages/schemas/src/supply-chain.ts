@@ -817,6 +817,84 @@ export type ComponentScanRequirementsResponse = z.infer<
 >;
 
 // ===========================================================================================
+// M22.9 — THE INSTANCE ADMISSION *WRITE* SURFACE'S WIRE CONTRACT
+// (`GET`/`PUT /instance/scan-exclusion-admissions`).
+//
+// WHY THIS EXISTS AT ALL, stated plainly because its absence was a blocking finding: the AND in
+// §1 requires EVERY represented tier strictly above a clause to admit its class, and
+// `buildScanExclusionTargetInputs` seeds `representedTiers` with `platform` and `trust_domain`
+// UNCONDITIONALLY. `tierForObjectType` can never return either of those two, so no policy — at any
+// tier, by any author — can contribute their admission. Their ONLY source is
+// `scan_exclusion_admissions` (drizzle/0066), and until this increment that table had no writer
+// outside the integration suite's admin pool. Every exclusion class M22.3–M22.6 built was therefore
+// inert on a real deployment while its tests were green: the whole dimension was reachable only by
+// hand-written SQL. A feature whose mandatory precondition has no production writer is not shipped.
+//
+// THE ORG-AND-BELOW RUNGS NEED NOTHING HERE, and deliberately get nothing. `org`,
+// `containment_domain`, `service`, `assembly` and `component` admit a class through the EXISTING
+// `scanExclusion` policy effect (`{"scanExclusion": {"admit": ["no_fix_available"]}}`), authored
+// over the ordinary policy write door and resolved by `matchPoliciesForTargets` — charter principle
+// 2, new concepts as policy data. Building a second admission surface for those five tiers would be
+// two constructions of one rule.
+//
+// THE TWIN IS `routes/instance-scan-floors.ts` — same instance scope, same DESIGN §4.2 `org_id`
+// exception, same operator-write / tenant-read split, same `x-scp-operator-token`. Read that file's
+// header for the full argument; it is not restated here.
+//
+// NO `DELETE` VERB, ON PURPOSE. The PUT is a whole-set replace for one `(tier, origin)`, so
+// `{"classes": []}` IS the revocation, and it is the same request shape an operator already uses to
+// narrow the set from three classes to two. A second verb that means "replace with nothing" would
+// be a second way to say one thing (charter priority 1).
+// ===========================================================================================
+
+/** One instance-scoped admission row — the API projection of `scan_exclusion_admissions` (no
+ *  `orgId`: it speaks for the DEPLOYMENT, identically for every org hosted on it).
+ *
+ *  A ROW IS AN ADMISSION AND NO ROW IS NO ADMISSION (0066's header): this list is empty on every
+ *  deployment that has not authored one, and that empty list is the safe default rather than a
+ *  missing configuration. */
+export const InstanceScanExclusionAdmissionSchema = z.object({
+  tier: z.enum(["platform", "trust_domain"]),
+  class: ScanExclusionClassSchema,
+  origin: ScanFloorOriginSchema,
+  note: z.string().nullable(),
+  updatedAt: z.string()
+});
+export type InstanceScanExclusionAdmission = z.infer<typeof InstanceScanExclusionAdmissionSchema>;
+
+export const InstanceScanExclusionAdmissionListResponseSchema = z.object({
+  items: z.array(InstanceScanExclusionAdmissionSchema)
+});
+export type InstanceScanExclusionAdmissionListResponse = z.infer<
+  typeof InstanceScanExclusionAdmissionListResponseSchema
+>;
+
+export const InstanceScanExclusionAdmissionTierParamSchema = z.object({
+  tier: z.enum(["platform", "trust_domain"])
+});
+
+/**
+ * Operator-authored write body — the WHOLE admitted class set for one `(tier, origin)`.
+ *
+ * A REPLACE RATHER THAN AN ADD, and the direction of the mistake is why. An additive verb makes
+ * withdrawal the harder operation: an operator who believes they have narrowed an admission, but
+ * whose request only ever adds, leaves the loosening in force with no error anywhere. A replace
+ * makes the request state what the deployment admits, so the read-back is the authored value.
+ *
+ * `classes` is a SET: duplicates collapse, and `ScanExclusionClassSchema` refuses an unrecognised
+ * value here exactly as the table's CHECK constraint refuses it one layer down (0066's header: an
+ * operator typo that silently admits nothing is the failure worth two copies of the list).
+ */
+export const PutInstanceScanExclusionAdmissionsRequestSchema = z.strictObject({
+  origin: ScanFloorOriginSchema.default("local"),
+  classes: z.array(ScanExclusionClassSchema).max(16),
+  note: z.string().max(500).nullish()
+});
+export type PutInstanceScanExclusionAdmissionsRequest = z.infer<
+  typeof PutInstanceScanExclusionAdmissionsRequestSchema
+>;
+
+// ===========================================================================================
 // M22.4 (ADR-0033 D1) — THE VENDOR RULE'S FACTS.
 //
 // The owner's headline rule: a vendor dependency is accepted only if we are on the LATEST VERSION
