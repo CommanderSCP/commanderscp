@@ -1,11 +1,15 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { ScanEvidence } from "@scp/schemas";
+import { asTrustDomainId } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
+import { upsertObjectByUrn } from "../graph/objects-repo.js";
+import { FEDERATION_IMPORT_ACTOR_ID } from "../federation/import-repo.js";
 import { testDatabaseUrl } from "../test-support/harness.js";
 import {
   createOrphanComponent,
@@ -87,6 +91,16 @@ import { SCAN_RULE_TEST_CONTROL_REF } from "./test-support/scan-rule-control.js"
  *
  *   M-8  drop `declaredFacts` and `approvedOverrides` from `scanExclusionsForDecision`
  *          -> 2 failed (D1, O1). The exclusion applies and the Decision cannot explain why.
+ *
+ * MUTATION RUN for O13 — the guarded `::timestamptz` cast (2026-08-18). Baseline: 17 passed.
+ *
+ *   M-17  UNWRAP the `CASE ... ~ ISO_TIMESTAMP_TEXT_PATTERN` in `scan-override-grants.ts`'s live-grant
+ *         window back to the bare `(properties->>'expiresAt')::timestamptz` cast
+ *           -> 1 failed (O13), and ONLY O13; the other 16 passed. It fails by TIMEOUT rather than by
+ *              an assertion, and that is the defect's own shape rather than a weak test: the cast
+ *              throws inside the gate's query, so no control run is ever written and there is nothing
+ *              to assert against. Nothing else in this file notices, because a peer's row is the only
+ *              way to reach a non-ISO `expiresAt` — every LOCAL door refuses the field outright.
  *
  * Instance-scoped `scan_exclusion_admissions` rows are GLOBAL to the deployment and the integration
  * suite runs `singleFork` against ONE shared Postgres, so a row left behind would silently admit
@@ -547,7 +561,7 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
     await admitAtInstance("approved_override");
     const org = await createTestOrg(server, "grant-pass");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
-    const { service, component } = await buildChain(admin, "grant-pass");
+    const { component } = await buildChain(admin, "grant-pass");
 
     await exclusionPolicy(admin, "clause-grant", org.orgId, {
       exclude: { class: "approved_override" }
@@ -1140,5 +1154,129 @@ describe("M22.5/M22.6 — declared facts and approved overrides, at the real gat
       reason: "withdrawn by the requester"
     });
     expect(revoked.status).toBe("revoked");
+  });
+
+  it("O13: a PEER'S grant with an uncastable `expiresAt` does not take the gate out — it is simply not live", async () => {
+    // THE DEFECT THIS PINS. The live-grant window casts `properties->>'expiresAt'` to `timestamptz`
+    // inside the gate's own query. `expiresAt` is refused at every LOCAL door, but the M22.6
+    // authoring guard deliberately EXEMPTS `federationImport` — a throw on that path aborts a peer's
+    // whole signed bundle — and the registered `property_schema` types the field only as
+    // `{"type": "string"}`, deliberately (0075 §1: typing it would move the failure from one grant to
+    // the whole channel). So a peer can legitimately deliver `expiresAt: "never"`.
+    //
+    // With a BARE cast, that one row throws inside EVERY gate evaluation for the org — the reconcile
+    // prewarm, the wave boundary, `POST /policy-evaluate` and the commander promotion scan — so no
+    // change in the org can be validated or advanced until an operator finds it. Fail-OPEN by way of
+    // a crash, reachable from across a trust boundary. The resolver now wraps the cast in a
+    // `CASE ... ~ pattern`, exactly as `graph/containment.ts` wraps its `::uuid`.
+    //
+    // WHY THE ROW IS PLANTED THROUGH `upsertObjectByUrn` WITH `federationImport` RATHER THAN A RAW
+    // INSERT, and what that does and does not buy. It is the exact function `import-repo.ts`'s
+    // `object_upsert` branch calls, with the same actor and the same context shape, so this exercises
+    // the REAL import writer and the REAL registry validation — which is the precondition the whole
+    // finding rests on: if `property_schema` refused `"never"`, no such row could exist and the guard
+    // would be unreachable. A raw `INSERT INTO objects` would prove nothing about that and is exactly
+    // the shortcut that let the exclusion dimension ship green and inert. What it does NOT do is
+    // drive a signed bundle end to end — `verifyBundleSignature`/`verifyJournalChain` are upstream of
+    // this function and are covered by `federation/federation.integration.test.ts`; duplicating a
+    // two-domain fixture here would not exercise one additional line of the resolver.
+    await admitAtInstance("approved_override");
+    const org = await createTestOrg(server, "grant-poison");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const { component } = await buildChain(admin, "grant-poison");
+
+    await exclusionPolicy(admin, "clause-poison", org.orgId, {
+      exclude: { class: "approved_override" }
+    });
+
+    // A GOOD grant beside the poisoned one, approved AT THE ORG so it clears the D3 authority floor
+    // (`OVERRIDE_APPROVAL_TIER_FLOOR`; a grant approved lower can never apply — see O7). Without it
+    // this case passes for the wrong reason: a gate that resolved NO overrides at all would also
+    // "not throw", and would say nothing about whether the guard let the healthy row through.
+    const requested = await (
+      await raiserFor(org, component.id)
+    ).scanOverrideGrants.create({
+      componentId: component.id,
+      vulnerabilityId: "CVE-2026-7801",
+      tierObjectId: org.orgId,
+      reason: "no upstream fix"
+    });
+    const approved = await admin.scanOverrideGrants.approve(requested.id, {
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      reason: "accepted"
+    });
+
+    // ...and now the peer's row. `status: "approved"`, the same component, and a tier that clears the
+    // same floor the good grant clears — so the ONLY thing standing between it and the exclusion set
+    // is the expiry window. Anything less would let this case pass because of a second refusal.
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      await upsertObjectByUrn(tx, {
+        orgId: org.orgId,
+        typeId: "scan_override_grant",
+        actorObjectId: FEDERATION_IMPORT_ACTOR_ID,
+        requestId: `federation-import:${randomUUID()}`,
+        urn: `urn:scp:${org.orgId}:scan_override_grant:from-a-peer`,
+        name: "from-a-peer",
+        properties: {
+          componentId: component.id,
+          vulnerabilityId: "CVE-2026-7802",
+          tierObjectId: org.orgId,
+          status: "approved",
+          reason: "authored by a peer running a looser build",
+          expiresAt: "never"
+        },
+        // The peer's claimed authority. `upsertObjectByUrn` only ever COMPARES this against the
+        // stored row's `origin_domain_id` (it never resolves it), so an unpaired id is the whole of
+        // what the create branch needs — the same stand-in `governance-reach.integration.test.ts`
+        // uses. Branded per ADR-0021 D4: a TRUST domain id, not a containment one.
+        federationImport: {
+          originDomainId: asTrustDomainId(randomUUID()),
+          revision: 1,
+          provenance: null
+        }
+      });
+    });
+
+    // THE GATE RUNS. Two findings, one legitimately excused, one covered only by the poisoned row.
+    const control = await scanControl(admin, org, {
+      suffix: "grant-poison",
+      cve: ["CVE-2026-7801", "CVE-2026-7802"],
+      pkg: ["openssl", "zlib"]
+    });
+    await requireScanControl(admin, "gate-poison", component.id, control.id);
+    const change = await admin.changes.propose({ name: "grant-poison", targets: [component.id] });
+    const run = await waitForControlRun(admin, change.id, control.id, "fail");
+
+    // IT PRODUCED A VERDICT AT ALL. That is the assertion the guard exists for — with a bare cast
+    // this line is never reached, because the query throws out of the gate and no run is ever
+    // written (the wait times out instead).
+    const evidence = run.evidence as unknown as ScanEvidence;
+    expect(evidence.severityCounts.high).toBe(2);
+
+    // FAIL-CLOSED, not fail-open: the good grant excused its finding, the poisoned one excused
+    // nothing. A guard that swallowed the malformed value as "no expiry = unlimited" would show 0.
+    expect(evidence.effectiveSeverityCounts?.high).toBe(1);
+    expect(evidence.exclusions?.appliedCount).toBe(1);
+    expect(evidence.exclusions?.applied[0]).toMatchObject({
+      class: "approved_override",
+      vulnerabilityId: "CVE-2026-7801",
+      grantObjectId: approved.id
+    });
+
+    // THE DECISION AGREES. A row dropped by the SQL window is not "refused for authority" — it never
+    // became a candidate — so the Decision must list exactly one grant and no authority refusal. This
+    // distinguishes the guard from a bar that happened to reject the poisoned row for some other
+    // reason, which would satisfy the counts above and mean the cast was never exercised.
+    const decisionExclusions = await gateDecisionExclusions(org, change.id);
+    expect(decisionExclusions?.approvedOverrides).toEqual([
+      {
+        grantObjectId: approved.id,
+        vulnerabilityId: "CVE-2026-7801",
+        tierObjectId: org.orgId,
+        grantTier: "org",
+        expiresAt: approved.expiresAt
+      }
+    ]);
+    expect(decisionExclusions?.overridesRefusedForAuthority).toBeUndefined();
   });
 });

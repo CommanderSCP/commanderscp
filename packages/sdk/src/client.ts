@@ -174,6 +174,7 @@ import {
   upsertControlByUrn as upsertControlByUrnRequest,
   putControlBinding as putControlBindingRequest,
   listChangeControlRuns as listChangeControlRunsRequest,
+  listControlRunFindings as listControlRunFindingsRequest,
   listApprovals as listApprovalsRequest,
   getApproval as getApprovalRequest,
   listApprovalVotes as listApprovalVotesRequest,
@@ -334,6 +335,8 @@ import type {
   ControlBinding,
   CreateControlBindingRequest,
   ControlRunListResponse,
+  ControlRunFindingsResponse,
+  CursorPageQuery,
   ApprovalRequest,
   ApprovalRequestListQuery,
   ApprovalRequestListResponse,
@@ -1616,6 +1619,30 @@ export class ScpClient {
       const result = await listChangeControlRunsRequest({
         client: this.client,
         path: { idOrUrn: changeId }
+      });
+      return unwrap(result);
+    },
+    /**
+     * The persisted findings of ONE scan control run (M22.1b/ADR-0033 §7), paged by ordinal.
+     *
+     * OPT-IN, and separate from `listForChange` on purpose: a run can carry up to
+     * `SCAN_FINDINGS_PERSIST_CAP` rows, so folding them into the run listing would put thousands of
+     * rows on a surface every change page reads.
+     *
+     * ALWAYS READ `findingsRecord` BEFORE THE ROWS. It is `truncated`, `unsupported`, or absent, and
+     * each of those means every exclusion for that scan was REFUSED — you cannot except what you did
+     * not record. A caller handed only `items` cannot distinguish "nothing was excluded" from "the
+     * finding set was capped and exclusions were therefore disallowed", which is the whole reason the
+     * marker travels with the page rather than beside it.
+     */
+    findings: async (
+      controlRunId: string,
+      query: CursorPageQuery = { limit: 20 }
+    ): Promise<ControlRunFindingsResponse> => {
+      const result = await listControlRunFindingsRequest({
+        client: this.client,
+        path: { id: controlRunId },
+        query
       });
       return unwrap(result);
     }
