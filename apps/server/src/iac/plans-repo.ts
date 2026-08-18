@@ -229,6 +229,7 @@ async function fetchObjectsByIds(tx: TenantTx, orgId: string, ids: string[]) {
     .where(and(eq(objects.orgId, orgId), inArray(objects.id, ids), isNull(objects.deletedAt)));
 }
 
+/**
  * The URN of one object by id, TOMBSTONES INCLUDED — deliberately unlike every other object read in
  * this file, all of which filter `deleted_at IS NULL`.
  *
