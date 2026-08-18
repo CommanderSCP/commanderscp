@@ -822,13 +822,19 @@ async function trigger(
     return { externalId };
   }
 
-  await mkdir(config.workspaceRoot, { recursive: true });
-  const scratch = await mkdtemp(join(config.workspaceRoot, "scp-dep-"));
-  const inDir = join(scratch, "in");
-  const outDir = join(scratch, "out");
+  // LOW-6: `scratch` DECLARED OUTSIDE, INITIALISED INSIDE THE `try` — `mkdir`/`mkdtemp` used to run
+  // BEFORE this `try` began, so a disk error here (permissions, ENOSPC) rejected `trigger()`
+  // UNRECORDED: no `outcomes.set(externalId, …)`, and the caller's `status()` would report `pending`
+  // forever. Moving them inside closes it the same way the descriptor/writer refusals above already
+  // are; the `finally` below is `undefined`-safe for the case where `mkdtemp` itself is what failed.
+  let scratch: string | undefined;
   const fileName = "manifest";
 
   try {
+    await mkdir(config.workspaceRoot, { recursive: true });
+    scratch = await mkdtemp(join(config.workspaceRoot, "scp-dep-"));
+    const inDir = join(scratch, "in");
+    const outDir = join(scratch, "out");
     const outcome = await writer.withRunCredential(ctx, descriptor.repo, async (session) => {
       // 1. READ the manifest as the repository holds it, with the run's own credential. The bytes
       //    never travelled through the intent — see "THE DESCRIPTOR IS NOT CONTENT".
@@ -997,7 +1003,9 @@ async function trigger(
       detail: `managed-dep: ${err instanceof Error ? err.message : String(err)}`
     });
   } finally {
-    await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+    // `scratch` is `undefined` exactly when `mkdir`/`mkdtemp` themselves are what threw — nothing to
+    // remove in that case.
+    if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
   }
   return { externalId };
 }

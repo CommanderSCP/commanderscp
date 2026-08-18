@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +26,24 @@ let startBehavior: { ok: boolean; stdout: string; stderr: string } = {
   stdout: "ok",
   stderr: ""
 };
+
+/** LOW-6: the one seam that lets a test make `saveState`'s final `rename` fail AFTER a run has
+ *  already happened, while `loadState` (an earlier `readFile`) succeeds normally — a pure-fs
+ *  fixture (an occupied directory, a garbled file) cannot produce that combination, because
+ *  `saveState`'s `rename` and `loadState`'s `readFile` share the same path and therefore the same
+ *  filesystem-shaped failure. Delegates to the real implementation for everything except `rename`,
+ *  which is undefined (real) unless a test opts in. */
+let renameShouldFail: Error | undefined;
+vi.mock("node:fs/promises", async () => {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  return {
+    ...actual,
+    rename: async (...args: Parameters<typeof actual.rename>) => {
+      if (renameShouldFail) throw renameShouldFail;
+      return actual.rename(...args);
+    }
+  };
+});
 
 vi.mock("node:child_process", () => {
   return {
@@ -65,6 +83,7 @@ let workspaceRoot: string;
 beforeEach(async () => {
   dockerCalls.length = 0;
   startBehavior = { ok: true, stdout: "ok", stderr: "" };
+  renameShouldFail = undefined;
   workspaceRoot = await mkdtemp(join(tmpdir(), "managed-iac-unit-"));
 });
 
@@ -287,5 +306,91 @@ describe("@scp/plugin-managed-iac: idempotency + secret redaction", () => {
     expect(createCall()!.args, "the credential is delivered by env-file, not by -e").toContain(
       "--env-file"
     );
+  });
+});
+
+describe("@scp/plugin-managed-iac: LOW-6 — loadState/saveState never reject trigger() unrecorded", () => {
+  it("a corrupt (non-ENOENT) dedup state file makes trigger() record a FAILED CLOSED refusal, not an unrecorded rejection", async () => {
+    const statePath = join(workspaceRoot, "dedup.json");
+    // `readFile` succeeds (the file exists); `JSON.parse` is what throws — the EXACT shape the
+    // defect names: "JSON.parse throws non-ENOENT, so loadState rethrows".
+    await writeFile(statePath, "{ this is not valid json", "utf8");
+
+    const plugin = createManagedIacExecutorPlugin();
+    const ref = await plugin.trigger(ctx({ statePath }), {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "loadfail-1"
+    });
+
+    expect(ref).toStrictEqual({ externalId: "managed-iac::loadfail-1" });
+    expect(
+      dockerCalls,
+      "an unreadable dedup cache cannot tell this run apart from one that already applied — refuse, never launch"
+    ).toStrictEqual([]);
+
+    // status() reads the SAME statePath — and finds a fresh, VALID, single-key file, because the
+    // refusal itself was recorded there. Before LOW-6's fix this call would have thrown too (loud,
+    // not silent — the property that kept this LOW), but the fix makes it succeed outright.
+    const status = await plugin.status(ctx({ statePath }), ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toContain("FAILED CLOSED");
+    expect(status.detail).toContain("could not load dedup state");
+  });
+
+  it("when even the refusal cannot be RECORDED, trigger() is loud — it rejects rather than silently doing nothing", async () => {
+    const statePath = join(workspaceRoot, "dedup.json");
+    // `statePath` ITSELF is a directory: `readFile` -> EISDIR (loadState rethrows), and the
+    // recovery `saveState`'s own `rename` onto that same path ALSO -> EISDIR. Nothing this plugin
+    // can do makes an outcome durable here, so it must not pretend one was recorded.
+    await mkdir(statePath);
+
+    const plugin = createManagedIacExecutorPlugin();
+    await expect(
+      plugin.trigger(ctx({ statePath }), {
+        kind: "sync",
+        targetRef: "t1",
+        parameters: { iacAction: "plan" },
+        idempotencyKey: "loadfail-2"
+      })
+    ).rejects.toThrow(/EISDIR|illegal operation/i);
+
+    expect(dockerCalls, "must never launch when the dedup cache is unreadable").toStrictEqual([]);
+  });
+
+  it("a run that COMPLETES but whose dedup state cannot be SAVED still returns the real externalId — never a rejection over a run that already happened", async () => {
+    const statePath = join(workspaceRoot, "dedup.json");
+    renameShouldFail = Object.assign(new Error("ENOSPC: no space left on device"), {
+      code: "ENOSPC"
+    });
+
+    const plugin = createManagedIacExecutorPlugin();
+    const ref = await plugin.trigger(ctx({ statePath }), {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "savefail-1"
+    });
+
+    // THE RUN REALLY HAPPENED — for `apply`/`rollback` this could be live infrastructure. Rejecting
+    // here would tell the caller "nothing happened" when something did, which is worse than a stale
+    // cache: a caller that reacts to a rejection by retrying could double-apply.
+    expect(ref).toStrictEqual({ externalId: "managed-iac::savefail-1" });
+    expect(createCall(), "the container really did launch").toBeDefined();
+
+    // The cache genuinely was NOT persisted (matching `renameShouldFail`): a second trigger() with
+    // the SAME idempotencyKey does not find a cached entry and launches a second container — the
+    // honest consequence of an unpersisted cache, not silently hidden.
+    renameShouldFail = undefined;
+    dockerCalls.length = 0;
+    const second = await plugin.trigger(ctx({ statePath }), {
+      kind: "sync",
+      targetRef: "t1",
+      parameters: { iacAction: "plan" },
+      idempotencyKey: "savefail-1"
+    });
+    expect(second).toStrictEqual(ref);
+    expect(createCall(), "the failed save left no durable record of the first run").toBeDefined();
   });
 });

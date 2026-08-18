@@ -196,3 +196,46 @@ describe("M23.1: managed-dep launches through the injected RunnerLauncher", () =
     expect((await plugin.status(ctx, ref)).phase).toBe("succeeded");
   });
 });
+
+describe("LOW-6: mkdir/mkdtemp are inside trigger()'s own try — a disk error is a FAILED outcome, never an unrecorded rejection", () => {
+  it("a workspaceRoot the plugin cannot mkdir into records a FAILED outcome, reaches the launcher NEVER, and writes nothing to the repository", async () => {
+    // `occupied` is a FILE, not a directory — `mkdir(join(occupied, "nested"), { recursive: true })`
+    // therefore fails with ENOTDIR, reproducing the disk-error shape LOW-6 names (permissions,
+    // ENOSPC, or — as here — a path component that is not a directory at all). This used to run
+    // BEFORE `trigger()`'s own `try`, so the failure escaped as an unrecorded rejection and
+    // `status()` reported `pending` forever.
+    const occupied = join(workspaceRoot, "occupied-by-a-file");
+    await writeFile(occupied, "not a directory");
+
+    let launcherReached = false;
+    const plugin = createManagedDepExecutorPlugin(() => {
+      launcherReached = true;
+      return throwingLauncher();
+    });
+    const { ctx, httpCalls } = depCtx();
+    const brokenCtx = {
+      ...ctx,
+      config: { ...ctx.config, workspaceRoot: join(occupied, "nested") }
+    };
+
+    const ref = await plugin.trigger(brokenCtx, npmIntent("mkdir-fail-1"));
+
+    expect(ref).toStrictEqual({ externalId: "managed-dep::mkdir-fail-1" });
+    expect(
+      launcherReached,
+      "the runner must never launch when the scratch dir cannot be made"
+    ).toBe(false);
+
+    const status = await plugin.status(brokenCtx, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toMatch(/ENOTDIR|not a directory/i);
+
+    // NO CREDENTIAL WAS EVEN MINTED — unlike the throwing-launcher case above, `mkdir` fails BEFORE
+    // `writer.withRunCredential` is ever called, so there is nothing here to revoke. The provider was
+    // never talked to at all.
+    expect(
+      httpCalls,
+      "the mkdir failure must be caught before any repo credential is minted"
+    ).toStrictEqual([]);
+  });
+});

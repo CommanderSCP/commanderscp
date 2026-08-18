@@ -320,13 +320,49 @@ async function trigger(
 ): Promise<ExternalRunRef> {
   const config = asConfig(ctx.config);
   const cacheKey = intent.idempotencyKey ?? randomUUID();
-  const state = await loadState(config.statePath);
+  // MOVED AHEAD OF `loadState` (LOW-6) — deterministic, IO-free, so a state-load failure below still
+  // has a ref to record its own refusal against, instead of nothing.
+  const externalId = `managed-iac::${cacheKey}`;
+
+  let state: DedupState;
+  try {
+    state = await loadState(config.statePath);
+  } catch (err) {
+    // LOW-6: `loadState`/`saveState` used to sit OUTSIDE `withRecordedOutcome`'s guarded region, so
+    // a corrupt state file (`JSON.parse` throwing non-ENOENT) made `trigger()` reject UNRECORDED —
+    // no outcome, no externalId the caller could later poll `status()` with. FAIL CLOSED rather than
+    // treating the read failure as "no prior run": this cache is exactly what tells a retry apart
+    // from a run that already applied, so an unreadable cache must refuse to launch, not guess.
+    // Recorded as this run's own outcome — a fresh single-key state is safe to write precisely
+    // because the OLD file was unreadable: nothing recoverable from it is lost by overwriting what
+    // could not be read anyway.
+    const detail =
+      `managed-iac: FAILED CLOSED — could not load dedup state at '${config.statePath}' ` +
+      `(${err instanceof Error ? err.message : String(err)}). Refusing to launch: an unreadable ` +
+      "dedup cache cannot tell this run apart from one that already applied.";
+    const refusal: RunOutcome = { externalId, succeeded: false, detail };
+    try {
+      await saveState(config.statePath, { keys: { [cacheKey]: refusal } });
+    } catch (saveErr) {
+      // Recording the refusal itself failed too — nothing left to do but be LOUD about it, which is
+      // exactly the property that keeps this LOW rather than HIGH (status()'s own loadState would
+      // fail just as loudly here).
+      ctx.logger.error("managed-iac: could not record the dedup-state-load failure either", {
+        externalId,
+        loadError: err instanceof Error ? err.message : String(err),
+        saveError: saveErr instanceof Error ? saveErr.message : String(saveErr)
+      });
+      throw err;
+    }
+    ctx.logger.info("managed-iac: run complete", { externalId, succeeded: false });
+    return { externalId };
+  }
+
   const existing = state.keys[cacheKey];
   if (existing) {
     return { externalId: existing.externalId };
   }
 
-  const externalId = `managed-iac::${cacheKey}`;
   const workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
   let outcome: RunOutcome = { externalId, succeeded: false, detail: "" };
 
@@ -418,7 +454,21 @@ async function trigger(
   );
 
   state.keys[cacheKey] = outcome;
-  await saveState(config.statePath, state);
+  try {
+    await saveState(config.statePath, state);
+  } catch (err) {
+    // LOW-6: THE RUN ALREADY HAPPENED (succeeded or failed) by this point — for `apply`/`rollback`
+    // that may be a LIVE infrastructure mutation. Rejecting here would tell the caller "nothing
+    // happened" when something did, and a caller that reacts to a rejection by retrying could
+    // double-apply — the exact failure mode this cache exists to prevent. So this is BEST EFFORT and
+    // LOUD, never a rejection: the caller still gets its real `externalId`, and the failure to
+    // persist is logged at error level rather than swallowed silently.
+    ctx.logger.error("managed-iac: run completed but the dedup state could not be saved", {
+      externalId,
+      succeeded: outcome.succeeded,
+      error: err instanceof Error ? err.message : String(err)
+    });
+  }
   ctx.logger.info("managed-iac: run complete", { externalId, succeeded: outcome.succeeded });
   return { externalId };
 }
