@@ -2327,3 +2327,61 @@ export const dependencyBumpAuthorships = pgTable(
     )
   ]
 );
+
+/**
+ * THE PER-OBJECT RUNGS OF THE `governance:move` LATTICE (drizzle/0079,
+ * docs/proposals/governance-reach-on-containment-move.md §9.2 — owner ruling 2026-08-18).
+ *
+ * One row per CONTAINER (org root, containment domain, service, assembly) under which a containment
+ * MOVE additionally requires `governance:move` at both ends. The lattice is monotone and top-down:
+ * enforcement applies iff the instance rung ({@link governanceMoveInstanceRung}) is enabled OR any
+ * object on the moved object's containment chain or on the destination's chain carries a row here.
+ * A rung enabled ABOVE therefore cannot be disabled below — the DELETE route answers 409 naming the
+ * upper rung rather than reporting a disable that leaves the state enforced anyway.
+ *
+ * EMPTY IS THE SHIPPED STATE and means no enforcement anywhere, which is why adding this table moved
+ * no existing authorization outcome.
+ */
+export const governanceMoveRungs = pgTable(
+  "governance_move_rungs",
+  {
+    orgId: uuid("org_id").notNull(),
+    /** The container the rung sits on — PK, because a rung is enabled or it is not. */
+    subjectObjectId: uuid("subject_object_id")
+      .notNull()
+      .references(() => objects.id),
+    /** `org` | `containment_domain` | `service` | `assembly`, the literal AT WRITE TIME.
+     *  Explainability only, never re-derived on read — the convention
+     *  `dependencies/subscription-resolution.ts`'s `tierForObjectType` documents. */
+    tier: text("tier").notNull(),
+    /** Principle 6: WHO enabled it. Stamped from the authenticated subject, never the request body. */
+    enabledByObjectId: uuid("enabled_by_object_id")
+      .notNull()
+      .references(() => objects.id),
+    enabledAt: timestamp("enabled_at", { withTimezone: true }).notNull().defaultNow(),
+    /** The Decision the enablement recorded. Nullable for rows a future importer might write. */
+    decisionId: uuid("decision_id")
+  },
+  (table) => [
+    primaryKey({ name: "governance_move_rungs_pk", columns: [table.subjectObjectId] }),
+    index("governance_move_rungs_org").on(table.orgId)
+  ]
+);
+
+/**
+ * THE INSTANCE (COMMANDER) RUNG — the singleton that ACTIVATES the lattice deployment-wide
+ * (drizzle/0079 §2; owner decision Q1-A: "if enabled there, orgs can't disable it").
+ *
+ * Storage is byte-for-byte the `dependency_subscription_unlock` shape (0062): `CHECK id = 'default'`,
+ * tenant SELECT-only, FORCE RLS, no write policy, operator-token `PUT` through the raw admin pool.
+ * The MEANING differs — the unlock permits, this activates — but the authority question is the same:
+ * a deployment-wide switch no tenant role may flip.
+ *
+ * NO ROW MEANS DISABLED, decided in exactly one place (`governance/move-enforcement.ts`'s
+ * `readInstanceMoveRung`).
+ */
+export const governanceMoveInstanceRung = pgTable("governance_move_instance_rung", {
+  id: text("id").primaryKey().default("default"),
+  enabled: boolean("enabled").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow()
+});

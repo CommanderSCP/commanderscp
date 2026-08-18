@@ -4,6 +4,7 @@ import { hasPermission, type Permission } from "../authz/resolve.js";
 import { forbidden } from "../errors.js";
 import { assertRootedContainmentParent } from "./containment.js";
 import { resolveContainmentParent } from "./objects-repo.js";
+import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
 
 /**
  * THE ONE PLACE A CALLER-SUPPLIED `domainId` BECOMES A CONTAINMENT PARENT.
@@ -298,6 +299,30 @@ export async function resolveDeclaredContainmentParent(
       );
     }
   }
+
+  // ---------------------------------------------------------------------------------------------
+  // THE SECOND, OPT-IN BAR: `governance:move` (proposal §9.2 door (a), owner ruling 2026-08-18).
+  //
+  // Runs AFTER the `permission` pair above, never instead of it — an enabled rung ADDS a demand, it
+  // never relaxes one. On every deployment with no rung set (all of them until an operator sets one)
+  // this is one singleton read plus two bounded chain walks and no behaviour change at all, which is
+  // why the four protected move-authz suites keep their outcomes.
+  //
+  // AND ITS ORG-ROOT RULE IS THE OPPOSITE OF THE TWO EXEMPTIONS ABOVE, deliberately. Both exemptions
+  // here are proved from CUSTODY: the org root's holders already hold every rooted row, so a move to
+  // or out of the root can only shrink the custodian set. `governance:move` is not about custody but
+  // about governance REACH, which runs with containment — so moving a row out of a governed subtree
+  // up to the org root is exactly the reach reduction the permission exists to gate, the archetypal
+  // case rather than an edge case. The two checks follow opposite rules at the same node because they
+  // are asking different questions; `governance/move-enforcement.ts`'s header carries the full
+  // argument, and cross-references this block.
+  await assertGovernanceMoveAdmits(tx, {
+    orgId: input.orgId,
+    subjectObjectId: input.subjectObjectId,
+    movedObjectId: current.id,
+    destinationObjectId: destination,
+    permissionSetForExplain: input.permission
+  });
 
   return destination;
 }

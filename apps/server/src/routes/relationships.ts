@@ -21,6 +21,7 @@ import {
   listRelationships
 } from "../graph/relationships-repo.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
+import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
 
 function idempotencyKey(request: FastifyRequest): string | undefined {
   const header = request.headers["idempotency-key"];
@@ -95,6 +96,20 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
           permission: "relationship:write",
           scopeObjectId: request.body.toId
         });
+        // THE SECOND, OPT-IN BAR on a `contains` write (proposal §9.2 door (c), owner ruling
+        // 2026-08-18). A `contains` edge IS a containment parent — route 2 of the same walk
+        // `objects.domain_id` is route 1 of — so creating one MOVES the `to` object into the `from`
+        // container, with exactly the governance-reach consequence a `domainId` write has. Only
+        // `contains`; every other relationship type is an ordinary edge and reaches nothing.
+        if (request.body.typeId === "contains") {
+          await assertGovernanceMoveAdmits(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            movedObjectId: request.body.toId,
+            destinationObjectId: request.body.fromId,
+            permissionSetForExplain: "relationship:write"
+          });
+        }
         return withIdempotency(
           tx,
           {
@@ -227,6 +242,21 @@ export function registerRelationshipRoutes(app: FastifyInstance, deps: AppDeps):
           permission: "relationship:write",
           scopeObjectId: found.toId
         });
+        // Deleting a `contains` edge is a MOVE TO THE ORG ROOT: the child stops being contained by
+        // `from` and falls back to its `domain_id` route, which every rooted row terminates at. The
+        // destination is therefore the org root — and the org root is NOT exempt from this bar
+        // (unlike #244's `object:write` pair), because leaving a governed subtree for the top level
+        // is precisely the reach reduction `governance:move` gates. See
+        // `governance/move-enforcement.ts`.
+        if (found.typeId === "contains") {
+          await assertGovernanceMoveAdmits(tx, {
+            orgId: auth.orgId,
+            subjectObjectId: auth.subjectObjectId,
+            movedObjectId: found.toId,
+            destinationObjectId: null,
+            permissionSetForExplain: "relationship:write"
+          });
+        }
         await deleteRelationship(tx, {
           orgId: auth.orgId,
           actorObjectId: auth.subjectObjectId,

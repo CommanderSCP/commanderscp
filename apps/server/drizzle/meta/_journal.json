@@ -554,6 +554,13 @@
       "when": 1788139911505,
       "tag": "0078_source_mapping_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1788141000000,
+      "tag": "0079_governance_move_rungs",
+      "breakpoints": true
     }
   ]
 }

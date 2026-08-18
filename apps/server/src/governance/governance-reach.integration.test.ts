@@ -4,7 +4,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ContainmentDomainId, TrustDomainId } from "@scp/schemas";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { auditEvents, decisions } from "../db/schema.js";
-import { upsertObjectByUrn } from "../graph/objects-repo.js";
+import { deleteObject, upsertObjectByUrn } from "../graph/objects-repo.js";
+import { ensureFederationSelf } from "../federation/self-repo.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import {
   GOVERNANCE_REACH_AUDIT_ACTION,
@@ -412,12 +413,34 @@ describe("a containment write that changes which policies reach an object", () =
     const componentId = component.json().id as string;
     expect(await reachingPolicyNames(org, componentId)).toContain(policyName);
 
-    const del = await server.app.inject({
+    // SINCE THE OWNER RULING OF 2026-08-18 (governance-reach-on-containment-move.md §9.3) ROUTE 2
+    // REFUSES TOO, so this half no longer runs through the HTTP door. That is not a weakening of the
+    // detection this file pins — it is the same harm PREVENTED rather than recorded — but it moves
+    // where the recorder is still reachable, and this test follows it rather than being deleted.
+    const refusedContains = await server.app.inject({
       method: "DELETE",
       url: `/api/v1/services/${serviceId}`,
       headers: { authorization: `Bearer ${org.adminToken}` }
     });
-    expect(del.statusCode, del.body).toBe(200);
+    expect(refusedContains.statusCode, refusedContains.body).toBe(409);
+    expect(refusedContains.body).toContain("contained by it");
+    expect(await reachingPolicyNames(org, componentId), "nothing detached").toContain(policyName);
+
+    // THE RECORDER'S REMAINING REACHABLE PATH: the two carve-outs the guard shares with the edge
+    // cascade — a `federationImport` tombstone (a peer's authority already deleted the row; refusing
+    // it would wedge the bundle) and a foreign-shadow removal. The container's dependents ARE still
+    // detached on those paths, so that is exactly where the route-3 record still has to fire.
+    await withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const self = await ensureFederationSelf(tx, org.orgId);
+      await deleteObject(tx, {
+        orgId: org.orgId,
+        typeId: "service",
+        actorObjectId: org.orgId,
+        requestId: "reach-route3-import",
+        idOrUrn: serviceId,
+        federationImport: { originDomainId: self.domainId, revision: 9_999 }
+      });
+    });
 
     // THE HARM. Nothing about the component was written — but its container is gone (and the edge
     // with it), so the gate no longer reaches it.

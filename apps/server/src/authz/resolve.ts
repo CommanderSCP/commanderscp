@@ -45,7 +45,17 @@ export type Permission =
   | "change:emergency"
   // M6 federation (DESIGN.md §13) — pairing/export/import/hand-fill vs read-only status/self.
   | "federation:read"
-  | "federation:write";
+  | "federation:write"
+  // The OPT-IN second bar on a containment MOVE (drizzle/0079,
+  // docs/proposals/governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18). Demanded
+  // at-or-above the moved object AND at-or-above the destination — and ONLY where a rung of the
+  // move-enforcement lattice is enabled, so it is inert on every deployment that has set none.
+  //
+  // Granted by drizzle/0079 to Administrator and Owner alone (owner decision Q2-A), deliberately NOT
+  // to Operator: Operator/Approver/Administrator/Owner all hold `object:write`, so an
+  // Operator-and-above grant would make every principal who can move also able to move under
+  // enforcement — the lattice would be inert until custom roles exist, and nothing authors one yet.
+  | "governance:move";
 
 export interface PermissionCheck {
   orgId: string;

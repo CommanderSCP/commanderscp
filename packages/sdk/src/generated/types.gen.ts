@@ -14794,6 +14794,421 @@ export type PolicyEvaluateResponses = {
 
 export type PolicyEvaluateResponse = PolicyEvaluateResponses[keyof PolicyEvaluateResponses];
 
+export type GetObjectGovernanceMoveEnforcementData = {
+    body?: never;
+    path: {
+        type: string;
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/objects/{type}/{idOrUrn}/governance-move-enforcement';
+};
+
+export type GetObjectGovernanceMoveEnforcementErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetObjectGovernanceMoveEnforcementError = GetObjectGovernanceMoveEnforcementErrors[keyof GetObjectGovernanceMoveEnforcementErrors];
+
+export type GetObjectGovernanceMoveEnforcementResponses = {
+    /**
+     * Success
+     */
+    200: {
+        enforced: boolean;
+        instance: {
+            enabled: boolean;
+        };
+        rungs: Array<{
+            tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+            subjectObjectId: string;
+            name: string;
+            enabledAt: string;
+            enabledByObjectId: string;
+            depth?: number;
+        }>;
+    };
+};
+
+export type GetObjectGovernanceMoveEnforcementResponse = GetObjectGovernanceMoveEnforcementResponses[keyof GetObjectGovernanceMoveEnforcementResponses];
+
+export type ListGovernanceMoveRungsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/governance/move-enforcement/rungs';
+};
+
+export type ListGovernanceMoveRungsErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type ListGovernanceMoveRungsError = ListGovernanceMoveRungsErrors[keyof ListGovernanceMoveRungsErrors];
+
+export type ListGovernanceMoveRungsResponses = {
+    /**
+     * Success
+     */
+    200: {
+        instance: {
+            enabled: boolean;
+        };
+        rungs: Array<{
+            tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+            subjectObjectId: string;
+            name: string;
+            enabledAt: string;
+            enabledByObjectId: string;
+            depth?: number;
+        }>;
+    };
+};
+
+export type ListGovernanceMoveRungsResponse = ListGovernanceMoveRungsResponses[keyof ListGovernanceMoveRungsResponses];
+
+export type DisableGovernanceMoveRungData = {
+    body?: never;
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/governance/move-enforcement/rungs/{idOrUrn}';
+};
+
+export type DisableGovernanceMoveRungErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    409: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type DisableGovernanceMoveRungError = DisableGovernanceMoveRungErrors[keyof DisableGovernanceMoveRungErrors];
+
+export type DisableGovernanceMoveRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        subjectObjectId: string;
+        tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+        enabled: boolean;
+        enforcement: {
+            enforced: boolean;
+            instance: {
+                enabled: boolean;
+            };
+            rungs: Array<{
+                tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+                subjectObjectId: string;
+                name: string;
+                enabledAt: string;
+                enabledByObjectId: string;
+                depth?: number;
+            }>;
+        };
+        decisionId: string;
+    };
+};
+
+export type DisableGovernanceMoveRungResponse = DisableGovernanceMoveRungResponses[keyof DisableGovernanceMoveRungResponses];
+
+export type EnableGovernanceMoveRungData = {
+    body: {
+        note?: string;
+    };
+    path: {
+        idOrUrn: string;
+    };
+    query?: never;
+    url: '/governance/move-enforcement/rungs/{idOrUrn}';
+};
+
+export type EnableGovernanceMoveRungErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    404: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type EnableGovernanceMoveRungError = EnableGovernanceMoveRungErrors[keyof EnableGovernanceMoveRungErrors];
+
+export type EnableGovernanceMoveRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        subjectObjectId: string;
+        tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+        enabled: boolean;
+        enforcement: {
+            enforced: boolean;
+            instance: {
+                enabled: boolean;
+            };
+            rungs: Array<{
+                tier: 'org' | 'containment_domain' | 'service' | 'assembly';
+                subjectObjectId: string;
+                name: string;
+                enabledAt: string;
+                enabledByObjectId: string;
+                depth?: number;
+            }>;
+        };
+        decisionId: string;
+    };
+};
+
+export type EnableGovernanceMoveRungResponse = EnableGovernanceMoveRungResponses[keyof EnableGovernanceMoveRungResponses];
+
+export type GetGovernanceMoveInstanceRungData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/instance/governance-move-enforcement';
+};
+
+export type GetGovernanceMoveInstanceRungErrors = {
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type GetGovernanceMoveInstanceRungError = GetGovernanceMoveInstanceRungErrors[keyof GetGovernanceMoveInstanceRungErrors];
+
+export type GetGovernanceMoveInstanceRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        enabled: boolean;
+        updatedAt: string | null;
+    };
+};
+
+export type GetGovernanceMoveInstanceRungResponse = GetGovernanceMoveInstanceRungResponses[keyof GetGovernanceMoveInstanceRungResponses];
+
+export type PutGovernanceMoveInstanceRungData = {
+    body: {
+        enabled: boolean;
+    };
+    path?: never;
+    query?: never;
+    url: '/instance/governance-move-enforcement';
+};
+
+export type PutGovernanceMoveInstanceRungErrors = {
+    /**
+     * Error
+     */
+    400: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    401: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+    /**
+     * Error
+     */
+    403: {
+        type: string;
+        title: string;
+        status: number;
+        detail?: string;
+        instance?: string;
+        decision_id?: string;
+    };
+};
+
+export type PutGovernanceMoveInstanceRungError = PutGovernanceMoveInstanceRungErrors[keyof PutGovernanceMoveInstanceRungErrors];
+
+export type PutGovernanceMoveInstanceRungResponses = {
+    /**
+     * Success
+     */
+    200: {
+        enabled: boolean;
+        updatedAt: string | null;
+    };
+};
+
+export type PutGovernanceMoveInstanceRungResponse = PutGovernanceMoveInstanceRungResponses[keyof PutGovernanceMoveInstanceRungResponses];
+
 export type ListInstanceScanFloorsData = {
     body?: never;
     path?: never;

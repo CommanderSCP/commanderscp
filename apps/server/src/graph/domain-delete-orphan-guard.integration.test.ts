@@ -16,10 +16,14 @@ import {
  * authz scope expansion joins parents on `deleted_at IS NULL` and a `domain_id` chain has exactly
  * one upward path: the tombstone dead-ends it. Two API calls to permanent, admin-proof garbage.
  *
- * The guard refuses the delete with the blockers NAMED. Route 2 (`contains` edges) keeps its
- * pre-existing CASCADE semantics — that difference is deliberate (an edge can be tombstoned with
- * its object; a column cannot without silently re-parenting the children), and the control test
- * below pins it so this guard cannot quietly widen into refusing ordinary container deletes.
+ * The guard refuses the delete with the blockers NAMED.
+ *
+ * SINCE THE OWNER RULING OF 2026-08-18 IT COVERS ALL THREE DEPENDENT ROUTES (proposal
+ * governance-reach-on-containment-move.md §9.3): `domain_id` children, `contains` children, and
+ * placements naming the row. The last test in this file used to be the CONTROL asserting route 2
+ * still cascaded; it is inverted here with the reason written in, and the wider surface —
+ * placements, the `federationImport` / `removedForeignShadow` carve-outs, an assembly, an empty
+ * container — lives in `graph/container-delete-guard.integration.test.ts`.
  */
 describe("domain delete orphan guard (route-1 containment)", () => {
   let server: ListeningTestServer;
@@ -65,9 +69,7 @@ describe("domain delete orphan guard (route-1 containment)", () => {
 
     // The load-bearing half of the incident: the child must REMAIN administrable after the
     // refused delete — this is the exact write that 403'd forever before the guard.
-    const updated = await admin
-      .object("domain")
-      .update(child.id, { labels: { touched: "yes" } });
+    const updated = await admin.object("domain").update(child.id, { labels: { touched: "yes" } });
     expect(updated.labels.touched).toBe("yes");
   });
 
@@ -84,20 +86,35 @@ describe("domain delete orphan guard (route-1 containment)", () => {
     expect(gone.id).toBe(parent.id);
   });
 
-  it("CONTROL: route-2 (contains) children still CASCADE — deleting a service with components succeeds", async () => {
-    // Pins that the guard did not widen: `contains` children have deliberate cascade semantics
-    // (the edge dies with the object, reader-side filter as backstop), and a service delete with
-    // live components was legal before this guard and must remain so. If this test starts
-    // failing, the guard grew past route 1 — that would need its own decision, not a drive-by.
+  it("route-2 (contains) children now REFUSE the delete too — the owner ruling that retired the asymmetry", async () => {
+    // THIS TEST IS THE INVERSION OF A CONTROL, AND THE REASON IS WRITTEN WHERE THE OLD REASON WAS.
+    //
+    // It used to assert the opposite: "route-2 (contains) children still CASCADE — deleting a
+    // service with components succeeds", pinning that the route-1 guard "cannot quietly widen".
+    // That control was doing its job — the widening is not quiet, it is an OWNER RULING
+    // (2026-08-18, docs/proposals/governance-reach-on-containment-move.md §9.3 / §9.6 Q3-A) taken
+    // after the measurement that the cascade tombstones the EDGES and leaves the children LIVE and
+    // detached from every authority, governance and audit chain.
+    //
+    // What the suite protects now is the CARVE-OUT SET, not the asymmetry: a `federationImport`
+    // delete with children must still land or a peer's bundle wedges, and that case lives in
+    // `container-delete-guard.integration.test.ts` alongside the `removedForeignShadow` twin.
     const service = await admin.services.create({ name: uniq("cascade-svc") });
     const component = await admin.components.create({
       name: uniq("cascade-comp"),
       service: service.id
     });
+
+    const detail = await refusalDetail(admin.services.delete(service.id));
+    expect(detail).toContain("contained by it");
+    expect(detail).toContain("contains");
+    // The blocker is NAMED, with its type, so the operator knows what to move.
+    expect(detail).toContain(component.urn);
+    expect(detail).toContain("component");
+
+    // And the delete lands once the child is gone — the guard names blockers, it is not a ban.
+    await admin.components.delete(component.id);
     const deleted = await admin.services.delete(service.id);
     expect(deleted.id).toBe(service.id);
-    // And the component stays administrable — its domain_id never pointed at the service.
-    const touched = await admin.components.update(component.id, { labels: { ok: "1" } });
-    expect(touched.labels.ok).toBe("1");
   });
 });

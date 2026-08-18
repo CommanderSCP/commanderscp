@@ -5330,6 +5330,135 @@ export const zPolicyEvaluateResponse = z.object({
 /**
  * Success
  */
+export const zGetObjectGovernanceMoveEnforcementResponse = z.object({
+    enforced: z.boolean(),
+    instance: z.object({
+        enabled: z.boolean()
+    }),
+    rungs: z.array(z.object({
+        tier: z.enum([
+            'org',
+            'containment_domain',
+            'service',
+            'assembly'
+        ]),
+        subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        enabledAt: z.string(),
+        enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zListGovernanceMoveRungsResponse = z.object({
+    instance: z.object({
+        enabled: z.boolean()
+    }),
+    rungs: z.array(z.object({
+        tier: z.enum([
+            'org',
+            'containment_domain',
+            'service',
+            'assembly'
+        ]),
+        subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        name: z.string(),
+        enabledAt: z.string(),
+        enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+        depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+    }))
+});
+
+/**
+ * Success
+ */
+export const zDisableGovernanceMoveRungResponse = z.object({
+    subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    tier: z.enum([
+        'org',
+        'containment_domain',
+        'service',
+        'assembly'
+    ]),
+    enabled: z.boolean(),
+    enforcement: z.object({
+        enforced: z.boolean(),
+        instance: z.object({
+            enabled: z.boolean()
+        }),
+        rungs: z.array(z.object({
+            tier: z.enum([
+                'org',
+                'containment_domain',
+                'service',
+                'assembly'
+            ]),
+            subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string(),
+            enabledAt: z.string(),
+            enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+        }))
+    }),
+    decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+});
+
+/**
+ * Success
+ */
+export const zEnableGovernanceMoveRungResponse = z.object({
+    subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+    tier: z.enum([
+        'org',
+        'containment_domain',
+        'service',
+        'assembly'
+    ]),
+    enabled: z.boolean(),
+    enforcement: z.object({
+        enforced: z.boolean(),
+        instance: z.object({
+            enabled: z.boolean()
+        }),
+        rungs: z.array(z.object({
+            tier: z.enum([
+                'org',
+                'containment_domain',
+                'service',
+                'assembly'
+            ]),
+            subjectObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            name: z.string(),
+            enabledAt: z.string(),
+            enabledByObjectId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/),
+            depth: z.int().gte(-9007199254740991).lte(9007199254740991).optional()
+        }))
+    }),
+    decisionId: z.uuid().regex(/^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/)
+});
+
+/**
+ * Success
+ */
+export const zGetGovernanceMoveInstanceRungResponse = z.object({
+    enabled: z.boolean(),
+    updatedAt: z.string().nullable()
+});
+
+/**
+ * Success
+ */
+export const zPutGovernanceMoveInstanceRungResponse = z.object({
+    enabled: z.boolean(),
+    updatedAt: z.string().nullable()
+});
+
+/**
+ * Success
+ */
 export const zListInstanceScanFloorsResponse = z.object({
     items: z.array(z.object({
         tier: z.enum(['platform', 'trust_domain']),

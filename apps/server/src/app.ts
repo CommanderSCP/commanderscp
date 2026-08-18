@@ -49,6 +49,7 @@ import { registerScannerAssignmentRoutes } from "./routes/scanner-assignments.js
 import { registerScanDbRoutes } from "./routes/scan-db.js";
 import { registerDependencySubscriptionRoutes } from "./routes/dependency-subscriptions.js";
 import { registerDependencyProducerRoutes } from "./routes/dependency-producers.js";
+import { registerGovernanceMoveRoutes } from "./routes/governance-move.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -230,6 +231,11 @@ export async function buildApp(
     registerTypedRegistryRoutes(app, deps, resource);
   }
   registerGovernanceRoutes(app, deps);
+  // The governance:move lattice — the opt-in second bar on a containment MOVE, plus its instance
+  // rung (proposal governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18). Pinned by
+  // `governance/move-enforcement.integration.test.ts`'s WIRING case: delete this line and the
+  // explain read 404s, which is what "built, never installed" looks like from the outside.
+  registerGovernanceMoveRoutes(app, deps);
   registerInstanceScanFloorRoutes(app, deps); // M17.5 instance-scoped scan floors (ADR-0016)
   registerScannerAssignmentRoutes(app, deps); // M13.3a instance-scoped scanner assignments (ADR-0020)
   registerScanDbRoutes(app, deps); // M13.3b-ii offline scanner-DB cache: status/staleness/refresh/load (ADR-0020)

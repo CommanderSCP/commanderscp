@@ -33,6 +33,7 @@ import { isPairBoundObjectType } from "../graph/pair-bound-types.js";
 import { isSystemManagedRelationshipType } from "../graph/system-managed-relationships.js";
 import { assertPolicyScopeWithinAuthority } from "../governance/policy-scope-authz.js";
 import { assertCampaignTargetsWithinAuthority } from "../coordination/campaign-scope-authz.js";
+import { assertGovernanceMoveAdmits } from "../governance/move-enforcement.js";
 import {
   computePlanDiff,
   duplicateProjectionDeclarations,
@@ -1001,6 +1002,30 @@ export async function prepareApplyChecks(
             scopeObjectId: found.domainId
           });
         }
+        // THE `governance:move` TWIN (proposal §9.2 door (b), owner ruling 2026-08-18). A door-only
+        // fix ships INERT on IaC — proven by mutation in #244 — so the second bar has to be added
+        // here as well as in `graph/containment-parent-authz.ts`, and the two must agree.
+        //
+        // Thrown EAGERLY rather than pushed onto `checks`, for the reason
+        // `assertPolicyScopeWithinAuthority` and `assertCampaignTargetsWithinAuthority` are: the
+        // demand is CONDITIONAL (it exists only where a rung is enabled) and its refusal carries a
+        // written explanation naming the rung, neither of which a `{permission, scopeObjectId}` pair
+        // can express. Still fully fail-closed: an uncaught throw aborts `prepareApplyChecks` before
+        // `executePlanDiff` runs, inside the route's transaction, so nothing partially applies.
+        //
+        // The applying principal is the REAL one (`actorObjectId`, resolved at apply time), which is
+        // what makes this path a genuine door rather than a replay of a plan-time decision.
+        //
+        // NO ORG-ROOT EXEMPTION at either end, unlike the four `object:write` entries above — see
+        // `governance/move-enforcement.ts`'s header: custody shrinks at the root, but governance
+        // REACH is exactly what a move to the root reduces.
+        await assertGovernanceMoveAdmits(tx, {
+          orgId,
+          subjectObjectId: actorObjectId,
+          movedObjectId: found.id,
+          destinationObjectId: destination,
+          permissionSetForExplain: writePermissionFor(entry.typeId)
+        });
       }
       if (entry.typeId === "policy" && entry.action === "update") {
         await assertPolicyScopeWithinAuthority(tx, {

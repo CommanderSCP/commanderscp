@@ -1,4 +1,4 @@
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import {
   asContainmentDomainId,
@@ -1503,23 +1503,37 @@ export async function deleteObject(
   // org-root admin included, because the authz scope expansion joins parents on
   // `deleted_at IS NULL` and the child's one upward chain dead-ends at the tombstone.
   //
-  // Why refusal, and only for THIS route: containment has two routes, and their delete semantics
-  // are deliberately different. Route 2 (`contains` edges) is CASCADED below — an edge can be
-  // tombstoned alongside its object, and the reader-side filter backstops what the cascade can't
-  // reach. Route 1 is a COLUMN: it cannot be tombstoned per-child without rewriting the children
-  // (a silent re-parent nobody asked for), and leaving it dangling is the measured orphaning. The
-  // only honest option left is the same one `deleteObject` already uses for a merge loser: refuse
-  // with the blockers named, and let the operator move or delete the children first.
+  // WIDENED TO ALL THREE DEPENDENT ROUTES (owner ruling 2026-08-18, proposal §9.3 / §9.6 Q3-A).
+  // It used to guard route 1 alone, on the reasoning that route 2 (`contains` edges) has deliberate
+  // CASCADE semantics and the reader-side filter backstops what the cascade cannot reach. THE OWNER
+  // RETIRED THAT ASYMMETRY, and the measurement behind it is `countContainmentDependents`' own
+  // (`governance/governance-reach.ts`): the cascade tombstones the EDGES, so a deleted service's
+  // components stay LIVE and detached — and placements are worse still, because a placement names
+  // its component and target by JSON PROPERTY, not by an edge the cascade can see, so deleting a
+  // component today leaves its placements live and dangling. One rule now covers all three:
   //
-  // NOT applied on the federation-import path: the authoritative domain already deleted this
-  // object, and refusing the import would silently diverge this replica from its authority — a
-  // worse failure than the orphaning, which the reader-side deleted-ancestor filter at least
-  // bounds. A local child naming a foreign domain replica as its parent therefore CAN still be
-  // orphaned by that authority's delete; recorded as a cost, same class as the replica edges the
-  // cascade below cannot reach.
-  if (!input.federationImport) {
+  //   route 1  `objects.domain_id` children   — the measured incident above
+  //   route 2  `contains` children            — a service's components, left live and detached
+  //   routes 3+4  placements naming this row  — invisible to the cascade entirely
+  //
+  // The counts are the same three `countContainmentDependents` computes (kept as counts THERE, for
+  // the reach Decision, because that record only needs the blast radius' size); here the rows are
+  // ENUMERATED, because a refusal an operator cannot act on is a wall, not a guard.
+  //
+  // CONSEQUENCE WORTH STATING: deleting a component with placements is now REFUSED. That closes the
+  // dangling-placement gap by refusal rather than by cascade — §9.6 Q3 offered the cascade and the
+  // owner chose refusal, so a placement is removed by `DELETE /placements/{id}` and never implicitly.
+  //
+  // NOT applied on the federation-import path, and not when removing a foreign SHADOW row — the same
+  // two carve-outs the edge cascade below has, for the same reason. The authoritative domain already
+  // deleted this object, and refusing the import would silently diverge this replica from its
+  // authority (a worse failure than the orphaning, which the reader-side deleted-ancestor filter at
+  // least bounds); a shadow removal is purely local cleanup of a row this domain never authored. A
+  // local child naming a foreign replica as its parent therefore CAN still be orphaned by that
+  // authority's delete; recorded as a cost, same class as the replica edges the cascade cannot reach.
+  if (!input.federationImport && !removedForeignShadow) {
     const domainChildren = await tx
-      .select({ id: objects.id, urn: objects.urn })
+      .select({ id: objects.id, urn: objects.urn, typeId: objects.typeId })
       .from(objects)
       .where(
         and(
@@ -1531,14 +1545,71 @@ export async function deleteObject(
         )
       )
       .limit(6);
+    const containsChildren = await tx
+      .select({ id: objects.id, urn: objects.urn, typeId: objects.typeId })
+      .from(relationships)
+      .innerJoin(objects, eq(objects.id, relationships.toId))
+      .where(
+        and(
+          eq(relationships.orgId, input.orgId),
+          eq(relationships.typeId, "contains"),
+          eq(relationships.fromId, existing.id),
+          isNull(relationships.deletedAt),
+          isNull(objects.deletedAt)
+        )
+      )
+      .limit(6);
+    // Placements name their endpoints by JSON property (`componentId` / `deploymentTargetId`) — the
+    // same predicate `countContainmentDependents` uses, so the guard and the reach record can never
+    // disagree about what depends on this row.
+    const placementBlockers = await tx
+      .select({ id: objects.id, urn: objects.urn, typeId: objects.typeId })
+      .from(objects)
+      .where(
+        and(
+          eq(objects.orgId, input.orgId),
+          eq(objects.typeId, "placement"),
+          isNull(objects.deletedAt),
+          sql`(${objects.properties} ->> 'componentId' = ${existing.id}
+               OR ${objects.properties} ->> 'deploymentTargetId' = ${existing.id})`
+        )
+      )
+      .limit(6);
+
+    const label = (rows: { urn: string; typeId: string }[]): string => {
+      const shown = rows.slice(0, 5).map((r) => `${r.typeId} '${r.urn}'`);
+      return `${shown.join(", ")}${rows.length > 5 ? ", …" : ""}`;
+    };
+    const count = (rows: unknown[]): string =>
+      rows.length > 5 ? "at least 5" : String(rows.length);
+
+    const clauses: string[] = [];
+    // VERBATIM the pre-widening sentence — the incident this guard was built for, and the copy the
+    // existing suite reads. Widening the guard must not rewrite the diagnosis of the case it already
+    // covered.
     if (domainChildren.length > 0) {
-      const shown = domainChildren.slice(0, 5).map((c) => c.urn);
-      const suffix = domainChildren.length > 5 ? ", …" : "";
-      throw conflict(
-        `cannot delete '${existing.urn}': ${domainChildren.length > 5 ? "at least 5" : String(domainChildren.length)} live object(s) still name it as their domain (objects.domain_id) — ` +
+      clauses.push(
+        `${count(domainChildren)} live object(s) still name it as their domain (objects.domain_id) — ` +
           `deleting it would orphan them permanently, because permission resolution stops at deleted parents and no admin could ever update or delete them again. ` +
-          `Move them to another domain or delete them first: ${shown.join(", ")}${suffix}`
+          `Move them to another domain or delete them first: ${label(domainChildren)}`
       );
+    }
+    if (containsChildren.length > 0) {
+      clauses.push(
+        `${count(containsChildren)} live object(s) are still contained by it (a 'contains' edge, containment route 2) — ` +
+          `the delete cascade tombstones the EDGES, not the children, so they would stay live and detached from every authority, governance and audit chain. ` +
+          `Move them (PUT /components/{idOrUrn}/service) or delete them first: ${label(containsChildren)}`
+      );
+    }
+    if (placementBlockers.length > 0) {
+      clauses.push(
+        `${count(placementBlockers)} live placement(s) still name it (placement route) — ` +
+          `a placement references its component and target by property rather than by an edge, so nothing would tombstone them and they would be left live and dangling. ` +
+          `Delete them first (DELETE /placements/{idOrUrn}): ${label(placementBlockers)}`
+      );
+    }
+    if (clauses.length > 0) {
+      throw conflict(`cannot delete '${existing.urn}': ${clauses.join(" ")}`);
     }
   }
 

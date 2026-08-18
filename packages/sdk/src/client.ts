@@ -208,6 +208,12 @@ import {
   // M21.3 (ADR-0032 §3a/§6) — the dependency-subscription enablement chain.
   getDependencySubscriptionUnlock as getDependencySubscriptionUnlockRequest,
   putDependencySubscriptionUnlock as putDependencySubscriptionUnlockRequest,
+  getObjectGovernanceMoveEnforcement as getObjectGovernanceMoveEnforcementRequest,
+  listGovernanceMoveRungs as listGovernanceMoveRungsRequest,
+  enableGovernanceMoveRung as enableGovernanceMoveRungRequest,
+  disableGovernanceMoveRung as disableGovernanceMoveRungRequest,
+  getGovernanceMoveInstanceRung as getGovernanceMoveInstanceRungRequest,
+  putGovernanceMoveInstanceRung as putGovernanceMoveInstanceRungRequest,
   getComponentDependencySubscription as getComponentDependencySubscriptionRequest,
   // M21.2 (ADR-0032 §4) — the inventory backfill.
   backfillDependencyInventory as backfillDependencyInventoryRequest,
@@ -359,6 +365,12 @@ import type {
   // M21.3 (ADR-0032 §3a/§6) — the dependency-subscription enablement chain.
   DependencyLineKey,
   DependencySubscriptionUnlock,
+  GovernanceMoveEnforcement,
+  GovernanceMoveRungList,
+  GovernanceMoveRungWriteResponse,
+  GovernanceMoveInstanceRung,
+  PutGovernanceMoveRungRequest,
+  PutGovernanceMoveInstanceRungRequest,
   DependencySubscriptionResolutionResponse,
   PutDependencySubscriptionUnlockRequest,
   // M21.2 (ADR-0032 §4) — the inventory backfill.
@@ -1829,6 +1841,74 @@ export class ScpClient {
   // at the scope you want it, and opt one line back out with `{ coordinate: "…", enabled: false }`.
   // A convenience wrapper here would be a second authoring path for one concept.
   // -----------------------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------------------
+  // `governance:move` — THE OPT-IN SECOND BAR ON A CONTAINMENT MOVE (proposal
+  // governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18).
+  //
+  // THERE IS NO `move()` HERE, AND THERE MUST NOT BE. A move is still made through the ordinary
+  // verbs — `object(type).update({ domainId })`, `components.setService(...)`, `relationships`
+  // create/delete of a `contains` edge, or an IaC apply. What this block exposes is the LATTICE that
+  // decides whether those verbs demand `governance:move` as well as `object:write`.
+  //
+  // `enforcement(type, idOrUrn)` answers about ONE object's containment chain. A move has TWO ends
+  // and the door ORs them, so `enforced: false` here is not a promise that a particular move is
+  // ungoverned — the destination's chain may carry the rung.
+  // -----------------------------------------------------------------------------------------
+  readonly governanceMove = {
+    /** Is a move of this object governed, and by which rung? (See the note above about two ends.) */
+    enforcement: async (type: string, idOrUrn: string): Promise<GovernanceMoveEnforcement> => {
+      const result = await getObjectGovernanceMoveEnforcementRequest({
+        client: this.client,
+        path: { type, idOrUrn }
+      });
+      return unwrap(result);
+    },
+    /** Every rung this org has enabled, with the instance rung's state. */
+    rungs: async (): Promise<GovernanceMoveRungList> => {
+      const result = await listGovernanceMoveRungsRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /** Enable a rung at one container. `policy:write` at-or-above the subject; idempotent. */
+    enable: async (
+      idOrUrn: string,
+      req: PutGovernanceMoveRungRequest = {}
+    ): Promise<GovernanceMoveRungWriteResponse> => {
+      const result = await enableGovernanceMoveRungRequest({
+        client: this.client,
+        path: { idOrUrn },
+        body: req
+      });
+      return unwrap(result);
+    },
+    /** Disable a rung. 409 while an upper rung (an ancestor's, or the instance rung) is enabled —
+     *  an enablement above cannot be undone below. */
+    disable: async (idOrUrn: string): Promise<GovernanceMoveRungWriteResponse> => {
+      const result = await disableGovernanceMoveRungRequest({
+        client: this.client,
+        path: { idOrUrn }
+      });
+      return unwrap(result);
+    },
+    /** The instance (commander) rung. It ACTIVATES for every org on the deployment. */
+    instance: async (): Promise<GovernanceMoveInstanceRung> => {
+      const result = await getGovernanceMoveInstanceRungRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /** Set the instance rung. `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN` — no
+     *  tenant role can grant this, because the rung binds every org on the deployment. */
+    setInstance: async (
+      req: PutGovernanceMoveInstanceRungRequest,
+      operatorToken: string
+    ): Promise<GovernanceMoveInstanceRung> => {
+      const result = await putGovernanceMoveInstanceRungRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    }
+  };
+
   readonly dependencySubscriptions = {
     /** The instance unlock — the FIRST conjunct. `unlocked: true` PERMITS; it activates nothing. */
     unlock: async (): Promise<DependencySubscriptionUnlock> => {
