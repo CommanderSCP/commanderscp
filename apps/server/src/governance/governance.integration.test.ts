@@ -15,6 +15,7 @@ import {
   createTestUser,
   listenTestServer,
   reconcileTicks,
+  waitForAcceptEdgeControlRun,
   waitForChangeParked,
   waitUntil,
   type ListeningTestServer,
@@ -391,6 +392,10 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // returns pass, so it eventually clears.
     await waitForControlRun(admin, change.id, realControl.id, "pass");
     await waitForValidating(admin, change.id);
+    // ...and the accept edge is authorized by ITS OWN run, not by the wave-boundary run the wait
+    // above returned — `POST /accept` is host-less and can only read the run made for its crossing
+    // (M22.0a). See `waitForAcceptEdgeControlRun`.
+    await waitForAcceptEdgeControlRun(admin, change.id, realControl.id, "pass");
     const accepted = await admin.changes.accept(change.id);
     expect(accepted.state).toBe("accepted");
 
@@ -783,6 +788,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // 'validating' on its own.
       await approverClient.approvals.vote(approvalRequest.id);
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
 
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
@@ -1590,6 +1596,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
 
@@ -1720,6 +1727,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
 
@@ -1825,6 +1833,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // control context, the clean matching verdict passes, and the change accepts.
       await waitForControlRun(admin, changeObjectId, control.id, "pass");
       await waitForValidating(admin, changeObjectId);
+      await waitForAcceptEdgeControlRun(admin, changeObjectId, control.id, "pass");
       const accepted = await admin.changes.accept(changeObjectId);
       expect(accepted.state).toBe("accepted");
 
@@ -1951,6 +1960,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
     });
@@ -2030,6 +2040,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(checkSource.callCountFor(sha)).toBeGreaterThan(callsWhileInFlight);
 
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
     });

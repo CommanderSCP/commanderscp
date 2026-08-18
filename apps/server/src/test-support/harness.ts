@@ -718,6 +718,74 @@ export async function assertStaysExecuting(
   await assertChangeStaysIn(server, orgId, changeObjectId, "executing", opts);
 }
 
+/**
+ * Waits for the run of `controlObjectId` that authorizes the **accept edge** — `lifecycle_edge` /
+ * `{fromState: "validating", toState: "accepted"}` — to exist on `changeObjectId` with `status`.
+ *
+ * ## Why a wave-boundary run is not an answer to this question
+ *
+ * `POST /changes/{id}/accept` runs the lifecycle gate with **no plugin host** (DESIGN §16's
+ * api/worker split — `coordination/gates.ts`'s `GateDeps.host` is `null` on the API tier), so it can
+ * only READ a control outcome, never produce one. Since M22.0a it reads
+ * `latestControlRunForGate`: the run made for ITS OWN crossing, because a run is evidence that a
+ * particular crossing was authorized and not a permanent property of the change (an exclusion grant
+ * carries an expiry — ADR-0033 §10).
+ *
+ * The run every test sees FIRST belongs to a different crossing. A change reaches `validating` by
+ * clearing its **wave boundaries** (`{topologyObjectId, waveIndex}`), so by the time it is
+ * acceptable there is already a passing run for the control — for the wrong gate. The accept edge's
+ * own run is written afterwards, by `reconcile.ts`'s `advanceValidatingChanges` prewarm, in the same
+ * tick that transitioned the change but in a LATER transaction. Between those two commits the
+ * change is observably `validating` and `accept` correctly answers 409 with a Decision reading
+ * `requireControls: {outcome: "not-run"}`.
+ *
+ * So `waitForValidating(...)` followed immediately by `accept(...)` is a RACE, and one that only
+ * ever loses on a loaded runner: the window measured ~180 ms wide on a cold plugin subprocess and
+ * ~20 ms warm, against a 100 ms poll.
+ *
+ * CI SURFACED THREE OF NINE. Three tests failed the shard; a census by the PROPERTY ("this accept
+ * depends on a control run made for another gate") found NINE call sites across
+ * `governance.integration.test.ts` and `scoped-scan-requirements.integration.test.ts`, and holding
+ * the accept-edge prewarm back by one reconcile tick failed exactly those nine and nothing else.
+ * The other six were passing on timing, not on contract. Waiting for the accept edge's OWN run
+ * makes the precondition the thing the test actually depends on, rather than a faster machine.
+ *
+ * NOT A RETRY LOOP AROUND `accept`. This waits for a named, observable fact — the run that will
+ * decide the crossing — and then asserts the accept exactly as before. A test whose control never
+ * produces that run still fails, here, by timeout.
+ *
+ * Reads `gateKind`/`gateRef` off `GET /changes/{id}/control-runs`, the additive projection M22.8
+ * shipped for exactly this question. A run missing them does not match: absent gate identity is not
+ * evidence of the right crossing, and failing closed here keeps the wait from silently degrading
+ * into the gate-agnostic one it replaced.
+ */
+export async function waitForAcceptEdgeControlRun(
+  client: ScpClient,
+  changeObjectId: string,
+  controlObjectId: string,
+  status: string,
+  opts: { timeoutMs?: number } = {}
+) {
+  const timeoutMs = opts.timeoutMs ?? 25_000;
+  return waitUntil(
+    async () => {
+      const runs = await client.controlRuns.listForChange(changeObjectId);
+      // `listControlRunsForChange` orders `createdAt DESC`, so the first match is the newest run
+      // for this crossing — the one `latestControlRunForGate` would return.
+      return runs.items.find((r) => {
+        if (r.controlObjectId !== controlObjectId || r.status !== status) return false;
+        if (r.gateKind !== "lifecycle_edge") return false;
+        const ref = r.gateRef as { fromState?: unknown; toState?: unknown } | undefined;
+        return ref?.fromState === "validating" && ref?.toState === "accepted";
+      });
+    },
+    {
+      describe: `the accept-edge (validating->accepted) run of control ${controlObjectId} on change ${changeObjectId} reports '${status}' — the run POST /accept will actually read (M22.0a)`,
+      timeoutMs
+    }
+  );
+}
+
 /** {@link assertChangeStaysIn} for a change parked on an unsatisfied cross-change prerequisite
  *  (M12 P4B): `advanceWaitingChanges` looked at it again and its requirements are still unmet. */
 export async function assertStaysWaiting(

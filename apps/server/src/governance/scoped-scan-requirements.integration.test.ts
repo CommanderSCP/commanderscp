@@ -11,6 +11,7 @@ import {
   createOrphanComponent,
   createTestOrg,
   listenTestServer,
+  waitForAcceptEdgeControlRun,
   waitUntil,
   type ListeningTestServer,
   type TestOrg
@@ -503,6 +504,9 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
         timeoutMs: 25_000
       }
     );
+    // The run above authorized the WAVE boundary. `accept` reads the run made for the accept edge
+    // itself (M22.0a) — written by the prewarm a moment after the transition this wait observed.
+    await waitForAcceptEdgeControlRun(adminA, changeA.id, controlA.id, "pass");
     expect((await adminA.changes.accept(changeA.id)).state).toBe("accepted");
 
     // ARM 2 — the SAME org floor, plus a COMPONENT floor that TIGHTENS maxHigh to 0. Identical
@@ -725,6 +729,9 @@ describe("M17.5 scoped scan-requirement policies (six tiers, most-restrictive-wi
         timeoutMs: 25_000
       }
     );
+    // See ARM 1 of (b): the accept edge is decided by its OWN run, not by the wave-boundary one
+    // `waitForControlRun` returned above.
+    await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
     expect((await admin.changes.accept(change.id)).state).toBe("accepted");
   });
 
