@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { verifyBlobDetached } from "@scp/cosign";
 import type { DependencyIndexEcosystem } from "@scp/plugin-api";
+import { boundText } from "@scp/runner-launcher";
 
 /**
  * M21.4 — THE AIR-GAP VERSION FEED (ADR-0032 §7, charter principle 5).
@@ -139,8 +140,17 @@ export function parseDependencyIndexFeed(text: string): DependencyIndexFeedDocum
       !Array.isArray(entry.versions) ||
       entry.versions.some((v) => typeof v !== "string")
     ) {
+      // `boundText`, NOT `.slice(0, 120)` (HIGH class, M23.0 verification pass 8). This message
+      // reaches a DATABASE ROW: `readDependencyIndexFeed` turns the throw into
+      // `FeedRead.detail` -> `unavailableOutcome(...).detail` -> `decisionFor`'s `reasonTree.detail`
+      // -> a `Decision`'s jsonb. A slice at a UTF-16 CODE-UNIT offset can land inside a surrogate
+      // pair, and `jsonb` refuses an ill-formed string. `JSON.stringify` escapes lone surrogates
+      // and NUL to ASCII, so the ONLY way through is a well-formed astral pair straddling the cut —
+      // and that is reachable: measured, a `coordinate` of 86 characters followed by an emoji makes
+      // `.slice(0, 120)` ill-formed. A malformed feed entry would then take the poll's Decision
+      // with it instead of being reported.
       throw new Error(
-        `dependency version feed carries a malformed entry (${JSON.stringify(raw).slice(0, 120)})`
+        `dependency version feed carries a malformed entry (${boundText(JSON.stringify(raw), 120, 0)})`
       );
     }
     entries.push({

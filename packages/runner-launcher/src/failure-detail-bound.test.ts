@@ -19,8 +19,23 @@ import {
  * `Command failed: <cmd>\n<the ENTIRE stderr>`. With a short message ahead of it the appended tail
  * lands inside every consumer's front-slice, so the append looked like it worked. It did not work
  * anywhere else: `output.slice(-N)` -> `output.slice(0, N)` — head instead of tail, negating the
- * mechanism's whole purpose — SURVIVED 1542 tests, while deleting the append entirely reddened 4.
- * The PRESENCE of output was pinned; its TAIL-ness was pinned by nothing.
+ * mechanism's whole purpose — SURVIVED 1542 tests. The PRESENCE of output was pinned; its TAIL-ness
+ * was pinned by nothing.
+ *
+ * THE COMPANION NUMBER, CORRECTED — LOW, verification pass 7 finding L1, re-measured in pass 8 and
+ * the disagreement turned out to be about the MUTATION, not the count. "Deleting the append
+ * entirely reddened 4" was reported here; pass 7 re-measured six. Both are right, and they are
+ * measurements of two different things. Re-run against `a0a3ab59^` with the round's own test files
+ * removed, in the same tree so `dist` resolution is the real one:
+ *
+ *   suffix = "" in the TAIL BRANCH ONLY            -> 4 red  (0 launcher, 1 iac, 2 scan, 1 dep)
+ *   the WHOLE suffix computation deleted           -> 6 red  (1 launcher, 1 iac, 2 scan, 2 dep)
+ *
+ * The extra two are not about the tail at all: they pin the `output.length === 0` arm's
+ * "[the runner printed nothing on stdout or stderr]" wording, which the broader mutation also
+ * removes. So the honest statement is the narrow one — FOUR tests pinned the append, none of them
+ * its TAIL-ness — and the sentence now says which mutation it is talking about, because a bare
+ * "deleting the append" admits both readings and they differ by 50%.
  *
  * SO EVERY ARM BELOW USES A MESSAGE OF NODE'S REAL SHAPE and puts the diagnosis at the END of the
  * output, which is where a `tofu apply`, a Trivy run and an `npm` failure all put theirs. An

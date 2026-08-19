@@ -823,16 +823,27 @@ function persistableText(text: string): string {
  * pass-through for it.
  */
 export function boundDetail(text: string): BoundedDetail {
-  return boundToWidth(text, RUNNER_DETAIL_MAX_CHARS, RUNNER_DETAIL_TAIL_CHARS) as BoundedDetail;
+  return boundText(text, RUNNER_DETAIL_MAX_CHARS, RUNNER_DETAIL_TAIL_CHARS) as BoundedDetail;
 }
 
 /**
- * The same bound at an arbitrary width, which is what lets ONE implementation serve both the
- * operator-facing `detail` and the per-string share of a whole persisted structure
- * ({@link boundPersistedJson}). `boundDetail` is this function at
+ * THE SAME BOUND AT AN ARBITRARY WIDTH — ONE implementation serving the operator-facing `detail`
+ * ({@link boundDetail}), the per-string share of a whole persisted structure
+ * ({@link boundPersistedJson}), and any other place that needs to cut a string short before storing
+ * it. `boundDetail` is this function at
  * ({@link RUNNER_DETAIL_MAX_CHARS}, {@link RUNNER_DETAIL_TAIL_CHARS}).
+ *
+ * EXPORTED BECAUSE THE ALTERNATIVE IS ANOTHER BARE `.slice`, and a bare slice at a UTF-16 CODE-UNIT
+ * offset is the defect this whole family of fixes is about: it cuts surrogate pairs, `jsonb`
+ * refuses the row, and the write throws inside whatever transaction it was in. A filterless census
+ * of "slice a string at a code-unit offset, then persist it" found a second live instance in
+ * `apps/server/src/dependencies/version-index-feed.ts`, so the primitive is offered rather than
+ * left private for each caller to re-invent.
+ *
+ * `tailChars` of 0 gives a HEAD-ONLY bound with an honest elision count — the right shape for a
+ * short diagnostic preview, where a reserved tail would leave almost no head.
  */
-function boundToWidth(text: string, max: number, tailWant: number): string {
+export function boundText(text: string, max: number, tailChars: number): string {
   if (max <= 0) return "";
   if (text.length <= max) return persistableText(text);
   // `elisionMarker(text.length)` is the longest the marker can be (the count only shrinks), so
@@ -843,7 +854,7 @@ function boundToWidth(text: string, max: number, tailWant: number): string {
     // provider refusal or an exception message, the diagnosis is what the last characters hold.
     return persistableText(text.slice(text.length - max));
   }
-  const tail = Math.min(tailWant, max - widest.length - 1);
+  const tail = Math.min(tailChars, max - widest.length - 1);
   const headShare = Math.max(0, max - tail - widest.length);
   const dropped = text.length - headShare - tail;
   // The elision count stays arithmetically honest through sanitising precisely because
@@ -913,7 +924,7 @@ function jsonCost(value: string | number | boolean): number {
 function boundStringToCost(text: string, left: number): string {
   let width = Math.min(RUNNER_DETAIL_MAX_CHARS, left);
   for (let attempt = 0; attempt < 5 && width > 0; attempt++) {
-    const candidate = boundToWidth(text, width, Math.floor(width / 2));
+    const candidate = boundText(text, width, Math.floor(width / 2));
     if (jsonCost(candidate) <= left) return candidate;
     width = Math.floor(width / 2);
   }
