@@ -332,10 +332,10 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
    * HIGH (M23.0 verification pass 9) — WHICH KEYS SURVIVE IS NOT THE WHOLE PROPERTY. HOW MUCH OF
    * EACH SURVIVES IS PART OF IT.
    *
-   * `walkField`'s doc rejects the reorder alternative (order `rollout` before `images` in
-   * `observedStateFrom`) because it "makes source-line order in an unrelated function a load-bearing
-   * contract". Pass 8's own design had that disease on a different observable: every arm above was
-   * green while the same three fields kept
+   * The allocator's doc (on `PERSISTED_JSON_SHARE_ROUNDS`) rejects the reorder alternative (order
+   * `rollout` before `images` in `observedStateFrom`) because it "makes source-line order in an
+   * unrelated function a load-bearing contract". Pass 8's own design had that disease on a different
+   * observable: every arm above was green while the same three fields kept
    *
    *   revision, images, rollout (SHIPPED)  ->  39 refs, row 4 065
    *   revision, rollout, images            ->  77 refs, row 7 864
@@ -439,9 +439,9 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
    * production actually produces — AT EVERY ORDER, so it cannot go blind that way again.
    *
    * It used to build `{revision, rollout, images}` with `images` LAST. That is the ONE permutation
-   * where the old `walkShare` short-circuited (`if (unwalkedSiblings <= 1) return walk(...)`) and no
-   * share was ever applied, so the arm measured the one layout that could not fail. Against its own
-   * 0.8 threshold, on pass 8's code:
+   * where the old per-field share short-circuited (`if (unwalkedSiblings <= 1) return walk(...)` —
+   * the last field was handed the whole remainder) and no share was ever applied, so the arm
+   * measured the one layout that could not fail. Against its own 0.8 threshold, on pass 8's code:
    *
    *   alone (images only)                        : 79
    *   this arm's old order {revision,rollout,images}: 78   ratio 0.987  PASSED
@@ -474,6 +474,277 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
     const out = boundPersistedJson(many) as Record<string, unknown>;
     expect(typeof out[PERSISTED_JSON_ELIDED_KEY]).toBe("string");
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+  });
+});
+
+/**
+ * MEDIUM (M23.0 verification pass 10) — THE PER-STRING BOUND HALVED ON A TWO-CHARACTER OVERSHOOT,
+ * AND EVERY ARM THAT COULD HAVE SEEN IT WAS SHAPED LIKE AN ARRAY.
+ *
+ * `boundText` bounds a CHARACTER count; the budget is measured in RENDERED characters, and the
+ * difference for an unescaped string is exactly the two quotes `JSON.stringify` adds. The old loop
+ * recovered those two characters by HALVING the width, so every plain-ASCII string — every image
+ * ref, digest, revision, URL and branch name a real executor reports — stored half of what it was
+ * given:
+ *
+ *   share    stored   rendered   utilisation
+ *     400      200       202       50.5 %
+ *    2634     1317      1319       50.1 %   <- one field's share of the 8 000 budget
+ *    3900     1950      1952       50.1 %
+ *
+ * WHY NO EXISTING ARM SAW IT, AND WHY THAT IS STRUCTURAL. Every fixture in this file whose field is
+ * large enough to be cut is an ARRAY (`images`), and an array is cut by dropping ENTRIES — the
+ * halving never runs on the array itself, only on entries that individually fit. The integration
+ * harness could not reach it either: the fake executor's only free-form `observed` field was
+ * `imagesByTarget`, an array. So the one shape the defect lives in was unreachable end to end BY
+ * CONSTRUCTION, in the unit tests and in the integration tests alike. The arms below are the
+ * string-shaped half of every property this file already states about arrays.
+ *
+ * MUTATION LOG — applied, watched fail, reverted, watched pass.
+ *
+ * | Mutation | Result |
+ * |---|---|
+ * | The pass-9 HALVING restored in `boundStringToCost` (`width = Math.floor(width / 2)`) | 5 of the 6 arms below fail: `budget - 96` at its first budget (`{budget: 400, row: 160}`), every escape density at 0.40, string-shaped utilisation at 0.497, key seating, and the elision residue at 0.43 |
+ * | The pass-9 IN-LOOP KEY CHARGING restored in `walkObjectFields` (each field walked against `floor(budget.left / unwalkedSiblings)` as the loop decrements `budget.left`, the last field handed the remainder) | 3 arms fail: order-independence with 3 distinct payloads, key seating (200 keys all seated at a one-character sliver), and the elision residue (`expected 792 to be 0` — 792 fields whose stored value is the empty string) |
+ *
+ * The two mutations redden DIFFERENT arms, with the seating arms overlapping: order-independence is
+ * blind to the halving and the utilisation arms are blind to the allocation. Two defects, two
+ * levers.
+ */
+describe("MEDIUM: a string field spends its share, not half of it", () => {
+  /** Longer than any share this file can hand out, so it ALWAYS overflows and the arms are never
+   *  measuring a string that simply fitted. */
+  const OVERFLOWING = "r".repeat(50_000);
+
+  /**
+   * `boundPersistedJson` reserves PERSISTED_JSON_MIN_LEAF = 96 characters of the budget up front,
+   * and that reserve is the whole of the `O(small)`. Written as the literal 96 rather than imported,
+   * for the reason the magnitude arms in this repository exist: an assertion against the constant
+   * that defines the bound cannot notice the constant moving.
+   */
+  const MIN_LEAF_RESERVE = 96;
+
+  it("A SINGLE STRING FIELD STORES `budget - 96` AT EVERY BUDGET 400…3 900, never `budget / 2`", () => {
+    // Every integer budget in the window, not a sample: the defect is arithmetic, and a sample is
+    // how a fixture ends up sitting on the one budget where the arithmetic happens to be right.
+    const offBy: { budget: number; row: number }[] = [];
+    for (let budget = 400; budget <= 3_900; budget++) {
+      const row = JSON.stringify(boundPersistedJson({ revision: OVERFLOWING }, budget))!.length;
+      if (row !== budget - MIN_LEAF_RESERVE) offBy.push({ budget, row });
+      // The guarantee itself, restated at every budget — the arm must not buy utilisation by
+      // going over.
+      expect(row, `budget ${budget}: over the budget`).toBeLessThanOrEqual(budget);
+    }
+    expect(offBy.slice(0, 5), "a string field did not spend its whole share").toEqual([]);
+    // NON-VACUITY: the window stops at 3 900 because RUNNER_DETAIL_MAX_CHARS caps any single string
+    // at 4 000 characters, so above ~4 100 the row is decided by that cap and not by the share.
+    // Asserted, so a future cap change turns this comment into a failure rather than a lie.
+    expect(
+      JSON.stringify(boundPersistedJson({ revision: OVERFLOWING }, 8_000))!.length
+    ).toBeLessThan(8_000 - MIN_LEAF_RESERVE);
+  });
+
+  it("EVERY ESCAPE DENSITY, not just the plain ASCII the defect was found on", () => {
+    // The old comment claimed the halving existed to make ESCAPES fit — "the worst escape expansion
+    // is 6x". It was not serving that case either: a power of two is not where the boundary sits
+    // for any particular density. Measured at share 3 900, C0 controls: 487 characters rendering to
+    // 2 779 (71 %) under halving, 673 rendering to 3 895 (99.9 %) under the search.
+    const alphabets: [string, string][] = [
+      ["plain ASCII", "r"],
+      ["backslashes (2x)", "\\"],
+      ["quotes (2x)", '"'],
+      // An escape, not a literal, for the reason NUL is one above. It renders as six characters.
+      ["C0 controls (6x)", "\u0001"],
+      ["astral (surrogate pairs)", "\u{1F600}"]
+    ];
+    for (const [name, unit] of alphabets) {
+      const text = unit.repeat(20_000);
+      for (let budget = 400; budget <= 3_900; budget += 17) {
+        const rendered = JSON.stringify(boundPersistedJson({ revision: text }, budget))!;
+        expect(rendered.length, `${name} at budget ${budget}: over the budget`).toBeLessThanOrEqual(
+          budget
+        );
+        // Halving reaches 0.39 on the C0 arm and ~0.505 on the rest; the search never drops below
+        // 0.749. A single threshold at 0.70 therefore reddens on the defect for EVERY density
+        // without pinning a byte count a marker's wording could move.
+        expect(
+          rendered.length / budget,
+          `${name} at budget ${budget}: half the share was discarded`
+        ).toBeGreaterThan(0.7);
+        expect(isWellFormed(rendered), `${name} at budget ${budget}`).toBe(true);
+      }
+    }
+  });
+
+  /**
+   * THE STRING-SHAPED HALF OF "BUDGET UTILISATION", which the array fixture cannot express.
+   *
+   * `{revision, images, rollout}` with a big `images` is the only overflowing composition this file
+   * had, and an array overflows by dropping whole entries — a path the per-string bound never
+   * touches. Two truncated STRINGS beside two small fields is the same property in the shape the
+   * defect lives in. Measured: 7 904 of 8 000 (98.8 %); under the halving, 3 976 (49.7 %).
+   *
+   * WHY THE STRINGS ARE 50 000 CHARACTERS AND NOT 4 000, which took a mutation run to discover.
+   * At 4 000 the halving DOES NOT FIRE at this budget, and the arm would have been green under the
+   * defect. The elision marker is sized against the widest count it could ever carry
+   * (`text.length`), so when the ACTUAL dropped count has fewer digits the result comes back a
+   * character or two under the requested width — and at a share of 3 931, dropping 97 of 4 000
+   * leaves exactly the two characters the quotes need. At 50 000 the dropped count has the same
+   * five digits as the length, there is no slack, and the first attempt misses by two. A
+   * utilisation arm that cannot see the defect is the "green for the wrong reason" mode this
+   * repository keeps shipping, so the fixture is chosen against the MEASURED mutation, not by
+   * eye.
+   */
+  it("BUDGET UTILISATION, STRING-SHAPED — the composition the array fixture cannot express", () => {
+    const out = boundPersistedJson({
+      a: "a".repeat(50_000),
+      b: "b".repeat(50_000),
+      phase: "Progressing",
+      step: 3
+    });
+    const row = JSON.stringify(out)!.length;
+    expect(row / PERSISTED_JSON_MAX_CHARS).toBeGreaterThan(0.9);
+    expect(row).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+    // NON-VACUITY: both strings really were cut, so the budget really was the constraint.
+    const bounded = out as { a: string; b: string };
+    expect(bounded.a.length).toBeLessThan(50_000);
+    expect(bounded.b.length).toBeLessThan(50_000);
+    // And the two small siblings were not sacrificed to pay for it.
+    expect((out as { phase: string; step: number }).phase).toBe("Progressing");
+    expect((out as { phase: string; step: number }).step).toBe(3);
+  });
+
+  /**
+   * HIGH (M23.0 verification pass 10) — PROPERTY (2), ON STRING CONTENTS, WHERE PASSES 8 AND 9 BOTH
+   * STILL FAILED IT.
+   *
+   * The allocator's doc rejects "reorder the composition" as an alternative BECAUSE it makes
+   * source-line order a load-bearing contract. Pass 8 failed that test on array contents and pass 9
+   * fixed it there; pass 9 then failed it on STRING contents, because it computed each field's share
+   * from the budget REMAINING mid-loop and handed the LAST field the entire remainder. All 24
+   * permutations of the fixture above, on pass 9 plus this round's width search:
+   *
+   *   a 3 858 / b 4 000    4 orders     row 7 904
+   *   a 3 929 / b 3 929   16 orders     row 7 904   <- the fair answer
+   *   a 4 000 / b 3 858    4 orders     row 7 904
+   *
+   * THE ROW IS THE SAME SIZE IN ALL THREE. No length assertion, and no utilisation assertion,
+   * can see this — which is why it is asserted on the PAYLOAD, byte for byte.
+   *
+   * AND WHY THIS FIXTURE IS 4 000 CHARACTERS WHERE THE UTILISATION ARM ABOVE IS 50 000. The spread
+   * exists because one of the two strings can be SATISFIED — handed the whole remainder as the last
+   * field, it fits entirely and keeps its spend out of the redistribution pool. A string long
+   * enough never to be satisfied (50 000) makes every order agree even on pass 9, so the arm would
+   * have been green under the defect. Each fixture is sized against the mutation it has to see.
+   *
+   * DELETE-THE-WIRING: move the key charging back inside the value loop in `walkObjectFields` (so
+   * phase 2's pool is read from a `budget.left` the walk is still decrementing) and this arm fails
+   * with 3 distinct payloads.
+   */
+  it("ORDER-INDEPENDENT RETENTION, TWO TRUNCATED STRINGS: 24 orders, one byte-identical answer", () => {
+    const source: Record<string, unknown> = {
+      a: "a".repeat(4_000),
+      b: "b".repeat(4_000),
+      phase: "Progressing",
+      step: 3
+    };
+    const orders: string[][] = [];
+    const permute = (rest: string[], taken: string[]) => {
+      if (rest.length === 0) return void orders.push(taken);
+      for (let i = 0; i < rest.length; i++) {
+        permute([...rest.slice(0, i), ...rest.slice(i + 1)], [...taken, rest[i]!]);
+      }
+    };
+    permute(Object.keys(source), []);
+    expect(orders.length).toBe(24);
+
+    const payloads = new Set<string>();
+    for (const order of orders) {
+      const value: Record<string, unknown> = {};
+      for (const key of order) value[key] = source[key];
+      const out = boundPersistedJson(value) as Record<string, unknown>;
+      // The KEYS come back in insertion order, which is not the property — how much of each field
+      // survived is. Compare a canonically ordered projection so the arm is about retention.
+      payloads.add(
+        JSON.stringify(Object.keys(source).map((key) => [key, out[key]] as const)) +
+          `|row=${JSON.stringify(out)!.length}`
+      );
+    }
+    expect(
+      [...payloads],
+      "how much of each field survived still depends on insertion order"
+    ).toHaveLength(1);
+    // NON-VACUITY: if the fixture stopped overflowing, all 24 would trivially agree.
+    expect(JSON.stringify(source).length).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS);
+  });
+
+  /**
+   * PROPERTY (1), STRENGTHENED AND THEN HONESTLY QUALIFIED (M23.0 verification pass 10).
+   *
+   * Charging the keys before any value is walked means the seating decision reads KEY COSTS ONLY.
+   * So a key is now never elided because a sibling's VALUE was large, at any budget — the first arm.
+   * What it does still depend on is how long the KEYS are, because the seated set is a prefix in
+   * insertion order: the second arm pins that residue rather than leaving it to be discovered.
+   */
+  it("KEY LENGTH, NOT VALUE SIZE, decides which keys are seated", () => {
+    const keys = Array.from({ length: 200 }, (_, i) => `key-number-${i}`);
+    const seatedKeys = (values: string) =>
+      Object.keys(boundPersistedJson(Object.fromEntries(keys.map((k) => [k, values]))) as object);
+    const withTinyValues = seatedKeys("v");
+    const withHugeValues = seatedKeys("v".repeat(9_000));
+    // NON-VACUITY: 200 keys cannot be seated at 96 characters each, so this IS the elision regime.
+    expect(withTinyValues).toContain(PERSISTED_JSON_ELIDED_KEY);
+    expect(withTinyValues.length).toBeLessThan(200);
+    // The property: growing every value by four orders of magnitude moves nothing.
+    expect(withHugeValues, "a value's size changed which keys were seated").toEqual(withTinyValues);
+
+    // THE RESIDUE, STATED. The seated set is a PREFIX, so an object whose keys differ wildly in
+    // LENGTH does still seat different keys at different orders. Documented on the allocator as the
+    // one carve-out from property (2); pinned here so "the one carve-out" stays exactly one.
+    const longKey = "L".repeat(5_000);
+    const longFirst = boundPersistedJson({ [longKey]: "v", s1: "v", s2: "v" }, 300) as object;
+    const longLast = boundPersistedJson({ s1: "v", s2: "v", [longKey]: "v" }, 300) as object;
+    expect(Object.keys(longFirst)).toEqual([PERSISTED_JSON_ELIDED_KEY]);
+    expect(Object.keys(longLast)).toEqual(["s1", PERSISTED_JSON_ELIDED_KEY]);
+  });
+
+  /**
+   * THE PRICE OF THE FLOOR, PINNED AS A FLOOR OF ITS OWN.
+   *
+   * Phase 1 seats a key only while PERSISTED_JSON_MIN_LEAF of budget remains for it AND for every
+   * key already seated. A field that then wants less than 96 characters leaves the difference
+   * unspent, so in the ELISION regime — and only there — utilisation drops. Pass 9's sliver rule
+   * scored higher on this number and lower on every other: 5 000 fields of `"v".repeat(50)` seated
+   * 792 fields, EVERY ONE OF THEM THE EMPTY STRING, for a row of 7 844. An empty value in a governed
+   * row reads as an observation, not as a cut (charter principle 6).
+   *
+   * Property (3) in the allocator's doc is narrowed to say so. This arm is what stops the residue
+   * growing quietly afterwards.
+   */
+  it("THE ELISION REGIME'S UTILISATION RESIDUE, pinned as a floor so it cannot silently grow", () => {
+    const longKeys = Object.fromEntries(
+      Array.from({ length: 50 }, (_, i) => [`${"k".repeat(5_000)}${i}`, "v"])
+    );
+    const longRow = JSON.stringify(boundPersistedJson(longKeys))!.length;
+    // Measured 4 554 of 8 000 = 56.9 %. The floor is set just under it: this arm fails if a future
+    // edit makes the elision regime WORSE, and its magnitude is stated here rather than argued.
+    expect(longRow / PERSISTED_JSON_MAX_CHARS).toBeGreaterThan(0.55);
+    expect(longRow).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+
+    // AND WHAT THE RESIDUE BUYS: every seated field carries its whole value, rather than 792 keys
+    // whose value is the empty string. This is the half pass 9 scored worse on.
+    const manyKeys = Object.fromEntries(
+      Array.from({ length: 5_000 }, (_, i) => [`k${i}`, "v".repeat(50)])
+    );
+    const out = boundPersistedJson(manyKeys) as Record<string, unknown>;
+    const fields = Object.keys(out).filter((key) => key !== PERSISTED_JSON_ELIDED_KEY);
+    expect(fields.length).toBeGreaterThan(50);
+    expect(
+      fields.filter((key) => out[key] === "").length,
+      "a seated field stored the empty string, which reads as an observation rather than a cut"
+    ).toBe(0);
+    expect(fields.every((key) => out[key] === "v".repeat(50))).toBe(true);
+    expect(typeof out[PERSISTED_JSON_ELIDED_KEY]).toBe("string");
   });
 });
 

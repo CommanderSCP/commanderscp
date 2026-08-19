@@ -1026,8 +1026,8 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  * what phase 1 now owns; what the argument missed is what a sliver actually stores. Charging the
  * keys first makes it visible — 5 000 fields of `"v".repeat(50)` at the 8 000 budget:
  *
- *   sliver (pass 9)   793 keys seated, 792 of them the EMPTY STRING, row 7 844
- *   floor  (pass 10)   77 keys seated, every one of them its whole 50-character value
+ *   sliver (pass 9)   792 fields seated, every one of them the EMPTY STRING, row 7 844
+ *   floor  (pass 10)    76 fields seated, every one of them its whole 50-character value
  *
  * `"k123": ""` in a governed row does not read as "this was cut". It reads as an observation — the
  * executor reported an empty value — which is the provenance-label defect this repository has
@@ -1067,7 +1067,7 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  *       each key it DID seat, and a field that turns out to want less than that leaves the
  *       difference unspent. The residue is bounded by `MIN_LEAF x seated`, and the worst shape for
  *       it is many long keys with tiny values: 50 keys of 5 000 characters with one-character
- *       values seats 35 of them and spends 4 554 of 8 000 (57 %), against 6 651 (83 %) under pass
+ *       values seats 34 of them and spends 4 554 of 8 000 (57 %), against 6 651 (83 %) under pass
  *       9's sliver rule. That is the price of the floor, it is paid only where the row already says
  *       `__scpElided`, and it is pinned as a FLOOR ON UTILISATION by
  *       `persisted-json-bound.test.ts` -> "THE ELISION REGIME'S UTILISATION RESIDUE", so it cannot
