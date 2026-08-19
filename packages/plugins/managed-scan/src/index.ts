@@ -13,12 +13,14 @@ import type {
 } from "@scp/plugin-api";
 import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
+  boundDetail,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
   runnerOutcomeDetail,
   toRunnerRunId,
   withRecordedOutcome,
   type ResolveRunnerLauncher,
+  type BoundedDetail,
   type RunnerCopyIn,
   // THE PORT'S OWN RESULT TYPE, not a local restatement of it. There used to be a `RunResult`
   // interface here duplicating `{ succeeded, stdout, stderr }`; a structural copy of a union that
@@ -235,7 +237,7 @@ async function runScanContainer(
 // Synchronous-trigger outcome cache, keyed by externalId (in-memory — a scan is a fresh,
 // stateless, read-only analysis per promotion journey; there is no cross-restart idempotency to
 // preserve the way a live `apply` needs one, so no durable statePath is required here).
-const outcomes = new Map<string, { succeeded: boolean; detail: string }>();
+const outcomes = new Map<string, { succeeded: boolean; detail: BoundedDetail }>();
 
 async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
   return []; // no push events — this executor's only activity is its own promotion-scan trigger().
@@ -257,13 +259,18 @@ async function trigger(
   const externalId = `managed-scan::${runKey}`;
 
   if (!SUPPORTED_METHODS.has(method)) {
-    const detail = `managed-scan: unsupported method '${method}' (this runner image ships 'trivy', 'trivy-vm' and 'openscap')`;
+    // BOUNDED, and not pro forma: `method` is a TENANT-SUPPLIED intent parameter, so this is the
+    // one refusal in this file whose length an attacker chooses.
+    const detail = boundDetail(
+      `managed-scan: unsupported method '${method}' (this runner image ships 'trivy', 'trivy-vm' and 'openscap')`
+    );
     outcomes.set(externalId, { succeeded: false, detail });
     return { externalId };
   }
   if (!params.inputDir || !params.outputDir) {
-    const detail =
-      "managed-scan: FAILED CLOSED — intent.parameters.inputDir/outputDir are required (server-controlled scan-subject layout + evidence sink)";
+    const detail = boundDetail(
+      "managed-scan: FAILED CLOSED — intent.parameters.inputDir/outputDir are required (server-controlled scan-subject layout + evidence sink)"
+    );
     outcomes.set(externalId, { succeeded: false, detail });
     return { externalId };
   }
@@ -283,7 +290,10 @@ async function trigger(
   await withRecordedOutcome(
     {
       record: (succeeded, detail) => {
-        outcomes.set(externalId, { succeeded, detail: `managed-scan: ${detail}` });
+        // RE-BOUND: prefixing a bounded detail produces a plain `string` again, and the compiler
+        // says so. `boundDetail` is idempotent and keeps BOTH ENDS, so this costs the middle of an
+        // already-bounded string and never the reason the run failed.
+        outcomes.set(externalId, { succeeded, detail: boundDetail(`managed-scan: ${detail}`) });
       },
       redact: (text) => text
     },
@@ -308,9 +318,16 @@ async function trigger(
         // records where the EVIDENCE landed rather than a Trivy report that can run to 32 MiB. The
         // FAILURE arm is, because `result.stderr` was the empty string for a budget-killed scan and
         // for a `docker` that never spawned alike — see `classifyRunnerFailure`.
-        detail: result.succeeded
-          ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
-          : `managed-scan: ${method} scan FAILED — ${runnerOutcomeDetail(result).slice(0, 2000)}`
+        // NOT `.slice(0, 2000)`. That front-slice was unreachable-by-construction for this plugin:
+        // the port appends the runner's last words AFTER `err.message`, which carries the whole of
+        // stderr, so at EVERY output size the 2000 characters kept here were Node's `Command failed:`
+        // preamble and the diagnosis was thrown away. The bound now lives where the string is
+        // composed and keeps the END.
+        detail: boundDetail(
+          result.succeeded
+            ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
+            : `managed-scan: ${method} scan FAILED — ${runnerOutcomeDetail(result)}`
+        )
       });
       ctx.logger.info("managed-scan: run complete", {
         externalId,
@@ -332,7 +349,8 @@ async function status(_ctx: PluginContext, ref: ExternalRunRef): Promise<Executi
   }
   return {
     phase: outcome.succeeded ? "succeeded" : "failed",
-    detail: outcome.detail.slice(0, 4000),
+    // NO SLICE — bounded at capture (`RunOutcome.detail` is `BoundedDetail`), both ends kept.
+    detail: outcome.detail,
     progress: 1
   };
 }

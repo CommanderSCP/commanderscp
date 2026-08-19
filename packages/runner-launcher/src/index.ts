@@ -694,15 +694,106 @@ export const RUNNER_MAXBUFFER_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
 export type RunnerFailureKind =
   "budget-exhausted" | "output-exceeded" | "signalled" | "spawn-failed" | "exit-nonzero";
 
+// --------------------------------------------------------------------------------------------
+// THE ONE BOUND, CHOSEN ONCE, HERE — and it keeps BOTH ENDS.
+// --------------------------------------------------------------------------------------------
+
+/**
+ * THE TOTAL BUDGET FOR ANY OPERATOR-FACING `detail` THIS PACKAGE PRODUCES OR ACCEPTS (MEDIUM, M23.0
+ * verification pass 7). It lives here because THE PORT IS THE ONLY PLACE THAT KNOWS WHAT THE STRING
+ * IS MADE OF — the classification, the replaced message and the child's own output — and the defect
+ * this fixes is precisely three consumers each truncating a string none of them composed.
+ *
+ * WHAT WENT WRONG, MEASURED. {@link classifyRunnerFailure} capped the child's output it appended but
+ * placed it AFTER `err.message`, which is uncapped: Node formats a non-zero exit as
+ * `Command failed: <cmd>\n<the ENTIRE stderr>`, so for 200 KB of stderr the message alone is
+ * ~200 KB and the 2000-character tail sat behind all of it. Every consumer then sliced from the
+ * FRONT — managed-scan and managed-dep at 2000 on capture, managed-iac at 4000 on read — so the tail
+ * the append exists to preserve was unreachable at EVERY output size for two of the three plugins
+ * and inside a ~1.8 KB window for the third. With 5 KB of runner output the real cause reached no
+ * operator at all. The four tests that covered this path all pinned the budget-kill arm, whose
+ * message is REPLACED with a short string, which is why the whole mechanism could be inert.
+ *
+ * WHY 4 000. It is managed-iac's existing read slice, i.e. the largest bound any consumer already
+ * imposed, so nothing that reached an operator before is smaller now. It is also the ceiling on a
+ * row: `detail` is copied into `reconcile.ts`'s `insertDecision` `inputContext` and, for managed-iac,
+ * into a durable on-disk ledger keyed by `idempotencyKey` that is never pruned — the same family as
+ * this repository's 1.44 GB/day Decision incident, where an unbounded write per key was the whole
+ * mechanism.
+ */
+export const RUNNER_DETAIL_MAX_CHARS = 4_000;
+
+/**
+ * HOW MUCH OF A BOUNDED DETAIL'S END IS SACRED. The useful end of a `tofu apply`, a Trivy run or an
+ * `npm` failure is its LAST lines; a front-slice discards exactly the diagnosis. So this many
+ * characters at the END survive every bound this module applies, and anything that has to go goes
+ * from the MIDDLE.
+ */
+export const RUNNER_DETAIL_TAIL_CHARS = 2_000;
+
+/**
+ * A `detail` that is PROVABLY within {@link RUNNER_DETAIL_MAX_CHARS}, because the only way to obtain
+ * one is {@link boundDetail}. This is the "a caller should not be able to receive an unbounded
+ * `detail` at all" property expressed where the compiler can enforce it rather than as a comment
+ * three consumers each read differently: the plugins' own outcome stores declare their `detail`
+ * field as this type, so composing `` `my prefix — ${detail}` `` and storing it does not typecheck
+ * until it is bounded again. Assignable TO `string` (so `ExecutionStatus.detail` needs no change);
+ * not assignable FROM one.
+ */
+declare const BOUNDED_DETAIL: unique symbol;
+export type BoundedDetail = string & { readonly [BOUNDED_DETAIL]: "bounded" };
+
+/** Marks where characters were removed, and says how many rather than leaving a reader to wonder
+ *  whether the runner simply stopped there. */
+function elisionMarker(dropped: number): string {
+  return ` …[${dropped} characters elided]… `;
+}
+
+/**
+ * BOUND A DETAIL, KEEPING BOTH ENDS — the head (who failed, doing what, with which argv) and the
+ * last {@link RUNNER_DETAIL_TAIL_CHARS} characters (the diagnosis). What is dropped is the middle,
+ * which for a runner failure is the noise the tool printed on its way to the error.
+ *
+ * IDEMPOTENT BY CONSTRUCTION: the result is never longer than the cap, so a second application is
+ * the identity. That is what makes it safe to apply at every trust boundary — the port, each
+ * plugin's store, the server's Decision write — WITHOUT recreating the defect this fixes, because
+ * they are the same bound and not three different slices.
+ */
+export function boundDetail(text: string): BoundedDetail {
+  if (text.length <= RUNNER_DETAIL_MAX_CHARS) return text as BoundedDetail;
+  // `elisionMarker(text.length)` is the longest the marker can be (the count only shrinks), so
+  // sizing the head against it guarantees the result fits even before the real count is known.
+  const headShare = Math.max(
+    0,
+    RUNNER_DETAIL_MAX_CHARS - RUNNER_DETAIL_TAIL_CHARS - elisionMarker(text.length).length
+  );
+  const dropped = text.length - headShare - RUNNER_DETAIL_TAIL_CHARS;
+  return (text.slice(0, headShare) +
+    elisionMarker(dropped) +
+    text.slice(text.length - RUNNER_DETAIL_TAIL_CHARS)) as BoundedDetail;
+}
+
+/** Keep the FRONT of `text` within `budget`, saying what was removed. Used for `err.message`, whose
+ *  useful half is its front — the command that was run — and whose second half, on Node's
+ *  `Command failed:` format, is a duplicate of the output that is appended (tail-first) after it. */
+function elideTail(text: string, budget: number): string {
+  if (text.length <= budget) return text;
+  const keep = Math.max(0, budget - elisionMarker(text.length).length);
+  return text.slice(0, keep) + elisionMarker(text.length - keep);
+}
+
 /** The classified failure a caller records. See {@link classifyRunnerFailure}. */
 export interface RunnerFailure {
   readonly kind: RunnerFailureKind;
   /**
-   * ONE REDACTED LINE, NEVER EMPTY — the string a plugin puts in its outcome store and `status()`
-   * hands to `reconcile.ts`. Never-empty is the property, not a nicety: the whole defect is that
-   * `""` was the recorded reason for the two shapes that most need explaining.
+   * ONE REDACTED LINE, NEVER EMPTY AND NEVER UNBOUNDED — the string a plugin puts in its outcome
+   * store and `status()` hands to `reconcile.ts`. Never-empty is the property, not a nicety: the
+   * whole defect this fixed first was that `""` was the recorded reason for the two shapes that most
+   * need explaining. NEVER-UNBOUNDED is the second half of the same property and was missing for a
+   * release: see {@link RUNNER_DETAIL_MAX_CHARS}. The type is {@link BoundedDetail} so a consumer
+   * cannot be handed a megabyte, and — the point — so no consumer has any reason to slice it.
    */
-  readonly detail: string;
+  readonly detail: BoundedDetail;
   /** Which step failed, so the detail is not the only place the answer lives. */
   readonly step: RunnerLaunchStep;
   /** Node's own `code`, carried across so a caller can branch without re-parsing `detail`. */
@@ -773,14 +864,44 @@ const FAILURE_WORDING: Record<RunnerFailureKind, string> = {
  * wording, and the whole subject of this fix is a diagnosis that survived only by accident. So the
  * output is appended explicitly, skipped only when it is provably already present.
  *
- * THE TAIL, NOT THE WHOLE THING: `maxBuffer` is up to 32 MiB and every consumer slices this to
- * 2000-4000 characters from the FRONT, so carrying megabytes would cost memory to produce something
- * that is then thrown away — and the useful end of a `tofu apply` or a Trivy failure is the LAST
- * lines, which a front-slice would discard. The `includes` check is itself skipped above the cap,
- * because a substring search over 32 MiB to save an append is the wrong trade.
+ * THE TAIL, NOT THE WHOLE THING, AND THE WHOLE `detail` IS BUDGETED AROUND IT (MEDIUM, M23.0
+ * verification pass 7 — the correction of a claim this doc used to make falsely). `maxBuffer` is up
+ * to 32 MiB and the useful end of a `tofu apply` or a Trivy failure is the LAST lines, so the tail
+ * is what is carried. THE CLAIM THAT WAS FALSE was the next clause: it said a front-slice "would
+ * discard" those lines, while the code placed the capped tail AFTER an UNCAPPED `err.message` — and
+ * Node's message for a non-zero exit is `Command failed: <cmd>\n<the ENTIRE stderr>`. So the
+ * front-slice every consumer then applied discarded the tail instead, at every output size for
+ * managed-scan and managed-dep and above ~1.8 KB for managed-iac. The mechanism was inert in exactly
+ * the case its own doc named as its reason to exist.
+ *
+ * SO THE COMPOSITION IS A BUDGET, NOT A CONCATENATION, and the three regions are ranked:
+ *   1. the HEAD — kind, wording, step, `code`/`signal`/`killed` — always whole; it is ~150 bytes and
+ *      it is the classification nothing else carries.
+ *   2. the TAIL — the child's own last words — RESERVED, never squeezed. Its length plus its longest
+ *      introducer is exactly {@link RUNNER_DETAIL_TAIL_CHARS}, which is the amount
+ *      {@link boundDetail} preserves at the END, so a caller that prefixes its own text and bounds
+ *      again cannot push the diagnosis out either.
+ *   3. `err.message` — whatever budget is left, FRONT kept (it opens with the step and the argv) and
+ *      elided with a stated count. Its second half, on Node's format, is a duplicate of the output
+ *      that region 2 already carries tail-first.
+ *
+ * THE `includes` SKIP NOW HAS A THIRD CONDITION and it is the one that matters: the append is
+ * skipped as a duplicate only when the message ALSO fits the budget whole, because "it is already in
+ * the message" stops being true the moment the message is the thing being truncated. The `includes`
+ * search is still skipped above the tail cap, because a substring search over 32 MiB to save an
+ * append is the wrong trade.
  */
+/**
+ * The longer of the two introducers, and its LENGTH IS LOAD-BEARING rather than decorative: the
+ * appended output is sized so that introducer + tail is exactly {@link RUNNER_DETAIL_TAIL_CHARS},
+ * the span {@link boundDetail} keeps at the end. That is what makes "the marker and the whole tail
+ * both survive a caller's own prefix" arithmetic instead of luck. Pinned by
+ * `failure-detail-bound.test.ts`.
+ */
+const OUTPUT_TAIL_MARKER = " :: runner output (tail): ";
+
 /** How much of the child's own output {@link classifyRunnerFailure} appends. See its doc. */
-const FAILURE_OUTPUT_TAIL_CHARS = 2_000;
+const FAILURE_OUTPUT_TAIL_CHARS = RUNNER_DETAIL_TAIL_CHARS - OUTPUT_TAIL_MARKER.length;
 export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
   const kind: RunnerFailureKind = err.deadlineExceeded
     ? "budget-exhausted"
@@ -796,18 +917,34 @@ export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
   if (err.signal) facts.push(`signal=${err.signal}`);
   if (err.killed === true) facts.push("killed");
 
+  const head = `${kind}: ${FAILURE_WORDING[kind]} during '${err.step}' (${facts.join(", ")}) — `;
+
   // stderr when there is any, else stdout: a runner that explains itself on stdout (managed-dep's
   // does) must not be recorded as silent just because it kept stderr clean.
   const output = err.stderr.length > 0 ? err.stderr : err.stdout;
   let suffix: string;
   if (output.length === 0) {
     suffix = " [the runner printed nothing on stdout or stderr]";
-  } else if (output.length <= FAILURE_OUTPUT_TAIL_CHARS && err.message.includes(output)) {
+  } else if (
+    output.length <= FAILURE_OUTPUT_TAIL_CHARS &&
+    err.message.includes(output) &&
+    // ...AND the message will not itself be truncated. Without this the append was skipped as a
+    // duplicate of a copy that the budget below then cut away.
+    head.length + err.message.length <= RUNNER_DETAIL_MAX_CHARS
+  ) {
     suffix = ""; // already in the message (Node's `Command failed:` format) — do not say it twice
   } else {
     const tail = output.slice(-FAILURE_OUTPUT_TAIL_CHARS);
-    suffix = ` :: runner output${tail.length < output.length ? " (tail)" : ""}: ${tail}`;
+    suffix =
+      tail.length < output.length ? `${OUTPUT_TAIL_MARKER}${tail}` : ` :: runner output: ${tail}`;
   }
+
+  // THE TAIL IS RESERVED AND THE MESSAGE GETS WHAT IS LEFT — the inversion of the old order, which
+  // let an unbounded message push the tail past every reader. `boundDetail` on the result is a
+  // no-op by construction (head is ~150 bytes, suffix at most RUNNER_DETAIL_TAIL_CHARS) and is
+  // applied anyway, because `BoundedDetail` must be a fact about the value and not about this
+  // arithmetic staying true.
+  const message = elideTail(err.message, RUNNER_DETAIL_MAX_CHARS - head.length - suffix.length);
 
   return {
     kind,
@@ -815,9 +952,7 @@ export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
     code: err.code,
     signal: err.signal,
     deadlineExceeded: err.deadlineExceeded,
-    detail:
-      `${kind}: ${FAILURE_WORDING[kind]} during '${err.step}' (${facts.join(", ")}) — ` +
-      `${err.message}${suffix}`
+    detail: boundDetail(`${head}${message}${suffix}`)
   };
 }
 
@@ -827,11 +962,20 @@ export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
  * spell it `result.succeeded ? result.stdout : result.stderr`, which is precisely the expression
  * that produced `""`.
  *
- * On SUCCESS this is the runner's own stdout, unchanged, because that is the evidence
- * (`tofu plan` output, a scan summary) the previous behaviour correctly recorded.
+ * On SUCCESS this is the runner's own stdout — the evidence (`tofu plan` output, a scan summary) the
+ * previous behaviour correctly recorded — BOUNDED, which it was not.
+ *
+ * THE SUCCESS ARM WAS THE WORSE HALF OF THE UNBOUNDED-LEDGER DEFECT and the measurement that found
+ * the failure arm did not reach it. managed-iac records this string into `saveState`, a durable JSON
+ * file keyed by `idempotencyKey` that is never pruned, and only `status()` sliced it — on READ, at
+ * 4000. A `tofu plan` over a large estate can print megabytes within the 16 MiB `maxBuffer`, so a
+ * successful apply wrote megabytes to disk per key, forever, to serve 4000 characters. Bounding here
+ * rather than at the three call sites is the whole point of the fix: {@link boundDetail} keeps the
+ * END, which for a plan is `Plan: 3 to add, 0 to change, 1 to destroy` — the line a front-slice at
+ * either 2000 or 4000 was the first thing to lose.
  */
-export function runnerOutcomeDetail(result: RunnerResult): string {
-  return result.succeeded ? result.stdout : result.failure.detail;
+export function runnerOutcomeDetail(result: RunnerResult): BoundedDetail {
+  return result.succeeded ? boundDetail(result.stdout) : result.failure.detail;
 }
 
 // ==================================================================================================
@@ -1609,7 +1753,7 @@ export const resolveDockerRunnerLauncher: ResolveRunnerLauncher = (config) =>
  * for managed-scan/managed-dep, a durable JSON file for managed-iac. May be async (a file write);
  * {@link withRecordedOutcome} awaits it either way.
  */
-export type RecordOutcome = (succeeded: boolean, detail: string) => void | Promise<void>;
+export type RecordOutcome = (succeeded: boolean, detail: BoundedDetail) => void | Promise<void>;
 
 /**
  * THE FIX FOR "A PATH OUT OF `trigger()` THAT RECORDS NO OUTCOME" (BUILD_AND_TEST.md §4.4, CLAUDE.md
@@ -1626,6 +1770,12 @@ export type RecordOutcome = (succeeded: boolean, detail: string) => void | Promi
  * still records its own success outcome from inside `fn`, in its own shape (managed-iac's carries a
  * `stateRef`, managed-dep's a `result`/`merge`) — a shape this package has no business inventing a
  * common ancestor for.
+ *
+ * THE RECORDED DETAIL IS BOUNDED HERE, not by the plugin. `record`'s parameter is
+ * {@link BoundedDetail} precisely so a plugin cannot store the raw message: managed-iac's `record`
+ * writes to a durable, never-pruned JSON file and from there into a `Decision`'s `inputContext`, and
+ * the message of a `docker create` rejection contains the child's entire stderr. See
+ * {@link RUNNER_DETAIL_MAX_CHARS}.
  *
  * `redact` IS NOT OPTIONAL AND IS NOT COSMETIC. A thrown `Error`'s `.message` is freeform text a
  * plugin did not construct and cannot trust — for managed-iac specifically, a `docker create`
@@ -1648,7 +1798,12 @@ export async function withRecordedOutcome<T>(
     return await fn();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await opts.record(false, opts.redact(message));
+    // BOUNDED BEFORE `record` EVER SEES IT. A thrown `Error`'s `.message` is freeform text this
+    // package did not compose — a `docker create` rejection carries the whole of stderr in it — and
+    // `record` writes to a store that is never pruned. Redact, then bound; both are the plugin's
+    // store's problem and neither is optional. `boundDetail` keeps the END, so the reason the throw
+    // happened survives the bound.
+    await opts.record(false, boundDetail(opts.redact(message)));
     return undefined;
   }
 }

@@ -15,11 +15,13 @@ import type {
 } from "@scp/plugin-api";
 import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
+  boundDetail,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
   runnerOutcomeDetail,
   toRunnerRunId,
   withRecordedOutcome,
+  type BoundedDetail,
   type ResolveRunnerLauncher,
   type RunnerResult
 } from "@scp/runner-launcher";
@@ -160,7 +162,13 @@ function redactSecrets(text: string, secretValues: string[]): string {
 interface RunOutcome {
   externalId: string;
   succeeded: boolean;
-  detail: string;
+  /** {@link BoundedDetail}, NOT `string`, and that is the fix rather than a decoration: this record
+   *  is written to a DURABLE, replicated, never-pruned JSON file keyed by `idempotencyKey`, and
+   *  `reconcile.ts` copies it from there into a `Decision`'s `inputContext`. The type is what makes
+   *  "you cannot store an unbounded reason here" a compile error at all fourteen write sites in this
+   *  file instead of a comment on one of them. See `@scp/runner-launcher`'s
+   *  {@link RUNNER_DETAIL_MAX_CHARS}. */
+  detail: BoundedDetail;
   stateRef?: string;
 }
 
@@ -303,7 +311,10 @@ async function runRunnerContainer(
     stderr: redactSecrets(result.stderr, secretValues),
     failure: {
       ...result.failure,
-      detail: redactSecrets(result.failure.detail, secretValues)
+      // RE-BOUND AFTER REDACTING, because redaction is not length-preserving: a secret value shorter
+      // than `***` makes the string GROW. The compiler is what insists — `RunnerFailure.detail` is
+      // `BoundedDetail`, so a transform that returns a plain `string` cannot be assigned back.
+      detail: boundDetail(redactSecrets(result.failure.detail, secretValues))
     }
   };
 }
@@ -355,10 +366,11 @@ async function trigger(
     // Recorded as this run's own outcome — a fresh single-key state is safe to write precisely
     // because the OLD file was unreadable: nothing recoverable from it is lost by overwriting what
     // could not be read anyway.
-    const detail =
+    const detail = boundDetail(
       `managed-iac: FAILED CLOSED — could not load dedup state at '${config.statePath}' ` +
-      `(${err instanceof Error ? err.message : String(err)}). Refusing to launch: an unreadable ` +
-      "dedup cache cannot tell this run apart from one that already applied.";
+        `(${err instanceof Error ? err.message : String(err)}). Refusing to launch: an unreadable ` +
+        "dedup cache cannot tell this run apart from one that already applied."
+    );
     const refusal: RunOutcome = { externalId, succeeded: false, detail };
     try {
       await saveState(config.statePath, { keys: { [cacheKey]: refusal } });
@@ -383,7 +395,7 @@ async function trigger(
   }
 
   const workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
-  let outcome: RunOutcome = { externalId, succeeded: false, detail: "" };
+  let outcome: RunOutcome = { externalId, succeeded: false, detail: boundDetail("") };
 
   // THE REDACTION SET FOR THE FAILURE PATH (M23.1 phase 2), populated the moment credentials are
   // actually resolved inside the guarded body below. Starts empty, so a throw BEFORE that point
@@ -429,8 +441,9 @@ async function trigger(
           outcome = {
             externalId,
             succeeded: false,
-            detail:
+            detail: boundDetail(
               "managed-iac rollback: FAILED CLOSED — priorStateRef missing or not a state-history/*.tfstate path"
+            )
           };
         } else {
           const result = await runRunnerContainer(
@@ -510,7 +523,13 @@ async function status(ctx: PluginContext, ref: ExternalRunRef): Promise<Executio
   }
   return {
     phase: outcome.succeeded ? "succeeded" : "failed",
-    detail: outcome.detail.slice(0, 4000), // evidence, bounded (already secret-redacted at capture)
+    // NO SLICE. The evidence is bounded WHERE IT IS COMPOSED (`@scp/runner-launcher`'s
+    // `boundDetail`, enforced by `RunOutcome.detail`'s type) and it is bounded KEEPING BOTH ENDS.
+    // The `.slice(0, 4000)` that used to be here was the third of three consumers each front-slicing
+    // a string none of them built, and it discarded the runner's last words — the diagnosis — for
+    // any run that printed more than ~1.8 KB. It also bounded nothing that mattered: the durable
+    // ledger behind `loadState` had already been written unsliced.
+    detail: outcome.detail,
     stateRef: outcome.stateRef,
     progress: 1
   };
