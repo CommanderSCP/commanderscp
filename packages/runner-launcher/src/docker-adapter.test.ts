@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunnerFailureKind, RunnerSpec } from "./index.js";
 import {
   runLaunchOrderingConformanceSuite,
@@ -1407,6 +1407,22 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
     stateDir = mkdtempSync(join(tmpdir(), "runner-launcher-secret-env-"));
   });
 
+  afterEach(() => {
+    // THE REAL HOUSEKEEPING GUARD, per case rather than as one final test. Every case in this
+    // describe is EITHER a refusal that never writes a file, OR a run whose `create` step is
+    // responsible for unlinking its own `--env-file` by the time the case's own assertions have
+    // run — so `stateDir` must already be empty of files here, before we remove it. A final
+    // "CLEANUP" test that made its OWN fresh (and therefore trivially empty) directory could never
+    // see a leak from an earlier case; this runs against THIS case's directory, immediately after
+    // THIS case, so a leak is caught by the case that caused it rather than being invisible forever.
+    const leftover = readdirSync(stateDir);
+    rmSync(stateDir, { recursive: true, force: true });
+    expect(
+      leftover,
+      `secretEnvDir leaked file(s) after this case: ${leftover.join(", ")}`
+    ).toStrictEqual([]);
+  });
+
   function secretSpec(overrides: Partial<RunnerSpec> = {}): RunnerSpec {
     return spec({
       env: ["PRIOR_STATE_FILE=state-history/2026-08-17.tfstate"],
@@ -1706,13 +1722,6 @@ describe("M23.1 conformance: secretEnv never reaches the command line, and never
       ["rm", "-f", "scp-runner-r1"]
     ]);
     expect(envFileSnapshots[1]!.path).not.toBe(firstPath);
-  });
-
-  it("CLEANUP: the state dir holds nothing after every case above", () => {
-    // A guard on this describe's own housekeeping. If a case leaked a file, the assertion that the
-    // adapter unlinks would be the only thing standing between a credential and a stale disk.
-    rmSync(stateDir, { recursive: true, force: true });
-    expect(existsSync(stateDir)).toBe(false);
   });
 });
 
@@ -2017,6 +2026,15 @@ describe("MEDIUM-4: reap()'s `--env-file` sweep — never a live run's file, nev
 
   beforeEach(() => {
     secretEnvDir = mkdtempSync(join(tmpdir(), "runner-launcher-secret-env-sweep-"));
+  });
+
+  afterEach(() => {
+    // REAL disk cleanup, not an assertion — unlike the secretEnv describe above, several cases HERE
+    // deliberately leave a fixture behind (a spared file, a dedup state file the sweep must never
+    // touch), so "this dir must be empty" would be a false claim about this describe's own cases.
+    // Every case already asserts what it expects to remain or be gone via `existsSync` inline; this
+    // just stops the mkdtemp'd fixture directory itself from accumulating on disk across runs.
+    rmSync(secretEnvDir, { recursive: true, force: true });
   });
 
   /** Writes a fixture file directly — bypassing `writeSecretEnvFile` entirely, exactly as a
