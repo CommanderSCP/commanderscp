@@ -94,6 +94,17 @@ interface FakeExecutorConfig {
     string,
     { phase?: string; step?: number; weight?: number; message?: string }
   >;
+  /**
+   * Per-target deterministic `status().detail`. Mirrors `forcePhase`, and exists for one reason
+   * `imagesByTarget` and `rolloutByTarget` do not cover: `ExecutionStatus.detail` is free-form
+   * `string` from ANY executor plugin, and `reconcile.ts` writes it into a `Decision`'s
+   * `inputContext` — permanent governed state, one row per failing poll. Proving that write is
+   * BOUNDED needs a plugin that returns an unbounded detail, and no in-repo plugin does: the three
+   * managed ones bound their own at composition (`@scp/runner-launcher`'s `boundDetail`, enforced
+   * by their stores' types), which is exactly why they cannot be the witness. A THIRD-PARTY plugin
+   * is the case the bound is for, and this is the only stand-in for one.
+   */
+  detailByTarget?: Record<string, string>;
 }
 
 function readConfig(config: unknown): FakeExecutorConfig {
@@ -240,7 +251,9 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     return {
       phase,
       stateRef: `v${target.version}`,
-      detail: `fake-executor target=${targetRef} version=v${target.version}`,
+      detail:
+        cfg.detailByTarget?.[targetRef] ??
+        `fake-executor target=${targetRef} version=v${target.version}`,
       ...(observed.images || observed.rollout ? { observed } : {}),
       progress: settled ? 1 : 0.5
     };
