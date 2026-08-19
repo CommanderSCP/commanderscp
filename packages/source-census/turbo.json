@@ -1,0 +1,50 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  // WHY THIS FILE EXISTS — the same defect `deploy/airgap/turbo.json`, `tools/helm-verify/turbo.json`,
+  // `packages/plugins/managed-scan/turbo.json` and `apps/server/turbo.json` each document, found HERE
+  // by the M23.0 verification-pass-8 sweep that went looking for it rather than by a red test — this
+  // package is the one that WROTE those other four files' shared reasoning and had never applied it
+  // to itself.
+  //
+  // TWO of this package's own unit tests are censuses of files OUTSIDE `packages/source-census/**`,
+  // and turbo hashed neither:
+  //   - `golden-count-gate.test.ts` reads `docs/BUILD_AND_TEST.md`'s M23.0 bullet and the three
+  //     `launch-argv.golden.test.ts` files (managed-iac/managed-scan/managed-dep) and fails the
+  //     moment the documented count and the real `it(` count disagree.
+  //   - `test-script-census.test.ts` runs `git ls-files` and reads EVERY tracked `package.json`
+  //     (scripts) and every tracked `*.test.ts` filename, repo-wide, to assert no `test`/
+  //     `test:integration` script can report success for having run nothing.
+  //
+  // MEASURED, not inferred (M23.0 verification pass 8): seeded a cache with `turbo run test
+  // --filter=@scp/source-census`, then appended a throwaway `it(` to
+  // `packages/plugins/managed-dep/src/launch-argv.golden.test.ts` (a real drift golden-count-gate
+  // exists to catch) and reran the SAME command with no `--force`. It printed `>>> FULL TURBO`, 2/2
+  // cached, green — the count mismatch never ran. Structurally identical to the measured
+  // `@scp/plugin-managed-scan` defect (an unvetted `ARG TRIVY_IMAGE=` digest going 5/5 cached green)
+  // this package's own `INTEGRATION_FLAG_ALLOWLIST` comment already names. The mutation was reverted
+  // immediately after being observed.
+  //
+  // DELIBERATELY WIDE, for the same reason `packages/plugins/managed-scan/turbo.json` gives:
+  // `test-script-census.test.ts`'s subject is "every package.json and every *.test.ts filename in
+  // the repo", which is a property of the WHOLE tree, not a short list of named files — narrowing
+  // this to golden-count-gate's three files would silently stop protecting the other census. Root
+  // `package.json` is listed explicitly because it sits outside every `apps/**|packages/**|...` glob
+  // below but is itself one of `test-script-census.test.ts`'s subjects (its own `test`/
+  // `test:integration` scripts).
+  "tasks": {
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/package.json",
+        "$TURBO_ROOT$/docs/BUILD_AND_TEST.md",
+        "$TURBO_ROOT$/apps/**",
+        "$TURBO_ROOT$/packages/**",
+        "$TURBO_ROOT$/deploy/**",
+        "$TURBO_ROOT$/scripts/**",
+        "$TURBO_ROOT$/tools/**"
+      ]
+    }
+  }
+}
