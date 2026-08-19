@@ -955,9 +955,19 @@ describe("MEDIUM: what the walk charges is what it renders — every leaf, and e
    * Deterministic (a fixed seed, no `Math.random`), so a failure is reproducible and a green is not
    * luck. It asserts the two facts every hand-picked arm asserts — the row fits, and the backstop
    * did not fire — over shapes nobody chose.
+   *
+   * SIZED DELIBERATELY, AND SMALLER THAN THE FIRST DRAFT. 2 000 shapes with 6 000-character strings
+   * ran for 5.5 SECONDS, which is not free in a suite whose slowest FILE (`whole-run-budget.ts`,
+   * 9.9s) measures real subprocess deadlines in a sibling worker — a CPU-bound arm is a
+   * wall-clock hazard to a timing arm running beside it, which is a bad trade for a property test.
+   * 800 shapes with 2 500-character strings runs in ~0.7s and still reddens on both pass-11
+   * defects: removing the tail reserve fails it at `case 9 at budget 6000`, removing the `null`
+   * charge fails four other arms in this file. Raise the count when hunting, not in the committed
+   * suite; 30 000-case sweeps over five seeds were run out of tree for this round and found nothing
+   * this one does not.
    */
   it(
-    "2 000 GENERATED SHAPES: the row fits AND the payload is never discarded",
+    "800 GENERATED SHAPES: the row fits AND the payload is never discarded",
     { timeout: 60_000 },
     () => {
       let seed = 0x51ab77;
@@ -991,7 +1001,7 @@ describe("MEDIUM: what the walk charges is what it renders — every leaf, and e
       };
       const leaf = (depth: number): unknown => {
         const r = rnd();
-        if (r < 0.45) return str(rnd() < 0.5 ? int(0, 200) : int(0, 6_000));
+        if (r < 0.45) return str(rnd() < 0.5 ? int(0, 200) : int(0, 2_500));
         if (r < 0.53) return int(-1e9, 1e9);
         if (r < 0.57) return rnd() < 0.5;
         if (r < 0.63) return null;
@@ -1008,7 +1018,7 @@ describe("MEDIUM: what the walk charges is what it renders — every leaf, and e
       const budgets = [8_000, 6_000, 4_000, 2_000, 1_000, 500, 200, 100, 64, 16, 4];
 
       let nonTrivial = 0;
-      for (let c = 0; c < 2_000; c++) {
+      for (let c = 0; c < 800; c++) {
         const value: Record<string, unknown> = {};
         for (let i = 0; i < int(1, 6); i++) value[str(int(1, 14)) || `f${i}`] = leaf(0);
         const budget = pick(budgets);
@@ -1022,8 +1032,8 @@ describe("MEDIUM: what the walk charges is what it renders — every leaf, and e
         if (rendered !== undefined && rendered.length > 100) nonTrivial++;
       }
       // NON-VACUITY: the generator really does produce values with something in them, so a green
-      // here is not 2 000 empty objects. (Measured: well over half.)
-      expect(nonTrivial, "the generated corpus is trivial").toBeGreaterThan(700);
+      // here is not 800 empty objects. (Measured: well over half.)
+      expect(nonTrivial, "the generated corpus is trivial").toBeGreaterThan(300);
     }
   );
 });
