@@ -597,16 +597,28 @@ describe("MEDIUM (verification pass 5): the product CEILING binds the run, not o
     const before = Date.now();
     durations = { create: 20, cp: 20, start: 20 };
     await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: STORED_4H }));
+    const after = Date.now();
 
+    // BRACKETED, NOT COMPARED TO A SINGLE PRE-RUN READ — verification pass 6. The stamp is
+    // `t_run + BOUND`, where `t_run` is run()'s OWN single clock read and `before <= t_run <= after`
+    // by construction. The previous form asserted `stamp - before <= BOUND`, which expands to
+    // `(t_run - before) + BOUND <= BOUND` and is therefore satisfiable ONLY when `t_run === before`
+    // — i.e. only when zero milliseconds elapsed between this test's clock read and run()'s own.
+    // It failed whenever the setup between them crossed a millisecond boundary: measured at 5/10 in
+    // isolation, 3/8 at package scope and 1/4 on a full `turbo test --force`, on an UNMUTATED tree,
+    // with the excess always exactly the elapsed setup time (probed by injecting a 50ms sleep: the
+    // overshoot became 51ms). Bracketing needs no slack constant and is exact in both directions.
+    const BOUND = CLAMPED + RUNNER_REAP_GRACE_MS;
     expect(
-      createdDeadlineLabel() - before,
+      createdDeadlineLabel(),
       "the container was stamped past the ceiling — a peer's reap() will not collect this orphan"
-    ).toBeLessThanOrEqual(CLAMPED + RUNNER_REAP_GRACE_MS);
+    ).toBeLessThanOrEqual(after + BOUND);
     // NOT VACUOUS in the other direction: the stamp is still the clamped budget plus the grace, not
     // some tiny value that would make a LIVE run reapable (HIGH-2's hazard, in reverse).
-    expect(createdDeadlineLabel() - before).toBeGreaterThanOrEqual(
-      CLAMPED + RUNNER_REAP_GRACE_MS - 1_000
-    );
+    expect(
+      createdDeadlineLabel(),
+      "the stamp is BELOW the clamped budget plus the grace — a LIVE run would look reapable"
+    ).toBeGreaterThanOrEqual(before + BOUND);
   });
 
   it("A STORED timeoutMs ABOVE THE CEILING IS CLAMPED BEFORE IT REACHES THE FILE-AGE BOUND", async () => {
@@ -620,11 +632,22 @@ describe("MEDIUM (verification pass 5): the product CEILING binds the run, not o
     const writtenAt = Date.now();
     durations = { create: 20, cp: 20, start: 20 };
     await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: STORED_4H }));
+    const after = Date.now();
 
+    // BRACKETED for the same reason as the REAP STAMP arm above (verification pass 6) — and the
+    // reference point matters here in a way it did not there. The `--env-file` is written INSIDE
+    // `run()`, so its mtime is at or after run()'s clock read; `writtenAt` is read BEFORE the call
+    // and is therefore an upper bound on the file's age that is strictly LARGER than the real one.
+    // Comparing that proxy against the bound could only pass when the two reads landed in the same
+    // millisecond. `after` brackets run()'s read from above, which is the true comparison.
     expect(
-      createdDeadlineLabel() - writtenAt,
+      createdDeadlineLabel(),
       "a live run can outlive RUNNER_SECRET_ENV_MAX_AGE_MS — reap() may unlink a credential mid-run"
-    ).toBeLessThanOrEqual(RUNNER_SECRET_ENV_MAX_AGE_MS);
+    ).toBeLessThanOrEqual(after + RUNNER_SECRET_ENV_MAX_AGE_MS);
+    expect(
+      createdDeadlineLabel(),
+      "the stamp is below the age bound — the bound would no longer cover a live run's own file"
+    ).toBeGreaterThanOrEqual(writtenAt + RUNNER_SECRET_ENV_MAX_AGE_MS);
   });
 
   it("AN ORPHAN A KILLED RUN LEAVES IS REAPABLE WITHIN A BOUNDED TIME, whatever the stored value", async () => {
