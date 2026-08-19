@@ -69,6 +69,8 @@ import { resolveReleasedVersion } from "../dependencies/internal-release-version
  * | `boundPluginJson` -> `boundPersistedJson(value, 400)` | CONSEQUENCE 1 FAILS: at that budget `rollout` cannot be seated at all |
  * | `const elided = false` in `resolveFromObservedImages` | CONSEQUENCE 2 FAILS: back to `no_matching_image_ref` |
  * | `walkObjectFields`' pass-2 redistribution loop, deleted | CONSEQUENCE 3 FAILS: `expected 36 to be 50` (35 refs plus the cut marker), and with that assertion lifted, `index 49 did not resolve: expected { determined: false, … }` — the fail-silent path itself. CONSEQUENCES 1 AND 2 STAY GREEN, which is the blindness this arm exists to remove |
+ * | The HALVING restored in `boundStringToCost` (`width = Math.floor(width / 2)`) | CONSEQUENCE 4 FAILS: `the revision stored roughly half of the share it was given: expected 1950 to be greater than 3000` — 1 950 of 4 099, row 5 917 (74.0 %). CONSEQUENCES 1, 2 AND 3 STAY GREEN, because none of them varies a STRING |
+ * | `stateRefByTarget` dropped from the fake executor's `status()` | CONSEQUENCE 4 FAILS with `expected 2 to be greater than 3000` — the revision is back to `v0`. That is the seam itself: without it this arm measures the hardcoded version string, which is the state four rounds ran in |
  *
  * NEITHER OF THE FIRST TWO REDDENS CONSEQUENCE 2, and that is correct rather than a gap: shrinking
  * the budget moves WHERE the cut falls, and both of that arm's coordinates stay on their own side of
@@ -95,6 +97,23 @@ import { resolveReleasedVersion } from "../dependencies/internal-release-version
  * of applications where internal-release detection silently stops roughly DOUBLED (the threshold
  * moved from 70 refs to 35). A second target, sized inside the window, is the only fixture that
  * distinguishes them.
+ *
+ * ============================================================================================
+ * CONSEQUENCE 4 AND THE STRUCTURAL REASON FOUR ROUNDS RAN BLIND — MEDIUM, PASS 10
+ * ============================================================================================
+ * Every arm above varies ONE thing: `imagesByTarget`, an ARRAY. That was not a choice. The fake
+ * executor's `status()` hardcoded `stateRef` to `v${target.version}` and `detail` never enters
+ * `observed_state`, so of the four hooks the plugin exposed — `imagesByTarget`, `rolloutByTarget`,
+ * `detailByTarget`, `forcePhase` — an array was the ONLY free-form field this harness could put
+ * into that column.
+ *
+ * The persisted-JSON bound cuts an array and a string by DIFFERENT rules (entries dropped from the
+ * tail vs. a per-string width bound), so every string-shaped defect in it was unreachable end to end
+ * BY CONSTRUCTION — and one lived there for three rounds: `boundStringToCost` recovered the two
+ * characters `JSON.stringify` spends on quotes by HALVING the width, storing half of every share.
+ *
+ * The fix is a seam, not another fixture: `stateRefByTarget`, mirroring the other three hooks, so
+ * `observed_state.revision` is something a test can vary. Consequence 4 drives it.
  */
 
 /** The shape Argo CD reports for a deployed workload — a tag AND the digest it resolved to. 80 of
@@ -120,10 +139,27 @@ const windowImageRefs = imageRefs.slice(0, WINDOW_REF_COUNT);
  *  so a fix that kept the key but emptied it is not silently green. */
 const ROLLOUT = { phase: "Progressing", step: 3, weight: 60, message: "canary at 60%" };
 
+/**
+ * THE STRING-SHAPED READING, which this harness could not produce until pass 10.
+ *
+ * An Argo CD MULTI-SOURCE application reports one revision per source and the executor joins them —
+ * `observe.ts`'s own dedup comment documents `stateRef: "7d34ef12+ff3fd8a3"` for exactly this shape.
+ * 100 sources is 4 099 characters. Not hostile input: an umbrella app with a source per component.
+ *
+ * `observedStateFrom` puts this on `observed_state.revision`, so it is a STRING competing with
+ * `images` (an ARRAY) and `rollout` (an OBJECT) for the same 8 000 characters — the production
+ * composition, in the one shape no fixture in this repository had ever driven end to end.
+ */
+const MULTI_SOURCE_COUNT = 100;
+const MULTI_SOURCE_REVISION = Array.from({ length: MULTI_SOURCE_COUNT }, (_, i) =>
+  (i.toString(16).padStart(8, "0") + "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f7").slice(0, 40)
+).join("+");
+
 describe("observed_state: a large `images` array may not cost the leaves the gates read", () => {
   let server: ListeningTestServer;
   const targetId = uuidv7();
   const windowTargetId = uuidv7();
+  const stringTargetId = uuidv7();
 
   beforeAll(async () => {
     // NON-VACUITY, ASSERTED BEFORE THE SERVER BOOTS: if the fixture ever stopped overflowing the
@@ -144,6 +180,18 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
     expect(windowRaw).toBeLessThan(PERSISTED_JSON_MAX_CHARS);
     expect(windowRaw).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS / 2);
 
+    // AND THE STRING FIXTURE OVERFLOWS ON ITS OWN, with the revision alone over the one-third share
+    // three fields divide the budget into. Either edge drifting makes consequence 4 a test of a
+    // string that simply fitted.
+    expect(
+      JSON.stringify({
+        revision: MULTI_SOURCE_REVISION,
+        images: windowImageRefs,
+        rollout: ROLLOUT
+      }).length
+    ).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS);
+    expect(MULTI_SOURCE_REVISION.length).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS / 3);
+
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
@@ -152,9 +200,25 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
         // `status = 'succeeded'` — the universal test — so a succeeded row would never reach the
         // `minWeight` branch at all and the arm would be vacuous. `running` makes reconcile write
         // `observing`, which is the state a dependency mid-canary is actually in.
-        forcePhase: { [targetId]: "running", [windowTargetId]: "running" },
-        imagesByTarget: { [targetId]: imageRefs, [windowTargetId]: windowImageRefs },
-        rolloutByTarget: { [targetId]: ROLLOUT, [windowTargetId]: ROLLOUT }
+        forcePhase: {
+          [targetId]: "running",
+          [windowTargetId]: "running",
+          [stringTargetId]: "running"
+        },
+        imagesByTarget: {
+          [targetId]: imageRefs,
+          [windowTargetId]: windowImageRefs,
+          [stringTargetId]: windowImageRefs
+        },
+        rolloutByTarget: {
+          [targetId]: ROLLOUT,
+          [windowTargetId]: ROLLOUT,
+          [stringTargetId]: ROLLOUT
+        },
+        // THE SEAM ADDED FOR THIS ARM (`packages/plugins/fake-executor`). `status().stateRef` was
+        // hardcoded to `v${target.version}` and `detail` never reaches `observed_state`, so before
+        // this key the ONLY free-form field this harness could vary in that column was an array.
+        stateRefByTarget: { [stringTargetId]: MULTI_SOURCE_REVISION }
       }
     });
   });
@@ -187,6 +251,7 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
   let orgId: string;
   let row: Awaited<ReturnType<typeof observedRow>>;
   let windowRow: Awaited<ReturnType<typeof observedRow>>;
+  let stringRow: Awaited<ReturnType<typeof observedRow>>;
 
   beforeAll(async () => {
     const org = await createTestOrg(server, "observed-gate-leaves");
@@ -213,6 +278,17 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
       targets: [windowTargetId]
     });
     windowRow = await observedRow(orgId, windowTargetId);
+
+    const stringTarget = await createTestComponent(admin, {
+      id: stringTargetId,
+      name: "observed-gate-string-target"
+    });
+    expect(stringTarget.id).toBe(stringTargetId);
+    await admin.changes.propose({
+      name: `a change whose executor reports a ${MULTI_SOURCE_COUNT}-source revision`,
+      targets: [stringTargetId]
+    });
+    stringRow = await observedRow(orgId, stringTargetId);
   });
 
   it("CONSEQUENCE 1: `stageDependencyVerdict` still reads the weight off the bounded row", () => {
@@ -331,5 +407,86 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
     );
     expect(verdict.satisfied).toBe(true);
     expect(verdict.branch).toBe("min_weight");
+  });
+
+  /**
+   * CONSEQUENCE 4 (MEDIUM, pass 10) — THE STRING PATH, WHICH THIS HARNESS COULD NOT REACH.
+   *
+   * `observedStateFrom` composes `{revision, images, rollout}`: a STRING, an ARRAY and an OBJECT.
+   * The persisted-JSON bound cuts the three by DIFFERENT rules — an array by dropping entries, a
+   * string by a per-string width bound — and until pass 10 the fake executor hardcoded
+   * `status().stateRef` to `v${target.version}` and never put `detail` into `observed_state`. So
+   * `imagesByTarget` was the only free-form field this file could vary, the array rule was the only
+   * one under test, and the string rule was unreachable END TO END BY CONSTRUCTION.
+   *
+   * What lived there: `boundStringToCost` recovered the two characters `JSON.stringify` spends on
+   * quotes by HALVING the width, so every string stored half of what it was given. Over this exact
+   * row, with a 4 099-character multi-source revision beside 50 image refs and a canary:
+   *
+   *   halving   revision 1 950 of 4 099   row 5 917   (74.0 % of the budget)
+   *   search    revision 3 898 of 4 099   row 7 865   (98.3 %)
+   *
+   * A revision is what an operator reads to answer "which commit is actually deployed", and it is
+   * the discriminator `observe.ts` dedupes multi-source Argo CD events on. Half of it is not half
+   * an answer.
+   *
+   * THIS ARM IS ALSO THE STRING-SHAPED UTILISATION ASSERTION, over a row a real plugin produced and
+   * real Postgres stored — the unit file's equivalent is `persisted-json-bound.test.ts` ->
+   * "BUDGET UTILISATION, STRING-SHAPED".
+   */
+  it("CONSEQUENCE 4: a long revision keeps its whole share, and the other two gates still read the same row", async () => {
+    const observed = stringRow.observedState as {
+      revision?: string;
+      images?: string[];
+      rollout?: { weight?: number };
+    };
+
+    // THE STRING PATH. Measured 3 898 of 4 099; 1 950 under the halving. The threshold sits between
+    // them so the arm reddens on the defect without pinning a byte count an elision marker's
+    // wording could move.
+    expect(typeof observed.revision).toBe("string");
+    expect(
+      observed.revision!.length,
+      "the revision stored roughly half of the share it was given"
+    ).toBeGreaterThan(3_000);
+    // NON-VACUITY: it really was cut, so the arm is about the bound and not about a string that fit.
+    expect(observed.revision!.length).toBeLessThan(MULTI_SOURCE_REVISION.length);
+    // AND IT IS THE EXECUTOR'S REVISION, cut in the middle — both ends kept, which is what makes a
+    // truncated revision still recognisable to the operator reading the row. A bound that stored
+    // some other string of the right length would pass the length assertion alone.
+    expect(observed.revision!.startsWith(MULTI_SOURCE_REVISION.slice(0, 500))).toBe(true);
+    expect(observed.revision!.endsWith(MULTI_SOURCE_REVISION.slice(-500))).toBe(true);
+
+    // UTILISATION, STRING-SHAPED, ON A REAL ROW. 7 906 of 8 000 measured (the payload plus the
+    // server-stamped `observedAt`); 5 958 under the halving.
+    const persisted = JSON.stringify(stringRow.observedState);
+    expect(persisted.length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+    expect(persisted.length / PERSISTED_JSON_MAX_CHARS).toBeGreaterThan(0.9);
+
+    // THE OTHER TWO GATES, ON THE SAME ROW. A large string sibling must not cost them their leaves
+    // any more than a large array sibling does — the properties compose rather than trade off.
+    expect(stringRow.status).not.toBe("succeeded");
+    const verdict = stageDependencyVerdict(
+      { dependsOn: "dependency-b", minWeight: 50 },
+      {
+        status: stringRow.status,
+        observedState: stringRow.observedState,
+        lastObservedAt: stringRow.lastObservedAt
+      },
+      Date.now()
+    );
+    expect(verdict.satisfied).toBe(true);
+    expect(verdict.branch).toBe("min_weight");
+    expect(verdict.weightUnreadable).toBeUndefined();
+
+    const recorded = observedImagesOf(stringRow.observedState);
+    expect(recorded.length).toBeGreaterThan(1);
+    const resolved = await resolveReleasedVersion({
+      line: { ecosystem: "oci", coordinate: repositoryOf(0) },
+      sourceRef: {},
+      observedImages: recorded,
+      manifestPaths: []
+    });
+    expect(resolved).toMatchObject({ determined: true, version: "1.2.3" });
   });
 });
