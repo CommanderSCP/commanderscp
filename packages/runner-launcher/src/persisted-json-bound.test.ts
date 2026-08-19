@@ -90,7 +90,27 @@ const ADVERSARIAL: ReadonlyArray<{ name: string; value: unknown }> = [
   { name: "a bigint", value: { n: 10n ** 40n } },
   { name: "a bare enormous string", value: "s".repeat(1_000_000) },
   { name: "null", value: null },
-  { name: "undefined", value: undefined }
+  { name: "undefined", value: undefined },
+  // M23.0 verification pass 11. Every array above holds STRINGS or INTEGERS, and both of those are
+  // charged exactly, so no arm of this corpus could reach the three leaf branches that return
+  // something rendering as `null`. Two of the three charged nothing for it.
+  { name: "a list of 2 000 nulls", value: { images: Array(2_000).fill(null) } },
+  { name: "a list of 2 000 undefineds", value: { images: Array(2_000).fill(undefined) } },
+  {
+    name: "a list of 2 000 functions",
+    value: { images: Array.from({ length: 2_000 }, () => () => 1) }
+  },
+  // …and every array above is cut at most ONCE per value, so no arm could reach the case where
+  // several tail markers are charged against a budget that has nothing left for them.
+  {
+    name: "four lists the budget cannot finish",
+    value: {
+      a: ["x".repeat(9_000), "x".repeat(9_000)],
+      b: ["x".repeat(9_000), "x".repeat(9_000)],
+      c: ["x".repeat(9_000), "x".repeat(9_000)],
+      d: ["x".repeat(9_000), "x".repeat(9_000)]
+    }
+  }
 ];
 
 describe("MEDIUM: boundPersistedJson bounds a whole plugin-supplied value, not a list of its fields", () => {
@@ -778,4 +798,232 @@ describe("MEDIUM: the array elision marker is recognisable by the readers that s
       expect(isPersistedJsonEntriesElision(ref), ref).toBe(false);
     }
   });
+});
+
+/**
+ * ================================================================================================
+ * MEDIUM (M23.0 verification pass 11) — WHAT THE WALK CHARGES MUST BE WHAT IT RENDERS, AND IN TWO
+ * PLACES IT WAS NOT. BOTH ENDED IN THE SAME LOSS: THE WHOLE ROW.
+ * ================================================================================================
+ * `boundPersistedJson` measures its own output and, when the walk's accounting turns out to be
+ * wrong, replaces the payload with a diagnostic sentence. Every round so far has read that as a
+ * safety net and asserted only that the ROW stays inside the budget. It does. What it costs when it
+ * fires had never been asked: `revision`, `images` and `rollout.weight` all disappear TOGETHER,
+ * silently, on a write that runs every tick — strictly worse than the truncation
+ * {@link isPersistedJsonEntriesElision} exists to make legible, and the exact fail-silent shape
+ * this whole file was written to prevent.
+ *
+ * Measured over 12 000 random mixed shapes at budgets 100…8 000, the backstop fired for pass 7 on
+ * 697, for pass 9 on 30 and for pass 10 on 238 — the redistribution rounds pass 10 added made the
+ * total-loss case EIGHT TIMES more likely than the round before it, which no assertion in this file
+ * could see because each one only ever asked whether the row fitted.
+ *
+ * THE TWO CAUSES, BOTH "a leaf/marker rendered characters nobody charged for":
+ *
+ *   1. `null`, `undefined` and a function/symbol all render as the four characters `null`. The
+ *      non-finite-number branch charged for that; the other two charged NOTHING. A `null` in a list
+ *      therefore cost 1 (its comma) and rendered 5, and since an array element is admitted while
+ *      the budget is merely non-trivial, free elements DEFEAT the array guard outright: 1 599 of
+ *      them overflow the 8 000 budget with nothing else in the value.
+ *
+ *   2. An array's tail marker was charged after the elements had already spent everything. The
+ *      element admitted at exactly `PERSISTED_JSON_MIN_LEAF` may take all of it — a string is
+ *      bounded to whatever is left, by construction — so EVERY CUT ARRAY overspent by exactly the
+ *      marker, and four of them anywhere in one value put the row past the single reserve
+ *      `boundPersistedJson` holds back. `PERSISTED_JSON_MIN_LEAF`'s own comment claims the opposite
+ *      in as many words ("so the elision itself can never be what pushes the row over") — a
+ *      well-written comment naming a hazard is a signal to sweep, not evidence it was handled.
+ *
+ * WHY THE CORPUS ABOVE COULD NOT SEE EITHER. Every array in it holds strings or integers, both
+ * charged exactly, and every value in it is cut at most once. A fixture cannot witness a defect in
+ * a branch it never reaches — the same mechanical blindness that hid the string-shaped defects for
+ * three rounds, one shape further along.
+ */
+describe("MEDIUM: what the walk charges is what it renders — every leaf, and every marker", () => {
+  /** Did the measured backstop replace the payload? That is the loss, not the row length. */
+  function wasDiscarded(bounded: unknown): boolean {
+    return (
+      bounded !== null &&
+      typeof bounded === "object" &&
+      typeof (bounded as Record<string, unknown>)[PERSISTED_JSON_ELIDED_KEY] === "string" &&
+      String((bounded as Record<string, unknown>)[PERSISTED_JSON_ELIDED_KEY]).startsWith(
+        "a plugin-supplied value rendered"
+      )
+    );
+  }
+  const discarded = (value: unknown, budget?: number): boolean =>
+    wasDiscarded(
+      budget === undefined ? boundPersistedJson(value) : boundPersistedJson(value, budget)
+    );
+
+  it("A LIST OF NULLS IS STORED, NOT DISCARDED — and the leaves beside it survive with it", () => {
+    // Shaped like a real reading, because the point is what a gate can still read afterwards.
+    const reading = {
+      revision: "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f70982",
+      images: Array.from(
+        { length: 20 },
+        (_, i) => `ghcr.io/acme/p/s-${i}@sha256:${"a".repeat(64)}`
+      ),
+      rollout: { phase: "Progressing", step: 3, weight: 60, message: "canary at 60%" },
+      probes: Array(1_700).fill(null)
+    };
+    expect(discarded(reading), "the backstop discarded the whole reading").toBe(false);
+    const out = boundPersistedJson(reading) as typeof reading;
+    expect(out.revision).toBe(reading.revision);
+    expect(out.rollout.weight, "ADR-0028's gate leaf went with the row").toBe(60);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+  });
+
+  it("THE MEASURED THRESHOLD: 1 598 nulls fitted and 1 599 took the whole value with them", () => {
+    // Pinned as the exact number rather than "a lot", because it is what makes the magnitude
+    // checkable: five characters each, against an 8 000-character column.
+    expect(discarded({ a: Array(1_598).fill(null) }), "1 598 nulls").toBe(false);
+    expect(discarded({ a: Array(1_599).fill(null) }), "1 599 nulls").toBe(false);
+    expect(discarded({ a: Array(100_000).fill(null) }), "100 000 nulls").toBe(false);
+    // …and the list is CUT rather than kept whole, so the guard is doing its job on them now.
+    const out = boundPersistedJson({ a: Array(100_000).fill(null) }) as { a: unknown[] };
+    expect(isPersistedJsonEntriesElision(String(out.a[out.a.length - 1]))).toBe(true);
+  });
+
+  it("ALL THREE BRANCHES THAT RENDER AS `null`, not just the one that was already charged", () => {
+    // The census, by property rather than by symptom: every leaf `walk` can return that
+    // `JSON.stringify` writes as `null`. A fix to one of these that missed the others would pass
+    // the arm above and fail here.
+    const branches: Record<string, unknown> = {
+      null: null,
+      undefined: undefined,
+      function: () => 1,
+      "non-finite number": Number.NaN
+    };
+    for (const [name, leaf] of Object.entries(branches)) {
+      expect(discarded({ a: Array(3_000).fill(leaf) }), `a list of 3 000 x ${name}`).toBe(false);
+    }
+  });
+
+  it("A CUT LIST PAYS FOR ITS OWN TAIL MARKER — four cuts in one value used to cost the value", () => {
+    // Four fields whose values are each a list the budget cannot finish. Under the defect the walk
+    // rendered 8 009 of an 8 000 budget — nine characters, four markers, and the whole reading.
+    const huge = "x".repeat(9_000);
+    const value = { a: [huge, huge], b: [huge, huge], c: [huge, huge], d: [huge, huge] };
+    expect(discarded(value)).toBe(false);
+    const out = boundPersistedJson(value) as Record<string, string[]>;
+    for (const key of ["a", "b", "c", "d"]) {
+      expect(out[key], `${key} was dropped entirely`).toBeDefined();
+      expect(
+        isPersistedJsonEntriesElision(out[key]![out[key]!.length - 1]!),
+        `${key} was cut without saying so`
+      ).toBe(true);
+    }
+  });
+
+  it("A COMPLETE LIST IS CHARGED NOTHING FOR A MARKER IT NEVER NEEDS", () => {
+    // The counter-arm: a reserve that were kept rather than released would show up here as a
+    // reading that no longer comes back byte-identical, and as retention lost on every array in
+    // the product.
+    const reading = {
+      revision: "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f70982",
+      images: ["ghcr.io/org/app:1.2.3", `ghcr.io/org/sidecar@sha256:${"a".repeat(64)}`],
+      rollout: { phase: "Progressing", step: 2, weight: 25, message: "canary at 25%" }
+    };
+    expect(JSON.stringify(boundPersistedJson(reading))).toBe(JSON.stringify(reading));
+    // …and the 400-ref reading keeps exactly what it kept before the reserve existed.
+    const out = boundPersistedJson({
+      revision: "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f70982",
+      images: Array.from(
+        { length: 400 },
+        (_, i) => `ghcr.io/acme/platform/service-${i}@sha256:${"a".repeat(64)}`
+      ),
+      rollout: { phase: "Progressing", step: 3, weight: 60, message: "canary at 60%" }
+    }) as { images: string[] };
+    expect(out.images[out.images.length - 1]).toBe("[elided: 328 more entries]");
+  });
+
+  it("THE RESERVE IS HANDED BACK, not quietly kept — a sibling gets to spend it", () => {
+    // The arm above cannot see this: it has slack, so a reserve that were never released would
+    // cost it nothing visible. Here the budget is spent to the last character, which is the only
+    // regime in which "released" and "held" differ. A COMPLETE list beside a string that wants
+    // everything: the row must still be exactly `budget - PERSISTED_JSON_MIN_LEAF`.
+    for (const budget of [4_000, 1_000]) {
+      const value = { list: ["ref-0", "ref-1", "ref-2"], text: "x".repeat(20_000) };
+      const row = JSON.stringify(boundPersistedJson(value, budget))!.length;
+      expect(row, `budget ${budget}: the completed list kept its tail reserve`).toBe(budget - 96);
+    }
+  });
+
+  /**
+   * THE SWEEP THAT WOULD HAVE CAUGHT BOTH, AND WHICH THE HAND-PICKED CORPUS ABOVE CANNOT BE.
+   * Deterministic (a fixed seed, no `Math.random`), so a failure is reproducible and a green is not
+   * luck. It asserts the two facts every hand-picked arm asserts — the row fits, and the backstop
+   * did not fire — over shapes nobody chose.
+   */
+  it(
+    "2 000 GENERATED SHAPES: the row fits AND the payload is never discarded",
+    { timeout: 60_000 },
+    () => {
+      let seed = 0x51ab77;
+      const rnd = () => {
+        seed ^= seed << 13;
+        seed ^= seed >>> 17;
+        seed ^= seed << 5;
+        seed >>>= 0;
+        return seed / 0x1_0000_0000;
+      };
+      const int = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
+      const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)]!;
+      const C0 = String.fromCharCode(1, 2, 7, 9, 10, 13, 27, 31);
+      const ALPHABETS = [
+        "abcdefghijklmnopqrstuvwxyz0123456789./:@-_",
+        "\\",
+        '"',
+        C0,
+        "\u{1F600}\u{1F4A9}\u{10000}",
+        `a\\b"cd${C0}\u{1F600}`,
+        " \t\n",
+        "\uD800",
+        `${PERSISTED_JSON_ELIDED_KEY}[elided: 5 more entries]`
+      ];
+      const str = (maxLen: number) => {
+        const a = pick(ALPHABETS);
+        const n = int(0, maxLen);
+        let out = "";
+        while (out.length < n) out += a;
+        return out.slice(0, n);
+      };
+      const leaf = (depth: number): unknown => {
+        const r = rnd();
+        if (r < 0.45) return str(rnd() < 0.5 ? int(0, 200) : int(0, 6_000));
+        if (r < 0.53) return int(-1e9, 1e9);
+        if (r < 0.57) return rnd() < 0.5;
+        if (r < 0.63) return null;
+        if (r < 0.67) return undefined;
+        if (r < 0.7) return Number.NaN;
+        if (r < 0.85 && depth < 5) return Array.from({ length: int(0, 40) }, () => leaf(depth + 1));
+        if (depth < 5) {
+          const o: Record<string, unknown> = {};
+          for (let i = 0; i < int(0, 8); i++) o[str(int(1, 12)) || `k${i}`] = leaf(depth + 1);
+          return o;
+        }
+        return str(int(0, 200));
+      };
+      const budgets = [8_000, 6_000, 4_000, 2_000, 1_000, 500, 200, 100, 64, 16, 4];
+
+      let nonTrivial = 0;
+      for (let c = 0; c < 2_000; c++) {
+        const value: Record<string, unknown> = {};
+        for (let i = 0; i < int(1, 6); i++) value[str(int(1, 14)) || `f${i}`] = leaf(0);
+        const budget = pick(budgets);
+        const bounded = boundPersistedJson(value, budget);
+        const rendered = JSON.stringify(bounded);
+        const label = `case ${c} at budget ${budget}`;
+        expect(rendered === undefined || rendered.length <= budget, `${label}: over budget`).toBe(
+          true
+        );
+        expect(wasDiscarded(bounded), `${label}: the backstop discarded the payload`).toBe(false);
+        if (rendered !== undefined && rendered.length > 100) nonTrivial++;
+      }
+      // NON-VACUITY: the generator really does produce values with something in them, so a green
+      // here is not 2 000 empty objects. (Measured: well over half.)
+      expect(nonTrivial, "the generated corpus is trivial").toBeGreaterThan(700);
+    }
+  );
 });

@@ -909,7 +909,13 @@ export const PERSISTED_JSON_MAX_DEPTH = 8;
 const PERSISTED_JSON_MAX_KEY_CHARS = 128;
 
 /** Never start a new element/field with less than this much budget left: enough for a short marker
- *  and its punctuation, so the elision itself can never be what pushes the row over. */
+ *  and its punctuation.
+ *
+ *  THIS COMMENT USED TO GO ON: "…so the elision itself can never be what pushes the row over."
+ *  Measured false, M23.0 verification pass 11 — a guard on STARTING an element says nothing about
+ *  what that element then spends, and the one it admits may take all of it. The marker's own money
+ *  is {@link tailMarkerCost}, reserved before the elements are offered anything; this constant is
+ *  only "the least a new element is worth starting". */
 const PERSISTED_JSON_MIN_LEAF = 96;
 
 /** The key an over-budget object carries instead of the fields that did not fit. Exported so a
@@ -917,10 +923,112 @@ const PERSISTED_JSON_MIN_LEAF = 96;
  *  from a suspiciously short value. */
 export const PERSISTED_JSON_ELIDED_KEY = "__scpElided";
 
+/**
+ * WHAT `null` COSTS — MEDIUM, M23.0 verification pass 11, and the reason it is a NAMED CONSTANT
+ * used by all three branches rather than a `4` typed in one of them.
+ *
+ * THE PROPERTY: every leaf branch of {@link walk} must charge what its return value RENDERS to.
+ * Four of the leaf branches did. Three returned something that `JSON.stringify` writes as the four
+ * characters `null` and, of those three, only the non-finite-number branch charged for it:
+ *
+ *     value                      renders   charged (before)   charged (now)
+ *     NaN / Infinity             null           4                  4
+ *     null / undefined           null           0   <- bug         4
+ *     function / symbol          null           0   <- bug         4
+ *
+ * The comment on the non-finite branch even names the reason ("a non-finite number is `null` to
+ * `JSON.stringify` anyway; making that explicit means the accounting below is the truth") — a
+ * well-written comment naming a hazard, handled in ONE of the three places that have it
+ * (CLAUDE.md, "census by property, not by symptom"). Both misses are on the branches a reader
+ * skims past because they look like they do nothing.
+ *
+ * WHY IT WAS NOT MERELY UNTIDY. Free elements DEFEAT THE ARRAY GUARD. An array element is admitted
+ * while `budget.left >= PERSISTED_JSON_MIN_LEAF`, so the guard can only stop a list whose elements
+ * actually spend; a `null` charged 0 spends 1 (its comma) and renders 5 (`,null`). Measured at the
+ * production 8 000 budget, with NOTHING else in the value:
+ *
+ *     {a: [ ...1 598 nulls ]}   row 7 997             stored
+ *     {a: [ ...1 599 nulls ]}   walk rendered 8 004   FALLBACK — the whole value is discarded
+ *
+ * and the fallback is the worst possible loss: not a truncated list a reader can recognise with
+ * {@link isPersistedJsonEntriesElision}, but `observed_state` replaced WHOLESALE by a diagnostic
+ * string, so `revision`, `images` and `rollout.weight` are all simultaneously gone, silently, on
+ * every tick. It is the exact failure this file was written to prevent, arriving through the one
+ * leaf nobody costed.
+ *
+ * WHY THE SUITE WAS GREEN. `persisted-json-bound.test.ts` has a 19-arm adversarial corpus and an
+ * arm asserting THE INTERNAL OVERFLOW FALLBACK NEVER FIRES — but every array in that corpus holds
+ * strings or integers, both of which are charged exactly. A fixture cannot witness a defect in a
+ * branch it never reaches; the corpus now carries `null`, `undefined` and a function.
+ *
+ * PRE-EXISTING, NOT THIS FAMILY OF ROUNDS'. Verified against the walk as it stood at passes 7, 8
+ * and 9: all three render 10 007 characters for `{a: [2 000 nulls]}` and all three fall back.
+ */
+const NULL_RENDERED_CHARS = 4;
+
+/**
+ * WHAT AN ARRAY HOLDS BACK FOR ITS OWN TAIL MARKER — MEDIUM, M23.0 verification pass 11.
+ *
+ * {@link PERSISTED_JSON_MIN_LEAF} says of itself: "Never start a new element/field with less than
+ * this much budget left: enough for a short marker and its punctuation, SO THE ELISION ITSELF CAN
+ * NEVER BE WHAT PUSHES THE ROW OVER." Measured, the second half of that sentence was false, and it
+ * was false for the reason a guard on STARTING an element cannot fix: the element it admits at
+ * exactly {@link PERSISTED_JSON_MIN_LEAF} may spend ALL of it — a string is bounded to whatever is
+ * left, by construction — and the marker is then charged against nothing.
+ *
+ *     array given 160   `[]` 2 -> 158   one string element takes 158 -> 0   marker 28 -> -28
+ *
+ * EVERY CUT ARRAY OVERSPENT ITS ALLOCATION BY EXACTLY THE MARKER, and the overspends COMPOUND: a
+ * reading with four cut arrays anywhere in it is 112 over, past the single
+ * {@link PERSISTED_JSON_MIN_LEAF} that `boundPersistedJson` reserves for the whole row. What
+ * happens then is the worst loss this file can produce — not a truncated list a reader can
+ * recognise with {@link isPersistedJsonEntriesElision}, but the measured backstop discarding the
+ * WHOLE value and storing a diagnostic sentence in its place, so `revision`, `images` and
+ * `rollout.weight` all vanish together, silently, on every tick.
+ *
+ * Measured over 12 000 mixed random shapes at budgets 100…8 000, before this reserve existed:
+ *
+ *     backstop fired   pass 7: 697/12 000   pass 8: —   pass 9: 30/12 000   pass 10: 238/12 000
+ *
+ * i.e. the redistribution rounds pass 10 added made it EIGHT TIMES more likely than pass 9, because
+ * a round hands a field a share computed from a pool that the previous round's marker overspends
+ * had already eaten. Pass 10's own comment saw the mechanism — "`sub.left` may go slightly
+ * negative when a leaf overshoots its own share ... which is what the measured check in
+ * `boundPersistedJson` is the backstop for" — and stopped at "the backstop holds", without asking
+ * what the backstop DOES when it fires. It throws the row away.
+ *
+ * SO THE MARKER IS BOUGHT FIRST. The array subtracts this reserve before any element is offered a
+ * character and adds it back at exactly one of two places: to the marker, or — if the list ran to
+ * the end and no marker is needed — to the parent, unspent. A complete array therefore costs
+ * EXACTLY what it cost before; a cut one holds back the marker's own worst-case price and then
+ * spends it on the marker, so the only residue is the digits the real count did not need.
+ *
+ * WHY IT IS DERIVED FROM THE MARKER AND NOT {@link PERSISTED_JSON_MIN_LEAF} SPELLED TWICE. They
+ * are different facts that a shared number would fuse: MIN_LEAF is "the least a new element is
+ * worth starting", this is "what the marker costs", and 96 is over three times what the marker
+ * needs. The difference is not free — a reserve is subtracted from what the ELEMENTS may spend, so
+ * an over-sized one comes straight out of retention on exactly the arrays that were already losing
+ * their tail. Measured on `imageRefs(400)` beside a revision and a rollout at the 8 000 budget:
+ *
+ *     no reserve (the defect)   72 refs kept, `328 more entries`, row 7 870, and 28 OVER
+ *     flat MIN_LEAF reserve     71 refs kept, `329 more entries`, row 7 763
+ *     derived from the marker   72 refs kept, `328 more entries`, row 7 870, and 0 over
+ *
+ * i.e. deriving it costs this reading NOTHING — the row is byte-identical to the unfixed one — and
+ * a flat 96 would have cost it an image ref. Deriving it also cannot go stale: widen the marker's
+ * wording and the reserve widens with it, which a hand-tuned constant cannot.
+ */
 /** The entry an over-budget ARRAY carries in place of its dropped tail. One function, so the marker
  *  and its recogniser below cannot drift apart. */
 function entriesElisionMarker(dropped: number): string {
   return `[elided: ${dropped} more entries]`;
+}
+
+function tailMarkerCost(length: number): number {
+  // `entriesElisionMarker(length)` is the WIDEST this marker can be — the count only shrinks as
+  // entries are kept — so the reserve is exact before the real count is known. Same idiom, and the
+  // same reason, as {@link boundText} sizing its head against `elisionMarker(text.length)`.
+  return jsonCost(entriesElisionMarker(length)) + 1; // + the comma that separates it from the tail
 }
 
 /**
@@ -1060,7 +1168,12 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  *       leaves at most one field's worth of the budget unspent, rather than a fixed fraction of it.
  *       Measured at the 8 000 budget: 400 image refs beside a revision and a rollout spend 7 870;
  *       two 4 000-character strings beside two small fields spend 7 904; a single string field at
- *       budget B spends exactly `B - PERSISTED_JSON_MIN_LEAF`.
+ *       budget B spends exactly `B - PERSISTED_JSON_MIN_LEAF` — exactly, for a string of ordinary
+ *       characters, at every integer B. STATED NO MORE STRONGLY THAN THAT LAST CLAUSE ALLOWS: an
+ *       ESCAPED string lands a few characters short of the figure, because the width that fits is
+ *       found by bisection over whole characters and one more character costs 2 (a backslash or a
+ *       quote) or 6 (a C0 control). Measured over every B in 200…4 000: 0 short for ASCII and for
+ *       astral characters, at most 1 for backslashes and quotes, at most 5 for C0 controls.
  *
  *       NARROWED, BECAUSE MEASUREMENT FALSIFIES THE UNQUALIFIED FORM. In the ELISION regime —
  *       phase 1 could not seat every key — phase 1 has reserved {@link PERSISTED_JSON_MIN_LEAF} for
@@ -1277,7 +1390,14 @@ function boundStringToCost(text: string, left: number): string {
 type WalkBudget = { left: number; clipped?: boolean };
 
 function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
-  if (value === null || value === undefined) return value;
+  if (value === null || value === undefined) {
+    // FOUR CHARACTERS, CHARGED — see {@link NULL_RENDERED_CHARS}. Reached only from an ARRAY
+    // element (an object's `undefined` field is dropped by `walkObjectFields` phase 1 before it
+    // gets here, and a top-level one is short-circuited by `boundPersistedJson`), and
+    // `JSON.stringify` renders an `undefined` array element as `null` exactly like a real one.
+    budget.left -= NULL_RENDERED_CHARS;
+    return value;
+  }
 
   switch (typeof value) {
     case "string": {
@@ -1290,7 +1410,7 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
       // A non-finite number is `null` to `JSON.stringify` anyway; making that explicit means the
       // accounting below is the truth rather than an approximation of it.
       if (!Number.isFinite(value)) {
-        budget.left -= 4;
+        budget.left -= NULL_RENDERED_CHARS;
         return null;
       }
       budget.left -= String(value).length;
@@ -1312,7 +1432,11 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
     case "object":
       break;
     default:
-      // function / symbol — `JSON.stringify` drops these; be explicit rather than lucky.
+      // function / symbol — `JSON.stringify` drops these; be explicit rather than lucky. The
+      // explicit `null` is four rendered characters in BOTH positions this can occupy (an array
+      // element, and an object field this function has already returned a value for), so it is
+      // charged like one — see {@link NULL_RENDERED_CHARS}.
+      budget.left -= NULL_RENDERED_CHARS;
       return null;
   }
 
@@ -1326,21 +1450,28 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
 
   if (Array.isArray(value)) {
     budget.left -= 2; // []
+    // THE TAIL MARKER IS PAID FOR BEFORE THE ELEMENTS ARE OFFERED ANYTHING — see
+    // {@link PERSISTED_JSON_TAIL_RESERVE}. Held back for the whole element loop and handed back
+    // either to the marker or, if the list ran to the end, to the parent.
+    const tailReserve = Math.min(Math.max(0, budget.left), tailMarkerCost(value.length));
+    budget.left -= tailReserve;
     const out: unknown[] = [];
     for (let i = 0; i < value.length; i++) {
       if (budget.left < PERSISTED_JSON_MIN_LEAF) {
         // Spend-in-order and truncate the TAIL — see {@link PERSISTED_JSON_SHARE_ROUNDS} for why
         // an array is not fair-shared. The marker is recognisable (`isPersistedJsonEntriesElision`)
         // so a reader looking for a specific entry can tell a cut from an absence.
+        budget.left += tailReserve;
         const marker = entriesElisionMarker(value.length - i);
         budget.left -= jsonCost(marker) + 1;
         out.push(marker);
         budget.clipped = true;
-        break;
+        return out;
       }
       if (i > 0) budget.left -= 1; // ,
       out.push(walk(value[i], budget, depth + 1));
     }
+    budget.left += tailReserve; // no cut: the reserve was never needed
     return out;
   }
 
