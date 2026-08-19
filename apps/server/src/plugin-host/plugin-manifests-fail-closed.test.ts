@@ -33,6 +33,15 @@ import { MANIFEST_BY_MODULE, hasPluginManifest, validatePluginConfig } from "./p
  *  | drop `additionalProperties:false` from fake-executor         | 1 failed — fake-executor        |
  *  | add manifest-less `webhook-control` to the NOTIFICATION list | file fails to LOAD: that        |
  *  |                                                              | allowlist's assertion throws    |
+ *  | drop `stateRefByTarget` from fake-executor's `configSchema`  | 2 failed — the hand-typed       |
+ *  |                                                              | negative control (`expected 400 |
+ *  |                                                              | to be undefined`) AND the       |
+ *  |                                                              | derived census (`expected […5]  |
+ *  |                                                              | to include 'stateRefByTarget'`) |
+ *
+ * A MUTATION TO A `packages/plugins/*` MANIFEST NEEDS `turbo build --force` BEFORE THIS FILE RUNS
+ * (pass 11): the manifests are imported through `main: dist/index.js`, so a `src/`-only edit leaves
+ * this suite green for the most misleading possible reason.
  */
 describe("every allowlisted plugin module has a config schema", () => {
   it("KNOWN_EXECUTOR_MODULES — all of them, no exemptions", () => {
@@ -157,9 +166,75 @@ describe("server-governed keys are refused; legitimate configs still work", () =
         forcePhase: { "target-b": "failed" },
         imagesByTarget: { "target-a": ["ghcr.io/acme/api@sha256:abc"] },
         rolloutByTarget: { "target-a": { phase: "Healthy", step: 2 } },
+        detailByTarget: { "target-a": "a third-party plugin's free-form detail" },
+        stateRefByTarget: { "target-a": "7d34ef12+ff3fd8a3" },
         observeEvents: [{ type: "sync", targetRef: "target-a" }]
       })
     ).toBeUndefined();
+  });
+
+  /**
+   * THE SAME PROPERTY, CENSUSED RATHER THAN LISTED — M23.0 verification pass 11.
+   *
+   * The literal above is a hand-typed restatement of "the tenant surface", and it was TWO KEYS
+   * behind when this was written: `detailByTarget` (added by pass 8) and `stateRefByTarget` (pass
+   * 10) had both reached `configSchema` without reaching this list. That is the same shape as the
+   * defect pass 8 found one level down — `@scp/plugin-fake-executor`'s own
+   * `config-schema-parity.test.ts` censuses the INTERFACE against the SCHEMA for exactly this
+   * reason — and a hand-typed list here reintroduces it at the place where the schema is actually
+   * ENFORCED.
+   *
+   * So: read the schema's own properties, build a value from each property's declared TYPE, and
+   * require the enforcement point to accept it. A key that the schema declares but the validator
+   * rejects is a tenant-facing 400 on a documented option; a key added to the schema later is
+   * covered on the day it is added. The sample builder deliberately fills one entry of an
+   * `additionalProperties` map rather than passing `{}`, so the VALUE type is exercised too — `{}`
+   * satisfies every object schema and would make this arm vacuous.
+   */
+  it("fake-executor: EVERY key its schema declares is accepted at the enforcement point", () => {
+    type Schema = {
+      type?: string;
+      properties?: Record<string, Schema>;
+      items?: Schema;
+      additionalProperties?: Schema | boolean;
+    };
+    function sampleFor(schema: Schema | undefined): unknown {
+      switch (schema?.type) {
+        case "integer":
+        case "number":
+          return 1;
+        case "boolean":
+          return true;
+        case "array":
+          return [sampleFor(schema.items)];
+        case "object": {
+          const extra = schema.additionalProperties;
+          if (extra && typeof extra === "object") return { "target-a": sampleFor(extra) };
+          const props = schema.properties ?? {};
+          return Object.fromEntries(
+            Object.entries(props).map(([k, v]) => [k, sampleFor(v)] as const)
+          );
+        }
+        default:
+          return "sample";
+      }
+    }
+    const schema = MANIFEST_BY_MODULE["fake-executor"]!.configSchema as Schema;
+    const keys = Object.keys(schema.properties ?? {});
+    // NON-VACUITY: the parse really found the tenant surface, and it includes the two keys that
+    // the hand-typed list above had missed.
+    expect(keys.length).toBeGreaterThan(5);
+    expect(keys).toContain("detailByTarget");
+    expect(keys).toContain("stateRefByTarget");
+
+    const rejected = keys.filter(
+      (key) =>
+        refusalStatus("fake-executor", { [key]: sampleFor(schema.properties![key]) }) !== undefined
+    );
+    expect(
+      rejected,
+      "the schema declares these keys as the tenant-facing surface but the validator refuses them"
+    ).toEqual([]);
   });
 
   it("managed-iac (the module that was ALREADY gated) is unchanged — the reference shape", () => {
