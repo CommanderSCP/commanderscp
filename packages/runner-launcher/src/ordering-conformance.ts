@@ -30,9 +30,17 @@ import type { RunnerCopyIn, RunnerCopyOut, RunnerLauncher, RunnerSpec } from "./
  * Kubernetes adapter inherits every case below by writing a substrate, not by re-deriving the race.
  *
  * WHAT A SUBSTRATE MUST DO, AND THE ONE THING THAT MAKES IT HONEST: a held step must be ISSUED and
- * must NOT SETTLE. A substrate that delayed the ISSUE instead of the settle would make every held
- * case below pass vacuously — which is why the first case is the UNHELD CONTROL: with nothing held
- * the full sequence must appear, in order, and `run()` must resolve with the runner's own output.
+ * must NOT SETTLE.
+ *
+ * CORRECTED CREDIT (this used to say a substrate that delayed the ISSUE instead of the settle "would
+ * make every held case below pass vacuously — which is why the first case is the UNHELD CONTROL".
+ * Measured false: forcing a held step's recording to wait for delivery instead of happening at issue
+ * time reddens EIGHT of the nine held cases directly — each one's own pre-release assertion that the
+ * held step already appears in `issued()` fails — while the unheld control, which holds nothing,
+ * passes unaffected. The protection is real; it lives in the held cases' own assertions, not in the
+ * control. The control's actual job is the one stated in its own name below: proving the substrate
+ * issues the full sequence AT ALL, so a held case with a step simply missing from `issued()` can be
+ * read as "the hold ate it" rather than as "nothing here works."
  *
  * THE SECOND DESCRIBE IS ABOUT IDENTITY, NOT ORDER, and it is here for the same inheritance reason.
  * Every case above — and every case in `docker-adapter.test.ts` — has exactly ONE `run()` in flight,
@@ -255,9 +263,12 @@ export function runLaunchOrderingConformanceSuite(
     const open = useCases(createSubstrate);
 
     it("THE UNHELD CONTROL — with nothing held, every step is issued in order and run() resolves", async () => {
-      // Non-vacuity for every case below: it proves the substrate ISSUES what the adapter asks for,
-      // so that a missing later step in a held case can only be the hold. A substrate that delayed
-      // the ISSUE rather than the SETTLE would pass all the held cases and fail this one.
+      // Non-vacuity for every case below: it proves the substrate ISSUES the full sequence AT ALL,
+      // so that a missing later step in a held case can be read as "the hold ate it" rather than as
+      // "nothing here works". It is NOT what catches a substrate that delays the ISSUE rather than
+      // the SETTLE — measured, that defect reddens eight of the nine held cases directly (each one's
+      // own pre-release assertion that the held step already appears in `issued()`) and leaves this
+      // control passing, since nothing is held here for a delayed issue to be visible against.
       const c = open();
       const result = await c.run(OUT_SWALLOW).promise;
       expect(c.issued()).toStrictEqual(FULL_SEQUENCE);
