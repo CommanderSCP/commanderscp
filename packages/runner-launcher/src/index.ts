@@ -823,21 +823,216 @@ function persistableText(text: string): string {
  * pass-through for it.
  */
 export function boundDetail(text: string): BoundedDetail {
-  if (text.length <= RUNNER_DETAIL_MAX_CHARS) return persistableText(text) as BoundedDetail;
+  return boundToWidth(text, RUNNER_DETAIL_MAX_CHARS, RUNNER_DETAIL_TAIL_CHARS) as BoundedDetail;
+}
+
+/**
+ * The same bound at an arbitrary width, which is what lets ONE implementation serve both the
+ * operator-facing `detail` and the per-string share of a whole persisted structure
+ * ({@link boundPersistedJson}). `boundDetail` is this function at
+ * ({@link RUNNER_DETAIL_MAX_CHARS}, {@link RUNNER_DETAIL_TAIL_CHARS}).
+ */
+function boundToWidth(text: string, max: number, tailWant: number): string {
+  if (max <= 0) return "";
+  if (text.length <= max) return persistableText(text);
   // `elisionMarker(text.length)` is the longest the marker can be (the count only shrinks), so
   // sizing the head against it guarantees the result fits even before the real count is known.
-  const headShare = Math.max(
-    0,
-    RUNNER_DETAIL_MAX_CHARS - RUNNER_DETAIL_TAIL_CHARS - elisionMarker(text.length).length
-  );
-  const dropped = text.length - headShare - RUNNER_DETAIL_TAIL_CHARS;
+  const widest = elisionMarker(text.length);
+  if (max <= widest.length + 2) {
+    // Too narrow to carry both ends AND an honest count. Keep the END: for a runner failure, a
+    // provider refusal or an exception message, the diagnosis is what the last characters hold.
+    return persistableText(text.slice(text.length - max));
+  }
+  const tail = Math.min(tailWant, max - widest.length - 1);
+  const headShare = Math.max(0, max - tail - widest.length);
+  const dropped = text.length - headShare - tail;
   // The elision count stays arithmetically honest through sanitising precisely because
   // `persistableText` is length-preserving: `keptHead + dropped + keptTail === text.length` still.
   return persistableText(
-    text.slice(0, headShare) +
-      elisionMarker(dropped) +
-      text.slice(text.length - RUNNER_DETAIL_TAIL_CHARS)
-  ) as BoundedDetail;
+    text.slice(0, headShare) + elisionMarker(dropped) + text.slice(text.length - tail)
+  );
+}
+
+/**
+ * THE TOTAL BUDGET FOR ONE PLUGIN-SUPPLIED STRUCTURE ENTERING A `jsonb` COLUMN — MEDIUM/HIGH, M23.0
+ * verification pass 7 finding M2, and the reason it is a BUDGET rather than another per-field cap.
+ *
+ * WHAT WENT WRONG, MEASURED. The previous round bounded ONE field of `ExecutionStatus` — `detail` —
+ * and missed its siblings three lines away in the same function. `observedStateFrom` reads
+ * `stateRef` and `observed.images` off the SAME free-form object the round declares untrusted, and
+ * `updateWaveTargetObserved` writes them into `change_wave_targets.observed_state` on the
+ * `succeeded`, `failed`/`aborted` AND `observing` branches — i.e. EVERY tick, not only on failure.
+ * Through the pre-existing `imagesByTarget` seam, with no product code modified:
+ *
+ *   OBSERVED-PROBE imageChars=500017 persistedImageChars=500017 rowJsonBytes={"b":500093,...}
+ *
+ * 500 093 bytes of plugin-chosen text, verbatim, in a row rewritten every second. And `stateRef`
+ * reaches persistence a SECOND time, on a different write — `markWaveTargetTriggered`'s
+ * `prior_state_ref` — as does `trigger()`'s whole `ExternalRunRef` in `executor_ref`. Three unbounded
+ * plugin-supplied `jsonb` columns on one table.
+ *
+ * SO THE BOUND IS NOT A LIST OF FIELDS. A per-field patch list that happens to cover today's fields
+ * is exactly what produced this finding: `ExecutionStatus.observed` is documented as "optional and
+ * additive", so the next field an executor contributes arrives unbounded by default and nothing
+ * goes red. This walks a whole VALUE against ONE budget, so a field nobody has written yet is
+ * covered on the day it is added, and the guarantee is a fact about the ROW rather than about a
+ * field: `JSON.stringify(boundPersistedJson(v)).length <= PERSISTED_JSON_MAX_CHARS`, always,
+ * checked exactly before returning.
+ *
+ * WHY 8 000. Two `RUNNER_DETAIL_MAX_CHARS` worth of room, i.e. an `observed_state` may carry an
+ * operator-readable revision, a realistic image list and a rollout message and still be about a
+ * tenth the size of the smallest row in the 1.44 GB/day incident. It is a CEILING and not a target:
+ * a real Argo CD reading is a few hundred bytes and is untouched by this.
+ */
+export const PERSISTED_JSON_MAX_CHARS = 8_000;
+
+/**
+ * How deep a plugin-supplied structure may nest before the rest is replaced by a marker. Also the
+ * cycle guard: a self-referential object would otherwise recurse until the stack gave out, and the
+ * values this walks are `unknown` from a subprocess whose serialiser we do not control.
+ */
+export const PERSISTED_JSON_MAX_DEPTH = 8;
+
+/** No object KEY may be longer than this. Keys are plugin-chosen too, and a key is not a place a
+ *  reader looks for content, so it gets a much smaller share than a value. */
+const PERSISTED_JSON_MAX_KEY_CHARS = 128;
+
+/** Never start a new element/field with less than this much budget left: enough for a short marker
+ *  and its punctuation, so the elision itself can never be what pushes the row over. */
+const PERSISTED_JSON_MIN_LEAF = 96;
+
+/** Exactly what `JSON.stringify` will spend on this leaf, escapes included — the accounting has to
+ *  be in RENDERED characters, because that is the unit the column is measured in. A string of
+ *  backslashes doubles; a C0 control sextuples. */
+function jsonCost(value: string | number | boolean): number {
+  return JSON.stringify(value).length;
+}
+
+/** Bound `text` so its RENDERED cost fits `left`. Starts at the per-string cap and halves until the
+ *  escapes fit, which terminates in at most four steps because the worst escape expansion is 6x. */
+function boundStringToCost(text: string, left: number): string {
+  let width = Math.min(RUNNER_DETAIL_MAX_CHARS, left);
+  for (let attempt = 0; attempt < 5 && width > 0; attempt++) {
+    const candidate = boundToWidth(text, width, Math.floor(width / 2));
+    if (jsonCost(candidate) <= left) return candidate;
+    width = Math.floor(width / 2);
+  }
+  return "";
+}
+
+function walk(value: unknown, budget: { left: number }, depth: number): unknown {
+  if (value === null || value === undefined) return value;
+
+  switch (typeof value) {
+    case "string": {
+      const bounded = boundStringToCost(value, budget.left);
+      budget.left -= jsonCost(bounded);
+      return bounded;
+    }
+    case "number": {
+      // A non-finite number is `null` to `JSON.stringify` anyway; making that explicit means the
+      // accounting below is the truth rather than an approximation of it.
+      if (!Number.isFinite(value)) {
+        budget.left -= 4;
+        return null;
+      }
+      budget.left -= String(value).length;
+      return value;
+    }
+    case "boolean":
+      budget.left -= value ? 4 : 5;
+      return value;
+    case "bigint": {
+      // `JSON.stringify` THROWS on a bigint. A plugin's JSON-RPC response cannot carry one today,
+      // but this function's contract is "any value", and a throw here is the stall this whole file
+      // exists to prevent.
+      const bounded = boundStringToCost(String(value), budget.left);
+      budget.left -= jsonCost(bounded);
+      return bounded;
+    }
+    case "object":
+      break;
+    default:
+      // function / symbol — `JSON.stringify` drops these; be explicit rather than lucky.
+      return null;
+  }
+
+  if (depth >= PERSISTED_JSON_MAX_DEPTH) {
+    const marker = "[elided: nesting deeper than the persisted-JSON depth limit]";
+    budget.left -= jsonCost(marker);
+    return marker;
+  }
+
+  if (Array.isArray(value)) {
+    budget.left -= 2; // []
+    const out: unknown[] = [];
+    for (let i = 0; i < value.length; i++) {
+      if (budget.left < PERSISTED_JSON_MIN_LEAF) {
+        const marker = `[elided: ${value.length - i} more entries]`;
+        budget.left -= jsonCost(marker) + 1;
+        out.push(marker);
+        break;
+      }
+      if (i > 0) budget.left -= 1; // ,
+      out.push(walk(value[i], budget, depth + 1));
+    }
+    return out;
+  }
+
+  budget.left -= 2; // {}
+  const entries = Object.entries(value as Record<string, unknown>);
+  const out: Record<string, unknown> = {};
+  for (let i = 0; i < entries.length; i++) {
+    const [rawKey, entryValue] = entries[i]!;
+    if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
+    if (budget.left < PERSISTED_JSON_MIN_LEAF) {
+      const marker = `${entries.length - i} more fields`;
+      budget.left -= jsonCost(marker) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
+      out[PERSISTED_JSON_ELIDED_KEY] = marker;
+      break;
+    }
+    const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
+    budget.left -= jsonCost(key) + 1 + (i > 0 ? 1 : 0); // "key": plus the separating comma
+    out[key] = walk(entryValue, budget, depth + 1);
+  }
+  return out;
+}
+
+/** The key an over-budget object carries instead of the fields that did not fit. Exported so a
+ *  test — or an operator's query — can find rows that were elided, rather than having to guess
+ *  from a suspiciously short value. */
+export const PERSISTED_JSON_ELIDED_KEY = "__scpElided";
+
+/**
+ * BOUND A WHOLE PLUGIN-SUPPLIED VALUE FOR PERSISTENCE. Every string inside it comes back through
+ * the same both-ends bound `boundDetail` applies (so it is persistable — see
+ * {@link boundDetail} for what Postgres actually refuses), and the RENDERED size of the whole is at
+ * most `maxChars`.
+ *
+ * THE GUARANTEE IS CHECKED, NOT ARGUED. The walk's accounting is exact, but "exact" is a claim
+ * about code that will be edited; so the rendered result is measured before returning and, if it
+ * somehow does not fit, a small diagnostic object is returned in its place. The fallback losing the
+ * payload is strictly better than the alternative — the row is what a coordination loop stalls on,
+ * and a stall is invisible.
+ *
+ * WHERE IT BELONGS: at the STORE, not at the composition sites. The write function is the one place
+ * that sees every value that becomes a row, including the ones a future field adds, and it cannot
+ * be forgotten the way a call at a composition site can. See `wave-targets-repo.ts`.
+ */
+export function boundPersistedJson(
+  value: unknown,
+  maxChars: number = PERSISTED_JSON_MAX_CHARS
+): unknown {
+  if (value === null || value === undefined) return value;
+  const budget = { left: Math.max(0, maxChars) - PERSISTED_JSON_MIN_LEAF };
+  const bounded = walk(value, budget, 0);
+  const rendered = JSON.stringify(bounded);
+  if (rendered === undefined || rendered.length <= maxChars) return bounded;
+  return {
+    [PERSISTED_JSON_ELIDED_KEY]: boundDetail(
+      `a plugin-supplied value rendered to ${rendered.length} characters after bounding, over the ${maxChars}-character budget, and was not stored verbatim`
+    )
+  };
 }
 
 /** The classified failure a caller records. See {@link classifyRunnerFailure}. */

@@ -234,9 +234,10 @@ describe("HIGH: every bounded detail is something Postgres will accept, at every
     // …and no U+FFFD was introduced anywhere in a long, legal, sliced string either.
     const longLegal = `HEAD${"中文 ".repeat(50_000)}\u{1F600}TAIL`;
     const bounded = boundDetail(longLegal);
-    expect(bounded.includes("\uFFFD"), "the sanitiser replaced a character it should not have").toBe(
-      false
-    );
+    expect(
+      bounded.includes("\uFFFD"),
+      "the sanitiser replaced a character it should not have"
+    ).toBe(false);
     expect(bounded.startsWith("HEAD")).toBe(true);
     expect(bounded.endsWith("TAIL")).toBe(true);
   });

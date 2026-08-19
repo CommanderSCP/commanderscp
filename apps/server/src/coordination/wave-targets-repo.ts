@@ -1,5 +1,6 @@
 import { and, desc, eq, getTableColumns, inArray, isNull, or, sql } from "drizzle-orm";
 import type { ExecutionStatus } from "@scp/plugin-api";
+import { boundPersistedJson } from "@scp/runner-launcher";
 import type { ChangeState } from "@scp/schemas";
 import type { TenantTx } from "../db/tenant-tx.js";
 import { changePlans, changes, changeWaveTargets, changeWaves, objects } from "../db/schema.js";
@@ -135,6 +136,62 @@ export async function claimWaveTargetForTriggering(
   return result.length > 0;
 }
 
+/**
+ * EVERY PLUGIN-SUPPLIED VALUE THAT BECOMES A ROW ON THIS TABLE GOES THROUGH HERE — MEDIUM, M23.0
+ * verification pass 7 findings M2 and M3, and the answer to "why did the previous round bound one
+ * field and miss its sibling three lines away".
+ *
+ * THE CENSUS THAT SHOULD HAVE BEEN RUN. `ExecutionStatus` (`@scp/plugin-api`) is returned by
+ * `status()` across the plugin host's JSON-RPC boundary, and `PluginHost.executor()` types that
+ * response with a BARE CAST — `call<ExecutionStatus>("status", …)`. There is no runtime validation
+ * anywhere on that path, so at runtime EVERY field is arbitrary JSON of arbitrary size chosen by a
+ * plugin, including third-party plugins whose strings this repository does not compose. Field by
+ * field, where each one lands and what bounds it:
+ *
+ *   ExecutionStatus.phase       -> change_wave_targets.status, decisions.input_context.phase
+ *                                  BOUNDED BY CONSTRUCTION. `reconcile.ts` branches on the three
+ *                                  literals it knows and writes "observing" for anything else, so
+ *                                  the column only ever receives one of four repository-chosen
+ *                                  strings. The plugin's value is compared, never stored.
+ *   ExecutionStatus.detail      -> decisions.input_context.detail
+ *                                  BOUNDED at `reconcile.ts` by `boundDetail` (the previous round).
+ *   ExecutionStatus.stateRef    -> change_wave_targets.observed_state.revision, via
+ *                                  `observedStateFrom` + `String()`  ......... WAS UNBOUNDED
+ *                              -> change_wave_targets.prior_state_ref, via
+ *                                  `markWaveTargetTriggered`, a SECOND write of the SAME field on a
+ *                                  different column  ........................ WAS UNBOUNDED
+ *   ExecutionStatus.observed.images[]     -> observed_state.images  .......... WAS UNBOUNDED
+ *                                  (measured: 500 093 bytes persisted verbatim, every tick)
+ *   ExecutionStatus.observed.rollout.{phase,message}
+ *                               -> observed_state.rollout  ................... WAS UNBOUNDED
+ *   ExecutionStatus.observed.rollout.{step,weight}
+ *                               -> observed_state.rollout. Numbers; a non-finite one renders as
+ *                                  `null`. No size hazard, but see `boundPersistedJson`, which
+ *                                  makes that explicit rather than incidental.
+ *   ExecutionStatus.progress    -> NOWHERE. Documented as the stuck-change watchdog's heartbeat
+ *                                  input; no reader exists. Recorded here so the next census does
+ *                                  not have to re-derive it.
+ *   ExternalRunRef (from `trigger()`, not `status()`)
+ *                               -> change_wave_targets.executor_ref  ......... WAS UNBOUNDED
+ *   AbortResult.detail          -> NOWHERE. `abort()` has no server-side caller.
+ *
+ * SO THE BOUND IS NOT PER FIELD, IT IS PER WRITE. Three of those columns are `jsonb` and all three
+ * are written from this file; `ExecutionStatus.observed` is documented as "optional and additive",
+ * so a per-field list is a list that goes stale the next time an executor contributes a signal. The
+ * write function is the choke point that cannot be forgotten: it is the last thing every value
+ * passes on its way to being a row, and it covers fields nobody has written yet.
+ *
+ * WHAT IT COSTS A HONEST READING. A real Argo CD `observed_state` is a few hundred characters and
+ * comes back byte-identical; the cap is `PERSISTED_JSON_MAX_CHARS` in `@scp/runner-launcher`.
+ */
+function boundPluginJson<T>(value: T): T {
+  // The cast is the honest one: `boundPersistedJson` may shorten a string, drop an array's tail or
+  // replace an over-deep branch with a marker, so the result is the same SHAPE with smaller values,
+  // which the type system cannot express for an arbitrary `T`. Every consumer of these columns
+  // already treats them as untrusted plugin output.
+  return boundPersistedJson(value) as T;
+}
+
 /** Step 3 of the claim/record split above — records the executor's result and closes out the
  *  claim. Guarded on `status = 'triggering'` so this only ever applies to a target this same
  *  claim/trigger/record cycle actually owns. */
@@ -148,9 +205,15 @@ export async function markWaveTargetTriggered(
     .update(changeWaveTargets)
     .set({
       status: "triggered",
+      // Repository-chosen (the resolved binding's registry id), not plugin-chosen — the one value
+      // in this `set` that does not need the bound.
       executorPluginId: update.executorPluginId,
-      executorRef: update.executorRef,
-      priorStateRef: update.priorStateRef ?? null,
+      // BOTH plugin-supplied, both `jsonb`, both previously verbatim. `executorRef` is whatever
+      // `trigger()` returned; `priorStateRef` is a prior poll's `ExecutionStatus.stateRef` — the
+      // same field the observed-state write below reads, reaching a row by a second route. Missing
+      // this one is exactly the census failure that produced the finding.
+      executorRef: boundPluginJson(update.executorRef),
+      priorStateRef: boundPluginJson(update.priorStateRef ?? null),
       attempt: 1,
       updatedAt: new Date()
     })
@@ -265,8 +328,16 @@ export async function updateWaveTargetObserved(
       // reports nothing storable, while `last_observed_at` is refreshed unconditionally — so a
       // reader that dated the snapshot by the poll would believe a frozen weight forever as long as
       // something kept polling. See `WaveTargetObservedState.observedAt`.
+      // BOUNDED AT THE STORE. Everything in this payload came off a free-form `ExecutionStatus`
+      // (see the census above `boundPluginJson`); `observedAt` is stamped here and is ours, so it
+      // is added AFTER the bound and cannot be spent by a plugin's budget.
       ...(observedState !== undefined
-        ? { observedState: observedState && { ...observedState, observedAt: now.toISOString() } }
+        ? {
+            observedState: observedState && {
+              ...boundPluginJson(observedState),
+              observedAt: now.toISOString()
+            }
+          }
         : {})
     })
     .where(and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.id, targetId)));
