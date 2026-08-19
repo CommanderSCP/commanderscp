@@ -773,15 +773,6 @@ export function boundDetail(text: string): BoundedDetail {
     text.slice(text.length - RUNNER_DETAIL_TAIL_CHARS)) as BoundedDetail;
 }
 
-/** Keep the FRONT of `text` within `budget`, saying what was removed. Used for `err.message`, whose
- *  useful half is its front — the command that was run — and whose second half, on Node's
- *  `Command failed:` format, is a duplicate of the output that is appended (tail-first) after it. */
-function elideTail(text: string, budget: number): string {
-  if (text.length <= budget) return text;
-  const keep = Math.max(0, budget - elisionMarker(text.length).length);
-  return text.slice(0, keep) + elisionMarker(text.length - keep);
-}
-
 /** The classified failure a caller records. See {@link classifyRunnerFailure}. */
 export interface RunnerFailure {
   readonly kind: RunnerFailureKind;
@@ -874,22 +865,23 @@ const FAILURE_WORDING: Record<RunnerFailureKind, string> = {
  * managed-scan and managed-dep and above ~1.8 KB for managed-iac. The mechanism was inert in exactly
  * the case its own doc named as its reason to exist.
  *
- * SO THE COMPOSITION IS A BUDGET, NOT A CONCATENATION, and the three regions are ranked:
- *   1. the HEAD — kind, wording, step, `code`/`signal`/`killed` — always whole; it is ~150 bytes and
- *      it is the classification nothing else carries.
- *   2. the TAIL — the child's own last words — RESERVED, never squeezed. Its length plus its longest
- *      introducer is exactly {@link RUNNER_DETAIL_TAIL_CHARS}, which is the amount
- *      {@link boundDetail} preserves at the END, so a caller that prefixes its own text and bounds
- *      again cannot push the diagnosis out either.
- *   3. `err.message` — whatever budget is left, FRONT kept (it opens with the step and the argv) and
- *      elided with a stated count. Its second half, on Node's format, is a duplicate of the output
- *      that region 2 already carries tail-first.
+ * SO THE ORDER IS THE FIX, AND IT IS ONE MECHANISM RATHER THAN TWO. The composition still puts
+ * `err.message` in whole — nothing is re-derived, which is what kept the budget-kill path's
+ * REPLACEMENT text intact — but the child's last words now come AFTER it and the whole string is
+ * closed by {@link boundDetail}, which keeps the last {@link RUNNER_DETAIL_TAIL_CHARS} characters
+ * and elides the MIDDLE. So the reader gets the classification and the argv at the front, the
+ * diagnosis at the back, and the noise the tool printed on its way there is what goes.
  *
- * THE `includes` SKIP NOW HAS A THIRD CONDITION and it is the one that matters: the append is
- * skipped as a duplicate only when the message ALSO fits the budget whole, because "it is already in
- * the message" stops being true the moment the message is the thing being truncated. The `includes`
- * search is still skipped above the tail cap, because a substring search over 32 MiB to save an
- * append is the wrong trade.
+ * THE APPENDED REGION IS SIZED TO THE RESERVE EXACTLY — tail plus its longest introducer is
+ * {@link RUNNER_DETAIL_TAIL_CHARS} — so a CALLER that prefixes its own text and bounds again cannot
+ * push the diagnosis out either. That is arithmetic, not luck, and `failure-detail-bound.test.ts`
+ * pins it.
+ *
+ * WHY NOT ALSO PRE-ELIDE THE MESSAGE against a computed budget: the first draft did, and a mutation
+ * run showed the two mechanisms covered each other — EITHER could be deleted with all 17 tests still
+ * green, which is the definition of a mechanism nothing pins. Simplicity (charter priority 1) picks
+ * the single bound. The `includes` search is still skipped above the tail cap, because a substring
+ * search over 32 MiB to save an append is the wrong trade.
  */
 /**
  * The longer of the two introducers, and its LENGTH IS LOAD-BEARING rather than decorative: the
@@ -925,13 +917,7 @@ export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
   let suffix: string;
   if (output.length === 0) {
     suffix = " [the runner printed nothing on stdout or stderr]";
-  } else if (
-    output.length <= FAILURE_OUTPUT_TAIL_CHARS &&
-    err.message.includes(output) &&
-    // ...AND the message will not itself be truncated. Without this the append was skipped as a
-    // duplicate of a copy that the budget below then cut away.
-    head.length + err.message.length <= RUNNER_DETAIL_MAX_CHARS
-  ) {
+  } else if (output.length <= FAILURE_OUTPUT_TAIL_CHARS && err.message.includes(output)) {
     suffix = ""; // already in the message (Node's `Command failed:` format) — do not say it twice
   } else {
     const tail = output.slice(-FAILURE_OUTPUT_TAIL_CHARS);
@@ -939,20 +925,19 @@ export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
       tail.length < output.length ? `${OUTPUT_TAIL_MARKER}${tail}` : ` :: runner output: ${tail}`;
   }
 
-  // THE TAIL IS RESERVED AND THE MESSAGE GETS WHAT IS LEFT — the inversion of the old order, which
-  // let an unbounded message push the tail past every reader. `boundDetail` on the result is a
-  // no-op by construction (head is ~150 bytes, suffix at most RUNNER_DETAIL_TAIL_CHARS) and is
-  // applied anyway, because `BoundedDetail` must be a fact about the value and not about this
-  // arithmetic staying true.
-  const message = elideTail(err.message, RUNNER_DETAIL_MAX_CHARS - head.length - suffix.length);
-
   return {
     kind,
     step: err.step,
     code: err.code,
     signal: err.signal,
     deadlineExceeded: err.deadlineExceeded,
-    detail: boundDetail(`${head}${message}${suffix}`)
+    // THE TAIL IS LAST AND THE BOUND KEEPS THE LAST RUNNER_DETAIL_TAIL_CHARS, which is the whole
+    // inversion: the old code let an unbounded `err.message` sit between the reader and the
+    // diagnosis. ONE mechanism, not two — an earlier draft also pre-elided the message against a
+    // computed budget, and a mutation run showed the two covered each other, so either could be
+    // deleted with 17 tests still green. Simplicity (charter priority 1) picks the one that is
+    // visible to a mutation: delete `boundDetail` here and this stops being bounded at all.
+    detail: boundDetail(`${head}${err.message}${suffix}`)
   };
 }
 
