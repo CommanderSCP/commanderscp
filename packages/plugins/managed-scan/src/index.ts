@@ -13,6 +13,7 @@ import type {
 } from "@scp/plugin-api";
 import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
+  RUN_OUTCOME_CACHE_MAX_IN_MEMORY,
   boundDetail,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
@@ -20,6 +21,7 @@ import {
   toRunnerRunId,
   withRecordedOutcome,
   type ResolveRunnerLauncher,
+  pruneOutcomeMap,
   type BoundedDetail,
   type RunnerCopyIn,
   // THE PORT'S OWN RESULT TYPE, not a local restatement of it. There used to be a `RunResult`
@@ -239,6 +241,52 @@ async function runScanContainer(
 // preserve the way a live `apply` needs one, so no durable statePath is required here).
 const outcomes = new Map<string, { succeeded: boolean; detail: BoundedDetail }>();
 
+/**
+ * BOUNDING ONE ENTRY DID NOT BOUND THE MAP (MEDIUM, M23.0 verification pass 7 finding M1). Same
+ * property managed-iac's durable ledger had, in RAM: nothing here pruned anything, ever, so a
+ * long-lived plugin instance accumulated one ~4 KB entry per scan for the life of the process.
+ *
+ * A LOOSER CAP THAN THE DURABLE ONE, deliberately. managed-iac re-parses its whole ledger on every
+ * poll, so its size is CPU per tick; this is a `Map.get`, O(1) whatever the size, and it is lost on
+ * restart anyway. The cost here is memory alone: {@link RUN_OUTCOME_CACHE_MAX_IN_MEMORY} x ~4.2 KB,
+ * about 4 MB worst case. Treating the two caches as one problem would either waste memory here or
+ * re-introduce the parse cost there.
+ *
+ * WHAT AN ENTRY MUST OUTLIVE: `trigger()` runs the scan synchronously to completion before writing
+ * the entry, so the only reader left is reconcile's next `status()` poll.
+ */
+function recordOutcome(
+  ctx: PluginContext,
+  externalId: string,
+  // A PLAIN `string`, not {@link BoundedDetail} — the M3 boundary move. The brand stays on what is
+  // STORED (`outcomes`' value type, so no reader can be handed a megabyte) and this is the only
+  // thing that mints one. A brand on a FIELD forces a conversion at every literal that builds the
+  // record, which is how one concept came to have 26 manual call sites across four packages, most
+  // of them pinned by no failing test.
+  outcome: { succeeded: boolean; detail: string }
+): void {
+  outcomes.set(externalId, { succeeded: outcome.succeeded, detail: boundDetail(outcome.detail) });
+  const pruned = pruneOutcomeMap(outcomes, RUN_OUTCOME_CACHE_MAX_IN_MEMORY);
+  if (pruned > 0) {
+    ctx.logger.info("managed-scan: pruned the oldest outcome-cache entries", {
+      pruned,
+      kept: outcomes.size
+    });
+  }
+}
+
+/** Exported for tests only — the cache is process-lifetime state, so a test asserting a refusal
+ *  must not be able to see a previous test's run. Mirrors managed-dep's. */
+export function __resetManagedScanOutcomes(): void {
+  outcomes.clear();
+}
+
+/** Exported for tests only — READ THE STORE, not what `status()` chose to return. See managed-dep's
+ *  `__managedDepStoredDetail` for the finding (L2) this exists to close. */
+export function __managedScanStoredDetail(externalId: string): string | undefined {
+  return outcomes.get(externalId)?.detail;
+}
+
 async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
   return []; // no push events — this executor's only activity is its own promotion-scan trigger().
 }
@@ -259,19 +307,20 @@ async function trigger(
   const externalId = `managed-scan::${runKey}`;
 
   if (!SUPPORTED_METHODS.has(method)) {
-    // BOUNDED, and not pro forma: `method` is a TENANT-SUPPLIED intent parameter, so this is the
-    // one refusal in this file whose length an attacker chooses.
-    const detail = boundDetail(
-      `managed-scan: unsupported method '${method}' (this runner image ships 'trivy', 'trivy-vm' and 'openscap')`
-    );
-    outcomes.set(externalId, { succeeded: false, detail });
+    // `method` is a TENANT-SUPPLIED intent parameter, so this is the one refusal in this file whose
+    // length an attacker chooses. `recordOutcome` is what bounds it — see its doc.
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail: `managed-scan: unsupported method '${method}' (this runner image ships 'trivy', 'trivy-vm' and 'openscap')`
+    });
     return { externalId };
   }
   if (!params.inputDir || !params.outputDir) {
-    const detail = boundDetail(
-      "managed-scan: FAILED CLOSED — intent.parameters.inputDir/outputDir are required (server-controlled scan-subject layout + evidence sink)"
-    );
-    outcomes.set(externalId, { succeeded: false, detail });
+    recordOutcome(ctx, externalId, {
+      succeeded: false,
+      detail:
+        "managed-scan: FAILED CLOSED — intent.parameters.inputDir/outputDir are required (server-controlled scan-subject layout + evidence sink)"
+    });
     return { externalId };
   }
 
@@ -290,10 +339,10 @@ async function trigger(
   await withRecordedOutcome(
     {
       record: (succeeded, detail) => {
-        // RE-BOUND: prefixing a bounded detail produces a plain `string` again, and the compiler
-        // says so. `boundDetail` is idempotent and keeps BOTH ENDS, so this costs the middle of an
-        // already-bounded string and never the reason the run failed.
-        outcomes.set(externalId, { succeeded, detail: boundDetail(`managed-scan: ${detail}`) });
+        // Prefixing a bounded detail produces a plain `string` again — `recordOutcome` re-bounds,
+        // and `boundDetail` is idempotent and keeps BOTH ENDS, so a second application costs the
+        // middle of an already-bounded string and never the reason the run failed.
+        recordOutcome(ctx, externalId, { succeeded, detail: `managed-scan: ${detail}` });
       },
       redact: (text) => text
     },
@@ -312,7 +361,7 @@ async function trigger(
           scanScapDir: params.scanScapDir
         }
       );
-      outcomes.set(externalId, {
+      recordOutcome(ctx, externalId, {
         succeeded: result.succeeded,
         // THE SUCCESS ARM IS NOT `runnerOutcomeDetail`, DELIBERATELY: on success this plugin
         // records where the EVIDENCE landed rather than a Trivy report that can run to 32 MiB. The
@@ -323,11 +372,9 @@ async function trigger(
         // stderr, so at EVERY output size the 2000 characters kept here were Node's `Command failed:`
         // preamble and the diagnosis was thrown away. The bound now lives where the string is
         // composed and keeps the END.
-        detail: boundDetail(
-          result.succeeded
-            ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
-            : `managed-scan: ${method} scan FAILED — ${runnerOutcomeDetail(result)}`
-        )
+        detail: result.succeeded
+          ? `managed-scan: ${method} scan complete — evidence at ${params.outputDir}/result.json`
+          : `managed-scan: ${method} scan FAILED — ${runnerOutcomeDetail(result)}`
       });
       ctx.logger.info("managed-scan: run complete", {
         externalId,

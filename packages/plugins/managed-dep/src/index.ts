@@ -14,11 +14,13 @@ import type {
 } from "@scp/plugin-api";
 import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
+  RUN_OUTCOME_CACHE_MAX_IN_MEMORY,
   boundDetail,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
   runnerOutcomeDetail,
   toRunnerRunId,
+  pruneOutcomeMap,
   type BoundedDetail,
   type ResolveRunnerLauncher,
   // THE PORT'S OWN RESULT TYPE rather than an inline `{ succeeded, stdout, stderr }`: a structural
@@ -702,10 +704,65 @@ interface RunOutcome {
  *  converges on the same branch and the same pull request. */
 const outcomes = new Map<string, RunOutcome>();
 
+/**
+ * WHAT THE CODE BELOW COMPOSES — a `detail` that is a plain `string`, because a composition site is
+ * the wrong place to remember to bound one (MEDIUM, M23.0 verification pass 7 finding M3).
+ *
+ * THE 26-CALL-SITE PROBLEM, AND WHY THE BRAND DID NOT SOLVE IT. `RunOutcome.detail` is
+ * {@link BoundedDetail}, which makes "you cannot store an unbounded reason" a compile error — good,
+ * and it is why every site here HAD a bound. But a brand on a FIELD forces a conversion at every
+ * literal that constructs the record, so this file alone carried FOURTEEN `boundDetail(...)` calls,
+ * of which a delete-the-wiring sweep found most pinned by no failing test. This repository's own
+ * rule is that three sites of one concept means the boundary is in the wrong place, and 15 is not a
+ * reason to write 15 tests.
+ *
+ * SO THE BOUND MOVED TO THE STORE. The brand stays exactly where it was — a READER of `RunOutcome`
+ * still cannot be handed a megabyte — and `recordOutcome` below is the only thing that can mint one.
+ * Composition sites deal in `string`, which is what they actually have, and there is now ONE place
+ * in this file where an unbounded value becomes a bounded one instead of fifteen.
+ */
+type PendingOutcome = Omit<RunOutcome, "detail"> & { detail: string };
+
+/**
+ * THE ONLY WAY AN OUTCOME ENTERS THE CACHE. Bounds the detail (finding M3) and bounds the number of
+ * entries (finding M1) — the two halves of "bounding one entry did not bound the map".
+ *
+ * A LOOSER ENTRY CAP THAN managed-iac's, deliberately: that plugin re-parses its whole durable
+ * ledger on every `status()` poll, so its size is CPU per tick, while this is a `Map.get` — O(1)
+ * whatever the size — that is lost on restart anyway. What an entry has to outlive is short and
+ * knowable: `trigger()` runs the job synchronously to completion BEFORE recording, so the only
+ * reader left is reconcile's next poll about a second later, plus a crash-and-retry window in which
+ * reconcile re-issues the same `idempotencyKey`. {@link RUN_OUTCOME_CACHE_MAX_IN_MEMORY} is orders
+ * of magnitude above anything that can be in flight, not the smallest number that would work.
+ */
+function recordOutcome(ctx: PluginContext, externalId: string, outcome: PendingOutcome): void {
+  outcomes.set(externalId, { ...outcome, detail: boundDetail(outcome.detail) });
+  const pruned = pruneOutcomeMap(outcomes, RUN_OUTCOME_CACHE_MAX_IN_MEMORY);
+  if (pruned > 0) {
+    ctx.logger.info("managed-dep: pruned the oldest outcome-cache entries", {
+      pruned,
+      kept: outcomes.size
+    });
+  }
+}
+
 /** Exported for tests only: the outcome cache is process-lifetime state, and a test that asserts a
  *  refusal must not be able to see a previous test's run. */
 export function __resetManagedDepOutcomes(): void {
   outcomes.clear();
+}
+
+/**
+ * Exported for tests only — READ THE STORE, not what `status()` chose to return.
+ *
+ * LOW (M23.0 verification pass 7, finding L2): a test claiming "THE OUTCOME MAP ENTRY IS BOUNDED,
+ * not just the value `status()` returns" read the value THROUGH `status()`, and its own comment
+ * admitted that reading it that way twice cannot distinguish the two. It was true only because the
+ * `.slice` in `status()` had been removed; re-adding one would have made the test green and the
+ * claim false. A claim about the store has to be measured at the store.
+ */
+export function __managedDepStoredDetail(externalId: string): string | undefined {
+  return outcomes.get(externalId)?.detail;
 }
 
 async function observe(_ctx: PluginContext, _since?: Cursor): Promise<ExecutorEvent[]> {
@@ -732,9 +789,9 @@ async function triggerMerge(
   try {
     descriptor = parseBumpMergeDescriptor(intent);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
-      detail: boundDetail(err instanceof Error ? err.message : String(err))
+      detail: err instanceof Error ? err.message : String(err)
     });
     return;
   }
@@ -743,9 +800,9 @@ async function triggerMerge(
   try {
     writer = resolveRepoWriter(writerConfig);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
-      detail: boundDetail(err instanceof Error ? err.message : String(err))
+      detail: err instanceof Error ? err.message : String(err)
     });
     return;
   }
@@ -763,16 +820,14 @@ async function triggerMerge(
         commitTitle: descriptor.commitTitle
       })
     );
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       // A PROVIDER REFUSAL IS A FAILED RUN, not a succeeded one with a note. The server records the
       // phase, and "the merge did not happen" must not read as "done".
       succeeded: merge.merged,
       merge,
-      detail: boundDetail(
-        merge.merged
-          ? `managed-dep: merged pull request #${merge.pullRequestNumber} on '${descriptor.repo}' at the evidenced commit ${descriptor.expectedHeadCommit}`
-          : `managed-dep: NOT merged — ${merge.mergeRefusal ?? "the provider refused"}`
-      )
+      detail: merge.merged
+        ? `managed-dep: merged pull request #${merge.pullRequestNumber} on '${descriptor.repo}' at the evidenced commit ${descriptor.expectedHeadCommit}`
+        : `managed-dep: NOT merged — ${merge.mergeRefusal ?? "the provider refused"}`
     });
     ctx.logger.info("managed-dep: merge run complete", {
       externalId,
@@ -780,9 +835,9 @@ async function triggerMerge(
       merged: merge.merged
     });
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
-      detail: boundDetail(`managed-dep: ${err instanceof Error ? err.message : String(err)}`)
+      detail: `managed-dep: ${err instanceof Error ? err.message : String(err)}`
     });
   }
 }
@@ -803,9 +858,9 @@ async function trigger(
   try {
     action = parseIntentAction(intent);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
-      detail: boundDetail(err instanceof Error ? err.message : String(err))
+      detail: err instanceof Error ? err.message : String(err)
     });
     return { externalId };
   }
@@ -818,9 +873,9 @@ async function trigger(
   try {
     descriptor = parseBumpDescriptor(intent);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
-      detail: boundDetail(err instanceof Error ? err.message : String(err))
+      detail: err instanceof Error ? err.message : String(err)
     });
     return { externalId };
   }
@@ -829,9 +884,9 @@ async function trigger(
   try {
     writer = resolveRepoWriter(config);
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
-      detail: boundDetail(err instanceof Error ? err.message : String(err))
+      detail: err instanceof Error ? err.message : String(err)
     });
     return { externalId };
   }
@@ -856,10 +911,8 @@ async function trigger(
       if (original === undefined) {
         return {
           succeeded: false,
-          detail: boundDetail(
-            `managed-dep: '${descriptor.spec.manifestPath}' is not present on '${descriptor.repo}@${descriptor.baseBranch}' — refusing to edit a file this component does not contain`
-          )
-        } satisfies RunOutcome;
+          detail: `managed-dep: '${descriptor.spec.manifestPath}' is not present on '${descriptor.repo}@${descriptor.baseBranch}' — refusing to edit a file this component does not contain`
+        } satisfies PendingOutcome;
       }
 
       // 1b. LOCATE THE VERSION LINE, from the bytes just read (M21.7, split shapes).
@@ -894,14 +947,13 @@ async function trigger(
       if (anchor === undefined && candidates.length === 0) {
         return {
           succeeded: false,
-          detail: boundDetail(
+          detail:
             `managed-dep: REFUSED (anchor_not_derivable) — no line of '${descriptor.spec.manifestPath}' names both ` +
-              `'${descriptor.spec.coordinate}' and '${descriptor.spec.fromVersion}', and the manifest's own parser did not ` +
-              `resolve that declaration to a single line carrying it. The inventory row may be stale, or this file may ` +
-              `declare the same image identically in more than one place, which has no single edit site. ` +
-              `Nothing was written to '${descriptor.repo}' and no container was started.`
-          )
-        } satisfies RunOutcome;
+            `'${descriptor.spec.coordinate}' and '${descriptor.spec.fromVersion}', and the manifest's own parser did not ` +
+            `resolve that declaration to a single line carrying it. The inventory row may be stale, or this file may ` +
+            `declare the same image identically in more than one place, which has no single edit site. ` +
+            `Nothing was written to '${descriptor.repo}' and no container was started.`
+        } satisfies PendingOutcome;
       }
 
       // 2. EDIT, in the isolated single-shot runner. It gets the file and five argv strings (seven
@@ -919,10 +971,8 @@ async function trigger(
           // NOT `.slice(0, 2000)`. Like managed-scan's, that front-slice could never reach the
           // runner's last words at any output size: the port appended them behind `err.message`,
           // which carries the whole of stderr. Bounded at composition instead, END kept.
-          detail: boundDetail(
-            `managed-dep: the runner failed to edit '${descriptor.spec.manifestPath}' — ${runnerOutcomeDetail(run)}`
-          )
-        } satisfies RunOutcome;
+          detail: `managed-dep: the runner failed to edit '${descriptor.spec.manifestPath}' — ${runnerOutcomeDetail(run)}`
+        } satisfies PendingOutcome;
       }
 
       let edited: string;
@@ -931,10 +981,8 @@ async function trigger(
       } catch {
         return {
           succeeded: false,
-          detail: boundDetail(
-            `managed-dep: the runner produced no '${fileName}' for '${descriptor.spec.manifestPath}'`
-          )
-        } satisfies RunOutcome;
+          detail: `managed-dep: the runner produced no '${fileName}' for '${descriptor.spec.manifestPath}'`
+        } satisfies PendingOutcome;
       }
 
       // 3. VERIFY before anything is written anywhere. This is the charter's "never authors any
@@ -954,10 +1002,8 @@ async function trigger(
           succeeded: false,
           // `verdict.detail` quotes MANIFEST TEXT the tenant supplied, so this refusal has no
           // length of its own — the one write in this file whose size a hostile input picks.
-          detail: boundDetail(
-            `managed-dep: REFUSED (${verdict.reason}) — ${verdict.detail}. Nothing was written to '${descriptor.repo}'.`
-          )
-        } satisfies RunOutcome;
+          detail: `managed-dep: REFUSED (${verdict.reason}) — ${verdict.detail}. Nothing was written to '${descriptor.repo}'.`
+        } satisfies PendingOutcome;
       }
 
       //    ...and only the second one MINTS. The proof is an HMAC over these exact bytes at this
@@ -1017,23 +1063,21 @@ async function trigger(
       return {
         succeeded: true,
         result,
-        detail: boundDetail(
-          result.merged
-            ? `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} merged as ${result.commitSha} (#${result.pullRequestNumber})`
-            : `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} opened as ${result.pullRequestUrl || `#${result.pullRequestNumber}`}${result.mergeRefusal ? ` — ${result.mergeRefusal}` : ""}${downgraded}`
-        )
-      } satisfies RunOutcome;
+        detail: result.merged
+          ? `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} merged as ${result.commitSha} (#${result.pullRequestNumber})`
+          : `managed-dep: ${descriptor.spec.coordinate} ${descriptor.spec.fromVersion} -> ${descriptor.spec.toVersion} opened as ${result.pullRequestUrl || `#${result.pullRequestNumber}`}${result.mergeRefusal ? ` — ${result.mergeRefusal}` : ""}${downgraded}`
+      } satisfies PendingOutcome;
     });
-    outcomes.set(externalId, outcome);
+    recordOutcome(ctx, externalId, outcome);
     ctx.logger.info("managed-dep: run complete", {
       externalId,
       repo: descriptor.repo,
       succeeded: outcome.succeeded
     });
   } catch (err) {
-    outcomes.set(externalId, {
+    recordOutcome(ctx, externalId, {
       succeeded: false,
-      detail: boundDetail(`managed-dep: ${err instanceof Error ? err.message : String(err)}`)
+      detail: `managed-dep: ${err instanceof Error ? err.message : String(err)}`
     });
   } finally {
     // `scratch` is `undefined` exactly when `mkdir`/`mkdtemp` themselves are what threw — nothing to

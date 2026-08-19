@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   RUNNER_DETAIL_MAX_CHARS,
+  RUN_OUTCOME_CACHE_MAX_IN_MEMORY,
   RunnerLaunchError,
   classifyRunnerFailure,
   type RunnerLauncher
@@ -16,7 +17,11 @@ import {
   githubHandler,
   recordingCtx
 } from "./write-test-support.js";
-import { __resetManagedDepOutcomes, createManagedDepExecutorPlugin } from "./index.js";
+import {
+  __managedDepStoredDetail,
+  __resetManagedDepOutcomes,
+  createManagedDepExecutorPlugin
+} from "./index.js";
 
 /**
  * HIGH (M23.0 verification pass 7) — THE THIRD PLUGIN, AND THE GAP WAS MEASURED RATHER THAN
@@ -151,14 +156,26 @@ describe("HIGH: a failed bump's own last words reach status().detail at every ou
     }
   );
 
-  it("THE OUTCOME MAP ENTRY IS BOUNDED, not just the value status() returns", async () => {
-    // `outcomes` is a module-level `Map` keyed by `externalId` that nothing prunes — the same
-    // per-key growth property as managed-iac's on-disk ledger, in RAM. Sized at 2 MB, where an
-    // entry holding the whole string is unmissable next to one holding 4000 characters.
-    const status = await runAndRead(failingLauncher(2_000_000), "dep-cache-1");
+  it("THE OUTCOME MAP ENTRY IS BOUNDED — measured at the STORE, not through status()", async () => {
+    // LOW (verification pass 7, finding L2): this arm used to make exactly the claim in its own
+    // title while reading the value THROUGH `status()`, and its own comment admitted that reading
+    // it that way cannot distinguish "the stored entry is bounded" from "`status()` bounds it on
+    // the way out". It was true only because the `.slice` in `status()` had been removed —
+    // re-adding one would have made the test green and the title false. Now it reads the Map.
+    const plugin = createManagedDepExecutorPlugin(() => failingLauncher(2_000_000));
+    const ctx = depCtx();
+    const ref = await plugin.trigger(ctx, npmIntent("dep-cache-1"));
+
+    const stored = __managedDepStoredDetail(ref.externalId);
+    expect(stored, "nothing was stored at all — the arm is vacuous").toBeDefined();
+    expect(stored!.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS);
+    expect(stored!.length).toBeLessThanOrEqual(4_000);
+    expect(stored).toContain(REAL_CAUSE);
+
+    // NON-VACUITY: the runner really did produce two megabytes for this entry to have bounded.
+    const status = await plugin.status(ctx, ref);
     expect(status.phase).toBe("failed");
-    expect(status.detail!.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS);
-    expect(status.detail).toContain(REAL_CAUSE);
+    expect(status.detail).toBe(stored);
   });
 });
 
@@ -180,4 +197,39 @@ describe("HIGH: the refusal that quotes TENANT MANIFEST TEXT is bounded too", ()
     // a human goes looking at the repository at 3am.
     expect(status.detail!.endsWith("Nothing was written to 'acme/widget'.")).toBe(true);
   });
+});
+
+/**
+ * MEDIUM (M23.0 verification pass 7, finding M1) — BOUNDING ONE ENTRY DID NOT BOUND THE MAP.
+ * `outcomes` is a module-level `Map` that nothing pruned, so a long-lived plugin instance held one
+ * ~4 KB entry per bump for the life of the process. Driven through the bad-`action` refusal, which
+ * records a real outcome without launching anything.
+ */
+describe("MEDIUM: the in-memory outcome cache is bounded by ENTRY COUNT", () => {
+  it("the oldest entry is evicted once the cap is passed, and the newest is still stored", async () => {
+    __resetManagedDepOutcomes();
+    const plugin = createManagedDepExecutorPlugin(() => failingLauncher(0));
+    const ctx = depCtx();
+    const refuse = (key: string) =>
+      plugin.trigger(ctx, {
+        kind: "custom" as const,
+        idempotencyKey: key,
+        parameters: { action: "not-a-real-action" }
+      });
+
+    const first = await refuse("dep-cap-first");
+    // NON-VACUITY: the first entry really is in the store before the sweep that evicts it.
+    expect(__managedDepStoredDetail(first.externalId)).toContain("not-a-real-action");
+
+    for (let i = 0; i < RUN_OUTCOME_CACHE_MAX_IN_MEMORY; i++) await refuse(`dep-cap-${i}`);
+    const last = await refuse("dep-cap-last");
+
+    expect(
+      __managedDepStoredDetail(first.externalId),
+      "the oldest entry was not evicted — the map is still unbounded"
+    ).toBeUndefined();
+    // …and the entry a `status()` poll immediately after its own `trigger()` needs is present.
+    expect(__managedDepStoredDetail(last.externalId)).toContain("not-a-real-action");
+    __resetManagedDepOutcomes();
+  }, 60_000);
 });

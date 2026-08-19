@@ -5,11 +5,16 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import {
   RUNNER_DETAIL_MAX_CHARS,
+  RUN_OUTCOME_CACHE_MAX_IN_MEMORY,
   RunnerLaunchError,
   classifyRunnerFailure,
   type RunnerLauncher
 } from "@scp/runner-launcher";
-import { createManagedScanExecutorPlugin } from "./index.js";
+import {
+  __managedScanStoredDetail,
+  __resetManagedScanOutcomes,
+  createManagedScanExecutorPlugin
+} from "./index.js";
 
 /**
  * HIGH (M23.0 verification pass 7) — FOR THIS PLUGIN THE FAILURE TAIL WAS UNREACHABLE AT EVERY
@@ -105,12 +110,12 @@ describe("HIGH: a failed scan's own last words reach status().detail at every ou
     }
   );
 
-  it("THE OUTCOME CACHE ENTRY IS BOUNDED, not just the value status() returns", async () => {
-    // `status()` used to be where the 4000 was applied. The cache entry behind it held the whole
-    // thing — an in-memory `Map` keyed by `externalId` that nothing prunes, so the same per-key
-    // growth property as managed-iac's on-disk ledger, in RAM. Reading through `status()` twice
-    // cannot distinguish the two, so this asserts against a 32 MiB-scale input where the difference
-    // is unmissable.
+  it("THE OUTCOME CACHE ENTRY IS BOUNDED — measured at the STORE, not through status()", async () => {
+    // LOW (M23.0 verification pass 7, finding L2): this arm made exactly the claim in its own title
+    // while reading the value THROUGH `status()`, and its own comment admitted that "reading
+    // through `status()` twice cannot distinguish the two". It was true only because the `.slice`
+    // in `status()` had been removed — re-adding one would have made the test green and the title
+    // false. Now it reads the Map.
     const plugin = createManagedScanExecutorPlugin(() => failingLauncher(2_000_000));
     const c = ctx();
     const ref = await plugin.trigger(c, {
@@ -122,8 +127,53 @@ describe("HIGH: a failed scan's own last words reach status().detail at every ou
         outputDir: join(scratch, "out")
       }
     });
+    const stored = __managedScanStoredDetail(ref.externalId);
+    expect(stored, "nothing was stored at all — the arm is vacuous").toBeDefined();
+    expect(stored!.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS);
+    expect(stored!.length).toBeLessThanOrEqual(4_000);
+    expect(stored).toContain(REAL_CAUSE);
+
+    // And `status()` hands back exactly what is stored — no second, different slice on the way out.
     const status = await plugin.status(c, ref);
-    expect(status.detail!.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS);
-    expect(status.detail).toContain(REAL_CAUSE);
+    expect(status.detail).toBe(stored);
   });
+});
+
+/**
+ * MEDIUM (M23.0 verification pass 7, finding M1) — the same property in RAM. `outcomes` is a
+ * module-level `Map` that nothing pruned, so a long-lived plugin instance accumulated one ~4 KB
+ * entry per scan for the life of the process.
+ *
+ * DRIVEN THROUGH THE UNSUPPORTED-METHOD REFUSAL, which records a real outcome without launching
+ * anything — so this is 1 000+ genuine cache writes rather than a stub poking the Map, and it runs
+ * in milliseconds. It is also the one refusal in that file whose length a tenant chooses.
+ */
+describe("MEDIUM: the in-memory outcome cache is bounded by ENTRY COUNT", () => {
+  it("the oldest entry is evicted once the cap is passed, and the newest is still readable", async () => {
+    __resetManagedScanOutcomes();
+    const plugin = createManagedScanExecutorPlugin(() => failingLauncher(0));
+    const c = ctx();
+    const refuse = (key: string) =>
+      plugin.trigger(c, {
+        kind: "custom",
+        idempotencyKey: key,
+        parameters: { method: "not-a-real-method" }
+      });
+
+    const first = await refuse("scan-cap-first");
+    // NON-VACUITY: the first entry really is in the cache before the sweep that evicts it.
+    expect((await plugin.status(c, first)).phase).toBe("failed");
+
+    for (let i = 0; i < RUN_OUTCOME_CACHE_MAX_IN_MEMORY; i++) await refuse(`scan-cap-${i}`);
+    const last = await refuse("scan-cap-last");
+
+    expect(
+      (await plugin.status(c, first)).detail,
+      "the oldest entry was not evicted — the map is still unbounded"
+    ).toContain("unknown run");
+    // …and the entry a `status()` poll immediately after its own `trigger()` needs is present.
+    expect((await plugin.status(c, last)).phase).toBe("failed");
+    expect((await plugin.status(c, last)).detail).toContain("not-a-real-method");
+    __resetManagedScanOutcomes();
+  }, 60_000);
 });

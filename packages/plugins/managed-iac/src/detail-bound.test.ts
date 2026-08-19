@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
 import {
   RUNNER_DETAIL_MAX_CHARS,
+  RUN_OUTCOME_CACHE_MAX_DURABLE,
   RunnerLaunchError,
   classifyRunnerFailure,
   type RunnerLauncher
@@ -37,7 +38,8 @@ import { createManagedIacExecutorPlugin } from "./index.js";
  * disk per key, forever, to serve 4000 characters. Its arm is below.
  */
 
-const REAL_CAUSE = "Error: creating EC2 Instance: InvalidAMIID.NotFound: The image id does not exist";
+const REAL_CAUSE =
+  "Error: creating EC2 Instance: InvalidAMIID.NotFound: The image id does not exist";
 
 /** A launcher that fails the way the real Docker adapter does: `RunnerLaunchError` -> the port's own
  *  `classifyRunnerFailure`. Building the failure any other way would test this file's fixture. */
@@ -152,7 +154,12 @@ describe("HIGH: the REAL CAUSE survives to status().detail, and the ledger stays
     const plan = `${"  # aws_instance.node will be created\n".repeat(150_000)}Plan: 3 to add, 0 to change, 1 to destroy.`;
     expect(plan.length).toBeGreaterThan(5_000_000);
     const { status, ledgerBytes } = await runAndRead(
-      { async run() { return { succeeded: true, stdout: plan, stderr: "" }; }, reap: async () => [] },
+      {
+        async run() {
+          return { succeeded: true, stdout: plan, stderr: "" };
+        },
+        reap: async () => []
+      },
       "success-1"
     );
     expect(status.phase).toBe("succeeded");
@@ -197,4 +204,75 @@ describe("HIGH: the REAL CAUSE survives to status().detail, and the ledger stays
     expect(ledgerBytes).toBeLessThan(10_000);
     expect(status.detail).toContain(REAL_CAUSE);
   });
+});
+
+/**
+ * MEDIUM (M23.0 verification pass 7, finding M1) — BOUNDING ONE ENTRY DID NOT BOUND THE LEDGER, AND
+ * THIS PLUGIN IS THE ONE WHERE THAT COSTS CPU AS WELL AS DISK.
+ *
+ * `state.keys` is a `Record` keyed by `idempotencyKey` and nothing pruned it, ever. Measured at 500
+ * keys: `bytes=2074290  bytesPerKey=4149` — the per-entry bound the previous round added working
+ * exactly as designed while the map grew without limit, because the map is a different quantity.
+ * And `loadState` `JSON.parse`s the WHOLE file on every `status()` poll while `saveState` rewrites
+ * it whole on every `trigger()`, so the ledger's size is O(total history ever) of parsing on a loop
+ * that ticks once a second — the 1.44 GB/day family properly stated.
+ *
+ * THE ASSERTION IS ON THE FILE, not on the plugin's in-memory view, for the same reason the arm
+ * above is: the defect the previous round fixed was precisely the two disagreeing.
+ */
+describe("MEDIUM: the durable ledger is bounded by ENTRY COUNT, not only by entry size", () => {
+  it("250 runs leave exactly RUN_OUTCOME_CACHE_MAX_DURABLE keys, the newest ones", async () => {
+    const plugin = createManagedIacExecutorPlugin(() => failingLauncher(500));
+    const c = ctx();
+    const runs = RUN_OUTCOME_CACHE_MAX_DURABLE + 50;
+    const keys = Array.from(
+      { length: runs },
+      (_, i) => `0199ab${String(i).padStart(6, "0")}-7f00-7000-8000-000000000000`
+    );
+    for (const key of keys) {
+      await plugin.trigger(c, {
+        kind: "sync",
+        targetRef: "t1",
+        parameters: { iacAction: "apply" },
+        idempotencyKey: key
+      });
+    }
+
+    const onDisk = JSON.parse(await readFile(statePath, "utf8")) as {
+      keys: Record<string, unknown>;
+    };
+    const stored = Object.keys(onDisk.keys);
+    expect(stored.length).toBe(RUN_OUTCOME_CACHE_MAX_DURABLE);
+    // Stated against a literal too — an assertion against the constant that defines the bound
+    // cannot notice the constant moving.
+    expect(stored.length).toBe(200);
+    // THE NEWEST SURVIVED AND THE OLDEST WENT, which is the direction that matters: an entry has to
+    // outlive reconcile's next `status()` poll, and that poll is about the run just recorded.
+    expect(stored).toContain(keys[runs - 1]);
+    expect(stored).not.toContain(keys[0]);
+
+    // AND THE FILE HAS A CEILING, which is the fact an operator cares about. 250 unbounded entries
+    // at the measured ~4.1 KB each would be over a megabyte and would keep going.
+    const bytes = (await stat(statePath)).size;
+    expect(bytes).toBeLessThanOrEqual(RUN_OUTCOME_CACHE_MAX_DURABLE * 4_500);
+  }, 60_000);
+
+  it("NON-VACUITY: the run that was just recorded is still readable through status()", async () => {
+    // Without this, a prune that emptied the cache outright would satisfy the arm above. What an
+    // entry must outlive is the poll that immediately follows its own trigger.
+    const plugin = createManagedIacExecutorPlugin(() => failingLauncher(500));
+    const c = ctx();
+    let ref = { externalId: "" };
+    for (let i = 0; i < RUN_OUTCOME_CACHE_MAX_DURABLE + 10; i++) {
+      ref = await plugin.trigger(c, {
+        kind: "sync",
+        targetRef: "t1",
+        parameters: { iacAction: "apply" },
+        idempotencyKey: `0199ac${String(i).padStart(6, "0")}-7f00-7000-8000-000000000000`
+      });
+    }
+    const status = await plugin.status(c, ref);
+    expect(status.phase).toBe("failed");
+    expect(status.detail).toContain(REAL_CAUSE);
+  }, 60_000);
 });

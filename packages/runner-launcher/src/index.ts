@@ -1035,6 +1035,76 @@ export function boundPersistedJson(
   };
 }
 
+/**
+ * HOW MANY RUN OUTCOMES A PLUGIN'S CACHE MAY HOLD — MEDIUM, M23.0 verification pass 7 finding M1,
+ * and the half of the 1.44 GB/day class the previous round did NOT fix.
+ *
+ * BOUNDING ONE ENTRY DID NOT BOUND THE MAP. Every managed executor caches `{succeeded, detail}` per
+ * `idempotencyKey` so a re-`trigger()` cannot re-run a completed job, and NONE of the three pruned
+ * anything, ever. Measured on managed-iac at 500 keys: `bytes=2074290  bytesPerKey=4149`, i.e. the
+ * per-entry bound is doing its job and the map is still unbounded because the map is a different
+ * quantity. Worse for the DURABLE one: `loadState` `JSON.parse`s the whole file on EVERY `status()`
+ * poll and `saveState` rewrites it whole on every `trigger()` — O(total history ever) per poll,
+ * forever, on a loop that ticks every second.
+ *
+ * THE RETENTION RULE, AND WHY IT IS SAFE. Oldest-first, keeping the most recent `max` entries. What
+ * an entry has to outlive is short and knowable: `trigger()` in all three plugins runs the job
+ * SYNCHRONOUSLY to completion before writing the entry, so by the time an entry exists the work is
+ * already done and the only remaining reader is `reconcile.ts`'s next `status()` poll — under two
+ * seconds away — plus a crash-and-retry window in which reconcile re-issues the SAME
+ * `idempotencyKey`. Dropping an entry that a retry then asks for is the one real hazard (it means a
+ * second run of a job that already ran), so the caps below are set orders of magnitude above the
+ * number of runs that can physically be in flight, not at the smallest value that would "work".
+ *
+ * AND THE DURABLE CACHE GETS A SMALLER CAP THAN THE IN-MEMORY ONES, which is the whole reason this
+ * is a parameter rather than a constant: managed-iac re-reads and re-parses its entire file on every
+ * poll, so its size is a per-poll CPU cost as well as a disk cost, while managed-scan's and
+ * managed-dep's `Map.get` is O(1) and their size is only memory. The two are not the same tradeoff
+ * and pretending they were would either waste memory or re-introduce the parse cost.
+ */
+export const RUN_OUTCOME_CACHE_MAX_DURABLE = 200;
+
+/** See {@link RUN_OUTCOME_CACHE_MAX_DURABLE}. In-memory caches pay O(1) per lookup rather than
+ *  re-parsing, and are lost on restart anyway, so they can afford far more history. */
+export const RUN_OUTCOME_CACHE_MAX_IN_MEMORY = 1_000;
+
+/**
+ * Drop the OLDEST entries of an insertion-ordered outcome cache until at most `max` remain. Returns
+ * how many went, so a caller can log a prune rather than have history vanish silently.
+ *
+ * ORDER: a `Map` iterates in insertion order by specification, and deleting an entry the iterator
+ * has already visited is explicitly safe. This is the in-memory form; {@link pruneOutcomeRecord} is
+ * the JSON-object form the durable ledger needs.
+ */
+export function pruneOutcomeMap<V>(store: Map<string, V>, max: number): number {
+  if (max < 0 || store.size <= max) return 0;
+  const target = store.size - max;
+  let dropped = 0;
+  for (const key of store.keys()) {
+    if (dropped >= target) break;
+    store.delete(key);
+    dropped++;
+  }
+  return dropped;
+}
+
+/**
+ * The same rule for a plain object — the shape a durable JSON ledger round-trips through.
+ *
+ * THE ORDERING CAVEAT, STATED RATHER THAN ASSUMED. `Object.keys` returns INTEGER-LIKE keys first, in
+ * ascending numeric order, and only then string keys in insertion order. Every key these caches use
+ * is an `idempotencyKey` (a UUID) or a `randomUUID()`, none of which is integer-like, so insertion
+ * order holds. If that ever stopped being true the COUNT would still be bounded — which is the
+ * property that matters here — and only the choice of which entry to drop would degrade.
+ */
+export function pruneOutcomeRecord<V>(store: Record<string, V>, max: number): number {
+  const keys = Object.keys(store);
+  if (max < 0 || keys.length <= max) return 0;
+  const doomed = keys.slice(0, keys.length - max);
+  for (const key of doomed) delete store[key];
+  return doomed.length;
+}
+
 /** The classified failure a caller records. See {@link classifyRunnerFailure}. */
 export interface RunnerFailure {
   readonly kind: RunnerFailureKind;

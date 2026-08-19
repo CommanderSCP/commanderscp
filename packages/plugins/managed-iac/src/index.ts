@@ -15,12 +15,14 @@ import type {
 } from "@scp/plugin-api";
 import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
+  RUN_OUTCOME_CACHE_MAX_DURABLE,
   boundDetail,
   MANAGED_RUN_TIMEOUT_MIN_MS,
   resolveDockerRunnerLauncher,
   runnerOutcomeDetail,
   toRunnerRunId,
   withRecordedOutcome,
+  pruneOutcomeRecord,
   type BoundedDetail,
   type ResolveRunnerLauncher,
   type RunnerResult
@@ -174,6 +176,46 @@ interface RunOutcome {
 
 interface DedupState {
   keys: Record<string, RunOutcome>;
+}
+
+/**
+ * BOUNDING ONE ENTRY DID NOT BOUND THE LEDGER (MEDIUM, M23.0 verification pass 7 finding M1). The
+ * previous round capped each `detail` and left `state.keys` — a `Record` keyed by `idempotencyKey`
+ * with no pruning anywhere — to grow forever. Measured at 500 keys: `bytes=2074290`,
+ * `bytesPerKey=4149`. The per-entry cap was working; the map was a different quantity.
+ *
+ * AND THE SIZE IS A PER-POLL COST HERE, not just a disk cost, which is what makes this the worse of
+ * the three: `loadState` `JSON.parse`s the WHOLE file on every `status()` call and `saveState`
+ * rewrites it whole on every `trigger()`, so an unbounded ledger is O(total history ever) of parsing
+ * on a loop that ticks once a second. That is the 1.44 GB/day family properly stated — an unbounded
+ * write per key, re-read forever.
+ *
+ * THE RULE: keep the most recent {@link RUN_OUTCOME_CACHE_MAX_DURABLE} outcomes, drop the oldest.
+ * What an entry must outlive is `trigger()` (which runs the container synchronously to completion
+ * BEFORE writing the entry) plus reconcile's next `status()` poll a second later, plus a
+ * crash-and-retry window in which reconcile re-issues the same `idempotencyKey`. Dropping an entry a
+ * retry then asks for would mean re-running an `apply` that already ran — the one hazard worth
+ * naming — so 200 is set far above anything that can be in flight rather than at the smallest
+ * workable number. Ceiling on the file: 200 x ~4.2 KB, about 840 KB, and that is the WORST case;
+ * a typical `detail` is a few hundred bytes.
+ */
+function pruneDedupState(state: DedupState): number {
+  return pruneOutcomeRecord(state.keys, RUN_OUTCOME_CACHE_MAX_DURABLE);
+}
+
+/**
+ * WHAT THIS FILE COMPOSES — a `detail` that is a plain `string` (MEDIUM, M23.0 verification pass 7
+ * finding M3). `RunOutcome.detail` is still {@link BoundedDetail}, so no READER of the ledger can be
+ * handed a megabyte; what changed is WHERE the conversion happens. A brand on a FIELD forces one at
+ * every literal that constructs the record, which is how one concept came to have 26 manual call
+ * sites across four packages — most of them, on a delete-the-wiring sweep, pinned by no failing
+ * test. Three sites of one concept means the boundary is wrong; the answer is not 23 more tests.
+ */
+type PendingOutcome = Omit<RunOutcome, "detail"> & { detail: string };
+
+/** THE ONLY WAY AN OUTCOME ENTERS THE LEDGER. One bound, at the store. */
+function storeOutcome(state: DedupState, cacheKey: string, outcome: PendingOutcome): void {
+  state.keys[cacheKey] = { ...outcome, detail: boundDetail(outcome.detail) };
 }
 
 let inMemoryState: DedupState = { keys: {} };
@@ -366,14 +408,17 @@ async function trigger(
     // Recorded as this run's own outcome — a fresh single-key state is safe to write precisely
     // because the OLD file was unreadable: nothing recoverable from it is lost by overwriting what
     // could not be read anyway.
-    const detail = boundDetail(
-      `managed-iac: FAILED CLOSED — could not load dedup state at '${config.statePath}' ` +
+    const refusalState: DedupState = { keys: {} };
+    storeOutcome(refusalState, cacheKey, {
+      externalId,
+      succeeded: false,
+      detail:
+        `managed-iac: FAILED CLOSED — could not load dedup state at '${config.statePath}' ` +
         `(${err instanceof Error ? err.message : String(err)}). Refusing to launch: an unreadable ` +
         "dedup cache cannot tell this run apart from one that already applied."
-    );
-    const refusal: RunOutcome = { externalId, succeeded: false, detail };
+    });
     try {
-      await saveState(config.statePath, { keys: { [cacheKey]: refusal } });
+      await saveState(config.statePath, refusalState);
     } catch (saveErr) {
       // Recording the refusal itself failed too — nothing left to do but be LOUD about it, which is
       // exactly the property that keeps this LOW rather than HIGH (status()'s own loadState would
@@ -395,7 +440,7 @@ async function trigger(
   }
 
   const workspaceDir = workspaceDirFor(config, ctx.orgId, intent.targetRef);
-  let outcome: RunOutcome = { externalId, succeeded: false, detail: boundDetail("") };
+  let outcome: PendingOutcome = { externalId, succeeded: false, detail: "" };
 
   // THE REDACTION SET FOR THE FAILURE PATH (M23.1 phase 2), populated the moment credentials are
   // actually resolved inside the guarded body below. Starts empty, so a throw BEFORE that point
@@ -441,9 +486,8 @@ async function trigger(
           outcome = {
             externalId,
             succeeded: false,
-            detail: boundDetail(
+            detail:
               "managed-iac rollback: FAILED CLOSED — priorStateRef missing or not a state-history/*.tfstate path"
-            )
           };
         } else {
           const result = await runRunnerContainer(
@@ -491,7 +535,16 @@ async function trigger(
     }
   );
 
-  state.keys[cacheKey] = outcome;
+  storeOutcome(state, cacheKey, outcome);
+  // PRUNE BEFORE THE WRITE, so the bound is a property of what reaches the disk rather than of what
+  // is in memory at some later moment. See `pruneDedupState`.
+  const pruned = pruneDedupState(state);
+  if (pruned > 0) {
+    ctx.logger.info("managed-iac: pruned the oldest dedup-cache entries", {
+      pruned,
+      kept: Object.keys(state.keys).length
+    });
+  }
   try {
     await saveState(config.statePath, state);
   } catch (err) {
