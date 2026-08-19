@@ -52,6 +52,32 @@ describe("FakeExecutorPlugin (unit, in-memory state)", () => {
     expect(status2.stateRef).toBe("v2");
   });
 
+  /**
+   * THE STRING SEAM INTO `observed_state` (M23.0 verification pass 10).
+   *
+   * `observedStateFrom` maps `status().stateRef` onto `observed_state.revision`. Until this hook
+   * existed the value was hardcoded to `v${target.version}`, so `imagesByTarget` — an ARRAY — was
+   * the ONLY free-form field an integration test could vary in that column, and every
+   * string-shaped defect in `@scp/runner-launcher`'s persisted-JSON bound was unreachable end to
+   * end by construction. Three verification rounds shipped one behind that gap.
+   *
+   * DELETE-THE-WIRING: drop the `cfg.stateRefByTarget?.[targetRef] ??` in `status()` and the first
+   * assertion fails; the second is the one that keeps the default — and every existing `v0`/`v1`
+   * assertion in this file — from being collateral of adding it.
+   */
+  it("stateRefByTarget overrides status().stateRef per target, and changes the default for nobody", async () => {
+    const plugin = createFakeExecutorPlugin();
+    const revision = "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f70982";
+    const ctx = testCtx({ stateRefByTarget: { "svc-a": revision } });
+    const refA = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-a" });
+    expect((await plugin.status(ctx, refA)).stateRef).toBe(revision);
+
+    // A target the map does not name still reports the version, on the SAME instance — so the hook
+    // is per-target rather than a mode switch.
+    const refB = await plugin.trigger(ctx, { kind: "sync", targetRef: "svc-b" });
+    expect((await plugin.status(ctx, refB)).stateRef).toBe("v0");
+  });
+
   it("rollback trigger sets the target's state ref back to priorStateRef instead of incrementing", async () => {
     const plugin = createFakeExecutorPlugin();
     const ctx = testCtx();

@@ -105,6 +105,26 @@ interface FakeExecutorConfig {
    * is the case the bound is for, and this is the only stand-in for one.
    */
   detailByTarget?: Record<string, string>;
+  /**
+   * Per-target deterministic `status().stateRef` — the synced revision. Mirrors `imagesByTarget`
+   * and `rolloutByTarget`, and exists because of what their SHAPES could not reach.
+   *
+   * THE HARNESS HAD NO STRING SEAM INTO `observed_state`, and four consecutive verification rounds
+   * shipped a regression behind that gap (M23.0 pass 10). `observedStateFrom` builds
+   * `{revision, images, rollout}`: `revision` comes from `status().stateRef`, which this plugin
+   * HARDCODED to `v${target.version}`, and `detail` never enters `observed_state` at all. So the
+   * only free-form field an integration test could vary in that column was `imagesByTarget` — an
+   * ARRAY. `@scp/runner-launcher`'s persisted-JSON bound treats arrays and strings by different
+   * rules (an array is cut by dropping ENTRIES, a string by the per-string width bound), and every
+   * string-shaped defect in that allocator was therefore unreachable end to end BY CONSTRUCTION:
+   * a per-string bound that discarded half of every share was invisible to a green integration
+   * suite for three rounds.
+   *
+   * The DEFAULT is unchanged — absent this key, `status()` still reports `v${target.version}` and
+   * `coercePriorStateRef` still round-trips it — so this adds a seam without moving any existing
+   * assertion.
+   */
+  stateRefByTarget?: Record<string, string>;
 }
 
 function readConfig(config: unknown): FakeExecutorConfig {
@@ -250,7 +270,9 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     if (rollout && Object.keys(rollout).length > 0) observed.rollout = rollout;
     return {
       phase,
-      stateRef: `v${target.version}`,
+      // The per-target override is the STRING seam into `observed_state.revision`; the default is
+      // the version this plugin has always reported. See `stateRefByTarget`.
+      stateRef: cfg.stateRefByTarget?.[targetRef] ?? `v${target.version}`,
       detail:
         cfg.detailByTarget?.[targetRef] ??
         `fake-executor target=${targetRef} version=v${target.version}`,
@@ -316,7 +338,8 @@ export const manifest: PluginManifest = {
         additionalProperties: { type: "array", items: { type: "string" } }
       },
       rolloutByTarget: { type: "object", additionalProperties: { type: "object" } },
-      detailByTarget: { type: "object", additionalProperties: { type: "string" } }
+      detailByTarget: { type: "object", additionalProperties: { type: "string" } },
+      stateRefByTarget: { type: "object", additionalProperties: { type: "string" } }
     }
   }
 };
