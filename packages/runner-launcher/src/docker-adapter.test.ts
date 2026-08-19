@@ -53,7 +53,11 @@ import {
  *     5 min/8 MiB) are driven as data: a port that collapsed them into one shared default would be
  *     a behaviour change wearing a refactor's clothes, and this is where that is caught.
  *  3. BOTH AXES OF THE COPY-OUT, independently: `when` (`always` vs `on-success`) and `onFailure`
- *     (`swallow` vs `propagate`). All four combinations the three callers span are exercised.
+ *     (`swallow` vs `propagate`). All FOUR combinations of the two axes are exercised — including
+ *     `{on-success, swallow}`, which no real caller pairs (managed-iac is `{always, swallow}`;
+ *     managed-scan and managed-dep are both `{on-success, propagate}`) and which this file left
+ *     unconstructed until it was found missing: a gate keyed on the wrong axis (`onFailure` instead
+ *     of `when`) passed every case that DID exist and copied evidence out of a failed run.
  *  4. THE FAILURE PATHS — a rejected `start` (captured, not rethrown), a rejected `cp` in, a
  *     rejected `rm` (swallowed), and — since M23.0's defect 1 was fixed — that a rejected `create`
  *     STILL tears down the NAME the caller chose. That last one was the opposite assertion until
@@ -721,6 +725,28 @@ describe("M23.1 conformance: copyOut.when and copyOut.onFailure are independent,
     fail("start");
     const result = await createDockerRunnerLauncher("docker").run(
       spec({ copyOut: { ...OUT_PATHS, when: "on-success", onFailure: "propagate" } })
+    );
+
+    expect(calls.map((c) => c.args)).toStrictEqual([
+      ["create", "--network", "none", "--name", "scp-runner-r1", "scp-runner-iac:vetted"],
+      ["start", "-a", "container-abc123"],
+      ["rm", "-f", "scp-runner-r1"]
+    ]);
+    expect(result.succeeded).toBe(false);
+  });
+
+  it("`when: on-success` + `onFailure: swallow` + a FAILED start — NO copy-out; `swallow` never widens WHEN it runs", async () => {
+    // THE FOURTH COMBINATION. No real caller pairs these two — managed-iac is `{always, swallow}`,
+    // managed-scan and managed-dep are both `{on-success, propagate}` — so nothing above this test
+    // ever constructs `{on-success, swallow}`, and it was never asserted anywhere in this file.
+    // `onFailure` decides what happens to a FAILED copy-out call; `when` alone decides whether the
+    // copy is issued at all. A gate that checked `copyOut.onFailure === "swallow"` instead of
+    // `copyOut.when === "always"` would pass every other case in this describe — none of them pairs
+    // "swallow" with "on-success" — and would copy evidence out of a run this caller explicitly
+    // asked to treat as fail-closed, breaking the exact property `index.ts`'s file header names.
+    fail("start");
+    const result = await createDockerRunnerLauncher("docker").run(
+      spec({ copyOut: { ...OUT_PATHS, when: "on-success", onFailure: "swallow" } })
     );
 
     expect(calls.map((c) => c.args)).toStrictEqual([
