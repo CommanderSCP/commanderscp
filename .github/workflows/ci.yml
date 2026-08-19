@@ -605,13 +605,19 @@ jobs:
       # revealed, not to move this step down.
       - name: Deny the mirrored upstream registries for the rest of the job
         run: scripts/ci-mirror.sh blackhole
-      # LEVER 2: `--shard=i/2` (turbo forwards args after `--` to every test:integration task —
-      # @scp/server, @scp/plugin-managed-iac AND @scp/plugin-managed-dep; every config passes
-      # `--passWithNoTests`, so the
-      # single-file managed-iac suite runs in whichever shard vitest assigns it and no-ops in the
-      # other). vitest shards at FILE granularity, so shard 1/2 + shard 2/2 together cover every
-      # file exactly once — verified locally (file counts sum to the full suite, none dropped or
-      # doubled).
+      # LEVER 2: `--shard=i/2` — turbo forwards args after `--` to every test:integration task.
+      # THE LIST IS FIVE PACKAGES, not the three this comment used to name (M23.0 verification
+      # pass 9): @scp/server, @scp/runner-launcher, @scp/plugin-managed-dep, @scp/plugin-managed-iac
+      # and @scp/plugin-managed-scan. It went stale for the same reason it is only a comment — turbo
+      # DISCOVERS the task from each package.json, so a new package needs no edit here and nothing
+      # forces the prose to keep up. Re-derive it rather than trusting this line:
+      #   for f in $(find apps packages -name package.json -not -path '*/node_modules/*'); do
+      #     python3 -c "import json;d=json.load(open('$f'));print(d['name']) if 'test:integration' in d.get('scripts',{}) else None"
+      #   done
+      # All five pass `--passWithNoTests`, so a single-file suite runs in whichever shard vitest
+      # assigns it and no-ops in the other. vitest shards at FILE granularity, so shard 1/2 +
+      # shard 2/2 together cover every file exactly once — verified locally (file counts sum to the
+      # full suite, none dropped or doubled).
       - run: pnpm test:integration -- --shard=${{ matrix.shard }}/2
       # Explicit, not part of test:integration's task graph (see comment above) — this is the ONLY
       # place in CI these tool-dependent assertions run for real rather than skip. Runs EXACTLY ONCE
