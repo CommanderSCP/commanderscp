@@ -912,6 +912,11 @@ const PERSISTED_JSON_MAX_KEY_CHARS = 128;
  *  and its punctuation, so the elision itself can never be what pushes the row over. */
 const PERSISTED_JSON_MIN_LEAF = 96;
 
+/** The key an over-budget object carries instead of the fields that did not fit. Exported so a
+ *  test — or an operator's query — can find rows that were elided, rather than having to guess
+ *  from a suspiciously short value. */
+export const PERSISTED_JSON_ELIDED_KEY = "__scpElided";
+
 /** Exactly what `JSON.stringify` will spend on this leaf, escapes included — the accounting has to
  *  be in RENDERED characters, because that is the unit the column is measured in. A string of
  *  backslashes doubles; a C0 control sextuples. */
@@ -1008,11 +1013,6 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
   }
   return out;
 }
-
-/** The key an over-budget object carries instead of the fields that did not fit. Exported so a
- *  test — or an operator's query — can find rows that were elided, rather than having to guess
- *  from a suspiciously short value. */
-export const PERSISTED_JSON_ELIDED_KEY = "__scpElided";
 
 /**
  * BOUND A WHOLE PLUGIN-SUPPLIED VALUE FOR PERSISTENCE. Every string inside it comes back through
