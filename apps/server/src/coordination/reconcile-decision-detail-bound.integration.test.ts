@@ -113,7 +113,7 @@ describe("reconcile: a plugin's `detail` is bounded before it becomes a Decision
     });
     expect(target.id).toBe(failingTargetId);
 
-    const change = await admin.changes.propose({
+    await admin.changes.propose({
       name: "a run whose executor is chatty and fails",
       targets: [failingTargetId]
     });

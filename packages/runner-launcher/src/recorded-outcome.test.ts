@@ -63,9 +63,12 @@ describe("withRecordedOutcome", () => {
     const recorded: string[] = [];
     const cause = `Command failed: docker create scp-runner-iac:vetted\n${"noise\n".repeat(200_000)}Error: no space left on device`;
     expect(cause.length).toBeGreaterThan(1_000_000);
-    await withRecordedOutcome({ record: (_ok, d) => void recorded.push(d), redact: (t) => t }, async () => {
-      throw new Error(cause);
-    });
+    await withRecordedOutcome(
+      { record: (_ok, d) => void recorded.push(d), redact: (t) => t },
+      async () => {
+        throw new Error(cause);
+      }
+    );
     expect(recorded).toHaveLength(1);
     expect(recorded[0]!.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS);
     // AND IT IS THE END THAT SURVIVED. A front-slice here records "Command failed: docker create"
