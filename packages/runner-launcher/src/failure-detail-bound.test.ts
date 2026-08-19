@@ -207,3 +207,54 @@ describe("the durable ledger's own string is bounded, on the SUCCESS path too", 
     );
   });
 });
+
+/**
+ * THE MAGNITUDE OF THE BOUND IS A PRODUCT DECISION, PINNED HERE AGAINST ABSOLUTE LITERALS — HIGH,
+ * M23.0 verification pass 7.
+ *
+ * WHY THIS EXISTS AT ALL. Every other length assertion in this repository reads
+ * `expect(x.length).toBeLessThanOrEqual(RUNNER_DETAIL_MAX_CHARS)` — against the very constant that
+ * DEFINES the bound, so it is a tautology about the magnitude and says only "the function applied
+ * itself". MEASURED: with `RUNNER_DETAIL_MAX_CHARS = 4_000` mutated to `40_000`, managed-iac (29),
+ * managed-scan (42) and managed-dep (247) stayed fully green and runner-launcher lost exactly one
+ * test — a FIXTURE PRECONDITION, not a product assertion. At `400_000` the 432 KB end-to-end
+ * integration test still passed, writing a 400 KB `Decision` row, because its only
+ * non-self-referential defence was `toContain("characters elided")`, which merely needs
+ * `MAX < 432_078`. The whole "1.44 GB/day" argument the bound makes for itself was defended by
+ * nothing.
+ *
+ * SO THE NUMBERS ARE WRITTEN OUT. A `Decision` row's size is governed state, not an implementation
+ * detail: changing it is a product decision that should require editing a test that says so, in a
+ * file whose name says what it protects. This is the test the prompt asks to redden when someone
+ * types `40_000`.
+ */
+describe("HIGH: the SIZE of the bound, not merely that a bound was applied", () => {
+  it("RUNNER_DETAIL_MAX_CHARS is 4 000 characters — roughly 4 KB of governed state per Decision", () => {
+    expect(RUNNER_DETAIL_MAX_CHARS).toBe(4_000);
+  });
+
+  it("RUNNER_DETAIL_TAIL_CHARS is 2 000 characters — half the budget is reserved for the diagnosis", () => {
+    expect(RUNNER_DETAIL_TAIL_CHARS).toBe(2_000);
+  });
+
+  it("the reserve leaves a real head: TAIL is strictly less than MAX minus the marker", () => {
+    // Not a restatement of the two literals above: this is the relationship that has to hold for
+    // `boundDetail` to keep BOTH ends. Set TAIL to MAX and the head share goes to zero — the bound
+    // silently becomes a tail-truncation and the argv/classification an operator needs stops
+    // appearing, with every length assertion in the repository still green.
+    const headShare = RUNNER_DETAIL_MAX_CHARS - RUNNER_DETAIL_TAIL_CHARS;
+    expect(headShare).toBeGreaterThan(200);
+    const bounded = boundDetail(`HEAD-MARKER${"x".repeat(100_000)}TAIL-MARKER`);
+    expect(bounded.startsWith("HEAD-MARKER")).toBe(true);
+  });
+
+  it("a bounded detail is at most 4 000 characters, stated without reference to the constant", () => {
+    // The same fact as the arms above, expressed the way an operator or a capacity planner would
+    // state it. Deliberately duplicated against the literal rather than the symbol: the mutation
+    // that survived was one that moved the symbol.
+    expect(boundDetail("z".repeat(8 * 1024 * 1024)).length).toBeLessThanOrEqual(4_000);
+    expect(
+      classifyRunnerFailure(nodeExitRejection(8 * 1024 * 1024)).detail.length
+    ).toBeLessThanOrEqual(4_000);
+  });
+});

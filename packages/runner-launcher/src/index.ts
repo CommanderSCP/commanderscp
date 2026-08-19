@@ -749,6 +749,53 @@ function elisionMarker(dropped: number): string {
   return ` …[${dropped} characters elided]… `;
 }
 
+/** Written as an escape, deliberately, here and in the pattern below. A LITERAL NUL byte in a
+ *  tracked source file is invisible to every recursive search this repository runs (CLAUDE.md:
+ *  `grep -rna`, `pnpm nul-census`) — a sanitiser nobody can grep for is the next place a census
+ *  misses. `REPLACEMENT` is U+FFFD. */
+const REPLACEMENT = "\uFFFD";
+
+/**
+ * THE TWO CODE POINTS POSTGRES REFUSES TO STORE, AND WHAT WE PUT THERE INSTEAD (HIGH regression,
+ * M23.0 verification pass 8). Measured against a real `postgres:16`, inserting into a `jsonb`
+ * column and into a `text` column:
+ *
+ * | input                       | jsonb                                    | text                                        |
+ * |-----------------------------|------------------------------------------|---------------------------------------------|
+ * | `"a\u{1F600}b"` (astral)    | OK                                       | OK                                          |
+ * | lone HIGH surrogate `\uD83D`| FAIL `invalid input syntax for type json`| OK                                          |
+ * | lone LOW surrogate `\uDE00` | FAIL `invalid input syntax for type json`| OK                                          |
+ * | `U+0000`                    | FAIL `unsupported Unicode escape sequence`| FAIL `invalid byte sequence for encoding "UTF8": 0x00` |
+ * | `U+FFFD`, `U+FFFF`, C0, DEL | OK                                       | OK                                          |
+ *
+ * So the predicate a persisted detail must satisfy is NOT "well-formed UTF-16" — `isWellFormed()`
+ * returns TRUE for a string carrying `U+0000`, which `jsonb` still refuses. It is well-formed AND
+ * NUL-free, and both halves were measured against the database rather than modelled, because the
+ * database is the authority on what the database accepts.
+ *
+ * WHY U+FFFD FOR BOTH. It is the standard "there was a character here and it could not be
+ * represented" mark, so an operator reading the detail sees that something was dropped instead of
+ * silently reading a shortened string. It is also a ONE-code-unit replacement for a one-code-unit
+ * input, which is why the elision arithmetic below stays exact: sanitising never changes `.length`.
+ */
+const NOT_PERSISTABLE = new RegExp(
+  [
+    // U+0000. `jsonb` refuses it outright; `text` refuses the byte. See the table above.
+    "\\u0000",
+    // A high surrogate with no low surrogate after it — what a HEAD cut leaves behind.
+    "[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])",
+    // A low surrogate with no high surrogate before it — what a TAIL cut leaves behind.
+    "(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]"
+  ].join("|"),
+  "g"
+);
+
+function persistableText(text: string): string {
+  // Every alternative above matches EXACTLY ONE code unit (the lookarounds are zero-width), so this
+  // replacement preserves `.length`. The elision arithmetic in `boundDetail` depends on that.
+  return text.replace(NOT_PERSISTABLE, REPLACEMENT);
+}
+
 /**
  * BOUND A DETAIL, KEEPING BOTH ENDS — the head (who failed, doing what, with which argv) and the
  * last {@link RUNNER_DETAIL_TAIL_CHARS} characters (the diagnosis). What is dropped is the middle,
@@ -758,9 +805,25 @@ function elisionMarker(dropped: number): string {
  * the identity. That is what makes it safe to apply at every trust boundary — the port, each
  * plugin's store, the server's Decision write — WITHOUT recreating the defect this fixes, because
  * they are the same bound and not three different slices.
+ *
+ * PERSISTABLE BY CONSTRUCTION TOO, and that half is a HIGH regression fix, not a nicety. The bound
+ * slices at UTF-16 CODE-UNIT offsets, so both cuts — head and tail — can land in the middle of a
+ * surrogate pair. Four emoji in 8 KB of `tofu` output is enough. The product was an ill-formed
+ * string, which `jsonb` refuses, which threw inside `reconcileExecutingChange`'s `withTenantTx` —
+ * rolling back the `updateWaveTargetObserved` in the same transaction. Measured end to end: the
+ * wave target NEVER terminalised, the poll re-threw every tick forever, and the only trace was a
+ * `console.error` behind a green health check. That is this repository's own worked example
+ * (BUILD_AND_TEST.md §4.4a) — a coordination loop stopped for 13 days behind passing checks.
+ *
+ * Sanitising is applied to the RESULT, not the input, for three reasons: it is at most
+ * {@link RUNNER_DETAIL_MAX_CHARS} long so the scan is bounded even for an 8 MB input; it catches
+ * the damage this function itself does at the two cuts; and it catches an input that was ALREADY
+ * ill-formed or NUL-carrying, including one short enough to skip the slice entirely — a plugin can
+ * hand us a detail decoded from a binary stream, and `text.length <= MAX` was previously a straight
+ * pass-through for it.
  */
 export function boundDetail(text: string): BoundedDetail {
-  if (text.length <= RUNNER_DETAIL_MAX_CHARS) return text as BoundedDetail;
+  if (text.length <= RUNNER_DETAIL_MAX_CHARS) return persistableText(text) as BoundedDetail;
   // `elisionMarker(text.length)` is the longest the marker can be (the count only shrinks), so
   // sizing the head against it guarantees the result fits even before the real count is known.
   const headShare = Math.max(
@@ -768,9 +831,13 @@ export function boundDetail(text: string): BoundedDetail {
     RUNNER_DETAIL_MAX_CHARS - RUNNER_DETAIL_TAIL_CHARS - elisionMarker(text.length).length
   );
   const dropped = text.length - headShare - RUNNER_DETAIL_TAIL_CHARS;
-  return (text.slice(0, headShare) +
-    elisionMarker(dropped) +
-    text.slice(text.length - RUNNER_DETAIL_TAIL_CHARS)) as BoundedDetail;
+  // The elision count stays arithmetically honest through sanitising precisely because
+  // `persistableText` is length-preserving: `keptHead + dropped + keptTail === text.length` still.
+  return persistableText(
+    text.slice(0, headShare) +
+      elisionMarker(dropped) +
+      text.slice(text.length - RUNNER_DETAIL_TAIL_CHARS)
+  ) as BoundedDetail;
 }
 
 /** The classified failure a caller records. See {@link classifyRunnerFailure}. */
