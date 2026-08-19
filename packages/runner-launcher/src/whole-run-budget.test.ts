@@ -298,9 +298,22 @@ describe("M23.1e HIGH-2: the container's stamped deadline is never in the past w
   });
 
   it("THE STAMP IS THE RUN DEADLINE PLUS THE GRACE, off the SAME clock read the run is bounded by", async () => {
-    // The formula, so that "always in the future" cannot be satisfied by an absurdly distant stamp
-    // (which would make `reap()` never collect a real orphan) nor by one derived from a second,
-    // later `Date.now()` — the second read is how the two drifted apart in the first place.
+    // The formula, so that "always in the future" cannot be satisfied by an absurdly distant stamp,
+    // which would make `reap()` never collect a real orphan.
+    //
+    // CORRECTED CLAIM (this comment used to say the bracket also caught a stamp "derived from a
+    // second, later `Date.now()`" — measured false). `before`/`after` bracket the WHOLE `run()`
+    // call, so ANY clock read taken during that call satisfies both bounds, including a second read
+    // taken at the reapDeadline call site itself: `new Date(runDeadlineAt + RUNNER_REAP_GRACE_MS)`
+    // mutated to `new Date(Date.now() + runTimeoutMs + RUNNER_REAP_GRACE_MS)`, at the same line,
+    // survives the whole file (117/117) and the managed-iac/scan/dep and plugin-host sibling suites
+    // — no time elapses between the two reads at that point in `run()`, so the two stamps are
+    // indistinguishable in practice. The mutation is SAFE, not undetected-and-dangerous: a later
+    // read only ever makes the stamp later (the conservative direction), and the actually dangerous
+    // direction — dropping the grace entirely — IS caught, here and by the siblings. The real HIGH-2
+    // regression this file guards against was a stamp read much LATER in `run()`, after real async
+    // work had elapsed; "SAMPLED THROUGHOUT A RUN THAT SPENDS ITS WHOLE BUDGET" above is what
+    // actually catches that.
     const before = Date.now();
     durations = { create: 50, cp: 50, start: 50 };
     await createDockerRunnerLauncher("docker").run(spec({ timeoutMs: 30_000 }));
