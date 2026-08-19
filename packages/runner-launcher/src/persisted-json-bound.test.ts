@@ -191,6 +191,38 @@ describe("MEDIUM: boundPersistedJson bounds a whole plugin-supplied value, not a
       expect(isWellFormed(rendered!)).toBe(true);
     }
   });
+
+  /**
+   * SMALL (M23.0 verification pass 9) — THE OVERFLOW FALLBACK WAS THE ONE VALUE THIS FUNCTION
+   * RETURNED WITHOUT MEASURING IT.
+   *
+   * "The guarantee is CHECKED, not argued" is the function's own headline, and the escape hatch out
+   * of the check was itself unchecked: at `maxChars = 0` the diagnostic object rendered to 140
+   * characters. Latent today — `boundPluginJson` always passes 8 000 — but an unmeasured branch
+   * inside a measured function is where the next one lives. Swept down to and past the stated
+   * precondition.
+   */
+  it("EVERY budget down to 1 is honoured, fallback included — no unmeasured escape hatch", () => {
+    for (let max = 4; max <= 400; max++) {
+      const rendered = JSON.stringify(boundPersistedJson({ images: ["x".repeat(5_000)] }, max));
+      expect(rendered, `budget ${max}: nothing at all was returned`).not.toBeUndefined();
+      expect(rendered!.length, `budget ${max}`).toBeLessThanOrEqual(max);
+      expect(isWellFormed(rendered!)).toBe(true);
+    }
+  });
+
+  it("THE STATED PRECONDITION, pinned: under 4 characters no JSON value exists, and `null` is it", () => {
+    // `null` is the shortest thing `JSON.stringify` can produce. A budget of 0..3 cannot be honoured
+    // by ANY value, so the doc states it as a precondition rather than the function pretending. This
+    // arm exists so a future edit that quietly returns a 140-character diagnostic here goes red.
+    for (const max of [0, 1, 2, 3]) {
+      expect(JSON.stringify(boundPersistedJson({ a: "x".repeat(500) }, max))).toBe("null");
+    }
+    // And at exactly 4 the guarantee is real again.
+    expect(
+      JSON.stringify(boundPersistedJson({ a: "x".repeat(500) }, 4))!.length
+    ).toBeLessThanOrEqual(4);
+  });
 });
 
 /**
@@ -258,24 +290,30 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
   });
 
+  /** All six permutations of the three fields `observedStateFrom` composes. */
+  const ORDERS = [
+    ["revision", "images", "rollout"], // <- what `observedStateFrom` actually produces
+    ["revision", "rollout", "images"],
+    ["images", "revision", "rollout"],
+    ["images", "rollout", "revision"],
+    ["rollout", "revision", "images"],
+    ["rollout", "images", "revision"]
+  ] as const;
+
+  const inOrder = (order: readonly string[], source: Record<string, unknown>) => {
+    const value: Record<string, unknown> = {};
+    for (const key of order) value[key] = source[key];
+    return value;
+  };
+
   it("AT EVERY FIELD ORDER — the fix is in the walk, not in how the value happens to be composed", () => {
     const source: Record<string, unknown> = {
       revision: REVISION,
       images: imageRefs(80),
       rollout: ROLLOUT
     };
-    const orders = [
-      ["revision", "images", "rollout"],
-      ["revision", "rollout", "images"],
-      ["images", "revision", "rollout"],
-      ["images", "rollout", "revision"],
-      ["rollout", "revision", "images"],
-      ["rollout", "images", "revision"]
-    ];
-    for (const order of orders) {
-      const value: Record<string, unknown> = {};
-      for (const key of order) value[key] = source[key];
-      const out = boundPersistedJson(value) as Reading & Record<string, unknown>;
+    for (const order of ORDERS) {
+      const out = boundPersistedJson(inOrder(order, source)) as Reading & Record<string, unknown>;
       expect(out.rollout?.weight, `order ${order.join(",")}: the gate's leaf was elided`).toBe(60);
       expect(out.revision, `order ${order.join(",")}: revision was elided`).toBe(REVISION);
       expect(
@@ -288,6 +326,95 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
       ).toBeUndefined();
       expect(JSON.stringify(out).length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
     }
+  });
+
+  /**
+   * HIGH (M23.0 verification pass 9) — WHICH KEYS SURVIVE IS NOT THE WHOLE PROPERTY. HOW MUCH OF
+   * EACH SURVIVES IS PART OF IT.
+   *
+   * `walkField`'s doc rejects the reorder alternative (order `rollout` before `images` in
+   * `observedStateFrom`) because it "makes source-line order in an unrelated function a load-bearing
+   * contract". Pass 8's own design had that disease on a different observable: every arm above was
+   * green while the same three fields kept
+   *
+   *   revision, images, rollout (SHIPPED)  ->  39 refs, row 4 065
+   *   revision, rollout, images            ->  77 refs, row 7 864
+   *   images, revision, rollout            ->  26 refs, row 2 765
+   *
+   * — a 3x spread decided by nothing but insertion order. A rejection argument the chosen design
+   * also fails is not a rejection argument, so the property is pinned here rather than asserted in a
+   * comment: retention is IDENTICAL, not merely "nonzero", across all six permutations.
+   */
+  it("ORDER-INDEPENDENT RETENTION: all six permutations keep the SAME number of entries", () => {
+    const source: Record<string, unknown> = {
+      revision: REVISION,
+      images: imageRefs(80),
+      rollout: ROLLOUT
+    };
+    const readings = ORDERS.map((order) => {
+      const out = boundPersistedJson(inOrder(order, source)) as Reading;
+      return {
+        order: order.join(","),
+        kept: out.images!.length,
+        row: JSON.stringify(out).length
+      };
+    });
+    // NON-VACUITY: if the fixture stopped overflowing, every permutation would keep all 80 and the
+    // arm would be about nothing.
+    expect(readings.every((r) => r.kept < 80)).toBe(true);
+    const first = readings[0]!;
+    for (const reading of readings) {
+      expect(reading.kept, `retention varies with field order: ${JSON.stringify(readings)}`).toBe(
+        first.kept
+      );
+      expect(reading.row, `row size varies with field order: ${JSON.stringify(readings)}`).toBe(
+        first.row
+      );
+    }
+  });
+
+  /**
+   * HIGH (M23.0 verification pass 9) — THE SHARE IS A FLOOR, NOT A CEILING; UNSPENT BUDGET COMES
+   * BACK.
+   *
+   * Pass 8 handed each field `floor(left / unwalkedSiblings)` as a CAP and never returned the
+   * remainder to a field already walked. `images` sits in the MIDDLE of `{revision, images, rollout}`,
+   * so it was capped at ~1/2 the budget while `revision` + `rollout` spent ~110 of the ~3 950 they
+   * were handed. Utilisation fell from 99.4 % to 50.6 %, and end to end that turned
+   * `resolveReleasedVersion` from `determined` into `observed_images_elided` for every list of
+   * 35…69 refs — a window that had never been broken.
+   *
+   * DELETE-THE-WIRING for pass 2: remove the redistribution loop in `walkObjectFields` and this arm
+   * fails at n = 40 (34 of 40 kept) and on utilisation (~50 %).
+   */
+  it("NO TRUNCATION AT ALL while the whole value fits — the 35…69 window pass 8 broke", () => {
+    for (let n = 30; n <= 69; n++) {
+      const value = { revision: REVISION, images: imageRefs(n), rollout: ROLLOUT };
+      const raw = JSON.stringify(value);
+      // NON-VACUITY: the window is defined by "fits the budget", so assert that rather than assume
+      // it. If a future fixture change pushed n = 69 over 8 000 this loop would be checking that an
+      // overflowing value is not truncated, which is impossible and would fail loudly.
+      expect(raw.length, `n=${n} no longer fits the budget`).toBeLessThanOrEqual(
+        PERSISTED_JSON_MAX_CHARS
+      );
+      const out = boundPersistedJson(value) as Reading;
+      expect(out.images?.length, `n=${n}: the list was cut although the whole value fits`).toBe(n);
+      expect(JSON.stringify(out), `n=${n}: a value that fits came back changed`).toBe(raw);
+    }
+  });
+
+  it("BUDGET UTILISATION: an overflowing value spends what it was given, not half of it", () => {
+    const out = boundPersistedJson({
+      revision: REVISION,
+      images: imageRefs(400),
+      rollout: ROLLOUT
+    });
+    const row = JSON.stringify(out).length;
+    // Pass 7 (one budget, insertion order) reached 99.4 %; pass 8 (share as ceiling) reached 50.6 %.
+    // 90 % is comfortably above the defect and below the exact figure, so this arm reddens on the
+    // regression without pinning a byte count that a marker's wording could move.
+    expect(row / PERSISTED_JSON_MAX_CHARS).toBeGreaterThan(0.9);
+    expect(row).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
   });
 
   it("THE SAME PROPERTY ON `executor_ref`, where losing a leaf strands the target for good", () => {
@@ -307,16 +434,33 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
     expect(out[PERSISTED_JSON_ELIDED_KEY]).toBeUndefined();
   });
 
-  it("a field that is SMALL costs a large sibling nothing — the share is a cap, not an allocation", () => {
-    // The counter-arm to fair sharing: if unspent share did not flow forward, this would keep a
-    // third of what a single-budget walk kept, and the bound would have become a filter.
-    const withSiblings = boundPersistedJson({
+  /**
+   * THE ARM THAT SHOULD HAVE CAUGHT PASS 8's DEFECT AND DID NOT, now expressed in the field order
+   * production actually produces — AT EVERY ORDER, so it cannot go blind that way again.
+   *
+   * It used to build `{revision, rollout, images}` with `images` LAST. That is the ONE permutation
+   * where the old `walkShare` short-circuited (`if (unwalkedSiblings <= 1) return walk(...)`) and no
+   * share was ever applied, so the arm measured the one layout that could not fail. Against its own
+   * 0.8 threshold, on pass 8's code:
+   *
+   *   alone (images only)                        : 79
+   *   this arm's old order {revision,rollout,images}: 78   ratio 0.987  PASSED
+   *   PRODUCTION order {revision,images,rollout}    : 39   ratio 0.494  FAILS
+   */
+  it("a field that is SMALL costs a large sibling nothing — AT EVERY ORDER, production's included", () => {
+    const alone = boundPersistedJson({ images: imageRefs(400) }) as Reading;
+    const source: Record<string, unknown> = {
       revision: "v1",
       rollout: ROLLOUT,
       images: imageRefs(400)
-    }) as Reading;
-    const alone = boundPersistedJson({ images: imageRefs(400) }) as Reading;
-    expect(withSiblings.images!.length).toBeGreaterThan(alone.images!.length * 0.8);
+    };
+    for (const order of ORDERS) {
+      const withSiblings = boundPersistedJson(inOrder(order, source)) as Reading;
+      expect(
+        withSiblings.images!.length,
+        `order ${order.join(",")}: two tiny siblings cost the array its budget`
+      ).toBeGreaterThan(alone.images!.length * 0.8);
+    }
   });
 
   it("MORE FIELDS THAN THE BUDGET CAN SEAT still elides — and that is a different fact", () => {

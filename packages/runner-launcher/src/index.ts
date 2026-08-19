@@ -966,28 +966,56 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  * {@link RUNNER_DETAIL_MAX_CHARS}), so an array is the only route in, which is why READING the code
  * did not surface it.
  *
- * THE RULE. Field `i` of an object with `n` still-unwalked fields is walked against a sub-budget of
- * `max(MIN_LEAF, floor(left / n))`, and whatever it does not spend goes straight back to the pool
- * for the fields after it. A small field therefore costs a large one nothing, and a large one
- * truncates INSIDE ITS OWN SHARE instead of taking the row.
+ * THE RULE — A FLOOR WITH REDISTRIBUTION, NOT A CEILING (corrected, M23.0 verification pass 9).
+ * Pass 1 walks field `i` of an object with `n` still-unwalked fields against a sub-budget of
+ * `floor(left / n)`, so no field can be starved by a sibling walked before it. Pass 2 then RE-WALKS
+ * the fields that hit that share — the ones that lost content to it — against an equal split of
+ * everything the others left unspent, and repeats while a field finishes and frees more. The share
+ * is therefore the amount a field is GUARANTEED, not the most it may have.
  *
- * THE PROPERTY, STATED SO A REVIEWER CAN FALSIFY IT: no object key is elided BECAUSE AN EARLIER
- * SIBLING WAS LARGE. A key can still be elided when an object has more keys than the budget can
- * seat at MIN_LEAF each — 8 000 chars will not hold 200 fields however it is divided — but that is a
- * different fact, it does not depend on field order, and it is visible in the row as `__scpElided`.
+ * WHY PASS 2 EXISTS, MEASURED. Pass 8 shipped pass 1 alone, and a ceiling with no way back throws
+ * away whatever the small fields do not want. `observedStateFrom` puts `images` in the MIDDLE of
+ * `{revision, images, rollout}`: `images` was capped at ~1/2 the budget while `revision` + `rollout`
+ * spent ~110 of the ~3 950 they were handed, and those ~3 840 characters were never returned. End to
+ * end through the fake-executor seam against real Postgres, 40 refs — a case that had NEVER been
+ * broken, because at 40 refs the pass-8 defect did not bite:
+ *
+ *   pass 7 (one budget)        40/40 images kept   row 4 659   resolveReleasedVersion  determined
+ *   pass 8 (share as ceiling)  34/40 images kept   row 4 063   resolveReleasedVersion  REFUSED
+ *   pass 9 (this)              40/40 images kept   row 4 659   resolveReleasedVersion  determined
+ *
+ * For every n in 35…69 that was a strict loss with no compensating benefit, and the loss is the
+ * fail-SILENT one: a coordinate whose ref fell past the cut yields `observed_images_elided`,
+ * `latest_version` is never determined and dependants are never bumped. Budget utilisation went
+ * from 99.4 % to 50.6 % and is back at ~99 %.
+ *
+ * THE PROPERTIES, STATED SO A REVIEWER CAN FALSIFY THEM.
+ *   (1) NO OBJECT KEY IS ELIDED BECAUSE A SIBLING WAS LARGE. A key can still be elided when an
+ *       object has more keys than the budget can seat at {@link PERSISTED_JSON_MIN_LEAF} each —
+ *       8 000 chars will not hold 200 fields however it is divided — but that is a different fact,
+ *       it does not depend on field order, and it is visible in the row as `__scpElided`.
+ *   (2) RETENTION DOES NOT DEPEND ON INSERTION ORDER — not just which keys survive, but how much of
+ *       each survives. Pass 8 failed this on array contents: the same three fields kept 26, 39 or 77
+ *       of 80 image refs depending only on where `images` sat, a 3x spread. Pinned over all six
+ *       permutations of a 3-field object by
+ *       `persisted-json-bound.test.ts` -> "AT EVERY FIELD ORDER".
+ *   (3) BUDGET UTILISATION. A value that overflows leaves at most one field's worth of the budget
+ *       unspent, rather than a fixed fraction of it.
  *
  * THE TWO ALTERNATIVES AND HOW THEY FAIL. (a) ORDER `rollout` BEFORE `images` in `observedStateFrom`:
  * makes source-line order in an unrelated function a load-bearing contract, which the next person
- * reorders innocently, and it fixes only the one pair we happen to know about today. (b) RESERVE A
- * SHARE FOR NAMED CRITICAL LEAVES: explicit, but the list of names is exactly the per-field census
- * that finding M2 replaced this walk with — `ExecutionStatus.observed` is documented as "optional
- * and additive", so the list goes stale on the day an executor contributes the next signal a gate
- * reads. A share is a property of the WALK: it protects a field nobody has written yet.
+ * reorders innocently, and it fixes only the one pair we happen to know about today. Property (2) is
+ * what earns this rejection — pass 8 rejected the alternative on a disease its own design still had,
+ * which is why (2) is now pinned by a test rather than asserted in a comment. (b) RESERVE A SHARE
+ * FOR NAMED CRITICAL LEAVES: explicit, but the list of names is exactly the per-field census that
+ * finding M2 replaced this walk with — `ExecutionStatus.observed` is documented as "optional and
+ * additive", so the list goes stale on the day an executor contributes the next signal a gate reads.
+ * A share is a property of the WALK: it protects a field nobody has written yet.
  *
- * WHAT IT COSTS, STATED. A very large array now keeps FEWER entries than it used to, because it no
- * longer gets its siblings' budget: for the 80-ref reading above, `images` keeps roughly half what
- * a single-budget walk kept. That is the deliberate trade — an array that was already being
- * truncated is truncated slightly harder, and readers can now tell a cut from an absence
+ * WHAT IT STILL COSTS, STATED. A very large array can keep slightly fewer entries than a
+ * single-budget walk kept, because the guaranteed shares of its siblings are spent before it is
+ * offered the remainder. The gap is bounded by what the siblings actually spend (~110 characters for
+ * `observedStateFrom`'s reading), not by their share. Readers can now tell a cut from an absence
  * ({@link isPersistedJsonEntriesElision}), rather than a whole sibling key vanishing silently.
  *
  * ARRAYS ARE NOT FAIR-SHARED, and that is the point rather than an omission. An object's keys are
@@ -996,30 +1024,119 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  * a half-written `ghcr.io/acme/api@sha256:…` still parses, into a repository and a digest that name
  * bytes nobody deployed. So arrays keep spending in order and truncating the tail.
  */
-function walkShare(
+function walkField(
   value: unknown,
-  budget: { left: number },
+  budget: WalkBudget,
   depth: number,
   unwalkedSiblings: number
-): unknown {
-  // The last (or only) field gets everything that is left — nothing is waiting behind it, so a
-  // share here would throw budget away rather than protect anyone.
-  if (unwalkedSiblings <= 1) return walk(value, budget, depth);
+): { value: unknown; spent: number; clipped: boolean } {
   // NO {@link PERSISTED_JSON_MIN_LEAF} FLOOR ON THE SHARE, deliberately. A floor looks like the
-  // kind thing to do — a sliver of budget renders a nested object as nothing but a marker — and it
-  // re-creates the exact defect this function exists to remove: once `left / n` falls under the
-  // floor, the early fields take a full MIN_LEAF each and the late ones are elided, which is
-  // insertion-order starvation again, just at a tighter budget. An equal sliver is order-independent
-  // at every budget, and a NUMBER (`rollout.weight`, `rollout.step`) is never truncated by the walk
-  // at all, so the leaves a gate reads survive a share far too small to hold a string.
-  const share = Math.max(0, Math.floor(budget.left / unwalkedSiblings));
-  const sub = { left: share };
+  // kind thing to do — a sliver of budget renders a nested object as nothing but a marker, and it is
+  // a whole object rather than a leaf that goes: `walk`'s object branch elides at
+  // `budget.left < MIN_LEAF`, before any number inside it is reached, so `rollout.weight` really is
+  // lost once `rollout`'s share falls under 96 (measured: readable at a 600-char whole-value budget,
+  // gone at 400). But a floor re-creates the exact defect this function exists to remove: once
+  // `left / n` falls under it, the early fields take a full MIN_LEAF each and the late ones are
+  // elided, which is insertion-order starvation again, just at a tighter budget. An equal sliver is
+  // order-independent at every budget, and at the budget this file actually runs at (8 000, three
+  // fields) every share is an order of magnitude above the floor a floor would impose.
+  //
+  // The last (or only) field is handed everything that is left: nothing is waiting behind it, so a
+  // share there would throw budget away rather than protect anyone.
+  const share =
+    unwalkedSiblings <= 1
+      ? Math.max(0, budget.left)
+      : Math.max(0, Math.floor(budget.left / unwalkedSiblings));
+  const sub: WalkBudget = { left: share };
   const bounded = walk(value, sub, depth);
   // Charge what was ACTUALLY spent, not the share. `sub.left` may go slightly negative when a leaf
   // overshoots its own share; subtracting the difference keeps the parent's accounting exact either
   // way, which is what the measured check in `boundPersistedJson` is the backstop for.
-  budget.left -= share - sub.left;
-  return bounded;
+  const spent = share - sub.left;
+  budget.left -= spent;
+  return { value: bounded, spent, clipped: sub.clipped === true };
+}
+
+/**
+ * HOW MANY TIMES THE UNSPENT REMAINDER IS RE-OFFERED. Each round finalises every field that no
+ * longer clips at the bigger share and re-walks only the rest, so the useful work is done in one or
+ * two rounds for any shape this file actually sees; the cap exists so a pathological object (5 000
+ * fields of geometrically increasing size) cannot turn a per-row bound into O(n²) walks. Reaching
+ * the cap is not a correctness failure — it leaves budget unspent, which is the direction that only
+ * costs retention.
+ */
+const PERSISTED_JSON_SHARE_ROUNDS = 4;
+
+/**
+ * Walk an object's fields under {@link walkField}'s two-pass rule. Split out of `walk` because pass
+ * 2 needs the raw value of every field it may re-walk, which a single in-place loop cannot keep.
+ */
+function walkObjectFields(
+  entries: [string, unknown][],
+  budget: WalkBudget,
+  depth: number
+): Record<string, unknown> {
+  /** Seated fields in insertion order. `raw` is kept only so pass 2 can re-walk a clipped field. */
+  const seated: { key: string; raw: unknown; value: unknown; spent: number }[] = [];
+  /** Indices into `seated` of the fields that lost content to their share. */
+  let clipped: number[] = [];
+  let elidedMarker: string | undefined;
+
+  // ---- PASS 1: every field against its guaranteed equal share. ----
+  for (let i = 0; i < entries.length; i++) {
+    const [rawKey, entryValue] = entries[i]!;
+    if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
+    if (budget.left < PERSISTED_JSON_MIN_LEAF) {
+      elidedMarker = `${entries.length - i} more fields`;
+      budget.left -= jsonCost(elidedMarker) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
+      break;
+    }
+    const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
+    budget.left -= jsonCost(key) + 1 + (i > 0 ? 1 : 0); // "key": plus the separating comma
+    // `entries.length - i` counts THIS field plus the ones behind it; a later `undefined` value
+    // makes that an over-count, which only makes the guaranteed share smaller, never larger — and
+    // pass 2 hands the difference back anyway.
+    const walked = walkField(entryValue, budget, depth + 1, entries.length - i);
+    if (walked.clipped) clipped.push(seated.length);
+    seated.push({ key, raw: entryValue, value: walked.value, spent: walked.spent });
+  }
+
+  // ---- PASS 2: re-offer what pass 1 did not spend, to the fields that wanted it. ----
+  // Each round refunds the clipped fields' spend, splits the whole pool equally between them and
+  // re-walks. The share therefore rises every round (the pool it divides gained the finished
+  // fields' leftovers), so this converges rather than repeating itself.
+  for (let round = 0; round < PERSISTED_JSON_SHARE_ROUNDS && clipped.length > 0; round++) {
+    let pool = budget.left;
+    for (const index of clipped) pool += seated[index]!.spent;
+    const share = Math.floor(pool / clipped.length);
+    // Below the per-leaf minimum there is nothing to redistribute: re-walking would only reproduce
+    // pass 1's result at a share that cannot seat anything.
+    if (share < PERSISTED_JSON_MIN_LEAF) break;
+    const stillClipped: number[] = [];
+    let spent = 0;
+    for (const index of clipped) {
+      const field = seated[index]!;
+      const sub: WalkBudget = { left: share };
+      field.value = walk(field.raw, sub, depth + 1);
+      field.spent = share - sub.left;
+      spent += field.spent;
+      if (sub.clipped) stillClipped.push(index);
+    }
+    budget.left = pool - spent;
+    // Everyone still wants more: an equal split of everything there is IS the end state, and another
+    // round would hand out the same shares again.
+    if (stillClipped.length === clipped.length) break;
+    clipped = stillClipped;
+  }
+
+  // TELL THE PARENT whether this subtree would use more budget, AFTER redistribution rather than
+  // during pass 1 — a field that pass 2 satisfied is not a reason for the parent to re-walk us.
+  if (clipped.length > 0 || elidedMarker !== undefined) budget.clipped = true;
+
+  const out: Record<string, unknown> = {};
+  for (const field of seated) out[field.key] = field.value;
+  if (elidedMarker !== undefined) out[PERSISTED_JSON_ELIDED_KEY] = elidedMarker;
+  return out;
 }
 
 /** Exactly what `JSON.stringify` will spend on this leaf, escapes included — the accounting has to
@@ -1041,12 +1158,25 @@ function boundStringToCost(text: string, left: number): string {
   return "";
 }
 
-function walk(value: unknown, budget: { left: number }, depth: number): unknown {
+/**
+ * THE WALK'S BUDGET, PLUS THE ONE BIT THAT MAKES REDISTRIBUTION POSSIBLE.
+ *
+ * `clipped` means "this sub-walk lost content it would have kept had its budget been larger" — a
+ * truncated string, an array whose tail became a marker, an object whose fields became
+ * `__scpElided`. It is what {@link walkObjectFields}'s pass 2 selects on, so it is deliberately NOT
+ * set by the two losses more budget cannot fix: the depth-limit marker, and a non-finite number
+ * rendering as `null`. Setting it for those would spend a redistribution round producing byte-identical
+ * output.
+ */
+type WalkBudget = { left: number; clipped?: boolean };
+
+function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
   if (value === null || value === undefined) return value;
 
   switch (typeof value) {
     case "string": {
       const bounded = boundStringToCost(value, budget.left);
+      if (bounded !== value) budget.clipped = true;
       budget.left -= jsonCost(bounded);
       return bounded;
     }
@@ -1067,7 +1197,9 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
       // `JSON.stringify` THROWS on a bigint. A plugin's JSON-RPC response cannot carry one today,
       // but this function's contract is "any value", and a throw here is the stall this whole file
       // exists to prevent.
-      const bounded = boundStringToCost(String(value), budget.left);
+      const rendered = String(value);
+      const bounded = boundStringToCost(rendered, budget.left);
+      if (bounded !== rendered) budget.clipped = true;
       budget.left -= jsonCost(bounded);
       return bounded;
     }
@@ -1079,6 +1211,8 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
   }
 
   if (depth >= PERSISTED_JSON_MAX_DEPTH) {
+    // NOT a budget clip — see {@link WalkBudget}. No amount of extra budget brings this subtree
+    // back, so marking it would only cost a redistribution round.
     const marker = "[elided: nesting deeper than the persisted-JSON depth limit]";
     budget.left -= jsonCost(marker);
     return marker;
@@ -1089,12 +1223,13 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
     const out: unknown[] = [];
     for (let i = 0; i < value.length; i++) {
       if (budget.left < PERSISTED_JSON_MIN_LEAF) {
-        // Spend-in-order and truncate the TAIL — see `walkShare` for why an array is not
+        // Spend-in-order and truncate the TAIL — see `walkField` for why an array is not
         // fair-shared. The marker is recognisable (`isPersistedJsonEntriesElision`) so a reader that
         // was looking for a specific entry can tell a cut from an absence.
         const marker = entriesElisionMarker(value.length - i);
         budget.left -= jsonCost(marker) + 1;
         out.push(marker);
+        budget.clipped = true;
         break;
       }
       if (i > 0) budget.left -= 1; // ,
@@ -1104,28 +1239,12 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
   }
 
   budget.left -= 2; // {}
-  const entries = Object.entries(value as Record<string, unknown>);
-  const out: Record<string, unknown> = {};
-  for (let i = 0; i < entries.length; i++) {
-    const [rawKey, entryValue] = entries[i]!;
-    if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
-    if (budget.left < PERSISTED_JSON_MIN_LEAF) {
-      const marker = `${entries.length - i} more fields`;
-      budget.left -= jsonCost(marker) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
-      out[PERSISTED_JSON_ELIDED_KEY] = marker;
-      break;
-    }
-    const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
-    budget.left -= jsonCost(key) + 1 + (i > 0 ? 1 : 0); // "key": plus the separating comma
-    // EACH FIELD AGAINST ITS SHARE, NOT AGAINST WHAT IS LEFT. This is the whole fix: with a single
-    // budget spent in insertion order, the first large field takes the row and every later key
-    // becomes `__scpElided` — so which leaf a gate can read was decided by source-line order in
-    // whatever function composed the value. `entries.length - i` counts THIS field plus the ones
-    // behind it; a later `undefined` value makes that an over-count, which only makes the share
-    // smaller, never larger. See `walkShare`.
-    out[key] = walkShare(entryValue, budget, depth + 1, entries.length - i);
-  }
-  return out;
+  // EACH FIELD AGAINST ITS GUARANTEED SHARE, AND THE REMAINDER RE-OFFERED TO WHOEVER WANTED IT.
+  // With a single budget spent in insertion order, the first large field took the row and every
+  // later key became `__scpElided` — so which leaf a gate could read was decided by source-line
+  // order in whatever function composed the value. With a share that is only a CEILING, half the
+  // budget was thrown away instead. See `walkField`.
+  return walkObjectFields(Object.entries(value as Record<string, unknown>), budget, depth);
 }
 
 /**
@@ -1140,6 +1259,17 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
  * payload is strictly better than the alternative — the row is what a coordination loop stalls on,
  * and a stall is invisible.
  *
+ * AND THE FALLBACK IS CHECKED TOO — M23.0 verification pass 9. It used to be returned unmeasured,
+ * which broke the guarantee in the one direction nobody looks: at `maxChars = 0` the diagnostic
+ * itself rendered to 140 characters. Latent (`boundPluginJson` always passes 8 000), but "checked,
+ * not argued" is the whole point of this function, and an unmeasured escape hatch out of a measured
+ * check is the shape of the next defect. Each candidate below is measured, shortest last.
+ *
+ * THE ONE PRECONDITION, STATED RATHER THAN ASSUMED: `maxChars >= 4`. `null` is the shortest thing
+ * `JSON.stringify` can produce, so no value at all satisfies a budget under four characters and the
+ * function returns `null` regardless. Callers pass a column bound; a column that cannot hold `null`
+ * does not exist.
+ *
  * WHERE IT BELONGS: at the STORE, not at the composition sites. The write function is the one place
  * that sees every value that becomes a row, including the ones a future field adds, and it cannot
  * be forgotten the way a call at a composition site can. See `wave-targets-repo.ts`.
@@ -1149,15 +1279,24 @@ export function boundPersistedJson(
   maxChars: number = PERSISTED_JSON_MAX_CHARS
 ): unknown {
   if (value === null || value === undefined) return value;
-  const budget = { left: Math.max(0, maxChars) - PERSISTED_JSON_MIN_LEAF };
+  const budget: WalkBudget = { left: Math.max(0, maxChars) - PERSISTED_JSON_MIN_LEAF };
   const bounded = walk(value, budget, 0);
   const rendered = JSON.stringify(bounded);
   if (rendered === undefined || rendered.length <= maxChars) return bounded;
-  return {
-    [PERSISTED_JSON_ELIDED_KEY]: boundDetail(
-      `a plugin-supplied value rendered to ${rendered.length} characters after bounding, over the ${maxChars}-character budget, and was not stored verbatim`
-    )
-  };
+  const fallbacks = [
+    {
+      [PERSISTED_JSON_ELIDED_KEY]: boundDetail(
+        `a plugin-supplied value rendered to ${rendered.length} characters after bounding, over the ${maxChars}-character budget, and was not stored verbatim`
+      )
+    },
+    { [PERSISTED_JSON_ELIDED_KEY]: true },
+    null
+  ];
+  for (const fallback of fallbacks) {
+    const fallbackRendered = JSON.stringify(fallback);
+    if (fallbackRendered !== undefined && fallbackRendered.length <= maxChars) return fallback;
+  }
+  return null;
 }
 
 /**
