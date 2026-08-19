@@ -4,7 +4,7 @@
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
     "openapi": { "dependsOn": ["@scp/server#build"], "outputs": ["tools/openapi/openapi.v1.json"] },
     "generate": { "dependsOn": ["^openapi"], "outputs": ["src/generated/**"] },
-    "lint": {},
+    "//#lint": {},
     "typecheck": { "dependsOn": ["^build"] },
     "test": { "dependsOn": ["build"] },
     "test:integration": {
