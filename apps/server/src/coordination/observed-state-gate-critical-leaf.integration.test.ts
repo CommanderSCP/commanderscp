@@ -1,7 +1,11 @@
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import { PERSISTED_JSON_MAX_CHARS, isPersistedJsonEntriesElision } from "@scp/runner-launcher";
+import {
+  PERSISTED_JSON_ELIDED_KEY,
+  PERSISTED_JSON_MAX_CHARS,
+  isPersistedJsonEntriesElision
+} from "@scp/runner-launcher";
 import { v7 as uuidv7 } from "uuid";
 import {
   createTestComponent,
@@ -71,6 +75,15 @@ import { resolveReleasedVersion } from "../dependencies/internal-release-version
  * | `walkObjectFields`' pass-2 redistribution loop, deleted | CONSEQUENCE 3 FAILS: `expected 36 to be 50` (35 refs plus the cut marker), and with that assertion lifted, `index 49 did not resolve: expected { determined: false, … }` — the fail-silent path itself. CONSEQUENCES 1 AND 2 STAY GREEN, which is the blindness this arm exists to remove |
  * | The HALVING restored in `boundStringToCost` (`width = Math.floor(width / 2)`) | CONSEQUENCE 4 FAILS: `the revision stored roughly half of the share it was given: expected 1950 to be greater than 3000` — 1 950 of 4 099, row 5 917 (74.0 %). CONSEQUENCES 1, 2 AND 3 STAY GREEN, because none of them varies a STRING |
  * | `stateRefByTarget` dropped from the fake executor's `status()` | CONSEQUENCE 4 FAILS with `expected 2 to be greater than 3000` — the revision is back to `v0`. That is the seam itself: without it this arm measures the hardcoded version string, which is the state four rounds ran in |
+ * | U+0000 removed from `NOT_PERSISTABLE` in `@scp/runner-launcher` | CONSEQUENCE 5's `beforeAll` never completes: `[reconcile] … poll failed (will retry next tick): DrizzleQueryError: Failed query: update "change_wave_targets" set "observed_state" = $1 …`, once a tick, forever. That IS the 13-day stall of BUILD_AND_TEST.md §4.4a, reproduced — and it is why the NUL travels through the plugin host and a real `jsonb` write rather than through a unit assertion |
+ * | The array tail reserve removed (`tailReserve = 0`) | CONSEQUENCE 5 STAYS GREEN — this row cuts only ONE list, and one marker's overspend fits inside the row's own reserve. The unit file's four-cut arm is the fixture for it. Recorded because "the integration arm did not redden" is evidence about the FIXTURE, not about the fix |
+ *
+ * EVERY ROW OF THIS TABLE REQUIRES `pnpm exec turbo build --force` BETWEEN THE EDIT AND THE RUN —
+ * pass 11. `@scp/runner-launcher` and `@scp/plugin-fake-executor` both resolve through
+ * `main: dist/index.js`, and the subprocess plugin host loads the built file, so a mutation applied
+ * to `src/` alone is a NO-OP here and the suite stays green for the most misleading possible reason.
+ * Measured: dropping `stateRefByTarget` from `src/index.ts` without rebuilding left all six arms
+ * passing; the same edit with a rebuild reddens two of them.
  *
  * NEITHER OF THE FIRST TWO REDDENS CONSEQUENCE 2, and that is correct rather than a gap: shrinking
  * the budget moves WHERE the cut falls, and both of that arm's coordinates stay on their own side of
@@ -155,11 +168,38 @@ const MULTI_SOURCE_REVISION = Array.from({ length: MULTI_SOURCE_COUNT }, (_, i) 
   (i.toString(16).padStart(8, "0") + "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f7").slice(0, 40)
 ).join("+");
 
+/**
+ * THE SAME STRING SEAM, POINTED AT THE THINGS THE BOUND'S OWN MACHINERY IS MADE OF — pass 11.
+ *
+ * `MULTI_SOURCE_REVISION` above is 4 099 characters of hex and `+`: a long string, but an entirely
+ * ordinary one, so it exercises the string RULE and nothing about the string's CONTENT. This one
+ * carries, in one value that a plugin can return today:
+ *
+ *   * U+0000, which `jsonb` refuses outright — the failure mode that stopped a coordination loop
+ *     for 13 days behind green health checks (BUILD_AND_TEST.md §4.4a);
+ *   * astral characters, three code points wide, so the width bound's cut lands mid-pair unless
+ *     something puts it right — the other half of that same incident;
+ *   * `PERSISTED_JSON_ELIDED_KEY` and the literal text of the ARRAY elision marker, i.e. the
+ *     bound's own vocabulary handed back to it as DATA. `isPersistedJsonEntriesElision`'s doc says
+ *     a plugin can spoof the marker and that this is deliberate; what must not happen is the
+ *     reverse — a plugin's revision making the row unreadable, or a KEPT image ref reading as a cut.
+ *
+ * Sanitising replaces a NUL with U+FFFD one-for-one, so `.length` is preserved and the head/tail
+ * assertions below can be written against the sanitised original rather than against a guess.
+ */
+const NUL = "\u0000";
+const HOSTILE_HEAD = `HEAD${NUL}${PERSISTED_JSON_ELIDED_KEY}[elided: 9 more entries]`;
+const HOSTILE_TAIL = `[elided: 9 more entries]${PERSISTED_JSON_ELIDED_KEY}${NUL}TAIL`;
+const HOSTILE_REVISION = `${HOSTILE_HEAD}${"\u{1F600}\u{1F4A9}\u{10000}".repeat(700)}${HOSTILE_TAIL}`;
+/** What sanitising turns it into, computed the same way the bound does: one code unit for one. */
+const HOSTILE_SANITISED = HOSTILE_REVISION.replace(new RegExp(NUL, "g"), "\uFFFD");
+
 describe("observed_state: a large `images` array may not cost the leaves the gates read", () => {
   let server: ListeningTestServer;
   const targetId = uuidv7();
   const windowTargetId = uuidv7();
   const stringTargetId = uuidv7();
+  const hostileTargetId = uuidv7();
 
   beforeAll(async () => {
     // NON-VACUITY, ASSERTED BEFORE THE SERVER BOOTS: if the fixture ever stopped overflowing the
@@ -192,6 +232,17 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
     ).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS);
     expect(MULTI_SOURCE_REVISION.length).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS / 3);
 
+    // AND THE HOSTILE FIXTURE IS BOTH HOSTILE AND OVERSIZED. Each clause is a separate way the arm
+    // could go vacuous: a fixture that fitted, one that carried no NUL, one whose astral run was
+    // too short to be cut mid-pair, one whose sanitising changed the length.
+    expect(HOSTILE_REVISION.length).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS / 3);
+    expect(HOSTILE_REVISION.includes(NUL)).toBe(true);
+    expect(HOSTILE_SANITISED.length).toBe(HOSTILE_REVISION.length);
+    expect(HOSTILE_SANITISED.includes(NUL)).toBe(false);
+    expect(
+      JSON.stringify({ revision: HOSTILE_REVISION, images: imageRefs, rollout: ROLLOUT }).length
+    ).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS);
+
     server = await listenTestServer({
       withEventRelay: true,
       withReconcileLoop: true,
@@ -203,22 +254,28 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
         forcePhase: {
           [targetId]: "running",
           [windowTargetId]: "running",
-          [stringTargetId]: "running"
+          [stringTargetId]: "running",
+          [hostileTargetId]: "running"
         },
         imagesByTarget: {
           [targetId]: imageRefs,
           [windowTargetId]: windowImageRefs,
-          [stringTargetId]: windowImageRefs
+          [stringTargetId]: windowImageRefs,
+          [hostileTargetId]: imageRefs
         },
         rolloutByTarget: {
           [targetId]: ROLLOUT,
           [windowTargetId]: ROLLOUT,
-          [stringTargetId]: ROLLOUT
+          [stringTargetId]: ROLLOUT,
+          [hostileTargetId]: ROLLOUT
         },
         // THE SEAM ADDED FOR THIS ARM (`packages/plugins/fake-executor`). `status().stateRef` was
         // hardcoded to `v${target.version}` and `detail` never reaches `observed_state`, so before
         // this key the ONLY free-form field this harness could vary in that column was an array.
-        stateRefByTarget: { [stringTargetId]: MULTI_SOURCE_REVISION }
+        stateRefByTarget: {
+          [stringTargetId]: MULTI_SOURCE_REVISION,
+          [hostileTargetId]: HOSTILE_REVISION
+        }
       }
     });
   });
@@ -252,6 +309,7 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
   let row: Awaited<ReturnType<typeof observedRow>>;
   let windowRow: Awaited<ReturnType<typeof observedRow>>;
   let stringRow: Awaited<ReturnType<typeof observedRow>>;
+  let hostileRow: Awaited<ReturnType<typeof observedRow>>;
 
   beforeAll(async () => {
     const org = await createTestOrg(server, "observed-gate-leaves");
@@ -289,6 +347,17 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
       targets: [stringTargetId]
     });
     stringRow = await observedRow(orgId, stringTargetId);
+
+    const hostileTarget = await createTestComponent(admin, {
+      id: hostileTargetId,
+      name: "observed-gate-hostile-target"
+    });
+    expect(hostileTarget.id).toBe(hostileTargetId);
+    await admin.changes.propose({
+      name: "a change whose executor reports a revision made of this bound's own vocabulary",
+      targets: [hostileTargetId]
+    });
+    hostileRow = await observedRow(orgId, hostileTargetId);
   });
 
   it("CONSEQUENCE 1: `stageDependencyVerdict` still reads the weight off the bounded row", () => {
@@ -488,5 +557,114 @@ describe("observed_state: a large `images` array may not cost the leaves the gat
       manifestPaths: []
     });
     expect(resolved).toMatchObject({ determined: true, version: "1.2.3" });
+  });
+
+  /**
+   * CONSEQUENCE 5 (pass 11) — THE STRING SEAM POINTED AT WHAT THE BOUND IS MADE OF, AND AT THE ONE
+   * BYTE POSTGRES REFUSES.
+   *
+   * Consequence 4 proved the string RULE; nothing had yet driven string CONTENT through this
+   * column, because until pass 10 nothing could. Three properties meet on this one row and each
+   * has already cost this repository something:
+   *
+   *   * U+0000 in a persisted string throws inside `reconcileExecutingChange`'s `withTenantTx`,
+   *     rolling back the observation in the same transaction and re-throwing every tick — the
+   *     13-day silent stall in BUILD_AND_TEST.md §4.4a. Its sibling, a surrogate pair cut in half
+   *     by a width bound, is the same failure by a different route, and an astral run is what puts
+   *     the cut there. Neither is reachable through `imagesByTarget`: an array is cut by dropping
+   *     WHOLE entries, so no cut ever lands inside one.
+   *   * The revision carries `__scpElided` and the array marker's literal text. A reader must not
+   *     be able to be talked into "this list was cut" by a SIBLING field's content, and the row
+   *     must not become unreadable because a plugin echoed the bound's own vocabulary back at it.
+   *
+   * ALSO A NON-DISCARD ARM. When the walk's accounting is wrong, `boundPersistedJson` measures the
+   * overflow and stores a diagnostic INSTEAD of the payload — every leaf, at once. Pass 11 found
+   * two ways to reach that (an uncharged `null`, and a cut list's tail marker charged against
+   * nothing) and it is what a hostile value would aim at, so it is asserted here over a real row
+   * rather than only in the unit sweep.
+   */
+  it("CONSEQUENCE 5: a revision made of NULs, astral pairs and the bound's own markers still stores", () => {
+    const observed = hostileRow.observedState as Record<string, unknown> & {
+      revision?: string;
+      images?: string[];
+      rollout?: { weight?: number };
+    };
+    const persisted = JSON.stringify(hostileRow.observedState)!;
+
+    // THE PAYLOAD IS THERE. Not the diagnostic the measured backstop stores when the walk's
+    // accounting is wrong — that outcome loses `revision`, `images` and `rollout` together and
+    // would satisfy every length assertion in this file.
+    const backstop = observed[PERSISTED_JSON_ELIDED_KEY];
+    expect(
+      typeof backstop === "string" && backstop.startsWith("a plugin-supplied value rendered"),
+      "the backstop discarded the whole reading"
+    ).toBe(false);
+    expect(persisted.length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+
+    // POSTGRES ACCEPTED IT, and these are the two reasons it might not have. The row is read back
+    // from the database, so this is the write having happened rather than a prediction about it.
+    expect(persisted.includes(NUL), "U+0000 reached the row").toBe(false);
+    expect(
+      (persisted as unknown as { isWellFormed(): boolean }).isWellFormed(),
+      "a lone surrogate reached the row"
+    ).toBe(true);
+
+    // THE REVISION IS THE EXECUTOR'S, SANITISED AND CUT IN THE MIDDLE — both ends kept, which is
+    // what keeps a truncated revision recognisable. Against the SANITISED original, because
+    // replacing a NUL with U+FFFD is length-preserving and deliberate, not a loss.
+    expect(typeof observed.revision).toBe("string");
+    expect(observed.revision!.length).toBeGreaterThan(3_000);
+    expect(observed.revision!.length).toBeLessThan(HOSTILE_REVISION.length);
+    expect(observed.revision!.startsWith(HOSTILE_SANITISED.slice(0, HOSTILE_HEAD.length))).toBe(
+      true
+    );
+    expect(observed.revision!.endsWith(HOSTILE_SANITISED.slice(-HOSTILE_TAIL.length))).toBe(true);
+
+    // AND IT IS NOT MISTAKEN FOR ONE OF THE BOUND'S OWN MARKERS, in either direction: the revision
+    // does not read as a cut list, and no KEPT image ref does either — only the tail does.
+    expect(isPersistedJsonEntriesElision(observed.revision!)).toBe(false);
+    const recorded = observedImagesOf(hostileRow.observedState);
+    expect(recorded.length).toBeGreaterThan(1);
+    expect(recorded.slice(0, -1).some((r) => isPersistedJsonEntriesElision(r))).toBe(false);
+    expect(isPersistedJsonEntriesElision(recorded[recorded.length - 1]!)).toBe(true);
+
+    // THE TWO GATES, ON THIS ROW. The point of the whole file: whatever a plugin puts in one field,
+    // the leaves the gates read are still there.
+    expect(hostileRow.status).not.toBe("succeeded");
+    const verdict = stageDependencyVerdict(
+      { dependsOn: "dependency-b", minWeight: 50 },
+      {
+        status: hostileRow.status,
+        observedState: hostileRow.observedState,
+        lastObservedAt: hostileRow.lastObservedAt
+      },
+      Date.now()
+    );
+    expect(verdict.satisfied).toBe(true);
+    expect(verdict.branch).toBe("min_weight");
+    expect(verdict.weightUnreadable).toBeUndefined();
+  });
+
+  it("CONSEQUENCE 5b: and the released version still resolves off that row, cut told from absent", async () => {
+    const recorded = observedImagesOf(hostileRow.observedState);
+    const survived = await resolveReleasedVersion({
+      line: { ecosystem: "oci", coordinate: repositoryOf(0) },
+      sourceRef: {},
+      observedImages: recorded,
+      manifestPaths: []
+    });
+    expect(survived).toMatchObject({ determined: true, version: "1.2.3" });
+
+    const droppedRepo = repositoryOf(IMAGE_REF_COUNT - 1);
+    expect(recorded.some((r) => r.startsWith(`${droppedRepo}:`))).toBe(false);
+    const dropped = await resolveReleasedVersion({
+      line: { ecosystem: "oci", coordinate: droppedRepo },
+      sourceRef: {},
+      observedImages: recorded,
+      manifestPaths: []
+    });
+    // NOT `no_matching_image_ref`: the ref is missing because this file cut the list, not because
+    // the executor never deployed it (charter principle 6).
+    expect(dropped).toMatchObject({ determined: false, reason: "observed_images_elided" });
   });
 });
