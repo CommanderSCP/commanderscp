@@ -278,9 +278,10 @@ describe("MEDIUM: one large field may not spend a sibling's budget", () => {
       const out = boundPersistedJson(value) as Reading & Record<string, unknown>;
       expect(out.rollout?.weight, `order ${order.join(",")}: the gate's leaf was elided`).toBe(60);
       expect(out.revision, `order ${order.join(",")}: revision was elided`).toBe(REVISION);
-      expect(out.images?.length, `order ${order.join(",")}: images vanished entirely`).toBeGreaterThan(
-        1
-      );
+      expect(
+        out.images?.length,
+        `order ${order.join(",")}: images vanished entirely`
+      ).toBeGreaterThan(1);
       expect(
         out[PERSISTED_JSON_ELIDED_KEY],
         `order ${order.join(",")}: a whole field was dropped for a sibling`
