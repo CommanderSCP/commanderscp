@@ -315,7 +315,8 @@ export const manifest: PluginManifest = {
         type: "object",
         additionalProperties: { type: "array", items: { type: "string" } }
       },
-      rolloutByTarget: { type: "object", additionalProperties: { type: "object" } }
+      rolloutByTarget: { type: "object", additionalProperties: { type: "object" } },
+      detailByTarget: { type: "object", additionalProperties: { type: "string" } }
     }
   }
 };
