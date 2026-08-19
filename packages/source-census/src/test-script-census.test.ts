@@ -49,25 +49,24 @@ const FLAG = "--passWithNoTests";
 /**
  * `test:integration` scripts that may carry the flag, each with the reason. ONE REASON ONLY IS
  * LEGITIMATE — vitest's file-granularity `--shard`, which hands a shard zero files for a
- * single-file (or, for managed-scan, an as-yet-unwritten) suite.
+ * single-file suite.
  *
- * `@scp/plugin-managed-scan` IS A DEBT, NOT A SHARD ARTIFACT, and is named here rather than hidden:
- * it has a `test:integration` script and a `vitest.integration.config.ts` and ZERO
- * `*.integration.test.ts` files — the M13.3 DoD's real-Docker scan suite was scaffolded and never
- * written. It finds no files in EITHER shard. Delete this entry when that suite lands.
+ * `@scp/plugin-managed-scan` USED TO BE LISTED HERE AS A DEBT (the M13.3 real-Docker scan suite was
+ * scaffolded and never written — zero files in EITHER shard). M23.0 verification pass 8 wrote
+ * `managed-scan.integration.test.ts`, closing it; it is now a single-file suite like its two
+ * siblings and needs no special reason beyond theirs.
  */
 const INTEGRATION_FLAG_ALLOWLIST: Record<string, string> = {
   "@scp/server": "CI shards test:integration 2 ways; a shard may draw zero files",
   "@scp/plugin-managed-iac": "single-file suite; the other shard legitimately draws zero files",
   "@scp/plugin-managed-dep": "single-file suite; the other shard legitimately draws zero files",
+  "@scp/plugin-managed-scan": "single-file suite; the other shard legitimately draws zero files",
   "@scp/runner-launcher":
-    "single-file suite (reaper.integration.test.ts, M23.1 phase 4); the other shard legitimately draws zero files",
-  "@scp/plugin-managed-scan":
-    "DEBT: the M13.3 real-Docker scan suite was scaffolded and never written — zero files in EITHER shard"
+    "single-file suite (reaper.integration.test.ts, M23.1 phase 4); the other shard legitimately draws zero files"
 };
 
 /** `test:integration` scripts that are allowed to have no integration test file at all today. */
-const KNOWN_EMPTY_INTEGRATION_SUITES = new Set(["@scp/plugin-managed-scan"]);
+const KNOWN_EMPTY_INTEGRATION_SUITES = new Set<string>([]);
 
 interface Pkg {
   name: string;

@@ -13,6 +13,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests"
   },
   "devDependencies": {
+    "@scp/cosign": "workspace:*",
     "@scp/plugin-testkit": "workspace:*",
     "@scp/source-census": "workspace:*",
     "typescript": "~5.8.0",
