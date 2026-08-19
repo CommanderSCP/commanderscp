@@ -946,8 +946,8 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
 }
 
 /**
- * WHAT ONE FIELD OF AN OBJECT MAY SPEND — MEDIUM, M23.0 verification pass 8, and the reason this is
- * a SHARE rather than "whatever is left".
+ * WHAT ONE FIELD OF AN OBJECT MAY SPEND — MEDIUM, M23.0 verification passes 8, 9 and 10, and the
+ * reason this is a SHARE rather than "whatever is left".
  *
  * WHAT WENT WRONG, MEASURED. The walk used to spend one budget in INSERTION ORDER: each field took
  * as much as it wanted and, once the remainder fell under {@link PERSISTED_JSON_MIN_LEAF}, every
@@ -966,51 +966,125 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  * {@link RUNNER_DETAIL_MAX_CHARS}), so an array is the only route in, which is why READING the code
  * did not surface it.
  *
- * THE RULE — A FLOOR WITH REDISTRIBUTION, NOT A CEILING (corrected, M23.0 verification pass 9).
- * Pass 1 walks field `i` of an object with `n` still-unwalked fields against a sub-budget of
- * `floor(left / n)`, so no field can be starved by a sibling walked before it. Pass 2 then RE-WALKS
- * the fields that hit that share — the ones that lost content to it — against an equal split of
- * everything the others left unspent, and repeats while a field finishes and frees more. The share
- * is therefore the amount a field is GUARANTEED, not the most it may have.
+ * ============================================================================================
+ * THE RULE — WATER-FILLING IN TWO PHASES (arrived at over three corrections; pass 10 is this one)
+ * ============================================================================================
+ *   PHASE 1 SEATS THE KEYS AND CHARGES NOTHING ELSE. A key is seated only while
+ *   {@link PERSISTED_JSON_MIN_LEAF} of budget remains available for it AND for every key already
+ *   seated. The first key that fails that test turns itself and everything after it into
+ *   {@link PERSISTED_JSON_ELIDED_KEY}.
  *
- * WHY PASS 2 EXISTS, MEASURED. Pass 8 shipped pass 1 alone, and a ceiling with no way back throws
- * away whatever the small fields do not want. `observedStateFrom` puts `images` in the MIDDLE of
- * `{revision, images, rollout}`: `images` was capped at ~1/2 the budget while `revision` + `rollout`
- * spent ~110 of the ~3 950 they were handed, and those ~3 840 characters were never returned. End to
- * end through the fake-executor seam against real Postgres, 40 refs — a case that had NEVER been
- * broken, because at 40 refs the pass-8 defect did not bite:
+ *   PHASE 2 DIVIDES WHAT IS LEFT EQUALLY BETWEEN THE SEATED FIELDS, walks all of them, and then
+ *   RE-DIVIDES what the satisfied ones did not want between the ones that are still short,
+ *   repeating while somebody finishes. That is max-min fairness: at the end every field is either
+ *   SATISFIED (it took less than its share and kept everything) or holds an EQUAL share of what the
+ *   satisfied fields left behind. Neither outcome can be influenced by where a field sits.
+ *
+ * WHY PASS 2 EXISTS, MEASURED (pass 9). Pass 8 shipped phase 1 alone, as a CEILING with no way
+ * back, and a ceiling throws away whatever the small fields do not want. `observedStateFrom` puts
+ * `images` in the MIDDLE of `{revision, images, rollout}`: `images` was capped at ~1/2 the budget
+ * while `revision` + `rollout` spent ~110 of the ~3 950 they were handed, and those ~3 840
+ * characters were never returned. End to end through the fake-executor seam against real Postgres,
+ * 40 refs — a case that had NEVER been broken, because at 40 refs the pass-8 defect did not bite:
  *
  *   pass 7 (one budget)        40/40 images kept   row 4 659   resolveReleasedVersion  determined
  *   pass 8 (share as ceiling)  34/40 images kept   row 4 063   resolveReleasedVersion  REFUSED
- *   pass 9 (this)              40/40 images kept   row 4 659   resolveReleasedVersion  determined
+ *   pass 9 (redistribution)    40/40 images kept   row 4 659   resolveReleasedVersion  determined
  *
  * For every n in 35…69 that was a strict loss with no compensating benefit, and the loss is the
  * fail-SILENT one: a coordinate whose ref fell past the cut yields `observed_images_elided`,
- * `latest_version` is never determined and dependants are never bumped. Budget utilisation went
- * from 99.4 % to 50.6 % and is back at ~99 %.
+ * `latest_version` is never determined and dependants are never bumped.
  *
+ * ============================================================================================
+ * WHY THE KEYS ARE CHARGED FIRST — HIGH, PASS 10. IT IS THE WHOLE OF PROPERTY (2).
+ * ============================================================================================
+ * Passes 8 and 9 walked field `i` against `floor(left / n)` where `left` was the budget REMAINING
+ * at that point in a single in-order loop. Two order-dependent consequences followed, and neither
+ * is visible in the row's LENGTH: a field that underspent raised every LATER field's share, and the
+ * LAST field was handed the entire remainder rather than a share at all. Measured on
+ * `{a: 4 000-char string, b: 4 000-char string, phase, step}` over all 24 permutations, on pass 9
+ * plus this round's {@link boundStringToCost} correction:
+ *
+ *   a 3 858 / b 4 000    4 orders                        row 7 904
+ *   a 3 929 / b 3 929   16 orders   <- the fair answer    row 7 904
+ *   a 4 000 / b 3 858    4 orders                        row 7 904
+ *
+ * The ROW IS THE SAME SIZE in all three, so no length or utilisation assertion can see it, and each
+ * is a different answer to "how much of `a` survived". The reorder alternative below is rejected
+ * BECAUSE it makes source-line order a load-bearing contract — a rejection this design has to earn
+ * rather than assert. Charging the keys up front is what earns it: the sum of the key costs is the
+ * same in every permutation, so the pool phase 2 divides is a FIXED number, and phase 2 never reads
+ * `budget.left` again. All 24 permutations are now byte-identical, pinned by
+ * `persisted-json-bound.test.ts` -> "ORDER-INDEPENDENT RETENTION ... TWO TRUNCATED STRINGS".
+ *
+ * ============================================================================================
+ * A {@link PERSISTED_JSON_MIN_LEAF} FLOOR, WHICH PASS 9 DELIBERATELY DID NOT HAVE. REVERSED, WITH
+ * THE MEASUREMENT THAT REVERSED IT.
+ * ============================================================================================
+ * Pass 9 argued that an equal SLIVER is order-independent at every budget while a floor re-creates
+ * insertion-order starvation at a tighter budget. The first half is true and the second half is
+ * what phase 1 now owns; what the argument missed is what a sliver actually stores. Charging the
+ * keys first makes it visible — 5 000 fields of `"v".repeat(50)` at the 8 000 budget:
+ *
+ *   sliver (pass 9)   793 keys seated, 792 of them the EMPTY STRING, row 7 844
+ *   floor  (pass 10)   77 keys seated, every one of them its whole 50-character value
+ *
+ * `"k123": ""` in a governed row does not read as "this was cut". It reads as an observation — the
+ * executor reported an empty value — which is the provenance-label defect this repository has
+ * already shipped once (charter principle 6). `__scpElided: "4924 more fields"` says what actually
+ * happened. A floor is therefore the honest rule, and phase 1 applies it to the KEY SEATING rather
+ * than to the share, which is what keeps it from being insertion-order starvation: the decision
+ * reads key costs ONLY and never looks at a value, so property (1) is now strictly true — a key is
+ * never elided because a SIBLING'S VALUE was large, at any budget.
+ *
+ * ITS RESIDUE, STATED. The seated set is a PREFIX in insertion order, so when keys differ wildly in
+ * LENGTH (the 5 000-character-key case) which ones are seated still varies with order. Values never
+ * influence it. Pinned as a bound rather than left to be discovered:
+ * `persisted-json-bound.test.ts` -> "KEY LENGTH, NOT VALUE SIZE".
+ *
+ * ============================================================================================
  * THE PROPERTIES, STATED SO A REVIEWER CAN FALSIFY THEM.
+ * ============================================================================================
  *   (1) NO OBJECT KEY IS ELIDED BECAUSE A SIBLING WAS LARGE. A key can still be elided when an
  *       object has more keys than the budget can seat at {@link PERSISTED_JSON_MIN_LEAF} each —
  *       8 000 chars will not hold 200 fields however it is divided — but that is a different fact,
- *       it does not depend on field order, and it is visible in the row as `__scpElided`.
+ *       it is decided by the KEYS alone, and it is visible in the row as `__scpElided`.
  *   (2) RETENTION DOES NOT DEPEND ON INSERTION ORDER — not just which keys survive, but how much of
- *       each survives. Pass 8 failed this on array contents: the same three fields kept 26, 39 or 77
- *       of 80 image refs depending only on where `images` sat, a 3x spread. Pinned over all six
- *       permutations of a 3-field object by
- *       `persisted-json-bound.test.ts` -> "AT EVERY FIELD ORDER".
- *   (3) BUDGET UTILISATION. A value that overflows leaves at most one field's worth of the budget
- *       unspent, rather than a fixed fraction of it.
+ *       each survives, byte for byte. Pass 8 failed this on array contents (the same three fields
+ *       kept 26, 39 or 77 of 80 image refs depending only on where `images` sat); pass 9 failed it
+ *       on string contents (the 24-permutation table above). Pinned over all six permutations of a
+ *       3-field object AND all 24 of a 4-field one, with an ARRAY-shaped large field and with
+ *       STRING-shaped ones, by `persisted-json-bound.test.ts`. The one carve-out is the key-length
+ *       residue named above.
+ *   (3) BUDGET UTILISATION. A value that overflows BECAUSE A FIELD WANTED MORE THAN ITS SHARE
+ *       leaves at most one field's worth of the budget unspent, rather than a fixed fraction of it.
+ *       Measured at the 8 000 budget: 400 image refs beside a revision and a rollout spend 7 870;
+ *       two 4 000-character strings beside two small fields spend 7 904; a single string field at
+ *       budget B spends exactly `B - PERSISTED_JSON_MIN_LEAF`.
+ *
+ *       NARROWED, BECAUSE MEASUREMENT FALSIFIES THE UNQUALIFIED FORM. In the ELISION regime —
+ *       phase 1 could not seat every key — phase 1 has reserved {@link PERSISTED_JSON_MIN_LEAF} for
+ *       each key it DID seat, and a field that turns out to want less than that leaves the
+ *       difference unspent. The residue is bounded by `MIN_LEAF x seated`, and the worst shape for
+ *       it is many long keys with tiny values: 50 keys of 5 000 characters with one-character
+ *       values seats 35 of them and spends 4 554 of 8 000 (57 %), against 6 651 (83 %) under pass
+ *       9's sliver rule. That is the price of the floor, it is paid only where the row already says
+ *       `__scpElided`, and it is pinned as a FLOOR ON UTILISATION by
+ *       `persisted-json-bound.test.ts` -> "THE ELISION REGIME'S UTILISATION RESIDUE", so it cannot
+ *       silently grow. Recovering it needs a second seat-and-fill sweep, which is a mutable cursor
+ *       through the most safety-critical loop in this file for a shape no `observed_state`,
+ *       `executor_ref` or `prior_state_ref` has ever had.
  *
  * THE TWO ALTERNATIVES AND HOW THEY FAIL. (a) ORDER `rollout` BEFORE `images` in `observedStateFrom`:
  * makes source-line order in an unrelated function a load-bearing contract, which the next person
  * reorders innocently, and it fixes only the one pair we happen to know about today. Property (2) is
- * what earns this rejection — pass 8 rejected the alternative on a disease its own design still had,
- * which is why (2) is now pinned by a test rather than asserted in a comment. (b) RESERVE A SHARE
- * FOR NAMED CRITICAL LEAVES: explicit, but the list of names is exactly the per-field census that
- * finding M2 replaced this walk with — `ExecutionStatus.observed` is documented as "optional and
- * additive", so the list goes stale on the day an executor contributes the next signal a gate reads.
- * A share is a property of the WALK: it protects a field nobody has written yet.
+ * what earns this rejection — pass 8 and pass 9 each rejected the alternative on a disease their own
+ * design still had, which is why (2) is now pinned byte-for-byte by tests rather than asserted in a
+ * comment. (b) RESERVE A SHARE FOR NAMED CRITICAL LEAVES: explicit, but the list of names is exactly
+ * the per-field census that finding M2 replaced this walk with — `ExecutionStatus.observed` is
+ * documented as "optional and additive", so the list goes stale on the day an executor contributes
+ * the next signal a gate reads. A share is a property of the WALK: it protects a field nobody has
+ * written yet.
  *
  * WHAT IT STILL COSTS, STATED. A very large array can keep slightly fewer entries than a
  * single-budget walk kept, because the guaranteed shares of its siblings are spent before it is
@@ -1023,41 +1097,7 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  * the tail off a list is an honest degradation while cutting each ELEMENT in half is corruption —
  * a half-written `ghcr.io/acme/api@sha256:…` still parses, into a repository and a digest that name
  * bytes nobody deployed. So arrays keep spending in order and truncating the tail.
- */
-function walkField(
-  value: unknown,
-  budget: WalkBudget,
-  depth: number,
-  unwalkedSiblings: number
-): { value: unknown; spent: number; clipped: boolean } {
-  // NO {@link PERSISTED_JSON_MIN_LEAF} FLOOR ON THE SHARE, deliberately. A floor looks like the
-  // kind thing to do — a sliver of budget renders a nested object as nothing but a marker, and it is
-  // a whole object rather than a leaf that goes: `walk`'s object branch elides at
-  // `budget.left < MIN_LEAF`, before any number inside it is reached, so `rollout.weight` really is
-  // lost once `rollout`'s share falls under 96 (measured: readable at a 600-char whole-value budget,
-  // gone at 400). But a floor re-creates the exact defect this function exists to remove: once
-  // `left / n` falls under it, the early fields take a full MIN_LEAF each and the late ones are
-  // elided, which is insertion-order starvation again, just at a tighter budget. An equal sliver is
-  // order-independent at every budget, and at the budget this file actually runs at (8 000, three
-  // fields) every share is an order of magnitude above the floor a floor would impose.
-  //
-  // The last (or only) field is handed everything that is left: nothing is waiting behind it, so a
-  // share there would throw budget away rather than protect anyone.
-  const share =
-    unwalkedSiblings <= 1
-      ? Math.max(0, budget.left)
-      : Math.max(0, Math.floor(budget.left / unwalkedSiblings));
-  const sub: WalkBudget = { left: share };
-  const bounded = walk(value, sub, depth);
-  // Charge what was ACTUALLY spent, not the share. `sub.left` may go slightly negative when a leaf
-  // overshoots its own share; subtracting the difference keeps the parent's accounting exact either
-  // way, which is what the measured check in `boundPersistedJson` is the backstop for.
-  const spent = share - sub.left;
-  budget.left -= spent;
-  return { value: bounded, spent, clipped: sub.clipped === true };
-}
-
-/**
+ *
  * HOW MANY TIMES THE UNSPENT REMAINDER IS RE-OFFERED. Each round finalises every field that no
  * longer clips at the bigger share and re-walks only the rest, so the useful work is done in one or
  * two rounds for any shape this file actually sees; the cap exists so a pathological object (5 000
@@ -1068,70 +1108,77 @@ function walkField(
 const PERSISTED_JSON_SHARE_ROUNDS = 4;
 
 /**
- * Walk an object's fields under {@link walkField}'s two-pass rule. Split out of `walk` because pass
- * 2 needs the raw value of every field it may re-walk, which a single in-place loop cannot keep.
+ * Walk an object's fields under the water-filling rule documented on
+ * {@link PERSISTED_JSON_SHARE_ROUNDS}. Split out of `walk` because phase 2 needs the raw value of
+ * every field it may re-walk, which a single in-place loop cannot keep.
  */
 function walkObjectFields(
   entries: [string, unknown][],
   budget: WalkBudget,
   depth: number
 ): Record<string, unknown> {
-  /** Seated fields in insertion order. `raw` is kept only so pass 2 can re-walk a clipped field. */
+  /** Seated fields in insertion order. `raw` is kept because phase 2 walks each field more than
+   *  once — at a larger share each time — and needs the original to walk. */
   const seated: { key: string; raw: unknown; value: unknown; spent: number }[] = [];
-  /** Indices into `seated` of the fields that lost content to their share. */
-  let clipped: number[] = [];
   let elidedMarker: string | undefined;
 
-  // ---- PASS 1: every field against its guaranteed equal share. ----
+  // ---- PHASE 1: SEAT THE KEYS. Charge the keys and NOTHING ELSE, so the pool phase 2 divides is
+  // a number that does not depend on the order the fields arrived in.
   for (let i = 0; i < entries.length; i++) {
     const [rawKey, entryValue] = entries[i]!;
     if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
-    if (budget.left < PERSISTED_JSON_MIN_LEAF) {
+    const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
+    const keyCost = jsonCost(key) + 1 + (seated.length > 0 ? 1 : 0); // "key": plus the comma
+    // EVERY seated field must still be able to get {@link PERSISTED_JSON_MIN_LEAF}, not just this
+    // one: the guarantee has to hold for the fields already seated, whose values are not walked
+    // until phase 2. `entries.length - i` counts THIS field plus the ones behind it; a later
+    // `undefined` value makes that an over-count, which only makes the marker's number too big —
+    // and the marker is a count of fields the reader cannot see either way.
+    if (budget.left - keyCost < PERSISTED_JSON_MIN_LEAF * (seated.length + 1)) {
       elidedMarker = `${entries.length - i} more fields`;
       budget.left -= jsonCost(elidedMarker) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
       break;
     }
-    const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
-    budget.left -= jsonCost(key) + 1 + (i > 0 ? 1 : 0); // "key": plus the separating comma
-    // `entries.length - i` counts THIS field plus the ones behind it; a later `undefined` value
-    // makes that an over-count, which only makes the guaranteed share smaller, never larger — and
-    // pass 2 hands the difference back anyway.
-    const walked = walkField(entryValue, budget, depth + 1, entries.length - i);
-    if (walked.clipped) clipped.push(seated.length);
-    seated.push({ key, raw: entryValue, value: walked.value, spent: walked.spent });
+    budget.left -= keyCost;
+    seated.push({ key, raw: entryValue, value: undefined, spent: 0 });
   }
 
-  // ---- PASS 2: re-offer what pass 1 did not spend, to the fields that wanted it. ----
-  // Each round refunds the clipped fields' spend, splits the whole pool equally between them and
-  // re-walks. The share therefore rises every round (the pool it divides gained the finished
-  // fields' leftovers), so this converges rather than repeating itself.
-  for (let round = 0; round < PERSISTED_JSON_SHARE_ROUNDS && clipped.length > 0; round++) {
-    let pool = budget.left;
-    for (const index of clipped) pool += seated[index]!.spent;
-    const share = Math.floor(pool / clipped.length);
-    // Below the per-leaf minimum there is nothing to redistribute: re-walking would only reproduce
-    // pass 1's result at a share that cannot seat anything.
-    if (share < PERSISTED_JSON_MIN_LEAF) break;
-    const stillClipped: number[] = [];
-    let spent = 0;
-    for (const index of clipped) {
+  // ---- PHASE 2: WATER-FILL THE VALUES. `pool` is what the fields in `pending` have to divide;
+  // a field that finishes under its share is taken out and only its ACTUAL spend leaves the pool.
+  let pool = budget.left;
+  let pending = seated.map((_, index) => index);
+  for (let round = 0; round < PERSISTED_JSON_SHARE_ROUNDS && pending.length > 0; round++) {
+    // Never negative in round 0: phase 1 seats a key only while MIN_LEAF per seated field still
+    // fits. A later round can drive it to 0 for a pathological object, and 0 is a legal share —
+    // the field stores a marker rather than nothing at all.
+    const share = Math.max(0, Math.floor(pool / pending.length));
+    const stillPending: number[] = [];
+    let satisfiedSpend = 0;
+    for (const index of pending) {
       const field = seated[index]!;
       const sub: WalkBudget = { left: share };
       field.value = walk(field.raw, sub, depth + 1);
+      // Charge what was ACTUALLY spent, not the share. `sub.left` may go slightly negative when a
+      // leaf overshoots its own share; the difference keeps the accounting exact either way, which
+      // is what the measured check in `boundPersistedJson` is the backstop for.
       field.spent = share - sub.left;
-      spent += field.spent;
-      if (sub.clipped) stillClipped.push(index);
+      if (sub.clipped === true) stillPending.push(index);
+      else satisfiedSpend += field.spent;
     }
-    budget.left = pool - spent;
-    // Everyone still wants more: an equal split of everything there is IS the end state, and another
-    // round would hand out the same shares again.
-    if (stillClipped.length === clipped.length) break;
-    clipped = stillClipped;
+    // Everyone still wants more: an equal split of everything there is IS the end state, and
+    // another round would hand out the same shares again.
+    if (stillPending.length === pending.length) break;
+    pool -= satisfiedSpend;
+    pending = stillPending;
   }
+  // Whatever is still pending holds its last share's spend; everything else is already out of the
+  // pool. What remains is genuinely unspent and goes back to the parent.
+  for (const index of pending) pool -= seated[index]!.spent;
+  budget.left = pool;
 
   // TELL THE PARENT whether this subtree would use more budget, AFTER redistribution rather than
-  // during pass 1 — a field that pass 2 satisfied is not a reason for the parent to re-walk us.
-  if (clipped.length > 0 || elidedMarker !== undefined) budget.clipped = true;
+  // during phase 1 — a field that phase 2 satisfied is not a reason for the parent to re-walk us.
+  if (pending.length > 0 || elidedMarker !== undefined) budget.clipped = true;
 
   const out: Record<string, unknown> = {};
   for (const field of seated) out[field.key] = field.value;
@@ -1146,16 +1193,75 @@ function jsonCost(value: string | number | boolean): number {
   return JSON.stringify(value).length;
 }
 
-/** Bound `text` so its RENDERED cost fits `left`. Starts at the per-string cap and halves until the
- *  escapes fit, which terminates in at most four steps because the worst escape expansion is 6x. */
+/**
+ * BOUND `text` SO ITS RENDERED COST FITS `left`. {@link boundText} bounds the CHARACTER count;
+ * `left` is measured in RENDERED characters, and the difference is the two quotes
+ * `JSON.stringify` always adds plus whatever the escapes cost. So the widest attempt overshoots by
+ * construction, and the width that fits has to be found by MEASURING rather than by guessing.
+ *
+ * SEARCH FOR THE WIDEST WIDTH THAT FITS; DO NOT HALVE — MEDIUM, M23.0 verification pass 10. This
+ * function used to shrink the width by HALF on every miss, and said of itself that it "halves until
+ * the ESCAPES fit ... the worst escape expansion is 6x". That is not the case it fires on. For ANY
+ * unescaped string — every image ref, digest, revision, URL and branch name a real executor
+ * reports — the first attempt overshoots by exactly TWO characters, the quotes, and halving then
+ * threw away half the budget to recover them. Measured, against a text longer than the budget:
+ *
+ *     left    halving stores/renders    search stores/renders    utilisation
+ *      400          200 / 202                 398 / 400            50.5 %  ->  100.0 %
+ *     1000          500 / 502                 998 / 1000           50.2 %  ->  100.0 %
+ *     2634         1317 / 1319               2632 / 2634           50.1 %  ->  100.0 %
+ *     3900         1950 / 1952               3898 / 3900           50.1 %  ->  100.0 %
+ *
+ * A WELL-WRITTEN COMMENT NAMING A HAZARD IS A SIGNAL TO SWEEP, NOT EVIDENCE IT WAS HANDLED
+ * (CLAUDE.md). The escape hazard the old comment named is real — a backslash doubles, a C0 control
+ * sextuples — and halving was not serving THAT case either, because a power of two is not where the
+ * boundary sits for any particular escape density:
+ *
+ *     backslashes, left 3900   halving 1950 / 3873    search 1963 / 3899
+ *     C0 controls, left 3900   halving  487 / 2779    search  673 / 3895   <- 71 % -> 99.9 %
+ *
+ * IT IS THIS FAMILY OF ROUNDS' OWN DEFECT, not a pre-existing one. While a field could take the
+ * whole budget the loop ran once and returned (`min(4000, 7902)` renders to 4 002 <= 7 902), so the
+ * shrink never fired. It went live the moment {@link walkObjectFields} started handing each field a
+ * SHARE — a share is exactly the regime where the first attempt misses. And nothing recovers it
+ * downstream: the field is still `clipped`, so the water-filling loop re-offers it a larger share
+ * and the same halving throws away half of THAT too.
+ *
+ * WHY A SEARCH AND NOT A CORRECTION TERM. Correcting the width by the measured overshoot collapses
+ * to nothing on a 6x string (the overshoot exceeds the whole width); correcting it by the measured
+ * RATIO converges in two steps but is not monotone, and a 20 000-case differential fuzz found 625
+ * inputs where it stored LESS than halving and one where it ran out of attempts and stored nothing.
+ * A bisection has none of those failure modes: it terminates in at most `log2(4000)` ~ 12 steps, and
+ * every value it returns has been MEASURED to fit — which is the same discipline
+ * `boundPersistedJson` applies to the whole row. The same fuzz over the same 20 000 inputs (ASCII,
+ * backslash, quote, C0-control and astral alphabets, budgets 0…5 000): zero over budget, zero worse
+ * than halving, zero cases where halving found something and the search did not.
+ *
+ * The first call is the FAST PATH and is the only one a string that already fits ever makes.
+ */
 function boundStringToCost(text: string, left: number): string {
-  let width = Math.min(RUNNER_DETAIL_MAX_CHARS, left);
-  for (let attempt = 0; attempt < 5 && width > 0; attempt++) {
-    const candidate = boundText(text, width, Math.floor(width / 2));
-    if (jsonCost(candidate) <= left) return candidate;
-    width = Math.floor(width / 2);
+  const widest = Math.min(RUNNER_DETAIL_MAX_CHARS, left);
+  if (widest <= 0) return "";
+  const whole = boundText(text, widest, Math.floor(widest / 2));
+  if (jsonCost(whole) <= left) return whole;
+
+  // Bisect [0, widest) for the largest width whose RENDERED cost fits. `best` stays "" only when
+  // not even the empty string fits — `left < 2` — which the row-level measurement in
+  // `boundPersistedJson` is the backstop for.
+  let best = "";
+  let lo = 0;
+  let hi = widest - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const candidate = boundText(text, mid, Math.floor(mid / 2));
+    if (jsonCost(candidate) <= left) {
+      best = candidate;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
-  return "";
+  return best;
 }
 
 /**
@@ -1223,9 +1329,9 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
     const out: unknown[] = [];
     for (let i = 0; i < value.length; i++) {
       if (budget.left < PERSISTED_JSON_MIN_LEAF) {
-        // Spend-in-order and truncate the TAIL — see `walkField` for why an array is not
-        // fair-shared. The marker is recognisable (`isPersistedJsonEntriesElision`) so a reader that
-        // was looking for a specific entry can tell a cut from an absence.
+        // Spend-in-order and truncate the TAIL — see {@link PERSISTED_JSON_SHARE_ROUNDS} for why
+        // an array is not fair-shared. The marker is recognisable (`isPersistedJsonEntriesElision`)
+        // so a reader looking for a specific entry can tell a cut from an absence.
         const marker = entriesElisionMarker(value.length - i);
         budget.left -= jsonCost(marker) + 1;
         out.push(marker);
@@ -1239,11 +1345,13 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
   }
 
   budget.left -= 2; // {}
-  // EACH FIELD AGAINST ITS GUARANTEED SHARE, AND THE REMAINDER RE-OFFERED TO WHOEVER WANTED IT.
-  // With a single budget spent in insertion order, the first large field took the row and every
-  // later key became `__scpElided` — so which leaf a gate could read was decided by source-line
-  // order in whatever function composed the value. With a share that is only a CEILING, half the
-  // budget was thrown away instead. See `walkField`.
+  // EVERY FIELD AGAINST AN EQUAL SHARE, AND WHAT THE SATISFIED ONES DO NOT WANT RE-OFFERED TO THE
+  // REST. With a single budget spent in insertion order, the first large field took the row and
+  // every later key became `__scpElided` — so which leaf a gate could read was decided by
+  // source-line order in whatever function composed the value. With a share that was only a
+  // CEILING, half the budget was thrown away instead. With a share computed from the budget
+  // REMAINING mid-loop, how much of each field survived still varied with order. See
+  // {@link PERSISTED_JSON_SHARE_ROUNDS}.
   return walkObjectFields(Object.entries(value as Record<string, unknown>), budget, depth);
 }
 
