@@ -917,6 +917,111 @@ const PERSISTED_JSON_MIN_LEAF = 96;
  *  from a suspiciously short value. */
 export const PERSISTED_JSON_ELIDED_KEY = "__scpElided";
 
+/** The entry an over-budget ARRAY carries in place of its dropped tail. One function, so the marker
+ *  and its recogniser below cannot drift apart. */
+function entriesElisionMarker(dropped: number): string {
+  return `[elided: ${dropped} more entries]`;
+}
+
+/**
+ * DOES THIS ARRAY ENTRY MEAN "THE LIST WAS CUT HERE"? — the difference between "the executor never
+ * deployed that image" and "we stopped writing the list down". Those are different facts and
+ * reporting one as the other is the provenance-label defect this repository has already shipped once
+ * (a Decision whose label named the branch that matched rather than what was true; charter
+ * principle 6).
+ *
+ * A reader that pulls a SPECIFIC entry out of a bounded array needs this, because after a cut a MISS
+ * is not evidence of absence. `internal-release-version.ts` is the live case: it scans
+ * `observed_state.images` for the ref whose repository equals a dependency line's coordinate, and
+ * without this a miss caused by the bound is reported as `no_matching_image_ref` — which blames the
+ * executor for something this file did.
+ *
+ * A PLUGIN CAN SPOOF IT by returning this exact string as an entry, and that is deliberately not
+ * defended against. The consequence of a false positive is a reader refusing to determine something
+ * it could have determined — the safe direction. The reverse, a real cut going unrecognised, is the
+ * one that produces a confident wrong answer.
+ */
+export function isPersistedJsonEntriesElision(value: string): boolean {
+  return /^\[elided: \d+ more entries\]$/.test(value);
+}
+
+/**
+ * WHAT ONE FIELD OF AN OBJECT MAY SPEND — MEDIUM, M23.0 verification pass 8, and the reason this is
+ * a SHARE rather than "whatever is left".
+ *
+ * WHAT WENT WRONG, MEASURED. The walk used to spend one budget in INSERTION ORDER: each field took
+ * as much as it wanted and, once the remainder fell under {@link PERSISTED_JSON_MIN_LEAF}, every
+ * field still unwalked was replaced wholesale by {@link PERSISTED_JSON_ELIDED_KEY}. `observedStateFrom`
+ * builds `{revision, images, rollout}` in that order, so `rollout` was always the first thing
+ * dropped — and `rollout.weight` is the leaf ADR-0028's `minWeight` gate reads. End to end through
+ * the fake-executor seam against real Postgres, 80 image refs of ordinary shape
+ * (`ghcr.io/acme/platform/service-N@sha256:<64>`) plus a canary at weight 60:
+ *
+ *   before  images, rollout, revision, observedAt   weight 60     min_weight         satisfied TRUE
+ *   after   images, revision, observedAt, __scpElided  undefined  weight_unreadable  satisfied FALSE
+ *
+ * Threshold: 73 refs. Not hostile input — `status.summary.images` on an Argo CD Application is the
+ * uncapped image list across every managed resource, and an umbrella app with 73+ images containing
+ * a Rollout is ordinary. A long `revision` does NOT reach it (each string is separately capped at
+ * {@link RUNNER_DETAIL_MAX_CHARS}), so an array is the only route in, which is why READING the code
+ * did not surface it.
+ *
+ * THE RULE. Field `i` of an object with `n` still-unwalked fields is walked against a sub-budget of
+ * `max(MIN_LEAF, floor(left / n))`, and whatever it does not spend goes straight back to the pool
+ * for the fields after it. A small field therefore costs a large one nothing, and a large one
+ * truncates INSIDE ITS OWN SHARE instead of taking the row.
+ *
+ * THE PROPERTY, STATED SO A REVIEWER CAN FALSIFY IT: no object key is elided BECAUSE AN EARLIER
+ * SIBLING WAS LARGE. A key can still be elided when an object has more keys than the budget can
+ * seat at MIN_LEAF each — 8 000 chars will not hold 200 fields however it is divided — but that is a
+ * different fact, it does not depend on field order, and it is visible in the row as `__scpElided`.
+ *
+ * THE TWO ALTERNATIVES AND HOW THEY FAIL. (a) ORDER `rollout` BEFORE `images` in `observedStateFrom`:
+ * makes source-line order in an unrelated function a load-bearing contract, which the next person
+ * reorders innocently, and it fixes only the one pair we happen to know about today. (b) RESERVE A
+ * SHARE FOR NAMED CRITICAL LEAVES: explicit, but the list of names is exactly the per-field census
+ * that finding M2 replaced this walk with — `ExecutionStatus.observed` is documented as "optional
+ * and additive", so the list goes stale on the day an executor contributes the next signal a gate
+ * reads. A share is a property of the WALK: it protects a field nobody has written yet.
+ *
+ * WHAT IT COSTS, STATED. A very large array now keeps FEWER entries than it used to, because it no
+ * longer gets its siblings' budget: for the 80-ref reading above, `images` keeps roughly half what
+ * a single-budget walk kept. That is the deliberate trade — an array that was already being
+ * truncated is truncated slightly harder, and readers can now tell a cut from an absence
+ * ({@link isPersistedJsonEntriesElision}), rather than a whole sibling key vanishing silently.
+ *
+ * ARRAYS ARE NOT FAIR-SHARED, and that is the point rather than an omission. An object's keys are
+ * different facts for different readers; an array's entries are instances of ONE kind, and cutting
+ * the tail off a list is an honest degradation while cutting each ELEMENT in half is corruption —
+ * a half-written `ghcr.io/acme/api@sha256:…` still parses, into a repository and a digest that name
+ * bytes nobody deployed. So arrays keep spending in order and truncating the tail.
+ */
+function walkShare(
+  value: unknown,
+  budget: { left: number },
+  depth: number,
+  unwalkedSiblings: number
+): unknown {
+  // The last (or only) field gets everything that is left — nothing is waiting behind it, so a
+  // share here would throw budget away rather than protect anyone.
+  if (unwalkedSiblings <= 1) return walk(value, budget, depth);
+  // NO {@link PERSISTED_JSON_MIN_LEAF} FLOOR ON THE SHARE, deliberately. A floor looks like the
+  // kind thing to do — a sliver of budget renders a nested object as nothing but a marker — and it
+  // re-creates the exact defect this function exists to remove: once `left / n` falls under the
+  // floor, the early fields take a full MIN_LEAF each and the late ones are elided, which is
+  // insertion-order starvation again, just at a tighter budget. An equal sliver is order-independent
+  // at every budget, and a NUMBER (`rollout.weight`, `rollout.step`) is never truncated by the walk
+  // at all, so the leaves a gate reads survive a share far too small to hold a string.
+  const share = Math.max(0, Math.floor(budget.left / unwalkedSiblings));
+  const sub = { left: share };
+  const bounded = walk(value, sub, depth);
+  // Charge what was ACTUALLY spent, not the share. `sub.left` may go slightly negative when a leaf
+  // overshoots its own share; subtracting the difference keeps the parent's accounting exact either
+  // way, which is what the measured check in `boundPersistedJson` is the backstop for.
+  budget.left -= share - sub.left;
+  return bounded;
+}
+
 /** Exactly what `JSON.stringify` will spend on this leaf, escapes included — the accounting has to
  *  be in RENDERED characters, because that is the unit the column is measured in. A string of
  *  backslashes doubles; a C0 control sextuples. */
@@ -984,7 +1089,10 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
     const out: unknown[] = [];
     for (let i = 0; i < value.length; i++) {
       if (budget.left < PERSISTED_JSON_MIN_LEAF) {
-        const marker = `[elided: ${value.length - i} more entries]`;
+        // Spend-in-order and truncate the TAIL — see `walkShare` for why an array is not
+        // fair-shared. The marker is recognisable (`isPersistedJsonEntriesElision`) so a reader that
+        // was looking for a specific entry can tell a cut from an absence.
+        const marker = entriesElisionMarker(value.length - i);
         budget.left -= jsonCost(marker) + 1;
         out.push(marker);
         break;
@@ -1009,7 +1117,13 @@ function walk(value: unknown, budget: { left: number }, depth: number): unknown 
     }
     const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
     budget.left -= jsonCost(key) + 1 + (i > 0 ? 1 : 0); // "key": plus the separating comma
-    out[key] = walk(entryValue, budget, depth + 1);
+    // EACH FIELD AGAINST ITS SHARE, NOT AGAINST WHAT IS LEFT. This is the whole fix: with a single
+    // budget spent in insertion order, the first large field takes the row and every later key
+    // becomes `__scpElided` — so which leaf a gate can read was decided by source-line order in
+    // whatever function composed the value. `entries.length - i` counts THIS field plus the ones
+    // behind it; a later `undefined` value makes that an over-count, which only makes the share
+    // smaller, never larger. See `walkShare`.
+    out[key] = walkShare(entryValue, budget, depth + 1, entries.length - i);
   }
   return out;
 }

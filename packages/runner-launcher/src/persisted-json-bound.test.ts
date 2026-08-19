@@ -3,7 +3,8 @@ import {
   PERSISTED_JSON_ELIDED_KEY,
   PERSISTED_JSON_MAX_CHARS,
   PERSISTED_JSON_MAX_DEPTH,
-  boundPersistedJson
+  boundPersistedJson,
+  isPersistedJsonEntriesElision
 } from "./index.js";
 
 /**
@@ -188,6 +189,177 @@ describe("MEDIUM: boundPersistedJson bounds a whole plugin-supplied value, not a
       );
       expect(rendered!.length, `budget ${max}`).toBeLessThanOrEqual(max);
       expect(isWellFormed(rendered!)).toBe(true);
+    }
+  });
+});
+
+/**
+ * MEDIUM (M23.0 verification pass 8) — THE BUDGET USED TO BE SPENT IN INSERTION ORDER, SO THE FIELD
+ * A GATE READS WAS DECIDED BY SOURCE-LINE ORDER IN AN UNRELATED FUNCTION.
+ *
+ * `observedStateFrom` composes `{revision, images, rollout}` in that order. The walk charged each
+ * field as it went and, once the remainder fell under the per-leaf minimum, replaced EVERY
+ * still-unwalked field with `__scpElided` — so `rollout`, always last, was always the first thing
+ * dropped. Measured end to end against real Postgres through the ordinary fake-executor seam, with
+ * 80 image refs of the shape an Argo CD Application actually reports:
+ *
+ *   before  images, rollout, revision, observedAt   weight 60     min_weight         satisfied TRUE
+ *   after   images, revision, observedAt, __scpElided  undefined  weight_unreadable  satisfied FALSE
+ *
+ * `rollout.weight` is the leaf ADR-0028's `minWeight` gate reads (`stage-dependency-hold.ts`), and
+ * losing it degrades the dependency to the universal `succeeded` test — fail-CLOSED, so nothing
+ * wrong ships, but a correct configuration holds indefinitely and the recorded cause (`no_weight`)
+ * blames the executor for what the bound did.
+ *
+ * THE ARMS BELOW ARE ORDER-INDEPENDENT ON PURPOSE. A test that only pinned `{revision, images,
+ * rollout}` would be satisfied by the alternative fix — reordering the composition — which makes
+ * source-line order a load-bearing contract that the next person reorders innocently. The property
+ * is about the WALK: no key is lost because a SIBLING was large, whatever order they arrive in.
+ */
+describe("MEDIUM: one large field may not spend a sibling's budget", () => {
+  /** The shape an Argo CD Application reports: `status.summary.images` is the image list across
+   *  every managed resource, uncapped, and 73 of these already exceed the whole-value budget. This
+   *  is not hostile input — it is an umbrella app. */
+  const imageRefs = (n: number) =>
+    Array.from(
+      { length: n },
+      (_, i) => `ghcr.io/acme/platform/service-${i}@sha256:${"a".repeat(64)}`
+    );
+  const ROLLOUT = { phase: "Progressing", step: 3, weight: 60, message: "canary at 60%" };
+  const REVISION = "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f70982";
+
+  type Reading = { revision?: string; images?: string[]; rollout?: typeof ROLLOUT };
+  const bound = (v: Reading) => boundPersistedJson(v) as Reading & Record<string, unknown>;
+
+  it("NON-VACUITY: 80 ordinary image refs really do overflow the budget on their own", () => {
+    // Without this the arms below are satisfiable by a fixture the bound never touched — the mode
+    // this repository has shipped before (a green test whose fixture silently never applied).
+    expect(JSON.stringify({ images: imageRefs(80) }).length).toBeGreaterThan(
+      PERSISTED_JSON_MAX_CHARS
+    );
+    // And the arms are not sitting on the boundary: the measured threshold at which the old
+    // insertion-order walk started dropping `rollout` was 73 refs — the point where `images` alone
+    // has spent effectively the whole budget, leaving the field walked after it nothing. 7 948 raw
+    // characters, measured; the arms below use 80.
+    expect(
+      JSON.stringify({ revision: REVISION, images: imageRefs(73), rollout: ROLLOUT }).length
+    ).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS - 100);
+  });
+
+  it("THE REPORTED CASE: 80 image refs beside a canary rollout leave `rollout.weight` readable", () => {
+    const out = bound({ revision: REVISION, images: imageRefs(80), rollout: ROLLOUT });
+    // The leaf the gate reads. `weightUnreadableCause` requires a FINITE NUMBER here; anything else
+    // is `no_weight`, which degrades the dependency and blames the executor.
+    expect(out.rollout?.weight).toBe(60);
+    expect(out.rollout?.step).toBe(3);
+    // And the whole key is there, not a marker standing in for it.
+    expect(out[PERSISTED_JSON_ELIDED_KEY]).toBeUndefined();
+    expect(out.revision).toBe(REVISION);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+  });
+
+  it("AT EVERY FIELD ORDER — the fix is in the walk, not in how the value happens to be composed", () => {
+    const source: Record<string, unknown> = {
+      revision: REVISION,
+      images: imageRefs(80),
+      rollout: ROLLOUT
+    };
+    const orders = [
+      ["revision", "images", "rollout"],
+      ["revision", "rollout", "images"],
+      ["images", "revision", "rollout"],
+      ["images", "rollout", "revision"],
+      ["rollout", "revision", "images"],
+      ["rollout", "images", "revision"]
+    ];
+    for (const order of orders) {
+      const value: Record<string, unknown> = {};
+      for (const key of order) value[key] = source[key];
+      const out = boundPersistedJson(value) as Reading & Record<string, unknown>;
+      expect(out.rollout?.weight, `order ${order.join(",")}: the gate's leaf was elided`).toBe(60);
+      expect(out.revision, `order ${order.join(",")}: revision was elided`).toBe(REVISION);
+      expect(out.images?.length, `order ${order.join(",")}: images vanished entirely`).toBeGreaterThan(
+        1
+      );
+      expect(
+        out[PERSISTED_JSON_ELIDED_KEY],
+        `order ${order.join(",")}: a whole field was dropped for a sibling`
+      ).toBeUndefined();
+      expect(JSON.stringify(out).length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+    }
+  });
+
+  it("THE SAME PROPERTY ON `executor_ref`, where losing a leaf strands the target for good", () => {
+    // `markWaveTargetTriggered` bounds `trigger()`'s whole `ExternalRunRef`, and reconcile polls
+    // with it verbatim — `client.status(target.executorRef)`. Every executor plugin reads
+    // `ref.externalId` out of it. A chatty plugin that puts a big field FIRST used to take that
+    // leaf with it, and a target whose ref can no longer be interpreted is polled as an unknown run
+    // forever, on every tick, with nothing in the row to say why.
+    const ref = {
+      logs: Array.from({ length: 500 }, (_, i) => `worker ${i} said something at length. `),
+      externalId: "run-42",
+      url: "https://argo.internal/applications/acme/api"
+    };
+    const out = boundPersistedJson(ref) as Record<string, unknown>;
+    expect(out.externalId).toBe("run-42");
+    expect(out.url).toBe("https://argo.internal/applications/acme/api");
+    expect(out[PERSISTED_JSON_ELIDED_KEY]).toBeUndefined();
+  });
+
+  it("a field that is SMALL costs a large sibling nothing — the share is a cap, not an allocation", () => {
+    // The counter-arm to fair sharing: if unspent share did not flow forward, this would keep a
+    // third of what a single-budget walk kept, and the bound would have become a filter.
+    const withSiblings = boundPersistedJson({
+      revision: "v1",
+      rollout: ROLLOUT,
+      images: imageRefs(400)
+    }) as Reading;
+    const alone = boundPersistedJson({ images: imageRefs(400) }) as Reading;
+    expect(withSiblings.images!.length).toBeGreaterThan(alone.images!.length * 0.8);
+  });
+
+  it("MORE FIELDS THAN THE BUDGET CAN SEAT still elides — and that is a different fact", () => {
+    // The honest limit of the property. Fair sharing does not create budget: 8 000 characters will
+    // not hold 5 000 fields however it is divided. What it guarantees is that a key is never lost
+    // BECAUSE A SIBLING WAS LARGE — and when one is lost for the other reason, `__scpElided` says so
+    // in the row rather than leaving a reader to infer it from a suspiciously short value.
+    const many = Object.fromEntries(
+      Array.from({ length: 5_000 }, (_, i) => [`k${i}`, "v".repeat(50)])
+    );
+    const out = boundPersistedJson(many) as Record<string, unknown>;
+    expect(typeof out[PERSISTED_JSON_ELIDED_KEY]).toBe("string");
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+  });
+});
+
+/**
+ * A CUT LIST AND A COMPLETE ONE MUST BE TELLABLE APART. `internal-release-version.ts` scans
+ * `observed_state.images` for the ref whose repository is a dependency line's coordinate; after a
+ * cut, a miss is not evidence of absence, and reporting it as `no_matching_image_ref` blames the
+ * executor for what this file did (charter principle 6).
+ */
+describe("MEDIUM: the array elision marker is recognisable by the readers that scan the array", () => {
+  it("what the walk emits is what the recogniser matches — one fact, pinned from both ends", () => {
+    const out = boundPersistedJson({
+      images: Array.from({ length: 400 }, (_, i) => `ghcr.io/acme/api-${i}:1.2.3`)
+    }) as { images: string[] };
+    const last = out.images[out.images.length - 1]!;
+    // If the marker's wording is edited without the recogniser, THIS is what goes red — rather than
+    // a reader silently deciding a truncated list was complete.
+    expect(isPersistedJsonEntriesElision(last)).toBe(true);
+    expect(out.images.slice(0, -1).some(isPersistedJsonEntriesElision)).toBe(false);
+  });
+
+  it("a real image ref is never mistaken for a cut", () => {
+    for (const ref of [
+      "ghcr.io/acme/api:1.2.3",
+      `ghcr.io/acme/api@sha256:${"a".repeat(64)}`,
+      "registry.internal:5000/acme/api:1.2.3",
+      "[elided: nesting deeper than the persisted-JSON depth limit]",
+      "",
+      "[elided: many more entries]"
+    ]) {
+      expect(isPersistedJsonEntriesElision(ref), ref).toBe(false);
     }
   });
 });
