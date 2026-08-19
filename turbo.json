@@ -2,8 +2,11 @@
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
-    "openapi": { "dependsOn": ["@scp/server#build"], "outputs": ["tools/openapi/openapi.v1.json"] },
-    "generate": { "dependsOn": ["^openapi"], "outputs": ["src/generated/**"] },
+    "openapi:emit": {
+      "dependsOn": ["@scp/server#build"],
+      "outputs": ["../../tools/openapi/openapi.v1.json"]
+    },
+    "generate": { "dependsOn": ["^openapi:emit"], "outputs": ["src/generated/**"] },
     "//#lint": {},
     "typecheck": { "dependsOn": ["^build"] },
     "test": { "dependsOn": ["build"] },
