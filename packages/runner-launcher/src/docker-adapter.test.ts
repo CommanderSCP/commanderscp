@@ -1856,13 +1856,10 @@ function dockerOrderingSubstrate(): LaunchOrderingSubstrate {
     hold: (kind, count = 1) => {
       holds[kind] += count;
     },
-    release: (kind, failure, nth = 0) => {
-      const matching = heldOpen.flatMap((held, index) => (held.kind === kind ? [index] : []));
-      const index = matching[nth];
-      if (index === undefined) {
-        throw new Error(
-          `docker-adapter.test: no held '${kind}' step at position ${nth} to release (${matching.length} held)`
-        );
+    release: (kind, failure) => {
+      const index = heldOpen.findIndex((held) => held.kind === kind);
+      if (index === -1) {
+        throw new Error(`docker-adapter.test: no held '${kind}' step to release`);
       }
       const [held] = heldOpen.splice(index, 1);
       held!.deliver(failure);

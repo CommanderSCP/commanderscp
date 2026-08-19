@@ -76,13 +76,20 @@ export interface LaunchOrderingSubstrate {
   /** Hold the next `count` occurrences of `kind`: issued, but not settled until released. */
   hold(kind: RunnerStepKind, count?: number): void;
   /**
-   * Settle a held occurrence of `kind` — successfully, or with `failure`. `nth` selects among the
-   * occurrences CURRENTLY HELD, oldest first, and defaults to the oldest, which is the only thing a
-   * single run can mean. Releasing OUT OF ORDER is what the concurrency case needs: two runs' steps
-   * do not settle in issue order in production, and an adapter that only ever saw them settle in
-   * issue order can share one identity between runs and still look correct.
+   * Settle the OLDEST still-held occurrence of `kind` — successfully, or with `failure`.
+   *
+   * CORRECTED CLAIM (this used to take a third `nth` argument selecting AMONG held occurrences, on
+   * the theory that releasing out of order was what the concurrency case below needed — measured
+   * false. Every identity this suite checks is allocated at ISSUE time, not at settle time: the
+   * Docker substrate's `stepIdentity` reads the id off `createdIds`, populated the instant `create`
+   * is issued (see docker-adapter.test.ts, "ALLOCATED AT ISSUE TIME, not at delivery"), so no order
+   * of *releasing* two held creates can move which identity either run ends up with. Measured
+   * directly: forcing every release to the oldest-held occurrence (removing `nth` entirely) still
+   * catches the containerId-hoist mutation the concurrency case exists for, at the same one case.
+   * The mechanism was never load-bearing; removed rather than kept as an unexercised obligation a
+   * future adapter's `release` would have had to implement with nothing checking it did.
    */
-  release(kind: RunnerStepKind, failure?: Error, nth?: number): void;
+  release(kind: RunnerStepKind, failure?: Error): void;
   /**
    * Optional: flush whatever this substrate's deliveries ride on, ONE round. The default drains
    * three macrotask turns; the suite calls it repeatedly until no further step is issued, so an
@@ -154,7 +161,7 @@ const FULL_SEQUENCE: RunnerStepKind[] = [
  */
 interface Case {
   hold(kind: RunnerStepKind, count?: number): void;
-  release(kind: RunnerStepKind, failure?: Error, nth?: number): void;
+  release(kind: RunnerStepKind, failure?: Error): void;
   run(copyOut: RunnerCopyOut | undefined, copyIn?: RunnerCopyIn[]): Tracked<{ succeeded: boolean }>;
   issued(): RunnerStepKind[];
   /** The identity each issued step addressed, aligned with {@link Case.issued}. */
@@ -186,9 +193,9 @@ function newCase(substrate: LaunchOrderingSubstrate): Case {
       outstanding.set(kind, (outstanding.get(kind) ?? 0) + count);
       substrate.hold(kind, count);
     },
-    release(kind, failure, nth) {
+    release(kind, failure) {
       outstanding.set(kind, Math.max(0, (outstanding.get(kind) ?? 0) - 1));
-      substrate.release(kind, failure, nth);
+      substrate.release(kind, failure);
     },
     run(copyOut, copyIn = [COPY_IN_A, COPY_IN_B]) {
       const tracked = track(substrate.launcher.run({ ...substrate.baseSpec(), copyIn, copyOut }));
@@ -450,9 +457,8 @@ export function runLaunchOrderingConformanceSuite(
       // invitation to park per-run state where it is convenient.
       const c = open();
       c.hold("create", 2);
-      // The first copy-in of EACH run. Held so that one run's second copy-in is issued at the moment
-      // the OTHER run's create was the last thing to settle — where a shared identity is wrong and
-      // an own identity is right.
+      // The first copy-in of EACH run. Held so both runs are genuinely interleaved through the
+      // copy-in step too, not just at `create`.
       c.hold("copy-in", 2);
 
       const first = c.run(OUT_SWALLOW);
@@ -466,18 +472,18 @@ export function runLaunchOrderingConformanceSuite(
         "the two runs did not overlap — the case cannot see a shared identity if only one run exists at a time"
       ).toStrictEqual(["create", "create"]);
 
-      // OUT OF ORDER ON PURPOSE: the SECOND run's container is created first.
-      c.release("create", undefined, 1);
+      // `release` always takes the oldest held occurrence of `kind` — see `LaunchOrderingSubstrate`'s
+      // own doc for why an out-of-order release would add nothing here: every identity this suite
+      // checks is fixed at ISSUE time, not at settle time, so no release order can move it.
+      c.release("create");
       await c.quiesce();
-      c.release("create", undefined, 0);
+      c.release("create");
       await c.quiesce();
       expect(c.issued()).toStrictEqual(["create", "create", "copy-in", "copy-in"]);
 
-      // Release the copy-in belonging to the run whose `create` settled FIRST. Its next copy-in is
-      // issued now, while the other run's `create` is the most recent one to have resolved.
-      c.release("copy-in", undefined, 0);
+      c.release("copy-in");
       await c.quiesce();
-      c.release("copy-in", undefined, 0);
+      c.release("copy-in");
 
       await Promise.all([first.promise, second.promise]);
 
