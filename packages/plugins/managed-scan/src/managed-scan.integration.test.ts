@@ -110,7 +110,9 @@ describe.runIf(await dockerAvailable())(
     beforeAll(async () => {
       const resolved = resolveSkopeo();
       if (resolved.source === "missing") {
-        throw new Error("managed-scan integration test: skopeo binary not found (vendored or PATH)");
+        throw new Error(
+          "managed-scan integration test: skopeo binary not found (vendored or PATH)"
+        );
       }
       const skopeoBin = resolved.bin;
 
@@ -192,7 +194,9 @@ describe.runIf(await dockerAvailable())(
         // NOT a dedup proof — the opposite: the retry actually tries to invoke docker again (no
         // cache short-circuits it), so a broken dockerBinary on the retry surfaces as a REAL
         // failure, overwriting the first run's cached success under the same externalId.
-        const brokenCtx = buildCtx({ dockerBinary: "/nonexistent/docker-binary-proves-a-real-retry" });
+        const brokenCtx = buildCtx({
+          dockerBinary: "/nonexistent/docker-binary-proves-a-real-retry"
+        });
         const second = await plugin.trigger(brokenCtx, {
           kind: "custom",
           targetRef: "subject",
@@ -213,7 +217,11 @@ describe.runIf(await dockerAvailable())(
       const ref = await plugin.trigger(brokenDockerCtx, {
         kind: "custom",
         targetRef: "subject",
-        parameters: { method: "not-a-real-method", inputDir, outputDir: join(scratchRoot, "unused") },
+        parameters: {
+          method: "not-a-real-method",
+          inputDir,
+          outputDir: join(scratchRoot, "unused")
+        },
         idempotencyKey: "unsupported-method"
       });
       const status = await plugin.status(brokenDockerCtx, ref);

@@ -39,7 +39,9 @@ function fakeExecutorConfigFields(): string[] {
   const source = readStripped(INDEX_TS);
   const start = source.indexOf("interface FakeExecutorConfig {");
   if (start === -1) {
-    throw new Error("fakeExecutorConfigFields: `interface FakeExecutorConfig {` not found in index.ts");
+    throw new Error(
+      "fakeExecutorConfigFields: `interface FakeExecutorConfig {` not found in index.ts"
+    );
   }
   const end = source.indexOf("\n}", start);
   if (end === -1) {
@@ -71,7 +73,9 @@ describe("fake-executor: configSchema is not a step behind FakeExecutorConfig", 
   });
 
   it("EVERY tenant-facing FakeExecutorConfig field has a configSchema.properties entry", () => {
-    const interfaceFields = fakeExecutorConfigFields().filter((f) => !SERVER_GOVERNED_FIELDS.has(f));
+    const interfaceFields = fakeExecutorConfigFields().filter(
+      (f) => !SERVER_GOVERNED_FIELDS.has(f)
+    );
     const schema = manifest.configSchema as { properties?: Record<string, unknown> };
     const schemaKeys = new Set(Object.keys(schema.properties ?? {}));
     const missing = interfaceFields.filter((f) => !schemaKeys.has(f));
