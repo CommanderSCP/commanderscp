@@ -699,33 +699,57 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
   });
 
   /**
-   * PROPERTY (1), STRENGTHENED AND THEN HONESTLY QUALIFIED (M23.0 verification pass 10).
+   * PROPERTY (1), AS PASS 10 STATED IT AND AS PASS 12 MEASURED IT.
    *
-   * Charging the keys before any value is walked means the seating decision reads KEY COSTS ONLY.
-   * So a key is now never elided because a sibling's VALUE was large, at any budget — the first arm.
-   * What it does still depend on is how long the KEYS are, because the seated set is a prefix in
-   * insertion order: the second arm pins that residue rather than leaving it to be discovered.
+   * Pass 10 charged the keys before any value is walked, so the seating decision read KEY COSTS
+   * ONLY, and it pinned exactly that here: "a value's size changed which keys were seated" was the
+   * failure message. The property was true. What it did not ask is what a KEY COSTS TO SEAT — a
+   * flat {@link PERSISTED_JSON_MIN_LEAF}, whatever was behind it — and that is what the first arm
+   * measures now: 200 keys whose every value is `"v"` hold 4 091 characters and were seated 71 at
+   * a budget of 8 000, the other 129 replaced by a marker. The seat is now priced at what the
+   * field needs, so all 200 seat and the value comes back byte-identical.
+   *
+   * WHAT THAT COSTS IN STRICTNESS, STATED RATHER THAN GLOSSED. The rule now reads values, so pass
+   * 10's absolute form is gone: a sibling large enough to need the whole floor CAN be the reason a
+   * later key is elided. It can only ever go one way — `admissionCost <= PERSISTED_JSON_MIN_LEAF`
+   * by construction — so the seated set is a SUPERSET of the flat rule's, which is the third arm.
    */
-  it("KEY LENGTH, NOT VALUE SIZE, decides which keys are seated", () => {
+  it("WHAT A FIELD NEEDS, NOT A FLAT 96, decides which keys are seated", () => {
     const keys = Array.from({ length: 200 }, (_, i) => `key-number-${i}`);
+    const tinyValued = Object.fromEntries(keys.map((k) => [k, "v"]));
     const seatedKeys = (values: string) =>
       Object.keys(boundPersistedJson(Object.fromEntries(keys.map((k) => [k, values]))) as object);
     const withTinyValues = seatedKeys("v");
     const withHugeValues = seatedKeys("v".repeat(9_000));
-    // NON-VACUITY: 200 keys cannot be seated at 96 characters each, so this IS the elision regime.
-    expect(withTinyValues).toContain(PERSISTED_JSON_ELIDED_KEY);
-    expect(withTinyValues.length).toBeLessThan(200);
-    // The property: growing every value by four orders of magnitude moves nothing.
-    expect(withHugeValues, "a value's size changed which keys were seated").toEqual(withTinyValues);
 
-    // THE RESIDUE, STATED. The seated set is a PREFIX, so an object whose keys differ wildly in
-    // LENGTH does still seat different keys at different orders. Documented on the allocator as the
-    // one carve-out from property (2); pinned here so "the one carve-out" stays exactly one.
+    // THE DEFECT: 200 keys of one character each are 4 091 rendered characters against a budget of
+    // 8 000, and 129 of them used to be a marker because each seat cost 96 whatever it held.
+    expect(JSON.stringify(tinyValued)!.length, "the fixture stopped being small").toBe(4_091);
+    expect(withTinyValues, "a field of one character was charged 96 to sit down").not.toContain(
+      PERSISTED_JSON_ELIDED_KEY
+    );
+    expect(withTinyValues.length).toBe(200);
+    expect(JSON.stringify(boundPersistedJson(tinyValued))).toBe(JSON.stringify(tinyValued));
+
+    // NON-VACUITY, AND THE UNCHANGED HALF: values too big to price still reserve the whole floor,
+    // so 200 of THEM is still the elision regime and still seats the flat rule's 71.
+    expect(withHugeValues).toContain(PERSISTED_JSON_ELIDED_KEY);
+    expect(withHugeValues.length).toBe(71); // 70 fields plus the marker
+
+    // ONE-WAY: every key the large-valued object seated is seated by the small-valued one too.
+    // `admissionCost` is capped at PERSISTED_JSON_MIN_LEAF, so pricing a seat can only add keys.
+    const huge = new Set(withHugeValues);
+    huge.delete(PERSISTED_JSON_ELIDED_KEY);
+    expect([...huge].every((key) => withTinyValues.includes(key))).toBe(true);
+
+    // THE RESIDUE, STATED. The seated set is a PREFIX, so an object whose fields differ wildly in
+    // what they need does still seat different keys at different orders. Documented on the
+    // allocator as the one carve-out from property (2); pinned here so it stays exactly one.
     const longKey = "L".repeat(5_000);
-    const longFirst = boundPersistedJson({ [longKey]: "v", s1: "v", s2: "v" }, 300) as object;
-    const longLast = boundPersistedJson({ s1: "v", s2: "v", [longKey]: "v" }, 300) as object;
+    const longFirst = boundPersistedJson({ [longKey]: "v", s1: "v", s2: "v" }, 200) as object;
+    const longLast = boundPersistedJson({ s1: "v", s2: "v", [longKey]: "v" }, 200) as object;
     expect(Object.keys(longFirst)).toEqual([PERSISTED_JSON_ELIDED_KEY]);
-    expect(Object.keys(longLast)).toEqual(["s1", PERSISTED_JSON_ELIDED_KEY]);
+    expect(Object.keys(longLast)).toEqual(["s1", "s2", PERSISTED_JSON_ELIDED_KEY]);
   });
 
   /**
@@ -746,9 +770,11 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
       Array.from({ length: 50 }, (_, i) => [`${"k".repeat(5_000)}${i}`, "v"])
     );
     const longRow = JSON.stringify(boundPersistedJson(longKeys))!.length;
-    // Measured 4 554 of 8 000 = 56.9 %. The floor is set just under it: this arm fails if a future
-    // edit makes the elision regime WORSE, and its magnitude is stated here rather than argued.
-    expect(longRow / PERSISTED_JSON_MAX_CHARS).toBeGreaterThan(0.55);
+    // Measured 6 651 of 8 000 = 83.1 %, up from pass 10's 4 554 (56.9 %) — the difference is the
+    // flat 96 a one-character value used to reserve, which pass 12 prices at what it needs. The
+    // floor is set just under the CURRENT figure: this arm fails if a future edit makes the elision
+    // regime worse, and its magnitude is stated here rather than argued.
+    expect(longRow / PERSISTED_JSON_MAX_CHARS).toBeGreaterThan(0.82);
     expect(longRow).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
 
     // AND WHAT THE RESIDUE BUYS: every seated field carries its whole value, rather than 792 keys
@@ -758,7 +784,7 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
     );
     const out = boundPersistedJson(manyKeys) as Record<string, unknown>;
     const fields = Object.keys(out).filter((key) => key !== PERSISTED_JSON_ELIDED_KEY);
-    expect(fields.length).toBeGreaterThan(50);
+    expect(fields.length).toBeGreaterThan(50); // 76 at pass 10, 133 once the seat is priced
     expect(
       fields.filter((key) => out[key] === "").length,
       "a seated field stored the empty string, which reads as an observation rather than a cut"
@@ -1036,4 +1062,226 @@ describe("MEDIUM: what the walk charges is what it renders — every leaf, and e
       expect(nonTrivial, "the generated corpus is trivial").toBeGreaterThan(300);
     }
   );
+});
+/**
+ * HIGH (M23.0 verification pass 12) — WHAT A REFUSAL HOLDS BACK MUST BE WHAT THE CONTENT COSTS.
+ *
+ * Two places decided whether to keep the next thing, and both reserved a flat
+ * `PERSISTED_JSON_MIN_LEAF` (96) for it without asking what it was worth: `walkObjectFields` phase
+ * 1 seating a key, and the array loop admitting an element. A third — pass 11's tail reserve — took
+ * the marker's price out of every list, including the ones that demonstrably never need a marker.
+ *
+ * NONE OF IT IS VISIBLE IN THE ROW'S LENGTH, which is why eleven passes did not find it: the row
+ * comes out THOUSANDS OF CHARACTERS SHORT of the budget while content is being thrown away, and in
+ * the worst cases LARGER than the value it damaged, because `__scpElided: "1 more fields"` is 30
+ * characters and `"version":"v1.4.2"` is 18. Measured before the fix, at the production budget:
+ *
+ *   {resources: {30 x {status, health, version}}}   input 2 495 -> stored 2 825, LOSSY
+ *   the same at 80 resources                        input 6 645 -> stored 3 684, LOSSY (54 % of
+ *                                                   the column abandoned)
+ *   {svc-i: {c-k: {ready, restarts, image}}} 8 x 4  input 1 553 -> stored 2 097, LOSSY
+ *   {a: ["a"]}                                      eleven characters, cut at every budget to 133
+ *
+ * The unit each arm asserts in is therefore RETENTION, never length.
+ */
+describe("HIGH: a refusal must be priced at what the content costs, not at a flat 96", () => {
+  const resources = (n: number) =>
+    Object.fromEntries(
+      Array.from({ length: n }, (_, i) => [
+        `apps/Deployment/svc-${i}`,
+        { status: "Synced", health: "Healthy", version: "v1.4.2" }
+      ])
+    );
+
+  it("A READING THE BUDGET HOLDS THREE TIMES OVER IS STORED VERBATIM", () => {
+    // THE REPORTED CASE. Argo CD's per-resource health map is the ordinary shape here — uniform
+    // siblings, every one of them tiny — and uniform is the worst case, because when every sibling
+    // clips for the same reason `walkObjectFields` breaks at round 0 and the pool is never re-offered.
+    const thirty = { resources: resources(30) };
+    expect(JSON.stringify(thirty)!.length, "the fixture stopped being small").toBe(2_495);
+    expect(JSON.stringify(boundPersistedJson(thirty))).toBe(JSON.stringify(thirty));
+
+    // …and at every size up to the point the budget really is the constraint. 80 resources is
+    // 6 645 characters of an 8 000 budget and used to store 3 684 of them.
+    for (const n of [20, 30, 40, 50, 60, 70, 80]) {
+      const reading = { resources: resources(n) };
+      expect(
+        JSON.stringify(boundPersistedJson(reading)),
+        `${n} resources came back damaged inside a budget that holds them`
+      ).toBe(JSON.stringify(reading));
+    }
+
+    // THE SAME DISEASE ONE LEVEL DEEPER, because the flat reservation multiplied down the tree:
+    // 96 x (keys at that level) at EVERY level, so three levels of tiny objects was hopeless.
+    const containers = Object.fromEntries(
+      Array.from({ length: 8 }, (_, i) => [
+        `svc-${i}`,
+        Object.fromEntries(
+          Array.from({ length: 4 }, (_, k) => [`c${k}`, { ready: true, restarts: 0, image: "v1" }])
+        )
+      ])
+    );
+    expect(JSON.stringify(containers)!.length).toBe(1_553);
+    expect(JSON.stringify(boundPersistedJson(containers))).toBe(JSON.stringify(containers));
+
+    // NON-VACUITY, AND THE DIRECTION THAT MATTERS: the bound is still a bound. A resource map the
+    // budget genuinely cannot hold is still cut, and still says so.
+    const overflowing = { resources: resources(200) };
+    expect(JSON.stringify(overflowing)!.length).toBeGreaterThan(PERSISTED_JSON_MAX_CHARS);
+    const cut = JSON.stringify(boundPersistedJson(overflowing))!;
+    expect(cut.length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+    expect(cut).toContain(PERSISTED_JSON_ELIDED_KEY);
+  });
+
+  it("L + 96 IS THE WHOLE LAW: a value of L characters survives verbatim at L + 96, and not before", () => {
+    // ONE LAW FOR EVERY SHAPE. `boundPersistedJson` reserves PERSISTED_JSON_MIN_LEAF from the row
+    // as its overspend backstop and the walk gets the rest, so a field that costs L wants exactly
+    // L + 96 — and that was true of scalars and objects while ARRAYS wanted `L + 96 + the tail
+    // marker's price`, a marker the complete list never stores. Measured before the fix:
+    //
+    //     {a: ["a"]}          L 11    verbatim from 134, not 107
+    //     {a: [40 entries]}   L 237   verbatim from 361, not 333
+    //
+    // Stated as a two-sided law so it cannot be satisfied by simply reserving more: verbatim at
+    // L + 96, and NOT verbatim at L + 95.
+    const atoms: [string, unknown][] = [
+      ["the empty string", ""],
+      ["a 200-character string", "x".repeat(200)],
+      ["50 backslashes", "\\".repeat(50)],
+      ["30 astral characters", "\u{1F600}".repeat(30)],
+      ["a number", 1_234_567_890_123],
+      ["a boolean", true],
+      ["null", null],
+      ["the empty list", []],
+      ["a one-element list", ["a"]],
+      ["a 40-element list", Array.from({ length: 40 }, (_, i) => `e${i}`)],
+      ["a 400-element list", Array.from({ length: 400 }, (_, i) => `e${i}`)],
+      ["a list of objects", Array.from({ length: 20 }, (_, i) => ({ id: i, ref: `r-${i}` }))],
+      ["a rollout", { phase: "Progressing", step: 3, weight: 60 }],
+      ["four levels of nesting", { a: { b: { c: { d: "deep" } } } }],
+      [
+        "a string, a list and an object together",
+        { r: "x".repeat(60), l: ["a", "b", 1, null, true], o: { w: 60 } }
+      ]
+    ];
+    for (const [name, value] of atoms) {
+      const wrapped = { a: value };
+      const verbatim = JSON.stringify(wrapped)!;
+      const L = verbatim.length;
+      expect(
+        JSON.stringify(boundPersistedJson(wrapped, L + 96)),
+        `${name}: not verbatim at L + 96`
+      ).toBe(verbatim);
+      expect(
+        JSON.stringify(boundPersistedJson(wrapped, L + 95)),
+        `${name}: verbatim at L + 95, so the law is looser than it says`
+      ).not.toBe(verbatim);
+    }
+  });
+
+  it("A LIST THAT FITS IS NOT CHARGED FOR A MARKER IT CANNOT NEED", () => {
+    // The narrow arm for pass 11's tail reserve, which its own author flagged as the half only they
+    // had reviewed ("an array whose reserve is released on one path and not the other"). The
+    // reserve is real money taken from what the ELEMENTS may spend, so a one-character list stored
+    // a 26-character apology instead of itself.
+    const value = { a: ["a"] };
+    expect(JSON.stringify(boundPersistedJson(value, 107))).toBe('{"a":["a"]}');
+    // …and the marker is still bought when the list really is cut, which is the arm that stops the
+    // fix from being "stop reserving". A cut list may never render past its budget.
+    for (const budget of [40, 60, 80, 100, 106]) {
+      const rendered = JSON.stringify(boundPersistedJson({ a: ["a"] }, budget))!;
+      expect(rendered.length, `budget ${budget}`).toBeLessThanOrEqual(budget);
+    }
+    const cutList = { a: Array.from({ length: 400 }, () => "x".repeat(80)) };
+    const out = boundPersistedJson(cutList) as { a: string[] };
+    expect(isPersistedJsonEntriesElision(out.a[out.a.length - 1]!)).toBe(true);
+    expect(JSON.stringify(out)!.length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+  });
+
+  it("RETENTION IS MONOTONE IN THE BUDGET while the stored key structure is unchanged", () => {
+    /** How much CONTENT survived: characters of real string, real numbers, real keys. A marker
+     *  scores nothing, because a marker is what a reader gets INSTEAD of content. */
+    const score = (v: unknown): number => {
+      if (v === null || v === undefined) return 0;
+      if (typeof v === "string")
+        return isPersistedJsonEntriesElision(v) || v.startsWith("[elided: nesting deeper")
+          ? 0
+          : v.length;
+      if (typeof v === "number" || typeof v === "boolean") return 1;
+      if (Array.isArray(v)) return v.reduce<number>((a, x) => a + score(x), 0);
+      let total = 0;
+      for (const [key, x] of Object.entries(v as Record<string, unknown>)) {
+        if (key === PERSISTED_JSON_ELIDED_KEY) continue;
+        total += key.length + score(x);
+      }
+      return total;
+    };
+    /** WHICH keys are stored, at every level. A budget that seats one MORE key legitimately trades
+     *  characters of a large field for it — that is property (1) working, not a regression — so the
+     *  comparison below is made only between budgets that stored the same key structure. */
+    const shape = (v: unknown): string => {
+      if (Array.isArray(v)) return "[]";
+      if (v !== null && typeof v === "object")
+        return `{${Object.entries(v as Record<string, unknown>)
+          .map(([k, x]) => `${k}${shape(x)}`)
+          .sort()
+          .join(",")}}`;
+      return "";
+    };
+
+    const shapes: [string, unknown][] = [
+      [
+        "a reading with 40 image refs",
+        {
+          revision: "9f2c1ab4e77d0c31a5b8e6f2c9d4a1b3e5f70982",
+          images: Array.from({ length: 40 }, (_, i) => `ghcr.io/a/b-${i}@sha256:${"a".repeat(64)}`),
+          rollout: { phase: "P", step: 3, weight: 60 }
+        }
+      ],
+      [
+        "a reading with a nested meta block",
+        {
+          r: "x".repeat(200),
+          images: Array.from({ length: 100 }, (_, i) => `img-${i}-${"x".repeat(50)}`),
+          meta: { a: "x".repeat(300), b: Array.from({ length: 20 }, () => 12_345) },
+          w: 60
+        }
+      ],
+      ["30 resources", { resources: resources(30) }]
+    ];
+    for (const [name, value] of shapes) {
+      let previous = -1;
+      let previousShape = "";
+      let previousBudget = 0;
+      for (let budget = 100; budget <= 1_400; budget++) {
+        const bounded = boundPersistedJson(value, budget);
+        const now = score(bounded);
+        const nowShape = shape(bounded);
+        if (nowShape === previousShape)
+          expect(
+            now,
+            `${name}: budget ${previousBudget} stored ${previous} characters of content and budget ${budget} stored ${now}`
+          ).toBeGreaterThanOrEqual(previous);
+        previous = now;
+        previousShape = nowShape;
+        previousBudget = budget;
+      }
+    }
+
+    // THE MEASURED CLIFF, pinned as the exact numbers rather than as "it got better". One more
+    // character of budget seated a third key, every field's share fell to the flat 96, `images`
+    // could no longer afford a single entry, and the row fell from 300 to 148 of the 418 available.
+    const reading = shapes[0]![1];
+    for (const budget of [416, 417, 418, 419, 420]) {
+      const out = boundPersistedJson(reading, budget) as {
+        images: string[];
+        rollout: { weight: number };
+      };
+      expect(
+        out.images.filter((x) => !isPersistedJsonEntriesElision(x)),
+        `budget ${budget}`
+      ).toHaveLength(2);
+      expect(out.rollout.weight, `budget ${budget}: ADR-0028's gate leaf`).toBe(60);
+    }
+  });
 });

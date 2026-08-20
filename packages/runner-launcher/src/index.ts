@@ -915,7 +915,13 @@ const PERSISTED_JSON_MAX_KEY_CHARS = 128;
  *  Measured false, M23.0 verification pass 11 — a guard on STARTING an element says nothing about
  *  what that element then spends, and the one it admits may take all of it. The marker's own money
  *  is {@link tailMarkerCost}, reserved before the elements are offered anything; this constant is
- *  only "the least a new element is worth starting". */
+ *  only "the least a new element is worth starting".
+ *
+ *  AND IT IS A CEILING ON WHAT A REFUSAL HOLDS BACK, NOT A FLAT PRICE — M23.0 verification pass 12.
+ *  Spelled as a flat 96 at the two places that REFUSE content, it reserved ninety-six characters
+ *  for a value of `60` and elided the next key to pay for it; a reading of 2 495 characters came
+ *  back damaged, and larger, at a budget of 8 000. Both sites now ask {@link admissionCost}, which
+ *  is this number OR the value's own cost, whichever is smaller. Nothing else may spell it. */
 const PERSISTED_JSON_MIN_LEAF = 96;
 
 /** The key an over-budget object carries instead of the fields that did not fit. Exported so a
@@ -1054,6 +1060,127 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
 }
 
 /**
+ * WHAT THE WALK WOULD ACTUALLY SPEND ON `value`, MEASURED UP TO `cap` — HIGH, M23.0 verification
+ * pass 12, and the reason {@link PERSISTED_JSON_MIN_LEAF} may no longer be spelled as a flat
+ * number anywhere content is REFUSED.
+ *
+ * WHAT WENT WRONG, MEASURED. {@link PERSISTED_JSON_MIN_LEAF} is 96, and both places that decide
+ * whether to keep the next thing held back 96 characters for it WITHOUT ASKING WHAT IT COSTS. For
+ * a field whose whole value is `60`, that reserves 96 characters for two — and the reservation is
+ * what elides the NEXT key. The losses are silent, they are worst on the small uniform readings a
+ * controller actually reports, and they are not visible in the row's length, because the row comes
+ * out THOUSANDS OF CHARACTERS SHORT of the budget while content is being thrown away:
+ *
+ *   {resources: {30 x {status, health, version}}}   input 2 495   budget 8 000
+ *       stored 2 825 characters, LOSSY — a value that fits three times over came back damaged
+ *       AND LARGER, because `__scpElided: "1 more fields"` (30 chars) replaced `"version":"v1.4.2"`
+ *   the same reading at 80 resources                input 6 645   budget 8 000
+ *       stored 3 684 — 4 316 characters, 54 % of the column, abandoned while entries were cut
+ *   {svc-i: {c-k: {ready, restarts, image}}}, 8 x 4  input 1 553 -> stored 2 097, every leaf's
+ *       `image` replaced by a marker saying a field was dropped
+ *
+ * The 8 000-character budget was never the constraint in any of those: 96 x (keys at that level)
+ * was, at EVERY level, multiplying down the tree. And the redistribution rounds cannot give it
+ * back — when every sibling is clipped for the same reason, `stillPending.length ===
+ * pending.length` and the loop breaks at round 0 with the pool untouched.
+ *
+ * IT IS ALSO WHY RETENTION WAS NOT MONOTONE IN THE BUDGET. Measured over budgets 4 to 8 200, one
+ * character MORE of budget stored strictly less: `{revision, images(40), rollout}` at 417 kept two
+ * whole image refs and rendered 300; at 418 it seated a third key, every field's share fell to 96,
+ * `images` could no longer afford a single entry, and the row fell to 148 of the 418 available.
+ * Pinned as a property (`persisted-json-bound.test.ts` -> "RETENTION IS MONOTONE IN THE BUDGET"),
+ * because "more budget stores less" is the shape of a rule that is measuring the wrong thing.
+ *
+ * WHAT THIS RETURNS. The EXACT rendered cost of `value` when that is at most `cap`, and any number
+ * greater than `cap` once the walk is known to spend more. Callers take
+ * `min(PERSISTED_JSON_MIN_LEAF, thisCost)`, so an over-`cap` answer reproduces the old flat
+ * reservation EXACTLY — the change can only ever admit content the old rule refused, never the
+ * reverse, which is what keeps it from becoming a new way to overspend.
+ *
+ * WHY IT IS SAFE TO CALL IN THE HOT LOOP. It never reads more than `cap` characters' worth: every
+ * accumulation is followed by a `> cap` test, a string longer than `cap` is rejected on its
+ * `.length` before `JSON.stringify` is called on it, and the recursion is bounded by
+ * {@link PERSISTED_JSON_MAX_DEPTH} as well as by `cap`. That second bound is not redundant — it is
+ * the cycle guard, and the values this walks are `unknown` from a subprocess whose serialiser we do
+ * not control.
+ *
+ * IT MIRRORS `walk`, BRANCH FOR BRANCH, AND THAT IS A COUPLING. A leaf `walk` charges more for than
+ * this predicts is a leaf that can be admitted for less than it costs. The two are pinned against
+ * each other over millions of small shapes at every budget by `persisted-json-bound.test.ts` ->
+ * "WHAT THE WALK CHARGES IS WHAT THE ESTIMATE PREDICTED", so a new branch in one that is missing
+ * from the other reddens rather than silently overspending.
+ */
+function renderedCostAtMost(value: unknown, cap: number, depth: number): number {
+  const over = cap + 1;
+  if (cap < 0) return over;
+  // `walk` charges these BEFORE its depth check, so this must too.
+  if (value === null || value === undefined) return NULL_RENDERED_CHARS;
+  switch (typeof value) {
+    case "string":
+      // `.length` first: rendering is never cheaper than one character per code unit, so this
+      // rejects a 500 000-character plugin string without `JSON.stringify` ever touching it.
+      // `persistableText` is length-preserving but NOT cost-preserving — a NUL becomes U+FFFD,
+      // which renders as one character where the NUL rendered as six.
+      return value.length > cap ? over : jsonCost(persistableText(value));
+    case "number":
+      return Number.isFinite(value) ? String(value).length : NULL_RENDERED_CHARS;
+    case "boolean":
+      return value ? 4 : 5;
+    case "object":
+      break;
+    default:
+      // `bigint` goes through the STRING path in `walk` and is not worth predicting; a function or
+      // a symbol renders as `null` in both positions it can occupy — {@link NULL_RENDERED_CHARS}.
+      return typeof value === "bigint" ? over : NULL_RENDERED_CHARS;
+  }
+  // At the depth limit `walk` stores a marker instead of the subtree, whatever the subtree costs.
+  // Reporting "more than `cap`" makes the caller fall back to the flat reservation, which is the
+  // conservative direction; predicting the marker's own width here would be an under-estimate for
+  // any subtree cheaper than it.
+  if (depth >= PERSISTED_JSON_MAX_DEPTH) return over;
+
+  if (Array.isArray(value)) {
+    let total = 2; // []
+    for (let i = 0; i < value.length; i++) {
+      if (i > 0) total += 1; // ,
+      if (total > cap) return over;
+      total += renderedCostAtMost(value[i], cap - total, depth + 1);
+      if (total > cap) return over;
+    }
+    return total;
+  }
+
+  let total = 2; // {}
+  let first = true;
+  for (const [rawKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
+    if (entryValue === undefined) continue; // `JSON.stringify` omits these, and so does `walk`
+    // A key past the cap is bounded rather than stored whole, so its cost is not predictable from
+    // the key itself; fall back rather than guess.
+    if (rawKey.length > PERSISTED_JSON_MAX_KEY_CHARS) return over;
+    total += jsonCost(persistableText(rawKey)) + 1 + (first ? 0 : 1); // "key": plus the comma
+    first = false;
+    if (total > cap) return over;
+    total += renderedCostAtMost(entryValue, cap - total, depth + 1);
+    if (total > cap) return over;
+  }
+  return total;
+}
+
+/**
+ * THE LEAST BUDGET THAT ADMITTING `value` CAN REQUIRE: {@link PERSISTED_JSON_MIN_LEAF}, unless the
+ * whole value is cheaper than that, in which case it is what the value actually costs. One
+ * function, called from both places a flat 96 used to be spelled — the object's key seating and the
+ * array's element admission — because they are the same fact, and a census that fixed one of them
+ * would have left the other (CLAUDE.md: census by property, not by symptom).
+ */
+function admissionCost(value: unknown, depth: number): number {
+  return Math.min(
+    PERSISTED_JSON_MIN_LEAF,
+    renderedCostAtMost(value, PERSISTED_JSON_MIN_LEAF, depth)
+  );
+}
+
+/**
  * WHAT ONE FIELD OF AN OBJECT MAY SPEND — MEDIUM, M23.0 verification passes 8, 9 and 10, and the
  * reason this is a SHARE rather than "whatever is left".
  *
@@ -1145,18 +1272,30 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  * reads key costs ONLY and never looks at a value, so property (1) is now strictly true — a key is
  * never elided because a SIBLING'S VALUE was large, at any budget.
  *
- * ITS RESIDUE, STATED. The seated set is a PREFIX in insertion order, so when keys differ wildly in
- * LENGTH (the 5 000-character-key case) which ones are seated still varies with order. Values never
- * influence it. Pinned as a bound rather than left to be discovered:
- * `persisted-json-bound.test.ts` -> "KEY LENGTH, NOT VALUE SIZE".
+ * ITS RESIDUE, STATED. The seated set is a PREFIX in insertion order, so when the fields differ
+ * wildly in what they NEED — a 5 000-character key, or a value too big to price against a tiny one
+ * — which ones are seated still varies with order. Pinned as a bound rather than left to be
+ * discovered: `persisted-json-bound.test.ts` -> "WHAT A FIELD NEEDS, NOT A FLAT 96".
  *
  * ============================================================================================
  * THE PROPERTIES, STATED SO A REVIEWER CAN FALSIFY THEM.
  * ============================================================================================
- *   (1) NO OBJECT KEY IS ELIDED BECAUSE A SIBLING WAS LARGE. A key can still be elided when an
- *       object has more keys than the budget can seat at {@link PERSISTED_JSON_MIN_LEAF} each —
- *       8 000 chars will not hold 200 fields however it is divided — but that is a different fact,
- *       it is decided by the KEYS alone, and it is visible in the row as `__scpElided`.
+ *   (1) NO OBJECT KEY IS ELIDED FOR ROOM A SIBLING DOES NOT NEED. A key can still be elided when
+ *       an object has more keys than the budget can seat — but the price of a seat is
+ *       {@link admissionCost}, i.e. {@link PERSISTED_JSON_MIN_LEAF} for a value too big to price
+ *       and the value's EXACT cost for anything smaller, so the elision says something true about
+ *       the content rather than about a constant. It is visible in the row as `__scpElided`.
+ *
+ *       RESTATED AT PASS 12, AND WEAKER ON PURPOSE. Passes 10 and 11 said "never because a
+ *       SIBLING'S VALUE was large", which was true because every field reserved the same 96
+ *       whatever it held — and that flat reserve is what elided keys with nothing behind them:
+ *       200 fields of `"v"` seated 71 and a marker, at 8 000, for 4 091 characters of content.
+ *       They now all seat, and the row is byte-identical to the input. The new rule reads values,
+ *       so a large sibling CAN now be the reason a later key is elided — but only for room it
+ *       genuinely needs, and the seated set is a SUPERSET of the flat rule's at every budget,
+ *       because `admissionCost <= PERSISTED_JSON_MIN_LEAF` always. A key the old rule seated is
+ *       never elided by the new one. Pinned by `persisted-json-bound.test.ts` -> "WHAT A FIELD
+ *       NEEDS, NOT A FLAT 96".
  *   (2) RETENTION DOES NOT DEPEND ON INSERTION ORDER — not just which keys survive, but how much of
  *       each survives, byte for byte. Pass 8 failed this on array contents (the same three fields
  *       kept 26, 39 or 77 of 80 image refs depending only on where `images` sat); pass 9 failed it
@@ -1176,17 +1315,19 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  *       astral characters, at most 1 for backslashes and quotes, at most 5 for C0 controls.
  *
  *       NARROWED, BECAUSE MEASUREMENT FALSIFIES THE UNQUALIFIED FORM. In the ELISION regime —
- *       phase 1 could not seat every key — phase 1 has reserved {@link PERSISTED_JSON_MIN_LEAF} for
- *       each key it DID seat, and a field that turns out to want less than that leaves the
- *       difference unspent. The residue is bounded by `MIN_LEAF x seated`, and the worst shape for
- *       it is many long keys with tiny values: 50 keys of 5 000 characters with one-character
- *       values seats 34 of them and spends 4 554 of 8 000 (57 %), against 6 651 (83 %) under pass
- *       9's sliver rule. That is the price of the floor, it is paid only where the row already says
- *       `__scpElided`, and it is pinned as a FLOOR ON UTILISATION by
- *       `persisted-json-bound.test.ts` -> "THE ELISION REGIME'S UTILISATION RESIDUE", so it cannot
- *       silently grow. Recovering it needs a second seat-and-fill sweep, which is a mutable cursor
- *       through the most safety-critical loop in this file for a shape no `observed_state`,
- *       `executor_ref` or `prior_state_ref` has ever had.
+ *       phase 1 could not seat every key — phase 1 has reserved {@link admissionCost} for each key
+ *       it DID seat, and a field that turns out to want less than that leaves the difference
+ *       unspent. Pass 10 reserved a flat {@link PERSISTED_JSON_MIN_LEAF} instead and paid 4 554 of
+ *       8 000 (57 %) for it on its own worst shape — 50 keys of 5 000 characters with
+ *       one-character values. Pricing the seat closes that gap without reintroducing the sliver:
+ *
+ *           pass 9 sliver rule   6 651 / 8 000 (83 %)   every seated field the EMPTY STRING
+ *           pass 10 flat floor   4 554 / 8 000 (57 %)   every seated field its whole value
+ *           pass 12 priced seat  6 651 / 8 000 (83 %)   every seated field its whole value
+ *
+ *       i.e. the residue the floor cost is gone and what the floor BOUGHT is kept. It is pinned as
+ *       a FLOOR ON UTILISATION by `persisted-json-bound.test.ts` -> "THE ELISION REGIME'S
+ *       UTILISATION RESIDUE", so it cannot silently regrow.
  *
  * THE TWO ALTERNATIVES AND HOW THEY FAIL. (a) ORDER `rollout` BEFORE `images` in `observedStateFrom`:
  * makes source-line order in an unrelated function a load-bearing contract, which the next person
@@ -1234,6 +1375,10 @@ function walkObjectFields(
    *  once — at a larger share each time — and needs the original to walk. */
   const seated: { key: string; raw: unknown; value: unknown; spent: number }[] = [];
   let elidedMarker: string | undefined;
+  /** The sum of what the already-seated fields need — {@link admissionCost} each, NOT a flat
+   *  {@link PERSISTED_JSON_MIN_LEAF} each. A field whose whole value is `60` reserves two
+   *  characters, and the difference is a key that stays. */
+  let reserved = 0;
 
   // ---- PHASE 1: SEAT THE KEYS. Charge the keys and NOTHING ELSE, so the pool phase 2 divides is
   // a number that does not depend on the order the fields arrived in.
@@ -1242,17 +1387,21 @@ function walkObjectFields(
     if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
     const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
     const keyCost = jsonCost(key) + 1 + (seated.length > 0 ? 1 : 0); // "key": plus the comma
-    // EVERY seated field must still be able to get {@link PERSISTED_JSON_MIN_LEAF}, not just this
-    // one: the guarantee has to hold for the fields already seated, whose values are not walked
-    // until phase 2. `entries.length - i` counts THIS field plus the ones behind it; a later
-    // `undefined` value makes that an over-count, which only makes the marker's number too big —
-    // and the marker is a count of fields the reader cannot see either way.
-    if (budget.left - keyCost < PERSISTED_JSON_MIN_LEAF * (seated.length + 1)) {
+    // EVERY seated field must still be able to get what IT needs, not just this one: the guarantee
+    // has to hold for the fields already seated, whose values are not walked until phase 2. What a
+    // field needs is {@link admissionCost} — capped at {@link PERSISTED_JSON_MIN_LEAF} for anything
+    // large, and the value's exact cost for anything small. `entries.length - i` counts THIS field
+    // plus the ones behind it; a later `undefined` value makes that an over-count, which only makes
+    // the marker's number too big — and the marker is a count of fields the reader cannot see
+    // either way.
+    const need = admissionCost(entryValue, depth + 1);
+    if (budget.left - keyCost < reserved + need) {
       elidedMarker = `${entries.length - i} more fields`;
       budget.left -= jsonCost(elidedMarker) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
       break;
     }
     budget.left -= keyCost;
+    reserved += need;
     seated.push({ key, raw: entryValue, value: undefined, spent: 0 });
   }
 
@@ -1449,15 +1598,40 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
   }
 
   if (Array.isArray(value)) {
+    // A LIST THAT FITS WHOLE IS NOT CHARGED FOR A MARKER IT CANNOT NEED — HIGH, M23.0 verification
+    // pass 12, and the half of the tail reserve its own author flagged as unreviewed ("an array
+    // whose reserve is released on one path and not the other").
+    //
+    // The reserve below is real money taken out of what the ELEMENTS may spend, and pass 11 took it
+    // unconditionally. So a list whose every entry fits was cut anyway, and the marker it stored is
+    // WIDER than the entries it replaced. Measured, `{a: ["a"]}` — eleven rendered characters:
+    //
+    //     budget 107..133   stored {"a":["[elided: 1 more entries]"]}   <- 26 characters of
+    //                       apology for one character of content, on a list that fits
+    //
+    // and the same at every scale: `{a: [40 short entries]}` (237 characters) needed 361, not 333.
+    // Asking first costs one bounded pass over the elements — the same order as walking them, and
+    // it stops the moment the answer is "no" — and it makes the law uniform: a value of L rendered
+    // characters comes back BYTE-IDENTICAL at every budget of L + PERSISTED_JSON_MIN_LEAF or more,
+    // for arrays exactly as for scalars and objects. Pinned as
+    // `persisted-json-bound.test.ts` -> "L + 96 IS THE WHOLE LAW".
+    const room = budget.left;
+    const wholeCost = renderedCostAtMost(value, room, depth);
     budget.left -= 2; // []
     // THE TAIL MARKER IS PAID FOR BEFORE THE ELEMENTS ARE OFFERED ANYTHING — see
     // {@link PERSISTED_JSON_TAIL_RESERVE}. Held back for the whole element loop and handed back
     // either to the marker or, if the list ran to the end, to the parent.
-    const tailReserve = Math.min(Math.max(0, budget.left), tailMarkerCost(value.length));
+    const tailReserve =
+      wholeCost <= room ? 0 : Math.min(Math.max(0, budget.left), tailMarkerCost(value.length));
     budget.left -= tailReserve;
     const out: unknown[] = [];
     for (let i = 0; i < value.length; i++) {
-      if (budget.left < PERSISTED_JSON_MIN_LEAF) {
+      // WHAT THIS ELEMENT NEEDS, NOT A FLAT 96 — see {@link renderedCostAtMost}. An element that
+      // fits WHOLE is admitted for what it costs, so a list of short entries is not cut with
+      // ninety-six characters still unspent; an element too big to price is admitted on exactly the
+      // old terms. The comma is part of the price here, which the flat guard never charged for.
+      const need = (i > 0 ? 1 : 0) + admissionCost(value[i], depth + 1);
+      if (budget.left < need) {
         // Spend-in-order and truncate the TAIL — see {@link PERSISTED_JSON_SHARE_ROUNDS} for why
         // an array is not fair-shared. The marker is recognisable (`isPersistedJsonEntriesElision`)
         // so a reader looking for a specific entry can tell a cut from an absence.
