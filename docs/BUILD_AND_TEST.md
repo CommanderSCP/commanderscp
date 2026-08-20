@@ -949,6 +949,17 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
        exactly one key and phase 1 now refuses that key before a field is seated. Pass 13 read this
        mutation correctly as a proxy for the prototype-pollution hole; it stopped distinguishing
        anything when the hole was closed at its source.
+
+       **AND A CAVEAT ABOUT THE INSTRUMENT, because it nearly produced a false "indistinguishable".**
+       Neither of those two verdicts rests on the sweep. Both rest on a MECHANISM plus a measurement
+       of that mechanism — an enumeration of every negative cap the branch is actually entered with,
+       and an enumeration of every `Object.prototype` key for which `[[Set]]` differs from defining a
+       property. The sweep is corroboration, and it is not sufficient on its own: run against the
+       finished build, the same 145 048-pair sweep reports `PERSISTED_JSON_SHARE_ROUNDS` **5 → 4** as
+       indistinguishable, and it is not — the named test kills it. The general family simply contains
+       no ladder, and a constant is only distinguishable by a family that contains the shape it
+       governs. "The sweep found no difference" is evidence about the family, never a proof; say
+       which family, and prefer an argument about the mechanism where one exists.
     3. **MET.** `packages/runner-launcher/src/persisted-json-budget-sweep.test.ts` is the permanent
        instrument: 116 850 (shape, budget) pairs in 2.8 s, every integer budget, depth 0–5. Zero rows
        over budget and zero backstop firings above a budget of 31 (below that the walk's own shortest
