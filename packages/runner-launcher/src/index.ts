@@ -1577,7 +1577,10 @@ function walkObjectFields(
   for (let i = 0; i < entries.length; i++) {
     const [rawKey, entryValue] = entries[i]!;
     if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
-    const boundedKey = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
+    const boundedKey = boundStringToCost(
+      rawKey,
+      Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS)
+    );
     const key = boundedKey.text;
     const keyCost = jsonCost(key) + 1 + (seated.length > 0 ? 1 : 0); // "key": plus the comma
     // EVERY seated field must still be able to get what IT needs, not just this one: the guarantee

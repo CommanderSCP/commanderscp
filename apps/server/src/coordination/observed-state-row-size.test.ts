@@ -113,9 +113,7 @@ describe("observed_state: the ROW, not the bound's return value, is what must fi
     expect(source).toContain(
       "const OBSERVED_STATE_TRUNCATION_RESERVE = PERSISTED_JSON_TRUNCATION_MAX_CHARS + 32;"
     );
-    expect(source).toContain(
-      "PERSISTED_JSON_MAX_CHARS - OBSERVED_STATE_TRUNCATION_RESERVE;"
-    );
+    expect(source).toContain("PERSISTED_JSON_MAX_CHARS - OBSERVED_STATE_TRUNCATION_RESERVE;");
   });
 
   it("EVERY SATURATING SHAPE REALLY CARRIES A REPORT, so the arm above measures the row WITH it", () => {

@@ -58,7 +58,10 @@ import {
  */
 
 const imageRefs = (n: number) =>
-  Array.from({ length: n }, (_, i) => `ghcr.io/acme/platform/service-${i}@sha256:${"a".repeat(64)}`);
+  Array.from(
+    { length: n },
+    (_, i) => `ghcr.io/acme/platform/service-${i}@sha256:${"a".repeat(64)}`
+  );
 const ROLLOUT = { phase: "Progressing", step: 3, weight: 60, message: "canary at 60%" };
 
 describe("M23.1g: what the bound removed comes back with what it kept", () => {
@@ -217,21 +220,26 @@ describe("M23.1g GATE: the bound may not remove content without emitting the sig
     ["a list alone", { images: imageRefs(60) }],
     ["the production composition", { revision: "v1", images: imageRefs(60), rollout: ROLLOUT }],
     ["a rollout with a long message", { rollout: { ...ROLLOUT, message: "m".repeat(3_000) } }],
-    ["nested per-resource readings", {
-      revision: "v1",
-      resources: Object.fromEntries(
-        Array.from({ length: 20 }, (_, i) => [
-          `svc-${i}`,
-          { status: "Synced", health: "Healthy", image: `ghcr.io/acme/svc-${i}:1.2.3` }
-        ])
-      )
-    }],
-    ["many one-element lists", Object.fromEntries(
-      Array.from({ length: 40 }, (_, i) => [`k${i}`, ["a"]])
-    )],
-    ["a wide flat object", Object.fromEntries(
-      Array.from({ length: 60 }, (_, i) => [`field-${i}`, "v".repeat(40)])
-    )]
+    [
+      "nested per-resource readings",
+      {
+        revision: "v1",
+        resources: Object.fromEntries(
+          Array.from({ length: 20 }, (_, i) => [
+            `svc-${i}`,
+            { status: "Synced", health: "Healthy", image: `ghcr.io/acme/svc-${i}:1.2.3` }
+          ])
+        )
+      }
+    ],
+    [
+      "many one-element lists",
+      Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`k${i}`, ["a"]]))
+    ],
+    [
+      "a wide flat object",
+      Object.fromEntries(Array.from({ length: 60 }, (_, i) => [`field-${i}`, "v".repeat(40)]))
+    ]
   ];
 
   it("EVERY (SHAPE, BUDGET): a value that came back changed came back WITH A REPORT", () => {

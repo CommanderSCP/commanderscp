@@ -235,8 +235,7 @@ function boundPluginJson<T>(
  *     the widest row                                                                     7 926  (of 8 000)
  */
 const OBSERVED_STATE_TRUNCATION_RESERVE = PERSISTED_JSON_TRUNCATION_MAX_CHARS + 32;
-const OBSERVED_STATE_VALUE_MAX_CHARS =
-  PERSISTED_JSON_MAX_CHARS - OBSERVED_STATE_TRUNCATION_RESERVE;
+const OBSERVED_STATE_VALUE_MAX_CHARS = PERSISTED_JSON_MAX_CHARS - OBSERVED_STATE_TRUNCATION_RESERVE;
 
 /** Step 3 of the claim/record split above — records the executor's result and closes out the
  *  claim. Guarded on `status = 'triggering'` so this only ever applies to a target this same
@@ -421,17 +420,20 @@ export async function updateWaveTargetObserved(
             // CALLER-EXPLICIT CLEAR, which must write SQL NULL. Spelling it `bounded && …` would
             // write `undefined`, and `undefined` in a drizzle `.set()` is "leave the column alone"
             // — the clear would silently become a no-op.
-            observedState: bounded === undefined ? null : {
-              ...bounded.value,
-              // AND WHAT THE BOUND REMOVED, AS DATA — M23.1g. Stamped after the bound like
-              // `observedAt`, out of the reserve documented above, and only when there is
-              // something to say: `truncation` absent means nothing was cut, which is every
-              // honest reading and costs the row nothing. `truncation` cannot collide with a
-              // plugin key because the object this bounds is composed by `observedStateFrom`
-              // from three names of OURS, not by the plugin.
-              ...(bounded.truncation ? { truncation: bounded.truncation } : {}),
-              observedAt: now.toISOString()
-            }
+            observedState:
+              bounded === undefined
+                ? null
+                : {
+                    ...bounded.value,
+                    // AND WHAT THE BOUND REMOVED, AS DATA — M23.1g. Stamped after the bound like
+                    // `observedAt`, out of the reserve documented above, and only when there is
+                    // something to say: `truncation` absent means nothing was cut, which is every
+                    // honest reading and costs the row nothing. `truncation` cannot collide with a
+                    // plugin key because the object this bounds is composed by `observedStateFrom`
+                    // from three names of OURS, not by the plugin.
+                    ...(bounded.truncation ? { truncation: bounded.truncation } : {}),
+                    observedAt: now.toISOString()
+                  }
           }
         : {})
     })
