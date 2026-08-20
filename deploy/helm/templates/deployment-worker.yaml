@@ -1,3 +1,4 @@
+{{- include "commanderscp.assertRunnerPrerequisites" . }}
 {{/*
 worker — SCP_ROLE=worker: outbox relay, coordination reconcile loop, watchdog, subprocess plugin
 host. Multiple replicas (M8 hardening — BUILD_AND_TEST.md §8 M8 item 6): the coordination
@@ -35,7 +36,11 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "commanderscp.serviceAccountName" . }}
-      automountServiceAccountToken: {{ .Values.managedIac.enabled }}
+      {{- /* M23.2 (owner decision 6): was `{{ .Values.managedIac.enabled }}`, which gave the worker a
+             token for managed-IaC and NONE for managed-scan or managed-dep — and gave it one even
+             on a docker-launcher deployment, where it is surface for nothing. Now it is exactly
+             "can a managed runner launch through the API server from this pod". */}}
+      automountServiceAccountToken: {{ eq (include "commanderscp.needsRunnerApiAccess" .) "true" }}
       terminationGracePeriodSeconds: 30
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -121,6 +126,18 @@ spec:
             - name: managed-iac-workspace
               mountPath: {{ .Values.managedIac.workspaceRoot }}
             {{- end }}
+            {{- if eq (include "commanderscp.needsRunnerApiAccess" .) "true" }}
+            {{- /* M23.2 — THE SHARED RUNNER WORKSPACE. This is the volume owner decision 5 makes a
+                   deployment prerequisite: the worker writes each run's inputs into a per-run
+                   subtree here and the runner Job mounts the SAME volume at subpaths, because
+                   Kubernetes has no `docker cp` (a ConfigMap fails the 1 MiB etcd limit and
+                   `pods/exec` + tar is impossible against `apps/runner-dep`'s seven-applet
+                   `FROM scratch` image). It MUST be ReadWriteMany and it must already exist —
+                   `tools/helm-verify` refuses the render otherwise rather than letting a runner Job
+                   hang unschedulable, and the chart's own PVCs are RWO so none can be reused. */}}
+            - name: runner-workspace
+              mountPath: {{ .Values.managedRunners.kubernetes.workspace.mountPath }}
+            {{- end }}
             {{- if .Values.scanDbCache.enabled }}
             - name: scan-db
               mountPath: {{ .Values.scanDbCache.mountPath }}
@@ -158,4 +175,14 @@ spec:
         {{- if .Values.managedIac.enabled }}
         - name: managed-iac-workspace
           emptyDir: {}
+        {{- end }}
+        {{- if eq (include "commanderscp.needsRunnerApiAccess" .) "true" }}
+        {{- /* AN EXISTING CLAIM, NEVER ONE THIS CHART CREATES. RWX is a storage-class capability an
+               operator provisions (NFS, CephFS, EFS, Azure Files, …); a chart that created a PVC and
+               asked for ReadWriteMany against a class that cannot serve it would produce a Pending
+               claim and an unschedulable runner Job — the "mysterious hang" owner decision 5 asks
+               for a clear failure message instead of. */}}
+        - name: runner-workspace
+          persistentVolumeClaim:
+            claimName: {{ .Values.managedRunners.kubernetes.workspace.claimName | quote }}
         {{- end }}

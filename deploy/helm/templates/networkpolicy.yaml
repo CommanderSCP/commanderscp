@@ -230,6 +230,52 @@ spec:
         {{- end }}
 ---
 {{- end }}
+{{- if and $kubeApiEnabled (eq (include "commanderscp.needsRunnerApiAccess" .) "true") }}
+{{/*
+Egress: the Kubernetes API server — for the SCP PODS THEMSELVES, when the managed runners launch as
+Jobs (M23.2).
+
+THE SAME BUG, ONE CLASS WIDER, AND IT WAS UNDECLARED. The allow above exists because the auto-wire
+hook pods carry this chart's selector labels, so `-default-deny` selected them and the chart rendered
+no allow for the API server — Calico dropped the connection and the air-gap drill went red every
+scheduled run from 2026-07-13. Its own note records the blast radius as "api / worker / migrations /
+postgres-eval are NOT selected", which was correct and is now the problem: with
+`managedRunners.launcher: kubernetes` the WORKER is the pod that talks to `kubernetes.default.svc`,
+on every managed trigger, and it is selected by default-deny with nothing allowing it. M23.2 would
+have reproduced the identical failure on any cluster whose CNI enforces policy — silently, because
+the symptom is a managed run that times out rather than an install that fails.
+
+RENDERED ONLY WHERE A RUNNER CAN ACTUALLY LAUNCH — the same predicate as the service-account token
+mount, so the three things that must agree (a token, an API allow, and an injected launcher setting)
+are derived from ONE condition rather than three that can drift. With the docker launcher this block
+renders nothing and the default-deny posture is byte-for-byte unchanged.
+
+The ipBlock/ports reasoning, the post-DNAT caveat and the RFC1918 default are all identical to the
+hook policy above and are not restated; `networkPolicy.kubeApi.cidrs`/`.ports` configure both.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-allow-kube-api-runner
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "commanderscp.selectorLabels" . | nindent 6 }}
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        {{- range $kubeApiCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range $kubeApiPorts }}
+        - { protocol: TCP, port: {{ . }} }
+        {{- end }}
+---
+{{- end }}
 {{- range .Values.networkPolicy.executorEgress }}
 # Egress: executor allowlist entry {{ .name | quote }} (Mode A / BYO-coordinate, DESIGN §12) — SCP
 # api/worker make outbound observe/trigger/status/abort calls to the execution systems they

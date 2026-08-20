@@ -302,6 +302,32 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_MANAGED_DEP_WORKSPACE_ROOT
   value: {{ .Values.managedDep.workspaceRoot | quote }}
 {{- end }}
+{{- if eq .Values.managedRunners.launcher "kubernetes" }}
+{{- /* M23.2 — WHICH LAUNCHER ADAPTER, and the Kubernetes adapter's deployment settings. Same
+       host-level, never-tenant-suppliable trust tier as SCP_MANAGED_IAC_*: the plugin subprocess
+       never sees `process.env` (host.ts's `minimalChildEnv` strips it), so these reach the plugins
+       only by being read here, injected LAST into every managed instance's config, and refused by
+       name at the four write doors. Rendered only when the operator selected `kubernetes`, so a
+       docker deployment carries no Kubernetes surface at all. */}}
+- name: SCP_MANAGED_RUNNER_LAUNCHER
+  value: "kubernetes"
+- name: SCP_MANAGED_RUNNER_K8S_NAMESPACE
+  value: {{ .Values.managedRunners.kubernetes.namespace | default .Release.Namespace | quote }}
+- name: SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT
+  value: {{ .Values.managedRunners.kubernetes.workspace.mountPath | quote }}
+- name: SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM
+  value: {{ .Values.managedRunners.kubernetes.workspace.claimName | quote }}
+- name: SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS
+  value: {{ .Values.managedRunners.kubernetes.perRunSecrets | quote }}
+- name: SCP_MANAGED_RUNNER_K8S_RUN_AS_NON_ROOT
+  value: {{ .Values.managedRunners.kubernetes.runAsNonRoot | quote }}
+{{- /* Node's global fetch cannot take a custom CA without an undici Agent, so the in-cluster API
+       server's certificate is trusted through this variable — the SAME mechanism the two shipped
+       in-cluster callers (bundled-{argocd,gitea}-autowire-bin.ts) already rely on, and the reason
+       they document it. Without it every API call from the adapter fails TLS verification. */}}
+- name: NODE_EXTRA_CA_CERTS
+  value: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+{{- end }}
 {{- if .Values.scanDbCache.enabled }}
 {{- /* M13.3b-ii (ADR-0020, proposal §13.3b) — the commander's server-maintained Trivy-DB cache.
        OPTIONAL and OFF by default, so single-container/dev stays zero-config on the image-baked DB
@@ -416,3 +442,60 @@ logs. Reused by all three workloads via `include ... (dict "root" . "dbEnvVar" "
   resources:
     {{- toYaml $root.Values.migrations.resources | nindent 4 }}
 {{- end -}}
+
+{{/*
+DOES THIS POD NEED A SERVICE-ACCOUNT TOKEN? (M23.2, owner decision 6)
+
+`deployment-api.yaml` carried a HARD `automountServiceAccountToken: false` with no value behind it,
+and `deployment-worker.yaml` gated its own on `managedIac.enabled` ALONE. Both were wrong for M23.2
+in different directions, and the api one was the load-bearing mistake: `values.yaml` documents
+`api.role=all` with `worker.replicaCount: 0` as the supported single-pod topology, so as shipped this
+milestone would have delivered a Kubernetes launcher that is dead on the chart's own small install —
+the pod that runs the managed executors would have had no token to authenticate with.
+
+TRUE ONLY WHERE A MANAGED RUNNER CAN ACTUALLY LAUNCH: the Kubernetes launcher is selected AND at
+least one managed class is enabled. So the hardened default is unchanged for every deployment that
+does not opt in, which is the half of owner decision 6 that says "the default stays hardened".
+
+The api pod additionally has to be running the worker role at all — a split-topology `api.role=api`
+never executes a managed trigger, so a token there would be surface for nothing.
+*/}}
+{{/*
+THE KUBERNETES LAUNCHER'S DEPLOYMENT PREREQUISITES, REFUSED AT RENDER TIME (M23.2, owner decision 5).
+
+"RWX STORAGE IS A DOCUMENTED DEPLOYMENT PREREQUISITE for payloads that must be moved rather than
+pulled. Kubernetes has no universal `docker cp`: a ConfigMap fails the 1 MiB etcd limit, and
+`pods/exec` + tar is impossible against `apps/runner-dep`'s seven-applet `FROM scratch` image. The
+chart's existing PVCs are RWO, so this needs a render-time check and a clear failure message rather
+than a mysterious hang."
+
+WHAT THE HANG WOULD LOOK LIKE WITHOUT THIS, which is why a `fail` and not a README line: with no
+claim named, the worker Deployment renders a `persistentVolumeClaim` with an empty `claimName`, the
+pod never schedules, and the operator sees a Deployment stuck at 0/1 with no message about managed
+execution anywhere. With a claim that exists but is RWO, everything installs cleanly and the FIRST
+managed run's Job sits Pending forever because the volume is already mounted by the worker on another
+node — a failure that appears days after the install and points at nothing.
+
+WHAT THIS CAN AND CANNOT CHECK. It can refuse an install that names no claim; it cannot read the
+claim's `accessModes`, because Helm renders without cluster access and the claim may not exist yet.
+So the message names the requirement explicitly rather than implying the chart verified it.
+*/}}
+{{- define "commanderscp.assertRunnerPrerequisites" -}}
+{{- if eq .Values.managedRunners.launcher "kubernetes" -}}
+{{- if not .Values.managedRunners.kubernetes.workspace.claimName -}}
+{{- fail "managedRunners.launcher=kubernetes requires managedRunners.kubernetes.workspace.claimName — the name of an EXISTING ReadWriteMany PersistentVolumeClaim shared by the worker and every runner Job. Kubernetes has no `docker cp`, so the runner's inputs and evidence move through this volume; this chart does not create it because RWX is a storage-class capability you provision (NFS/CephFS/EFS/Azure Files). The chart's own PVCs are ReadWriteOnce and cannot be reused." -}}
+{{- end -}}
+{{- if not (or .Values.managedIac.enabled (ne (.Values.managedDep.runnerImage | default "") "")) -}}
+{{- fail "managedRunners.launcher=kubernetes is set but no managed executor class is enabled, so nothing will ever launch. Enable managedIac.enabled (with managedIac.runnerImage) and/or set managedDep.runnerImage, or leave managedRunners.launcher at its default of `docker`." -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{- define "commanderscp.needsRunnerApiAccess" -}}
+{{- $anyManagedClass := or .Values.managedIac.enabled (ne (.Values.managedDep.runnerImage | default "") "") -}}
+{{- if and (eq .Values.managedRunners.launcher "kubernetes") $anyManagedClass -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}

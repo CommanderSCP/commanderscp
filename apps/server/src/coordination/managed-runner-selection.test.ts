@@ -175,9 +175,10 @@ describe("M23.2: every production construction path carries the selection", () =
       "createManagedScanExecutorPlugin",
       "createManagedDepExecutorPlugin"
     ]) {
-      expect(source, `${factory} is no longer constructed with the zero-argument default`).toContain(
-        `mod.${factory}()`
-      );
+      expect(
+        source,
+        `${factory} is no longer constructed with the zero-argument default`
+      ).toContain(`mod.${factory}()`);
     }
   });
 });

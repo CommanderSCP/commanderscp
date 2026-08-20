@@ -23,12 +23,47 @@ metadata:
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
 rules:
+  # `patch` WAS MISSING AND THE PATH WAS DEAD WITHOUT IT (M23.2). This Role shipped as
+  # create/get/list/watch/delete, which is every verb a launcher that only creates and deletes Jobs
+  # needs — and the M23.2 adapter creates its Job SUSPENDED (so the name is staked before a single
+  # byte is copied into the shared workspace, which is what keeps two concurrent runs of one runId
+  # from corrupting each other) and then PATCHes `spec.suspend: false` to start it. Against the
+  # Role as shipped that PATCH is a 403 and every managed run on Kubernetes fails at `start`.
+  #
+  # FOUND BY THE HARNESS, NOT BY READING. `scripts/kind-runner-harness.sh` binds a token to THIS
+  # Role — rendered by `helm template`, never a hand-written copy — and
+  # `kubernetes-adapter.kind.test.ts` asks `kubectl auth can-i` for each verb by name, so a verb the
+  # adapter needs and this file does not grant fails with the verb in the message. That is the whole
+  # reason owner decision 3 required a real cluster: a fake authorises everything.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "watch", "delete"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  {{- if .Values.managedRunners.kubernetes.perRunSecrets }}
+  # THE DECLARED, DISABLED CAPABILITY (M23.2), and this block is the ONLY thing that turns it on.
+  #
+  # `RunnerSpec.secretEnv` exists because credentials had to leave the `docker create` argv (M23.1a,
+  # ADR-0035), and on Kubernetes the only delivery that is not strictly worse is a per-run Secret +
+  # `envFrom.secretRef` — `env[].value` puts the credential in etcd and in every etcd backup.
+  #
+  # IT IS OFF BY DEFAULT BECAUSE THE GRANT IS AN OWNER DECISION THAT HAS NOT BEEN TAKEN, and the
+  # decision is not "should the adapter support secrets" but "may the worker ServiceAccount create
+  # and delete Secrets in this namespace". Two things compound and both were surfaced rather than
+  # resolved: a runner pod keeps a routable interface under owner decision 1's accepted degradation
+  # (kindnet does not enforce NetworkPolicy — measured, with a known-positive control), so a leaked
+  # credential has an egress path that `--network none` denied on Docker; and a Secret object is at
+  # rest in etcd for the Job's life, which is longer and more replicated than the mode-0600
+  # `--env-file` that lived for one `docker create`.
+  #
+  # WITH IT OFF, `managed-scan` and `managed-dep` run on Kubernetes (both pass `secretEnv: []` —
+  # managed-scan's comment is "NO CREDENTIAL AT ALL") and `managed-iac` REFUSES at its first step
+  # with a sentence naming this value. Refusing rather than falling back is the point.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "delete"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

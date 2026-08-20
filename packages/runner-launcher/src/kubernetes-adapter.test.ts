@@ -129,7 +129,10 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
       return "create";
     }
     if (op.method === "PATCH") return "start";
-    if (op.method === "DELETE" && op.path?.startsWith(`/apis/batch/v1/namespaces/${NAMESPACE}/jobs/`)) {
+    if (
+      op.method === "DELETE" &&
+      op.path?.startsWith(`/apis/batch/v1/namespaces/${NAMESPACE}/jobs/`)
+    ) {
       return "teardown";
     }
     return undefined;
@@ -239,14 +242,11 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
         () => route(req)
       ),
     copyDir: (op) =>
-      perform(
-        { kind: "copyDir", step: op.step, fromDir: op.fromDir, toDir: op.toDir },
-        () => {
-          // ONLY THE SHARED VOLUME IS MODELLED. A copy-OUT's destination is a host directory the
-          // plugin owns; tracking it here would make `dirs` answer a question this fake cannot.
-          if (op.toDir.startsWith(`${WORKSPACE_ROOT}/`)) dirs.add(op.toDir);
-        }
-      ),
+      perform({ kind: "copyDir", step: op.step, fromDir: op.fromDir, toDir: op.toDir }, () => {
+        // ONLY THE SHARED VOLUME IS MODELLED. A copy-OUT's destination is a host directory the
+        // plugin owns; tracking it here would make `dirs` answer a question this fake cannot.
+        if (op.toDir.startsWith(`${WORKSPACE_ROOT}/`)) dirs.add(op.toDir);
+      }),
     removeDir: (op) =>
       perform({ kind: "removeDir", step: op.step, dir: op.dir }, () => {
         // RECURSIVE, like `rm -rf`. A `delete` of the exact string would leave every slot behind and
@@ -324,9 +324,7 @@ function spec(over: Partial<RunnerSpec> = {}): RunnerSpec {
 const requestsOf = (ops: RecordedOp[]) => ops.filter((o) => o.kind === "request");
 const sequenceOf = (ops: RecordedOp[]) =>
   ops.map((o) =>
-    o.kind === "request"
-      ? `${o.step} ${o.method} ${o.path!.split("?")[0]}`
-      : `${o.step} ${o.kind}`
+    o.kind === "request" ? `${o.step} ${o.method} ${o.path!.split("?")[0]}` : `${o.step} ${o.kind}`
   );
 
 // ==================================================================================================
@@ -476,9 +474,7 @@ describe("M23.2: the five port steps, in order, against the API server and the s
   it("TEARDOWN RUNS OUTSIDE THE BUDGET — its own timeout, never the tenant's `timeoutMs`", async () => {
     const c = cluster();
     await c.launcher().run(spec({ timeoutMs: 1_000 }));
-    const del = requestsOf(c.ops).find(
-      (o) => o.method === "DELETE" && o.path?.includes("/jobs/")
-    )!;
+    const del = requestsOf(c.ops).find((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))!;
     expect(del.timeoutMs).toBe(30_000);
   });
 });
@@ -503,8 +499,11 @@ describe("M23.2: identity, attribution and the value that cannot be honoured", (
     await c.launcher().run(spec({ timeoutMs: 123_000 }));
     const after = Date.now();
     const post = requestsOf(c.ops).find((o) => o.method === "POST")!;
-    const meta = (post.body as { metadata: { labels: Record<string, string>; annotations: Record<string, string> } })
-      .metadata;
+    const meta = (
+      post.body as {
+        metadata: { labels: Record<string, string>; annotations: Record<string, string> };
+      }
+    ).metadata;
     expect(meta.labels[RUNNER_LAUNCHER_OWNER_LABEL]).toBe(LAUNCHER_OWNER_ID);
     const stamped = Date.parse(meta.annotations[RUNNER_LAUNCHER_DEADLINE_ANNOTATION]!);
     expect(stamped).toBeGreaterThanOrEqual(before + 123_000 + 120_000);
@@ -606,7 +605,10 @@ describe("M23.2: a pod's terminal state maps onto the port's five failure kinds"
       status: {
         phase: "Pending",
         containerStatuses: [
-          { name: "runner", state: { waiting: { reason: "ImagePullBackOff", message: "no such tag" } } }
+          {
+            name: "runner",
+            state: { waiting: { reason: "ImagePullBackOff", message: "no such tag" } }
+          }
         ]
       }
     });
@@ -785,7 +787,9 @@ describe("M23.2: `secretEnv` is a wired, disabled capability until the RBAC gran
     expect((secretPost.body as { data: Record<string, string> }).data).toStrictEqual({
       AWS_SECRET_ACCESS_KEY: Buffer.from("super-secret-value").toString("base64")
     });
-    const jobPost = requestsOf(c.ops).find((o) => o.path?.endsWith("/jobs") && o.method === "POST")!;
+    const jobPost = requestsOf(c.ops).find(
+      (o) => o.path?.endsWith("/jobs") && o.method === "POST"
+    )!;
     const container = (
       jobPost.body as {
         spec: {
@@ -795,9 +799,7 @@ describe("M23.2: `secretEnv` is a wired, disabled capability until the RBAC gran
         };
       }
     ).spec.template.spec.containers[0]!;
-    expect(container.envFrom).toStrictEqual([
-      { secretRef: { name: "scp-runner-r1-env" } }
-    ]);
+    expect(container.envFrom).toStrictEqual([{ secretRef: { name: "scp-runner-r1-env" } }]);
     expect(JSON.stringify(container.env)).not.toContain("super-secret-value");
   });
 
@@ -880,9 +882,9 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
       res: { status: 500, body: '{"reason":"InternalError"}' }
     });
     await expect(c.launcher().run(spec())).rejects.toThrow(/HTTP 500/);
-    expect(
-      requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))
-    ).toBe(true);
+    expect(requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))).toBe(
+      true
+    );
   });
 });
 
@@ -1000,7 +1002,10 @@ describe("M23.2: `reap()` removes foreign, expired Jobs and nothing else", () =>
 
   it("A MISSING OR GARBLED DEADLINE FAILS CLOSED — ambiguous must never read as safe", async () => {
     const c = cluster();
-    c.foreignJobs.push(foreign("scp-runner-nodeadline", undefined), foreign("scp-runner-junk", "yesterday"));
+    c.foreignJobs.push(
+      foreign("scp-runner-nodeadline", undefined),
+      foreign("scp-runner-junk", "yesterday")
+    );
     expect(await c.launcher().reap()).toStrictEqual([]);
   });
 
@@ -1023,7 +1028,8 @@ describe("M23.2: `reap()` removes foreign, expired Jobs and nothing else", () =>
     await on.launcher({ perRunSecrets: true }).reap();
     expect(
       requestsOf(on.ops).some(
-        (o) => o.method === "DELETE" && o.path === "/api/v1/namespaces/scp/secrets/scp-runner-dead-env"
+        (o) =>
+          o.method === "DELETE" && o.path === "/api/v1/namespaces/scp/secrets/scp-runner-dead-env"
       )
     ).toBe(true);
   });
@@ -1042,7 +1048,9 @@ describe("M23.2: `reap()` removes foreign, expired Jobs and nothing else", () =>
     expect(a).toStrictEqual(b);
     // One listing GET, not two.
     expect(
-      requestsOf(c.ops).filter((o) => o.method === "GET" && o.path?.includes("labelSelector=scp.launcher.owner"))
+      requestsOf(c.ops).filter(
+        (o) => o.method === "GET" && o.path?.includes("labelSelector=scp.launcher.owner")
+      )
     ).toHaveLength(1);
     await whenKubernetesReapSettled(NAMESPACE);
   });
@@ -1104,13 +1112,9 @@ function kubernetesOrderingSubstrate(): LaunchOrderingSubstrate {
       });
     },
     issued: () =>
-      c.ops
-        .map((o) => c.orderingStepOf(o))
-        .filter((k): k is RunnerStepKind => k !== undefined),
+      c.ops.map((o) => c.orderingStepOf(o)).filter((k): k is RunnerStepKind => k !== undefined),
     issuedIdentities: () =>
-      c.ops
-        .filter((o) => c.orderingStepOf(o) !== undefined)
-        .map((o) => c.identityOf(o)),
+      c.ops.filter((o) => c.orderingStepOf(o) !== undefined).map((o) => c.identityOf(o)),
     hold: (kind, count = 1) => c.hold(kind, count),
     release: (kind, failure) => c.release(kind, failure)
   };

@@ -89,9 +89,10 @@ describe("M23.2: managed-iac, constructed the way production constructs it, hono
       parameters: { iacAction: "plan" },
       idempotencyKey: "select-1"
     });
-    expect(seen, "the Kubernetes adapter was never reached — the plugin still defaults to Docker").toContain(
-      "POST /apis/batch/v1/namespaces/scp/jobs"
-    );
+    expect(
+      seen,
+      "the Kubernetes adapter was never reached — the plugin still defaults to Docker"
+    ).toContain("POST /apis/batch/v1/namespaces/scp/jobs");
     expect((await plugin.status(c, ref)).phase).toBe("failed");
   });
 

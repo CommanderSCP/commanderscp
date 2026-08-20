@@ -1,3 +1,4 @@
+{{- include "commanderscp.assertRunnerPrerequisites" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,7 +28,13 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: {{ include "commanderscp.serviceAccountName" . }}
-      automountServiceAccountToken: false
+      {{- /* CONDITIONAL SINCE M23.2 (owner decision 6). It was a hard `false`, which is right for
+             every deployment that launches no managed runner — and fatal for the one topology
+             `values.yaml` itself documents as supported: `api.role=all` with `worker.replicaCount: 0`
+             puts the managed executors in THIS pod, and a Kubernetes launcher with no token cannot
+             authenticate to the API server at all. True only when the Kubernetes launcher is
+             selected, a managed class is enabled, AND this pod actually runs the worker role. */}}
+      automountServiceAccountToken: {{ and (eq (include "commanderscp.needsRunnerApiAccess" .) "true") (eq .Values.api.role "all") }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

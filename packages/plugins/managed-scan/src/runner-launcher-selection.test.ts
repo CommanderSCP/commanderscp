@@ -92,9 +92,10 @@ describe("M23.2: managed-scan, constructed the way production constructs it, hon
       kubernetes: { ...KUBERNETES_SETTINGS.kubernetes, io: recordingIo(seen) }
     });
     const ref = await plugin.trigger(c, intent("select-1"));
-    expect(seen, "the Kubernetes adapter was never reached — the plugin still defaults to Docker").toContain(
-      "POST /apis/batch/v1/namespaces/scp/jobs"
-    );
+    expect(
+      seen,
+      "the Kubernetes adapter was never reached — the plugin still defaults to Docker"
+    ).toContain("POST /apis/batch/v1/namespaces/scp/jobs");
     expect((await plugin.status(c, ref)).phase).toBe("failed");
   });
 

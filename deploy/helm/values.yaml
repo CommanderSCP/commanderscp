@@ -254,6 +254,62 @@ managedDep:
   workspaceRoot: /var/lib/scp/managed-dep
 
 # -------------------------------------------------------------------------------------------
+# WHICH SUBSTRATE THE MANAGED RUNNERS LAUNCH ON (M23.2). Applies to ALL THREE managed classes at
+# once — `managed-iac`, `managed-scan` and `managed-dep` — because it is a property of the
+# deployment, not of one executor.
+#
+# `docker` (the default) IS TODAY'S BEHAVIOUR, BYTE FOR BYTE: the plugins shell out to a container
+# CLI, which is correct under docker-compose/VM and is the only thing that ever worked. It does NOT
+# work under `helm install` and never did — this chart mounts no Docker socket anywhere (deliberately;
+# mounting one is a container-escape risk it refuses to paper over) and the scpd image ships no
+# docker binary, so a managed run on Kubernetes ends at an ENOENT.
+#
+# `kubernetes` launches each run as an ephemeral Job through the API server. Requirements, all of
+# them enforced at render time by `tools/helm-verify` rather than discovered as a hang:
+#   - `workspace.claimName` must name a ReadWriteMANY PersistentVolumeClaim that ALREADY EXISTS.
+#     Kubernetes has no universal `docker cp`: a ConfigMap fails the 1 MiB etcd limit and
+#     `pods/exec` + tar is impossible against `apps/runner-dep`'s seven-applet `FROM scratch` image
+#     (no tar, no shell). The worker writes the run's inputs into this volume and the runner Job
+#     mounts the same bytes. This chart's own PVCs are RWO and cannot be reused for it.
+#   - the worker (and, on an `api.role=all` single-pod install, the api) gets a service-account
+#     token — see `automountServiceAccountToken` in the deployment templates.
+#   - at least one managed class must be enabled, or nothing will ever launch.
+#
+# NETWORK EGRESS IS NOT `--network none` AND CANNOT BE (owner decision, 2026-08-18). No pod-spec
+# field removes a pod's network namespace. Runner pods carry `scp.launcher.network=<the requested
+# mode>` so a NetworkPolicy can select them, and that is TRAFFIC DENIAL, NOT INTERFACE ABSENCE —
+# fail-open on a CNI that does not enforce NetworkPolicy at all. Do not read the label as containment.
+# -------------------------------------------------------------------------------------------
+managedRunners:
+  # "docker" | "kubernetes". Explicit, never auto-detected: guessing from the presence of a
+  # service-account token would switch an eval stack running inside a pod onto Jobs it has no RBAC
+  # for, and would leave a hardened install (automountServiceAccountToken: false) shelling out to a
+  # binary the image does not ship. Anything other than the exact string "kubernetes" is docker.
+  launcher: docker
+  kubernetes:
+    # Where the runner Jobs are created. Empty means `.Release.Namespace`.
+    namespace: ""
+    # The RWX PersistentVolumeClaim the worker and every runner Job share. MUST ALREADY EXIST — this
+    # chart does not create it, because RWX is a storage-class capability an operator provisions.
+    workspace:
+      claimName: ""
+      # Where the worker mounts it. The Job mounts the same volume at subpaths under this root.
+      mountPath: /var/lib/scp/runner-workspace
+    # THE PER-RUN SECRET CAPABILITY — declared, and OFF. `RunnerSpec.secretEnv` reaches a pod as a
+    # per-run Secret + `envFrom.secretRef`, which needs `secrets: create,get,delete` on the worker
+    # ServiceAccount. That grant is an owner decision that has not been taken, so with this false
+    # the chart renders no such rule AND the server refuses a run that needs one — loudly, at its
+    # first step, rather than falling back to `env[].value` (plaintext in etcd and in every etcd
+    # backup) or dropping the credential silently. Only `managed-iac` populates `secretEnv` today;
+    # `managed-scan` and `managed-dep` hold no credential and run unaffected.
+    perRunSecrets: false
+    # Pod `securityContext.runAsNonRoot` for runner Jobs. FALSE by default, and that is a fact about
+    # the images rather than a preference: none of apps/runner-{iac,scan,dep} declares a `USER`, so
+    # `true` makes every managed run fail with CreateContainerConfigError before its entrypoint.
+    # Set it only if you rebuild the runner images to run as a non-root uid.
+    runAsNonRoot: false
+
+# -------------------------------------------------------------------------------------------
 # Managed-scan vulnerability-DB cache (M13.3b-ii — ADR-0020, proposal §13.3b). OPTIONAL, OFF BY
 # DEFAULT: with it off the promotion scan step's runner uses the DB baked into the scp-runner-scan
 # image (the fail-closed fallback, as stale as the image), so single-container/dev stays zero-config.

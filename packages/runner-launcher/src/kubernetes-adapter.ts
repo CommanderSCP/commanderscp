@@ -203,7 +203,7 @@ export interface KubernetesApiRequest {
   readonly body?: unknown;
   /** `application/merge-patch+json` for the unsuspend PATCH; `application/json` otherwise. */
   readonly contentType?: string;
-  /** `text/plain` for a log read; `application/json` otherwise. */
+  /** {@link LOG_ACCEPT} for a log read; `application/json` otherwise. */
   readonly accept?: string;
   /** Derived from the ONE whole-run deadline, never from `spec.timeoutMs`. */
   readonly timeoutMs: number;
@@ -389,6 +389,22 @@ const PODS_PATH = (ns: string): string => `/api/v1/namespaces/${ns}/pods`;
  * Kubernetes offers. The `+1` is the whole trick: it is the smallest read that can distinguish
  * "exactly at the limit" from "over it".
  */
+/**
+ * THE `Accept` HEADER FOR A LOG READ, AND `text/plain` IS THE WRONG ANSWER — MEASURED, NOT INFERRED.
+ *
+ * `pods/log` serves a plain-text body, so `Accept: text/plain` looks obviously right and the API
+ * server answers it with **406 Not Acceptable**. Kubernetes content-negotiates every subresource
+ * against its own serializer list, which offers `application/json`, `application/yaml` and
+ * `application/vnd.kubernetes.protobuf` — `text/plain` is not among them, and the log body arrives
+ * as an unnegotiated stream regardless.
+ *
+ * WHAT THAT COST BEFORE THE HARNESS RAN: every failed run reported `exit-nonzero` with
+ * `code: 406`. The log read rejected, the rejection replaced the pod's real termination, and an
+ * operator reading a `spawn-failed` ImagePullBackOff would have been told the runner exited 406.
+ * Nothing in `kubernetes-adapter.test.ts` could see it — a fake answers whatever Accept it is given.
+ */
+const LOG_ACCEPT = "*/*";
+
 function logRequestPath(ns: string, podName: string, maxBuffer: number): string {
   return `${PODS_PATH(ns)}/${podName}/log?container=${RUNNER_CONTAINER_NAME}&limitBytes=${maxBuffer + 1}`;
 }
@@ -487,17 +503,17 @@ const FATAL_WAITING_REASONS = new Set([
  * `budget-exhausted` and `output-exceeded` are not produced here: the first is the deadline path
  * (`deadlineExceeded`) and the second is the log-size check, exactly as on Docker.
  */
-export function kubernetesTermination(pod: PodView): {
-  succeeded: boolean;
-  message: string;
-  code: string | number | null;
-  killed: boolean;
-  signal: string | null;
-} | undefined {
+export function kubernetesTermination(pod: PodView):
+  | {
+      succeeded: boolean;
+      message: string;
+      code: string | number | null;
+      killed: boolean;
+      signal: string | null;
+    }
+  | undefined {
   const status = pod.status ?? {};
-  const container = (status.containerStatuses ?? []).find(
-    (c) => c.name === RUNNER_CONTAINER_NAME
-  );
+  const container = (status.containerStatuses ?? []).find((c) => c.name === RUNNER_CONTAINER_NAME);
 
   const waiting = container?.state?.waiting;
   if (waiting?.reason && FATAL_WAITING_REASONS.has(waiting.reason)) {
@@ -613,7 +629,10 @@ export function createKubernetesRunnerLauncher(
       return [];
     }
     if (listing.status < 200 || listing.status >= 300) {
-      debug("reap: listing launcher-owned Jobs returned HTTP %d, skipping this pass", listing.status);
+      debug(
+        "reap: listing launcher-owned Jobs returned HTTP %d, skipping this pass",
+        listing.status
+      );
       return [];
     }
 
@@ -957,8 +976,7 @@ export function createKubernetesRunnerLauncher(
               slots,
               workspaceVolume: config.workspaceVolume,
               runAsNonRoot: config.runAsNonRoot === true,
-              ttlSecondsAfterFinished:
-                config.ttlSecondsAfterFinished ?? KUBERNETES_JOB_TTL_SECONDS
+              ttlSecondsAfterFinished: config.ttlSecondsAfterFinished ?? KUBERNETES_JOB_TTL_SECONDS
             })
           },
           (res) => (res.status >= 200 && res.status < 300) || res.status === 409
@@ -1029,7 +1047,7 @@ export function createKubernetesRunnerLauncher(
               {
                 step: "start",
                 method: "GET",
-                accept: "text/plain",
+                accept: LOG_ACCEPT,
                 path: logRequestPath(namespace, podName, spec.maxBuffer)
               },
               // A log read can legitimately 400 ("container is waiting to start") for a pod that
@@ -1123,9 +1141,7 @@ export function createKubernetesRunnerLauncher(
                 path: `${SECRETS_PATH(namespace)}/${secretName}`,
                 timeoutMs: RUNNER_REMOVE_TIMEOUT_MS
               })
-              .catch((cause) =>
-                debug("teardown: DELETE secret %s failed: %O", secretName, cause)
-              );
+              .catch((cause) => debug("teardown: DELETE secret %s failed: %O", secretName, cause));
           }
           await io
             .removeDir({ step: "teardown", dir: runRoot })

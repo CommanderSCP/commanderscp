@@ -202,6 +202,11 @@ interface PodSpec {
   securityContext?: { runAsNonRoot?: boolean; seccompProfile?: { type?: string } };
   containers?: Container[];
   initContainers?: Container[];
+  /** M23.2 — the field owner decision 6 makes conditional. `false` is the hardened default and must
+   *  stay it for every deployment that launches no managed runner through the API server. */
+  automountServiceAccountToken?: boolean;
+  /** M23.2 — the shared RWX runner workspace is one of these. */
+  volumes?: unknown[];
 }
 
 function podSpecOf(doc: K8sDoc): PodSpec | undefined {
@@ -1653,6 +1658,201 @@ function main(): void {
     );
     console.log(
       `  positive (outpost + gitea/argocd) clean; negative (retrans + gitea) correctly flagged: "${badViolations[0]}"`
+    );
+  }
+
+  // ================================================================================================
+  // M23.2 — THE KUBERNETES RUNNER LAUNCHER'S CHART CONTRACT
+  // ================================================================================================
+  // Four properties, and every one of them is something a `helm install` gets wrong SILENTLY. The
+  // adapter itself is gated by `kubernetes-adapter.kind.test.ts` against a real cluster (CI job 4e);
+  // what THAT cannot see is whether the chart hands it a token, an egress path, a volume and the
+  // settings to use them. A managed run then fails minutes into a promotion, on a cluster, with a
+  // timeout — which is the worst place to discover any of it.
+  {
+    const label = "M23.2 runner launcher";
+    console.log("helm-verify: checking the M23.2 Kubernetes runner-launcher chart contract...");
+
+    // (1) THE DEFAULT IS UNCHANGED. Every deployment that does not opt in must render exactly what
+    //     it rendered before: no launcher vars, no API allow, and the hardened token default.
+    const defaults = renderChart("verify-m23-default", []);
+    const defaultWorker = defaults.find(
+      (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+    );
+    assert(defaultWorker, `[${label}] no worker Deployment in the default render`);
+    const defaultSpec = defaultWorker ? podSpecOf(defaultWorker) : undefined;
+    assert(
+      defaultSpec?.automountServiceAccountToken === false,
+      `[${label}] the worker mounts a service-account token by DEFAULT — the hardened default must be unchanged for a deployment that launches no managed runner`
+    );
+    assert(
+      !JSON.stringify(defaults).includes("SCP_MANAGED_RUNNER_LAUNCHER"),
+      `[${label}] the default render carries Kubernetes launcher settings; a docker deployment must carry no Kubernetes surface at all`
+    );
+    assert(
+      !defaults.some((d) => String(d.metadata?.name ?? "").includes("allow-kube-api-runner")),
+      `[${label}] the default render emits an API-server egress allow for the SCP pods; that must appear only where a runner can launch`
+    );
+
+    // (2) SELECTED: the token, the egress allow, the volume and the settings all arrive TOGETHER.
+    //     They are derived from one condition on purpose — three that can drift is how a deployment
+    //     ends up with a launcher setting and no token, which fails at the first API call.
+    const k8s = renderChart("verify-m23-k8s", [
+      "--set",
+      "managedRunners.launcher=kubernetes",
+      "--set",
+      "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+      "--set",
+      "managedIac.enabled=true",
+      "--set",
+      "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+    ]);
+    const worker = k8s.find(
+      (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+    );
+    const workerSpec = worker ? podSpecOf(worker) : undefined;
+    assert(
+      workerSpec?.automountServiceAccountToken === true,
+      `[${label}] the worker has NO service-account token with the Kubernetes launcher selected — every API call it makes would be anonymous`
+    );
+    const workerEnv = JSON.stringify(workerSpec?.containers ?? []);
+    for (const key of [
+      "SCP_MANAGED_RUNNER_LAUNCHER",
+      "SCP_MANAGED_RUNNER_K8S_NAMESPACE",
+      "SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT",
+      "SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM",
+      "SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS",
+      // Node's global fetch cannot take a custom CA without an undici Agent, so without this the
+      // adapter's every request fails TLS verification against the in-cluster API server.
+      "NODE_EXTRA_CA_CERTS"
+    ]) {
+      assert(workerEnv.includes(key), `[${label}] the worker is missing ${key}`);
+    }
+    assert(
+      workerEnv.includes("scp-runner-rwx") ||
+        JSON.stringify(workerSpec?.volumes ?? []).includes("scp-runner-rwx"),
+      `[${label}] the worker does not mount the shared runner workspace claim — the runner's inputs have nowhere to go`
+    );
+    // THE TWO CASES THE OLD EXPRESSION GOT WRONG, and they are here because the assertion above
+    // SURVIVED the mutation that restores it. `automountServiceAccountToken: {{ .Values.managedIac
+    // .enabled }}` is `true` in the render above too, so "the worker has a token" was passing for
+    // the wrong reason. Each of these fails under that expression and passes under the real one.
+    {
+      // (a) managed-DEP only. The old expression keyed on managedIac ALONE, so enabling the bump
+      //     actuator and nothing else gave the worker no token at all — M21's actuator dead on
+      //     Kubernetes for the second time, by a different mechanism.
+      const depOnly = renderChart("verify-m23-dep-only", [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"
+      ]);
+      const depWorker = depOnly.find(
+        (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+      );
+      assert(
+        podSpecOf(depWorker!)?.automountServiceAccountToken === true,
+        `[${label}] with only managed-dep enabled the worker has NO service-account token — the launcher condition is keyed on managed-IaC alone, which is the shape that left two of the three managed classes unable to authenticate`
+      );
+      // (b) THE DOCKER LAUNCHER WITH managed-IaC ON must NOT mount a token. It is surface for
+      //     nothing there — no Kubernetes call is ever made — and the old expression granted it.
+      const dockerIac = renderChart("verify-m23-docker-iac", [
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ]);
+      const dockerWorker = dockerIac.find(
+        (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+      );
+      assert(
+        podSpecOf(dockerWorker!)?.automountServiceAccountToken === false,
+        `[${label}] the worker mounts a service-account token on a DOCKER-launcher deployment — an API credential for a pod that makes no API call`
+      );
+    }
+    assert(
+      k8s.some((d) => String(d.metadata?.name ?? "").includes("allow-kube-api-runner")),
+      `[${label}] no API-server egress allow for the SCP pods. The chart's own -default-deny selects the worker (its comment records "api / worker / migrations / postgres-eval are NOT selected" as the BLAST RADIUS of the hook allow), so on any CNI that enforces policy every managed run would hang`
+    );
+
+    // (3) THE PER-RUN SECRET GRANT IS OFF BY DEFAULT AND ON ONLY WHEN ASKED. This is the declared,
+    //     disabled capability: the RBAC rule and the server-side enablement come from the SAME value,
+    //     so neither can be true without the other.
+    const runnerRole = (docs: K8sDoc[]) =>
+      docs.find((d) => d.kind === "Role" && String(d.metadata?.name ?? "").endsWith("-runner-iac"));
+    const roleOff = runnerRole(k8s);
+    assert(roleOff, `[${label}] no runner Role rendered with managedIac enabled`);
+    assert(
+      !JSON.stringify(roleOff?.rules ?? []).includes("secrets"),
+      `[${label}] the runner Role grants 'secrets' with managedRunners.kubernetes.perRunSecrets OFF — the capability is declared as disabled and must render no rule`
+    );
+    // AND THE VERB THE HARNESS FOUND MISSING. The adapter creates the Job SUSPENDED and PATCHes it
+    // live; the Role shipped as create/get/list/watch/delete, so `start` was a 403 for every run.
+    assert(
+      JSON.stringify(roleOff?.rules ?? []).includes('"patch"'),
+      `[${label}] the runner Role does not grant 'patch' on jobs — the adapter unsuspends the Job with a merge patch, so every managed run fails at 'start'`
+    );
+    const withSecrets = renderChart("verify-m23-secrets", [
+      "--set",
+      "managedRunners.launcher=kubernetes",
+      "--set",
+      "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+      "--set",
+      "managedRunners.kubernetes.perRunSecrets=true",
+      "--set",
+      "managedIac.enabled=true",
+      "--set",
+      "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+    ]);
+    assert(
+      JSON.stringify(runnerRole(withSecrets)?.rules ?? []).includes("secrets"),
+      `[${label}] perRunSecrets=true renders no 'secrets' rule, so the Secret POST would 403 while the server believes the capability is enabled`
+    );
+    assert(
+      JSON.stringify(withSecrets).includes('"SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS"'),
+      `[${label}] perRunSecrets=true does not reach the server`
+    );
+
+    // (4) THE PREREQUISITES ARE REFUSED AT RENDER, not discovered as a hang (owner decision 5).
+    //     A NEGATIVE CONTROL FOR EACH, because "the render succeeded" is what a guard that does not
+    //     fire also produces.
+    for (const [why, args] of [
+      [
+        "no RWX claim",
+        [
+          "--set",
+          "managedRunners.launcher=kubernetes",
+          "--set",
+          "managedIac.enabled=true",
+          "--set",
+          "managedIac.runnerImage=x"
+        ]
+      ],
+      [
+        "no managed class enabled",
+        [
+          "--set",
+          "managedRunners.launcher=kubernetes",
+          "--set",
+          "managedRunners.kubernetes.workspace.claimName=rwx"
+        ]
+      ]
+    ] as [string, string[]][]) {
+      let refused = false;
+      try {
+        renderChart("verify-m23-bad", args);
+      } catch {
+        refused = true;
+      }
+      assert(
+        refused,
+        `[${label}] the chart RENDERED with the Kubernetes launcher and ${why}. Owner decision 5 requires "a render-time check and a clear failure message rather than a mysterious hang"`
+      );
+    }
+    console.log(
+      "  default render unchanged; selected render carries token + egress + volume + settings; perRunSecrets gates the RBAC; both prerequisites refuse at render"
     );
   }
 

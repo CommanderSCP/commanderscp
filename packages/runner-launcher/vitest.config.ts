@@ -7,6 +7,10 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
-    exclude: ["**/node_modules/**", "**/dist/**", "**/*.integration.test.ts"]
+    // `*.kind.test.ts` IS EXCLUDED FOR A STRONGER REASON THAN `*.integration.test.ts`. The Docker
+    // integration suite would merely fail without a daemon; the kind suite fails without a cluster
+    // BY DESIGN (it has no skip path — see its header), so leaving it in the default include would
+    // make `pnpm test` red on every machine that has not run `scripts/kind-runner-harness.sh up`.
+    exclude: ["**/node_modules/**", "**/dist/**", "**/*.integration.test.ts", "**/*.kind.test.ts"]
   }
 });

@@ -627,6 +627,78 @@ jobs:
         if: ${{ matrix.shard == 1 }}
         run: pnpm --filter @scp/airgap test
 
+  kind-runner-harness:
+    name: "4e. Kubernetes runner harness (kind, real API server)"
+    # ============================================================================================
+    # THE GATE OWNER DECISION 3 REQUIRED, AND IT IS MERGE-GATING (BUILD_AND_TEST.md M23, 2026-08-18)
+    # ============================================================================================
+    # "A REAL PR-GATING KUBERNETES HARNESS. The DoD's premise that one exists is false: nothing in
+    # the tree talks to a Kubernetes API server, and the three shell drills are `schedule`-only,
+    # state twice that they are 'NEVER merge-gating', and recorded their greens on a decommissioned
+    # runner."  This job is the answer, and the difference from those drills is the whole point: it
+    # runs on every push and pull request, and 5z `needs:` it, so a red here blocks merge.
+    #
+    # WHY IT IS ITS OWN JOB RATHER THAN A STEP IN JOB 5, measured rather than assumed:
+    #   - `kindest/node` is ~1.27 GB in the local image store. Job 5 already spends the hosted
+    #     runner's ~14 GB of free disk (`.github/scripts/free-disk.sh`) on the Testcontainers tier
+    #     and three prebuilt runner images.
+    #   - Job 5 blackholes Docker Hub and quay.io PART WAY THROUGH, and a cluster bring-up placed
+    #     after that line would fail on the node-image pull. Here the blackhole comes first, before
+    #     anything that needs an image, which is a stronger claim than job 5 can make.
+    #   - Wall clock is small and separable: cluster create 31-33s warm, image load ~2s, chart RBAC
+    #     ~2s, and the suite itself 8.1s for seven cases (measured locally, arm64/colima — the CI
+    #     runner is amd64 with different I/O, so treat these as the shape rather than the number).
+    #
+    # WHAT IT DELIBERATELY DOES NOT INSTALL: a CNI. kind's default kindnet does not enforce
+    # NetworkPolicy — re-measured for M23.2 with a known-positive control, a pod SELECTED by a
+    # deny-all-egress policy reached a public IP and a resolver exactly like an unselected one. A
+    # gate that asserted containment here would assert nothing, and installing Calico means its
+    # image, its rollout wait, and a manifest `scripts/airgap-drill.sh` still fetches from
+    # raw.githubusercontent.com at cluster-build time. NETWORK CONTAINMENT IS NOT GATED HERE and is
+    # not claimed to be; it stays with the scheduled air-gap drill, which already has the machinery.
+    runs-on: ubuntu-latest
+    needs: [static-checks, unit-tests, testcontainer-images]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: "Install Helm (BUILD_AND_TEST.md §1: 3.16+) — the harness renders the chart's own RBAC"
+        uses: azure/setup-helm@v4
+        with:
+          version: latest
+      - name: Install kind (binary only — this job creates its own cluster)
+        # PINNED, not `latest`. `tools/ci-mirror/images.list` pins `kindest/node:v1.36.1`, which is
+        # kind v0.32.0's default node image; a kind that defaulted elsewhere would either pull an
+        # unmirrored image (and fail under the blackhole below, correctly) or run a control plane
+        # nobody pinned. `install_only` means this action creates no cluster —
+        # `scripts/kind-runner-harness.sh` does, with the extraMount the shared workspace needs.
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+          version: v0.32.0
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Seed every mirrored image (kindest/node and the runner Jobs' alpine come from here)
+        run: scripts/ci-mirror.sh seed
+      - name: Deny the mirrored upstream registries for the rest of the job
+        # BEFORE THE CLUSTER IS CREATED, not after — which is what makes this job's offline claim
+        # stronger than job 5's. Everything the cluster and the Jobs need is now in the local image
+        # store under the exact tag they name, so a pull that still reaches outside CANNOT pass. If
+        # this step ever makes the job red, the fix is to mirror the image it revealed.
+        run: scripts/ci-mirror.sh blackhole
+      - name: Stand up the kind cluster and apply the chart's own runner RBAC
+        run: scripts/kind-runner-harness.sh up
+      - name: Drive the Kubernetes adapter against the real API server
+        # Its own script and its own vitest config: the suite FAILS rather than skips when no cluster
+        # is present (a `skipIf` is how a gate becomes a green job that ran nothing), so it must be
+        # reachable from exactly one place — here.
+        run: pnpm --filter @scp/runner-launcher test:kind
+      - name: Tear the cluster down
+        if: always()
+        run: scripts/kind-runner-harness.sh down
+
   integration:
     name: "5z. Integration (aggregation gate)"
     # LEVER 2: a single, stable status-check name for branch protection to require, standing in for
@@ -648,7 +720,18 @@ jobs:
     # relationship with integration-shard, so both are added as sibling `needs:` entries here
     # rather than folded into that job's chain.
     needs:
-      [integration-shard, helm-verify, prod-audit, e2e-m0, e2e-m4, e2e-m5, e2e-m6, e2e-m7, e2e-web]
+      [
+        integration-shard,
+        helm-verify,
+        prod-audit,
+        kind-runner-harness,
+        e2e-m0,
+        e2e-m4,
+        e2e-m5,
+        e2e-m6,
+        e2e-m7,
+        e2e-web
+      ]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -662,6 +745,7 @@ jobs:
             "integration-shard=${{ needs.integration-shard.result }}" \
             "helm-verify (4b)=${{ needs.helm-verify.result }}" \
             "prod-audit (5y)=${{ needs.prod-audit.result }}" \
+            "kind-runner-harness (4e)=${{ needs.kind-runner-harness.result }}" \
             "e2e-m0 (7)=${{ needs.e2e-m0.result }}" \
             "e2e-m4 (8)=${{ needs.e2e-m4.result }}" \
             "e2e-m5 (8b)=${{ needs.e2e-m5.result }}" \

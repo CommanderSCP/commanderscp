@@ -3,10 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
-import {
-  RUNNER_LAUNCHER_DEADLINE_ANNOTATION,
-  RUNNER_LAUNCHER_DEADLINE_LABEL
-} from "./index.js";
+import { RUNNER_LAUNCHER_DEADLINE_ANNOTATION, RUNNER_LAUNCHER_DEADLINE_LABEL } from "./index.js";
 
 const execFileAsync = promisify(execFile);
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

@@ -104,16 +104,19 @@ describe("M23.2: managed-dep, constructed the way production constructs it, hono
       kubernetes: { ...KUBERNETES_SETTINGS.kubernetes, io: recordingIo(seen) }
     });
     const ref = await plugin.trigger(ctx, intent("select-1"));
-    expect(seen, "the Kubernetes adapter was never reached — the plugin still defaults to Docker").toContain(
-      "POST /apis/batch/v1/namespaces/scp/jobs"
-    );
+    expect(
+      seen,
+      "the Kubernetes adapter was never reached — the plugin still defaults to Docker"
+    ).toContain("POST /apis/batch/v1/namespaces/scp/jobs");
     expect((await plugin.status(ctx, ref)).phase).toBe("failed");
   });
 
   it("WITH THE SELECTION ABSENT the Kubernetes io is NEVER touched — the default is unchanged", async () => {
     const seen: string[] = [];
     const plugin = createManagedDepExecutorPlugin();
-    const ctx = depCtx({ kubernetes: { ...KUBERNETES_SETTINGS.kubernetes, io: recordingIo(seen) } });
+    const ctx = depCtx({
+      kubernetes: { ...KUBERNETES_SETTINGS.kubernetes, io: recordingIo(seen) }
+    });
     await plugin.trigger(ctx, intent("select-2")).catch(() => undefined);
     expect(seen).toStrictEqual([]);
   });
