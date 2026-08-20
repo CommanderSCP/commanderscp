@@ -261,6 +261,7 @@ present and correct when enabled) so the next one cannot be forgotten silently.
 | `internalBaseUrl`              | `SCP_INTERNAL_BASE_URL`                                                   | How this instance names itself to a human — the CLI device-login URL.                    |
 | `api.role`                     | `SCP_ROLE` on the api pods                                                | `api` (default) or `all`.                                                                |
 | `managedDep.*`                 | `SCP_MANAGED_DEP_RUNNER_IMAGE` / `_WORKSPACE_ROOT`                        | M21.5 dependency-bump actuator. Empty image (default) = OFF, fail-closed at dispatch.    |
+| `managedRunners.*`             | `SCP_MANAGED_RUNNER_LAUNCHER` / `_K8S_*`                                  | M23.2. `docker` (default) = today's behaviour; `kubernetes` launches each run as a Job.  |
 
 **Still NOT settable, and why.** The retrans **byte plumbing** — `SCP_RELAY_OUT_DIR` / `IN_DIR` /
 `BLOB_OUT_DIR`, `SCP_RELAY_SOURCE_REPO` / `DEST_REPO` / `CERT_DIR`, and the `SCP_DELIVERY_ROOTS`
@@ -275,17 +276,32 @@ managed-DEP runner is NOT in that list: `managedDep.runnerImage` reaches
 `SCP_MANAGED_DEP_RUNNER_IMAGE`, because a class that cannot be switched on by any shipped
 deployment is a class whose charter clauses are enforced by nothing — ADR-0032 §8e.)
 
-**Corrected 2026-08-17 (M21.7).** "Reaches the env var" is not "can run", and the distinction was
-being blurred here. **No managed-execution runner — iac, scan or dep — can be launched by this
-chart at all**, whatever its values say. All three orchestrator plugins launch their runner with the
-docker CLI (`docker create` / `docker cp` / `docker start`): a pod has no docker socket, this chart
-deliberately mounts none, the scpd image ships no docker binary, and no Kubernetes-native launch
-mode exists yet (`templates/runner-iac.yaml`, "HONEST SCOPE"). So `managedDep.runnerImage` buys a
-failure at dispatch rather than a failure at config, and `managedIac.enabled` renders an RBAC +
-Job-template on-ramp nothing consumes. Managed execution runs on a compose/VM deployment today —
-which is why the air-gap `install.sh` prints the pinned runner refs under `--mode helm` as an
-inventory and prescribes no knob there: there is none to prescribe, and an instruction that
-silently does nothing is worse than silence.
+**Corrected 2026-08-17 (M21.7), and SUPERSEDED IN PART 2026-08-20 (M23.2) — read both.** The 2026-08-17
+correction said: "Reaches the env var" is not "can run", and **no managed-execution runner — iac,
+scan or dep — can be launched by this chart at all**, whatever its values say. That was exactly true
+of the chart as it then stood: all three plugins launched their runner with the docker CLI, a pod has
+no docker socket, this chart deliberately mounts none, the scpd image ships no docker binary, and no
+Kubernetes-native launch mode existed.
+
+**M23.2 closed the launch half and closed it behind a switch.** With `managedRunners.launcher:
+kubernetes` the three plugins launch each run as an ephemeral `batch/v1` Job through the API server
+(`@scp/runner-launcher`'s Kubernetes adapter), and the chart now renders the RBAC, the
+service-account token, the API-server egress allow and the injected settings that path needs — each
+of them gated by `tools/helm-verify` and exercised against a real cluster by CI job 4e. **The default
+is unchanged**: `launcher: docker` renders byte-for-byte what it rendered before, and the sentence
+above still describes it exactly.
+
+**WHAT IS STILL TRUE, and it is the part not to skim.** (i) The Kubernetes launcher requires an
+EXISTING **ReadWriteMany** PVC named in `managedRunners.kubernetes.workspace.claimName` — Kubernetes
+has no `docker cp`, so the runner's inputs and evidence move through a volume the worker and the Job
+both mount. The chart refuses to render without it rather than hanging. (ii) `--network none` is NOT
+honoured and cannot be; runner pods carry `scp.launcher.network=<requested mode>` so a NetworkPolicy
+can select them, which is traffic denial, not interface absence, and is fail-open on a CNI that does
+not enforce. (iii) `managed-iac` still cannot run on Kubernetes unless
+`managedRunners.kubernetes.perRunSecrets` is set, because its credentials need a per-run Secret and
+that RBAC grant is opt-in; `managed-scan` and `managed-dep` hold no credential and are unaffected.
+(iv) `SCP_MANAGED_SCAN_RUNNER_IMAGE` STILL HAS NO CHART VALUE — that gap is M23.3's, and it is
+unchanged by any of the above: managed-scan cannot be switched on by this chart on either substrate.
 
 ## Other known gaps (honestly flagged, not silently worked around)
 
