@@ -1,6 +1,6 @@
 # ADR-0035: Managed execution — credential exposure, orphan containers, and the enforcement layering that catches neither
 
-**Status:** **Accepted (2026-08-18)**, **amended 2026-08-18 (M23.1e, Decision 5)** — four decision points decided by the owner on 2026-08-18, before this milestone's code was written; a fifth records the whole-run budget that M23.1e added, which amends Decisions 2 and 3 and closes Defect 4. Three fixes land in M23.1 and M23.2 (pending). **This ADR records the defects found in production (managed-iac live on main, credential-readable from host process table and `docker inspect`; the 10-second SIGKILL defeating every run over 10 seconds; orphaned containers from crash-killed subprocesses), their fixes, and the fundamental enforcement-layering reason none of it was caught by any existing test.**
+**Status:** **Accepted (2026-08-18)**, **amended 2026-08-18 (M23.1e, Decision 5)**, **amended 2026-08-20 (M23.4, Decision 6 — the per-run Secret grant)** — four decision points decided by the owner on 2026-08-18, before this milestone's code was written; a fifth records the whole-run budget that M23.1e added, which amends Decisions 2 and 3 and closes Defect 4. Three fixes land in M23.1 and M23.2 (pending). **This ADR records the defects found in production (managed-iac live on main, credential-readable from host process table and `docker inspect`; the 10-second SIGKILL defeating every run over 10 seconds; orphaned containers from crash-killed subprocesses), their fixes, and the fundamental enforcement-layering reason none of it was caught by any existing test.**
 
 **Numbering:** this ADR was authored as 0034 and renumbered to **0035** by agreement with the
 concurrent `claude/ui-review-worktree-efc42b` branch on 2026-08-18. Three branches independently claimed
@@ -112,6 +112,47 @@ Every container now carries:
 
 **What the reaper does NOT do (still open).** Nothing sweeps the reap labels' OWNER identity for a replica that scales down permanently — its containers become reapable only once their deadline passes, same as a crash, which is correct but means a deliberate scale-down is not distinguishable from a crash for sweep-latency purpose. `abort()` head-of-line-blocked by a long `trigger()` (Defect 2 still open) remains unfixed.
 
+### 6. The per-run Secret grant on Kubernetes (M23.4, owner decision 2026-08-20)
+
+**Granted. `secrets: create,delete` on the worker ServiceAccount, rendered by the chart's DEFAULT, is Accepted.** Owner decision, verbatim: *"Grant the secrets RBAC, keep going."*
+
+**What it decides.** M23.2 built the Kubernetes half of Decision 1's `env`/`secretEnv` split — `secretEnv` reaching a pod as a per-run Secret plus `envFrom.secretRef` — and shipped it as a *declared, disabled capability*: `managedRunners.kubernetes.perRunSecrets` defaulted to `false`, the chart rendered no `secrets` rule, and a spec carrying a non-empty `secretEnv` was refused at step `secret-env` with a sentence naming the value. That was correct while the grant was undecided, and it had a cost that is the whole reason to end it: **`managed-iac` is the only class that populates `secretEnv`, so it could not run on Kubernetes at all.** With this decision the default is `true`.
+
+**The scope of the grant, and the omissions are measurements rather than tidiness:**
+
+| Verb | Granted | Why |
+|---|---|---|
+| `create` on `""/secrets` | yes | One POST per run that carries a credential. |
+| `delete` on `""/secrets` | yes | Teardown's fast path, and `reap()`'s sweep of a dead peer's run. |
+| `get` | **no** | A filterless read of every `SECRETS_PATH` use in `kubernetes-adapter.ts` finds one POST and two DELETEs and no GET. M23.2's own comment said "create,get,delete"; the code never needed the middle verb. |
+| `list` | **no** | A refusal, not an omission: `list` on secrets returns every Secret **body** in the namespace, including the release's own database password. The reap sweep is built to work without it — it lists **Jobs**, which are not secret, and derives the Secret's name from the Job's. |
+| `update`/`patch` on `jobs/finalizers` | **no** | What `blockOwnerDeletion: true` would have cost; the ownership edge below sets it `false` instead. |
+
+**`resourceNames` is not expressible, and that is stated rather than left as a silence.** Per-run Secret names derive from `runId`, so the set is unbounded — and Kubernetes RBAC cannot restrict a `create` by `resourceNames` under **any** circumstances, because the object's name is not known to the authorizer at admission time. The grant is therefore namespace-wide on `secrets`. **The narrowing that IS available is deployment-shaped:** `managedRunners.kubernetes.namespace` puts the runner Jobs, their Secrets, the Role and the RoleBinding in a namespace of the runners' own, away from the release's own Secrets. That is the recommended shape for anything holding real cloud credentials, and it did not work before M23.4 — the Role rendered unconditionally into `.Release.Namespace` while the adapter created Jobs in the configured one, so setting the value produced a silent 403 on every launch.
+
+**The credential's lifetime is the cluster's obligation, not a `finally`'s.** Decision 1's Docker arm unlinks the `--env-file` in a `finally`, and M23.1d found the hole in that: **no `finally` survives a SIGKILL**, and the plugin host's hang detector kills a subprocess mid-`trigger()`. On Docker the answer had to be a sweep, because a file has no owner. A Kubernetes object has one, so the answer here is `ownerReferences` — and it costs an ordering change that is part of this decision:
+
+- **The Job is POSTed first and the Secret second.** M23.2 had it the other way round (the Secret staked the run's name). An `ownerReference` needs the owner's uid, so the owner must exist first.
+- **The Secret references the Job by `uid`**, with `controller: false` and `blockOwnerDeletion: false`. Deleting the Job — by teardown, by `ttlSecondsAfterFinished`, by an operator, or by a successor launcher's `reap()` — makes the Secret garbage. **A create response with no `metadata.uid` refuses the run** rather than falling back to an unowned Secret.
+- **The `finally` stays, demoted to what it is:** a latency optimisation over a guarantee that no longer depends on it.
+- **A 409 on the Secret POST changed meaning.** It used to mean "another run holds this runId, touch nothing". It is now reachable only *after* a Job POST that did not 409, so it means "this run owns the name and there is orphan debris behind it whose owning Job is gone": tear down the Job this run created, delete nothing this run did not create, and let the collector take the debris — which makes the retry succeed rather than loop on the same 409 forever.
+
+### 6a. THE COMBINATION THE OWNER ACCEPTED, named rather than footnoted
+
+Granting the RBAC does not only add a Secret. It adds a Secret **to a runner that already keeps a routable network interface**, and the two compound. Both halves were surfaced by M23.2 rather than resolved, and by granting, the owner accepted them **together**:
+
+1. **`--network none` is not honoured on Kubernetes and cannot be** (Decision recorded at M23.2, owner decision 1). No pod-spec field, annotation, `securityContext` or RuntimeClass removes a pod's network namespace. The strongest portable substitute is a deny-all-egress NetworkPolicy, which is **traffic denial, not interface absence** — and it is **fail-open on a CNI that does not enforce**. That is measured, not assumed: on kind + kindnet, a pod *selected* by a deny-all-egress policy reached a public IP and a resolver, indistinguishable from an unselected control. The adapter therefore carries the resolved mode as the pod label `scp.launcher.network` and **claims nothing**.
+2. **A per-run Secret is at rest in etcd for the Job's life**, and in every etcd backup — longer-lived and more replicated than the mode-0600 `--env-file` it replaces, which lived for one `docker create`.
+
+**The combination, stated plainly: on a cluster whose CNI does not enforce NetworkPolicy, a managed-iac runner holds a real cloud credential in its environment AND has an egress path to the internet.** On the Docker path `--network none` denied that path outright. This is a genuine reduction in containment for that deployment shape, and it is accepted because:
+
+- **The alternative was not "a safer credential" but "no managed-iac on Kubernetes at all."** Refusing left the class dead on the substrate the product ships a Helm chart for, and pushed operators toward the docker-socket mount this chart explicitly refuses to paper over — a container-escape risk strictly worse than either half of this combination.
+- **The credential is scoped and vaulted already** (charter Managed Execution Exception: "vaulted scoped credentials", per run, never tenant- or server-wide). What egress buys an attacker is bounded by that scope, not by the credential class.
+- **The degradation is a property of the operator's CNI, not of this product**, and it is *observable* rather than hidden: the pod carries `scp.launcher.network=none` precisely so a policy written against that selector never silently selects nothing. An operator on Calico/Cilium loses nothing.
+- **The etcd exposure is the lesser of the two available spellings.** The rejected alternative — `env[].value` — puts the same credential in the same etcd with no lifetime bound at all, and the adapter refuses to fall back to it even when the Secret path is unavailable.
+
+**What is NOT accepted, and remains open:** enforcing `--network none` equivalence on Kubernetes (already listed under Consequences → Later, item 2). Granting the Secret RBAC makes that item **more** urgent, not less, and it is the thing to fix if this combination is ever judged unacceptable. Nothing in this decision should be read as closing it.
+
 ### 5. The whole-run budget (M23.1e), which amends Decisions 2 and 3
 
 **`RunnerSpec.timeoutMs` is the WHOLE-RUN budget, and that is Accepted.** Not three constants re-sized: the property was *a per-call bound being used as a whole-run bound*, and three sites means the boundary is wrong, not that there are three edits.
@@ -144,10 +185,17 @@ Every container now carries:
 4. The per-method budget removes the 10-second SIGKILL (M23.1c).
 5. Orphaned containers from prior crashes are swept on each `run()` (M23.1d).
 
+### Immediate (M23.4)
+
+1. `managedRunners.kubernetes.perRunSecrets` defaults to **true**; the chart renders `secrets: create,delete` and managed-iac launches on Kubernetes.
+2. The per-run Secret is owned by its Job (`ownerReferences`), so its deletion survives a SIGKILL of the launcher. Proved on a real cluster on the success path, the failure path, and by deleting the Job out from under a live run.
+3. The credential path is proved end to end in-cluster — a real value reaching the runner's environment and appearing in no argv, no log, and no API object a reader can list — with a non-vacuity control that delivers the same value as `env[].value` and requires the sweep to find it.
+4. Three chart defects found by granting it "for all three managed classes": the runner Role was gated on `managedIac.enabled` (so managed-dep and managed-scan got a token and no RBAC), `managedScan.runnerImage` did not exist at all, and the Role ignored `managedRunners.kubernetes.namespace`.
+
 ### Later
 
 1. **M23.2** must add a Kubernetes adapter that uses the same `secretEnv`/`env` split, proving the port's axis was correct.
-2. **M23.2** must enforce `--network none` equivalence on the Kubernetes path (a deny-all-egress NetworkPolicy), making the network isolation symmetry real.
+2. **M23.2** must enforce `--network none` equivalence on the Kubernetes path (a deny-all-egress NetworkPolicy), making the network isolation symmetry real. **Still open, and Decision 6 raised its priority rather than lowering it:** the runner now holds a mounted credential as well as a routable interface, so the fail-open CNI case is the combination named in §6a.
 3. **Defect 2 (managed-scan, still open)** — the plugin's outer error handling must be fixed to record every failure, in the same shape managed-iac and managed-dep now use.
 4. **Defect 3 (promotion-scan-step in-process call)** — must route through the plugin host, or be split into a separate executor type with its own per-method budget.
 5. **M24.3+** — the audit event this work creates (federation.promotion.scan.runner_failed) must be wired to an operator UI so the bypass of Defect 2's outcome recording is visible.

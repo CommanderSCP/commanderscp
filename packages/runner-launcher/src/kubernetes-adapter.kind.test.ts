@@ -70,8 +70,11 @@ const execFileAsync = promisify(execFile);
 
 interface Harness {
   namespace: string;
-  secretsNamespace: string;
-  secretsToken: string;
+  /** The OPT-OUT namespace: the same chart rendered at `perRunSecrets=false`. See the harness script
+   *  for why this pair's polarity inverted in M23.4 — `namespace` above is now the one WITH the
+   *  grant, because that is what the chart's defaults produce since the owner took the decision. */
+  noSecretsNamespace: string;
+  noSecretsToken: string;
   apiBase: string;
   token: string;
   caFile: string;
@@ -147,19 +150,21 @@ function io(token: string = ""): KubernetesRunnerIo {
 }
 
 function launcher(over: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {}) {
-  // THE SECRET CASE RUNS IN THE NAMESPACE WHOSE RBAC THE CHART RENDERED AT
-  // `perRunSecrets=true`, and with THAT namespace's token — so the capability is exercised under
-  // exactly the grant a `helm install --set managedRunners.kubernetes.perRunSecrets=true` makes,
-  // not under a permission the harness handed itself.
-  const secrets = over.perRunSecrets === true;
+  // EVERY CASE RUNS UNDER RBAC THE CHART RENDERED, NEVER UNDER A PERMISSION THE HARNESS HANDED
+  // ITSELF — that is the whole reason owner decision 3 required a real cluster ("a fake authorises
+  // everything"). The default namespace carries the chart's DEFAULT render, which since M23.4 means
+  // the per-run Secret grant is present; `perRunSecrets: false` switches to the namespace rendered
+  // at that value, and to that namespace's own token, so an opt-out case is exercised under exactly
+  // the grant a `helm install --set managedRunners.kubernetes.perRunSecrets=false` makes.
+  const optedOut = over.perRunSecrets === false;
   return createKubernetesRunnerLauncher({
-    namespace: secrets ? harness.secretsNamespace : harness.namespace,
+    namespace: optedOut ? harness.noSecretsNamespace : harness.namespace,
     workspaceRoot: harness.workspaceHost,
     workspaceVolume: { kind: "hostPath", path: harness.nodeWorkspace },
-    perRunSecrets: secrets,
+    perRunSecrets: !optedOut,
     runAsNonRoot: over.runAsNonRoot === true,
     pollIntervalMs: 500,
-    io: io(secrets ? harness.secretsToken : harness.token)
+    io: io(optedOut ? harness.noSecretsToken : harness.token)
   });
 }
 
@@ -294,14 +299,40 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `the chart's runner Role does not grant ${verb} on ${resource}`
       ).toBe("yes");
     }
-    // THE NEGATIVE CONTROL. Every assertion above is "the answer was yes", which is also what a
-    // broken `canI` that always returned "yes" would produce, and what a `--as` that silently fell
-    // back to the cluster-admin kubeconfig would produce too. `secrets` is the one thing the chart
-    // does NOT grant unless `managedRunners.kubernetes.perRunSecrets` is set, and the harness leaves
-    // it unset — so this must be "no", and its being "no" is what makes the yeses mean something.
+    // THE GRANT THE OWNER TOOK, ASKED FOR BY NAME (M23.4). Two verbs, in the DEFAULT namespace,
+    // because the chart's default is what an operator installs.
+    for (const verb of ["create", "delete"]) {
+      expect(
+        await canI(verb, "secrets", sa),
+        `the chart's DEFAULT render does not grant ${verb} on secrets — managed-iac cannot run on Kubernetes without it, which is the state the owner's 2026-08-20 grant exists to end`
+      ).toBe("yes");
+    }
+    // AND THE TWO VERBS IT DID NOT. These are narrowness assertions AND the negative controls in one:
+    // every assertion above is "the answer was yes", which is also what a broken `canI` that always
+    // returned "yes" would produce, and what a `--as` that silently fell back to the cluster-admin
+    // kubeconfig would produce too. A cluster-admin fallback answers "yes" to `list secrets`; the
+    // real Role does not, so these "no"s are what make the yeses mean something.
+    for (const verb of ["list", "get"]) {
+      expect(
+        await canI(verb, "secrets", sa),
+        `the runner Role grants '${verb}' on secrets. The adapter issues one POST and two DELETEs and no GET, and a 'list' returns every Secret BODY in the namespace including the release's database password — neither is part of what was granted`
+      ).toBe("no");
+    }
+    // THE OPT-OUT NAMESPACE STILL RENDERS NOTHING, which is the arm that catches a chart change
+    // granting `secrets` unconditionally regardless of the value.
+    const optedOutSa = `system:serviceaccount:${harness.noSecretsNamespace}:scp-runner-harness`;
+    const optedOut = await kubectlIn(
+      harness.noSecretsNamespace,
+      "auth",
+      "can-i",
+      "create",
+      "secrets",
+      "--as",
+      optedOutSa
+    ).catch((err: { stdout?: string }) => String(err.stdout ?? "no"));
     expect(
-      await canI("create", "secrets", sa),
-      "the runner Role grants `secrets: create` with perRunSecrets off — the declared-and-disabled capability is not disabled"
+      optedOut.trim(),
+      "perRunSecrets=false still grants `secrets: create` — the opt-out grants the privilege it says it declines"
     ).toBe("no");
   }, 60_000);
 
@@ -402,43 +433,52 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     }
   }, 120_000);
 
-  it("THE DISABLED CAPABILITY WORKS WHEN THE CHART ENABLES IT — a real Secret, a real envFrom", async () => {
-    // "WIRED, TESTED, AND OFF" IS TWO CLAIMS AND THE SECOND ONE ROTS IF NOTHING EXERCISES IT. The
-    // RBAC case above proves the grant is ABSENT with `perRunSecrets` unset (its `secrets: create`
-    // negative control). This proves the same chart value, SET, produces a grant the adapter's
-    // Secret path actually works under — end to end, against a real API server: the Secret is
-    // POSTed and accepted, `envFrom.secretRef` delivers the value into the container's environment,
-    // and teardown deletes it. Without this, the day the owner takes the RBAC decision the code
-    // would be reached for the first time in production.
-    const sa = `system:serviceaccount:${harness.secretsNamespace}:scp-runner-harness`;
-    const out = await kubectlIn(
-      harness.secretsNamespace,
-      "auth",
-      "can-i",
-      "create",
-      "secrets",
-      "--as",
-      sa
-    ).catch((err: { stdout?: string }) => String(err.stdout ?? "no"));
-    expect(
-      out.trim(),
-      "perRunSecrets=true rendered no `secrets` grant — the capability cannot be turned on at all"
-    ).toBe("yes");
+  // ================================================================================================
+  // M23.4 — THE IN-CLUSTER CREDENTIAL PATH, WHICH M23.2 SAID IT COULD NOT PROVE
+  // ================================================================================================
+  //
+  // M23.2 shipped `secretEnv` as a declared, DISABLED capability and listed the in-cluster credential
+  // path as one of the two things it could not prove: the grant did not exist, so the code could only
+  // be exercised in a namespace the harness had opted into, and nothing showed what a real credential
+  // does on the way through. With the owner's grant (2026-08-20) it is provable, so these cases prove
+  // it — a real value, delivered through a per-run Secret, reaching the runner's environment, and
+  // appearing in NO argv, NO log, NO API object a reader can list, and nothing left behind.
+  //
+  // EVERY SWEEP HERE HAS A NON-VACUITY CONTROL, and the last case in this block IS that control: the
+  // same probe, run against a credential deliberately delivered the WRONG way (`env[].value`), must
+  // FIND it. A sweep that cannot fail is a sweep that proves nothing, and this suite has already been
+  // bitten by tests that were green for the wrong reason.
 
-    // A LEFTOVER SECRET FROM AN EARLIER RUN 409s THIS ONE, and that is not a test artefact — it is
-    // the production hazard, observed: a SIGKILLed run leaves its Secret behind and the retry, which
-    // addresses the SAME name because `runId` is retry-stable, is correctly refused as "another run
-    // holds this runId" until `reap()` collects it on its deadline. This case is about the delivery
-    // path, so it clears the ground first rather than asserting through that.
-    await kubectlIn(
-      harness.secretsNamespace,
-      "delete",
-      "secret",
-      "scp-runner-secretenv-env",
-      "--ignore-not-found"
+  /** Everything a reader with `get`/`list` on this namespace can see, as one string to sweep. */
+  async function readableSurface(ns: string): Promise<string> {
+    const parts = await Promise.all(
+      [
+        ["get", "jobs", "-o", "json"],
+        ["get", "pods", "-o", "json"],
+        ["get", "events", "-o", "json"],
+        ["get", "secrets", "-o", "name"]
+      ].map((args) => kubectlIn(ns, ...args).catch(() => ""))
     );
+    return parts.join("\n");
+  }
 
-    const result = await launcher({ perRunSecrets: true }).run(
+  /** Polls until `predicate` holds or the budget runs out. Returns whether it held. */
+  async function until(predicate: () => Promise<boolean>, budgetMs = 30_000): Promise<boolean> {
+    const deadline = Date.now() + budgetMs;
+    while (Date.now() < deadline) {
+      if (await predicate().catch(() => false)) return true;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return false;
+  }
+
+  it("THE CREDENTIAL REACHES THE RUNNER AND APPEARS IN NOTHING A READER CAN LIST", async () => {
+    const ns = harness.namespace;
+    await kubectlIn(ns, "delete", "secret", "scp-runner-secretenv-env", "--ignore-not-found");
+
+    // SLOW ENOUGH TO BE OBSERVED. The sweep has to look at the Job and the pod WHILE THEY EXIST —
+    // teardown deletes them, so a post-hoc `kubectl get` would find nothing and pass vacuously.
+    const running = launcher().run(
       spec({
         runId: "secretenv",
         labels: { "scp.run-id": "secretenv" },
@@ -448,21 +488,174 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         operands: [
           "/bin/sh",
           "-c",
-          'test -n "$AWS_SECRET_ACCESS_KEY" && echo "len=${#AWS_SECRET_ACCESS_KEY}"'
+          'test -n "$AWS_SECRET_ACCESS_KEY" && echo "len=${#AWS_SECRET_ACCESS_KEY}" && sleep 6'
         ],
         secretEnv: [`AWS_SECRET_ACCESS_KEY=${CREDENTIAL}`]
       })
     );
+
+    // SNAPSHOT MID-RUN, and assert the snapshot is not empty before trusting what it does not
+    // contain — "the credential is not in this string" is trivially true of the empty string.
+    const appeared = await until(async () =>
+      (await kubectlIn(ns, "get", "jobs", "-o", "name")).includes("scp-runner-secretenv")
+    );
+    expect(appeared, "the Job never appeared, so the sweep below would have swept nothing").toBe(
+      true
+    );
+    const surface = await readableSurface(ns);
+    expect(surface).toContain("scp-runner-secretenv");
+
+    // (1) NOT IN ANY API OBJECT A READER CAN LIST. The Job carries the container's `args` (this
+    //     adapter's argv), its `env`, its labels and its annotations; the pod carries the resolved
+    //     spec; events carry the kubelet's own messages. The credential is in exactly one object —
+    //     the Secret — and a `get secrets -o name` proves the sweep saw that namespace at all
+    //     without reading a single body.
+    expect(surface).not.toContain(CREDENTIAL);
+    expect(surface).not.toContain(Buffer.from(CREDENTIAL, "utf8").toString("base64"));
+
+    // (2) THE SECRET IS OWNED BY THE JOB, IN A REAL CLUSTER'S OWN VIEW OF IT. This is the assertion
+    //     that makes every deletion case below a consequence rather than a coincidence: the API
+    //     server accepted the ownerReference, resolved it to a live Job, and did NOT collect it.
+    const ownerJson = await kubectlIn(
+      ns,
+      "get",
+      "secret",
+      "scp-runner-secretenv-env",
+      "-o",
+      "jsonpath={.metadata.ownerReferences[0]}"
+    );
+    const owner = JSON.parse(ownerJson) as Record<string, unknown>;
+    expect(owner.kind).toBe("Job");
+    expect(owner.name).toBe("scp-runner-secretenv");
+    expect(owner.blockOwnerDeletion).toBe(false);
+    const jobUid = (
+      await kubectlIn(ns, "get", "job", "scp-runner-secretenv", "-o", "jsonpath={.metadata.uid}")
+    ).trim();
+    // THE UID IS THE LIVE JOB'S, not a plausible-looking string. An ownerReference whose uid does
+    // not resolve makes the collector delete the Secret out from under a running pod.
+    expect(owner.uid).toBe(jobUid);
+
+    const result = await running;
+
+    // (3) IT ARRIVED INTACT. Derived, not counted by hand — an earlier draft hardcoded 27 for a
+    //     28-character string and reddened on the arithmetic instead of on the behaviour.
     expect(result.succeeded, `the run failed: ${JSON.stringify(result.failure)}`).toBe(true);
-    // DERIVED, NOT COUNTED BY HAND — the first draft hardcoded 27 for a 28-character string and the
-    // test reddened on the arithmetic rather than on the behaviour. The property is that the value
-    // reached the container INTACT through the Secret, so the length is the value's own.
-    expect(result.stdout.trim()).toBe(`len=${CREDENTIAL.length}`);
+    expect(result.stdout).toContain(`len=${CREDENTIAL.length}`);
+
+    // (4) NOT IN THE RUN'S OWN OUTPUT, which is what reaches a Decision record and an operator's
+    //     screen.
     expect(result.stdout).not.toContain(CREDENTIAL);
-    // AND ITS LIFETIME IS THE RUN'S, not `ttlSecondsAfterFinished`.
-    const secrets = await kubectlIn(harness.secretsNamespace, "get", "secrets", "-o", "name");
-    expect(secrets).not.toContain("scp-runner-secretenv-env");
-  }, 120_000);
+    expect(result.stderr).not.toContain(CREDENTIAL);
+
+    // (5) AND NOTHING IS LEFT BEHIND — the success path of the credential's lifetime.
+    expect(await kubectlIn(ns, "get", "secrets", "-o", "name")).not.toContain(
+      "scp-runner-secretenv-env"
+    );
+    expect(await kubectlIn(ns, "get", "jobs", "-o", "name")).not.toContain("scp-runner-secretenv");
+  }, 180_000);
+
+  it("FAILURE PATH: a runner that exits non-zero leaves no Secret either", async () => {
+    // THE COMMON CASE FOR managed-iac — a `tofu apply` a policy refused — so a credential lifetime
+    // that only holds on success is a credential lifetime that mostly does not hold.
+    const ns = harness.namespace;
+    await kubectlIn(ns, "delete", "secret", "scp-runner-secretfail-env", "--ignore-not-found");
+    const result = await launcher().run(
+      spec({
+        runId: "secretfail",
+        labels: { "scp.run-id": "secretfail" },
+        operands: ["/bin/sh", "-c", 'test -n "$AWS_SECRET_ACCESS_KEY" && exit 7'],
+        secretEnv: [`AWS_SECRET_ACCESS_KEY=${CREDENTIAL}`]
+      })
+    );
+    expect(result.succeeded).toBe(false);
+    expect(result.failure!.kind).toBe("exit-nonzero");
+    expect(result.failure!.code).toBe(7);
+    // AND THE FAILURE RECORD IS CLEAN. This is the one that travels furthest — into a Decision row,
+    // into an audit event, into a support ticket.
+    expect(JSON.stringify(result.failure)).not.toContain(CREDENTIAL);
+    expect(await kubectlIn(ns, "get", "secrets", "-o", "name")).not.toContain(
+      "scp-runner-secretfail-env"
+    );
+  }, 180_000);
+
+  it("THE LAUNCHER DYING MID-RUN: the API SERVER deletes the Secret, with no `finally` involved", async () => {
+    // THE ONE THAT MATTERS, AND THE WHOLE REASON FOR THE ORDERING CHANGE. M23.1d's lesson is that no
+    // `finally` survives a SIGKILL: the plugin host's hang detector kills a subprocess mid-`trigger()`
+    // and nothing in that process runs again. Docker had no analogue for `ownerReferences`, so the
+    // answer there had to be a sweep. Here the deletion is the cluster's obligation, and this case
+    // proves it the only way that means anything — by taking the launcher out of the picture and
+    // watching the Secret go anyway.
+    //
+    // THE JOB IS DELETED FROM OUTSIDE, which is what `ttlSecondsAfterFinished`, an operator's
+    // `kubectl delete job`, and a SUCCESSOR process's `reap()` all reduce to. The launcher's own
+    // teardown never runs against this object — its subsequent DELETE 404s, which is why the run's
+    // rejection is caught and discarded.
+    const ns = harness.namespace;
+    await kubectlIn(ns, "delete", "secret", "scp-runner-sigkill-env", "--ignore-not-found");
+    const abandoned = launcher()
+      .run(
+        spec({
+          runId: "sigkill",
+          labels: { "scp.run-id": "sigkill" },
+          operands: ["/bin/sh", "-c", 'test -n "$AWS_SECRET_ACCESS_KEY" && sleep 120'],
+          secretEnv: [`AWS_SECRET_ACCESS_KEY=${CREDENTIAL}`],
+          timeoutMs: 30_000
+        })
+      )
+      .catch(() => undefined);
+
+    const live = await until(async () =>
+      (await kubectlIn(ns, "get", "secrets", "-o", "name")).includes("scp-runner-sigkill-env")
+    );
+    expect(live, "the per-run Secret never existed, so its disappearance proves nothing").toBe(true);
+
+    await kubectlIn(ns, "delete", "job", "scp-runner-sigkill", "--wait=false");
+
+    // NOT AN IMMEDIATE READ. Garbage collection is asynchronous by design, and asserting "gone the
+    // instant the Job DELETE returns" would be asserting an implementation detail of the collector
+    // rather than the guarantee, which is that the credential's life is BOUNDED by the Job's.
+    const collected = await until(
+      async () =>
+        !(await kubectlIn(ns, "get", "secrets", "-o", "name")).includes("scp-runner-sigkill-env"),
+      60_000
+    );
+    expect(
+      collected,
+      "the per-run Secret outlived the Job that owned it. That is the M23.1d credential-lifetime defect, reappearing on the Kubernetes adapter and in a worse place than a mode-0600 file: etcd, and every etcd backup"
+    ).toBe(true);
+
+    await abandoned;
+  }, 180_000);
+
+  it("THE NON-VACUITY CONTROL: the same sweep FINDS a credential delivered the wrong way", async () => {
+    // WITHOUT THIS CASE EVERY "not.toContain(CREDENTIAL)" ABOVE IS UNFALSIFIABLE. A typo in the
+    // constant, a `kubectlIn` that silently returned "", a namespace with nothing in it — all three
+    // produce a clean sweep. So: deliver the SAME value the way the port exists to prevent
+    // (`env[].value`, which is what a fallback would do), run the identical probe, and require it to
+    // HIT. If this case ever goes green-by-passing, the sweep is broken and the cases above are lies.
+    const ns = harness.namespace;
+    const leaky = launcher().run(
+      spec({
+        runId: "leakprobe",
+        labels: { "scp.run-id": "leakprobe" },
+        operands: ["/bin/sh", "-c", 'test -n "$AWS_SECRET_ACCESS_KEY" && sleep 6'],
+        // THE WRONG DELIVERY, ON PURPOSE, AND ONLY HERE. `env` is plain `env[].value` on the pod
+        // spec: readable by anyone with `get jobs`, and in etcd and every etcd backup. This is the
+        // fallback the adapter REFUSES to make on its own.
+        env: [`AWS_SECRET_ACCESS_KEY=${CREDENTIAL}`]
+      })
+    );
+    const appeared = await until(async () =>
+      (await kubectlIn(ns, "get", "jobs", "-o", "name")).includes("scp-runner-leakprobe")
+    );
+    expect(appeared, "the control run's Job never appeared").toBe(true);
+    const surface = await readableSurface(ns);
+    expect(
+      surface,
+      "the sweep did NOT find a credential that is sitting in plaintext on the pod spec. The probe is broken, and every 'the credential is nowhere' assertion in this file is therefore worthless"
+    ).toContain(CREDENTIAL);
+    await leaky;
+  }, 180_000);
 
   it("`reap()` DELETES A FOREIGN, EXPIRED JOB AND LEAVES A LIVE ONE — against a real listing", async () => {
     const dead = "scp-runner-reap-dead";

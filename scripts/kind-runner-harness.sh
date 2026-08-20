@@ -138,6 +138,12 @@ EOF
   # `--set serviceAccount.name` points the chart's RoleBinding at the harness SA, so what is bound is
   # exactly the Role `deploy/helm/templates/runner-iac.yaml` renders. A verb the adapter needs and
   # the chart does not grant is then a 403 in the test rather than a surprise in production.
+  #
+  # THE SETTINGS ARE THE CHART'S DEFAULTS AND NOTHING IS OVERRIDDEN HERE, which is the whole point of
+  # this namespace after M23.4: `managedRunners.kubernetes.perRunSecrets` now defaults to TRUE (the
+  # owner's grant, 2026-08-20), so what this SA gets is what a `helm install` gives a real operator.
+  # If a future change silently removed the `secrets` rule from the DEFAULT render, the credential
+  # case below would 403 here — which is exactly where a test should find out.
   helm template scp "${REPO_ROOT}/deploy/helm" \
     --namespace "$NAMESPACE" \
     --set managedIac.enabled=true \
@@ -146,29 +152,31 @@ EOF
     --show-only templates/runner-iac.yaml \
     | kubectl apply -n "$NAMESPACE" -f -
 
-  # A SECOND NAMESPACE WITH THE CAPABILITY TURNED ON. `managedRunners.kubernetes.perRunSecrets` is a
-  # DECLARED, DISABLED capability: the namespace above proves it is off (its SA cannot create a
-  # Secret, which is the negative control that makes the other RBAC assertions mean something). This
-  # one proves the same chart value, set, produces a grant the adapter's Secret path actually works
-  # under — otherwise "wired and off" is only half checked, and the half that is never exercised is
-  # the half that rots. Same chart, same template, one value different.
-  log "creating the perRunSecrets namespace + ServiceAccount, with the chart's RBAC AT THAT SETTING"
-  kubectl create namespace "${NAMESPACE}-secrets"
-  kubectl -n "${NAMESPACE}-secrets" create serviceaccount scp-runner-harness
+  # A SECOND NAMESPACE WITH THE CAPABILITY TURNED OFF — AND THE POLARITY OF THIS PAIR INVERTED IN
+  # M23.4, which is worth a sentence because a reader of the old comment would have it backwards.
+  # While the grant was undecided the DEFAULT namespace was the one without `secrets` and this second
+  # one proved the opt-IN worked. The owner granted the RBAC, so the default namespace above now
+  # carries it and this one proves the opt-OUT still renders nothing — the negative control that
+  # makes every "can-i ... yes" in the suite mean something, and the arm that catches a chart change
+  # which granted `secrets` unconditionally regardless of the value. Same chart, same template, one
+  # value different; only which one is the odd one out has changed.
+  log "creating the perRunSecrets=false namespace + ServiceAccount, with the chart's RBAC AT THAT SETTING"
+  kubectl create namespace "${NAMESPACE}-nosecrets"
+  kubectl -n "${NAMESPACE}-nosecrets" create serviceaccount scp-runner-harness
   helm template scp "${REPO_ROOT}/deploy/helm" \
-    --namespace "${NAMESPACE}-secrets" \
+    --namespace "${NAMESPACE}-nosecrets" \
     --set managedIac.enabled=true \
     --set managedIac.runnerImage="$RUNNER_IMAGE" \
-    --set managedRunners.kubernetes.perRunSecrets=true \
+    --set managedRunners.kubernetes.perRunSecrets=false \
     --set serviceAccount.name=scp-runner-harness \
     --show-only templates/runner-iac.yaml \
-    | kubectl apply -n "${NAMESPACE}-secrets" -f -
+    | kubectl apply -n "${NAMESPACE}-nosecrets" -f -
 
   log "minting a ServiceAccount token and extracting the cluster CA"
   local token ca_file api_base
   token="$(kubectl -n "$NAMESPACE" create token scp-runner-harness --duration=2h)"
-  local secrets_token
-  secrets_token="$(kubectl -n "${NAMESPACE}-secrets" create token scp-runner-harness --duration=2h)"
+  local nosecrets_token
+  nosecrets_token="$(kubectl -n "${NAMESPACE}-nosecrets" create token scp-runner-harness --duration=2h)"
   ca_file="${WORKDIR}/cluster-ca.crt"
   kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' \
     | base64 -d >"$ca_file"
@@ -178,8 +186,8 @@ EOF
 {
   "cluster": "${CLUSTER_NAME}",
   "namespace": "${NAMESPACE}",
-  "secretsNamespace": "${NAMESPACE}-secrets",
-  "secretsToken": "${secrets_token}",
+  "noSecretsNamespace": "${NAMESPACE}-nosecrets",
+  "noSecretsToken": "${nosecrets_token}",
   "apiBase": "${api_base}",
   "token": "${token}",
   "caFile": "${ca_file}",
