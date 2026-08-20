@@ -914,6 +914,13 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
        a non-vacuity control.
     5. Every gate leaf survives at every size, asserted **through the reader** (`stageDependencyVerdict`,
        `resolveReleasedVersion`) — never through a row length, which is what let three of these ship.
+    6. The **1-in-119 failure pass 11 saw in `packages/runner-launcher`** is caught or retired. Still open:
+       pass 13 identified a *different* flake (`cel-sandbox.test.ts > evaluates a false boolean condition`,
+       ~10,022 ms, a worker-thread deadline under the 109-task parallel graph — pre-existing, unrelated to
+       this branch), and said so explicitly. The runner-launcher one remains unexplained. A first attempt to
+       measure it produced 300/300 failures that measured nothing: the run used a freshly-created
+       `git worktree`, which has no `node_modules`, so every invocation died on `Cannot find package
+       'vitest'`. Re-run it in a worktree with dependencies installed.
 
     **Known live and uncovered:** a `__proto__` own key — which `JSON.parse` of a plugin response creates —
     is charged, silently dropped, and replaces the stored object's prototype. The pinned law "L + 96 IS THE
