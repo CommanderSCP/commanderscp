@@ -43,9 +43,13 @@ Every container this chart renders (api, worker, migrations Job) gets, by defaul
 - `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: [ALL]`,
   `seccompProfile: RuntimeDefault` (container level) — writable paths are explicit `emptyDir`
   mounts (`/tmp`) or PVCs (object storage), never the root filesystem
-- `automountServiceAccountToken: false` on `api` (never talks to the Kubernetes API); `worker`
-  only automounts a token when `managedIac.enabled` (needs the Kubernetes API to launch runner
-  Jobs)
+- `automountServiceAccountToken: false` on `api` and on `worker` by default. A token is mounted on
+  BOTH only when `managedRunners.launcher=kubernetes` AND some managed class is enabled — the
+  launcher is what talks to the Kubernetes API, so a `docker` deployment with `managedIac.enabled`
+  gets no token at all. **Corrected 2026-08-20:** this bullet used to say "`worker` only automounts
+  a token when `managedIac.enabled`", which was already wrong at M23.2 in two directions (it gave
+  a token to a docker deployment that makes no API call, and none to a `managedDep`- or
+  `managedScan`-only Kubernetes deployment that makes nothing but) and is gated in CI job 4b
 - Default-deny NetworkPolicy + explicit allows (DNS, Postgres, optionally NATS, ingress to `api`
   only) — see `templates/networkpolicy.yaml`'s own doc comment for exactly what's allowed and why.
   Coordinating an existing execution system (Mode A / BYO-coordinate — an existing Argo CD,
@@ -162,21 +166,49 @@ reconcile ticks cannot both fire the same real deployment. See that module's doc
 `coordination.integration.test.ts`'s "multi-replica trigger claim is single-flight" suite for the
 concurrent-replica proof.
 
-## Managed-IaC (Mode 2) — known gap
+## Managed execution on Kubernetes — what runs, and what still does not
 
-`managedIac.enabled: true` grants the `worker` ServiceAccount RBAC to create/watch/delete `Job`s
-and ships a reference Job manifest (ConfigMap) for the `scp-runner-iac` image. **This is on-ramp
-infrastructure, not a working end-to-end path yet**: `packages/plugins/managed-iac`'s current
-implementation launches the runner via `docker create`/`docker cp`/`docker start` (a host Docker
-socket), which does not work unmodified inside a standard Kubernetes pod — and this chart
-deliberately does not paper over that by mounting a host Docker socket (a real container-escape
-risk). Mode 2 works under docker-compose/VM deployments today — with the two operator steps that
-shape makes possible and Kubernetes does not: giving the `scp` container a docker CLI (the scpd
-image ships none; `SCP_MANAGED_RUNNER_DOCKER_BINARY` points at the one you mount) and a reachable
-Docker daemon. Neither is arranged for you; the shipped compose file mounts no socket. Wiring the
-plugin to
-launch Kubernetes Jobs via the API (using the RBAC + template this chart already ships) is tracked
-follow-up work. `managedIac.enabled` defaults to `false`.
+**REWRITTEN 2026-08-20 (M23.4). This section used to be headed "Managed-IaC (Mode 2) — known gap"
+and said the RBAC was "on-ramp infrastructure, not a working end-to-end path yet". That stopped
+being true at M23.2 and is fully false now; the old text is replaced rather than annotated, because
+a reader deciding whether to deploy needs the current answer, not its history.**
+
+Set `managedRunners.launcher=kubernetes` and each managed run launches as an ephemeral `Job`
+through the API server — no Docker socket, which this chart still refuses to mount (a real
+container-escape risk it does not paper over) and the scpd image still ships no docker binary.
+`packages/runner-launcher`'s Kubernetes adapter is driven against a real cluster by CI job 4e.
+
+What the launcher needs, all of it refused at RENDER time rather than discovered as a hang:
+
+- **An EXISTING ReadWriteMany PVC** named in `managedRunners.kubernetes.workspace.claimName`.
+  Kubernetes has no universal `docker cp`, so the run's inputs and evidence move through a volume
+  the worker and the Job both mount. This chart does not create it — RWX is a storage-class
+  capability you provision.
+- **At least one managed class enabled**: `managedIac.enabled` (with `managedIac.runnerImage`),
+  `managedDep.runnerImage`, or `managedScan.runnerImage`. All three are off by default.
+
+The RBAC — `batch/jobs` create/get/list/watch/patch/delete, `pods`/`pods/log` read, and
+`secrets` create/delete — renders whenever the Kubernetes launcher is selected and any class is
+enabled, into `managedRunners.kubernetes.namespace` (defaulting to the release namespace). It does
+NOT render for a `docker` deployment.
+
+**The `secrets` grant is the owner's, taken 2026-08-20** (ADR-0035 §6). Only `managed-iac` carries
+a credential; it reaches the runner as a per-run Secret plus `envFrom.secretRef`, owned by the Job
+so the cluster deletes it even if the launcher is killed mid-run. `managedRunners.kubernetes.
+perRunSecrets=false` declines the grant and makes managed-iac refuse loudly instead of falling back
+to `env[].value`. See that value's comment in `values.yaml` for what the grant does and does not
+include, and **ADR-0035 §6a for the containment combination accepted along with it**.
+
+**What still does not work, stated rather than implied:** `--network none` is NOT honoured and
+cannot be — no pod-spec field removes a pod's network namespace. Runner pods carry
+`scp.launcher.network=<requested mode>` so a NetworkPolicy can select them, which is traffic denial
+rather than interface absence, and is **fail-open on a CNI that does not enforce**. On the docker
+launcher `--network none` denied that path outright.
+
+The `docker` launcher (the default) remains correct for docker-compose and VM deployments, with the
+two operator steps that shape makes possible and Kubernetes does not: giving the container a docker
+CLI (`SCP_MANAGED_RUNNER_DOCKER_BINARY` points at the one you mount) and a reachable daemon.
+Neither is arranged for you; the shipped compose file mounts no socket.
 
 ## Federation mTLS — three distinct knobs, and which one you need
 

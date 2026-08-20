@@ -421,15 +421,18 @@ if [[ "$MODE" == "helm" ]]; then
   # no error to tell them it didn't take.
   if [[ -n "${SCP_RUNNER_IAC_DIGEST:-}" || -n "${SCP_RUNNER_SCAN_DIGEST:-}" || -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
     echo
-    echo "   MANAGED-EXECUTION RUNNERS: verified, pushed to your registry and digest-pinned above —"
-    echo "   but NOT STARTABLE BY THIS CHART, and there is no chart value that changes that. The"
-    echo "   orchestrator plugins launch a runner with the docker CLI (docker create/cp/start)"
-    echo "   against a host Docker daemon; a Kubernetes pod has none, and this chart deliberately"
-    echo "   mounts no docker socket (helm/templates/runner-iac.yaml 'HONEST SCOPE', helm/README.md)."
-    echo "   managedIac.enabled renders the env vars and the Job-template on-ramp, but nothing in"
-    echo "   this chart launches a container; managedScan has no chart value at all. Run managed"
-    echo "   execution on a compose/VM instance (install.sh --mode compose) until the plugins grow a"
-    echo "   Kubernetes-native launch mode. The pinned refs, so you can wire one up yourself:"
+    echo "   MANAGED-EXECUTION RUNNERS: verified, pushed to your registry and digest-pinned above,"
+    echo "   and STARTABLE BY THIS CHART as of M23.4 — this notice said the opposite until then."
+    echo "   Each run launches as an ephemeral Kubernetes Job through the API server. Still no"
+    echo "   docker socket: this chart mounts none and will not (a container-escape risk)."
+    echo "   Set all of: managedRunners.launcher=kubernetes, an EXISTING ReadWriteMany claim in"
+    echo "   managedRunners.kubernetes.workspace.claimName, and at least one class —"
+    echo "   managedIac.enabled=true with managedIac.runnerImage, managedDep.runnerImage, or"
+    echo "   managedScan.runnerImage. A missing prerequisite fails the render with the reason."
+    echo "   managed-IaC credentials travel as a per-run Secret (granted by default; decline with"
+    echo "   managedRunners.kubernetes.perRunSecrets=false and it refuses loudly instead). Note"
+    echo "   --network none is NOT honoured on Kubernetes and cannot be; see helm/README.md."
+    echo "   The pinned refs to use for those values:"
     if [[ -n "${SCP_RUNNER_IAC_DIGEST:-}" ]]; then
       echo "     scp-runner-iac   ${RUNNER_IAC_REF}"
     fi
