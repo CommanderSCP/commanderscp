@@ -54,12 +54,28 @@
  * Not THROW either, at this layer. Refusal belongs at the boundary — `apps/server`'s
  * `util/safe-json.ts` rejects poisoned JSON at the two doors that admit foreign bytes (the HTTP
  * body parser and the `.scpbundle` reader), which is where a refusal can become a 400 or a
- * recorded file refusal. Two of this module's five call sites sit inside fail-closed VERIFY paths
- * (`verifyJournalChain`, `restatesDecision`); making canonicalization throw there would convert a
- * `valid: false` into an unhandled exception in the federation inbox loop, trading an integrity
- * bug for an availability bug. The integrity fix is that the canonical string covers everything;
- * boundary rejection is defence in depth on top of it, not a substitute — content reaches these
- * functions from federation peers and from disk, not only over HTTP.
+ * recorded file refusal.
+ *
+ * THIS PARAGRAPH USED TO OVERSTATE ITS CASE, and the overstatement is corrected here rather than
+ * quietly deleted. It claimed that throwing from a fail-closed VERIFY path (`verifyJournalChain`,
+ * `restatesDecision`) "would convert a `valid: false` into an unhandled exception in the
+ * federation inbox loop". Measured: it would not. `verifySegment` (`apps/server`'s
+ * `federation/import-repo.ts`) ALREADY throws `conflict(...)` when verification fails, and
+ * `inbox-loop.ts` catches it — a 409 `ProblemError` becomes a structured `refuseFile` carrying its
+ * Decision, anything else falls to the `deferFile` arm, and one level up there is a
+ * containment catch for the genuinely unanticipated throw. So the real cost of throwing here is
+ * narrower than claimed: a tampered segment would be DEFERRED AND RETRIED every tick under an
+ * unstructured message, instead of REFUSED ONCE with a Decision an operator can read. Bad, and
+ * not the availability collapse the old sentence described.
+ *
+ * THE DECISION STANDS ON A STRONGER ARGUMENT — the one that was actually measured. A boundary
+ * check cannot cover this module's inputs, because not all of them cross a boundary.
+ * `sync_journal.payload` and `decisions.input_context` are `jsonb` columns; content grafted
+ * straight into one of them by SQL — a compromised or buggy writer, a restored dump, an operator
+ * with a psql prompt — passes through NEITHER door by construction, and is read back and
+ * canonicalized as if it had. Only a TOTAL canonicalizer covers that input, and a canonicalizer
+ * that throws is not total. The integrity fix is that the canonical string covers everything;
+ * boundary rejection is defence in depth on top of totality, not a substitute for it.
  *
  * ## Compatibility guarantee
  *
