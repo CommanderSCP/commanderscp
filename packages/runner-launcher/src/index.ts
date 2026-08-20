@@ -3,6 +3,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { debuglog, promisify } from "node:util";
+import type {
+  KubernetesRunnerIo,
+  KubernetesWorkspaceVolume
+} from "./kubernetes-adapter.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -457,6 +461,58 @@ export interface RunnerLauncher {
 export interface RunnerLauncherConfig {
   /** SERVER-INJECTED (never tenant): the container CLI to exec. Defaults to `"docker"`. */
   dockerBinary?: string;
+  /**
+   * WHICH ADAPTER (M23.2) — SERVER-INJECTED, never tenant, and EXPLICIT rather than detected.
+   *
+   * This is the field the note above predicted, and it arrives under the rule that note set: it
+   * joins the server-injected class on day one, in all three layers, in this same change. Absent or
+   * anything other than `"kubernetes"` means the Docker adapter — so every deployment that does not
+   * opt in behaves byte-identically, which is what makes a second adapter safe to merge at all.
+   *
+   * NEVER AUTO-DETECTED. Guessing the platform from the presence of a service-account token is the
+   * runtime/install-time fork M15.4 declined to create, and it guesses wrong in both directions: a
+   * compose deployment inside a pod (the eval stack) would be switched to Jobs it has no RBAC for,
+   * and a Kubernetes deployment with `automountServiceAccountToken: false` — which is this chart's
+   * hardened default — would silently keep shelling out to a `docker` binary the image does not
+   * ship.
+   */
+  runnerLauncher?: "docker" | "kubernetes";
+  /**
+   * The Kubernetes adapter's deployment settings. SERVER-INJECTED as one block, for the same reason
+   * `dockerBinary` is: the plugin subprocess never sees `process.env` (the host's `minimalChildEnv`
+   * strips it), so injected config is the ONLY channel these values have.
+   *
+   * REQUIRED when {@link runnerLauncher} is `"kubernetes"`, and its absence is a NAMED refusal
+   * rather than a `TypeError` inside a half-built Job manifest.
+   */
+  kubernetes?: KubernetesLauncherSettings;
+}
+
+/**
+ * The Kubernetes adapter's server-injected settings. Declared HERE rather than in
+ * `kubernetes-adapter.ts` so that `RunnerLauncherConfig` — the one type every plugin passes to its
+ * resolver — stays the single description of what a launcher can be configured with.
+ */
+export interface KubernetesLauncherSettings {
+  /** The namespace every Job, Secret and pod read lives in. */
+  namespace: string;
+  /** Where THIS process sees the shared RWX workspace volume the Job also mounts. */
+  workspaceRoot: string;
+  /** The volume the Job mounts. A CLOSED UNION — see `KubernetesWorkspaceVolume`. */
+  workspaceVolume: KubernetesWorkspaceVolume;
+  /** THE PER-RUN SECRET CAPABILITY — declared, and OFF until the RBAC grant is an owner decision.
+   *  See `KubernetesRunnerLauncherConfig.perRunSecrets` for what is inert and what turns it on. */
+  perRunSecrets?: boolean;
+  /** Pod `securityContext.runAsNonRoot`. Off by default — none of the three runner images has a
+   *  `USER` line, so `true` makes every managed run fail before its entrypoint. */
+  runAsNonRoot?: boolean;
+  /** API server base. Defaults to `https://kubernetes.default.svc`. */
+  apiBase?: string;
+  /** THE HARNESS's SEAM, and it is `undefined` in production by construction: nothing injects it
+   *  from config, so a deployment cannot supply one. The kind-based integration test builds a real
+   *  `fetch`-backed io against a real API server and passes it here rather than reaching around the
+   *  resolver — which is what makes that test exercise the SHIPPED selection path. */
+  io?: KubernetesRunnerIo;
 }
 
 /**
@@ -2795,7 +2851,11 @@ export const RUNNER_SECRET_ENV_MAX_AGE_MS = MANAGED_RUN_TIMEOUT_MAX_MS + RUNNER_
  * successor process mints its own id, so it correctly treats its dead predecessor's leftover
  * container as foreign and reapable once that container's deadline has passed.
  */
-const LAUNCHER_OWNER_ID = randomUUID();
+/** EXPORTED FOR THE SECOND ADAPTER (M23.2), not widened for convenience. `reap()`'s cardinal rule is
+ *  "never destroy a container you do not own", and ownership is THIS PROCESS's identity — so the
+ *  Kubernetes adapter must stamp and compare the SAME id, not a second one. Two ids in one process
+ *  would make each adapter treat the other's live objects as foreign and reapable. */
+export const LAUNCHER_OWNER_ID = randomUUID();
 
 /**
  * THE SINGLE-FLIGHT SLOT FOR THE BACKGROUND SWEEP, one per container CLI — module scope for exactly
@@ -3433,3 +3493,43 @@ export async function withRecordedOutcome<T>(
     return undefined;
   }
 }
+
+// ==================================================================================================
+// THE SECOND ADAPTER (M23.2). Re-exported from the package entry point rather than reached by a
+// subpath, because `package.json` declares only `main: dist/index.js` — a subpath would be a new
+// packaging surface for one import. The re-export sits at the BOTTOM and `kubernetes-adapter.ts`
+// imports only FUNCTIONS and CONSTANTS from here, so the module cycle resolves: nothing in that file
+// reads a binding of this one at module-evaluation time. `kubernetes-adapter.test.ts`'s first case
+// imports the package entry and calls `resolveRunnerLauncher`, which is what would fail loudly if
+// that ever stopped being true.
+// ==================================================================================================
+export {
+  KUBERNETES_JOB_TTL_SECONDS,
+  KUBERNETES_MERGES_STDERR_INTO_STDOUT,
+  KUBERNETES_POLL_INTERVAL_MS,
+  K8S_SA_DIR,
+  RUNNER_CONTAINER_NAME,
+  RUNNER_LAUNCHER_DEADLINE_ANNOTATION,
+  RUNNER_NETWORK_LABEL,
+  RUNNER_RUN_ID_LABEL,
+  RUNNER_WORKSPACE_VOLUME_NAME,
+  createFetchKubernetesIo,
+  createKubernetesRunnerLauncher,
+  isKubernetesAlreadyExists,
+  isKubernetesLabelValue,
+  jobManifest,
+  kubernetesTermination,
+  resolveRunnerLauncher,
+  runnerJobName,
+  runnerSecretName,
+  shortDigest,
+  whenKubernetesReapSettled,
+  workspaceSlots
+} from "./kubernetes-adapter.js";
+export type {
+  KubernetesApiRequest,
+  KubernetesApiResponse,
+  KubernetesRunnerIo,
+  KubernetesRunnerLauncherConfig,
+  KubernetesWorkspaceVolume
+} from "./kubernetes-adapter.js";
