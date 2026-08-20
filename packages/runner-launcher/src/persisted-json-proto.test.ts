@@ -4,7 +4,7 @@ import {
   boundPersistedJson,
   PERSISTED_JSON_ELIDED_KEY,
   PERSISTED_JSON_MAX_CHARS
-} from "./index.ts";
+} from "./index.js";
 
 /**
  * ================================================================================================

@@ -1229,9 +1229,10 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     ];
     const wholeSubLists = (budget: number): number => {
       const out = boundPersistedJson(value, budget);
-      expect(JSON.stringify(out)!.length, `budget ${budget}: over the row bound`).toBeLessThanOrEqual(
-        budget
-      );
+      expect(
+        JSON.stringify(out)!.length,
+        `budget ${budget}: over the row bound`
+      ).toBeLessThanOrEqual(budget);
       return Array.isArray(out) ? out.filter((e) => Array.isArray(e)).length : -1;
     };
     // The threshold, both sides of it. A reserve one character short admits the first sub-list at
@@ -1293,7 +1294,9 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     // NON-VACUITY: the band has to be one where real content is being stored, or "not discarded"
     // is green on a build that stores a marker and nothing else. Measured 1 084…3 919, mean 2 410
     // — the apology the backstop stores in its place is 145.
-    expect(narrowest, "the band stores nothing, so the discard arm is vacuous").toBeGreaterThan(500);
+    expect(narrowest, "the band stores nothing, so the discard arm is vacuous").toBeGreaterThan(
+      500
+    );
     expect(widest, "the band never approaches its budget").toBeGreaterThan(3_000);
   });
 
@@ -1314,7 +1317,10 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     expect(stored).not.toBe(JSON.stringify(ladder));
     expect(stored).not.toContain(PERSISTED_JSON_ELIDED_KEY);
     const kept = JSON.parse(stored) as Record<string, string>;
-    expect(Object.keys(kept), "a key was elided, so this is not the redistribution regime").toHaveLength(10);
+    expect(
+      Object.keys(kept),
+      "a key was elided, so this is not the redistribution regime"
+    ).toHaveLength(10);
     // …and the fields really do end up at DIFFERENT lengths, which is what water-filling means:
     // the small ones keep everything and the large ones share what is left.
     expect(kept.k0).toBe("v".repeat(4));
@@ -1345,7 +1351,10 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
       ["seven levels of objects", nestObj(7)],
       ["seven levels of lists", nestList(7)],
       ["a well-formed astral pair", "a\u{1F600}b"],
-      ["two 4 000-character strings, 8 021 rendered", { p: "x".repeat(4_000), q: "y".repeat(4_000) }],
+      [
+        "two 4 000-character strings, 8 021 rendered",
+        { p: "x".repeat(4_000), q: "y".repeat(4_000) }
+      ],
       [
         "400 image refs, 35 897 rendered",
         Array.from({ length: 400 }, (_, i) => `ghcr.io/a/s-${i}@sha256:${"0".repeat(64)}`)

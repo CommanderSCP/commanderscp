@@ -864,7 +864,9 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     - **HOW IT IS PROVEN — the seam had to be new, and that is the finding.** `docker-adapter.test.ts` settles every step on the NEXT TICK by design (it asks *what* and in what *order*), and `managed-trigger-budget.test.ts`'s stub `docker` is slow only on `start`. With one slow step there is no sum to bound, so **both suites were structurally blind to a defect about the sum** — eighty green tests, none of which could ask *how long*. `whole-run-budget.test.ts` therefore models DURATION and models Node's own `timeout` semantics including the `0` trap, and `managed-trigger-whole-run-budget.test.ts` is the sibling of the M23.1c test with a stub that is slow on EVERY step. Mutation table, one at a time against a clean tree, rebuilding `dist` each time (apps/server resolves `main: dist/index.js`, so a `src` mutation is otherwise a no-op there): `MANAGED_TRIGGER_GRACE_MS` 60_000→3_000 **RED ×2** (this is the mutation that survived before the fix, and its survival is what proved the budget unbounded), 60_000→30_000 **RED**, per-call `spec.timeoutMs` **RED ×2**, stamp loses the grace **RED ×3**, `void reap()`→`await reap()` **RED ×2**, unconditional teardown **RED** (launcher + the managed-iac golden), skip-teardown-on-any-failure **RED ×10**, DELETE the reap wiring **RED ×5**, remove the single-flight slot **RED**, remove the reap pass budget **RED**. One mutation is a **semantic no-op and is recorded as such rather than as a catch**: `Math.max(1, remaining)` → `remaining` changes nothing, because past the refusal `remaining` is an integer ≥1 — the clamp is unreachable belt kept only because shifting the refusal by one character (`<= 0` → `< 0`) would turn a single instant of the clock into `timeout: 0`, i.e. no bound, on a live `tofu apply`. A second mutation is **SURVIVED and recorded as such, not RED**: the reap-stamp line, `new Date(runDeadlineAt + RUNNER_REAP_GRACE_MS)` → `new Date(Date.now() + runTimeoutMs + RUNNER_REAP_GRACE_MS)` — "a second `Date.now()` for the stamp" — SURVIVES the whole file and every sibling suite (measured, all green). It is safe rather than dangerous: at that line no async work has happened yet, so the second read is taken at essentially the same instant as the first and the two stamps are indistinguishable in practice; a later read can only push the stamp later, the conservative direction. The dangerous direction — a stamp read after real work has elapsed, which is the actual HIGH-2 defect this file exists to catch — is what "SAMPLED THROUGHOUT A RUN THAT SPENDS ITS WHOLE BUDGET" (`whole-run-budget.test.ts`) catches instead; this line's own mutation table entry was wrong until this correction, which is itself the CLAUDE.md-cited hazard of a false RED in evidence other rounds rest on.
     - **THE GOLDENS MOVED, DELIBERATELY.** All three `launch-argv.golden.test.ts` asserted the per-call `timeout` as an EQUALITY, which was pinning the defect. They now assert the interval it must lie in — never above the caller's budget, never more than a slack below it — with `toStrictEqual` intact so the ABSENCE of `maxBuffer` on `rm` is still pinned exactly. managed-iac's create-failure fixture was itself a **name conflict** (`name already in use`) while asserting that the teardown runs, i.e. the golden encoded the fourth defect; it is now an ordinary failure, with the conflict as its own arm asserting the opposite.
   - **[ADR-0035](adr/0035-managed-execution-credential-and-orphan-protection.md) — the owner's four decisions (2026-08-18).** This ADR records the three defects live on main (credential exposure via argv and `docker inspect`, the 10-second SIGKILL defeating every run over 10s, orphaned containers from crashed subprocesses), the fixes (env/secretEnv split, per-method budget, the reaper), and why none of it was caught by the test suite (the real plugins tested in isolation from the host; the host tested with a fast fake; the wiring between them had no defect-catching surface).
-  - **M23.1f The persistence bound — IN PROGRESS, and it is the largest thing in M23 that nobody planned.**
+  - **M23.1f The persistence bound — IN PROGRESS (pass 14 of an adversarial series; clauses 2 and 3 of
+    the definition of done are now met, 1 and 6 are not), and it is the largest thing in M23 that
+    nobody planned.**
     M23.1e's outer catches made a failure `detail` durable: written to a plugin's on-disk ledger, returned
     by `status()`, and from there into a `Decision`'s `inputContext`. Bounding what an untrusted plugin can
     put there became eight rounds of work, and this entry is written retroactively because it ran for all
@@ -877,8 +879,9 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     over the three `jsonb` columns a plugin can write — `observed_state`, `executor_ref`, `prior_state_ref`,
     measured at 500,093 bytes of plugin-chosen text before the bound.
 
-    **Six consecutive rounds' own fixes introduced or multiplied a defect.** Recorded because the pattern is
-    the finding, not the individual bugs:
+    **Six consecutive rounds' own fixes introduced or multiplied a defect — seven as of pass 14, whose
+    finding (a) is pass 11's own fix applied to one of the two branches that needed it.** Recorded
+    because the pattern is the finding, not the individual bugs:
 
     | round fixed | round introduced |
     |---|---|
@@ -902,14 +905,56 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
        instances against a build a structured budget sweep caught 49,518 times. The axis eleven passes never
        varied was the **budget**. The permanent test is a sweep, not a corpus.
 
-    **Definition of done — machine-checked, and NOT met as of pass 13:**
-    1. An adversarial pass finds no defect. Passes 11, 12 and 13 each answered "converged?" with **No**.
-    2. **Six of eight mutations currently survive all 227 tests** — `tailMarkerCost`'s `+1` comma, the
-       phase-1 elision `+2`, `PERSISTED_JSON_SHARE_ROUNDS` at 3 or 8, `renderedCostAtMost`'s negative-cap
-       return, and `Object.assign` for `out[field.key]`. Done requires a corpus that kills them, or a
-       measured argument that no input can distinguish them.
-    3. Zero backstop firings and zero over-budget rows across a dense **budget sweep** (not a random
-       corpus) at every width, depth 0–5.
+    **Definition of done — machine-checked. Clause 2 is MET as of pass 14; clauses 1 and 6 are not.**
+    1. An adversarial pass finds no defect. Passes 11, 12, 13 and 14 each answered "converged?" with
+       **No** — pass 14 found two (below), which is the fourth consecutive round to find one.
+    2. **MET (pass 14).** Every one of the eight is now either killed by a named test or shown
+       indistinguishable by the sweep that would have found a difference:
+
+       | mutation | verdict |
+       |---|---|
+       | `tailMarkerCost`'s `+1` comma | **KILLED** — "THE ARRAY'S TAIL MARKER COSTS ITS COMMA" |
+       | the phase-1 elision `+2` | **KILLED** — "THE OBJECT'S ELISION ENTRY COSTS ITS COLON AND COMMA" |
+       | `PERSISTED_JSON_SHARE_ROUNDS` at 3 | **KILLED** — "FIVE ROUNDS IS THE FIXED POINT" |
+       | `PERSISTED_JSON_SHARE_ROUNDS` at 8 | **INDISTINGUISHABLE, and that is now the intended state** |
+       | `renderedCostAtMost`'s negative-cap return | **INDISTINGUISHABLE, measured** |
+       | `Object.assign` for `out[field.key]` | **INDISTINGUISHABLE, measured** |
+       | `PERSISTED_JSON_MAX_KEY_CHARS` | killed already; used as the sweep's non-vacuity control |
+
+       NOT BY A BYTE COUNT, because a byte count says nothing about why. A reserve short by N shifts
+       the budget at which the next thing becomes affordable by EXACTLY N, which is sharper and
+       two-sided. Measured over every budget 4…400: `list(3) of list(3)` keeps its first sub-list at
+       **138**, and at **137** with the `+1` deleted; `3 fields x list(2)` seats its first field at
+       **142**, and at **140** with the `+2` deleted.
+
+       `PERSISTED_JSON_SHARE_ROUNDS` **4 → 5**, because 3 AND 8 both surviving meant the constant was
+       in the wrong place rather than that it did not matter. Instrumenting the loop to record the
+       round it REACHES, over 182 365 (shape, budget) pairs: 5 290 run four rounds and **527 run
+       five**, so 4 was truncating real work. Against a 64-round ceiling — 1: −29.04 %, 2: −0.60 %,
+       3: −0.047 %, 4: −0.0028 %, **5 and above: zero**. Five is the FIXED POINT: the smallest cap at
+       which raising it changes no output anywhere. A downward mutation is now detectable and an
+       upward one is not, which is the shape a well-chosen cap should have. The witness is a
+       **ladder** — sizes close enough that exactly one field satisfies per round; the geometric
+       family the constant's own comment names satisfies several at once and never reaches round
+       four, which is why eleven passes' corpora never demanded one.
+
+       `renderedCostAtMost`'s `if (cap < 0) return over` → `return 0`: the branch **is** reached —
+       11 960 of 33 785 292 calls, most negative cap −92 — and its answer is still not observable.
+       Recursion never passes a negative cap, so the only callers are the two "does this fit whole"
+       probes, both of which use the result only as `wholeCost <= room` with `room === cap`; for
+       cap < 0 both `cap + 1 <= cap` and `0 <= cap` are false. **Zero** of the 11 960 would compare
+       differently. It is a fast path, not a correctness requirement.
+
+       `out[field.key] =` → `Object.assign`: **zero** of 145 048 pairs differ. The two differ for
+       exactly one key and phase 1 now refuses that key before a field is seated. Pass 13 read this
+       mutation correctly as a proxy for the prototype-pollution hole; it stopped distinguishing
+       anything when the hole was closed at its source.
+    3. **MET.** `packages/runner-launcher/src/persisted-json-budget-sweep.test.ts` is the permanent
+       instrument: 116 850 (shape, budget) pairs in 2.8 s, every integer budget, depth 0–5. Zero rows
+       over budget and zero backstop firings above a budget of 31 (below that the walk's own shortest
+       honest output — `{"__scpElided":"<n> more fields"}`, 32 characters — does not fit, and there is
+       nothing shorter to store). Before pass 14's fix the same sweep counted **15 982 firings, the
+       highest at a budget of 3 915**.
     4. Zero rows refused by a real Postgres over adversarial alphabets, with the pre-bound shape refused as
        a non-vacuity control.
     5. Every gate leaf survives at every size, asserted **through the reader** (`stageDependencyVerdict`,
@@ -922,10 +967,126 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
        `git worktree`, which has no `node_modules`, so every invocation died on `Cannot find package
        'vitest'`. Re-run it in a worktree with dependencies installed.
 
-    **Known live and uncovered:** a `__proto__` own key — which `JSON.parse` of a plugin response creates —
-    is charged, silently dropped, and replaces the stored object's prototype. The pinned law "L + 96 IS THE
-    WHOLE LAW" is **false past 4,008 characters**; its largest string atom is 300, so it samples only where
-    it happens to hold.
+    **WHAT PASS 14 FOUND, and both were live on main-bound code.**
+
+    **(a) THE OBJECT CHARGED ITS ELISION MARKER AGAINST MONEY IT HAD ALREADY SPENT — the seventh
+    consecutive round whose predecessor's fix left the sibling case standing.** Pass 11 found exactly
+    this in the ARRAY's tail marker, wrote the mechanism out in full, and bought the marker first —
+    in the array. `walkObjectFields` phase 1 subtracted `jsonCost(marker) + jsonCost(__scpElided) + 2`
+    with no check that it could be afforded, one branch away, and was not swept. A well-written
+    comment naming a hazard is a signal to sweep, not evidence it was handled.
+
+    It is worse in the object than in the array because an object's overspend happens once per
+    ELIDING OBJECT, so it multiplies by the tree's width and depth where an array's merely adds:
+
+    ```
+    five levels of three fields, 4 483 characters of ordinary content
+        budget 1200   walk given 1104   rendered 1189   budget.left  -85
+        budget 3000   walk given 2904   rendered 2917   budget.left  -13
+    four levels of three fields, 1 486 characters
+        budget 1200   walk given 1104   rendered 1297   ->  193 OVER  ->  WHOLE VALUE DISCARDED
+    ```
+
+    The four-level shape was discarded at **every budget from 4 to 1 296**, the five-level one at
+    every budget to **3 915** — `revision`, `images` and `rollout.weight` replaced together by a
+    145-character apology, silently, on every tick.
+
+    THE FIX IS THE ARRAY'S, APPLIED TO THE BRANCH THAT WAS MISSED: ask first whether the object fits
+    whole; if not, buy the widest elision entry it could need BEFORE phase 1 seats anything, and hand
+    the reserve back to the marker or, if every key seated, to the pool. A complete object therefore
+    costs exactly what it cost before, which is what keeps "L + 96 IS THE WHOLE LAW" true.
+
+    AND IT MAKES THE OVERSPEND A THEOREM RATHER THAN A HOPE. Every container is walked with at least
+    `admissionCost` — its exact cost when that is under 96, and 96 otherwise. One that fits keeps
+    everything and needs no marker; one admitted at 96 can afford any marker this file emits, because
+    96 exceeds all of them (widest object entry 47, array tail 37, depth marker 60). So the ONLY
+    container that can overspend is the ROOT, and `boundPersistedJson` holds back 96 for it.
+
+    WHAT IT COST, MEASURED RATHER THAN WORRIED ABOUT. Retention falls at tight budgets, because the
+    four lists pass 13 kept at a budget of 143 were being paid for out of the row's backstop cushion.
+    At the 8 000 the column actually uses the delta is **0.00 %**; over 2 000 it is **+2.37 %**,
+    because whole values stop being discarded. And the SHAPE of the evidence is the argument: before,
+    five of the thirteen places where one more character of budget stored 100+ characters LESS landed
+    on **145** — the apology's length — `depth 5 width 3` going 2 539 → 145 between budget 3 201 and
+    3 202. Nine cliffs remain, the worst 513 characters, and **not one lands on the backstop**; they
+    are the flat-96 seating cliff pass 12 named, which is a different property and a smaller loss.
+
+    **(b) PROTOTYPE POLLUTION REACHABLE FROM AN UNTRUSTED EXECUTOR'S RESPONSE** — pass 13 named it as
+    known-live-and-uncovered and it is now fixed. `JSON.parse` gives `__proto__` as an ordinary own
+    property, and a plugin's JSON-RPC response is parsed exactly that way, so `out[field.key] = value`
+    was not a store at all but a call to `Object.prototype`'s `__proto__` setter:
+
+    ```
+    input   {"revision":"abc","__proto__":{"polluted":true},"images":["i1"]}
+    stored  {"revision":"abc","images":["i1"]}
+    stored.polluted                              true
+    getPrototypeOf(stored) === Object.prototype  false
+    truncation                                   undefined
+    ```
+
+    Three defects in one line: a PLUGIN-CHOSEN PROTOTYPE on a stored object (and `{"__proto__":null}`
+    is the same defect the other way — no `hasOwnProperty`); the field CHARGED and then silently
+    dropped, so the money came off the siblings (two 3 000-character fields at a budget of 4 000, one
+    named `__proto__`: the other stored 1 950 where it now stores 3 011); and a value that came back
+    changed with NO REPORT, which is exactly the property M23.1g's gate holds — its sweep's shapes
+    simply had no such key.
+
+    REFUSED, NOT DEFINED. `Object.defineProperty` stores it honestly and leaves the prototype alone,
+    but then ships `"__proto__": {...}` over the public API to the SDK, the CLI and `apps/web` — a
+    gadget that fires on `Object.assign({}, observed)` (measured: it pollutes; a spread does not). The
+    loss is REPORTED (`dropped: true`), which is the whole difference between the fix and the defect.
+    TWO WRITE SITES, TWO GUARDS, each on the line that has the hazard: the walk's phase 1 for the
+    value, and `boundTruncationReport` for the report — the report needs its own because it is keyed
+    by ROOT FIELD NAME, so a refused `__proto__` would be named out loud in a record we serialise,
+    putting the gadget back into the field that exists to explain its absence.
+
+    The guard is on the BOUNDED key: `boundStringToCost` can manufacture `__proto__` from a longer one
+    — 2 800 of 602 000 (key, budget) pairs, all at a rendered budget of 11, where the bisection lands
+    on the 9-character suffix. (It does not compose into a stored field today, measured: a key bounded
+    at 11 cannot then be seated. The guard is where it is because that is a fact about
+    `boundStringToCost`, not about the walk.) "`__proto__` is the only such key" is a TEST and not a
+    sentence — the suite enumerates `Object.prototype`'s own properties and asserts exactly one
+    accessor and no non-writable data property, because it is a claim about the runtime.
+
+    **THE LAW HAS A DOMAIN, and pass 13's wording for it was half right.** "L + 96 IS THE WHOLE LAW"
+    was pinned over atoms whose largest string is 300 characters. Measured, `{a: <atom>}`, searching
+    every budget for the first at which the value comes back byte-identical: a 4 000-character string
+    at L + 96 and a 4 001-character one at NO budget; a 126-character key at L + 96 and a
+    127-character one never (the 128 bounds the RENDERED cost, and two quotes leave room for 126 —
+    the constant's comment said "no object KEY may be longer than this", which is measurably false and
+    is now corrected at the constant); seven levels of nesting yes, eight no; a well-formed astral
+    pair yes, a NUL or a lone surrogate no; a function-valued field no; a `__proto__` key no. **The
+    domain is about the ATOMS, not the total** — two 4 000-character strings side by side are 8 021
+    rendered characters and obey the law exactly, and 400 image refs are 35 897 and obey it exactly.
+    "False past 4 008 characters" is not the boundary; "false past a 4 000-character STRING" is. Every
+    boundary is pinned two-sided, and the outside arms check L+1 000, L+10 000, the column policy and
+    four times it, because a boundary that is a share and one that is a cap are different facts.
+
+    **THE INSTRUMENT IS THE DELIVERABLE, and it is now a permanent test.** M23.1f's own finding —
+    random shape generation is the wrong instrument, 6 000 random shapes found zero instances of a
+    defect a structured budget sweep caught 49 518 times — was recorded but never made into a standing
+    gate. It is one now. The axis is the BUDGET; sweep it densely at every width, do not generate
+    shapes and hope. Pass 14's first run of it found (a) in five seconds.
+
+    **STILL OPEN, RECORDED NOT FIXED.**
+    - **Retention is not monotone in the budget.** Nine places where one more character of budget
+      stores more than 100 characters LESS, the worst 513 (`depth 5 width 3`, budget 1 149 → 1 150,
+      892 → 379). This is pass 12's flat-96 seating cliff, unchanged in kind by pass 14 and smaller in
+      degree (13 cliffs and a worst of 2 394 before). It is a retention property, not a correctness
+      one: no cliff now lands on the backstop. Fixing it means revisiting `PERSISTED_JSON_MIN_LEAF`'s
+      role as a seating FLOOR, which is a design change pass 10 argued for on measured grounds and
+      should not be undone in a verification pass.
+    - **An object that seats ZERO fields returns its whole allocation unspent.** At a share of 120 a
+      subtree whose children each need 96 plus a 30-character elision entry can seat nothing and
+      stores a 31-character marker, handing 89 characters back — and the water-filling loop cannot
+      redistribute them, because every sibling is clipped for the same reason and it breaks at round
+      0. Same family as the cliff above.
+    - **The array's tail marker is over-charged by one when the list is cut at index 0**
+      (`budget.left -= jsonCost(marker) + 1` charges a comma that is not written). Conservative — it
+      can only under-store — and it keeps the charge equal to `tailMarkerCost`'s reserve, which is why
+      it is left alone and written down instead.
+    - **A plugin field literally named `__scpElided` collides with the marker** and is overwritten by
+      it. Pre-existing; the same is true of two long keys that bound to the same text.
 
   - **M23.1g Surfacing truncation on the API — DONE.** M23.1f turned a verbatim value into one that may be
     cut and told nobody outside the server. Two consequences were live:

@@ -4,7 +4,7 @@ import {
   boundPersistedJson,
   PERSISTED_JSON_ELIDED_KEY,
   PERSISTED_JSON_MAX_CHARS
-} from "./index.ts";
+} from "./index.js";
 
 /**
  * ================================================================================================
@@ -71,22 +71,17 @@ function family(): Shape[] {
     d === 0
       ? "leaf"
       : Object.fromEntries(Array.from({ length: w }, (_, i) => [`d${d}f${i}`, nest(d - 1, w)]));
-  for (let d = 0; d <= 5; d++)
-    for (const w of [1, 2, 3]) push(`depth ${d} width ${w}`, nest(d, w));
+  for (let d = 0; d <= 5; d++) for (const w of [1, 2, 3]) push(`depth ${d} width ${w}`, nest(d, w));
 
   // Pass 12's and pass 13's family: many fields, each a small container.
   for (const n of [1, 2, 3, 5, 8, 13, 21, 40]) {
     push(
       `${n} fields x list(5)`,
-      Object.fromEntries(
-        Array.from({ length: n }, (_, i) => [`k${i}`, ["a", "b", "c", "d", "e"]])
-      )
+      Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, ["a", "b", "c", "d", "e"]]))
     );
     push(
       `${n} fields x obj(3)`,
-      Object.fromEntries(
-        Array.from({ length: n }, (_, i) => [`k${i}`, { a: "1", b: "2", c: "3" }])
-      )
+      Object.fromEntries(Array.from({ length: n }, (_, i) => [`k${i}`, { a: "1", b: "2", c: "3" }]))
     );
   }
 
@@ -152,7 +147,10 @@ function family(): Shape[] {
 
   // Roots that are not plain objects — the one shape with no field names to report under.
   push("bare string 200", "v".repeat(200));
-  push("bare list of 40", Array.from({ length: 40 }, (_, i) => `e${i}`));
+  push(
+    "bare list of 40",
+    Array.from({ length: 40 }, (_, i) => `e${i}`)
+  );
 
   return out;
 }
@@ -255,10 +253,9 @@ describe("HIGH: the whole bound, swept densely in the BUDGET at every width and 
       intact,
       "nothing ever came back whole, so the intact-side assertions are vacuous"
     ).toBeGreaterThan(50_000);
-    expect(
-      elided,
-      "no budget was ever tight enough to reach the backstop at all"
-    ).toBeGreaterThan(500);
+    expect(elided, "no budget was ever tight enough to reach the backstop at all").toBeGreaterThan(
+      500
+    );
 
     expect(over.slice(0, 5), `${over.length} rows over their budget`).toEqual([]);
     expect(
