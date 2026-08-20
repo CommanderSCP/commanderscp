@@ -285,10 +285,24 @@ describe("MEDIUM (pass 5): the commander's in-process scan path carries no runaw
     ).toBe(false);
     // The whole config, so a NEW key cannot arrive unnoticed: every one of these is a server-side
     // operator setting with no binding row behind it.
+    //
+    // M23.2 ADDED ONE, AND THIS ASSERTION IS WHY THAT WAS DELIBERATE. `runnerLauncher` is the
+    // adapter selection; it arrives here because `pluginCtx` spreads the WHOLE launcher slice
+    // (`managedRunnerSettings()`) rather than picking `dockerBinary` out of it — the alternative
+    // being a commander whose own promotion scan stays on Docker forever while every bound executor
+    // moves to Jobs, which is the exact shape of the defect `managedRunnerSettings` already exists
+    // to prevent. It is server-injected and never tenant-settable: absent from managed-scan's
+    // manifest (`additionalProperties: false`) and refused by name at the four write doors
+    // (`plugin-manifests-runner-launcher.test.ts`).
+    //
+    // `kubernetes` is NOT here and its absence is load-bearing: `managedRunnerSettings()` omits the
+    // key entirely on a docker deployment, so nothing about Kubernetes reaches this path unless an
+    // operator selected it. `managed-runner-selection.test.ts` covers the selected shape.
     expect(Object.keys(config).sort()).toStrictEqual([
       "dockerBinary",
       "networkMode",
-      "runnerImage"
+      "runnerImage",
+      "runnerLauncher"
     ]);
   });
 
