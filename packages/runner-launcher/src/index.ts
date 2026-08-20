@@ -934,8 +934,16 @@ export const PERSISTED_JSON_MAX_CHARS = 8_000;
  */
 export const PERSISTED_JSON_MAX_DEPTH = 8;
 
-/** No object KEY may be longer than this. Keys are plugin-chosen too, and a key is not a place a
- *  reader looks for content, so it gets a much smaller share than a value. */
+/** A CEILING ON WHAT AN OBJECT KEY MAY RENDER TO. Keys are plugin-chosen too, and a key is not a
+ *  place a reader looks for content, so it gets a much smaller share than a value.
+ *
+ *  IN RENDERED CHARACTERS, WHICH IS TWO MORE THAN THE KEY ITSELF — this comment used to say "no
+ *  object KEY may be longer than this", and that is measurably false. {@link boundStringToCost}
+ *  bounds the RENDERED cost, and `JSON.stringify` adds two quotes, so the widest key that survives
+ *  a walk is 126 characters: measured, a 126-character key comes back verbatim at L + 96 and a
+ *  127-character one comes back at NO budget, replaced by a head/marker/tail form. Recorded rather
+ *  than "fixed" by adding 2, because the number that has to be a ceiling is the one the column is
+ *  measured in; pinned as a boundary by `persisted-json-bound.test.ts` -> "THE LAW'S DOMAIN". */
 const PERSISTED_JSON_MAX_KEY_CHARS = 128;
 
 /** Never start a new element/field with less than this much budget left: enough for a short marker

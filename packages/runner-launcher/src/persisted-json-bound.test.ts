@@ -1150,6 +1150,110 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     expect(cut).toContain(PERSISTED_JSON_ELIDED_KEY);
   });
 
+  /**
+   * THE LAW'S DOMAIN, WHICH PASS 13 FOUND MISSING AND PASS 14 MEASURED.
+   *
+   * "L + 96 IS THE WHOLE LAW" was pinned over atoms whose largest string is 300 characters, so it
+   * sampled only where the claim happens to hold. It is FALSE for a string past
+   * {@link RUNNER_DETAIL_MAX_CHARS}, and false for four other reasons the atoms never reached. The
+   * law is not wrong — it has a DOMAIN, and an unstated domain is a law that goes false silently
+   * the first time somebody writes a fixture outside it. Measured, `{a: <atom>}`, searching every
+   * budget to 60 000 for the first at which the value comes back byte-identical:
+   *
+   *     atom                              L      verbatim at
+   *     string of 4 000                4 008    L + 96
+   *     string of 4 001                4 009    NEVER          <- boundStringToCost caps at 4 000
+   *     key of 126 characters            140    L + 96
+   *     key of 127 characters            141    NEVER          <- the 128 is a RENDERED cost, and
+   *                                                               two quotes leave room for 126
+   *     seven levels of nesting           54    L + 96
+   *     eight levels of nesting           60    NEVER          <- PERSISTED_JSON_MAX_DEPTH
+   *     "a\u{1F600}b"                      12    L + 96
+   *     a string carrying U+0000          16    NEVER          <- sanitised to U+FFFD
+   *     a lone surrogate                  16    NEVER          <- sanitised to U+FFFD
+   *     a function-valued field            2    NEVER          <- stored as null, omitted by
+   *                                                               JSON.stringify
+   *     a `__proto__` key                 27    NEVER          <- refused, see isUnsafePersistedKey
+   *
+   * AND THE DOMAIN IS ABOUT THE ATOMS, NOT THE TOTAL, which is the half pass 13's wording missed.
+   * Two 4 000-character strings side by side are 8 021 characters and obey the law exactly; 400
+   * image refs are 35 897 characters and obey it exactly. "False past 4 008 characters" is not the
+   * boundary — "false past a 4 000-character STRING" is.
+   */
+  it("THE LAW'S DOMAIN: each boundary is verbatim on one side and NEVER verbatim on the other", () => {
+    const nestObj = (d: number): unknown => (d === 0 ? "leaf" : { n: nestObj(d - 1) });
+    const nestList = (d: number): unknown => (d === 0 ? "leaf" : [nestList(d - 1)]);
+    const key = (n: number, value: unknown) => Object.fromEntries([["K".repeat(n), value]]);
+
+    /** The smallest budget above L at which `{a: value}` comes back byte-identical, or -1 when no
+     *  budget in `[L, L + extra]` does. Dense, because the whole point is that the answer is an
+     *  exact budget and not a region. */
+    const lawBudget = (value: unknown, extra = 300): number => {
+      const want = JSON.stringify({ a: value })!;
+      for (let b = want.length; b <= want.length + extra; b++)
+        if (JSON.stringify(boundPersistedJson({ a: value }, b)) === want) return b - want.length;
+      return -1;
+    };
+
+    // INSIDE THE DOMAIN — the law holds, and holds at sizes far past where it was ever sampled.
+    const inside: [string, unknown][] = [
+      ["a 4 000-character string, the widest boundStringToCost keeps", "x".repeat(4_000)],
+      ["a 4 000-character string inside a list", ["x".repeat(4_000)]],
+      ["a 126-character key", key(126, "v")],
+      ["seven levels of objects", nestObj(7)],
+      ["seven levels of lists", nestList(7)],
+      ["a well-formed astral pair", "a\u{1F600}b"],
+      ["two 4 000-character strings, 8 021 rendered", { p: "x".repeat(4_000), q: "y".repeat(4_000) }],
+      [
+        "400 image refs, 35 897 rendered",
+        Array.from({ length: 400 }, (_, i) => `ghcr.io/a/s-${i}@sha256:${"0".repeat(64)}`)
+      ]
+    ];
+    for (const [name, value] of inside) {
+      expect(lawBudget(value), `${name}: the law does not hold here`).toBe(96);
+      const want = JSON.stringify({ a: value })!;
+      expect(
+        JSON.stringify(boundPersistedJson({ a: value }, want.length + 95)),
+        `${name}: verbatim at L + 95, so the law is looser than it says`
+      ).not.toBe(want);
+    }
+
+    // OUTSIDE IT — not "verbatim later", but verbatim at NO budget at all, which is the statement
+    // that makes the domain a boundary rather than an inconvenience.
+    const outside: [string, unknown][] = [
+      ["a 4 001-character string", "x".repeat(4_001)],
+      ["a 4 001-character string inside a list", ["x".repeat(4_001)]],
+      ["a 127-character key", key(127, "v")],
+      ["eight levels of objects", nestObj(8)],
+      ["eight levels of lists", nestList(8)],
+      ["a string carrying U+0000", "a\u0000b"],
+      ["a lone high surrogate", "a\uD83Db"],
+      ["a function-valued field", { f: () => 1 }],
+      ["a `__proto__` key", JSON.parse('{"__proto__":{"p":1}}')]
+    ];
+    for (const [name, value] of outside) {
+      expect(lawBudget(value), `${name}: the law holds here after all`).toBe(-1);
+      // AND NOT MERELY LATER. The dense scan above covers L…L+300; these are the budgets a caller
+      // could plausibly reach for, including four times the column policy. Every one of these
+      // boundaries is an absolute cap rather than a share, so no budget can buy past it.
+      const want = JSON.stringify({ a: value })!;
+      for (const budget of [
+        want.length + 1_000,
+        want.length + 10_000,
+        PERSISTED_JSON_MAX_CHARS,
+        PERSISTED_JSON_MAX_CHARS * 4
+      ])
+        expect(
+          JSON.stringify(boundPersistedJson({ a: value }, budget)),
+          `${name}: verbatim at ${budget}, so the boundary is a share and not a cap`
+        ).not.toBe(want);
+    }
+
+    // NON-VACUITY: `lawBudget` must be capable of returning 96, or every "outside" arm is green on
+    // a helper that always returns -1.
+    expect(lawBudget("x".repeat(300))).toBe(96);
+  });
+
   it("L + 96 IS THE WHOLE LAW: a value of L characters survives verbatim at L + 96, and not before", () => {
     // ONE LAW FOR EVERY SHAPE. `boundPersistedJson` reserves PERSISTED_JSON_MIN_LEAF from the row
     // as its overspend backstop and the walk gets the rest, so a field that costs L wants exactly
@@ -1164,6 +1268,11 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     const atoms: [string, unknown][] = [
       ["the empty string", ""],
       ["a 200-character string", "x".repeat(200)],
+      // AT THE BOUNDARY, not comfortably inside it — 300 was the widest atom, and the domain arm
+      // above is what says why 4 000 is the last width that works.
+      ["a 4 000-character string", "x".repeat(4_000)],
+      ["a 126-character key", Object.fromEntries([["K".repeat(126), "v"]])],
+      ["seven levels of nesting", { a: { b: { c: { d: { e: { f: { g: "deep" } } } } } } }],
       ["50 backslashes", "\\".repeat(50)],
       ["30 astral characters", "\u{1F600}".repeat(30)],
       ["a number", 1_234_567_890_123],

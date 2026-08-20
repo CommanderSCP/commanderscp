@@ -267,7 +267,10 @@ describe("HIGH: the whole bound, swept densely in the BUDGET at every width and 
     ).toEqual([]);
     expect(silent.slice(0, 5), `${silent.length} values cut with no truncation report`).toEqual([]);
     expect(noise.slice(0, 5), `${noise.length} reports on values that lost nothing`).toEqual([]);
-  });
+    // 2.8s alone; the explicit budget is for the parallel graph, where vitest's 5 000 ms default
+    // is what a 116 850-pair sweep hits first. A gate that reds because the machine was busy is a
+    // gate people learn to re-run rather than read.
+  }, 60_000);
 
   it("COUNTER-ARM: the sweep's own family reaches the production budget and the real reading", () => {
     // The sweep above stops at 9 000, but its widest shape is far smaller than a saturating
