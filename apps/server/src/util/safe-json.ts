@@ -60,19 +60,59 @@ export class PrototypePoisoningError extends SyntaxError {
 }
 
 /**
- * Throws {@link PrototypePoisoningError} if `value` — typically fresh `JSON.parse` output —
- * contains a forbidden own key anywhere in its object graph.
+ * Throws {@link PrototypePoisoningError} if `value` contains a forbidden own key anywhere in its
+ * object graph. TOTAL over every input, including ones no `JSON.parse` can produce.
  *
- * Iterative (breadth-first) rather than recursive on purpose: the `.scpbundle` door accepts bodies
- * up to 64 MiB, and a deeply nested document must be REJECTED by this guard, never turned into a
- * `RangeError: Maximum call stack size exceeded` from the guard itself.
+ * Iterative rather than recursive on purpose: the `.scpbundle` door accepts bodies up to 64 MiB,
+ * and a deeply nested document must be REJECTED by this guard, never turned into a `RangeError:
+ * Maximum call stack size exceeded` from the guard itself.
+ *
+ * ## Why the visited set, when both call sites pass `JSON.parse` output
+ *
+ * They do, and `JSON.parse` output is a tree, and `secure-json-parse` — the library this
+ * reimplements — has no visited set either for exactly that reason. But this function is
+ * EXPORTED, and an export's precondition is only as strong as the next caller's memory of it.
+ * Without a visited set, one cyclic argument makes it spin forever: `const a = {}; a.self = a;
+ * assertNoPrototypePoisoning(a)` was still running at 20 s and had to be hard-killed, and with the
+ * two lines below deleted this package's own test file ran past 300 s. That is a guard turning
+ * into the denial of service it exists to prevent, in the process that serves every route.
+ *
+ * A visited `WeakSet` is chosen over three alternatives:
+ *
+ *  - A NODE BUDGET would need a number, and any number is either small enough to refuse a
+ *    legitimate multi-thousand-entry bundle (the reason `bodyLimit` is 64 MiB) or large enough
+ *    that a cyclic graph still burns seconds of CPU before hitting it. It also converts a
+ *    programming mistake into an input rejection, which is the wrong verdict for the wrong party.
+ *  - MAKING THE PRECONDITION UNMISSABLE AT THE SIGNATURE (a branded `AcyclicJson` parameter) puts
+ *    the burden on every call site to prove something the callee can establish for itself in one
+ *    `WeakSet`, and cannot be enforced at all against JavaScript callers coming through the plugin
+ *    host.
+ *  - ALLOCATING THE SET LAZILY, only once a walk has passed some node count, measures as free
+ *    (100k walks over a 4253-node document: 13.76 s untracked, 13.82 s lazy, 23.92 s `WeakSet`,
+ *    23.60 s `Set`). It was still rejected: it reintroduces the arbitrary number, and the cost it
+ *    saves is not one anything here can feel. Same benchmark in absolute terms — a 74-byte API
+ *    body costs 0.9 us to `JSON.parse` and 0.6 us to walk, and the tracking is ~43 % of that
+ *    walk; extrapolated to a full 64 MiB bundle the tracking adds roughly 0.2 s to an import that
+ *    already parses, signature-verifies and writes the whole thing. Simplicity is decision
+ *    priority 1 in the charter; the number is recorded here so a future reader with a real
+ *    hot-path problem knows exactly what to reach for.
+ *
+ * It changes NOTHING for tree input: a tree visits each node identity exactly once, so nothing is
+ * ever skipped that would otherwise have been examined. For the shared-subtree DAGs a non-JSON
+ * caller can build it is a strict improvement — those were re-walked once per inbound edge before,
+ * exponentially so for a diamond chain.
  */
 export function assertNoPrototypePoisoning(value: unknown): void {
-  // JSON.parse output is a tree — no cycles — so no visited-set is needed.
+  // Identity, not structure: two structurally equal siblings are different nodes and both get
+  // examined. Only the SAME object reached a second time is skipped, and re-examining it could
+  // not reach a verdict the first visit did not.
+  const visited = new WeakSet<object>();
   const queue: unknown[] = [value];
   while (queue.length > 0) {
     const node = queue.pop();
     if (node === null || typeof node !== "object") continue;
+    if (visited.has(node)) continue;
+    visited.add(node);
 
     // `Object.prototype.hasOwnProperty.call`, never `node.hasOwnProperty(...)`: the whole point is
     // that `node`'s own members are attacker-chosen, `hasOwnProperty` included.

@@ -97,6 +97,93 @@ describe("parseJsonRejectingPrototypePoisoning", () => {
 });
 
 /**
+ * TOTALITY OVER GRAPHS `JSON.parse` CANNOT PRODUCE.
+ *
+ * `assertNoPrototypePoisoning` is EXPORTED, so its callers are not limited to the two doors that
+ * hand it fresh `JSON.parse` output. Before the visited set, a single cyclic argument made it spin
+ * forever — measured: still running at 20 s, hard-killed — which is the guard becoming the denial
+ * of service it exists to prevent, inside the process that serves every route.
+ *
+ * A NON-TERMINATING WALK CANNOT BE CAUGHT BY A TEST TIMEOUT: it is synchronous, so it blocks the
+ * event loop and vitest never gets to fire one. (Measured: with the visited set deleted, this file
+ * ran past 300 s and had to be killed — it does not fail, it hangs, and a hang that wedges CI is a
+ * bad gate even though it is a loud one.) So the cases below count node VISITS through an
+ * enumerable getter and trip a budget instead. With the visited set each node is examined once;
+ * delete it and the budget throws in milliseconds and the named test fails cleanly.
+ */
+describe("assertNoPrototypePoisoning — terminates on graphs JSON.parse cannot produce", () => {
+  /** An enumerable accessor property that counts how often the walk reads it, and refuses to be a
+   *  hang: past `budget` reads it throws, turning non-termination into a fast, named failure. */
+  const countingProperty = (
+    target: Record<string, unknown>,
+    key: string,
+    value: unknown,
+    budget = 10_000
+  ): { reads: () => number } => {
+    let reads = 0;
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads > budget) throw new Error(`assertNoPrototypePoisoning did not terminate`);
+        return value;
+      }
+    });
+    return { reads: () => reads };
+  };
+
+  it("a self-referential object", () => {
+    const a: Record<string, unknown> = { ok: 1 };
+    const probe = countingProperty(a, "self", a);
+    expect(() => {
+      assertNoPrototypePoisoning(a);
+    }).not.toThrow();
+    expect(probe.reads()).toBe(1);
+  });
+
+  it("a two-node cycle through an array", () => {
+    const a: Record<string, unknown> = {};
+    const b: Record<string, unknown> = {};
+    const probe = countingProperty(b, "back", [a]);
+    a.fwd = b;
+    expect(() => {
+      assertNoPrototypePoisoning(a);
+    }).not.toThrow();
+    expect(probe.reads()).toBe(1);
+  });
+
+  it("STILL REFUSES a poisoned node reachable only past the cycle", () => {
+    const poisoned = JSON.parse('{"__proto__":{"isAdmin":true}}') as unknown;
+    const a: Record<string, unknown> = { later: poisoned };
+    countingProperty(a, "self", a);
+    expect(() => {
+      assertNoPrototypePoisoning(a);
+    }).toThrow(PrototypePoisoningError);
+  });
+
+  it("a shared subtree is not re-walked once per inbound edge", () => {
+    // A diamond chain: without identity-based skipping the leaf is read 2**depth times.
+    const leaf: Record<string, unknown> = {};
+    const probe = countingProperty(leaf, "value", true);
+    let node: Record<string, unknown> = { l: leaf, r: leaf };
+    for (let i = 0; i < 40; i += 1) node = { l: node, r: node };
+    expect(() => {
+      assertNoPrototypePoisoning(node);
+    }).not.toThrow();
+    expect(probe.reads()).toBe(1);
+  });
+
+  it("examines every structurally-equal SIBLING — the skip is identity, not structure", () => {
+    const poisoned = JSON.parse('{"__proto__":{"x":1}}') as unknown;
+    // Two distinct objects that a structural cache would collapse; the third must still be reached.
+    expect(() => {
+      assertNoPrototypePoisoning({ one: { a: 1 }, two: { a: 1 }, three: poisoned });
+    }).toThrow(PrototypePoisoningError);
+  });
+});
+
+/**
  * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
  * that three named keys are absent only proves those three are absent; this proves NOTHING was
  * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
