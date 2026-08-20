@@ -13,6 +13,7 @@ import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { AppDeps } from "./types.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
 import { badRequest, ProblemError, sendProblem } from "./errors.js";
+import { assertNoPrototypePoisoning, PrototypePoisoningError } from "./util/safe-json.js";
 import type { CollectedRoute } from "./openapi/registry.js";
 import "./openapi/registry.js";
 import { registerAuthRoutes } from "./routes/auth.js";
@@ -128,13 +129,37 @@ export async function buildApp(
   // M7 (coordination/webhook-signature.ts): captures the RAW request bytes onto `request.rawBody`
   // BEFORE JSON-parsing them — every webhook signature scheme (GitHub's `X-Hub-Signature-256`, the
   // generic `sha256=` fallback) is computed over those exact bytes, and a JSON.parse -> JSON.
-  // stringify round trip is not guaranteed byte-identical (whitespace, key order). Behaves
-  // identically to Fastify's own default JSON parser for every OTHER route — this replaces it
-  // wholesale rather than adding a second, route-scoped parser, since Fastify content-type parsers
-  // are registered per content-type globally, not per-route. An empty body parses to `undefined`
-  // (matches Fastify's default), and a JSON syntax error surfaces as the same `FST_ERR_CTP_INVALID_
-  // JSON_BODY`-shaped error the default parser produces (rethrown as-is so the existing error
-  // handling table is unaffected).
+  // stringify round trip is not guaranteed byte-identical (whitespace, key order). This REPLACES
+  // Fastify's default parser rather than adding a second, route-scoped one, because Fastify
+  // content-type parsers are registered per content-type globally, not per-route — so whatever
+  // this function does or fails to do applies to EVERY route in the process.
+  //
+  // THIS COMMENT USED TO CLAIM the replacement "behaves identically to Fastify's own default JSON
+  // parser for every OTHER route". It was false in three ways, all measured against the base
+  // commit, and the first was a live vulnerability:
+  //
+  //   1. Fastify's default is `secure-json-parse` with `onProtoPoisoning: "error"` and
+  //      `onConstructorPoisoning: "error"`. The replacement was a bare `JSON.parse`, so prototype-
+  //      poisoning rejection was absent from every route in the application — and, since nothing
+  //      else in this codebase ever mentioned `secure-json-parse`, from the codebase entirely.
+  //      `POST /services` with `properties: {"ok":1,"__proto__":{…}}` returned 201 Created and
+  //      stored `{"ok":1}`: accepted, silently partially discarded, reported as success. Restored
+  //      below via `util/safe-json.ts`, which reimplements the same two rules (that module's doc
+  //      comment records why the library itself cannot be added as a dependency here: it is in the
+  //      pnpm store but not the offline metadata mirror, so a direct dependency edge would need a
+  //      network fetch at install time, which charter principle 5 forbids).
+  //   2. A JSON syntax error did NOT surface as `FST_ERR_CTP_INVALID_JSON_BODY`. That error carries
+  //      `statusCode: 400`; a raw `SyntaxError` carries none, so `setErrorHandler` below fell
+  //      through to its catch-all and answered a client typo with 500 Internal Server Error
+  //      (measured: `{not json` -> 500). Both failure modes now produce a 400 problem+json via
+  //      `badRequest`, which is this codebase's own equivalent of that Fastify error.
+  //   3. An empty body does NOT match Fastify's default — the default replies
+  //      `FST_ERR_CTP_EMPTY_JSON_BODY`. Parsing it to `undefined` is a DELIBERATE divergence that
+  //      routes here rely on, so it is kept, and now labelled as a divergence rather than as parity.
+  //
+  // One further known divergence, left as-is: Fastify's default strips a leading UTF-8 BOM before
+  // parsing and this does not, so a BOM-prefixed body is a 400 here. Narrowing behaviour is safe;
+  // it is recorded rather than silently "fixed" because widening it is a functional change.
   app.addContentTypeParser<Buffer>(
     "application/json",
     { parseAs: "buffer" },
@@ -144,11 +169,30 @@ export async function buildApp(
         done(null, undefined);
         return;
       }
+      let parsed: unknown;
       try {
-        done(null, JSON.parse(body.toString("utf8")));
-      } catch (err) {
-        done(err as Error, undefined);
+        parsed = JSON.parse(body.toString("utf8"));
+      } catch {
+        done(badRequest("Malformed JSON body"), undefined);
+        return;
       }
+      try {
+        assertNoPrototypePoisoning(parsed);
+      } catch (err) {
+        // Refuse the whole request. NOT `protoAction: "remove"`: stripping the key would accept a
+        // request while silently discarding part of it, which is exactly the behaviour that made
+        // the original defect invisible.
+        done(
+          badRequest(
+            err instanceof PrototypePoisoningError
+              ? err.message
+              : "Object contains forbidden prototype property"
+          ),
+          undefined
+        );
+        return;
+      }
+      done(null, parsed);
     }
   );
 
