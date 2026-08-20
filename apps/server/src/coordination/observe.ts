@@ -69,6 +69,37 @@ function sourceKindForModule(pluginModule: string): string {
  */
 export type ObserveWatermarks = Record<string, string>;
 
+/**
+ * A watermark map is keyed by `ExecutorEvent.kind` — a string a PLUGIN supplies, i.e. foreign
+ * input — so every one of these maps is built on a NULL PROTOTYPE and every lookup into one is
+ * own-key-only. Without that, `kind === "__proto__"` walks straight into
+ * `Object.prototype`'s `__proto__` accessor and this module stops working:
+ *
+ *   - `next[ev.kind] = ev.occurredAt` stores NOTHING (the setter ignores a string), so
+ *     `advanceWatermarks` becomes a permanent no-op for that kind. MEASURED on the base commit:
+ *     four consecutive ticks of a `__proto__`-kind event left the mark set at `[]` while a control
+ *     kind advanced normally — the cursor never moves, so the provider is re-polled from the same
+ *     point forever and every event in the window is re-fetched on every tick, indefinitely.
+ *   - `watermarkFor(marks, "__proto__")` returned `Object.prototype`, which then reached the
+ *     provider stringified as `?since=[object Object]`.
+ *   - `serializeCursorToken` dropped the key from the persisted token entirely.
+ *
+ * `kind` is not validated against an allow-list anywhere (the doc above lists `push`,
+ * `workflow_run`, `custom`, `sync`, but `custom` exists precisely so a plugin can invent one), so
+ * the fix belongs here rather than in a validator.
+ */
+function emptyWatermarks(): ObserveWatermarks {
+  return Object.create(null) as ObserveWatermarks;
+}
+
+/** Own-key lookup. Never `marks[kind]`: for `kind` of `"__proto__"`, `"toString"`,
+ *  `"constructor"`, … that expression returns an INHERITED member of `Object.prototype`, not a
+ *  watermark. `emptyWatermarks` already removes the inherited members from maps this module
+ *  builds; this makes the read correct even for a map a caller built as a plain object literal. */
+function ownMark(marks: ObserveWatermarks, kind: string): string | undefined {
+  return Object.prototype.hasOwnProperty.call(marks, kind) ? marks[kind] : undefined;
+}
+
 /** A watermark must be a parseable timestamp — anything else is corruption, not a cursor, and
  *  passing it through would reach the provider as a nonsense `?since=` query parameter. */
 function isTimestamp(value: string): boolean {
@@ -76,13 +107,17 @@ function isTimestamp(value: string): boolean {
 }
 
 export function parseCursorToken(token: string | null): ObserveWatermarks {
-  if (!token) return {};
+  if (!token) return emptyWatermarks();
   const trimmed = token.trim();
-  if (!trimmed.startsWith("{")) return isTimestamp(trimmed) ? { _legacy: trimmed } : {};
+  if (!trimmed.startsWith("{")) {
+    const out = emptyWatermarks();
+    if (isTimestamp(trimmed)) out._legacy = trimmed;
+    return out;
+  }
   try {
     const parsed: unknown = JSON.parse(trimmed);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: ObserveWatermarks = {};
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return emptyWatermarks();
+    const out = emptyWatermarks();
     for (const [kind, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (typeof value === "string" && value.length > 0) out[kind] = value;
     }
@@ -91,13 +126,13 @@ export function parseCursorToken(token: string | null): ObserveWatermarks {
     // An unparseable token is treated as "no watermark" rather than throwing: a corrupt cursor must
     // not wedge the observe loop for that instance forever. Re-polling is safe — dedupe collapses
     // anything already ingested.
-    return {};
+    return emptyWatermarks();
   }
 }
 
 /** The watermark a given event kind should resume from — its own, else the legacy scalar. */
 export function watermarkFor(marks: ObserveWatermarks, kind: string): string | undefined {
-  return marks[kind] ?? marks._legacy;
+  return ownMark(marks, kind) ?? ownMark(marks, "_legacy");
 }
 
 /** ISO-8601 lexicographic max, advanced INDEPENDENTLY per event kind. */
@@ -105,10 +140,12 @@ export function advanceWatermarks(
   events: ExecutorEvent[],
   current: ObserveWatermarks
 ): ObserveWatermarks {
-  const next: ObserveWatermarks = { ...current };
+  // `Object.assign` onto a null-prototype target, not `{ ...current }`: the spread would give the
+  // accumulator `Object.prototype` back and reopen every hazard described on `emptyWatermarks`.
+  const next: ObserveWatermarks = Object.assign(emptyWatermarks(), current);
   for (const ev of events) {
     if (typeof ev.occurredAt !== "string" || !ev.kind) continue;
-    const seen = next[ev.kind] ?? next._legacy;
+    const seen = ownMark(next, ev.kind) ?? ownMark(next, "_legacy");
     if (seen === undefined || ev.occurredAt > seen) next[ev.kind] = ev.occurredAt;
   }
   return next;
@@ -116,7 +153,7 @@ export function advanceWatermarks(
 
 export function serializeCursorToken(marks: ObserveWatermarks): string {
   // Keys sorted so an unchanged cursor serializes byte-identically and does not churn the row.
-  const sorted: ObserveWatermarks = {};
+  const sorted: ObserveWatermarks = emptyWatermarks();
   for (const key of Object.keys(marks).sort()) sorted[key] = marks[key] as string;
   return JSON.stringify(sorted);
 }

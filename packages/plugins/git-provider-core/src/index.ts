@@ -304,6 +304,11 @@ async function observe(
   return [...commits, ...runs];
 }
 
+/** Own-property read — see the comment inside {@link watermarkForKind}. */
+function ownKey(source: Record<string, unknown>, key: string): unknown {
+  return Object.prototype.hasOwnProperty.call(source, key) ? source[key] : undefined;
+}
+
 /** The watermark one event kind should resume from: its own, else the legacy scalar, else none. */
 export function watermarkForKind(token: string | undefined, kind: string): string | undefined {
   if (!token) return undefined;
@@ -317,9 +322,15 @@ export function watermarkForKind(token: string | undefined, kind: string): strin
     const parsed: unknown = JSON.parse(trimmed);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
     const marks = parsed as Record<string, unknown>;
-    const own = marks[kind];
+    // Own-key lookups. `marks[kind]` for a `kind` of `"__proto__"`, `"constructor"`, `"toString"`,
+    // … reads an INHERITED member of `Object.prototype` rather than a watermark. Today the
+    // `typeof === "string"` guards below happen to reject every such member, so this is hardening
+    // rather than a live bug — but the guard is what makes it safe, not the lookup, and the twin of
+    // this function in `apps/server/src/coordination/observe.ts` had no such guard and WAS broken
+    // (a `__proto__`-kind event froze its cursor permanently). Same property, so same fix.
+    const own = ownKey(marks, kind);
     if (typeof own === "string" && own.length > 0) return own;
-    const legacy = marks._legacy;
+    const legacy = ownKey(marks, "_legacy");
     return typeof legacy === "string" && legacy.length > 0 ? legacy : undefined;
   } catch {
     // Unparseable cursor ⇒ poll from the beginning rather than throw. Re-polling is safe: the
