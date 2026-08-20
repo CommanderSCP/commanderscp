@@ -844,24 +844,50 @@ export function boundDetail(text: string): BoundedDetail {
  * short diagnostic preview, where a reserved tail would leave almost no head.
  */
 export function boundText(text: string, max: number, tailChars: number): string {
-  if (max <= 0) return "";
-  if (text.length <= max) return persistableText(text);
+  return boundTextWithLoss(text, max, tailChars).text;
+}
+
+/**
+ * {@link boundText}, PLUS HOW MANY OF THE ORIGINAL'S CHARACTERS IT REMOVED — M23.1g.
+ *
+ * WHY THE COUNT IS RETURNED RATHER THAN READ BACK OFF THE RESULT. The obvious way to recover it is
+ * to match {@link elisionMarker} in the returned string. That is exactly the mistake M23.1g exists
+ * to stop being made one layer up: the marker is CONTENT-SHAPED, a plugin can put the same
+ * characters in a revision on purpose (`observed-state-gate-critical-leaf.integration.test.ts`
+ * drives precisely that fixture), and a reader that pattern-matches it cannot tell our cut from
+ * their string. Worse, the NARROW branch below — a `max` too small to carry both ends and an honest
+ * count — emits NO marker at all, so a matcher reports "not truncated" for the case that lost the
+ * most. The function that did the cutting is the only place the number is known for free.
+ *
+ * `dropped` is in ORIGINAL characters (UTF-16 code units), and `keptHead + dropped + keptTail ===
+ * text.length` holds through sanitising because {@link persistableText} is length-preserving.
+ */
+function boundTextWithLoss(
+  text: string,
+  max: number,
+  tailChars: number
+): { text: string; dropped: number } {
+  if (max <= 0) return { text: "", dropped: text.length };
+  if (text.length <= max) return { text: persistableText(text), dropped: 0 };
   // `elisionMarker(text.length)` is the longest the marker can be (the count only shrinks), so
   // sizing the head against it guarantees the result fits even before the real count is known.
   const widest = elisionMarker(text.length);
   if (max <= widest.length + 2) {
     // Too narrow to carry both ends AND an honest count. Keep the END: for a runner failure, a
     // provider refusal or an exception message, the diagnosis is what the last characters hold.
-    return persistableText(text.slice(text.length - max));
+    return { text: persistableText(text.slice(text.length - max)), dropped: text.length - max };
   }
   const tail = Math.min(tailChars, max - widest.length - 1);
   const headShare = Math.max(0, max - tail - widest.length);
   const dropped = text.length - headShare - tail;
   // The elision count stays arithmetically honest through sanitising precisely because
   // `persistableText` is length-preserving: `keptHead + dropped + keptTail === text.length` still.
-  return persistableText(
-    text.slice(0, headShare) + elisionMarker(dropped) + text.slice(text.length - tail)
-  );
+  return {
+    text: persistableText(
+      text.slice(0, headShare) + elisionMarker(dropped) + text.slice(text.length - tail)
+    ),
+    dropped
+  };
 }
 
 /**
@@ -887,8 +913,12 @@ export function boundText(text: string, max: number, tailChars: number): string 
  * additive", so the next field an executor contributes arrives unbounded by default and nothing
  * goes red. This walks a whole VALUE against ONE budget, so a field nobody has written yet is
  * covered on the day it is added, and the guarantee is a fact about the ROW rather than about a
- * field: `JSON.stringify(boundPersistedJson(v)).length <= PERSISTED_JSON_MAX_CHARS`, always,
- * checked exactly before returning.
+ * field: `JSON.stringify(boundPersistedJson(v).value).length <= PERSISTED_JSON_MAX_CHARS`, always,
+ * checked exactly before returning. The `truncation` half of that return value is NOT inside this
+ * number — it is a separate value with a separate bound
+ * ({@link PERSISTED_JSON_TRUNCATION_MAX_CHARS}), so that a store which chooses to persist it
+ * reserves for it out of its own column policy and no reading loses a character to a report it did
+ * not need. `wave-targets-repo.ts` is the one store that does.
  *
  * WHY 8 000. Two `RUNNER_DETAIL_MAX_CHARS` worth of room, i.e. an `observed_state` may carry an
  * operator-readable revision, a realistic image list and a rollout message and still be about a
@@ -928,6 +958,88 @@ const PERSISTED_JSON_MIN_LEAF = 96;
  *  test — or an operator's query — can find rows that were elided, rather than having to guess
  *  from a suspiciously short value. */
 export const PERSISTED_JSON_ELIDED_KEY = "__scpElided";
+
+/**
+ * ================================================================================================
+ * WHAT THE BOUND REMOVED, AS DATA — M23.1g, and the reason it is a RETURN VALUE rather than
+ * something a reader recovers from the stored bytes.
+ * ================================================================================================
+ * M23.1f turned a verbatim plugin value into one that may be cut, and told nobody outside this
+ * package. Everything downstream of it — `packages/schemas`' documented "the opaque stateRef
+ * as-is", `PipelineWaveCard`'s "no rollout" — went on describing the old value. An elided `rollout`
+ * arrives at the UI as `undefined`, which is the SAME bytes as "this executor reports no rollout",
+ * and the card renders the wrong cause. That is the provenance-label defect this repository has
+ * already shipped once (charter principle 6): the label named the branch that matched rather than
+ * what was true.
+ *
+ * THE THREE WAYS A READER COULD BE TOLD, AND WHY THIS IS THE ONE.
+ *
+ *   (a) LET THE READER PATTERN-MATCH THE MARKERS. Rejected. `apps/web` depends on `@scp/schemas`,
+ *       `@scp/sdk` and `@scp/server` and must not learn this package's sentinels — a UI regexing a
+ *       server sentinel is the UI reimplementing server semantics, against charter principle 3.
+ *       And it does not work even inside the server: {@link boundTextWithLoss}'s narrow branch
+ *       emits NO marker, and a plugin can put the marker text in a value on purpose.
+ *   (b) DERIVE IT AT READ TIME BY COMPARING STORED-TO-ORIGINAL. There is no original — the
+ *       unbounded value never reaches a row, which is the entire point of M23.1f.
+ *   (c) HAVE THE FUNCTION THAT DID THE CUTTING SAY SO. This. The counts are free at the cut site
+ *       and unrecoverable anywhere else.
+ *
+ * THE SIGNAL AND THE BOUND ARE NOT SEPARABLE, BY TYPE. {@link boundPersistedJson} returns
+ * {@link BoundedPersistedJson}, so there is no way to obtain the bounded value without also being
+ * handed the report; a caller that drops it does so visibly, at a named line, and
+ * `apps/server/src/coordination/observed-truncation.test.ts` is the gate that a bound applied to
+ * an `observed_state` write without emitting the signal fails.
+ */
+export interface PersistedJsonFieldTruncation {
+  /**
+   * The field is NOT IN THE STORED VALUE AT ALL and that is our doing, not the executor's. This is
+   * the bit the wrong-cause defect turned on: without it, "absent" and "we cut it" are the same
+   * bytes on the wire.
+   */
+  dropped: boolean;
+  /** Characters removed from strings anywhere inside this field's subtree. */
+  droppedCharacters?: number;
+  /** Array entries removed from arrays anywhere inside this field's subtree. */
+  droppedEntries?: number;
+  /** Object fields removed from objects anywhere inside this field's subtree — including the field
+   *  itself when `dropped` is true's siblings did the same. Their NAMES are gone below the root:
+   *  the walk replaces them with {@link PERSISTED_JSON_ELIDED_KEY} and a count. */
+  droppedFields?: number;
+}
+
+/**
+ * Keyed by the ROOT FIELD of the bounded value. A value whose root is not a plain object — a bare
+ * string, an array — reports under the empty key `""`, meaning "the value itself".
+ *
+ * A key is present ONLY when something was removed from that field, so an empty report is never
+ * produced: `truncation === undefined` is "nothing was cut", which is the state of every honest
+ * reading and costs nothing to store.
+ */
+export type PersistedJsonTruncation = Record<string, PersistedJsonFieldTruncation>;
+
+/** {@link boundPersistedJson}'s result: what will be stored, and what storing it cost. */
+export interface BoundedPersistedJson {
+  value: unknown;
+  /** Undefined when the value came back with everything it arrived with. */
+  truncation?: PersistedJsonTruncation;
+}
+
+/**
+ * HOW WIDE THE REPORT ITSELF MAY BE. The report is OURS — the counts are integers and `dropped` is
+ * a boolean — with exactly one plugin-chosen component: the root field NAMES, each already bounded
+ * to {@link PERSISTED_JSON_MAX_KEY_CHARS} by the walk that stored them. What is NOT bounded by that
+ * is HOW MANY of them there are, and a plugin choosing 5 000 root keys is the shape this file
+ * already measures elsewhere. So the report is bounded like everything else here — by measurement,
+ * not by argument — and the entries that do not fit are replaced by one
+ * {@link PERSISTED_JSON_ELIDED_KEY} entry carrying their count, which is a legal
+ * {@link PersistedJsonFieldTruncation} rather than a shape a schema would refuse.
+ *
+ * IT IS NOT TAKEN OUT OF THE VALUE'S BUDGET. The report is a separate return value and its storage
+ * is the caller's decision; `wave-targets-repo.ts` reserves for it out of the `observed_state`
+ * column policy at the call site, so no arithmetic in this walk changes and no reading loses a
+ * character to a report it did not need.
+ */
+export const PERSISTED_JSON_TRUNCATION_MAX_CHARS = 288;
 
 /**
  * WHAT `null` COSTS — MEDIUM, M23.0 verification pass 11, and the reason it is a NAMED CONSTANT
@@ -1431,8 +1543,30 @@ function walkObjectFields(
 ): Record<string, unknown> {
   /** Seated fields in insertion order. `raw` is kept because phase 2 walks each field more than
    *  once — at a larger share each time — and needs the original to walk. */
-  const seated: { key: string; raw: unknown; value: unknown; spent: number; need: number }[] = [];
+  const seated: {
+    key: string;
+    raw: unknown;
+    value: unknown;
+    spent: number;
+    need: number;
+    /** What bounding the KEY cost. Charged once, before any value is walked, and therefore kept
+     *  separately from the value's loss — which is REPLACED on every re-walk. */
+    keyDropped: number;
+    /** WHAT THIS FIELD LOST, replaced (never accumulated) on every re-walk — phase 2 walks a field
+     *  more than once and only the LAST walk's value is stored, so only the last walk's loss is
+     *  true. Accumulating instead would report a field cut two or three times over, and a re-walk
+     *  is the NORMAL case here: the water-filling loop exists to run it. */
+    loss: WalkLoss;
+  }[] = [];
   let elidedMarker: string | undefined;
+  /** Root-level attribution only — see {@link WalkBudget.fields}. Below the root the names are not
+   *  addressable from the API and the losses roll up into the root field that contains them. */
+  const collector = depth === 0 ? budget.fields : undefined;
+  /** Root fields phase 1 refused outright. Their names are the ONLY place "we cut `rollout`" and
+   *  "the executor reported no rollout" stop being the same bytes, and the stored value cannot
+   *  carry them: `__scpElided` is a COUNT, deliberately, because the names would be plugin-chosen
+   *  text competing with the reading for the column. */
+  let refusedKeys: string[] | undefined;
   /** The sum of what the already-seated fields need — {@link admissionCost} each, NOT a flat
    *  {@link PERSISTED_JSON_MIN_LEAF} each. A field whose whole value is `60` reserves two
    *  characters, and the difference is a key that stays. */
@@ -1443,7 +1577,8 @@ function walkObjectFields(
   for (let i = 0; i < entries.length; i++) {
     const [rawKey, entryValue] = entries[i]!;
     if (entryValue === undefined) continue; // `JSON.stringify` omits these; charge nothing
-    const key = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
+    const boundedKey = boundStringToCost(rawKey, Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS));
+    const key = boundedKey.text;
     const keyCost = jsonCost(key) + 1 + (seated.length > 0 ? 1 : 0); // "key": plus the comma
     // EVERY seated field must still be able to get what IT needs, not just this one: the guarantee
     // has to hold for the fields already seated, whose values are not walked until phase 2. What a
@@ -1456,11 +1591,29 @@ function walkObjectFields(
     if (budget.left - keyCost < reserved + need) {
       elidedMarker = `${entries.length - i} more fields`;
       budget.left -= jsonCost(elidedMarker) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
+      // THE SAME NUMBER THE MARKER CARRIES, for the same reason the array's does.
+      budget.loss.fields += entries.length - i;
+      if (collector) {
+        // Bounded like any other plugin-chosen string that becomes a row — this one lands in the
+        // report rather than in the value, but it is the same untrusted text.
+        refusedKeys = entries
+          .slice(i)
+          .filter(([, refusedValue]) => refusedValue !== undefined)
+          .map(([refusedKey]) => boundText(refusedKey, PERSISTED_JSON_MAX_KEY_CHARS, 0));
+      }
       break;
     }
     budget.left -= keyCost;
     reserved += need;
-    seated.push({ key, raw: entryValue, value: undefined, spent: 0, need });
+    seated.push({
+      key,
+      raw: entryValue,
+      value: undefined,
+      spent: 0,
+      need,
+      keyDropped: boundedKey.dropped,
+      loss: { characters: boundedKey.dropped, entries: 0, fields: 0 }
+    });
   }
 
   // ---- PHASE 2: WATER-FILL THE VALUES. `pool` is what the fields in `pending` have to divide;
@@ -1480,8 +1633,14 @@ function walkObjectFields(
       // half of pass 12's fix that pass 12 did not carry through. See the block above
       // {@link walkObjectFields} under "AND PHASE 2 MUST HONOUR WHAT PHASE 1 RESERVED".
       const offered = Math.max(share, field.need);
-      const sub: WalkBudget = { left: offered };
+      // A FRESH LOSS ACCUMULATOR PER ATTEMPT, at every depth. Sharing the parent's would double
+      // count a field re-walked at a larger share — and a re-walk is the NORMAL case here, not a
+      // pathological one: the water-filling loop exists to run it. The winning attempt's loss
+      // replaces the previous one below.
+      const sub: WalkBudget = { left: offered, loss: emptyLoss() };
       field.value = walk(field.raw, sub, depth + 1);
+      field.loss = { characters: field.keyDropped, entries: 0, fields: 0 };
+      addLoss(field.loss, sub.loss);
       // Charge what was ACTUALLY spent, not the share. `sub.left` may go slightly negative when a
       // leaf overshoots its own share; the difference keeps the accounting exact either way, which
       // is what the measured check in `boundPersistedJson` is the backstop for.
@@ -1503,6 +1662,16 @@ function walkObjectFields(
   // TELL THE PARENT whether this subtree would use more budget, AFTER redistribution rather than
   // during phase 1 — a field that phase 2 satisfied is not a reason for the parent to re-walk us.
   if (pending.length > 0 || elidedMarker !== undefined) budget.clipped = true;
+
+  // ROLL THE FIELDS' LOSSES UP so an ancestor's accumulator (and, at the root, the "was anything
+  // cut at all" test) sees them. The key-bounding loss seeded above rides along.
+  for (const field of seated) addLoss(budget.loss, field.loss);
+  if (collector) {
+    for (const field of seated) {
+      if (isLossy(field.loss)) collector.set(field.key, truncationOf(field.loss, false));
+    }
+    for (const refused of refusedKeys ?? []) collector.set(refused, { dropped: true });
+  }
 
   const out: Record<string, unknown> = {};
   for (const field of seated) out[field.key] = field.value;
@@ -1563,22 +1732,23 @@ function jsonCost(value: string | number | boolean): number {
  *
  * The first call is the FAST PATH and is the only one a string that already fits ever makes.
  */
-function boundStringToCost(text: string, left: number): string {
+function boundStringToCost(text: string, left: number): { text: string; dropped: number } {
   const widest = Math.min(RUNNER_DETAIL_MAX_CHARS, left);
-  if (widest <= 0) return "";
-  const whole = boundText(text, widest, Math.floor(widest / 2));
-  if (jsonCost(whole) <= left) return whole;
+  if (widest <= 0) return { text: "", dropped: text.length };
+  const whole = boundTextWithLoss(text, widest, Math.floor(widest / 2));
+  if (jsonCost(whole.text) <= left) return whole;
 
   // Bisect [0, widest) for the largest width whose RENDERED cost fits. `best` stays "" only when
   // not even the empty string fits — `left < 2` — which the row-level measurement in
-  // `boundPersistedJson` is the backstop for.
-  let best = "";
+  // `boundPersistedJson` is the backstop for. Its `dropped` is the WHOLE string, which is the truth
+  // in that case and is what the truncation report must say.
+  let best = { text: "", dropped: text.length };
   let lo = 0;
   let hi = widest - 1;
   while (lo <= hi) {
     const mid = (lo + hi) >>> 1;
-    const candidate = boundText(text, mid, Math.floor(mid / 2));
-    if (jsonCost(candidate) <= left) {
+    const candidate = boundTextWithLoss(text, mid, Math.floor(mid / 2));
+    if (jsonCost(candidate.text) <= left) {
       best = candidate;
       lo = mid + 1;
     } else {
@@ -1598,7 +1768,57 @@ function boundStringToCost(text: string, left: number): string {
  * rendering as `null`. Setting it for those would spend a redistribution round producing byte-identical
  * output.
  */
-type WalkBudget = { left: number; clipped?: boolean };
+type WalkBudget = {
+  left: number;
+  clipped?: boolean;
+  /**
+   * WHAT THIS SUB-WALK REMOVED, in the units a reader can act on. Separate from `clipped`, which is
+   * a scheduling bit ("offer me more budget and I will keep more") that the redistribution loop
+   * consumes and then forgets. `loss` is the DURABLE fact — it is what
+   * {@link boundPersistedJson} turns into {@link PersistedJsonTruncation}, and the reason a
+   * consumer can tell `rollout: undefined` because the executor reported no rollout from
+   * `rollout: undefined` because we cut it.
+   *
+   * NOT SET BY SANITISING. {@link persistableText} replaces U+0000 and lone surrogates with U+FFFD
+   * one code unit for one; nothing is removed, the value stays readable, and calling that
+   * "truncation" would make the signal fire on readings that lost nothing.
+   */
+  loss: WalkLoss;
+  /**
+   * ROOT-LEVEL ATTRIBUTION, and only the root budget carries it. `loss` alone answers "was anything
+   * cut"; this answers "cut from WHICH field", which is the whole difference between an operator
+   * told "no rollout" and an operator told "we truncated the rollout". Populated by
+   * {@link walkObjectFields} at depth 0 only — below the root the field names are not addressable
+   * from the API, and a path-shaped key would be plugin-chosen text in a governed row.
+   */
+  fields?: Map<string, PersistedJsonFieldTruncation>;
+};
+
+/** What one sub-walk removed. Three units because they are three different facts to a reader: a
+ *  shortened string, a cut list, and a key that is not there at all. */
+type WalkLoss = { characters: number; entries: number; fields: number };
+
+function emptyLoss(): WalkLoss {
+  return { characters: 0, entries: 0, fields: 0 };
+}
+
+function addLoss(into: WalkLoss, from: WalkLoss): void {
+  into.characters += from.characters;
+  into.entries += from.entries;
+  into.fields += from.fields;
+}
+
+function isLossy(loss: WalkLoss): boolean {
+  return loss.characters > 0 || loss.entries > 0 || loss.fields > 0;
+}
+
+function truncationOf(loss: WalkLoss, dropped: boolean): PersistedJsonFieldTruncation {
+  const entry: PersistedJsonFieldTruncation = { dropped };
+  if (loss.characters > 0) entry.droppedCharacters = loss.characters;
+  if (loss.entries > 0) entry.droppedEntries = loss.entries;
+  if (loss.fields > 0) entry.droppedFields = loss.fields;
+  return entry;
+}
 
 function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
   if (value === null || value === undefined) {
@@ -1613,9 +1833,14 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
   switch (typeof value) {
     case "string": {
       const bounded = boundStringToCost(value, budget.left);
-      if (bounded !== value) budget.clipped = true;
-      budget.left -= jsonCost(bounded);
-      return bounded;
+      // `clipped` and `loss` are set on DIFFERENT conditions and that is deliberate. Sanitising a
+      // NUL changes the text without removing anything (`bounded.text !== value`, `dropped === 0`),
+      // and more budget would not bring it back — so it must not schedule a redistribution round
+      // and must not be reported as truncation. See {@link WalkBudget}.
+      if (bounded.text !== value) budget.clipped = true;
+      budget.loss.characters += bounded.dropped;
+      budget.left -= jsonCost(bounded.text);
+      return bounded.text;
     }
     case "number": {
       // A non-finite number is `null` to `JSON.stringify` anyway; making that explicit means the
@@ -1636,9 +1861,10 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
       // exists to prevent.
       const rendered = String(value);
       const bounded = boundStringToCost(rendered, budget.left);
-      if (bounded !== rendered) budget.clipped = true;
-      budget.left -= jsonCost(bounded);
-      return bounded;
+      if (bounded.text !== rendered) budget.clipped = true;
+      budget.loss.characters += bounded.dropped;
+      budget.left -= jsonCost(bounded.text);
+      return bounded.text;
     }
     case "object":
       break;
@@ -1656,6 +1882,12 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
     // back, so marking it would only cost a redistribution round.
     const marker = "[elided: nesting deeper than the persisted-JSON depth limit]";
     budget.left -= jsonCost(marker);
+    // REPORTED EVEN THOUGH IT IS NOT A BUDGET CLIP. `clipped` says "more budget would keep more"
+    // and this one is false for it; the truncation report answers a different question — "is what
+    // the reader sees the whole of what the executor said" — and here it is not. Counted in the
+    // unit of whatever was replaced, so a reader is told 40 entries and not "a subtree".
+    if (Array.isArray(value)) budget.loss.entries += value.length;
+    else budget.loss.fields += Object.keys(value as Record<string, unknown>).length;
     return marker;
   }
 
@@ -1702,6 +1934,9 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
         budget.left -= jsonCost(marker) + 1;
         out.push(marker);
         budget.clipped = true;
+        // THE SAME NUMBER THE MARKER CARRIES. A reader that has the marker and a reader that has
+        // the report must not be told two different things about one cut.
+        budget.loss.entries += value.length - i;
         return out;
       }
       if (i > 0) budget.left -= 1; // ,
@@ -1748,16 +1983,29 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
  * WHERE IT BELONGS: at the STORE, not at the composition sites. The write function is the one place
  * that sees every value that becomes a row, including the ones a future field adds, and it cannot
  * be forgotten the way a call at a composition site can. See `wave-targets-repo.ts`.
+ *
+ * AND IT RETURNS WHAT IT REMOVED — M23.1g. Not a courtesy: a bound that shortens a value and says
+ * nothing hands every reader downstream a value that is indistinguishable from an honest one, and
+ * the reader then reports a cause that is false. See {@link PersistedJsonFieldTruncation} for the
+ * defect, the three ways a reader could have been told, and why this is the only one that works.
+ * The pair is the whole return value precisely so the two cannot be separated by accident.
  */
 export function boundPersistedJson(
   value: unknown,
   maxChars: number = PERSISTED_JSON_MAX_CHARS
-): unknown {
-  if (value === null || value === undefined) return value;
-  const budget: WalkBudget = { left: Math.max(0, maxChars) - PERSISTED_JSON_MIN_LEAF };
+): BoundedPersistedJson {
+  if (value === null || value === undefined) return { value };
+  const fields = new Map<string, PersistedJsonFieldTruncation>();
+  const budget: WalkBudget = {
+    left: Math.max(0, maxChars) - PERSISTED_JSON_MIN_LEAF,
+    loss: emptyLoss(),
+    fields
+  };
   const bounded = walk(value, budget, 0);
   const rendered = JSON.stringify(bounded);
-  if (rendered === undefined || rendered.length <= maxChars) return bounded;
+  if (rendered === undefined || rendered.length <= maxChars) {
+    return { value: bounded, truncation: truncationReport(fields, budget.loss) };
+  }
   const fallbacks = [
     {
       [PERSISTED_JSON_ELIDED_KEY]: boundDetail(
@@ -1769,9 +2017,86 @@ export function boundPersistedJson(
   ];
   for (const fallback of fallbacks) {
     const fallbackRendered = JSON.stringify(fallback);
-    if (fallbackRendered !== undefined && fallbackRendered.length <= maxChars) return fallback;
+    if (fallbackRendered !== undefined && fallbackRendered.length <= maxChars) {
+      return { value: fallback, truncation: wholesaleTruncation(value) };
+    }
   }
-  return null;
+  return { value: null, truncation: wholesaleTruncation(value) };
+}
+
+/**
+ * THE BACKSTOP'S OWN REPORT — and it is the one the reader needs most, because the backstop is the
+ * worst loss this file can produce: `revision`, `images` and `rollout.weight` gone TOGETHER,
+ * replaced by a diagnostic sentence. Before this, that arrived at an operator as three fields the
+ * executor apparently never reported.
+ *
+ * Every root field is `dropped`, because every root field is. The walk's own per-field accounting
+ * is deliberately NOT reused here: it describes a value that was measured over budget and thrown
+ * away, i.e. a value nobody will ever read.
+ */
+function wholesaleTruncation(input: unknown): PersistedJsonTruncation {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return { "": { dropped: true } };
+  }
+  const entries: [string, PersistedJsonFieldTruncation][] = Object.entries(
+    input as Record<string, unknown>
+  )
+    .filter(([, fieldValue]) => fieldValue !== undefined)
+    .map(([key]) => [boundText(key, PERSISTED_JSON_MAX_KEY_CHARS, 0), { dropped: true }]);
+  return entries.length === 0 ? { "": { dropped: true } } : boundTruncationReport(entries);
+}
+
+/**
+ * Turn the walk's accounting into the report, or `undefined` when there is nothing to report.
+ *
+ * `rootLoss` is the fallback for a value whose root is not an object — a bare over-long string, an
+ * array of image refs handed in directly. {@link walkObjectFields} is the only thing that fills
+ * `fields`, so without this clause the ONE shape that has no field names would report nothing at
+ * all while losing content, which is precisely the silence M23.1g exists to end.
+ */
+function truncationReport(
+  fields: Map<string, PersistedJsonFieldTruncation>,
+  rootLoss: WalkLoss
+): PersistedJsonTruncation | undefined {
+  if (fields.size > 0) return boundTruncationReport([...fields.entries()]);
+  if (isLossy(rootLoss)) return { "": truncationOf(rootLoss, false) };
+  return undefined;
+}
+
+/**
+ * MEASURED, NOT ARGUED — the same discipline {@link boundPersistedJson} applies to the value. A
+ * report that could itself grow without limit would be a second unbounded plugin-influenced write
+ * on the same row, which is the finding this whole family of rounds started from.
+ *
+ * The entries that do not fit become ONE {@link PERSISTED_JSON_ELIDED_KEY} entry carrying their
+ * count. That is a legal {@link PersistedJsonFieldTruncation}, so a schema over
+ * `Record<string, PersistedJsonFieldTruncation>` still validates the report — the alternative, a
+ * bare marker string in a record of objects, is a shape the response serializer would refuse and
+ * therefore a stall.
+ */
+function boundTruncationReport(
+  all: [string, PersistedJsonFieldTruncation][]
+): PersistedJsonTruncation {
+  const out: PersistedJsonTruncation = {};
+  // The widest the elision entry can be: the count only shrinks as entries are kept, so the reserve
+  // is exact before the real count is known — the same idiom as {@link tailMarkerCost}.
+  const reserve =
+    1 +
+    jsonCost(PERSISTED_JSON_ELIDED_KEY) +
+    1 +
+    JSON.stringify({ dropped: true, droppedFields: all.length }).length;
+  let cost = 2; // {}
+  for (let i = 0; i < all.length; i++) {
+    const [key, entry] = all[i]!;
+    const price = (i > 0 ? 1 : 0) + jsonCost(key) + 1 + JSON.stringify(entry).length;
+    if (cost + price > PERSISTED_JSON_TRUNCATION_MAX_CHARS - reserve) {
+      out[PERSISTED_JSON_ELIDED_KEY] = { dropped: true, droppedFields: all.length - i };
+      return out;
+    }
+    out[key] = entry;
+    cost += price;
+  }
+  return out;
 }
 
 /**

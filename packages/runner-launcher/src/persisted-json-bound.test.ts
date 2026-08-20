@@ -3,9 +3,21 @@ import {
   PERSISTED_JSON_ELIDED_KEY,
   PERSISTED_JSON_MAX_CHARS,
   PERSISTED_JSON_MAX_DEPTH,
-  boundPersistedJson,
+  boundPersistedJson as boundPersistedJsonWithReport,
   isPersistedJsonEntriesElision
 } from "./index.js";
+
+/**
+ * THE VALUE ALONE. `boundPersistedJson` returns `{ value, truncation }` since M23.1g — deliberately
+ * inseparable, so no caller can obtain the bounded value without being handed the report — and
+ * every arm below this line is about the VALUE. The report has its own file,
+ * `persisted-json-truncation.test.ts`, because it is a different property: these arms measure what
+ * survives, those measure whether we say what did not.
+ */
+const boundPersistedJson = (value: unknown, maxChars?: number): unknown =>
+  maxChars === undefined
+    ? boundPersistedJsonWithReport(value).value
+    : boundPersistedJsonWithReport(value, maxChars).value;
 
 /**
  * MEDIUM (M23.0 verification pass 7, findings M2 and M3) — BOUND THE STRUCTURE, NOT A LIST OF ITS
