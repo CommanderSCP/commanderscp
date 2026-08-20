@@ -1366,6 +1366,64 @@ const PERSISTED_JSON_SHARE_ROUNDS = 4;
  * {@link PERSISTED_JSON_SHARE_ROUNDS}. Split out of `walk` because phase 2 needs the raw value of
  * every field it may re-walk, which a single in-place loop cannot keep.
  */
+/**
+ * AND PHASE 2 MUST HONOUR WHAT PHASE 1 RESERVED — HIGH, M23.0 verification pass 13, a REGRESSION
+ * introduced by pass 12's own fix, and the sixth consecutive round whose fix created the next
+ * defect.
+ *
+ * WHAT PASS 12 CHANGED. A seat used to cost a flat {@link PERSISTED_JSON_MIN_LEAF}; it now costs
+ * {@link admissionCost} — the value's exact rendered cost when that is under 96. Pass 12 argued
+ * the change was safe in one direction only: "`admissionCost <= PERSISTED_JSON_MIN_LEAF` by
+ * construction, so the change can only admit content the old rule refused." That is true, and it
+ * is a statement about the SEATED SET. The flat 96 was never only a price. It was also the
+ * GUARANTEE that every seated field would be handed at least 96 characters in phase 2 — which is
+ * exactly what {@link PERSISTED_JSON_MIN_LEAF}'s own comment says it is for: "enough for a short
+ * marker and its punctuation". A well-written comment naming a hazard is a signal to sweep, not
+ * evidence it was handled (CLAUDE.md); pass 12 REWROTE that comment and swept the three places the
+ * 96 was CHARGED, missing the places the reserved characters were SPENT.
+ *
+ * WHAT BROKE. Phase 1 promises field `i` exactly `need_i` characters and charges the budget for
+ * them. Phase 2 then ignores the promise and hands every pending field `floor(pool / n)`. Under
+ * the flat rule the split could fall below 96 too, but 96 covers every marker this file can emit,
+ * so nothing overspent. Under the exact rule a field can be offered LESS than the value it was
+ * seated for costs — and a value that no longer fits emits a marker that was never costed:
+ * `[elided: N more entries]` is 26 rendered characters where the list it replaces was 5.
+ *
+ * The overspends compound across siblings and the row goes over. Measured, `{k0..k4: ["a"]}` —
+ * five one-element lists, 56 characters — at a budget of 143:
+ *
+ *     phase 1 seats k0..k3 (need 5 each), refuses k4, and charges 30 for `__scpElided`
+ *     pool -8  ->  share 0  ->  each surviving list renders `["[elided: 1 more entries]"]`
+ *     row 167 of a 143 budget  ->  THE BACKSTOP DISCARDS THE WHOLE VALUE
+ *
+ * and that is the worst loss this file can produce — `revision`, `images` and `rollout.weight`
+ * gone together, replaced by a diagnostic sentence, silently, on every tick. Measured over 197 934
+ * (shape, budget) pairs of one-element and five-element lists at widths 3…400:
+ *
+ *     pass 11 (bcabfdf3^)   0 / 197 934 discarded
+ *     pass 12 pre-fix       0 / 197 934 discarded
+ *     pass 12 as shipped    34 900 / 197 934 discarded, at budgets up to 13 981
+ *
+ * IT REACHED THE PRODUCTION BUDGET. `{300 fields, each a five-element list}` — 8 591 characters —
+ * was discarded WHOLESALE by `boundPersistedJson(value)` with no explicit budget at all, storing
+ * 145 characters of apology in place of the reading. Six of twenty-two straightforward
+ * per-resource shapes did the same at the default 8 000.
+ *
+ * THE FIX IS THE PROMISE, KEPT. A field is offered `max(share, need)`. It cannot overspend the
+ * pool, because `need` is only below {@link PERSISTED_JSON_MIN_LEAF} when it is the value's EXACT
+ * total cost — such a field spends `need` however large a share it is given, and phase 1 already
+ * proved `pool >= sum(need)`. A field whose `need` is the capped 96 spends at most its share, and
+ * `pool >= 96 x (capped fields)` by the same invariant. So `sum(spend) <= pool` at every round.
+ *
+ * WHY ELEVEN PASSES OF RANDOM FUZZING WOULD NEVER HAVE FOUND IT, and what to do instead. The
+ * defect needs a budget in a NARROW BAND relative to one specific structure: phase 1 must refuse
+ * exactly enough fields for the `__scpElided` charge to drive the pool under what the survivors
+ * were seated for. 6 000 random shapes — widths to 25 x 60, depth 10, arrays to 120, bigints,
+ * functions, over-long and colliding keys — found ZERO instances against the broken build. The
+ * corpus that finds it is a DENSE BUDGET SWEEP over a structured family, which is what
+ * `persisted-json-bound.test.ts` -> "A SEAT PHASE 1 PAID FOR IS A SHARE PHASE 2 MUST HONOUR" is.
+ * Randomness is the wrong instrument for a defect whose trigger is an arithmetic coincidence.
+ */
 function walkObjectFields(
   entries: [string, unknown][],
   budget: WalkBudget,
@@ -1373,7 +1431,7 @@ function walkObjectFields(
 ): Record<string, unknown> {
   /** Seated fields in insertion order. `raw` is kept because phase 2 walks each field more than
    *  once — at a larger share each time — and needs the original to walk. */
-  const seated: { key: string; raw: unknown; value: unknown; spent: number }[] = [];
+  const seated: { key: string; raw: unknown; value: unknown; spent: number; need: number }[] = [];
   let elidedMarker: string | undefined;
   /** The sum of what the already-seated fields need — {@link admissionCost} each, NOT a flat
    *  {@link PERSISTED_JSON_MIN_LEAF} each. A field whose whole value is `60` reserves two
@@ -1402,7 +1460,7 @@ function walkObjectFields(
     }
     budget.left -= keyCost;
     reserved += need;
-    seated.push({ key, raw: entryValue, value: undefined, spent: 0 });
+    seated.push({ key, raw: entryValue, value: undefined, spent: 0, need });
   }
 
   // ---- PHASE 2: WATER-FILL THE VALUES. `pool` is what the fields in `pending` have to divide;
@@ -1410,20 +1468,24 @@ function walkObjectFields(
   let pool = budget.left;
   let pending = seated.map((_, index) => index);
   for (let round = 0; round < PERSISTED_JSON_SHARE_ROUNDS && pending.length > 0; round++) {
-    // Never negative in round 0: phase 1 seats a key only while MIN_LEAF per seated field still
-    // fits. A later round can drive it to 0 for a pathological object, and 0 is a legal share —
-    // the field stores a marker rather than nothing at all.
+    // Never negative in round 0: phase 1 seats a key only while `admissionCost` per seated field
+    // still fits. A later round can drive it to 0 for a pathological object, and 0 is a legal
+    // share — the field stores a marker rather than nothing at all.
     const share = Math.max(0, Math.floor(pool / pending.length));
     const stillPending: number[] = [];
     let satisfiedSpend = 0;
     for (const index of pending) {
       const field = seated[index]!;
-      const sub: WalkBudget = { left: share };
+      // AT LEAST WHAT PHASE 1 RESERVED FOR IT — HIGH, M23.0 verification pass 13, and the
+      // half of pass 12's fix that pass 12 did not carry through. See the block above
+      // {@link walkObjectFields} under "AND PHASE 2 MUST HONOUR WHAT PHASE 1 RESERVED".
+      const offered = Math.max(share, field.need);
+      const sub: WalkBudget = { left: offered };
       field.value = walk(field.raw, sub, depth + 1);
       // Charge what was ACTUALLY spent, not the share. `sub.left` may go slightly negative when a
       // leaf overshoots its own share; the difference keeps the accounting exact either way, which
       // is what the measured check in `boundPersistedJson` is the backstop for.
-      field.spent = share - sub.left;
+      field.spent = offered - sub.left;
       if (sub.clipped === true) stillPending.push(index);
       else satisfiedSpend += field.spent;
     }

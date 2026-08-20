@@ -1285,3 +1285,136 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
     }
   });
 });
+
+/**
+ * HIGH (M23.0 verification pass 13) — A SEAT PHASE 1 PAID FOR IS A SHARE PHASE 2 MUST HONOUR.
+ *
+ * A REGRESSION IN PASS 12'S OWN FIX, not a pre-existing defect. Pass 12 replaced a flat
+ * `PERSISTED_JSON_MIN_LEAF` seat price with the value's exact cost and argued the change was safe
+ * because it "can only admit content the old rule refused" — a statement about the seated SET. The
+ * flat 96 was also the guarantee that a seated field would be HANDED 96 characters, which is what
+ * that constant's own comment says it is for ("enough for a short marker and its punctuation").
+ * Phase 2 kept dividing the pool equally, so a field could be offered less than the value it was
+ * seated for costs, and the value then emitted a marker nobody had costed:
+ * `[elided: N more entries]` is 26 rendered characters where the list it replaced was 5.
+ *
+ * Measured on the shipped build, over 197 934 (shape, budget) pairs:
+ *
+ *   pass 11        0 / 197 934 whole values discarded by the backstop
+ *   pass 12 pre    0 / 197 934
+ *   pass 12 as shipped   34 900 / 197 934, at budgets up to 13 981 — INCLUDING the production
+ *                        8 000 with no explicit budget argument
+ *
+ * THE UNIT HERE IS THE BACKSTOP, not the row length. Every arm below is green on a function that
+ * stores nothing at all; the last one is the counter-arm for that.
+ *
+ * WHY IT IS A DENSE BUDGET SWEEP AND NOT A RANDOM CORPUS. The trigger is an arithmetic coincidence
+ * — phase 1 must refuse exactly enough fields for the `__scpElided` charge to push the pool under
+ * what the survivors were seated for. 6 000 random shapes (widths to 25 x 60, depth 10, arrays to
+ * 120, bigints, functions, over-long and colliding keys) found ZERO instances against the broken
+ * build; this sweep finds 49 518 of 335 496. Random shape generation is the wrong instrument, and
+ * that is the reason eleven passes of it went past this.
+ */
+describe("HIGH: a seat phase 1 paid for is a share phase 2 must honour", () => {
+  const DIAGNOSTIC = "a plugin-supplied value rendered";
+  /** The backstop threw the payload away — the loss this whole file exists to prevent. */
+  const discarded = (bounded: unknown): boolean =>
+    bounded !== null &&
+    typeof bounded === "object" &&
+    String((bounded as Record<string, unknown>)[PERSISTED_JSON_ELIDED_KEY] ?? "").startsWith(
+      DIAGNOSTIC
+    );
+
+  /** `n` fields at one level, each holding the same small value — the family the defect lives in,
+   *  because every survivor is small enough to have been seated at its exact cost. */
+  const wide = (n: number, make: (i: number) => unknown): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (let i = 0; i < n; i++) out[`k${i}`] = make(i);
+    return out;
+  };
+  const KINDS: [string, (i: number) => unknown][] = [
+    ["a one-element list", () => ["a"]],
+    ["a five-element list", () => ["a", "b", "c", "d", "e"]],
+    ["a one-field object", () => ({ x: 1 })]
+  ];
+
+  it("THE MINIMAL CASE: five one-element lists at 143 are lists, not a diagnostic sentence", () => {
+    // 56 characters of content. Before the fix the walk rendered 167 for a budget of 143 and the
+    // backstop replaced the whole value; the four lists it kept had each become a 26-character
+    // apology for one character of content.
+    const value = wide(5, () => ["a"]);
+    const bounded = boundPersistedJson(value, 143) as Record<string, string[]>;
+    expect(discarded(bounded), "the backstop discarded five one-element lists").toBe(false);
+    // RETENTION, not length: the lists that survived have to hold their entry.
+    const kept = Object.entries(bounded).filter(([key]) => key !== PERSISTED_JSON_ELIDED_KEY);
+    expect(kept.length, "no field survived at all").toBeGreaterThanOrEqual(4);
+    for (const [key, list] of kept) {
+      expect(list, `${key} is not a list`).toEqual(["a"]);
+    }
+  });
+
+  it("AT THE PRODUCTION BUDGET, no explicit argument: 300 small lists are stored, not discarded", () => {
+    // `boundPersistedJson(value)` — the call `wave-targets-repo.ts` actually makes. 8 591
+    // characters of ordinary per-resource reading came back as 145 characters of apology.
+    const value = wide(300, () => ["a", "b", "c", "d", "e"]);
+    const bounded = boundPersistedJson(value);
+    expect(discarded(bounded), "the whole reading was discarded at the default budget").toBe(false);
+    const rendered = JSON.stringify(bounded)!;
+    expect(rendered.length).toBeLessThanOrEqual(PERSISTED_JSON_MAX_CHARS);
+    // …and it is not merely SHORT: most of the column is real content, not markers.
+    expect(rendered.length, "the column was abandoned").toBeGreaterThan(
+      PERSISTED_JSON_MAX_CHARS - 200
+    );
+  });
+
+  it("EVERY BUDGET 100…900, three depths, six widths, three field kinds: the backstop never fires", () => {
+    // The defect is per-OBJECT, so the same family is buried at increasing depth — a share that
+    // breaks phase 1's promise does it wherever the object sits, not only at the root.
+    const bury = (value: unknown, depth: number): unknown => {
+      let out = value;
+      for (let i = 0; i < depth; i++) out = { [`d${i}`]: out };
+      return out;
+    };
+    const failures: string[] = [];
+    let swept = 0;
+    for (const depth of [0, 1, 2]) {
+      for (const width of [5, 8, 13, 21, 34, 55]) {
+        for (const [kindName, make] of KINDS) {
+          const value = bury(wide(width, make), depth);
+          for (let budget = 100; budget <= 900; budget++) {
+            swept++;
+            const bounded = boundPersistedJson(value, budget);
+            if (discarded(bounded))
+              failures.push(`depth ${depth}, ${width} x ${kindName}, budget ${budget}`);
+            const rendered = JSON.stringify(bounded);
+            if (rendered !== undefined && rendered.length > budget)
+              failures.push(
+                `OVER BUDGET: depth ${depth}, ${width} x ${kindName}, budget ${budget} -> ${rendered.length}`
+              );
+          }
+        }
+      }
+    }
+    // NON-VACUITY: the sweep really did run the shapes it says it ran.
+    expect(swept, "the sweep is empty").toBe(3 * 6 * 3 * 801);
+    expect(
+      failures.slice(0, 8),
+      `${failures.length} of ${swept} shapes lost their payload`
+    ).toEqual([]);
+  });
+
+  it("COUNTER-ARM: the same sweep on a function that stores nothing would be green", () => {
+    // Every arm above is satisfied by `() => ({})`. So the family is also asserted to come back
+    // VERBATIM once the budget can hold it — which is the `L + 96` law, restated at width.
+    for (const width of [5, 8, 13, 21, 34, 55]) {
+      for (const [kindName, make] of KINDS) {
+        const value = wide(width, make);
+        const verbatim = JSON.stringify(value)!;
+        expect(
+          JSON.stringify(boundPersistedJson(value, verbatim.length + 96)),
+          `${width} x ${kindName}: not verbatim at L + 96`
+        ).toBe(verbatim);
+      }
+    }
+  });
+});
