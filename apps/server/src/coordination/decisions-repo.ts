@@ -5,6 +5,7 @@ import type { TenantTx } from "../db/tenant-tx.js";
 import { decisions } from "../db/schema.js";
 import { notFound } from "../errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
+import { canonicalJson } from "../util/canonical-json.js";
 
 /**
  * Decision records (DESIGN.md §10.4) — the explainability funnel every engine verdict writes
@@ -254,19 +255,15 @@ export async function latestBlockDecisionForSubject(
  * Array ORDER is preserved deliberately — it is meaningful in every Decision context this compares
  * (a failing-artifact list, a freeze-override list), and `jsonb` preserves it too, so a reordered
  * array is a genuinely different input set and MUST write a new row.
+ *
+ * The key-sorting itself is `@scp/schemas/canonical-json` — the repo's single canonicalizer.
+ * This wrapper adds only the JSON round trip, which is specific to the read-back comparison above.
+ * It used to carry its own inline copy of the sort; that copy shared the whole family's defect
+ * (a `__proto__` subtree silently vanished, so two different `inputContext`s compared EQUAL and a
+ * genuinely new Decision was suppressed as a restatement).
  */
-function canonicalJson(value: unknown): string {
-  const sortKeys = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(sortKeys);
-    if (v !== null && typeof v === "object") {
-      const src = v as Record<string, unknown>;
-      const out: Record<string, unknown> = {};
-      for (const key of Object.keys(src).sort()) out[key] = sortKeys(src[key]);
-      return out;
-    }
-    return v;
-  };
-  return JSON.stringify(sortKeys(JSON.parse(JSON.stringify(value ?? null))));
+function canonicalJsonForComparison(value: unknown): string {
+  return canonicalJson(JSON.parse(JSON.stringify(value ?? null)) as unknown);
 }
 
 /**
@@ -282,8 +279,10 @@ function canonicalJson(value: unknown): string {
 export function restatesDecision(previous: Decision, candidate: InsertDecisionInput): boolean {
   return (
     previous.verdict === candidate.verdict &&
-    canonicalJson(previous.inputContext) === canonicalJson(candidate.inputContext) &&
-    canonicalJson(previous.reasonTree) === canonicalJson(candidate.reasonTree)
+    canonicalJsonForComparison(previous.inputContext) ===
+      canonicalJsonForComparison(candidate.inputContext) &&
+    canonicalJsonForComparison(previous.reasonTree) ===
+      canonicalJsonForComparison(candidate.reasonTree)
   );
 }
 
