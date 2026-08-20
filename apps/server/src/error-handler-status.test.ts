@@ -79,7 +79,7 @@ describe("app.ts setErrorHandler", () => {
       expect(res.statusCode).toBe(400);
     });
 
-    it("413 Content Too Large past the 64 MiB bodyLimit", async () => {
+    it("413 Payload Too Large past the 64 MiB bodyLimit", async () => {
       const res = await app.inject({
         method: "POST",
         url: "/__error_handler_probe",
@@ -87,6 +87,7 @@ describe("app.ts setErrorHandler", () => {
         payload: `{"a":"${"x".repeat(65 * 1024 * 1024)}"}`
       });
       expect(res.statusCode).toBe(413);
+      expect(res.json()).toMatchObject({ title: "Payload Too Large" });
     });
 
     it("answers application/problem+json, like every other refusal in this server", async () => {
