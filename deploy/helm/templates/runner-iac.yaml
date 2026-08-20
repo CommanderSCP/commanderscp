@@ -1,25 +1,47 @@
 {{/*
-Managed-IaC (Mode 2, DESIGN §12/§16) on-ramp — RBAC granting the worker ServiceAccount permission
-to create/watch/delete Jobs (and read their Pods' logs) in this namespace, plus a ConfigMap
-documenting the exact per-run Job shape the `scp-managed-iac` orchestrator plugin would launch
-from the SEPARATE, signed `scp-runner-iac` image (apps/runner-iac — never bundled into the scpd
-image itself).
+THE RUNNER RBAC — one Role, one RoleBinding, for ALL THREE MANAGED CLASSES, plus the M8 reference
+Job ConfigMap that only managed-IaC ever had.
 
-HONEST SCOPE (flagged in the M8 PR body): `packages/plugins/managed-iac`'s CURRENT implementation
-launches the runner via `docker create`/`docker cp`/`docker start` — a host Docker socket, not a
-Kubernetes Job. That is fully functional under docker-compose/VM deployments (where `docker run`
-is the natural launch mechanism DESIGN §12 always described for that shape) but does NOT yet work
-unmodified inside a standard Kubernetes pod (no docker socket, and mounting one is a real
-container-escape risk this chart deliberately does NOT paper over). This RBAC + template is the
-on-ramp for a future Kubernetes-native launch mode in the plugin itself — not a claim that Mode 2
-already works end-to-end under `helm install` today. `managedIac.enabled` stays `false` by default
-so this is fully inert unless an operator opts in with eyes open.
+WHAT M23.4 CHANGED HERE, AND WHY EACH ONE WAS A DEFECT RATHER THAN A PREFERENCE:
+
+1. THE ROLE WAS GATED ON `managedIac.enabled` AND IS NOW GATED ON "a managed run can happen here".
+   Measured, not inferred: `helm template --set managedRunners.launcher=kubernetes --set
+   managedDep.runnerImage=... ` (managed-IaC off) rendered the worker's service-account token, the
+   kube-API egress allow, the workspace mount and every launcher setting — and NO Role and NO
+   RoleBinding at all. The worker authenticates and every `jobs: create` is a 403. managed-dep, the
+   one class that WRITES to a user's repository, was dead on Kubernetes in that configuration, and
+   `helm-verify`'s own M23.2 case (a) proves the TOKEN arrives for a dep-only render while nothing
+   checked that the RBAC did. That is the incomplete-call-site-census property CLAUDE.md names: the
+   launcher's wiring was fixed for all three classes and its AUTHORISATION was fixed for one.
+
+2. IT RENDERS INTO THE RUNNER NAMESPACE, not unconditionally into `.Release.Namespace`.
+   `managedRunners.kubernetes.namespace` has been operator-settable since M23.2 and the adapter
+   creates its Jobs there; the Role went to the release namespace regardless. Setting the value the
+   chart itself recommends produced a silent 403 on every launch. Both now come from
+   `commanderscp.runnerNamespace`. The RoleBinding's SUBJECT stays in the release namespace, because
+   that is where the ServiceAccount lives — a RoleBinding may name a subject from another namespace,
+   and this is the case it exists for.
+
+3. IT IS NO LONGER RENDERED FOR A `docker` DEPLOYMENT. A Role granting Job creation to a
+   ServiceAccount whose pods mount no token (the chart sets `automountServiceAccountToken: false`
+   for the docker launcher, and `helm-verify` asserts it) is a standing grant for a caller that
+   never calls. Strictly a narrowing, and declared as one in `tools/helm-verify`.
+
+HONEST SCOPE, INHERITED FROM M8 AND NOW OUT OF DATE IN THE OTHER DIRECTION. This module used to say
+managed execution "does NOT yet work unmodified inside a standard Kubernetes pod". As of M23.2 it
+does: `packages/runner-launcher`'s Kubernetes adapter launches each run as a Job through the API
+server, and `kubernetes-adapter.kind.test.ts` proves it against a real cluster. The `docker
+create`/`docker cp`/`docker start` path is still what a docker-compose or VM deployment takes; which
+one runs is `managedRunners.launcher`. The ConfigMap at the bottom is the M8 REFERENCE SHAPE and is
+no longer what launches — `jobManifest()` is, pinned whole by `kubernetes-launch.golden.test.ts`.
 */}}
-{{- if .Values.managedIac.enabled }}
+{{- if eq (include "commanderscp.needsRunnerApiAccess" .) "true" }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "commanderscp.fullname" . }}-runner-iac
+  # THE RUNNER NAMESPACE, not unconditionally the release namespace — see point 2 in the module doc.
+  namespace: {{ include "commanderscp.runnerNamespace" . }}
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
 rules:
@@ -42,36 +64,54 @@ rules:
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
   {{- if .Values.managedRunners.kubernetes.perRunSecrets }}
-  # THE DECLARED, DISABLED CAPABILITY (M23.2), and this block is the ONLY thing that turns it on.
+  # THE PER-RUN SECRET GRANT (M23.2 declared it and shipped it OFF; the owner granted it 2026-08-20,
+  # "grant the secrets RBAC, keep going"). This block is the ONLY thing that renders it, and the same
+  # value sets the server-side flag, so the RBAC and the code's belief about the RBAC cannot diverge.
   #
-  # `RunnerSpec.secretEnv` exists because credentials had to leave the `docker create` argv (M23.1a,
-  # ADR-0035), and on Kubernetes the only delivery that is not strictly worse is a per-run Secret +
-  # `envFrom.secretRef` — `env[].value` puts the credential in etcd and in every etcd backup.
+  # WHY IT IS NEEDED AT ALL. `RunnerSpec.secretEnv` exists because credentials had to leave the
+  # `docker create` argv (M23.1a, ADR-0035). On Kubernetes the only delivery that is not strictly
+  # worse is a per-run Secret + `envFrom.secretRef`: `env[].value` puts the credential in etcd AND in
+  # every etcd backup, in plaintext, with no lifetime at all. Without this rule managed-iac cannot
+  # run on Kubernetes — it refuses at its first step — which is the state the grant exists to end.
   #
-  # IT IS OFF BY DEFAULT BECAUSE THE GRANT IS AN OWNER DECISION THAT HAS NOT BEEN TAKEN, and the
-  # decision is not "should the adapter support secrets" but "may the worker ServiceAccount create
-  # and delete Secrets in this namespace". Two things compound and both were surfaced rather than
-  # resolved: a runner pod keeps a routable interface under owner decision 1's accepted degradation
-  # (kindnet does not enforce NetworkPolicy — measured, with a known-positive control), so a leaked
-  # credential has an egress path that `--network none` denied on Docker; and a Secret object is at
-  # rest in etcd for the Job's life, which is longer and more replicated than the mode-0600
-  # `--env-file` that lived for one `docker create`.
+  # TWO VERBS, AND THE OMISSIONS ARE MEASUREMENTS.
+  #   `get`    — NOT granted. A filterless read of every `SECRETS_PATH` use in
+  #              `kubernetes-adapter.ts` finds one POST and two DELETEs and no GET. M23.2's own
+  #              comment said "create,get,delete"; the code never needed the middle one.
+  #   `list`   — NOT granted, and this one is a refusal rather than an omission. `list` on secrets
+  #              returns every Secret BODY in the namespace, this release's own database password
+  #              included. The reap sweep is built to work without it: it lists JOBS (not secret) and
+  #              derives the Secret name from the Job's.
+  #   `update`/`patch` on `jobs/finalizers` — NOT granted, which is why the per-run Secret's
+  #              ownerReference sets `blockOwnerDeletion: false`.
   #
-  # WITH IT OFF, `managed-scan` and `managed-dep` run on Kubernetes (both pass `secretEnv: []` —
-  # managed-scan's comment is "NO CREDENTIAL AT ALL") and `managed-iac` REFUSES at its first step
-  # with a sentence naming this value. Refusing rather than falling back is the point.
+  # WHAT COULD NOT BE NARROWED, SAID PLAINLY RATHER THAN LEFT AS A SILENCE: `resourceNames`. Per-run
+  # Secret names derive from `runId`, so the set is unbounded — and Kubernetes RBAC cannot restrict a
+  # `create` by `resourceNames` under ANY circumstances, because the object's name is not known to
+  # the authorizer at admission time. So this is namespace-wide on `secrets`, deliberately and with
+  # the reason stated. The narrowing that IS available is deployment-shaped:
+  # `managedRunners.kubernetes.namespace` moves the Jobs, the Secrets, this Role and its binding into
+  # a namespace of the runners' own, away from this release's Secrets. Recommended for anything
+  # holding real cloud credentials.
+  #
+  # WHAT THE OWNER ACCEPTED BY GRANTING, recorded as a named combination in ADR-0035 rather than
+  # implied here: a runner pod keeps a routable interface under owner decision 1's accepted
+  # `--network none` -> fail-open NetworkPolicy degradation AND now holds a mounted credential.
   - apiGroups: [""]
     resources: ["secrets"]
-    verbs: ["create", "get", "delete"]
+    verbs: ["create", "delete"]
   {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: {{ include "commanderscp.fullname" . }}-runner-iac
+  namespace: {{ include "commanderscp.runnerNamespace" . }}
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
 subjects:
+  # THE SUBJECT STAYS WHERE THE WORKLOAD IS. A RoleBinding in namespace A may name a ServiceAccount
+  # from namespace B; that is exactly what makes a separate runner namespace expressible at all.
   - kind: ServiceAccount
     name: {{ include "commanderscp.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
@@ -79,6 +119,7 @@ roleRef:
   kind: Role
   name: {{ include "commanderscp.fullname" . }}-runner-iac
   apiGroup: rbac.authorization.k8s.io
+{{- if .Values.managedIac.enabled }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -87,6 +128,16 @@ metadata:
   labels:
     {{- include "commanderscp.labels" . | nindent 4 }}
 data:
+  # SUPERSEDED AS A SPECIFICATION, KEPT AS DOCUMENTATION (M23.4). When this was written nothing
+  # launched a Kubernetes Job and this was the only statement of the intended shape. Since M23.2
+  # `jobManifest()` in `packages/runner-launcher` builds the real thing and
+  # `kubernetes-launch.golden.test.ts` pins it whole, so THIS is no longer what runs and differs from
+  # it in at least three visible ways: `runAsNonRoot` is false by default (none of the three runner
+  # images declares a USER, so true fails every run with CreateContainerConfigError), the volume is
+  # the operator's RWX claim rather than an emptyDir (an emptyDir is not reachable from the worker,
+  # so nothing could be copied in), and a credential arrives via `envFrom.secretRef` rather than as
+  # env set "by the orchestrator at launch time". Read the golden for what a run actually creates.
+  #
   # Reference shape ONLY (not applied as a live resource by this chart — see module doc above for
   # why a Job can't usefully be "installed once"). `__RUN_ID__`/`__ACTION__`/`__WORKSPACE_PVC__`
   # are placeholders a Kubernetes-native launcher substitutes per run.
@@ -125,4 +176,5 @@ data:
           volumes:
             - name: workspace
               emptyDir: {}
+{{- end }}
 {{- end }}

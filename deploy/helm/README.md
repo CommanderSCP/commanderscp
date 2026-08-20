@@ -297,11 +297,25 @@ has no `docker cp`, so the runner's inputs and evidence move through a volume th
 both mount. The chart refuses to render without it rather than hanging. (ii) `--network none` is NOT
 honoured and cannot be; runner pods carry `scp.launcher.network=<requested mode>` so a NetworkPolicy
 can select them, which is traffic denial, not interface absence, and is fail-open on a CNI that does
-not enforce. (iii) `managed-iac` still cannot run on Kubernetes unless
-`managedRunners.kubernetes.perRunSecrets` is set, because its credentials need a per-run Secret and
-that RBAC grant is opt-in; `managed-scan` and `managed-dep` hold no credential and are unaffected.
-(iv) `SCP_MANAGED_SCAN_RUNNER_IMAGE` STILL HAS NO CHART VALUE — that gap is M23.3's, and it is
-unchanged by any of the above: managed-scan cannot be switched on by this chart on either substrate.
+not enforce. (iii) **SUPERSEDED 2026-08-20 (M23.4).** This used to read "`managed-iac` still cannot run on
+Kubernetes unless `managedRunners.kubernetes.perRunSecrets` is set, because that RBAC grant is
+opt-in". The owner granted the RBAC, so `perRunSecrets` now defaults to **true**: the chart renders
+`secrets: create,delete` on the runner Role and managed-iac launches. Setting it back to `false`
+remains supported and still produces a loud refusal at the run's first step rather than a fallback to
+`env[].value`. See the `perRunSecrets` comment in `values.yaml` for what the grant does and does not
+include, and ADR-0035 for the combination the owner accepted along with it.
+(iv) **CLOSED 2026-08-20 (M23.4).** This used to read "`SCP_MANAGED_SCAN_RUNNER_IMAGE` STILL HAS NO
+CHART VALUE". It has one now — `managedScan.runnerImage`, empty by default, exactly like
+`managedDep.runnerImage`. It was found while granting the Secret RBAC "for all three managed
+classes": two of the three could be enabled from the chart and the third could not be enabled at all,
+on either substrate.
+(v) **A THIRD THING THAT WAS WRONG AND IS NOW FIXED, recorded because a reader of the old text would
+have believed it.** The runner Role and RoleBinding were gated on `managedIac.enabled` and rendered
+unconditionally into the release namespace. So (a) enabling only `managedDep` or only `managedScan`
+on the Kubernetes launcher produced a worker with a service-account token and **no RBAC at all** —
+every `jobs: create` a 403 — and (b) setting `managedRunners.kubernetes.namespace`, which this chart
+offers, put the Role in one namespace and the Jobs in another, with the same result. Both are gated
+in CI job 4b now, per class and per namespace.
 
 ## Other known gaps (honestly flagged, not silently worked around)
 

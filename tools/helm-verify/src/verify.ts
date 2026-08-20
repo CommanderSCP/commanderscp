@@ -1777,42 +1777,178 @@ function main(): void {
       `[${label}] no API-server egress allow for the SCP pods. The chart's own -default-deny selects the worker (its comment records "api / worker / migrations / postgres-eval are NOT selected" as the BLAST RADIUS of the hook allow), so on any CNI that enforces policy every managed run would hang`
     );
 
-    // (3) THE PER-RUN SECRET GRANT IS OFF BY DEFAULT AND ON ONLY WHEN ASKED. This is the declared,
-    //     disabled capability: the RBAC rule and the server-side enablement come from the SAME value,
-    //     so neither can be true without the other.
+    // (3) THE PER-RUN SECRET GRANT — DECLARED HERE, NOT TOLERATED HERE.
+    //
+    //     THIS BLOCK INVERTED IN M23.4 AND THE INVERSION IS THE POINT OF WRITING IT DOWN. Until then
+    //     it asserted the grant was ABSENT: `perRunSecrets` was a declared-and-disabled capability
+    //     and this gate's job was to keep it disabled. The owner granted the RBAC on 2026-08-20
+    //     ("grant the secrets RBAC, keep going"), so the default render now carries a privilege it
+    //     did not carry before. A hardened-defaults gate that simply stopped failing on that would
+    //     be worse than no gate — it would have quietly accepted a privilege grant. So the gate does
+    //     not stop asserting; it asserts the OPPOSITE, plus the exact SHAPE of what was granted, so
+    //     that any FURTHER widening (a `get`, a `list`, a `*`, a second resource) is a red build.
+    //
+    //     WHAT IS ACCEPTED, EXHAUSTIVELY: `create` and `delete` on `""/secrets`, namespaced, on the
+    //     worker ServiceAccount, rendered only where a managed run can actually launch. The
+    //     reasoning, the alternatives and the combination the owner accepted along with it are in
+    //     ADR-0035; this is the machine-checked half of that record.
     const runnerRole = (docs: K8sDoc[]) =>
       docs.find((d) => d.kind === "Role" && String(d.metadata?.name ?? "").endsWith("-runner-iac"));
-    const roleOff = runnerRole(k8s);
-    assert(roleOff, `[${label}] no runner Role rendered with managedIac enabled`);
-    assert(
-      !JSON.stringify(roleOff?.rules ?? []).includes("secrets"),
-      `[${label}] the runner Role grants 'secrets' with managedRunners.kubernetes.perRunSecrets OFF — the capability is declared as disabled and must render no rule`
-    );
+    const roleOn = runnerRole(k8s);
+    assert(roleOn, `[${label}] no runner Role rendered with the Kubernetes launcher selected`);
     // AND THE VERB THE HARNESS FOUND MISSING. The adapter creates the Job SUSPENDED and PATCHes it
     // live; the Role shipped as create/get/list/watch/delete, so `start` was a 403 for every run.
     assert(
-      JSON.stringify(roleOff?.rules ?? []).includes('"patch"'),
+      JSON.stringify(roleOn?.rules ?? []).includes('"patch"'),
       `[${label}] the runner Role does not grant 'patch' on jobs — the adapter unsuspends the Job with a merge patch, so every managed run fails at 'start'`
     );
-    const withSecrets = renderChart("verify-m23-secrets", [
+
+    type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
+    const secretRules = ((roleOn?.rules ?? []) as Rule[]).filter((r) =>
+      (r.resources ?? []).includes("secrets")
+    );
+    assert(
+      secretRules.length === 1,
+      `[${label}] expected exactly ONE 'secrets' rule on the runner Role by default (the owner's grant, ADR-0035); found ${secretRules.length}. managed-iac cannot run on Kubernetes without it, and more than one rule means the grant is being widened somewhere this gate cannot see`
+    );
+    // THE EXACT SHAPE, AS A SET EQUALITY AND NOT A `.includes`. A `.includes("create")` passes for
+    // `["*"]`, for `["create","list"]`, and for a rule that also grants `configmaps` — i.e. for
+    // every widening this assertion exists to catch.
+    assert(
+      JSON.stringify((secretRules[0]?.verbs ?? []).slice().sort()) === '["create","delete"]',
+      `[${label}] the 'secrets' grant is not exactly ["create","delete"] (got ${JSON.stringify(secretRules[0]?.verbs)}). 'get' is unused by the adapter (one POST, two DELETEs, no GET) and 'list' returns every Secret BODY in the namespace including this release's database password — neither is part of what the owner granted`
+    );
+    assert(
+      JSON.stringify(secretRules[0]?.resources ?? []) === '["secrets"]' &&
+        JSON.stringify(secretRules[0]?.apiGroups ?? []) === '[""]',
+      `[${label}] the 'secrets' rule names resources/apiGroups other than exactly ["secrets"] in the core group — a rule that carries a second resource inherits this grant's verbs for it`
+    );
+    assert(
+      JSON.stringify(k8s).includes('"SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS"'),
+      `[${label}] the per-run-secret setting does not reach the server, so the RBAC and the code's belief about the RBAC can diverge`
+    );
+
+    //     AND THE OPT-OUT STILL WORKS. One value renders the rule AND sets the flag, in both
+    //     directions — an operator who turns it off must get NO rule, or the two halves of the
+    //     capability drift apart in the direction that 403s inside a promotion.
+    const withoutSecrets = renderChart("verify-m23-nosecrets", [
       "--set",
       "managedRunners.launcher=kubernetes",
       "--set",
       "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
       "--set",
-      "managedRunners.kubernetes.perRunSecrets=true",
+      "managedRunners.kubernetes.perRunSecrets=false",
       "--set",
       "managedIac.enabled=true",
       "--set",
       "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
     ]);
     assert(
-      JSON.stringify(runnerRole(withSecrets)?.rules ?? []).includes("secrets"),
-      `[${label}] perRunSecrets=true renders no 'secrets' rule, so the Secret POST would 403 while the server believes the capability is enabled`
+      !JSON.stringify(runnerRole(withoutSecrets)?.rules ?? []).includes("secrets"),
+      `[${label}] perRunSecrets=false still renders a 'secrets' rule — the opt-out grants the privilege it says it declines`
     );
     assert(
-      JSON.stringify(withSecrets).includes('"SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS"'),
-      `[${label}] perRunSecrets=true does not reach the server`
+      JSON.stringify(withoutSecrets).includes('"false"'),
+      `[${label}] perRunSecrets=false does not reach the server`
+    );
+
+    // (3b) THE RBAC EXISTS FOR ALL THREE MANAGED CLASSES, NOT ONLY THE ONE IT WAS NAMED AFTER.
+    //
+    //      A MEASURED DEFECT, NOT A TIDINESS RULE. Before M23.4 this Role was gated on
+    //      `managedIac.enabled` while the service-account token, the kube-API egress allow, the
+    //      workspace mount and every launcher setting were gated on "any managed class". Case (a)
+    //      above proves the TOKEN arrives for a dep-only render; nothing proved the AUTHORISATION
+    //      did, and it did not — `helm template` with managedDep alone rendered no Role and no
+    //      RoleBinding at all, so the worker authenticated and every `jobs: create` was a 403.
+    //      managed-dep, the one class that writes to a user's repository, was dead on Kubernetes.
+    //      That is the incomplete-call-site-census property, and this loop is the census.
+    for (const [why, extra] of [
+      ["managed-iac only", ["managedIac.enabled=true", "managedIac.runnerImage=ghcr.io/x/iac:1"]],
+      ["managed-dep only", ["managedDep.runnerImage=ghcr.io/x/dep:1"]],
+      ["managed-scan only", ["managedScan.runnerImage=ghcr.io/x/scan:1"]]
+    ] as [string, string[]][]) {
+      const docs = renderChart("verify-m23-class", [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        ...extra.flatMap((e) => ["--set", e])
+      ]);
+      const role = runnerRole(docs);
+      assert(
+        role,
+        `[${label}] with ${why} enabled on the Kubernetes launcher the chart renders NO runner Role. The worker gets a service-account token and every 'jobs: create' it makes is a 403 — a class enabled by the operator that cannot launch anything`
+      );
+      assert(
+        docs.some(
+          (d) => d.kind === "RoleBinding" && String(d.metadata?.name ?? "").endsWith("-runner-iac")
+        ),
+        `[${label}] with ${why} enabled the runner Role is rendered with no RoleBinding, which authorises nobody`
+      );
+      assert(
+        JSON.stringify(role?.rules ?? []).includes("secrets"),
+        `[${label}] with ${why} enabled the per-run Secret grant is missing. All three classes are launched by the SAME ServiceAccount through the SAME Role, so a grant that depends on WHICH class is enabled is a grant that is absent whenever the class it was named after is off`
+      );
+    }
+
+    // (3c) THE ROLE FOLLOWS THE RUNNER NAMESPACE. `managedRunners.kubernetes.namespace` has been
+    //      operator-settable since M23.2 and the adapter creates its Jobs there; the Role was
+    //      rendered unconditionally into `.Release.Namespace`, so taking the chart's own advice and
+    //      separating the runners produced a silent 403 on every launch. Both now come from one
+    //      helper, and this is what keeps them from drifting apart again.
+    {
+      const separated = renderChart("verify-m23-ns", [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ]);
+      assert(
+        runnerRole(separated)?.metadata?.namespace === "scp-runners",
+        `[${label}] with managedRunners.kubernetes.namespace set, the runner Role renders into '${String(runnerRole(separated)?.metadata?.namespace)}' while the adapter creates its Jobs in 'scp-runners' — every launch is a 403 that names no cause`
+      );
+      const binding = separated.find(
+        (d) => d.kind === "RoleBinding" && String(d.metadata?.name ?? "").endsWith("-runner-iac")
+      );
+      assert(
+        binding?.metadata?.namespace === "scp-runners",
+        `[${label}] the runner RoleBinding does not follow the runner namespace, so the Role above authorises nobody there`
+      );
+      // AND THE SUBJECT STAYS WITH THE WORKLOAD. A RoleBinding in the runner namespace naming a
+      // ServiceAccount in the runner namespace would name one that does not exist.
+      const subjectNs = (binding as unknown as { subjects?: { namespace?: string }[] })
+        ?.subjects?.[0]?.namespace;
+      assert(
+        subjectNs === "verify-m23-ns" || subjectNs === "default",
+        `[${label}] the runner RoleBinding's subject namespace is '${String(subjectNs)}' — the ServiceAccount lives with the workload, in the RELEASE namespace, not in the runner namespace`
+      );
+    }
+
+    // (3d) A `docker` DEPLOYMENT GETS NO RUNNER RBAC AT ALL. A DECLARED NARROWING (M23.4): the Role
+    //      used to render for `managedIac.enabled` regardless of launcher, granting Job creation —
+    //      and now Secret creation — to a ServiceAccount whose pods mount no token (case (b) above
+    //      asserts exactly that) and which makes no API call. Surface for nobody.
+    {
+      const dockerIacDocs = renderChart("verify-m23-docker-rbac", [
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ]);
+      assert(
+        !runnerRole(dockerIacDocs),
+        `[${label}] a DOCKER-launcher deployment renders the runner Role. Its ServiceAccount mounts no token and makes no API call, so this is a standing Job- and Secret-creation grant for a caller that never calls`
+      );
+    }
+    assert(
+      !runnerRole(defaults),
+      `[${label}] the DEFAULT render carries a runner Role — the hardened default must grant nothing at all`
     );
 
     // (4) THE PREREQUISITES ARE REFUSED AT RENDER, not discovered as a hang (owner decision 5).
@@ -1852,7 +1988,7 @@ function main(): void {
       );
     }
     console.log(
-      "  default render unchanged; selected render carries token + egress + volume + settings; perRunSecrets gates the RBAC; both prerequisites refuse at render"
+      "  default render unchanged; selected render carries token + egress + volume + settings; the per-run Secret grant is exactly create+delete on secrets, present for all three classes, absent on docker and at the default, and following the runner namespace; both prerequisites refuse at render"
     );
   }
 

@@ -254,6 +254,25 @@ managedDep:
   workspaceRoot: /var/lib/scp/managed-dep
 
 # -------------------------------------------------------------------------------------------
+# Managed-scan (M13.3b — ADR-0020). OFF BY DEFAULT, same control as managedDep: with `runnerImage`
+# empty nothing is rendered, `SCP_MANAGED_SCAN_RUNNER_IMAGE` is unset, and a managed-scan binding
+# fails closed at dispatch with "managed scanning is not enabled".
+#
+# THIS BLOCK IS NET-NEW IN M23.4 AND ITS ABSENCE WAS A REAL HOLE, not a deliberate omission. The
+# server has read `SCP_MANAGED_SCAN_RUNNER_IMAGE` since M13.3b (`managedScanServerSettings`), and a
+# filterless grep over `deploy/helm/` for that name found it in README PROSE and nowhere else — so
+# managed-scan could not be enabled by `helm install` at all, on any launcher, while the other two
+# classes could. BUILD_AND_TEST.md's M23.3 entry records the same measurement. Found while granting
+# the Secret RBAC "for all three managed classes": two of the three were reachable from the chart.
+#
+# NO networkMode KNOB, and for the opposite reason to managedDep's: managed-scan's charter egress
+# clause is QUALIFIED (registry pulls), so the plugin resolves the value against the scanner
+# registry rather than taking an operator default. See `promotion-scan-step.ts`.
+# -------------------------------------------------------------------------------------------
+managedScan:
+  runnerImage: ""
+
+# -------------------------------------------------------------------------------------------
 # WHICH SUBSTRATE THE MANAGED RUNNERS LAUNCH ON (M23.2). Applies to ALL THREE managed classes at
 # once — `managed-iac`, `managed-scan` and `managed-dep` — because it is a property of the
 # deployment, not of one executor.
@@ -295,14 +314,36 @@ managedRunners:
       claimName: ""
       # Where the worker mounts it. The Job mounts the same volume at subpaths under this root.
       mountPath: /var/lib/scp/runner-workspace
-    # THE PER-RUN SECRET CAPABILITY — declared, and OFF. `RunnerSpec.secretEnv` reaches a pod as a
-    # per-run Secret + `envFrom.secretRef`, which needs `secrets: create,get,delete` on the worker
-    # ServiceAccount. That grant is an owner decision that has not been taken, so with this false
-    # the chart renders no such rule AND the server refuses a run that needs one — loudly, at its
-    # first step, rather than falling back to `env[].value` (plaintext in etcd and in every etcd
-    # backup) or dropping the credential silently. Only `managed-iac` populates `secretEnv` today;
-    # `managed-scan` and `managed-dep` hold no credential and run unaffected.
-    perRunSecrets: false
+    # THE PER-RUN SECRET CAPABILITY — GRANTED, AND ON (owner decision 2026-08-20, ADR-0035). This
+    # value renders the `secrets` rule on the runner Role AND sets the server-side flag; neither can
+    # be true without the other, which is what stops a deployment believing it can create Secrets
+    # that RBAC will 403.
+    #
+    # WHAT IT ENDS. `RunnerSpec.secretEnv` reaches a pod as a per-run Secret + `envFrom.secretRef`.
+    # Until this default flipped, `managed-iac` — the only class that populates `secretEnv` — could
+    # not run on Kubernetes AT ALL: it refused at its first step. That refusal was correct while the
+    # grant was undecided and is not something to keep once it is.
+    #
+    # WHAT THE GRANT IS: `create` and `delete` on `""/secrets`, namespaced, and nothing else.
+    # Not `get` (the adapter issues one POST and two DELETEs and no GET), and NOT `list` — a `list`
+    # on secrets returns every Secret BODY in the namespace, this chart's own database password
+    # included. The reap sweep is built to work without it.
+    #
+    # WHAT COULD NOT BE NARROWED, SAID PLAINLY: `resourceNames`. Per-run Secret names derive from
+    # `runId`, so the set is unbounded, and Kubernetes RBAC cannot restrict a `create` by
+    # `resourceNames` under any circumstances — the object's name is not known to the authorizer at
+    # admission time. The grant is therefore namespace-wide on `secrets`. THE NARROWING THAT IS
+    # ACTUALLY AVAILABLE IS `namespace` ABOVE: point it at a namespace of the runners' own and the
+    # Role, the RoleBinding, the Jobs and the Secrets all move there, away from this release's own
+    # Secrets. That is the recommended shape for anything holding real cloud credentials.
+    #
+    # SETTING IT `false` STILL WORKS and is the supported opt-out: no rule is rendered and the server
+    # refuses a run that needs one, loudly, at its first step, rather than falling back to
+    # `env[].value` (plaintext in etcd and in every etcd backup) or dropping the credential silently.
+    # `managed-scan` and `managed-dep` hold no credential (`secretEnv: []` in both) and are
+    # unaffected either way — but they DO need the rest of this Role, which is a separate fix made
+    # at the same time; see `templates/runner-iac.yaml`.
+    perRunSecrets: true
     # Pod `securityContext.runAsNonRoot` for runner Jobs. FALSE by default, and that is a fact about
     # the images rather than a preference: none of apps/runner-{iac,scan,dep} declares a `USER`, so
     # `true` makes every managed run fail with CreateContainerConfigError before its entrypoint.

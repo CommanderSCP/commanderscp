@@ -290,6 +290,16 @@ since those three differ between the migrations Job and the api/worker Deploymen
 - name: SCP_MANAGED_IAC_WORKSPACE_ROOT
   value: {{ .Values.managedIac.workspaceRoot | quote }}
 {{- end }}
+{{- if .Values.managedScan.runnerImage }}
+{{- /* M23.4 — the value that had no chart value. `managedScanServerSettings()` has read this since
+       M13.3b; the chart never rendered it, so a `helm install` could not turn managed-scan on at
+       all. Same host-level, never-tenant-suppliable trust tier as SCP_MANAGED_IAC_*. Gated on the
+       IMAGE for the same reason managedDep is: the image IS the enablement. No network-mode var —
+       this class's egress clause is QUALIFIED (registry pulls), so the plugin resolves it against
+       the scanner registry rather than taking an operator default. */}}
+- name: SCP_MANAGED_SCAN_RUNNER_IMAGE
+  value: {{ .Values.managedScan.runnerImage | quote }}
+{{- end }}
 {{- if .Values.managedDep.runnerImage }}
 {{- /* M21.5 (ADR-0032 §8) — the dependency-bump actuator. Same host-level, never-tenant-suppliable
        trust tier as SCP_MANAGED_IAC_*. Gated on the IMAGE rather than on a separate `enabled` flag,
@@ -485,15 +495,45 @@ So the message names the requirement explicitly rather than implying the chart v
 {{- if not .Values.managedRunners.kubernetes.workspace.claimName -}}
 {{- fail "managedRunners.launcher=kubernetes requires managedRunners.kubernetes.workspace.claimName — the name of an EXISTING ReadWriteMany PersistentVolumeClaim shared by the worker and every runner Job. Kubernetes has no `docker cp`, so the runner's inputs and evidence move through this volume; this chart does not create it because RWX is a storage-class capability you provision (NFS/CephFS/EFS/Azure Files). The chart's own PVCs are ReadWriteOnce and cannot be reused." -}}
 {{- end -}}
-{{- if not (or .Values.managedIac.enabled (ne (.Values.managedDep.runnerImage | default "") "")) -}}
-{{- fail "managedRunners.launcher=kubernetes is set but no managed executor class is enabled, so nothing will ever launch. Enable managedIac.enabled (with managedIac.runnerImage) and/or set managedDep.runnerImage, or leave managedRunners.launcher at its default of `docker`." -}}
+{{- if ne (include "commanderscp.anyManagedClass" .) "true" -}}
+{{- fail "managedRunners.launcher=kubernetes is set but no managed executor class is enabled, so nothing will ever launch. Enable managedIac.enabled (with managedIac.runnerImage) and/or set managedDep.runnerImage and/or set managedScan.runnerImage, or leave managedRunners.launcher at its default of `docker`." -}}
 {{- end -}}
 {{- end -}}
 {{- end }}
 
+{{/*
+IS ANY MANAGED EXECUTOR CLASS ENABLED? All THREE of them, and the third one is the point.
+
+`managedScan.runnerImage` is net-new in M23.4 and its absence was a hole rather than a choice: the
+server has gated managed-scan on `SCP_MANAGED_SCAN_RUNNER_IMAGE` since M13.3b and this chart never
+rendered it, so managed-scan could not be enabled by `helm install` on any launcher. Every predicate
+that means "a managed run can happen here" has to name all three, or the class left out gets the
+half of the wiring that is keyed on something else and fails at the first call it makes.
+*/}}
+{{- define "commanderscp.anyManagedClass" -}}
+{{- if or .Values.managedIac.enabled (ne (.Values.managedDep.runnerImage | default "") "") (ne (.Values.managedScan.runnerImage | default "") "") -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{/*
+WHERE THE RUNNER JOBS, THEIR SECRETS AND THEIR RBAC LIVE.
+
+ONE DEFINITION, USED BY BOTH THE SERVER SETTING AND THE ROLE, and that is the whole reason it is a
+helper. `SCP_MANAGED_RUNNER_K8S_NAMESPACE` has been operator-settable since M23.2 while the runner
+Role and RoleBinding were rendered, unconditionally, into `.Release.Namespace` — so an operator who
+took the chart's own advice and separated the runners got a Role in one namespace and Jobs created
+in another, i.e. a 403 on every launch with nothing anywhere saying why. The two now derive from the
+same expression and cannot drift.
+*/}}
+{{- define "commanderscp.runnerNamespace" -}}
+{{- .Values.managedRunners.kubernetes.namespace | default .Release.Namespace -}}
+{{- end }}
+
 {{- define "commanderscp.needsRunnerApiAccess" -}}
-{{- $anyManagedClass := or .Values.managedIac.enabled (ne (.Values.managedDep.runnerImage | default "") "") -}}
-{{- if and (eq .Values.managedRunners.launcher "kubernetes") $anyManagedClass -}}
+{{- if and (eq .Values.managedRunners.launcher "kubernetes") (eq (include "commanderscp.anyManagedClass" .) "true") -}}
 true
 {{- else -}}
 false
