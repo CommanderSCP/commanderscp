@@ -905,11 +905,16 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
        instances against a build a structured budget sweep caught 49,518 times. The axis eleven passes never
        varied was the **budget**. The permanent test is a sweep, not a corpus.
 
-    **Definition of done — machine-checked. Clause 2 is MET as of pass 14; clauses 1 and 6 are not.**
-    1. An adversarial pass finds no defect. Passes 11, 12, 13 and 14 each answered "converged?" with
-       **No** — pass 14 found two (below), which is the fourth consecutive round to find one.
-    2. **MET (pass 14).** Every one of the eight is now either killed by a named test or shown
-       indistinguishable by the sweep that would have found a difference:
+    **Definition of done — machine-checked. Clauses 2 and 3 are MET; clause 1 is NOT, and clause 6 is
+    NOT. Pass 15 did not re-adjudicate clauses 4 and 5 and does not claim to have.**
+    1. An adversarial pass finds no defect. Passes 11, 12, 13, 14 and 15 each answered "converged?"
+       with **No** — pass 15 found four surviving mutations and a five-instance class outside this
+       file ("WHAT PASS 15 FOUND" below), the fifth consecutive round to find something.
+    2. **MET, and RE-VERIFIED INDEPENDENTLY BY PASS 15.** All seven rows below were re-run one at a
+       time against a clean tree with a rebuild: three killed by the named test the table names,
+       three surviving, one control — no row was found to misreport its verdict. The two
+       "indistinguishable" verdicts were then re-checked against a sweep built independently of the
+       repository's own, which the repository's own sweep could not have settled:
 
        | mutation | verdict |
        |---|---|
@@ -1098,6 +1103,113 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
       it is left alone and written down instead.
     - **A plugin field literally named `__scpElided` collides with the marker** and is overwritten by
       it. Pre-existing; the same is true of two long keys that bound to the same text.
+
+
+    **WHAT PASS 15 FOUND. Four surviving mutations inside this file, and one class of five outside
+    it that is bigger than anything M23.1f has fixed.**
+
+    **THE INSTRUMENT.** A differential budget sweep built independently of the repository's own:
+    303 shapes x 2 312 budgets = **700 536 (shape, budget) pairs per build**, comparing the stored
+    value, the truncation report AND the prototype identity of every object in the result. Its
+    family deliberately contains what pass 14 recorded the repository's own sweep as lacking — a
+    **ladder**, sizes close enough that one field satisfies per water-filling round. Non-vacuity
+    control: it distinguishes `PERSISTED_JSON_SHARE_ROUNDS` 5 -> 4 in **161** pairs, which the
+    repository's own sweep reports as indistinguishable.
+
+    **THE TWO "INDISTINGUISHABLE" VERDICTS HOLD, and now rest on two independent instruments.**
+    `SHARE_ROUNDS` 5 -> 8 and 5 -> **64**: zero differing pairs each, so five really is the fixed
+    point against the ceiling and not merely against eight. `renderedCostAtMost`'s negative cap:
+    zero differing pairs, and an independent instrumentation reproduced pass 14's mechanism to the
+    digit — the branch is entered **27 600** times over this family, most negative cap **-92**
+    (pass 14 measured -92 over its own), and in **zero** of them do `cap + 1` and `0` compare
+    differently.
+
+    **BUT PASS 14'S STATED MECHANISM FOR THE `Object.assign` VERDICT IS FALSE, AND THE COMMENT IN
+    `index.ts` REPEATS IT.** Both say the two writes "differ for exactly one key — `__proto__`" and
+    that phase 1's guard is what removes the difference. Measured: `out[k] = v` and
+    `Object.assign(out, {[k]: v})` are **[[Set]] on both sides** and are identical for `__proto__`
+    too — both pollute. What differs from `out[k] = v` is a **spread** or `Object.defineProperty`,
+    not `Object.assign`. Rebuilding with the guard DELETED and sweeping `out[k]=` against
+    `Object.assign` still gives **zero** differing pairs, and both builds pollute identically
+    (`protoOK=false, v.polluted=true`). The verdict was right and the reason was not; a future round
+    reading that reason would conclude the guard is what makes `Object.assign` safe, and it is not.
+
+    **FOUR SURVIVING MUTATIONS — behaviour changes no test in the 255 detects.** Found by mutating,
+    rebuilding, running the whole suite, and only then sweeping the survivors:
+
+    | mutation | differing pairs | suite |
+    |---|---|---|
+    | depth limit's ARRAY branch: `budget.loss.entries += value.length` -> `+= 1` | 635 | green |
+    | `PERSISTED_JSON_TRUNCATION_MAX_CHARS` 288 -> 512 | 123 089 | green |
+    | `PERSISTED_JSON_TRUNCATION_MAX_CHARS` 288 -> 287 | 2 354 | green |
+    | `wholesaleTruncation`'s `boundText(key, …, 0)` -> `tailChars: 1` | 135 | green |
+
+    **The first is FIXED** (`persisted-json-truncation.test.ts` -> "THE DEPTH LIMIT'S OTHER BRANCH"),
+    because it is the only one where the report states a FALSE NUMBER: an over-deep list of 40
+    entries reported as `droppedEntries: 1`. It survived because the depth limit has TWO accounting
+    branches and the existing arm drives only the object one — deleting either reddens the pair,
+    which is why the mutation log recorded the deletion as caught, while a wrong count in the array
+    branch had no arm at all. One property, two places, one covered.
+
+    The other three are RECORDED, NOT FIXED. `PERSISTED_JSON_TRUNCATION_MAX_CHARS` is an unpinned
+    tunable whose consequences stay self-consistent because `OBSERVED_STATE_TRUNCATION_RESERVE`
+    derives from it — moving it silently moves the value's share of the 8 000-character column
+    policy (512 costs a reading 224 characters) without any test noticing.
+
+    **THE CLASS OUTSIDE THIS FILE: THE SAME UNGUARDED COMPUTED-KEY WRITE, IN FIVE MORE PLACES, TWO
+    OF THEM UNDER A SIGNATURE.** Pass 14 fixed `__proto__` in `walkObjectFields` and nothing swept
+    for the property. A filterless census (own-key iteration + a computed-key write) over every
+    tracked `.ts` finds the identical recursive key-copy walker five more times:
+
+    ```
+    apps/server/src/util/canonical-json.ts:21          acc[key] = sortKeysDeep(...)
+    apps/server/src/coordination/decisions-repo.ts:264 out[key] = sortKeys(src[key])
+    apps/server/src/coordination/test-support/counting-cel-sandbox.ts:143
+    packages/iac/src/canonical.ts:19                   acc[key] = sortKeysDeep(...)
+    packages/schemas/src/federation-journal.ts:52      acc[key] = sortKeysDeep(...)
+    ```
+
+    In every one, a `__proto__` subtree is SILENTLY DROPPED from the canonical form. Measured: two
+    payloads differing only by an arbitrarily large `__proto__` subtree produce a **byte-identical**
+    canonical string. That is not a formatting quirk where these are used:
+
+    * `federation-journal.ts` is the sync-journal **hash chain and Ed25519 signature**, whose own
+      module doc calls `verifyJournalChain` "the fail-closed gate a tampered or truncated segment
+      must never pass". `computeJournalRowHash` and `computeBundleChecksum` both go through it, so
+      **content under `__proto__` is not covered by the row hash or the bundle signature.**
+    * `canonical-json.ts` is the message `governance/attestation.ts` signs, and the equality test
+      `objects-repo.ts` uses to decide whether a write is a no-op.
+    * `decisions-repo.ts`'s copy is `restatesDecision` — two Decisions with different inputs dedupe
+      as identical (charter principle 6).
+
+    **AND THE TRUST BOUNDARY IS OPEN, because this repository turned off the protection its framework
+    ships with.** `app.ts:136` replaces Fastify's default `application/json` parser wholesale to
+    capture `request.rawBody` for M7 webhook signatures, and its comment says it "Behaves identically
+    to Fastify's own default JSON parser for every OTHER route". **Measurably false.** Fastify 5's
+    default is `secure-json-parse` with `onProtoPoisoning: "error"`; the replacement is plain
+    `JSON.parse`. Measured on the same body: the default **rejects** ("Object contains forbidden
+    prototype property"), the replacement **accepts**. Driven end to end against a real server,
+    `POST /services` with `properties: {"ok":1,"__proto__":{…}}` returns **201 Created** and the
+    stored row is `"properties":{"ok":1}` — a write accepted, silently partially discarded, and
+    reported as success. The air-gap path does not even need that: `inbox-loop.ts:479` parses a
+    `.scpbundle` with plain `JSON.parse` from a file.
+
+    A well-written comment naming parity is not evidence of parity — the same rule CLAUDE.md states
+    for a comment naming a hazard.
+
+    **A THIRD INSTANCE, on the plugin boundary.** `observe.ts`'s watermarks index by a
+    plugin-supplied event KIND. An `ExecutorEvent` of kind `__proto__` makes `advanceWatermarks`
+    a permanent no-op — measured over four ticks the mark set stays `[]` while an ordinary kind
+    advances normally — and `watermarkFor` returns `Object.prototype`, which reaches a provider as
+    `?since=[object Object]`. The observe loop re-polls the same window forever.
+
+    **AND ONE CORRECTION TO PASS 14'S THREAT MODEL, measured.** The pollution does not survive into
+    a row: `JSON.stringify` does not serialise a prototype, so a polluted object becomes a clean
+    `jsonb` value. Deleting the guard and re-running the new end-to-end file leaves all four
+    prototype/own-key/payload/wire checks GREEN. The defect is IN-PROCESS. What is row-observable is
+    its second half — the field is charged and then dropped, so siblings pay for it — and that is
+    what `observed-proto-pollution.integration.test.ts` asserts, on both write sites, with a fixture
+    measured to separate the builds at the production budget (4 000 characters guarded, 3 822 not).
 
   - **M23.1g Surfacing truncation on the API — DONE.** M23.1f turned a verbatim value into one that may be
     cut and told nobody outside the server. Two consequences were live:

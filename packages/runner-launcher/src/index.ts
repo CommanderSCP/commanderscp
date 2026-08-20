@@ -1881,13 +1881,24 @@ function walkObjectFields(
   }
 
   const out: Record<string, unknown> = {};
-  // `out[key] = value` AND `Object.assign(out, {[key]: value})` ARE THE SAME HERE, and pass 14
-  // records that as a measured no-op rather than as a caught mutation. They differ for exactly one
-  // key — `__proto__`, the only own property of `Object.prototype` that is an accessor, enumerated
-  // as a test in `persisted-json-proto.test.ts` — and phase 1 above refuses that key before a field
-  // is ever seated. Pass 13 listed this substitution as a surviving mutation and read it correctly:
-  // it was a proxy for the prototype-pollution hole, and it stopped distinguishing anything when
-  // the hole was closed at its source. Zero of 145 048 (shape, budget) pairs differ.
+  // `out[key] = value` AND `Object.assign(out, {[key]: value})` ARE THE SAME HERE, and both passes
+  // 14 and 15 record that as a measured no-op rather than as a caught mutation: zero differing
+  // pairs over 145 048 (pass 14) and over 700 536 (pass 15, a family with a ladder in it).
+  //
+  // PASS 14'S STATED REASON WAS WRONG AND IS CORRECTED HERE, because a false reason is worse than
+  // none — a reader would conclude the guard below is what makes `Object.assign` safe. It is not.
+  // `Object.assign` copies with `[[Set]]`, exactly as `out[key] = value` does, so the two are
+  // identical for EVERY key INCLUDING `__proto__` — measured: both leave `Object.getPrototypeOf`
+  // changed and `polluted` readable, and rebuilding with `isUnsafePersistedKey` DELETED still gives
+  // zero differing pairs between them. What actually differs from `out[key] = value` is a SPREAD or
+  // `Object.defineProperty`, both of which create an own data property instead of calling the
+  // setter — which is why `wave-targets-repo.ts` spreading `...bounded.value` is safe and an
+  // `Object.assign({}, observed)` in a consumer is not (see {@link isUnsafePersistedKey}).
+  //
+  // So this substitution is an unconditional no-op, not a no-op contingent on the guard. Pass 13
+  // listed it as a surviving mutation and read its SIGNIFICANCE correctly — it was a proxy for the
+  // prototype-pollution hole — but the hole is closed by the refusal in phase 1 above, not by the
+  // choice of write form here. Neither form would be safe without it.
   for (const field of seated) out[field.key] = field.value;
   if (elidedMarker !== undefined) out[PERSISTED_JSON_ELIDED_KEY] = elidedMarker;
   return out;
