@@ -144,8 +144,17 @@ EOF
   # owner's grant, 2026-08-20), so what this SA gets is what a `helm install` gives a real operator.
   # If a future change silently removed the `secrets` rule from the DEFAULT render, the credential
   # case below would 403 here — which is exactly where a test should find out.
+  #
+  # `managedRunners.launcher=kubernetes` IS NOW REQUIRED TO GET THIS TEMPLATE AT ALL, and that is a
+  # deliberate narrowing rather than an accident of this script: as of M23.4 a `docker` deployment
+  # renders no runner RBAC, because its ServiceAccount mounts no token and makes no API call. The
+  # harness is exercising the Kubernetes launcher, so it selects it, and `workspace.claimName` comes
+  # with it (a render-time prerequisite, owner decision 5) even though this single-node harness uses
+  # the hostPath workspace below rather than a real RWX claim.
   helm template scp "${REPO_ROOT}/deploy/helm" \
     --namespace "$NAMESPACE" \
+    --set managedRunners.launcher=kubernetes \
+    --set managedRunners.kubernetes.workspace.claimName=scp-runner-harness-rwx \
     --set managedIac.enabled=true \
     --set managedIac.runnerImage="$RUNNER_IMAGE" \
     --set serviceAccount.name=scp-runner-harness \
@@ -165,6 +174,8 @@ EOF
   kubectl -n "${NAMESPACE}-nosecrets" create serviceaccount scp-runner-harness
   helm template scp "${REPO_ROOT}/deploy/helm" \
     --namespace "${NAMESPACE}-nosecrets" \
+    --set managedRunners.launcher=kubernetes \
+    --set managedRunners.kubernetes.workspace.claimName=scp-runner-harness-rwx \
     --set managedIac.enabled=true \
     --set managedIac.runnerImage="$RUNNER_IMAGE" \
     --set managedRunners.kubernetes.perRunSecrets=false \

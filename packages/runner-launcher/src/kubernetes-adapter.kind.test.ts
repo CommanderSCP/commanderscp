@@ -592,6 +592,15 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     // rejection is caught and discarded.
     const ns = harness.namespace;
     await kubectlIn(ns, "delete", "secret", "scp-runner-sigkill-env", "--ignore-not-found");
+    //
+    // AND THE VACUITY THIS CASE HAS TO CLOSE: the launcher's OWN teardown would eventually delete
+    // this Secret too, when the run ends. If the observation window overlapped that, the case would
+    // pass whether or not the ownerReference existed. So the run is given a 30-SECOND budget, the
+    // moment of the Job deletion is timed, and the collection must be observed in the FIRST HALF of
+    // that budget — a window in which the launcher is provably still parked in its `start` poll and
+    // has issued no DELETE at all. `settled` is the second half of the same guard.
+    const RUN_BUDGET_MS = 30_000;
+    let settled = false;
     const abandoned = launcher()
       .run(
         spec({
@@ -599,16 +608,20 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
           labels: { "scp.run-id": "sigkill" },
           operands: ["/bin/sh", "-c", 'test -n "$AWS_SECRET_ACCESS_KEY" && sleep 120'],
           secretEnv: [`AWS_SECRET_ACCESS_KEY=${CREDENTIAL}`],
-          timeoutMs: 30_000
+          timeoutMs: RUN_BUDGET_MS
         })
       )
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        settled = true;
+      });
 
     const live = await until(async () =>
       (await kubectlIn(ns, "get", "secrets", "-o", "name")).includes("scp-runner-sigkill-env")
     );
     expect(live, "the per-run Secret never existed, so its disappearance proves nothing").toBe(true);
 
+    const deletedAt = Date.now();
     await kubectlIn(ns, "delete", "job", "scp-runner-sigkill", "--wait=false");
 
     // NOT AN IMMEDIATE READ. Garbage collection is asynchronous by design, and asserting "gone the
@@ -617,12 +630,22 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     const collected = await until(
       async () =>
         !(await kubectlIn(ns, "get", "secrets", "-o", "name")).includes("scp-runner-sigkill-env"),
-      60_000
+      RUN_BUDGET_MS / 2
     );
     expect(
       collected,
       "the per-run Secret outlived the Job that owned it. That is the M23.1d credential-lifetime defect, reappearing on the Kubernetes adapter and in a worse place than a mode-0600 file: etcd, and every etcd backup"
     ).toBe(true);
+
+    // THE TWO GUARDS THAT MAKE THE DELETION THE CLUSTER'S AND NOT THE LAUNCHER'S.
+    expect(
+      settled,
+      "the run had already finished when the Secret went, so its own teardown could have deleted it and this case proves nothing about ownerReferences"
+    ).toBe(false);
+    expect(
+      Date.now() - deletedAt,
+      `the Secret took longer than half the run's ${RUN_BUDGET_MS}ms budget to disappear, which puts the observation inside the window where the launcher's own teardown runs`
+    ).toBeLessThan(RUN_BUDGET_MS / 2);
 
     await abandoned;
   }, 180_000);
