@@ -1149,6 +1149,63 @@ function tailMarkerCost(length: number): number {
   return jsonCost(entriesElisionMarker(length)) + 1; // + the comma that separates it from the tail
 }
 
+/** The value an over-budget OBJECT stores under {@link PERSISTED_JSON_ELIDED_KEY} in place of the
+ *  fields that did not fit. One function, beside the array's, so the two markers and the two
+ *  reserves that pay for them cannot drift apart. */
+function fieldsElisionMarker(dropped: number): string {
+  return `${dropped} more fields`;
+}
+
+/**
+ * WHAT AN OBJECT HOLDS BACK FOR ITS OWN ELISION ENTRY — HIGH, M23.0 verification pass 14, and the
+ * defect pass 11's array fix left standing one branch away.
+ *
+ * Pass 11 found that a cut ARRAY charged its tail marker against a budget it had already spent, and
+ * bought the marker first. The OBJECT does the identical thing with the identical consequence and
+ * was not swept: phase 1 subtracts `jsonCost(marker) + jsonCost(__scpElided) + 2` with no check
+ * that it can be afforded. A well-written comment naming a hazard is a signal to sweep, not
+ * evidence it was handled (CLAUDE.md) — the array's fix names the hazard in full and fixes one of
+ * the two places that have it.
+ *
+ * WHY IT IS WORSE HERE THAN IT WAS FOR THE ARRAY. An array's overspend is one marker on one list.
+ * An object's is one marker PER ELIDING OBJECT, and an eliding object is the normal state of every
+ * level of a nested reading at a tight budget — so the overspends multiply by the tree's width and
+ * depth rather than adding up over a handful of lists. Measured on `{d5f0..d5f2: {...}}`, five
+ * levels of three fields, 4 483 characters of ordinary content, at the DENSE BUDGET SWEEP this pass
+ * is built around:
+ *
+ *     budget 1200   walk given 1104   rendered 1189   budget.left  -85
+ *     budget 3000   walk given 2904   rendered 2917   budget.left  -13
+ *     budget 4000   walk given 3904   rendered 3916   budget.left  -12
+ *
+ * and four levels of three fields — 1 486 characters — rendered 1 297 against a budget of 1 200,
+ * i.e. 193 over, past the single {@link PERSISTED_JSON_MIN_LEAF} the row reserves, so THE BACKSTOP
+ * DISCARDED THE WHOLE VALUE. It did so at EVERY budget from 4 to 1 296, and the five-level shape at
+ * every budget up to 3 915: `revision`, `images` and `rollout.weight` replaced together by a
+ * 145-character apology, silently, on every tick. 15 982 backstop firings over 145 048
+ * (shape, budget) pairs.
+ *
+ * THE FIX IS THE ARRAY'S, APPLIED TO THE BRANCH THAT WAS MISSED. The object asks first whether it
+ * fits whole; if it does not, it buys the widest elision entry it could need BEFORE phase 1 seats
+ * anything, and hands the reserve back at exactly one of two places — to the marker, or to the pool
+ * if every key seated. So a complete object costs exactly what it cost before (the reserve is zero
+ * for it, which is what keeps "L + 96 IS THE WHOLE LAW" true), and an eliding one has already paid.
+ *
+ * AND IT MAKES THE OVERSPEND A THEOREM RATHER THAN A HOPE. Every container is walked with at least
+ * {@link admissionCost} — the value's exact cost when that is under 96, and 96 otherwise. A
+ * container whose exact cost fits keeps everything and needs no marker; one admitted at 96 can
+ * afford any marker this file emits, because 96 exceeds all of them (the widest object entry is 47
+ * rendered characters at 2^53 fields, the widest array tail 37, the depth marker 60). So the ONLY
+ * container that can overspend is the ROOT, which `boundPersistedJson` hands `maxChars - 96` — and
+ * the 96 it held back is larger than the one marker the root can fail to afford. Zero backstop
+ * firings and zero over-budget rows over the sweep is the measurement of that.
+ */
+function fieldsElisionCost(fields: number): number {
+  // The widest it can be: the count only shrinks as keys are seated. `+ 2` is the `:` and the comma
+  // that attach the entry to the object — the two characters phase 1 charged and never reserved.
+  return jsonCost(fieldsElisionMarker(fields)) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
+}
+
 /**
  * DOES THIS ARRAY ENTRY MEAN "THE LIST WAS CUT HERE"? — the difference between "the executor never
  * deployed that image" and "we stopped writing the list down". Those are different facts and
@@ -1539,7 +1596,11 @@ const PERSISTED_JSON_SHARE_ROUNDS = 4;
 function walkObjectFields(
   entries: [string, unknown][],
   budget: WalkBudget,
-  depth: number
+  depth: number,
+  /** Whether `walk` already measured this object as fitting whole in the budget it was handed. An
+   *  object that fits cannot elide, so it must not be charged for an elision entry — the same
+   *  question, asked for the same reason, as the array's `wholeCost <= room`. */
+  fitsWhole: boolean
 ): Record<string, unknown> {
   /** Seated fields in insertion order. `raw` is kept because phase 2 walks each field more than
    *  once — at a larger share each time — and needs the original to walk. */
@@ -1571,6 +1632,14 @@ function walkObjectFields(
    *  {@link PERSISTED_JSON_MIN_LEAF} each. A field whose whole value is `60` reserves two
    *  characters, and the difference is a key that stays. */
   let reserved = 0;
+  // THE ELISION ENTRY IS BOUGHT BEFORE A KEY IS SEATED — see {@link fieldsElisionCost}. Held for
+  // the whole of phase 1 and handed back at exactly one of two places: to the marker, or to the
+  // pool if every key seated. Clamped at what there is, which matters only for a root handed less
+  // than the marker costs — the one container `boundPersistedJson`'s own reserve covers.
+  const elisionReserve = fitsWhole
+    ? 0
+    : Math.min(Math.max(0, budget.left), fieldsElisionCost(entries.length));
+  budget.left -= elisionReserve;
 
   // ---- PHASE 1: SEAT THE KEYS. Charge the keys and NOTHING ELSE, so the pool phase 2 divides is
   // a number that does not depend on the order the fields arrived in.
@@ -1592,8 +1661,15 @@ function walkObjectFields(
     // either way.
     const need = admissionCost(entryValue, depth + 1);
     if (budget.left - keyCost < reserved + need) {
-      elidedMarker = `${entries.length - i} more fields`;
-      budget.left -= jsonCost(elidedMarker) + jsonCost(PERSISTED_JSON_ELIDED_KEY) + 2;
+      elidedMarker = fieldsElisionMarker(entries.length - i);
+      // THE RESERVE, SPENT ON WHAT IT WAS BOUGHT FOR. `fieldsElisionCost(entries.length)` is the
+      // widest this can be, so what is charged here is never more than what was held back — and
+      // the difference (the digits the real count did not need) returns to the pool.
+      // ONE function prices both, deliberately: this line used to spell the arithmetic out a
+      // second time, and two spellings of one price is how a reserve stops covering the charge it
+      // was bought for.
+      budget.left += elisionReserve;
+      budget.left -= fieldsElisionCost(entries.length - i);
       // THE SAME NUMBER THE MARKER CARRIES, for the same reason the array's does.
       budget.loss.fields += entries.length - i;
       if (collector) {
@@ -1618,6 +1694,10 @@ function walkObjectFields(
       loss: { characters: boundedKey.dropped, entries: 0, fields: 0 }
     });
   }
+
+  // No cut: the reserve was never needed, and it goes to the fields rather than being burned — the
+  // array's `budget.left += tailReserve` on the same branch, for the same reason.
+  if (elidedMarker === undefined) budget.left += elisionReserve;
 
   // ---- PHASE 2: WATER-FILL THE VALUES. `pool` is what the fields in `pending` have to divide;
   // a field that finishes under its share is taken out and only its ACTUAL spend leaves the pool.
@@ -1949,6 +2029,11 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
     return out;
   }
 
+  // AN OBJECT THAT FITS WHOLE IS NOT CHARGED FOR AN ELISION ENTRY IT CANNOT NEED — the array's
+  // question, asked one branch over, where pass 11 did not sweep. See {@link fieldsElisionCost}
+  // for the measurement and for why an object's overspend compounds where an array's adds.
+  const objectRoom = budget.left;
+  const objectWholeCost = renderedCostAtMost(value, objectRoom, depth);
   budget.left -= 2; // {}
   // EVERY FIELD AGAINST AN EQUAL SHARE, AND WHAT THE SATISFIED ONES DO NOT WANT RE-OFFERED TO THE
   // REST. With a single budget spent in insertion order, the first large field took the row and
@@ -1957,7 +2042,12 @@ function walk(value: unknown, budget: WalkBudget, depth: number): unknown {
   // CEILING, half the budget was thrown away instead. With a share computed from the budget
   // REMAINING mid-loop, how much of each field survived still varied with order. See
   // {@link PERSISTED_JSON_SHARE_ROUNDS}.
-  return walkObjectFields(Object.entries(value as Record<string, unknown>), budget, depth);
+  return walkObjectFields(
+    Object.entries(value as Record<string, unknown>),
+    budget,
+    depth,
+    objectWholeCost <= objectRoom
+  );
 }
 
 /**

@@ -744,9 +744,14 @@ describe("MEDIUM: a string field spends its share, not half of it", () => {
     expect(JSON.stringify(boundPersistedJson(tinyValued))).toBe(JSON.stringify(tinyValued));
 
     // NON-VACUITY, AND THE UNCHANGED HALF: values too big to price still reserve the whole floor,
-    // so 200 of THEM is still the elision regime and still seats the flat rule's 71.
+    // so 200 of THEM is still the elision regime and still seats roughly the flat rule's 71.
     expect(withHugeValues).toContain(PERSISTED_JSON_ELIDED_KEY);
-    expect(withHugeValues.length).toBe(71); // 70 fields plus the marker
+    // 69 fields plus the marker. It was 70 + the marker until pass 14 made the object BUY its
+    // elision entry before phase 1 seats anything (see `fieldsElisionCost`): those 30 characters
+    // used to be spent out of the row's backstop cushion, and one seat is exactly what they buy.
+    // The measurement that says the trade is worth making is in that comment — 15 982 whole-value
+    // discards over a 145 048-pair budget sweep, gone above a budget of 31.
+    expect(withHugeValues.length).toBe(70);
 
     // ONE-WAY: every key the large-valued object seated is seated by the small-valued one too.
     // `admissionCost` is capped at PERSISTED_JSON_MIN_LEAF, so pricing a seat can only add keys.
@@ -1357,11 +1362,56 @@ describe("HIGH: a seat phase 1 paid for is a share phase 2 must honour", () => {
     const value = wide(5, () => ["a"]);
     const bounded = boundPersistedJson(value, 143) as Record<string, string[]>;
     expect(discarded(bounded), "the backstop discarded five one-element lists").toBe(false);
-    // RETENTION, not length: the lists that survived have to hold their entry.
+    // RETENTION, not length: whatever survived has to be a whole list and not a cut one. The COUNT
+    // that survives is deliberately not asserted here — see the arm below for why it moved and for
+    // the two-sided statement that replaced it.
     const kept = Object.entries(bounded).filter(([key]) => key !== PERSISTED_JSON_ELIDED_KEY);
-    expect(kept.length, "no field survived at all").toBeGreaterThanOrEqual(4);
+    expect(kept.length, "no field survived at all").toBeGreaterThanOrEqual(1);
     for (const [key, list] of kept) {
       expect(list, `${key} is not a list`).toEqual(["a"]);
+    }
+  });
+
+  it("AND THE COUNT THAT SURVIVES IS THE LAW'S, NOT THE CUSHION'S — pass 14", () => {
+    // WHAT MOVED AND WHY IT IS THE RIGHT DIRECTION. Pass 13 asserted four of the five lists survive
+    // at 143. One does now, and the four were being paid for out of the row's backstop cushion: the
+    // walk is handed `143 - PERSISTED_JSON_MIN_LEAF` = 47 characters, and four lists plus their keys
+    // plus a 30-character elision entry is 75. Pass 14 made the object BUY that entry before phase 1
+    // seats anything (`fieldsElisionCost`), so the walk now spends what it was given. Measured over
+    // every budget in 100…175, both builds:
+    //
+    //     budget   108   119   130   141   149   152
+    //     pass 13    1     2     3     4     4     5   <- borrowing from the cushion
+    //     pass 14    0     0     0     1     2     5
+    //
+    // The borrowing is what produced 15 982 whole-value discards over the pass-14 sweep, five of
+    // which are CLIFFS: one more character of budget took `depth 5 width 3` from 2 539 stored
+    // characters to 145 of apology. Nine cliffs remain in the fixed build and NOT ONE of them lands
+    // on the backstop.
+    const value = wide(5, () => ["a"]);
+    const L = JSON.stringify(value)!.length;
+    expect(L).toBe(56);
+
+    // THE LAW IS WHERE IT ALWAYS WAS, and that is the two-sided statement retention gets instead of
+    // a hand-picked count: everything at L + 96, not everything at L + 95.
+    expect(JSON.stringify(boundPersistedJson(value, L + 96))).toBe(JSON.stringify(value));
+    expect(JSON.stringify(boundPersistedJson(value, L + 95))).not.toBe(JSON.stringify(value));
+
+    // AND BELOW THE LAW, RETENTION IS MONOTONE AND NEVER A DIAGNOSTIC. That is the property the
+    // count was standing in for, and unlike the count it cannot be satisfied by borrowing.
+    let previous = 0;
+    for (let budget = 4; budget <= L + 96; budget++) {
+      const out = boundPersistedJson(value, budget);
+      const rendered = JSON.stringify(out) ?? "null";
+      expect(rendered.length, `budget ${budget}: over the row bound`).toBeLessThanOrEqual(budget);
+      // 32 is the width of `{"__scpElided":"5 more fields"}` — the walk's SHORTEST honest output
+      // for this value, so below it the backstop is not a defect but the only thing left. At and
+      // above it the backstop must never fire, in any of its three forms.
+      if (budget < 32) continue;
+      expect(discarded(out), `budget ${budget}: the backstop fired`).toBe(false);
+      expect(out, `budget ${budget}: the backstop returned null`).not.toBeNull();
+      expect(rendered.length, `budget ${budget}: retention fell`).toBeGreaterThanOrEqual(previous);
+      previous = rendered.length;
     }
   });
 
