@@ -6,6 +6,14 @@ import { createDb, createPool } from "./db/client.js";
 import { loadConfig } from "./config.js";
 
 /**
+ * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
+ * that three named keys are absent only proves those three are absent; this proves NOTHING was
+ * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
+ * so it is checked rather than assumed.
+ */
+const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
+
+/**
  * THE WIRING TEST for the global `application/json` content-type parser registered in `app.ts`.
  *
  * Deliberately routed through the real `buildApp` rather than calling the guard directly:
@@ -23,6 +31,7 @@ import { loadConfig } from "./config.js";
  * shares the one under test, so any route demonstrates it, and a locally declared one keeps the
  * test independent of route-level auth and schema validation.
  */
+
 describe("app.ts JSON body parser", () => {
   let app: FastifyInstance;
   let pool: Pool;
@@ -128,5 +137,8 @@ describe("app.ts JSON body parser", () => {
     expect(probe.polluted).toBeUndefined();
     expect(probe.isAdmin).toBeUndefined();
     expect(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted")).toBe(false);
+    expect(Object.getOwnPropertyNames(Object.prototype).sort().join(",")).toBe(
+      OBJECT_PROTOTYPE_KEYS_AT_LOAD
+    );
   });
 });

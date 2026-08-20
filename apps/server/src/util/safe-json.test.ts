@@ -96,6 +96,14 @@ describe("parseJsonRejectingPrototypePoisoning", () => {
   });
 });
 
+/**
+ * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
+ * that three named keys are absent only proves those three are absent; this proves NOTHING was
+ * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
+ * so it is checked rather than assumed.
+ */
+const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
+
 describe("safe-json — global prototype hygiene", () => {
   it("mutates no member of Object.prototype", () => {
     for (const json of [
@@ -113,5 +121,8 @@ describe("safe-json — global prototype hygiene", () => {
     expect(probe.polluted).toBeUndefined();
     expect(probe.isAdmin).toBeUndefined();
     expect(Object.prototype.hasOwnProperty.call(Object.prototype, "polluted")).toBe(false);
+    expect(Object.getOwnPropertyNames(Object.prototype).sort().join(",")).toBe(
+      OBJECT_PROTOTYPE_KEYS_AT_LOAD
+    );
   });
 });

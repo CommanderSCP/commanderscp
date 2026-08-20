@@ -179,6 +179,15 @@ describe("sync journal hash chain (pure)", () => {
  * identical, the signature still verified, and `valid` came back `true`. The tamper was invisible
  * precisely BECAUSE the canonicalizer refused to look at it.
  */
+
+/**
+ * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
+ * that three named keys are absent only proves those three are absent; this proves NOTHING was
+ * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
+ * so it is checked rather than assumed.
+ */
+const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
+
 describe("a __proto__ subtree grafted onto a signed payload no longer passes verifyJournalChain", () => {
   it("recomputes to a DIFFERENT rowHash, so the segment is rejected", () => {
     const { publicKey, privateKey } = keyPair();
@@ -252,6 +261,9 @@ describe("a __proto__ subtree grafted onto a signed payload no longer passes ver
     const probe = {} as Record<string, unknown>;
     expect(probe.isAdmin).toBeUndefined();
     expect(probe.smuggled).toBeUndefined();
+    expect(Object.getOwnPropertyNames(Object.prototype).sort().join(",")).toBe(
+      OBJECT_PROTOTYPE_KEYS_AT_LOAD
+    );
   });
 });
 

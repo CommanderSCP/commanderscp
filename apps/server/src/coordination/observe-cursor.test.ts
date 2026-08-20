@@ -19,6 +19,15 @@ import {
  * Measured on the homelab: commit `bfddca9` at `02:32:14Z` was never ingested, because the
  * `workflow_run` it triggered at `02:32:17Z` advanced the shared cursor three seconds past it.
  */
+
+/**
+ * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
+ * that three named keys are absent only proves those three are absent; this proves NOTHING was
+ * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
+ * so it is checked rather than assumed.
+ */
+const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
+
 describe("observe cursor: each event kind advances independently", () => {
   const ev = (kind: string, occurredAt: string) =>
     ({ kind, occurredAt, correlation: {}, raw: {} }) as ExecutorEvent;
@@ -147,6 +156,10 @@ describe("observe cursor: each event kind advances independently", () => {
       const probe = {} as Record<string, unknown>;
       expect(probe.polluted).toBeUndefined();
       expect(Object.prototype.hasOwnProperty.call(Object.prototype, "_legacy")).toBe(false);
+      // Not just the named keys: nothing was added to or removed from Object.prototype at all.
+      expect(Object.getOwnPropertyNames(Object.prototype).sort().join(",")).toBe(
+        OBJECT_PROTOTYPE_KEYS_AT_LOAD
+      );
     });
   });
 
