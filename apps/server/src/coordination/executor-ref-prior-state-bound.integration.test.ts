@@ -96,7 +96,7 @@ const vendorFields = Object.fromEntries(
 
 /** An escape, not a literal: a NUL byte in a tracked source file is dropped by every recursive
  *  search this repository runs (CLAUDE.md). */
-const NUL = " ";
+const NUL = "\u0000";
 /** Everything this bound is made of, handed back to it as DATA, on the column whose damage strands
  *  a target for good: the byte `jsonb` refuses, astral pairs for the width cut to land inside, and
  *  the bound's own two markers as content. */
