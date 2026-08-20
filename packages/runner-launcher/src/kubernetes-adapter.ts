@@ -3,7 +3,6 @@ import { debuglog } from "node:util";
 import {
   DEFAULT_DOCKER_BINARY,
   LAUNCHER_OWNER_ID,
-  RUNNER_LAUNCHER_DEADLINE_LABEL,
   RUNNER_LAUNCHER_OWNER_LABEL,
   RUNNER_MAXBUFFER_CODE,
   RUNNER_REAP_BUDGET_MS,
@@ -166,7 +165,27 @@ export const RUNNER_RUN_ID_LABEL = "scp.launcher.run-id";
  * reformatted one is precisely the "ambiguous must never read as safe" hazard the Docker predicate
  * guards.
  */
-export const RUNNER_LAUNCHER_DEADLINE_ANNOTATION = RUNNER_LAUNCHER_DEADLINE_LABEL;
+/**
+ * A LITERAL, NOT `= RUNNER_LAUNCHER_DEADLINE_LABEL`, AND THE REASON IS A DEFECT THIS FILE SHIPPED
+ * FOR ONE COMMIT.
+ *
+ * `index.ts` re-exports this module and this module imports `index.ts`, which is a legal ESM cycle
+ * for FUNCTION bodies (nothing reads a binding until it is called) and an immediate
+ * `ReferenceError` for a top-level `const` initialised from the other module's binding. Written as
+ * `= RUNNER_LAUNCHER_DEADLINE_LABEL`, loading `@scp/runner-launcher` from a real Node ESM loader
+ * failed with `Cannot access 'RUNNER_LAUNCHER_DEADLINE_LABEL' before initialization` — so every
+ * managed-executor plugin SUBPROCESS died at import and `plugin instance … did not become ready`
+ * was the only symptom.
+ *
+ * WHAT MAKES IT WORTH THIS MANY LINES: the unit test written to catch exactly this passed. It
+ * imports `./index.js` under vitest, whose module graph resolved the cycle in the other order, so
+ * "the module cycle resolves" was asserted, green, and false. Only loading the BUILT package under
+ * `node` found it — `module-load.integration.test.ts` now does that permanently, and
+ * `runner-launcher-selection.test.ts` in each plugin package would also have caught it had it run
+ * against `dist`. The equality this line used to express is asserted there instead, where being
+ * wrong is a failed assertion rather than a dead subprocess.
+ */
+export const RUNNER_LAUNCHER_DEADLINE_ANNOTATION = "scp.launcher.deadline";
 
 // ==================================================================================================
 // THE SEAM — one injected object, the exact analogue of `dockerBinary` + `execFile`

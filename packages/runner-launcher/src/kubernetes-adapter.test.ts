@@ -155,7 +155,7 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
     const overrideIndex = overrides.findIndex((o) => o.match(req));
     if (overrideIndex !== -1) return overrides.splice(overrideIndex, 1)[0]!.res;
 
-    const [path] = req.path.split("?");
+    const path = req.path.split("?")[0]!;
     const jobsRoot = `/apis/batch/v1/namespaces/${NAMESPACE}/jobs`;
     const secretsRoot = `/api/v1/namespaces/${NAMESPACE}/secrets`;
     const podsRoot = `/api/v1/namespaces/${NAMESPACE}/pods`;
@@ -324,7 +324,9 @@ function spec(over: Partial<RunnerSpec> = {}): RunnerSpec {
 const requestsOf = (ops: RecordedOp[]) => ops.filter((o) => o.kind === "request");
 const sequenceOf = (ops: RecordedOp[]) =>
   ops.map((o) =>
-    o.kind === "request" ? `${o.step} ${o.method} ${o.path.split("?")[0]}` : `${o.step} ${o.kind}`
+    o.kind === "request"
+      ? `${o.step} ${o.method} ${o.path!.split("?")[0]}`
+      : `${o.step} ${o.kind}`
   );
 
 // ==================================================================================================
@@ -333,9 +335,17 @@ const sequenceOf = (ops: RecordedOp[]) =>
 
 describe("M23.2 adapter selection: explicit operator config, never detection", () => {
   it("AN UNSET `runnerLauncher` IS DOCKER — every deployment that does not opt in is unchanged", () => {
-    // Also the module-cycle proof: `index.ts` re-exports `resolveRunnerLauncher` from a module that
-    // imports `index.ts`. If any binding of this file's imports were read at module-evaluation time
-    // rather than at call time, THIS line would throw a TDZ ReferenceError before the assertion.
+    // THIS IS NOT THE MODULE-CYCLE PROOF, AND IT SAID IT WAS. The sentence here used to read: "if
+    // any binding of this file's imports were read at module-evaluation time rather than at call
+    // time, THIS line would throw a TDZ ReferenceError before the assertion." It was measured false
+    // one commit later — `kubernetes-adapter.ts` had exactly such a top-level read
+    // (`RUNNER_LAUNCHER_DEADLINE_ANNOTATION = RUNNER_LAUNCHER_DEADLINE_LABEL`), this case stayed
+    // GREEN, and the built package could not be imported by Node at all: every managed plugin
+    // subprocess died at load. Vitest resolves the cycle through its own module graph in the other
+    // order, so a claim about Node's loader cannot be checked here at all.
+    // `module-load.integration.test.ts` builds the package and loads it with `node`, which is the
+    // only instrument that can settle it. What THIS case still proves is the ordinary thing its
+    // name says: an unset `runnerLauncher` yields a working Docker launcher.
     const launcher = resolveRunnerLauncher({ dockerBinary: "/opt/bin/podman" });
     expect(typeof launcher.run).toBe("function");
     expect(typeof launcher.reap).toBe("function");
@@ -757,10 +767,11 @@ describe("M23.2: `secretEnv` is a wired, disabled capability until the RBAC gran
 
   it("THE REFUSAL CARRIES NO CREDENTIAL — the whole reason this class exists", async () => {
     const c = cluster({ perRunSecrets: false });
-    const err = await c
+    const err = (await c
       .launcher()
       .run(withSecret)
-      .catch((e: Error) => e);
+      .then(() => new Error("the run was expected to be refused, and resolved instead"))
+      .catch((e: Error) => e)) as Error;
     for (const text of [err.message, String(err), err.stack ?? "", JSON.stringify(err)]) {
       expect(text).not.toContain("super-secret-value");
     }

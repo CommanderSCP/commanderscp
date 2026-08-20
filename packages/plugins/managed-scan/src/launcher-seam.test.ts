@@ -124,7 +124,16 @@ describe("M23.1: managed-scan launches through the injected RunnerLauncher", () 
     // further adapter-selection key, because every key here joins the server-injected,
     // never-tenant-settable class and must be added to all three enforcement layers in the same
     // change. M23.2 is where that happens; M23.1 must not smuggle one in early.
-    expect(resolverSaw).toStrictEqual([{ dockerBinary: "/usr/local/bin/docker" }]);
+    // M23.2 UPDATED THIS LINE, AND IT WAS SUPPOSED TO. The comment above says "M23.2 is where that
+    // happens; M23.1 must not smuggle one in early" — so this assertion is the placeholder that
+    // makes the adapter-selection field arrive DELIBERATELY rather than by accident, and updating
+    // it is the act of arriving. It stays `toStrictEqual` on the WHOLE object for the reason it
+    // always was: every key here joins the server-injected, never-tenant-settable class and must
+    // move through all three enforcement layers in the same change. A FOURTH key appearing here
+    // still fails, which is the property being kept.
+    expect(resolverSaw).toStrictEqual([
+      { dockerBinary: "/usr/local/bin/docker", runnerLauncher: undefined, kubernetes: undefined }
+    ]);
     expect(seen).toHaveLength(1);
 
     // THE WHOLE SPEC, `toStrictEqual`. See `@scp/plugin-managed-iac`'s file of the same name for the

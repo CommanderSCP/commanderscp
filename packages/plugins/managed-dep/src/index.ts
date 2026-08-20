@@ -17,11 +17,12 @@ import {
   RUN_OUTCOME_CACHE_MAX_IN_MEMORY,
   boundDetail,
   MANAGED_RUN_TIMEOUT_MIN_MS,
-  resolveDockerRunnerLauncher,
+  resolveRunnerLauncher,
   runnerOutcomeDetail,
   toRunnerRunId,
   pruneOutcomeMap,
   type BoundedDetail,
+  type KubernetesLauncherSettings,
   type ResolveRunnerLauncher,
   // THE PORT'S OWN RESULT TYPE rather than an inline `{ succeeded, stdout, stderr }`: a structural
   // restatement of a union whose false arm REQUIRES a failure diagnosis is a restatement that drops
@@ -193,6 +194,23 @@ export interface ManagedDepConfig {
    * defences, which is the point.
    */
   dockerBinary?: string;
+
+  /**
+   * SERVER-INJECTED (never tenant) — WHICH LAUNCHER ADAPTER RUNS THIS PLUGIN'S RUNNER (M23.2).
+   *
+   * Absent, or anything other than `"kubernetes"`, means the Docker adapter — so a deployment that
+   * does not opt in behaves byte-identically, which is what makes a second adapter safe to merge.
+   * The same TWO INDEPENDENT DEFENCES `dockerBinary` has apply here from day one: this plugin's
+   * manifest is `additionalProperties: false` with these keys absent, so a binding carrying either
+   * is rejected at the write door (`plugin-manifests-runner-launcher.test.ts` pins the refusal by
+   * name), and the server injects them LAST so a regression in the write door downgrades from a
+   * launcher swap to an accepted-but-overwritten key.
+   */
+  runnerLauncher?: "docker" | "kubernetes";
+  /** SERVER-INJECTED (never tenant): the Kubernetes launcher's deployment settings. Required when
+   *  {@link runnerLauncher} is `"kubernetes"` — the resolver refuses BY NAME when it is missing,
+   *  rather than producing a TypeError inside a half-built Job manifest. */
+  kubernetes?: KubernetesLauncherSettings;
 
   // --- The git-provider identity (TENANT config — the App the component's team installed) --------
   /** Only `github` is implementable under the charter's credential clause today; see
@@ -604,7 +622,13 @@ function asConfig(config: unknown): ManagedDepConfig {
     runnerImage: c.runnerImage,
     workspaceRoot: c.workspaceRoot,
     timeoutMs: c.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    dockerBinary: c.dockerBinary ?? "docker"
+    dockerBinary: c.dockerBinary ?? "docker",
+    // CARRIED THROUGH THE NORMALISER, and its absence would have been silent: `asConfig` REBUILDS
+    // the object field by field, so a server-injected key it does not name is dropped before the
+    // resolver ever sees it — the launcher selection would have been accepted at every layer and
+    // then discarded here.
+    runnerLauncher: c.runnerLauncher,
+    kubernetes: c.kubernetes
   };
 }
 
@@ -631,7 +655,11 @@ async function runEditorContainer(
   inDir: string,
   outDir: string
 ): Promise<RunnerResult> {
-  return resolveLauncher({ dockerBinary: config.dockerBinary }).run({
+  return resolveLauncher({
+    dockerBinary: config.dockerBinary,
+    runnerLauncher: config.runnerLauncher,
+    kubernetes: config.kubernetes
+  }).run({
     // The same key `externalId` is built from, so an orphan is traceable to the bump it was editing.
     runId: toRunnerRunId(runKey),
     // ATTRIBUTION FOR AN ORPHAN (M23.0 defect 1) — the only way an operator finds a container left
@@ -1138,7 +1166,14 @@ function describeCapabilities(): ExecutorCapabilities {
  * setting (ADR-0032 §8d).
  */
 export function createManagedDepExecutorPlugin(
-  resolveLauncher: ResolveRunnerLauncher = resolveDockerRunnerLauncher
+  // THE DEFAULT IS THE SELECTING RESOLVER, NOT THE DOCKER ONE — M23.2, AND THIS LINE IS THE WIRING.
+  // `subprocess-entry.ts` constructs this plugin with NO argument, so whatever stands here is what
+  // every production run uses. While it was `resolveDockerRunnerLauncher`, an operator could set
+  // `runnerLauncher: "kubernetes"` through every layer of the chart and every managed run would
+  // still shell out to a `docker` binary the `scpd` image does not ship — a feature correctly built
+  // and installed nowhere, which is this repository's dominant defect class (CLAUDE.md). Delete
+  // this and `runner-launcher-selection.test.ts`'s named case for this plugin dies.
+  resolveLauncher: ResolveRunnerLauncher = resolveRunnerLauncher
 ): ExecutorPlugin {
   return {
     observe,

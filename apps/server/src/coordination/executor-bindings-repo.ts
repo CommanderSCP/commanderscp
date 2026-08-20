@@ -1,4 +1,5 @@
 import { tmpdir } from "node:os";
+import type { KubernetesLauncherSettings } from "@scp/runner-launcher";
 import { join } from "node:path";
 import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
@@ -616,11 +617,91 @@ function managedRunnerDockerBinary(): string {
   return value && value.length > 0 ? value : "docker";
 }
 
+/**
+ * WHICH LAUNCHER ADAPTER EVERY MANAGED EXECUTOR USES (M23.2) — operator/server-governed, the same
+ * trust tier as `SCP_MANAGED_RUNNER_DOCKER_BINARY`, and EXPLICIT rather than detected.
+ *
+ * ANYTHING OTHER THAN THE EXACT STRING `"kubernetes"` IS DOCKER, including a typo. That direction is
+ * chosen deliberately: the failure mode of a mistyped value is "the deployment keeps doing what it
+ * did before", not "managed execution silently switches substrate". A Kubernetes deployment whose
+ * value did not take is diagnosable in one step — nothing works, and `scpd` ships no docker binary —
+ * whereas a compose deployment nudged onto Jobs it has no API server for is not.
+ */
+function managedRunnerLauncherKind(): "docker" | "kubernetes" {
+  return process.env.SCP_MANAGED_RUNNER_LAUNCHER?.trim() === "kubernetes" ? "kubernetes" : "docker";
+}
+
+/**
+ * THE KUBERNETES LAUNCHER'S DEPLOYMENT SETTINGS — read here, from the environment, for exactly the
+ * reason `managedDepServerSettings` gives: the plugin subprocess never sees `process.env`
+ * (`host.ts`'s `minimalChildEnv` strips it), so injected config is the ONLY channel these values
+ * have.
+ *
+ * THE WORKSPACE VOLUME IS A CLOSED UNION BUILT HERE, never operator-supplied JSON. This object lands
+ * verbatim inside a pod spec the worker POSTs with its own service-account token, so "whatever JSON
+ * the operator put in an env var" would be an arbitrary-volume-mount primitive wearing a config
+ * field's clothes — a `hostPath: /` away from reading the node. Two shapes, and only two: an RWX
+ * PersistentVolumeClaim (production; owner decision 5 makes RWX a documented prerequisite) and a
+ * host path (the kind-based test harness, which has no RWX storage class to offer).
+ *
+ * RETURNS `undefined` WHEN THE LAUNCHER IS DOCKER, so nothing about Kubernetes reaches a plugin on a
+ * compose deployment — and returns `undefined` when the launcher is Kubernetes and the settings are
+ * incomplete, so the resolver's named refusal is what an operator sees rather than a half-built
+ * manifest.
+ */
+function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefined {
+  if (managedRunnerLauncherKind() !== "kubernetes") return undefined;
+  const namespace = process.env.SCP_MANAGED_RUNNER_K8S_NAMESPACE?.trim();
+  const workspaceRoot = process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT?.trim();
+  const claimName = process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM?.trim();
+  const hostPath = process.env.SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH?.trim();
+  if (!namespace || !workspaceRoot) return undefined;
+  const workspaceVolume = claimName
+    ? ({ kind: "persistentVolumeClaim", claimName } as const)
+    : hostPath
+      ? ({ kind: "hostPath", path: hostPath } as const)
+      : undefined;
+  if (!workspaceVolume) return undefined;
+  return {
+    namespace,
+    workspaceRoot,
+    workspaceVolume,
+    // THE DECLARED, DISABLED CAPABILITY. Only `true` enables it, and enabling it here is only half
+    // the change: without `secrets: create,get,delete` in the chart's Role the Secret POST 403s, so
+    // the chart renders the RBAC from the SAME value. See `KubernetesRunnerLauncherConfig`.
+    perRunSecrets: process.env.SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS?.trim() === "true",
+    // OFF BY DEFAULT AND THAT IS A FINDING, not a preference: none of apps/runner-{iac,scan,dep}
+    // has a `USER` line, so `true` makes every managed run fail with CreateContainerConfigError
+    // before its entrypoint. Kept as a knob so an operator who rebuilds the images non-root can
+    // harden it without a code change.
+    runAsNonRoot: process.env.SCP_MANAGED_RUNNER_K8S_RUN_AS_NON_ROOT?.trim() === "true",
+    ...(process.env.SCP_MANAGED_RUNNER_K8S_API_BASE?.trim()
+      ? { apiBase: process.env.SCP_MANAGED_RUNNER_K8S_API_BASE.trim() }
+      : {})
+  };
+}
+
 /** Exported so the commander's promotion scan step, which constructs a `managed-scan` plugin context
  *  directly rather than through a binding, resolves the SAME operator-governed binary. Two code
- *  paths reading one knob; the alternative is a setting that silently applies to half the runs. */
-export function managedRunnerSettings(): { dockerBinary: string } {
-  return { dockerBinary: managedRunnerDockerBinary() };
+ *  paths reading one knob; the alternative is a setting that silently applies to half the runs.
+ *
+ *  M23.2 WIDENS IT TO THE WHOLE LAUNCHER SLICE rather than adding a second function beside it. The
+ *  reason is the defect this function already exists to prevent: `dockerBinary` shipped injected on
+ *  the binding path and absent on the binding-free one, so an operator's podman applied to some of
+ *  the runs. A launcher SELECTION with the same shape would mean the commander's own promotion scan
+ *  stayed on Docker forever while bound executors moved to Jobs — the same bug with a larger blast
+ *  radius. One function, every caller. */
+export function managedRunnerSettings(): {
+  dockerBinary: string;
+  runnerLauncher: "docker" | "kubernetes";
+  kubernetes?: KubernetesLauncherSettings;
+} {
+  const kubernetes = managedRunnerKubernetesSettings();
+  return {
+    dockerBinary: managedRunnerDockerBinary(),
+    runnerLauncher: managedRunnerLauncherKind(),
+    ...(kubernetes ? { kubernetes } : {})
+  };
 }
 
 /**
@@ -676,16 +757,19 @@ export function managedDepServerSettings(): {
   runnerImage: string | undefined;
   workspaceRoot: string;
   dockerBinary: string;
+  runnerLauncher: "docker" | "kubernetes";
+  kubernetes?: KubernetesLauncherSettings;
 } {
   return {
     runnerImage: process.env.SCP_MANAGED_DEP_RUNNER_IMAGE,
     workspaceRoot: process.env.SCP_MANAGED_DEP_WORKSPACE_ROOT ?? join(tmpdir(), "scp-managed-dep"),
-    // THE OPERATOR'S RUNTIME, and it belongs in THIS function rather than only at the binding
-    // injection site below, because this class has TWO construction paths and the binding one is
-    // the rare one: `dependencies/managed-dep-instance.ts` builds the ordinary, binding-free
-    // dispatch. Returning it here is what makes both paths read the same knob — the alternative,
-    // which is what shipped, is a setting that silently applies to some of the runs.
-    dockerBinary: managedRunnerDockerBinary()
+    // THE OPERATOR'S RUNTIME AND, SINCE M23.2, THE WHOLE LAUNCHER SLICE — and it belongs in THIS
+    // function rather than only at the binding injection site below, because this class has TWO
+    // construction paths and the binding one is the rare one:
+    // `dependencies/managed-dep-instance.ts` builds the ordinary, binding-free dispatch. Returning
+    // it here is what makes both paths read the same knobs — the alternative, which is what
+    // shipped, is a setting that silently applies to some of the runs.
+    ...managedRunnerSettings()
   };
 }
 
@@ -821,7 +905,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
-    serverInjected.dockerBinary = managedRunnerDockerBinary();
+    Object.assign(serverInjected, managedRunnerSettings());
   }
 
   if (pluginModule === "managed-scan") {
@@ -834,7 +918,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     serverInjected.networkMode = settings.networkMode;
     serverInjected.workspaceRoot = settings.workspaceRoot;
-    serverInjected.dockerBinary = managedRunnerDockerBinary();
+    Object.assign(serverInjected, managedRunnerSettings());
   }
 
   if (pluginModule === "managed-dep") {
@@ -847,7 +931,7 @@ export async function resolveExecutorPluginInstance(
     serverInjected.runnerImage = settings.runnerImage;
     // No `networkMode` — see `managedDepServerSettings`. The plugin uses a literal.
     serverInjected.workspaceRoot = settings.workspaceRoot;
-    serverInjected.dockerBinary = settings.dockerBinary;
+    Object.assign(serverInjected, managedRunnerSettings());
   }
 
   return {
