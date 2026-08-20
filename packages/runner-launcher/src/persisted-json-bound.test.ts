@@ -1180,6 +1180,148 @@ describe("HIGH: a refusal must be priced at what the content costs, not at a fla
    * image refs are 35 897 characters and obey it exactly. "False past 4 008 characters" is not the
    * boundary — "false past a 4 000-character STRING" is.
    */
+  /**
+   * WHAT THE WATER-FILLING CAP IS WORTH, AND WHY IT IS FIVE — M23.0 verification pass 14.
+   *
+   * `PERSISTED_JSON_SHARE_ROUNDS` was 4, and pass 13 recorded that 3 and 8 both SURVIVED the whole
+   * suite: a constant nothing could distinguish in either direction. Neither survives measurement.
+   * Instrumenting the loop over 182 365 (shape, budget) pairs found 5 290 that run four rounds and
+   * 527 that run FIVE, so 4 was truncating real work; and against a 64-round ceiling the retention
+   * cost of each cap is 1: -29.04 %, 2: -0.60 %, 3: -0.047 %, 4: -0.0028 %, 5 and above: zero.
+   *
+   * FIVE IS THE FIXED POINT — the smallest cap at which raising it changes no output anywhere. The
+   * shape below is the witness the round-demand instrument found, and it separates every cap from
+   * 1 to 5, which is what makes an exact byte count here a gate rather than a golden:
+   *
+   *     ladder n=10 base=4 delta=40, L = 1 921, at a budget of 1 978
+   *         1 round  1 401     3 rounds  1 855     5 rounds  1 882
+   *         2 rounds 1 777     4 rounds  1 881     8 and 64  1 882
+   *
+   * WHY THE LADDER. Rounds are demanded only when exactly ONE field becomes satisfied per round —
+   * fields whose sizes are close enough together that a share satisfies one at a time. Geometric
+   * sizes (the family the constant's own comment names) satisfy several at once and never reach
+   * round four; this is the shape eleven passes' corpora did not contain.
+   */
+  /**
+   * THE TWO MARKER CHARGES, PRICED TO THE CHARACTER — M23.0 verification pass 14, and the two
+   * mutations pass 13 recorded as surviving all 227 tests.
+   *
+   * `tailMarkerCost` reserves `jsonCost(marker) + 1`; `fieldsElisionCost` reserves
+   * `jsonCost(marker) + jsonCost(__scpElided) + 2`. The trailing terms are PUNCTUATION — the comma
+   * that separates an array's marker from the entries before it, and the `:` and comma that attach
+   * an object's elision entry — and punctuation is the kind of term a reader deletes as noise. A
+   * reserve short by N is not "N characters of retention"; it is a container that spends N more
+   * than it was allocated, and those overspends COMPOUND across siblings until the row's own
+   * 96-character cushion is gone and the backstop discards the whole reading.
+   *
+   * NEITHER IS PINNED BY A BYTE COUNT HERE, because a byte count says nothing about WHY. A reserve
+   * short by N shifts the budget at which the next thing becomes affordable by EXACTLY N, and that
+   * is both a sharper statement and a two-sided one. Measured over every budget 4…400:
+   *
+   *     list(3) of list(3), first sub-list survives at   base 138    with `+ 1` deleted  137
+   *     3 fields x list(2), first field seated at        base 142    with `+ 2` deleted  140
+   */
+  it("THE ARRAY'S TAIL MARKER COSTS ITS COMMA: one character of budget, exactly", () => {
+    const value = [
+      ["e", "e", "e"],
+      ["e", "e", "e"],
+      ["e", "e", "e"]
+    ];
+    const wholeSubLists = (budget: number): number => {
+      const out = boundPersistedJson(value, budget);
+      expect(JSON.stringify(out)!.length, `budget ${budget}: over the row bound`).toBeLessThanOrEqual(
+        budget
+      );
+      return Array.isArray(out) ? out.filter((e) => Array.isArray(e)).length : -1;
+    };
+    // The threshold, both sides of it. A reserve one character short admits the first sub-list at
+    // 137 — spending one character more than the array was allocated, which is the defect.
+    expect(wholeSubLists(137), "the tail marker's comma was not reserved").toBe(0);
+    expect(wholeSubLists(138), "the reserve is one character too wide").toBe(1);
+    // NON-VACUITY at both ends: below, the marker alone; above, the whole list.
+    expect(JSON.stringify(boundPersistedJson(value, 137))).toBe('["[elided: 3 more entries]"]');
+    expect(JSON.stringify(boundPersistedJson(value, 139))).toBe(JSON.stringify(value));
+  });
+
+  it("THE OBJECT'S ELISION ENTRY COSTS ITS COLON AND COMMA: two characters, exactly", () => {
+    const value = { k0: ["a", "a"], k1: ["a", "a"], k2: ["a", "a"] };
+    const seated = (budget: number): number => {
+      const out = boundPersistedJson(value, budget) as Record<string, unknown> | null;
+      expect(
+        JSON.stringify(out)!.length,
+        `budget ${budget}: over the row bound`
+      ).toBeLessThanOrEqual(budget);
+      return out === null || Array.isArray(out)
+        ? -1
+        : Object.keys(out).filter((k) => k !== PERSISTED_JSON_ELIDED_KEY).length;
+    };
+    // Two characters short seats a field at 140 that the object cannot pay for — and unlike the
+    // array's, this overspend happens once per ELIDING OBJECT, so it multiplies by the tree.
+    expect(seated(140), "the elision entry's punctuation was not reserved").toBe(0);
+    expect(seated(141), "the elision entry's punctuation was not reserved").toBe(0);
+    expect(seated(142), "the reserve is two characters too wide").toBe(3);
+    // NON-VACUITY: below the threshold the object really is nothing but its marker, and above it
+    // the value really is whole.
+    expect(JSON.stringify(boundPersistedJson(value, 140))).toBe('{"__scpElided":"3 more fields"}');
+    expect(JSON.stringify(boundPersistedJson(value, 142))).toBe(JSON.stringify(value));
+
+    // AND THE CONSEQUENCE, WHICH IS NOT TWO CHARACTERS. An object's overspend happens once per
+    // ELIDING OBJECT, and at depth 6 width 3 there are 1 093 of them, so two characters each is
+    // 2 186 — past the row's 96-character cushion many times over. Measured with the `+ 2` deleted:
+    // this 9 103-character value is DISCARDED WHOLE at 2 062 budgets, the lowest 3 907; the current
+    // build discards it at none. This band is the cheap part of that measurement (300 budgets,
+    // ~0.4 s) rather than the whole of it.
+    const deep = (k: number): unknown =>
+      k === 0
+        ? "l"
+        : Object.fromEntries(Array.from({ length: 3 }, (_, i) => [`f${i}`, deep(k - 1)]));
+    const nested = deep(6);
+    expect(JSON.stringify(nested)!.length, "the deep witness moved").toBe(9_103);
+    let widest = 0;
+    let narrowest = Number.POSITIVE_INFINITY;
+    for (let budget = 3_800; budget <= 4_100; budget++) {
+      const out = boundPersistedJson(nested, budget) as Record<string, unknown> | null;
+      const rendered = JSON.stringify(out) ?? "null";
+      expect(
+        String(out === null ? "null" : (out[PERSISTED_JSON_ELIDED_KEY] ?? "")),
+        `budget ${budget}: the whole 9 103-character reading was discarded`
+      ).not.toContain("a plugin-supplied");
+      expect(rendered.length, `budget ${budget}: over the row bound`).toBeLessThanOrEqual(budget);
+      widest = Math.max(widest, rendered.length);
+      narrowest = Math.min(narrowest, rendered.length);
+    }
+    // NON-VACUITY: the band has to be one where real content is being stored, or "not discarded"
+    // is green on a build that stores a marker and nothing else. Measured 1 084…3 919, mean 2 410
+    // — the apology the backstop stores in its place is 145.
+    expect(narrowest, "the band stores nothing, so the discard arm is vacuous").toBeGreaterThan(500);
+    expect(widest, "the band never approaches its budget").toBeGreaterThan(3_000);
+  });
+
+  it("FIVE ROUNDS IS THE FIXED POINT: the water-filling cap is the smallest that loses nothing", () => {
+    const ladder = Object.fromEntries(
+      Array.from({ length: 10 }, (_, i) => [`k${i}`, "v".repeat(4 + i * 40)])
+    );
+    expect(JSON.stringify(ladder)!.length, "the witness shape moved").toBe(1_921);
+    const stored = JSON.stringify(boundPersistedJson(ladder, 1_978))!;
+    // 1 882, not the 1 881 four rounds reached and not the 1 855 three reached. A LOWER cap fails
+    // this; a higher one cannot, because five is where the value stops moving — recorded as an
+    // asymmetry rather than papered over.
+    expect(stored.length, "a lower water-filling cap is truncating real work").toBe(1_882);
+    expect(stored.length, "over budget").toBeLessThanOrEqual(1_978);
+
+    // NON-VACUITY: the shape must genuinely be in the redistribution regime. If it fitted whole, or
+    // if nothing were cut, every cap would agree and the count above would pin nothing.
+    expect(stored).not.toBe(JSON.stringify(ladder));
+    expect(stored).not.toContain(PERSISTED_JSON_ELIDED_KEY);
+    const kept = JSON.parse(stored) as Record<string, string>;
+    expect(Object.keys(kept), "a key was elided, so this is not the redistribution regime").toHaveLength(10);
+    // …and the fields really do end up at DIFFERENT lengths, which is what water-filling means:
+    // the small ones keep everything and the large ones share what is left.
+    expect(kept.k0).toBe("v".repeat(4));
+    expect(kept.k9!.length).toBeLessThan(364);
+    expect(new Set(Object.values(kept).map((v) => v.length)).size).toBeGreaterThan(3);
+  });
+
   it("THE LAW'S DOMAIN: each boundary is verbatim on one side and NEVER verbatim on the other", () => {
     const nestObj = (d: number): unknown => (d === 0 ? "leaf" : { n: nestObj(d - 1) });
     const nestList = (d: number): unknown => (d === 0 ? "leaf" : [nestList(d - 1)]);

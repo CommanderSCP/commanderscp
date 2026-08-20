@@ -1349,6 +1349,25 @@ export function isPersistedJsonEntriesElision(value: string): boolean {
  */
 function renderedCostAtMost(value: unknown, cap: number, depth: number): number {
   const over = cap + 1;
+  // A NEGATIVE CAP IS REACHABLE AND ITS ANSWER IS NOT OBSERVABLE — M23.0 verification pass 14,
+  // recorded because pass 13 listed `return over` -> `return 0` as a mutation that survived and
+  // asked for a corpus or a measured argument. This is the measured argument.
+  //
+  // Recursion never passes a negative cap (every `cap - total` is guarded by a `total > cap` test
+  // immediately above it), so the only callers that can are the two that ask "does this container
+  // fit whole in what I have left" — `walk`'s array branch and its object branch — and
+  // `budget.left` can be negative there. Instrumented over the 145 048-pair budget sweep:
+  //
+  //     renderedCostAtMost calls                       33 785 292
+  //     entered with cap < 0                               11 960   (most negative: -92)
+  //     where `over` and `0` would compare differently          0
+  //
+  // Both callers use the result ONLY as `wholeCost <= room`, where `room === cap`. For cap < 0,
+  // `cap + 1 <= cap` is false and `0 <= cap` is false, so the two answers are the same decision at
+  // every negative cap there is. The branch is a FAST PATH, not a correctness requirement — delete
+  // it and the string branch's `value.length > cap` and the container branches' `total > cap` each
+  // return `over` anyway. It is kept because it says at the top what the reader would otherwise
+  // have to derive from three later comparisons.
   if (cap < 0) return over;
   // `walk` charges these BEFORE its depth check, so this must too.
   if (value === null || value === undefined) return NULL_RENDERED_CHARS;
@@ -1595,13 +1614,35 @@ function admissionCost(value: unknown, depth: number): number {
  * bytes nobody deployed. So arrays keep spending in order and truncating the tail.
  *
  * HOW MANY TIMES THE UNSPENT REMAINDER IS RE-OFFERED. Each round finalises every field that no
- * longer clips at the bigger share and re-walks only the rest, so the useful work is done in one or
- * two rounds for any shape this file actually sees; the cap exists so a pathological object (5 000
- * fields of geometrically increasing size) cannot turn a per-row bound into O(n²) walks. Reaching
- * the cap is not a correctness failure — it leaves budget unspent, which is the direction that only
- * costs retention.
+ * longer clips at the bigger share and re-walks only the rest; the cap exists so a pathological
+ * object (5 000 fields of geometrically increasing size) cannot turn a per-row bound into O(n²)
+ * walks. Reaching the cap is not a correctness failure — it leaves budget unspent, which is the
+ * direction that only costs retention.
+ *
+ * WHY FIVE, MEASURED — M23.0 verification pass 14, and the reason the number is no longer a guess.
+ * It was 4, and the sentence above used to go on "the useful work is done in one or two rounds for
+ * any shape this file actually sees". Both halves were measured and both were wrong. Instrumenting
+ * the loop to record the round it REACHES, over 182 365 (shape, budget) pairs — ladders of strings,
+ * geometric fields, ladders of lists and of objects, nested objects to depth 4, and a 400-image
+ * Argo CD reading — 5 290 pairs run four rounds and 527 run FIVE. So 4 was truncating the loop on
+ * real work. What that cost, against a 64-round ceiling over the same family:
+ *
+ *     rounds   retention vs the ceiling   worst single shortfall
+ *          1          -29.04 %                 5 350 characters
+ *          2           -0.5999 %                 181
+ *          3           -0.0466 %                  41
+ *          4           -0.0028 %                  19
+ *          5            0        %                   0
+ *          6, 8, 64     0        %                   0
+ *
+ * FIVE IS THE FIXED POINT, and that is the property the number is chosen for rather than a round
+ * figure: it is the SMALLEST cap at which raising it further changes no output anywhere in the
+ * family. So a mutation that lowers it is detectable and one that raises it is not — which is the
+ * shape a well-chosen cap should have, and the opposite of what 4 had, where BOTH directions were
+ * detectable and the upward one meant the constant was simply too small. Pinned by
+ * `persisted-json-bound.test.ts` -> "FIVE ROUNDS IS THE FIXED POINT".
  */
-const PERSISTED_JSON_SHARE_ROUNDS = 4;
+const PERSISTED_JSON_SHARE_ROUNDS = 5;
 
 /**
  * Walk an object's fields under the water-filling rule documented on
@@ -1840,6 +1881,13 @@ function walkObjectFields(
   }
 
   const out: Record<string, unknown> = {};
+  // `out[key] = value` AND `Object.assign(out, {[key]: value})` ARE THE SAME HERE, and pass 14
+  // records that as a measured no-op rather than as a caught mutation. They differ for exactly one
+  // key — `__proto__`, the only own property of `Object.prototype` that is an accessor, enumerated
+  // as a test in `persisted-json-proto.test.ts` — and phase 1 above refuses that key before a field
+  // is ever seated. Pass 13 listed this substitution as a surviving mutation and read it correctly:
+  // it was a proxy for the prototype-pollution hole, and it stopped distinguishing anything when
+  // the hole was closed at its source. Zero of 145 048 (shape, budget) pairs differ.
   for (const field of seated) out[field.key] = field.value;
   if (elidedMarker !== undefined) out[PERSISTED_JSON_ELIDED_KEY] = elidedMarker;
   return out;
