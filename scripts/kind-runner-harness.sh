@@ -146,9 +146,29 @@ EOF
     --show-only templates/runner-iac.yaml \
     | kubectl apply -n "$NAMESPACE" -f -
 
+  # A SECOND NAMESPACE WITH THE CAPABILITY TURNED ON. `managedRunners.kubernetes.perRunSecrets` is a
+  # DECLARED, DISABLED capability: the namespace above proves it is off (its SA cannot create a
+  # Secret, which is the negative control that makes the other RBAC assertions mean something). This
+  # one proves the same chart value, set, produces a grant the adapter's Secret path actually works
+  # under — otherwise "wired and off" is only half checked, and the half that is never exercised is
+  # the half that rots. Same chart, same template, one value different.
+  log "creating the perRunSecrets namespace + ServiceAccount, with the chart's RBAC AT THAT SETTING"
+  kubectl create namespace "${NAMESPACE}-secrets"
+  kubectl -n "${NAMESPACE}-secrets" create serviceaccount scp-runner-harness
+  helm template scp "${REPO_ROOT}/deploy/helm" \
+    --namespace "${NAMESPACE}-secrets" \
+    --set managedIac.enabled=true \
+    --set managedIac.runnerImage="$RUNNER_IMAGE" \
+    --set managedRunners.kubernetes.perRunSecrets=true \
+    --set serviceAccount.name=scp-runner-harness \
+    --show-only templates/runner-iac.yaml \
+    | kubectl apply -n "${NAMESPACE}-secrets" -f -
+
   log "minting a ServiceAccount token and extracting the cluster CA"
   local token ca_file api_base
   token="$(kubectl -n "$NAMESPACE" create token scp-runner-harness --duration=2h)"
+  local secrets_token
+  secrets_token="$(kubectl -n "${NAMESPACE}-secrets" create token scp-runner-harness --duration=2h)"
   ca_file="${WORKDIR}/cluster-ca.crt"
   kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' \
     | base64 -d >"$ca_file"
@@ -158,6 +178,8 @@ EOF
 {
   "cluster": "${CLUSTER_NAME}",
   "namespace": "${NAMESPACE}",
+  "secretsNamespace": "${NAMESPACE}-secrets",
+  "secretsToken": "${secrets_token}",
   "apiBase": "${api_base}",
   "token": "${token}",
   "caFile": "${ca_file}",

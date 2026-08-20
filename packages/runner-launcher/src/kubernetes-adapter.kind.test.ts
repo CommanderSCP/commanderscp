@@ -70,6 +70,8 @@ const execFileAsync = promisify(execFile);
 
 interface Harness {
   namespace: string;
+  secretsNamespace: string;
+  secretsToken: string;
   apiBase: string;
   token: string;
   caFile: string;
@@ -122,10 +124,10 @@ const caFetch = ((url: string, init: RequestInit): Promise<Response> =>
     req.end();
   })) as unknown as typeof fetch;
 
-function io(): KubernetesRunnerIo {
+function io(token: string = ""): KubernetesRunnerIo {
   return createFetchKubernetesIo({
     apiBase: harness.apiBase,
-    readToken: async () => harness.token,
+    readToken: async () => token || harness.token,
     copyDir: async (fromDir, toDir) => {
       const { cp, mkdir } = await import("node:fs/promises");
       await mkdir(toDir, { recursive: true });
@@ -145,20 +147,29 @@ function io(): KubernetesRunnerIo {
 }
 
 function launcher(over: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {}) {
+  // THE SECRET CASE RUNS IN THE NAMESPACE WHOSE RBAC THE CHART RENDERED AT
+  // `perRunSecrets=true`, and with THAT namespace's token — so the capability is exercised under
+  // exactly the grant a `helm install --set managedRunners.kubernetes.perRunSecrets=true` makes,
+  // not under a permission the harness handed itself.
+  const secrets = over.perRunSecrets === true;
   return createKubernetesRunnerLauncher({
-    namespace: harness.namespace,
+    namespace: secrets ? harness.secretsNamespace : harness.namespace,
     workspaceRoot: harness.workspaceHost,
     workspaceVolume: { kind: "hostPath", path: harness.nodeWorkspace },
-    perRunSecrets: over.perRunSecrets === true,
+    perRunSecrets: secrets,
     runAsNonRoot: over.runAsNonRoot === true,
     pollIntervalMs: 500,
-    io: io()
+    io: io(secrets ? harness.secretsToken : harness.token)
   });
 }
 
 /** `kubectl` against the harness cluster, for the assertions the adapter itself must not make. */
 async function kubectl(...args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("kubectl", ["-n", harness.namespace, ...args], {
+  return kubectlIn(harness.namespace, ...args);
+}
+
+async function kubectlIn(namespace: string, ...args: string[]): Promise<string> {
+  const { stdout } = await execFileAsync("kubectl", ["-n", namespace, ...args], {
     env: { ...process.env, KUBECONFIG: harness.kubeconfig },
     maxBuffer: 8 * 1024 * 1024
   });
@@ -175,6 +186,9 @@ async function canI(verb: string, resource: string, sa: string): Promise<string>
     return String((err as { stdout?: string }).stdout ?? "").trim() || "no";
   }
 }
+
+/** The stand-in credential. Long enough that its LENGTH is a fingerprint, and never printed. */
+const CREDENTIAL = "an-actual-looking-credential";
 
 let scratch: string;
 
@@ -386,6 +400,68 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     } finally {
       await kubectl("delete", "job", name, "--wait=false").catch(() => undefined);
     }
+  }, 120_000);
+
+  it("THE DISABLED CAPABILITY WORKS WHEN THE CHART ENABLES IT — a real Secret, a real envFrom", async () => {
+    // "WIRED, TESTED, AND OFF" IS TWO CLAIMS AND THE SECOND ONE ROTS IF NOTHING EXERCISES IT. The
+    // RBAC case above proves the grant is ABSENT with `perRunSecrets` unset (its `secrets: create`
+    // negative control). This proves the same chart value, SET, produces a grant the adapter's
+    // Secret path actually works under — end to end, against a real API server: the Secret is
+    // POSTed and accepted, `envFrom.secretRef` delivers the value into the container's environment,
+    // and teardown deletes it. Without this, the day the owner takes the RBAC decision the code
+    // would be reached for the first time in production.
+    const sa = `system:serviceaccount:${harness.secretsNamespace}:scp-runner-harness`;
+    const out = await kubectlIn(
+      harness.secretsNamespace,
+      "auth",
+      "can-i",
+      "create",
+      "secrets",
+      "--as",
+      sa
+    ).catch((err: { stdout?: string }) => String(err.stdout ?? "no"));
+    expect(
+      out.trim(),
+      "perRunSecrets=true rendered no `secrets` grant — the capability cannot be turned on at all"
+    ).toBe("yes");
+
+    // A LEFTOVER SECRET FROM AN EARLIER RUN 409s THIS ONE, and that is not a test artefact — it is
+    // the production hazard, observed: a SIGKILLed run leaves its Secret behind and the retry, which
+    // addresses the SAME name because `runId` is retry-stable, is correctly refused as "another run
+    // holds this runId" until `reap()` collects it on its deadline. This case is about the delivery
+    // path, so it clears the ground first rather than asserting through that.
+    await kubectlIn(
+      harness.secretsNamespace,
+      "delete",
+      "secret",
+      "scp-runner-secretenv-env",
+      "--ignore-not-found"
+    );
+
+    const result = await launcher({ perRunSecrets: true }).run(
+      spec({
+        runId: "secretenv",
+        labels: { "scp.run-id": "secretenv" },
+        // PRINTS THE LENGTH, NEVER THE VALUE. The log is read back into `result.stdout` and would
+        // otherwise put the credential in this test's own output on failure — the same reason the
+        // adapter redacts.
+        operands: [
+          "/bin/sh",
+          "-c",
+          'test -n "$AWS_SECRET_ACCESS_KEY" && echo "len=${#AWS_SECRET_ACCESS_KEY}"'
+        ],
+        secretEnv: [`AWS_SECRET_ACCESS_KEY=${CREDENTIAL}`]
+      })
+    );
+    expect(result.succeeded, `the run failed: ${JSON.stringify(result.failure)}`).toBe(true);
+    // DERIVED, NOT COUNTED BY HAND — the first draft hardcoded 27 for a 28-character string and the
+    // test reddened on the arithmetic rather than on the behaviour. The property is that the value
+    // reached the container INTACT through the Secret, so the length is the value's own.
+    expect(result.stdout.trim()).toBe(`len=${CREDENTIAL.length}`);
+    expect(result.stdout).not.toContain(CREDENTIAL);
+    // AND ITS LIFETIME IS THE RUN'S, not `ttlSecondsAfterFinished`.
+    const secrets = await kubectlIn(harness.secretsNamespace, "get", "secrets", "-o", "name");
+    expect(secrets).not.toContain("scp-runner-secretenv-env");
   }, 120_000);
 
   it("`reap()` DELETES A FOREIGN, EXPIRED JOB AND LEAVES A LIVE ONE — against a real listing", async () => {
