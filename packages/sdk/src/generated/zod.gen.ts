@@ -4157,7 +4157,13 @@ export const zExplainChangeResponse = z.object({
                         step: z.number().optional(),
                         weight: z.number().optional(),
                         message: z.string().optional()
-                    }).optional()
+                    }).optional(),
+                    truncation: z.record(z.string(), z.object({
+                        dropped: z.boolean(),
+                        droppedCharacters: z.int().gte(0).lte(9007199254740991).optional(),
+                        droppedEntries: z.int().gte(0).lte(9007199254740991).optional(),
+                        droppedFields: z.int().gte(0).lte(9007199254740991).optional()
+                    })).optional()
                 }).nullish(),
                 status: z.string(),
                 attempt: z.int().gte(-9007199254740991).lte(9007199254740991),

@@ -11724,6 +11724,14 @@ export type ExplainChangeResponses = {
                             weight?: number;
                             message?: string;
                         };
+                        truncation?: {
+                            [key: string]: {
+                                dropped: boolean;
+                                droppedCharacters?: number;
+                                droppedEntries?: number;
+                                droppedFields?: number;
+                            };
+                        };
                     } | null;
                     status: string;
                     attempt: number;
