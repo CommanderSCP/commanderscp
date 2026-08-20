@@ -222,8 +222,10 @@ function boundPluginJson<T>(
  *     character, and every arm of `persisted-json-bound.test.ts` keeps its exact numbers — while
  *     the row policy stays what it says it is.
  *
- * WHAT IT COSTS, STATED: a `observed_state` reading that saturates the budget keeps 320 characters
- * less than it did, about three image refs of a 72-ref list. It buys the difference between an
+ * WHAT IT COSTS, MEASURED, over the five saturating shapes `observed-state-row-size.test.ts` drives:
+ * the widest row goes 7 916 -> 7 725 of 8 000, i.e. a saturating reading keeps about three image
+ * refs fewer. The table below is the arithmetic CEILING, which is a different fact from what the
+ * shapes reach and is the one the policy has to hold against. It buys the difference between an
  * operator told "this executor reports no rollout" and an operator told "we truncated it", which
  * is the wrong-cause defect charter principle 6 exists for. The reserve is charged on EVERY
  * reading, truncated or not, because "how much can this column hold" must not depend on what the

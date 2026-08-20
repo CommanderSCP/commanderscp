@@ -962,8 +962,11 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     **AND IT IS PAID FOR.** The report is stamped after the bound, like `observedAt` — which is exactly the
     escape `observed-state-row-size.test.ts` was written to catch, so this one does not escape:
     `updateWaveTargetObserved` hands the bound `PERSISTED_JSON_MAX_CHARS - (PERSISTED_JSON_TRUNCATION_MAX_CHARS + 32)`.
-    The row policy does not move (widest row 7 944 -> 7 926 of 8 000); the value's share of it does, by
-    ~3 image refs on a saturating reading. The alternative — raising the policy — was rejected: it is the
+    The row policy does not move; the value's share of it does. Both numbers, because the ceiling and what
+    the shapes actually reach are different facts: the arithmetic CEILING goes 7 944 -> 7 926 of 8 000
+    (walk output 7 584 + report 302 + stamp 40), and the widest row the five saturating fixtures of
+    `observed-state-row-size.test.ts` MEASURE goes 7 916 -> 7 725 — i.e. the reserve is bought out of
+    slack the ceiling was already holding, and costs a saturating reading about three image refs. The alternative — raising the policy — was rejected: it is the
     1.44 GB/day discipline, and re-committing the exact defect the gate exists for, inside the increment
     about silent losses, is not a trade. No arithmetic inside the walk changed, so all 63 value-side arms of
     `persisted-json-bound.test.ts` keep their exact numbers.
