@@ -2,7 +2,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readStripped } from "@scp/source-census";
-import { PERSISTED_JSON_MAX_CHARS, boundPersistedJson } from "@scp/runner-launcher";
+import {
+  PERSISTED_JSON_MAX_CHARS,
+  PERSISTED_JSON_TRUNCATION_MAX_CHARS,
+  boundPersistedJson
+} from "@scp/runner-launcher";
 import { observedStateFrom } from "./wave-targets-repo.js";
 
 /**
@@ -32,6 +36,24 @@ import { observedStateFrom } from "./wave-targets-repo.js";
  * to 32 — a plausible retune, since it is three times what the marker actually needs — and the
  * widest row becomes 8 008. Measured: `{revision, images, rollout}` reaches 8 008 of 8 000.
  *
+ * ================================================================================================
+ * AND THE SECOND THING STAMPED AFTER THE BOUND — M23.1g, and it is PAID FOR RATHER THAN TOLERATED.
+ * ================================================================================================
+ * `truncation` (what the bound removed, per field) is stamped beside `observedAt`. That is a second
+ * escapee of exactly the shape this file was written to catch, so it is NOT allowed to escape:
+ * `updateWaveTargetObserved` hands the bound `OBSERVED_STATE_VALUE_MAX_CHARS`, which is
+ * `PERSISTED_JSON_MAX_CHARS` minus a reserve the report is then measured against. The row policy
+ * does not move; the value's share of it does.
+ *
+ *     widest walk output   OBSERVED_STATE_VALUE_MAX_CHARS - PERSISTED_JSON_MIN_LEAF   =  7 584
+ *     the report           PERSISTED_JSON_TRUNCATION_MAX_CHARS + `,"truncation":`     =    302
+ *     the stamp            `,"observedAt":"…"`                                        =     40
+ *     the widest row                                                                     7 926
+ *
+ * The arms below are unchanged in what they assert — the ROW, against `PERSISTED_JSON_MAX_CHARS` —
+ * and that is the point: a reserve that was NOT taken out of the value's budget would show up here
+ * as a row over the policy, on exactly the saturating shapes that now carry a report.
+ *
  * The runner-launcher suite DOES redden on that mutation today, but for an unrelated reason: five
  * of its arms pin the literal `budget - 96`. Someone retuning the constant on purpose updates those
  * five and ships — the numbers move together and say nothing about a timestamp. This file is the
@@ -43,12 +65,20 @@ import { observedStateFrom } from "./wave-targets-repo.js";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, "wave-targets-repo.ts");
 
-/** Exactly what `updateWaveTargetObserved` composes, minus the database. */
+/** Re-derived here rather than imported, because `wave-targets-repo.ts` keeps it private and the
+ *  arm below reads the repository's own arithmetic out of the source to check this copy. */
+const OBSERVED_STATE_VALUE_MAX_CHARS =
+  PERSISTED_JSON_MAX_CHARS - (PERSISTED_JSON_TRUNCATION_MAX_CHARS + 32);
+
+/** Exactly what `updateWaveTargetObserved` composes, minus the database — the value, the truncation
+ *  report when there is one, and the stamp, in that order. */
 function persistedRow(status: Parameters<typeof observedStateFrom>[0], at: Date): string {
   const observedState = observedStateFrom(status);
   if (!observedState) return "";
+  const bounded = boundPersistedJson(observedState, OBSERVED_STATE_VALUE_MAX_CHARS);
   return JSON.stringify({
-    ...(boundPersistedJson(observedState) as object),
+    ...(bounded.value as object),
+    ...(bounded.truncation ? { truncation: bounded.truncation } : {}),
     observedAt: at.toISOString()
   });
 }
@@ -66,11 +96,42 @@ describe("observed_state: the ROW, not the bound's return value, is what must fi
     // rather than restated, for the reason the fake-executor parity gate is: a hand-typed copy has
     // the same blind spot as the code it copies.
     const source = readStripped(REPO);
-    expect(source).toContain("...boundPluginJson(observedState)");
+    expect(source).toContain("boundPluginJson(observedState, OBSERVED_STATE_VALUE_MAX_CHARS)");
+    expect(source).toContain("...bounded.value,");
+    expect(source).toContain("...(bounded.truncation ? { truncation: bounded.truncation } : {}),");
     expect(source).toContain("observedAt: now.toISOString()");
-    // …and the stamp really is applied AFTER the bound, which is the whole reason this file exists.
-    expect(source.indexOf("...boundPluginJson(observedState)")).toBeLessThan(
+    // …and BOTH stamps really are applied AFTER the bound, which is the whole reason this file
+    // exists — `observedAt` since M23.1f's round, `truncation` since M23.1g.
+    expect(source.indexOf("...bounded.value,")).toBeLessThan(
+      source.indexOf("...(bounded.truncation ? { truncation: bounded.truncation } : {}),")
+    );
+    expect(source.indexOf("...bounded.value,")).toBeLessThan(
       source.indexOf("observedAt: now.toISOString()")
+    );
+    // AND THE RESERVE THIS FILE RE-DERIVES IS THE REPOSITORY'S OWN. A copy that drifted would make
+    // every arm below a measurement of a budget the product does not use.
+    expect(source).toContain(
+      "const OBSERVED_STATE_TRUNCATION_RESERVE = PERSISTED_JSON_TRUNCATION_MAX_CHARS + 32;"
+    );
+    expect(source).toContain(
+      "PERSISTED_JSON_MAX_CHARS - OBSERVED_STATE_TRUNCATION_RESERVE;"
+    );
+  });
+
+  it("EVERY SATURATING SHAPE REALLY CARRIES A REPORT, so the arm above measures the row WITH it", () => {
+    // NON-VACUITY FOR THE RESERVE. If the saturating fixtures stopped being truncated, the row
+    // would fit for a reason that has nothing to do with the reserve being paid for, and a
+    // regression that let the report escape the budget would go unnoticed.
+    const bounded = boundPersistedJson(
+      observedStateFrom({
+        stateRef: "r".repeat(50_000),
+        observed: { images: imageRefs(400), rollout: ROLLOUT }
+      })!,
+      OBSERVED_STATE_VALUE_MAX_CHARS
+    );
+    expect(bounded.truncation).toBeDefined();
+    expect(JSON.stringify({ truncation: bounded.truncation }).length).toBeLessThanOrEqual(
+      PERSISTED_JSON_TRUNCATION_MAX_CHARS + 32
     );
   });
 
