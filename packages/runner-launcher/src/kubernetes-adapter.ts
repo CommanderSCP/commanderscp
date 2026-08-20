@@ -66,7 +66,9 @@ const debug = debuglog("scp-runner-launcher");
  *   copy-out  A recursive filesystem copy back OUT of the same subtree, honouring `when` and
  *             `onFailure` unchanged — the two asymmetries M23.1 refused to normalise.
  *   teardown  DELETE the Job (background propagation), DELETE the per-run Secret, remove the
- *             workspace subtree. Unconditional, outside the run budget, swallowed-but-not-silent —
+ *             workspace subtree. The Secret DELETE is a latency optimisation over the
+ *             `ownerReference` the Job already carries, never the thing the credential's lifetime
+ *             depends on — see step 2b. Unconditional, outside the run budget, swallowed-but-not-silent —
  *             all three exactly as the Docker adapter, and with the same ONE exception: a run that
  *             lost the name to somebody else tears down NOTHING, because none of it is its own.
  *
@@ -95,7 +97,10 @@ const debug = debuglog("scp-runner-launcher");
  *    SERVER and returns success. `output-exceeded` is kept REACHABLE anyway — see
  *    {@link logRequestPath} — because the hazard it names ("the output looks like data but is
  *    truncated") is a property of the evidence, not of Node.
- * 4. THE PER-RUN SECRET IS A DECLARED, DISABLED CAPABILITY. It is built, tested and OFF. See
+ * 4. THE PER-RUN SECRET IS ON (M23.4, owner decision 2026-08-20). It was shipped in M23.2 as a
+ *    declared, DISABLED capability; the grant has since been taken, so the chart renders the RBAC by
+ *    default and `managed-iac` launches on Kubernetes. What the grant BOUGHT and what it COST are
+ *    both recorded, as an accepted combination, in ADR-0035 §"the accepted combination". See
  *    {@link KubernetesRunnerLauncherConfig.perRunSecrets}.
  */
 
@@ -258,29 +263,52 @@ export interface KubernetesRunnerLauncherConfig {
   readonly workspaceRoot: string;
   readonly workspaceVolume: KubernetesWorkspaceVolume;
   /**
-   * PER-RUN SECRETS — A DECLARED CAPABILITY THAT IS OFF, AND THIS FIELD IS THE ONLY THING THAT TURNS
-   * IT ON.
+   * PER-RUN SECRETS — GRANTED, ON BY DEFAULT SINCE M23.4, AND THIS FIELD IS NOW THE OPT-OUT.
    *
-   * `RunnerSpec.secretEnv` exists because credentials had to leave the argv (M23.1a, ADR-0035), and
-   * the port's own doc names the Kubernetes mapping as the reason the field is split at all: "a
-   * per-run Secret + `envFrom.secretRef` rather than as `env[].value`". That mapping needs
-   * `""/secrets: create,get,delete` on the worker ServiceAccount, and
-   * `deploy/helm/templates/runner-iac.yaml`'s Role grants `batch/jobs` and `pods`/`pods/log` and
-   * NOTHING ELSE — in a chart whose two other Roles do grant `secrets`, scoped to `get` only, on
-   * separate hook ServiceAccounts. Widening it is an OWNER DECISION and it has not been taken.
+   * THE HISTORY MATTERS BECAUSE THE FIELD'S MEANING INVERTED. `RunnerSpec.secretEnv` exists because
+   * credentials had to leave the argv (M23.1a, ADR-0035), and the port's own doc names the Kubernetes
+   * mapping as the reason the field is split at all: "a per-run Secret + `envFrom.secretRef` rather
+   * than as `env[].value`". M23.2 built that mapping and shipped it OFF, because the mapping needs
+   * `""/secrets` on the worker ServiceAccount and widening a Role is an owner decision. The owner
+   * took it on 2026-08-20 ("grant the secrets RBAC, keep going"), so the chart renders the rule by
+   * default and this defaults to `true`. WITHOUT THE GRANT, managed-iac — the only class that
+   * populates `secretEnv` — could not run on Kubernetes at all; ending that state is the whole
+   * purpose of the decision.
    *
-   * SO THE CAPABILITY IS WIRED AND DISABLED RATHER THAN ASSUMED OR DROPPED. With this `false`
-   * (the default, and what the chart renders unless an operator opts in), a spec carrying a
-   * non-empty `secretEnv` is REFUSED at step `"secret-env"` before anything is created. The two
-   * alternatives were both worse and are named so nobody reaches for them later:
+   * WHAT THE GRANT IS, EXACTLY, AND WHY IT IS NOT WIDER. `create` and `delete` on `""/secrets`,
+   * namespaced. NOT `get` — a filterless read of every `SECRETS_PATH` use in this file finds one
+   * POST and two DELETEs and no GET, so `get` would be a verb granted for nothing. NOT `list` — and
+   * that one is a refusal rather than an omission, because a `list` on secrets returns every Secret
+   * BODY in the namespace, including the chart's own database password; the reap sweep is built to
+   * work without it (it lists JOBS, which are not secret, and derives the Secret name). NOT
+   * `update`/`patch` on `jobs/finalizers`, which is what `blockOwnerDeletion: true` would have cost.
+   *
+   * WHAT COULD NOT BE NARROWED, SAID PLAINLY RATHER THAN LEFT AS A GAP: `resourceNames`. Per-run
+   * Secret names derive from `runId`, so the set is unbounded — and Kubernetes RBAC cannot restrict
+   * a `create` by `resourceNames` under ANY circumstances, because the object's name is not known to
+   * the authorizer at admission time. The grant is therefore namespace-wide on the `secrets`
+   * resource, and the honest mitigations are deployment-shaped rather than RBAC-shaped:
+   * `managedRunners.kubernetes.namespace` puts the runner Jobs and their Secrets in a namespace of
+   * their own, and the Role+RoleBinding follow the value there (M23.4 — before it, they did not, and
+   * setting that value produced a silent 403 on every launch).
+   *
+   * SETTING IT `false` STILL WORKS AND STILL REFUSES LOUDLY: a spec carrying a non-empty `secretEnv`
+   * fails at step `"secret-env"` before anything is created. The two alternatives to refusing were
+   * both worse and are named so nobody reaches for them later:
    *   - Fall back to `env[].value`. That is plaintext credentials in etcd and in every etcd backup,
    *     which the port's own header calls "strictly worse than the host process table this replaced".
    *   - Drop `secretEnv` silently. A managed-iac apply would then run with no AWS credentials and
    *     fail somewhere inside OpenTofu, which is a mystery instead of a refusal.
    *
-   * WHAT IS INERT TODAY, EXACTLY: only `managed-iac` populates `secretEnv` (managed-scan passes
-   * `[]` with the comment "NO CREDENTIAL AT ALL"; managed-dep likewise). So on Kubernetes with this
-   * off, managed-scan and managed-dep run and managed-iac refuses, loudly, at the first step.
+   * WHICH CLASSES THIS AFFECTS, MEASURED RATHER THAN ASSUMED. A filterless grep for `secretEnv:`
+   * across `packages/plugins` finds three production assignments: `managed-iac/src/index.ts:345`
+   * builds it from `infraCreds`; `managed-scan/src/index.ts:243` and `managed-dep/src/index.ts:692`
+   * are the literal `[]`, the latter with "NO ENVIRONMENT AT ALL, SECRET OR OTHERWISE" beside it
+   * (managed-dep's credential lives on the ORCHESTRATOR side of the boundary, charter
+   * `scp-managed-dep` as amended 2026-08-15). So this flag is load-bearing for managed-iac and inert
+   * for the other two — which is a statement about their SPECS, not about their RBAC: all three are
+   * launched by the same worker ServiceAccount through the same Role, and M23.4 fixed that Role
+   * being rendered only when `managedIac.enabled` (see `deploy/helm/templates/runner-iac.yaml`).
    */
   readonly perRunSecrets: boolean;
   /**
@@ -443,6 +471,26 @@ export function isKubernetesAlreadyExists(res: KubernetesApiResponse): boolean {
     return body.reason === "AlreadyExists";
   } catch {
     return false;
+  }
+}
+
+/**
+ * THE `metadata.uid` OF AN OBJECT AN API SERVER JUST CREATED, or `undefined`.
+ *
+ * ONE CALLER, AND IT REFUSES THE RUN WHEN THIS RETURNS `undefined` (see step 2b). That is why this
+ * is a parse rather than a cast: the uid is what makes the per-run Secret's deletion the garbage
+ * collector's obligation instead of this process's, and an `ownerReferences` entry with an empty or
+ * WRONG uid does not fail — the API server accepts it and the collector then treats the owner as
+ * already deleted, which deletes the Secret out from under a LIVE run. A missing uid must therefore
+ * be a refusal, and a non-string one must read as missing rather than as `String(undefined)`.
+ */
+export function kubernetesObjectUid(res: KubernetesApiResponse): string | undefined {
+  try {
+    const body = JSON.parse(res.body) as { metadata?: { uid?: unknown } };
+    const uid = body.metadata?.uid;
+    return typeof uid === "string" && uid.length > 0 ? uid : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -892,72 +940,45 @@ export function createKubernetesRunnerLauncher(
        * `createNameConflict`, and every word of its reasoning applies unchanged: the Job (and the
        * Secret, and the workspace subtree) behind that name belong to a run this one did not start
        * and is not supervising, and an unconditional teardown destroys a live `tofu apply`. What
-       * changes is only the SIGNAL — a typed 409 `AlreadyExists` instead of a stderr substring — and
-       * the STEP it can be raised at, because with a per-run Secret the Secret POST is the first
-       * thing that stakes the name.
+       * changes is only the SIGNAL — a typed 409 `AlreadyExists` instead of a stderr substring.
+       *
+       * THE JOB POST IS WHAT STAKES THE NAME (M23.4 reordered it — see step 2b). It used to be the
+       * Secret POST, and the swap is not cosmetic: it is what lets the Secret carry an
+       * `ownerReference` to the Job, which is what makes its deletion the KERNEL's obligation rather
+       * than this process's.
        */
       let foreignRun = false;
 
-      // 1. THE PER-RUN SECRET (`secret-env`), OR THE REFUSAL THAT STANDS IN FOR IT. Before the `try`,
-      //    exactly like the Docker adapter's `--env-file`: a failure here has created no Job.
-      if (spec.secretEnv.length > 0) {
-        if (!config.perRunSecrets) {
-          fail(
-            "secret-env",
-            [],
-            new Error(
-              "this runner needs per-run Secrets and the Kubernetes launcher was not granted them. " +
-                "RunnerSpec.secretEnv must reach the pod as a Secret + envFrom.secretRef, which needs " +
-                "`secrets: create,get,delete` on the worker ServiceAccount — a grant the chart does " +
-                "not make by default. Set managedRunners.kubernetes.perRunSecrets=true to render the " +
-                "RBAC and enable it. REFUSING rather than falling back to env[].value, which would " +
-                "put the credential in etcd and in every etcd backup."
-            )
-          );
-        }
-        const created = await api(
-          {
-            step: "secret-env",
-            method: "POST",
-            path: SECRETS_PATH(namespace),
-            contentType: "application/json",
-            body: {
-              apiVersion: "v1",
-              kind: "Secret",
-              metadata: {
-                name: secretName,
-                namespace,
-                labels: {
-                  [RUNNER_LAUNCHER_OWNER_LABEL]: LAUNCHER_OWNER_ID,
-                  [RUNNER_RUN_ID_LABEL]: spec.runId
-                },
-                annotations: { [RUNNER_LAUNCHER_DEADLINE_ANNOTATION]: reapDeadline }
-              },
-              type: "Opaque",
-              data: Object.fromEntries(
-                spec.secretEnv.map((entry) => {
-                  const eq = entry.indexOf("=");
-                  return [
-                    entry.slice(0, eq),
-                    Buffer.from(entry.slice(eq + 1), "utf8").toString("base64")
-                  ];
-                })
-              )
-            }
-          },
-          (res) => (res.status >= 200 && res.status < 300) || res.status === 409
+      /**
+       * AND A SECOND, NARROWER OWNERSHIP FLAG, because the two objects can now diverge. `foreignRun`
+       * says "the NAME is someone else's, touch nothing". This one says "the Secret behind this name
+       * is not the one I POSTed", which is reachable on its own: the Job POST succeeded (so the name
+       * IS mine) and the Secret POST 409'd on debris whose owning Job has already gone. Tearing that
+       * debris down would be deleting an object this process cannot prove it created, so it does not
+       * — Kubernetes' own garbage collector will, because the owner it references no longer exists.
+       */
+      let secretIsOurs = false;
+
+      // 1. THE REFUSAL THAT STANDS IN FOR THE SECRET WHEN THE GRANT WAS NOT MADE. Before the `try`,
+      //    exactly like the Docker adapter's `--env-file`: a failure here has created no Job. The
+      //    chart grants `secrets` by DEFAULT since M23.4 (owner decision, 2026-08-20 — "grant the
+      //    secrets RBAC, keep going"), so this arm is now the OPT-OUT path rather than the shipped
+      //    one; it stays, because an operator who sets `perRunSecrets=false` must get this sentence
+      //    and not a 403 from inside a promotion.
+      if (spec.secretEnv.length > 0 && !config.perRunSecrets) {
+        fail(
+          "secret-env",
+          [],
+          new Error(
+            "this runner needs per-run Secrets and the Kubernetes launcher was not granted them. " +
+              "RunnerSpec.secretEnv must reach the pod as a Secret + envFrom.secretRef, which needs " +
+              "`secrets: create,delete` on the worker ServiceAccount. The chart grants that by " +
+              "default; this deployment has managedRunners.kubernetes.perRunSecrets=false, which " +
+              "renders no such rule AND sets this flag. Set it back to true to enable the class. " +
+              "REFUSING rather than falling back to env[].value, which would put the credential in " +
+              "etcd and in every etcd backup."
+          )
         );
-        if (isKubernetesAlreadyExists(created)) {
-          foreignRun = true;
-          fail(
-            "secret-env",
-            ["POST", SECRETS_PATH(namespace)],
-            new Error(
-              `Secret ${secretName} already exists — another run holds this runId. Refusing, and ` +
-                `tearing down nothing: everything behind this name belongs to that run.`
-            )
-          );
-        }
       }
 
       try {
@@ -991,6 +1012,106 @@ export function createKubernetesRunnerLauncher(
                 `down nothing: the Job behind this name belongs to that run.`
             )
           );
+        }
+
+        // 2b. THE PER-RUN SECRET (`secret-env`) — AFTER the Job, OWNED BY the Job, and both halves
+        //     of that sentence are the credential-lifetime guarantee.
+        //
+        //     WHY NOT A `finally`. There is one, twenty lines below, and it is the FAST path — it
+        //     deletes the Secret the instant the run ends. It is not the guarantee, because M23.1d's
+        //     whole lesson is that no `finally` survives a SIGKILL: the plugin host's hang detector
+        //     (`apps/server/src/plugin-host/host.ts`) kills a subprocess mid-`trigger()` and nothing
+        //     in this process runs again. On Docker the answer was a sweep (MEDIUM-4's `--env-file`
+        //     reaper) because a file has no owner. A Kubernetes object does, so the answer here is
+        //     the API's own: `ownerReferences` makes the Secret's deletion the garbage collector's
+        //     obligation the moment the Job goes, and `ttlSecondsAfterFinished` makes the Job go
+        //     without anyone asking. Kill this process at any instant and the credential still has a
+        //     bounded life, enforced by the cluster rather than by code that is no longer running.
+        //
+        //     `blockOwnerDeletion: false` IS DELIBERATE AND IT IS AN RBAC FACT, not a preference:
+        //     setting it true requires `update` on `jobs/finalizers`, a third verb on a second
+        //     resource, bought for a guarantee this does not need (nothing here depends on the
+        //     Secret outliving a Job deletion request).
+        //
+        //     `controller: false` likewise — the Job controller is the Job's controller. This is an
+        //     ownership edge for garbage collection, not a claim to reconcile the Secret.
+        if (spec.secretEnv.length > 0) {
+          const ownerUid = kubernetesObjectUid(created);
+          if (!ownerUid) {
+            // FAIL, NEVER FALL BACK TO AN UNOWNED SECRET. An unowned Secret is exactly the object
+            // this ordering exists to make impossible, and a create response with no `metadata.uid`
+            // means something is answering that is not an API server. The `finally` below still
+            // deletes the Job.
+            fail(
+              "secret-env",
+              ["POST", JOBS_PATH(namespace)],
+              new Error(
+                `the Job create response carried no metadata.uid, so the per-run Secret could not be ` +
+                  `owned by it. Refusing rather than creating a Secret whose deletion would depend ` +
+                  `on this process surviving.`
+              )
+            );
+          }
+          const secretCreated = await api(
+            {
+              step: "secret-env",
+              method: "POST",
+              path: SECRETS_PATH(namespace),
+              contentType: "application/json",
+              body: {
+                apiVersion: "v1",
+                kind: "Secret",
+                metadata: {
+                  name: secretName,
+                  namespace,
+                  labels: {
+                    [RUNNER_LAUNCHER_OWNER_LABEL]: LAUNCHER_OWNER_ID,
+                    [RUNNER_RUN_ID_LABEL]: spec.runId
+                  },
+                  annotations: { [RUNNER_LAUNCHER_DEADLINE_ANNOTATION]: reapDeadline },
+                  ownerReferences: [
+                    {
+                      apiVersion: "batch/v1",
+                      kind: "Job",
+                      name: jobName,
+                      uid: ownerUid,
+                      controller: false,
+                      blockOwnerDeletion: false
+                    }
+                  ]
+                },
+                type: "Opaque",
+                data: Object.fromEntries(
+                  spec.secretEnv.map((entry) => {
+                    const eq = entry.indexOf("=");
+                    return [
+                      entry.slice(0, eq),
+                      Buffer.from(entry.slice(eq + 1), "utf8").toString("base64")
+                    ];
+                  })
+                )
+              }
+            },
+            (res) => (res.status >= 200 && res.status < 300) || res.status === 409
+          );
+          if (isKubernetesAlreadyExists(secretCreated)) {
+            // NOT `foreignRun`. The Job POST above did NOT 409, so this run owns the name; what it
+            // does not own is the Secret already sitting behind it, whose owning Job is by
+            // construction gone (a live one would have 409'd the Job POST). So: refuse, tear down
+            // the Job THIS run created, and leave the debris to the collector that is already
+            // obliged to take it. A retry on the same runId then succeeds.
+            fail(
+              "secret-env",
+              ["POST", SECRETS_PATH(namespace)],
+              new Error(
+                `Secret ${secretName} already exists without the Job that owned it — orphan debris ` +
+                  `from an earlier run of this runId. Refusing rather than reusing or deleting a ` +
+                  `Secret this run did not create; Kubernetes garbage-collects it because its ` +
+                  `ownerReference no longer resolves, and a retry then succeeds.`
+              )
+            );
+          }
+          secretIsOurs = true;
         }
 
         // 3. COPY IN — sequential and awaited, into this run's own subtree of the shared volume.
@@ -1119,6 +1240,14 @@ export function createKubernetesRunnerLauncher(
         //    that the budget is what ran out), swallowed but not silent, and skipped ENTIRELY for a
         //    run that lost its name. Three objects, in the order that leaves nothing addressable if
         //    an earlier one fails: the Job (which owns the pod), then the Secret, then the bytes.
+        //
+        //    THIS IS THE FAST PATH FOR THE SECRET, NOT THE GUARANTEE. The guarantee is the
+        //    `ownerReference` step 2b attaches: delete the Job and the collector takes the Secret
+        //    whether or not this block ever runs. What this block buys is LATENCY — seconds instead
+        //    of however long the collector takes — and it is worth having for exactly that, which is
+        //    also why its failure is swallowed rather than escalated. A `finally` that is the only
+        //    thing standing between a credential and an unbounded lifetime is the M23.1d defect; a
+        //    `finally` that merely shortens a bounded one is not.
         if (foreignRun) {
           debug(
             "teardown: SKIPPED for %s — this run lost the name to a run it does not own",
@@ -1133,7 +1262,7 @@ export function createKubernetesRunnerLauncher(
               timeoutMs: RUNNER_REMOVE_TIMEOUT_MS
             })
             .catch((cause) => debug("teardown: DELETE job %s failed: %O", jobName, cause));
-          if (spec.secretEnv.length > 0 && config.perRunSecrets) {
+          if (secretIsOurs) {
             await io
               .request({
                 step: "teardown",

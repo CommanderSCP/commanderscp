@@ -85,6 +85,30 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
   const ops: RecordedOp[] = [];
   const jobs = new Map<string, Record<string, unknown>>();
   const secrets = new Map<string, Record<string, unknown>>();
+  /** Monotonic `metadata.uid` source — see the Job POST route. */
+  let uidCounter = 0;
+
+  /** Deletes every Secret whose `ownerReferences` names `uid`, which is what a real cluster's
+   *  garbage collector does when the owner goes. Also the collector's OTHER rule, and it is the one
+   *  that matters for orphan debris: an owner reference that resolves to nothing at all is collected
+   *  too, so a Secret left behind by a SIGKILLed run does not survive its Job. */
+  const collectOrphanedSecrets = (deletedUid?: string) => {
+    const liveUids = new Set(
+      [...jobs.values(), ...foreignJobs].map(
+        (j) => (j as { metadata?: { uid?: string } }).metadata?.uid
+      )
+    );
+    for (const [name, obj] of [...secrets]) {
+      const owners =
+        (obj as { metadata?: { ownerReferences?: { uid?: string }[] } }).metadata
+          ?.ownerReferences ?? [];
+      if (owners.length === 0) continue; // unowned objects are nobody's garbage
+      const collected = owners.some(
+        (o) => o.uid === deletedUid || (o.uid !== undefined && !liveUids.has(o.uid))
+      );
+      if (collected) secrets.delete(name);
+    }
+  };
   const dirs = new Set<string>();
   /** Jobs that already exist before this process starts — the peers `reap()` and the 409 arms need. */
   const foreignJobs: Record<string, unknown>[] = [];
@@ -174,8 +198,19 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
       if (clash) {
         return { status: 409, body: JSON.stringify({ kind: "Status", reason: "AlreadyExists" }) };
       }
-      jobs.set(body.metadata.name, body as Record<string, unknown>);
-      return { status: 201, body: JSON.stringify(body) };
+      // THE API SERVER STAMPS `metadata.uid` ON CREATE, AND THIS FAKE HAS TO TOO — not for realism's
+      // sake but because the adapter READS it: the per-run Secret's `ownerReference` needs the Job's
+      // uid, and a fake that echoed the POSTed body unchanged would make every `secretEnv` run
+      // refuse with "the Job create response carried no metadata.uid". Monotonic rather than random
+      // so a RECREATED Job of the same name gets a DIFFERENT uid, which is the property the
+      // stale-owner arm below turns on.
+      uidCounter += 1;
+      const stamped = {
+        ...(body as Record<string, unknown>),
+        metadata: { ...(body.metadata as Record<string, unknown>), uid: `uid-${uidCounter}` }
+      };
+      jobs.set(body.metadata.name, stamped);
+      return { status: 201, body: JSON.stringify(stamped) };
     }
     if (req.method === "POST" && path === secretsRoot) {
       const body = req.body as { metadata: { name: string } };
@@ -192,11 +227,19 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
     }
     if (req.method === "DELETE" && path.startsWith(`${jobsRoot}/`)) {
       const name = path.slice(jobsRoot.length + 1);
+      const gone = jobs.get(name) as { metadata?: { uid?: string } } | undefined;
       jobs.delete(name);
       const foreign = foreignJobs.findIndex(
         (j) => (j as { metadata: { name: string } }).metadata.name === name
       );
       if (foreign !== -1) foreignJobs.splice(foreign, 1);
+      // KUBERNETES' GARBAGE COLLECTOR, MODELLED — and it is modelled because the adapter DEPENDS on
+      // it. `ownerReferences` is what makes the per-run Secret's deletion survive a SIGKILL of this
+      // process, and a fake in which deleting a Job left its owned Secret behind would let a
+      // regression that dropped the `ownerReference` pass every unit test in this file. The real
+      // behaviour is proved against a real API server in `kubernetes-adapter.kind.test.ts`; this is
+      // the model that keeps the unit suite from being wrong in the same direction.
+      collectOrphanedSecrets(gone?.metadata?.uid);
       return { status: 200, body: "{}" };
     }
     if (req.method === "DELETE" && path.startsWith(`${secretsRoot}/`)) {
@@ -751,12 +794,17 @@ describe("M23.2: the merged log lands in `stdout`, and that is a decision", () =
 // THE PER-RUN SECRET — a declared capability that is OFF
 // ==================================================================================================
 
-describe("M23.2: `secretEnv` is a wired, disabled capability until the RBAC grant is decided", () => {
+describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels as a Secret the Job owns", () => {
   const withSecret = spec({
     secretEnv: ["AWS_SECRET_ACCESS_KEY=super-secret-value"],
     copyOut: undefined
   });
 
+  // THE OPT-OUT ARM COMES FIRST BECAUSE IT IS THE ONE THAT INVERTED. Until M23.4 `perRunSecrets`
+  // defaulted to false and this was the shipped behaviour of every Kubernetes deployment; the owner
+  // granted the RBAC on 2026-08-20, so the chart now renders the rule by default and this is what an
+  // operator who deliberately turns it back off gets. It has to stay a loud refusal either way — the
+  // failure it replaces is a 403 from inside a promotion, minutes in.
   it("WITH THE CAPABILITY OFF THE RUN IS REFUSED AT `secret-env` — nothing is created", async () => {
     const c = cluster({ perRunSecrets: false });
     await expect(c.launcher().run(withSecret)).rejects.toThrow(
@@ -816,6 +864,159 @@ describe("M23.2: `secretEnv` is a wired, disabled capability until the RBAC gran
     ]);
   });
 
+  // ================================================================================================
+  // M23.4 — THE CREDENTIAL'S LIFETIME IS THE JOB'S, ENFORCED BY THE CLUSTER AND NOT BY A `finally`
+  // ================================================================================================
+  //
+  // WHY THIS BLOCK EXISTS AT ALL. M23.1a moved the credential out of the `docker create` argv; M23.1d
+  // then found that the mode-0600 `--env-file` it moved into was left on disk whenever the plugin
+  // host SIGKILLed the subprocess mid-`trigger()`, because no `finally` survives a SIGKILL. That
+  // defect is now reachable on the OTHER adapter, in a worse place: a Kubernetes Secret does not sit
+  // on one machine's disk, it sits in etcd and in every etcd backup, replicated across the control
+  // plane. The answer is not a better `finally`. It is `ownerReferences` — the cluster deleting the
+  // Secret because the Job it belongs to is gone, whether or not this process still exists.
+
+  it("THE SECRET IS OWNED BY THE JOB — with the Job's REAL uid, not its name", async () => {
+    const c = cluster({ perRunSecrets: true });
+    await c.launcher().run(withSecret);
+    const jobPost = requestsOf(c.ops).find((o) => o.method === "POST" && o.path?.endsWith("/jobs"))!;
+    const secretPost = requestsOf(c.ops).find(
+      (o) => o.method === "POST" && o.path?.endsWith("/secrets")
+    )!;
+    // ORDER FIRST, because it is what makes ownership POSSIBLE: a Secret cannot reference a uid that
+    // does not exist yet. M23.2 POSTed the Secret first and could not have owned it to anything.
+    expect(c.ops.indexOf(jobPost)).toBeLessThan(c.ops.indexOf(secretPost));
+    const owners = (
+      secretPost.body as { metadata: { ownerReferences?: Record<string, unknown>[] } }
+    ).metadata.ownerReferences;
+    // THE UID COMES FROM THE CREATE RESPONSE, and this is the assertion that a `uid: jobName` or a
+    // `uid: ""` regression fails: the fake stamps `uid-N` on create, so a uid derived from anything
+    // the adapter already knew would not match. An ownerReference with a WRONG uid is worse than
+    // none — the collector treats the owner as already deleted and removes the Secret out from under
+    // a live run, which is a `CreateContainerConfigError` on a pod that has not started yet.
+    expect(owners).toStrictEqual([
+      {
+        apiVersion: "batch/v1",
+        kind: "Job",
+        name: "scp-runner-r1",
+        uid: "uid-1",
+        controller: false,
+        blockOwnerDeletion: false
+      }
+    ]);
+  });
+
+  it("SUCCESS PATH: the Secret is gone when run() resolves", async () => {
+    const c = cluster({ perRunSecrets: true });
+    const result = await c.launcher().run(withSecret);
+    expect(result.succeeded).toBe(true);
+    expect(c.secrets.size).toBe(0);
+  });
+
+  it("FAILURE PATH: a non-zero runner deletes the Secret exactly as a successful one does", async () => {
+    // THE ARM THAT A `finally` PLACED INSIDE THE SUCCESS BRANCH WOULD FAIL. A managed-iac apply that
+    // exits non-zero is the COMMON case (a `tofu apply` that a policy refused), so a credential
+    // lifetime that only holds on success is a credential lifetime that mostly does not hold.
+    const c = cluster({ perRunSecrets: true });
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Failed",
+        containerStatuses: [{ name: "runner", state: { terminated: { exitCode: 5 } } }]
+      }
+    });
+    const result = await c.launcher().run(withSecret);
+    expect(result.succeeded).toBe(false);
+    expect(result.failure!.kind).toBe("exit-nonzero");
+    expect(c.secrets.size).toBe(0);
+    expect(
+      requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/secrets/"))
+    ).toBe(true);
+  });
+
+  it("THE LAUNCHER DYING MID-RUN: the cluster deletes the Secret, because NOTHING in this process can", async () => {
+    // THE ONE THAT MATTERS, AND THE ONE NO `finally` CAN PASS. The plugin host's hang detector
+    // (`apps/server/src/plugin-host/host.ts`) SIGKILLs a subprocess mid-`trigger()`. Modelled here
+    // the only way a single process can model its own death: the run is PARKED at `start` and then
+    // never touched again — no teardown, no `finally`, not one further op from the launcher — and
+    // the Secret's disappearance is caused entirely by the Job going away.
+    const c = cluster({ perRunSecrets: true });
+    c.hold("start");
+    const abandoned = c.launcher().run(withSecret);
+    await new Promise((r) => setImmediate(r));
+
+    // THE CREDENTIAL IS LIVE IN THE CLUSTER at the instant of death — the precondition without which
+    // everything below passes vacuously.
+    expect(c.secrets.has("scp-runner-r1-env")).toBe(true);
+    const opsAtDeath = c.ops.length;
+
+    // NOW THE CLUSTER ACTS ALONE. `io.request` rather than the launcher, because the launcher is
+    // conceptually dead: this is `ttlSecondsAfterFinished` firing, or an operator's `kubectl delete
+    // job`, or a SUCCESSOR process's `reap()` — three routes, one deletion, and the Secret follows
+    // the Job through every one of them because of the ownerReference and not because of who asked.
+    await c.io.request({
+      step: "teardown",
+      method: "DELETE",
+      path: "/apis/batch/v1/namespaces/scp/jobs/scp-runner-r1?propagationPolicy=Background",
+      timeoutMs: 1_000
+    });
+    expect(c.secrets.has("scp-runner-r1-env")).toBe(false);
+
+    // AND THE LAUNCHER ISSUED NOTHING IN BETWEEN. Without this the case proves only "something
+    // deleted it", which a teardown that quietly ran would also satisfy.
+    expect(c.ops.length).toBe(opsAtDeath + 1);
+
+    c.release("start", new Error("the launcher process is gone"));
+    await abandoned.catch(() => undefined);
+  });
+
+  it("A SUCCESSOR PROCESS'S `reap()` COLLECTS THE SECRET TOO — the same sweep, on the same deadline", async () => {
+    // BELT AND BRACES, AND DELIBERATELY SO: the ownerReference is the guarantee, but it is a
+    // guarantee that only fires once something deletes the Job. `reap()` is what deletes the Job of
+    // a run whose owner is gone, so the two mechanisms compose — and this is the arm that proves the
+    // sweep addresses the Secret by NAME rather than relying on collection it cannot observe.
+    const c = cluster({ perRunSecrets: true });
+    c.foreignJobs.push({
+      metadata: {
+        name: "scp-runner-dead",
+        labels: { "scp.launcher.owner": "some-other-process" },
+        annotations: { "scp.launcher.deadline": new Date(Date.now() - 60_000).toISOString() }
+      }
+    });
+    c.secrets.set("scp-runner-dead-env", { metadata: { name: "scp-runner-dead-env" } });
+    const removed = await c.launcher().reap();
+    expect(removed).toContain("scp-runner-dead");
+    expect(
+      requestsOf(c.ops).some(
+        (o) => o.method === "DELETE" && o.path === "/api/v1/namespaces/scp/secrets/scp-runner-dead-env"
+      )
+    ).toBe(true);
+    expect(c.secrets.has("scp-runner-dead-env")).toBe(false);
+  });
+
+  it("A CREATE RESPONSE WITH NO uid REFUSES — an UNOWNED Secret is never created", async () => {
+    // THE NEGATIVE CONTROL FOR THE WHOLE MECHANISM. If the adapter fell back to an ownerReference-less
+    // Secret when the uid was missing, every assertion above would still pass and the SIGKILL
+    // guarantee would silently not exist on whatever cluster answered that way.
+    const c = cluster({ perRunSecrets: true });
+    c.overrides.push({
+      match: (r) => r.method === "POST" && r.path.endsWith("/jobs"),
+      res: { status: 201, body: JSON.stringify({ metadata: { name: "scp-runner-r1" } }) }
+    });
+    await expect(c.launcher().run(withSecret)).rejects.toThrow(
+      /carried no metadata\.uid, so the per-run Secret could not be owned/
+    );
+    expect(
+      requestsOf(c.ops).some((o) => o.method === "POST" && o.path?.endsWith("/secrets"))
+    ).toBe(false);
+    expect(c.secrets.size).toBe(0);
+    // AND THE JOB THAT WAS CREATED IS TORN DOWN — a refusal that leaked a Job per attempt would be a
+    // second defect wearing the first one's clothes.
+    expect(
+      requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))
+    ).toBe(true);
+  });
+
   it("A FAILURE MID-RUN REDACTS THE BASE64 ENCODING TOO, not only the plaintext", async () => {
     // THE ONE REDACTION THE DOCKER ADAPTER NEVER NEEDED. A Secret body carries the credential
     // base64-encoded, and a base64 string does not match its own plaintext — so a redaction set
@@ -854,7 +1055,16 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
     expect(c.ops.some((o) => o.kind === "removeDir")).toBe(false);
   });
 
-  it("A 409 ON THE SECRET POST STOPS THE RUN BEFORE THE JOB IS EVEN ATTEMPTED", async () => {
+  it("A 409 ON THE SECRET POST IS ORPHAN DEBRIS — this run's OWN Job is torn down, the debris is NOT", async () => {
+    // M23.4 INVERTED THIS CASE, AND THE INVERSION IS THE POINT. Until M23.4 the Secret POST came
+    // FIRST, so a 409 there meant "another run holds this runId" and the correct response was to
+    // touch nothing at all. Now the JOB POST stakes the name (which is what lets the Secret carry an
+    // `ownerReference` to it), so a Secret 409 is only reachable AFTER a Job POST that did NOT 409 —
+    // i.e. this run owns the name, and what is behind it is a Secret whose owning Job is gone. Two
+    // different objects, two different owners, two different answers:
+    //   - the Job this run just created is ITS OWN, so teardown deletes it;
+    //   - the Secret is not, so nothing here deletes it. The collector will, because its
+    //     `ownerReference` no longer resolves.
     const c = cluster({ perRunSecrets: true });
     const launcher = c.launcher();
     // A REALISTIC VALUE, and the reason is a real property of the port's redaction: it is a plain
@@ -863,16 +1073,48 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
     // too; worth knowing, and not what this case is about.
     const secretEnv = ["AWS_SECRET_ACCESS_KEY=an-actual-looking-credential"];
     await launcher.run(spec({ secretEnv, copyOut: undefined }));
-    // Re-create the Secret behind the scenes to model a peer that holds it.
-    c.secrets.set("scp-runner-r1-env", { metadata: { name: "scp-runner-r1-env" } });
+    // THE DEBRIS: a Secret bearing the run's name whose owner uid names a Job that no longer exists.
+    // That is exactly what a SIGKILLed predecessor leaves behind for the instant before the
+    // collector takes it, and `uid-gone-forever` is unreachable by the fake's monotonic counter.
+    const debris = {
+      metadata: {
+        name: "scp-runner-r1-env",
+        ownerReferences: [{ kind: "Job", name: "scp-runner-r1", uid: "uid-gone-forever" }]
+      }
+    };
+    c.secrets.set("scp-runner-r1-env", debris);
     c.ops.length = 0;
-    await expect(launcher.run(spec({ secretEnv, copyOut: undefined }))).rejects.toThrow(
-      /Secret scp-runner-r1-env already exists/
-    );
+    const refusal = (await launcher
+      .run(spec({ secretEnv, copyOut: undefined }))
+      .then(() => new Error("the run was expected to be refused, and resolved instead"))
+      .catch((e: Error) => e)) as Error;
+    expect(refusal.message).toMatch(/already exists without the Job that owned it — orphan debris/);
+    // AND THE REFUSAL CARRIES NO CREDENTIAL, even though the message is about a Secret.
+    for (const text of [refusal.message, String(refusal), refusal.stack ?? "", JSON.stringify(refusal)]) {
+      expect(text).not.toContain("an-actual-looking-credential");
+    }
+    // THE JOB WAS ATTEMPTED — it has to be, or the Secret could never be owned by anything.
     expect(requestsOf(c.ops).some((o) => o.method === "POST" && o.path?.endsWith("/jobs"))).toBe(
-      false
+      true
     );
-    expect(requestsOf(c.ops).some((o) => o.method === "DELETE")).toBe(false);
+    // AND IT WAS TORN DOWN. This is the arm that separates "the name is someone else's" from "the
+    // Secret is someone else's": leaving the Job would leak a Job per retry, forever.
+    expect(
+      requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))
+    ).toBe(true);
+    // THE DEBRIS IS NOT DELETED BY THIS PROCESS. Never delete an object you cannot prove you made.
+    expect(
+      requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/secrets/"))
+    ).toBe(false);
+    // AND YET THE DEBRIS IS GONE BY THE END OF THE RUN — collected, not deleted. The assertion
+    // directly above is what makes this one mean something: no `DELETE .../secrets/...` was issued
+    // by the adapter at all, so the only thing that could have removed it is the garbage collector
+    // reacting to the Job teardown, which is precisely the mechanism the whole ordering exists to
+    // buy. A retry therefore succeeds rather than looping on the same 409 forever.
+    expect(c.secrets.has("scp-runner-r1-env")).toBe(false);
+    await expect(launcher.run(spec({ secretEnv, copyOut: undefined }))).resolves.toMatchObject({
+      succeeded: true
+    });
   });
 
   it("EVERY OTHER CREATE FAILURE STILL TEARS DOWN — without this arm, 'skip on any failure' passes", async () => {
