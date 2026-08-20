@@ -152,6 +152,35 @@ describe("M23.1g: what the bound removed comes back with what it kept", () => {
     expect(bounded.truncation?.next?.droppedFields).toBe(3);
   });
 
+  it("THE DEPTH LIMIT'S OTHER BRANCH: an over-deep ARRAY reports its ENTRIES, and the count is real", () => {
+    // M23.0 verification pass 15. The arm above exercises exactly ONE of the depth limit's two
+    // accounting branches — `budget.loss.fields += Object.keys(...).length` — and the array branch
+    // beside it, `budget.loss.entries += value.length`, had no arm at all. Deleting either one
+    // reddens the pair, which is why the mutation log recorded the deletion as caught; but a WRONG
+    // COUNT in the array branch was invisible to the whole 255-test suite. Measured: replacing
+    // `value.length` with `1` leaves every test green while the report tells a reader that ONE
+    // entry was replaced where FORTY were — a number the reader cannot check against anything,
+    // because the subtree it describes is exactly what the row no longer contains (charter
+    // principle 6, and the same class as a provenance label that is read rather than inferred).
+    //
+    // The count is asserted against `ENTRY_COUNT` rather than a literal, and the literal is
+    // deliberately not 1: `+= 1` is the mutation this arm exists to kill, and an arm whose fixture
+    // has one entry cannot tell the two apart.
+    const ENTRY_COUNT = 40;
+    let deep: unknown = Array.from({ length: ENTRY_COUNT }, (_, i) => `entry-${i}`);
+    for (let i = 0; i < PERSISTED_JSON_MAX_DEPTH; i++) deep = { next: deep };
+    const bounded = boundPersistedJson(deep);
+    // NON-VACUITY: the limit really is what removed the list — not the budget, which is untouched
+    // here. Without this the arm would pass on a shape the depth limit never reached.
+    expect(JSON.stringify(bounded.value)).toContain("nesting deeper than");
+    expect(bounded.truncation?.next?.droppedEntries).toBe(ENTRY_COUNT);
+    // …and it is reported as ENTRIES, not as fields: the unit is part of the claim, and the two
+    // branches write to different counters.
+    expect(bounded.truncation?.next?.droppedFields).toBeUndefined();
+    // NOT a budget clip — `dropped` stays false, because more budget would not bring it back.
+    expect(bounded.truncation?.next?.dropped).toBe(false);
+  });
+
   it("THE BACKSTOP — the worst loss this file can produce — reports EVERY root field dropped", () => {
     // When the walk's own measurement says the row is over budget, the payload is discarded whole
     // and a diagnostic sentence stored in its place: `revision`, `images` and `rollout.weight` gone
