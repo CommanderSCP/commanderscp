@@ -666,9 +666,17 @@ function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefin
     namespace,
     workspaceRoot,
     workspaceVolume,
-    // THE DECLARED, DISABLED CAPABILITY. Only `true` enables it, and enabling it here is only half
-    // the change: without `secrets: create,get,delete` in the chart's Role the Secret POST 403s, so
-    // the chart renders the RBAC from the SAME value. See `KubernetesRunnerLauncherConfig`.
+    // THE GRANTED CAPABILITY (owner decision 2026-08-20, ADR-0035 §6). Enabling it here is only
+    // half the change: without `secrets: create,delete` in the chart's Role the Secret POST 403s, so
+    // the chart renders the RBAC and sets this variable from the SAME value.
+    //
+    // THE CODE DEFAULT STAYS `false` WHILE THE CHART DEFAULT IS `true`, AND THAT ASYMMETRY IS
+    // DELIBERATE. This flag does not mean "per-run Secrets are a good idea"; it means "the RBAC to
+    // create them EXISTS in this namespace", and only the thing that rendered the RBAC knows that.
+    // The chart does, so it says so. A hand-rolled Kubernetes deployment that never applied a Role
+    // does not, and for it the honest answer is the named refusal at step `secret-env` rather than a
+    // 403 from inside a promotion, minutes in. Absent env var => the deployment made no such claim.
+    // See `KubernetesRunnerLauncherConfig.perRunSecrets`.
     perRunSecrets: process.env.SCP_MANAGED_RUNNER_K8S_PER_RUN_SECRETS?.trim() === "true",
     // OFF BY DEFAULT AND THAT IS A FINDING, not a preference: none of apps/runner-{iac,scan,dep}
     // has a `USER` line, so `true` makes every managed run fail with CreateContainerConfigError

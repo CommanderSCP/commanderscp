@@ -619,7 +619,9 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     const live = await until(async () =>
       (await kubectlIn(ns, "get", "secrets", "-o", "name")).includes("scp-runner-sigkill-env")
     );
-    expect(live, "the per-run Secret never existed, so its disappearance proves nothing").toBe(true);
+    expect(live, "the per-run Secret never existed, so its disappearance proves nothing").toBe(
+      true
+    );
 
     const deletedAt = Date.now();
     await kubectlIn(ns, "delete", "job", "scp-runner-sigkill", "--wait=false");

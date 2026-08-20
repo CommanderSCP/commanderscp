@@ -879,7 +879,9 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
   it("THE SECRET IS OWNED BY THE JOB — with the Job's REAL uid, not its name", async () => {
     const c = cluster({ perRunSecrets: true });
     await c.launcher().run(withSecret);
-    const jobPost = requestsOf(c.ops).find((o) => o.method === "POST" && o.path?.endsWith("/jobs"))!;
+    const jobPost = requestsOf(c.ops).find(
+      (o) => o.method === "POST" && o.path?.endsWith("/jobs")
+    )!;
     const secretPost = requestsOf(c.ops).find(
       (o) => o.method === "POST" && o.path?.endsWith("/secrets")
     )!;
@@ -988,7 +990,8 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
     expect(removed).toContain("scp-runner-dead");
     expect(
       requestsOf(c.ops).some(
-        (o) => o.method === "DELETE" && o.path === "/api/v1/namespaces/scp/secrets/scp-runner-dead-env"
+        (o) =>
+          o.method === "DELETE" && o.path === "/api/v1/namespaces/scp/secrets/scp-runner-dead-env"
       )
     ).toBe(true);
     expect(c.secrets.has("scp-runner-dead-env")).toBe(false);
@@ -1006,15 +1009,15 @@ describe("M23.4: `secretEnv` is a GRANTED capability — the credential travels 
     await expect(c.launcher().run(withSecret)).rejects.toThrow(
       /carried no metadata\.uid, so the per-run Secret could not be owned/
     );
-    expect(
-      requestsOf(c.ops).some((o) => o.method === "POST" && o.path?.endsWith("/secrets"))
-    ).toBe(false);
+    expect(requestsOf(c.ops).some((o) => o.method === "POST" && o.path?.endsWith("/secrets"))).toBe(
+      false
+    );
     expect(c.secrets.size).toBe(0);
     // AND THE JOB THAT WAS CREATED IS TORN DOWN — a refusal that leaked a Job per attempt would be a
     // second defect wearing the first one's clothes.
-    expect(
-      requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))
-    ).toBe(true);
+    expect(requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))).toBe(
+      true
+    );
   });
 
   it("A FAILURE MID-RUN REDACTS THE BASE64 ENCODING TOO, not only the plaintext", async () => {
@@ -1090,7 +1093,12 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
       .catch((e: Error) => e)) as Error;
     expect(refusal.message).toMatch(/already exists without the Job that owned it — orphan debris/);
     // AND THE REFUSAL CARRIES NO CREDENTIAL, even though the message is about a Secret.
-    for (const text of [refusal.message, String(refusal), refusal.stack ?? "", JSON.stringify(refusal)]) {
+    for (const text of [
+      refusal.message,
+      String(refusal),
+      refusal.stack ?? "",
+      JSON.stringify(refusal)
+    ]) {
       expect(text).not.toContain("an-actual-looking-credential");
     }
     // THE JOB WAS ATTEMPTED — it has to be, or the Secret could never be owned by anything.
@@ -1099,9 +1107,9 @@ describe("M23.2: a run that lost its name tears down NOTHING", () => {
     );
     // AND IT WAS TORN DOWN. This is the arm that separates "the name is someone else's" from "the
     // Secret is someone else's": leaving the Job would leak a Job per retry, forever.
-    expect(
-      requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))
-    ).toBe(true);
+    expect(requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/jobs/"))).toBe(
+      true
+    );
     // THE DEBRIS IS NOT DELETED BY THIS PROCESS. Never delete an object you cannot prove you made.
     expect(
       requestsOf(c.ops).some((o) => o.method === "DELETE" && o.path?.includes("/secrets/"))

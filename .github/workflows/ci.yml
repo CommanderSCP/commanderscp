@@ -645,9 +645,13 @@ jobs:
     #   - Job 5 blackholes Docker Hub and quay.io PART WAY THROUGH, and a cluster bring-up placed
     #     after that line would fail on the node-image pull. Here the blackhole comes first, before
     #     anything that needs an image, which is a stronger claim than job 5 can make.
-    #   - Wall clock is small and separable: cluster create 31-33s warm, image load ~2s, chart RBAC
-    #     ~2s, and the suite itself 8.1s for seven cases (measured locally, arm64/colima — the CI
-    #     runner is amd64 with different I/O, so treat these as the shape rather than the number).
+    #   - Wall clock is small and separable: cluster create ~25s warm, image load ~2s, chart RBAC
+    #     ~2s, and the suite itself ~50s for eleven cases (re-measured 2026-08-20 on arm64/colima
+    #     after M23.4 added four; the CI runner is amd64 with different I/O, so treat these as the
+    #     shape rather than the number). HALF OF THAT 50s IS ONE CASE ON PURPOSE: "THE LAUNCHER
+    #     DYING MID-RUN" gives its abandoned run a 30-second budget so the Secret's collection can
+    #     be observed in the first HALF of it — a window in which the launcher provably has not
+    #     issued a teardown. Shortening the budget shortens the proof, not just the job.
     #
     # WHAT IT DELIBERATELY DOES NOT INSTALL: a CNI. kind's default kindnet does not enforce
     # NetworkPolicy — re-measured for M23.2 with a known-positive control, a pod SELECTED by a
