@@ -260,6 +260,15 @@ export const ChangeWaveTargetSchema = z.object({
   /** DERIVED, read-only (ADR-0007): the Category of `type`, via `categoryOfType`. Not stored. */
   category: ExecutorCategorySchema,
   executorPluginId: z.string().nullable(),
+  /** The `ExternalRunRef` the executor's `trigger()` returned — plugin-shaped, opaque to SCP, and
+   *  the handle `status()` is polled with.
+   *
+   *  BOUNDED, NOT VERBATIM (M23.1f), and unlike `observed` below it carries NO structured
+   *  truncation signal — recorded here rather than left to be discovered. The reason is that the
+   *  reader of this field is the PLUGIN, not an operator: a cut here is a broken handle, not a
+   *  wrong thing on a screen, and the honest fix for that is refusing the write rather than
+   *  describing the damage. See the note at `markWaveTargetTriggered` in `wave-targets-repo.ts`
+   *  and M23.1g in BUILD_AND_TEST.md, where it is carried as still open. */
   executorRef: z.record(z.string(), z.unknown()).nullable(),
   /** The snapshot reconcile observed from status() — the per-wave version (ADR-0008 decisions 1-2).
    *  Additive-optional: plans predating the `observed_state` column read back without it; `null` once

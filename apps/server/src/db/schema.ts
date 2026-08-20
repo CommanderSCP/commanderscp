@@ -844,8 +844,15 @@ export const changeWaveTargets = pgTable(
     // Last status() stateRef reconcile observed — the synced revision it previously computed and
     // discarded (ADR-0008 decision 1; docs/proposals/observe-enrichment.md signal 1). Additive/
     // nullable, null until the first successful observe; a status() with no stateRef never nulls a
-    // previously-captured value (updateWaveTargetObserved writes it only when defined). Stores the
-    // opaque revision as-is (jsonb); the strongly-typed digest/rollout object is a later increment.
+    // previously-captured value (updateWaveTargetObserved writes it only when defined).
+    //
+    // NOT AS-IS — the claim this comment made until M23.1g, and M23.1f made it false. Everything in
+    // this column is plugin-supplied and passes `boundPluginJson` on the way in: a string may be
+    // shortened, a list may lose its tail, U+0000 and lone surrogates become U+FFFD. What was
+    // removed is written into the SAME jsonb under `truncation`, per field, so a reader is never
+    // left to infer a cut from a suspiciously short value — and so `no rollout` and `we cut the
+    // rollout` stop being the same bytes (`ChangeWaveTargetSchema.observed.truncation`).
+    // `observedAt` is stamped here too and is deliberately NOT on the API.
     observedState: jsonb("observed_state"),
     // pending|triggering|triggered|observing|succeeded|failed|aborted|no_executor
     // `no_executor` (docs/adr/0006): fail-closed terminal — the target has real executor bindings
