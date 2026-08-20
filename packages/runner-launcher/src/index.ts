@@ -961,6 +961,66 @@ export const PERSISTED_JSON_ELIDED_KEY = "__scpElided";
 
 /**
  * ================================================================================================
+ * THE ONE KEY THIS FILE REFUSES TO WRITE — HIGH, M23.0 verification pass 14. PROTOTYPE POLLUTION
+ * REACHABLE FROM AN UNTRUSTED EXECUTOR'S RESPONSE.
+ * ================================================================================================
+ * `JSON.parse` gives `__proto__` as an ORDINARY OWN PROPERTY. A plugin's JSON-RPC response is
+ * parsed exactly that way, so `{"revision":"abc","__proto__":{"polluted":true}}` arrives here as a
+ * three-key object with `__proto__` among its own keys, and `Object.entries` hands it to the walk
+ * like any other field. `walkObjectFields` then wrote it with `out[field.key] = field.value` —
+ * which for THIS key is not a store at all. It is a call to `Object.prototype`'s `__proto__`
+ * SETTER. Measured on the build before this fix:
+ *
+ *     input   {"revision":"abc","__proto__":{"polluted":true},"images":["i1"]}
+ *     stored  {"revision":"abc","images":["i1"]}          <- the field is simply gone
+ *     own keys of the stored object   [ 'revision', 'images' ]
+ *     stored.polluted                 true                <- read off the plugin's object
+ *     Object.getPrototypeOf(stored) === Object.prototype   false
+ *     truncation                      undefined           <- and nothing was reported
+ *
+ * THREE DEFECTS IN ONE LINE. (i) The stored object's PROTOTYPE is an object the plugin chose, so
+ * every property lookup that misses now consults plugin-controlled data — a `for...in` enumerates
+ * it, and a downstream `observed.rollout` can be answered by the executor rather than by the
+ * reading. `{"__proto__":null}` is the same defect wearing the other hat: the stored object loses
+ * `hasOwnProperty` and every other `Object.prototype` method. (ii) The field is charged and then
+ * silently DROPPED — the walk paid for it out of the budget, so the money came off the siblings'
+ * share and nothing was stored for it. Measured: two 3 000-character fields at a budget of 4 000,
+ * one of them named `__proto__`, stored 1 950 characters of the other and nothing of the first.
+ * (iii) The value came back different from the input with `truncation === undefined`, which is
+ * exactly the property M23.1g's gate exists to hold — its sweep's shapes simply had no such key.
+ *
+ * AND IT IS THE ONLY KEY WITH THE PROPERTY, WHICH IS MEASURED AND NOT ASSUMED.
+ * `Object.getOwnPropertyNames(Object.prototype)` has exactly one entry whose descriptor carries a
+ * getter or a setter — `__proto__` — and none that is a non-writable data property. So it is the
+ * only string key for which `obj[k] = v` differs from defining an own data property. That
+ * enumeration is a TEST (`persisted-json-proto.test.ts`), not a sentence here, because it is a
+ * claim about the runtime that a future runtime can falsify.
+ *
+ * WHY REFUSE IT RATHER THAN STORE IT HONESTLY WITH `Object.defineProperty`. Defining it works —
+ * the prototype is untouched, `JSON.stringify` emits it, and a `JSON.parse` round trip through
+ * `jsonb` gives an own property back. It was rejected because it does not stop at this row.
+ * `observed_state` is served over the public API to the generated SDK, the CLI and `apps/web`, and
+ * shipping `"__proto__": {...}` in a JSON response hands every one of those consumers a pollution
+ * gadget that fires the moment any of them does `Object.assign({}, observed)` (measured: it
+ * pollutes) rather than a spread. A key that is never legitimate observed-executor state is not
+ * worth carrying at that price — which is what `qs`, `lodash` and every other library that has met
+ * this decided too. The loss is REPORTED (`dropped: true`) rather than silent, which is the
+ * difference between this and the defect.
+ *
+ * WHERE THE GUARD LIVES: at the two places a plugin-chosen string becomes a computed property key
+ * on an object we build — {@link walkObjectFields}'s phase 1 for the VALUE, and
+ * {@link boundTruncationReport} for the REPORT. Both are the line that has the hazard rather than
+ * a filter somewhere upstream of it, because a filter upstream is what the next call site misses.
+ * The report needs its own guard for a reason worth naming: the report is keyed by ROOT FIELD NAME,
+ * so a refused `__proto__` would otherwise be described BY NAME in a record we then serialise —
+ * re-creating the gadget in the field that exists to explain its absence.
+ */
+function isUnsafePersistedKey(key: string): boolean {
+  return key === "__proto__";
+}
+
+/**
+ * ================================================================================================
  * WHAT THE BOUND REMOVED, AS DATA — M23.1g, and the reason it is a RETURN VALUE rather than
  * something a reader recovers from the stored bytes.
  * ================================================================================================
@@ -1323,6 +1383,11 @@ function renderedCostAtMost(value: unknown, cap: number, depth: number): number 
   let first = true;
   for (const [rawKey, entryValue] of Object.entries(value as Record<string, unknown>)) {
     if (entryValue === undefined) continue; // `JSON.stringify` omits these, and so does `walk`
+    // AND SO DOES `walk` FOR THIS ONE, for a different reason — see {@link isUnsafePersistedKey}.
+    // The estimate mirrors the walk branch for branch or a field is admitted for less than it
+    // costs; here the drift would be the other way (an over-estimate), but "the other way" is how
+    // a mirror stops being checkable.
+    if (isUnsafePersistedKey(rawKey)) continue;
     // A key past the cap is bounded rather than stored whole, so its cost is not predictable from
     // the key itself; fall back rather than guess.
     if (rawKey.length > PERSISTED_JSON_MAX_KEY_CHARS) return over;
@@ -1651,6 +1716,16 @@ function walkObjectFields(
       Math.min(budget.left, PERSISTED_JSON_MAX_KEY_CHARS)
     );
     const key = boundedKey.text;
+    if (isUnsafePersistedKey(key)) {
+      // REFUSED FOR SAFETY, NOT FOR ROOM — see {@link isUnsafePersistedKey}. Charged nothing,
+      // because nothing is stored; counted as a dropped field, because one is. Tested on the
+      // BOUNDED key and not the raw one: `boundStringToCost`'s narrow branch keeps the END of an
+      // over-long key, so a 300-character key ending in `__proto__` bounds to exactly `__proto__`
+      // at a tight budget. A guard on the raw key would pass it straight through.
+      budget.loss.fields += 1;
+      collector?.set(key, { dropped: true });
+      continue;
+    }
     const keyCost = jsonCost(key) + 1 + (seated.length > 0 ? 1 : 0); // "key": plus the comma
     // EVERY seated field must still be able to get what IT needs, not just this one: the guarantee
     // has to hold for the fields already seated, whose values are not walked until phase 2. What a
@@ -2171,6 +2246,15 @@ function boundTruncationReport(
   all: [string, PersistedJsonFieldTruncation][]
 ): PersistedJsonTruncation {
   const out: PersistedJsonTruncation = {};
+  // A KEY THAT IS NOT SAFE TO WRITE AS A COMPUTED PROPERTY NEVER ENTERS THE REPORT'S KEY SPACE —
+  // see {@link isUnsafePersistedKey}. `out[key] = entry` below is the same call to the same setter
+  // the walk's own write loop was making, so the report needs its own guard rather than trusting a
+  // filter one function away; and the report is the one place a refused `__proto__` would be named
+  // OUT LOUD in a record we serialise, which would put the gadget back in the very field that
+  // exists to explain its absence. Such a field is counted in the elision bucket, which already
+  // means exactly this: fields were removed and their names are not recoverable.
+  const named = all.filter(([key]) => !isUnsafePersistedKey(key));
+  let unnamed = all.length - named.length;
   // The widest the elision entry can be: the count only shrinks as entries are kept, so the reserve
   // is exact before the real count is known — the same idiom as {@link tailMarkerCost}.
   const reserve =
@@ -2179,16 +2263,17 @@ function boundTruncationReport(
     1 +
     JSON.stringify({ dropped: true, droppedFields: all.length }).length;
   let cost = 2; // {}
-  for (let i = 0; i < all.length; i++) {
-    const [key, entry] = all[i]!;
+  for (let i = 0; i < named.length; i++) {
+    const [key, entry] = named[i]!;
     const price = (i > 0 ? 1 : 0) + jsonCost(key) + 1 + JSON.stringify(entry).length;
     if (cost + price > PERSISTED_JSON_TRUNCATION_MAX_CHARS - reserve) {
-      out[PERSISTED_JSON_ELIDED_KEY] = { dropped: true, droppedFields: all.length - i };
-      return out;
+      unnamed += named.length - i;
+      break;
     }
     out[key] = entry;
     cost += price;
   }
+  if (unnamed > 0) out[PERSISTED_JSON_ELIDED_KEY] = { dropped: true, droppedFields: unnamed };
   return out;
 }
 
