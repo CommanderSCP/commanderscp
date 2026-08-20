@@ -12,7 +12,7 @@ import {
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
 import type { AppDeps } from "./types.js";
 import { getSharedCelSandbox } from "./governance/cel-sandbox.js";
-import { badRequest, ProblemError, sendProblem } from "./errors.js";
+import { badRequest, frameworkClientProblem, ProblemError, sendProblem } from "./errors.js";
 import { assertNoPrototypePoisoning, PrototypePoisoningError } from "./util/safe-json.js";
 import type { CollectedRoute } from "./openapi/registry.js";
 import "./openapi/registry.js";
@@ -153,6 +153,14 @@ export async function buildApp(
   //      through to its catch-all and answered a client typo with 500 Internal Server Error
   //      (measured: `{not json` -> 500). Both failure modes now produce a 400 problem+json via
   //      `badRequest`, which is this codebase's own equivalent of that Fastify error.
+  //
+  //      THAT SENTENCE NAMES A PROPERTY, AND THIS PARSER WAS ONE MEMBER OF IT. `setErrorHandler`
+  //      ignored `err.statusCode` for EVERY error, not only for parser errors, so every other
+  //      pre-handler refusal Fastify raises was a 500 too — an unsupported media type, an
+  //      oversized body, a mismatched `content-length`. Fixing the parser and leaving those is the
+  //      exact shape CLAUDE.md's census-by-property rule exists to prevent, so the handler now
+  //      honours the status instead: see `frameworkClientProblem` in `errors.ts` for the
+  //      measured census of the whole class and `error-handler-status.test.ts` for its pins.
   //   3. An empty body does NOT match Fastify's default — the default replies
   //      `FST_ERR_CTP_EMPTY_JSON_BODY`. Parsing it to `undefined` is a DELIBERATE divergence that
   //      routes here rely on, so it is kept, and now labelled as a divergence rather than as parity.
@@ -223,7 +231,26 @@ export async function buildApp(
       sendProblem(request, reply, badRequest(err.message));
       return;
     }
+    // A FRAMEWORK-RAISED CLIENT ERROR KEEPS THE STATUS THE FRAMEWORK GAVE IT. Everything Fastify
+    // refuses before a route handler runs — unsupported media type, oversized body, a
+    // `content-length` that does not match the bytes — arrived here with a correct `statusCode`
+    // that this handler used to drop on the floor, answering 415/413/400 conditions with 500.
+    // `frameworkClientProblem` (errors.ts) carries the full census, and the reason it is narrower
+    // than a bare `err.statusCode` read: `undici`'s errors carry an UPSTREAM response's status
+    // under that same property name.
+    //
+    // Logged at `info`, not `error`: these are the caller's mistakes, and the whole harm of the
+    // old behaviour was that a client typo looked like a server fault to everything downstream of
+    // the logs as well as to the client.
+    const clientProblem = frameworkClientProblem(err);
+    if (clientProblem) {
+      request.log.info({ err }, "request refused");
+      sendProblem(request, reply, clientProblem);
+      return;
+    }
     request.log.error(err);
+    // NEVER `err.message` here. Honouring `statusCode` must not slide into honouring the message
+    // of a fault we did not anticipate: a 5xx body is the fixed title and nothing else.
     sendProblem(request, reply, new ProblemError(500, "Internal Server Error"));
   });
 
