@@ -927,10 +927,10 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     WHOLE LAW" is **false past 4,008 characters**; its largest string atom is 300, so it samples only where
     it happens to hold.
 
-  - **M23.1g Surfacing truncation on the API — DECLARED, not started.** M23.1f turned a verbatim value into
-    one that may be cut and told nobody outside the server. Two consequences go live the moment it merges:
-    - `packages/schemas/src/changes.ts:266` documents `revision` as "the opaque stateRef as-is (a git SHA /
-      Argo revision)". **False now** — it can be a cut string carrying an elision marker mid-value.
+  - **M23.1g Surfacing truncation on the API — DONE.** M23.1f turned a verbatim value into one that may be
+    cut and told nobody outside the server. Two consequences were live:
+    - `packages/schemas/src/changes.ts` documented `revision` as "the opaque stateRef as-is (a git SHA /
+      Argo revision)". **False** — it can be a cut string carrying an elision marker mid-value.
     - `apps/web/src/components/pipeline/PipelineWaveCard.tsx` renders `observed?.images?.[0]`,
       `observed?.revision`, `observed?.rollout`. An elided `rollout` is `undefined`, so the card reads
       "no rollout" when the truth is "we truncated it" — **an operator given a wrong cause**, the same class
@@ -939,14 +939,85 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     The UI must NOT pattern-match the marker. `isPersistedJsonEntriesElision` and
     `PERSISTED_JSON_ELIDED_KEY` live in `@scp/runner-launcher`; `apps/web` depends only on `@scp/schemas`,
     `@scp/sdk`, `@scp/server`, correctly. A UI regexing a server sentinel is the UI reimplementing server
-    semantics, against charter principle 3. So: the server surfaces truncation as **structured data** (a
-    flag and dropped-count per field), the SDK regenerates, the UI renders a fact. Done when the schemas
-    comment is true, a truncated field is distinguishable from an absent one through the generated SDK
-    alone, and a named test fails if a bound is applied without the signal.
+    semantics, against charter principle 3 — and it would not even work: the markers are content-shaped
+    (a plugin can return `[elided: 9 more entries]` as a revision, and
+    `observed-state-gate-critical-leaf.integration.test.ts` already drives exactly that fixture), and
+    `boundText`'s narrow branch emits **no marker at all**.
 
-    **UI follow-up, deliberately out of this milestone:** what an operator should *see* for
-    truncated-versus-absent is a design judgement belonging with the UI session on
-    `claude/ui-review-worktree-efc42b`, against the settled wire shape.
+    **THE SHAPE.** `boundPersistedJson` now returns `{ value, truncation }` — the pair, so the bound and its
+    signal cannot be separated by a caller who forgets. `truncation` is
+    `Record<field, { dropped, droppedCharacters?, droppedEntries?, droppedFields? }>`, keyed by the ROOT
+    FIELD, absent entirely when nothing was removed. `dropped: true` is the load-bearing bit: it is the only
+    thing that separates "we cut it" from "the executor never reported it", and the name is **not
+    recoverable from the row** — `__scpElided` is a count, deliberately, because names would be
+    plugin-chosen text competing with the reading for the column. Surfaced as
+    `ChangeWaveTargetSchema.observed.truncation`.
+
+    **THE COUNTS ARE TAKEN AT THE CUT SITES, NOT PARSED BACK OUT.** `boundTextWithLoss` returns the
+    characters it dropped; the array tail and the object elision report the same number their markers
+    carry; the depth limit reports what it replaced even though it is deliberately not a budget clip. Phase
+    2 re-walks a field at a larger share, so each attempt gets a **fresh** accumulator that REPLACES the
+    previous one — accumulating reports one cut two and three times over, and that mutation is in the table.
+
+    **AND IT IS PAID FOR.** The report is stamped after the bound, like `observedAt` — which is exactly the
+    escape `observed-state-row-size.test.ts` was written to catch, so this one does not escape:
+    `updateWaveTargetObserved` hands the bound `PERSISTED_JSON_MAX_CHARS - (PERSISTED_JSON_TRUNCATION_MAX_CHARS + 32)`.
+    The row policy does not move (widest row 7 944 -> 7 926 of 8 000); the value's share of it does, by
+    ~3 image refs on a saturating reading. The alternative — raising the policy — was rejected: it is the
+    1.44 GB/day discipline, and re-committing the exact defect the gate exists for, inside the increment
+    about silent losses, is not a trade. No arithmetic inside the walk changed, so all 63 value-side arms of
+    `persisted-json-bound.test.ts` keep their exact numbers.
+
+    **PROOF.** `packages/runner-launcher/src/persisted-json-truncation.test.ts` — 12 arms, two of which
+    assert the signal is ABSENT (a signal that fires on readings that lost nothing is one consumers learn to
+    ignore), plus the gate: a **dense budget sweep** over seven structured `observed_state` shapes at every
+    budget 100…9 000 asserting `value !== input` implies `truncation !== undefined`, 1 000+ cut and 100+
+    intact for non-vacuity. A sweep and not a random corpus, for the reason M23.1f's own done-criteria give.
+    **Nine mutations, nine reds**, one at a time on a clean tree: each of the four accounting sites, the
+    refused key names, accumulate-vs-replace, the backstop's report, the report's self-bound, and `dropped`
+    inverted. Two are recorded as reddening ONE arm with the sweep green — the depth limit and the refused
+    names — because that is evidence about the sweep's family, not about the fix.
+    `apps/server/src/coordination/observed-truncation.integration.test.ts` drives real reconcile against
+    real Postgres and reads `changes.explain` back through `ScpClient`, typed **only** against
+    `packages/sdk/src/generated` (`ExplainChangeResponse`, re-exported for it) — if `truncation` were missing
+    from the OpenAPI document the aliases would not compile, so `tsc` is that assertion. **Its import list is
+    part of the test**: no `@scp/runner-launcher`, because `apps/web` cannot import it either, so the 8 000 is
+    hand-copied with its name in a comment. Delete-the-wiring: dropping the stamp reddens 3 of 6 named arms;
+    deleting the schema field and rebuilding reddens the same 3.
+
+    **OASDIFF PREDICTED BEFORE PUSHING** (the binary is linux-only): merge-base `3006f2ee` -> working tree,
+    diffed leaf-by-leaf in python — **15 added, 0 removed, 0 changed**. The one `required` addition is
+    `dropped`, inside `truncation/additionalProperties`, a subschema that does not exist at the base; no
+    existing field's optionality moved, and `revision` is byte-identical in the spec (JSDoc does not reach
+    it).
+
+    **`dropped: true` IS NOT REACHABLE END TO END TODAY, and the arithmetic is written down rather than
+    left to be rediscovered.** The defect this entry describes — "an elided `rollout` reads as absent" — was
+    real at 73 image refs and M23.1f's water-filling closed it: `observedStateFrom` composes three root
+    fields, phase 1 prices a seat at `admissionCost` (≤ 96), and three seats cost ~288 of the 7 584 the walk
+    is given. A root field of `observed_state` cannot be refused until an executor contributes something like
+    **78** observed fields. The unit file covers `dropped` at a budget where it fires; the integration file
+    drives what a real Argo CD produces (`droppedEntries` from an uncapped `status.summary.images`,
+    `droppedCharacters` from a multi-source revision). A future budget retune re-opens it.
+
+    **STILL OPEN, recorded not fixed.**
+    - `executor_ref` and `prior_state_ref` are bounded and carry **no** structured signal. Deliberate, and
+      the reason is at the line: their reader is the PLUGIN, not an operator — `executor_ref` is the handle
+      `status()` is polled with — so a cut there is a **broken handle**, not a wrong display, and the honest
+      fix is refusing the write, not describing the damage prettily. Neither is surfaced on the API as
+      anything but an opaque record, so there is nowhere for a per-field signal to be read from.
+    - **TWO PLUGIN-SUPPLIED VALUES THAT ARE STILL UNBOUNDED**, found by this increment's doc census and
+      belonging to M23.1f's property rather than this one. M23.1f's census (the block above `boundPluginJson`)
+      enumerated `ExecutionStatus` and `ExternalRunRef` — the returns of `status()` and `trigger()` — and
+      never `observe()`'s: `ExecutorEvent.raw` is arbitrary plugin JSON written into
+      `change_source_events.payload` verbatim (`observe.ts:207`), and `executor_observe_cursors.cursor_token`
+      is plugin-minted text stored whole, its column comment saying so ("the driver stores it verbatim").
+      Both are permanent rows on a polling loop. Not fixed here because a bound is a different change from a
+      signal, and bounding a correlation payload has readers to check first.
+    - The UI. What an operator should *see* for truncated-versus-absent is a design judgement belonging with
+      the UI session on `claude/ui-review-worktree-efc42b`, against the now-settled wire shape. Until then
+      `PipelineWaveCard` still renders the wrong cause — the data to fix it is on the API, the rendering is
+      not done.
 
     RECORD CORRECTION: commit `22c4058d` is labelled `test(m23.3)`. M23.3 is chart wiring, not started; that
     commit belongs to M23.1e. Its predecessor `b22fcbe1` is titled "renumber off M23.3" — the collision was
