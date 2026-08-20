@@ -864,6 +864,87 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     - **HOW IT IS PROVEN — the seam had to be new, and that is the finding.** `docker-adapter.test.ts` settles every step on the NEXT TICK by design (it asks *what* and in what *order*), and `managed-trigger-budget.test.ts`'s stub `docker` is slow only on `start`. With one slow step there is no sum to bound, so **both suites were structurally blind to a defect about the sum** — eighty green tests, none of which could ask *how long*. `whole-run-budget.test.ts` therefore models DURATION and models Node's own `timeout` semantics including the `0` trap, and `managed-trigger-whole-run-budget.test.ts` is the sibling of the M23.1c test with a stub that is slow on EVERY step. Mutation table, one at a time against a clean tree, rebuilding `dist` each time (apps/server resolves `main: dist/index.js`, so a `src` mutation is otherwise a no-op there): `MANAGED_TRIGGER_GRACE_MS` 60_000→3_000 **RED ×2** (this is the mutation that survived before the fix, and its survival is what proved the budget unbounded), 60_000→30_000 **RED**, per-call `spec.timeoutMs` **RED ×2**, stamp loses the grace **RED ×3**, `void reap()`→`await reap()` **RED ×2**, unconditional teardown **RED** (launcher + the managed-iac golden), skip-teardown-on-any-failure **RED ×10**, DELETE the reap wiring **RED ×5**, remove the single-flight slot **RED**, remove the reap pass budget **RED**. One mutation is a **semantic no-op and is recorded as such rather than as a catch**: `Math.max(1, remaining)` → `remaining` changes nothing, because past the refusal `remaining` is an integer ≥1 — the clamp is unreachable belt kept only because shifting the refusal by one character (`<= 0` → `< 0`) would turn a single instant of the clock into `timeout: 0`, i.e. no bound, on a live `tofu apply`. A second mutation is **SURVIVED and recorded as such, not RED**: the reap-stamp line, `new Date(runDeadlineAt + RUNNER_REAP_GRACE_MS)` → `new Date(Date.now() + runTimeoutMs + RUNNER_REAP_GRACE_MS)` — "a second `Date.now()` for the stamp" — SURVIVES the whole file and every sibling suite (measured, all green). It is safe rather than dangerous: at that line no async work has happened yet, so the second read is taken at essentially the same instant as the first and the two stamps are indistinguishable in practice; a later read can only push the stamp later, the conservative direction. The dangerous direction — a stamp read after real work has elapsed, which is the actual HIGH-2 defect this file exists to catch — is what "SAMPLED THROUGHOUT A RUN THAT SPENDS ITS WHOLE BUDGET" (`whole-run-budget.test.ts`) catches instead; this line's own mutation table entry was wrong until this correction, which is itself the CLAUDE.md-cited hazard of a false RED in evidence other rounds rest on.
     - **THE GOLDENS MOVED, DELIBERATELY.** All three `launch-argv.golden.test.ts` asserted the per-call `timeout` as an EQUALITY, which was pinning the defect. They now assert the interval it must lie in — never above the caller's budget, never more than a slack below it — with `toStrictEqual` intact so the ABSENCE of `maxBuffer` on `rm` is still pinned exactly. managed-iac's create-failure fixture was itself a **name conflict** (`name already in use`) while asserting that the teardown runs, i.e. the golden encoded the fourth defect; it is now an ordinary failure, with the conflict as its own arm asserting the opposite.
   - **[ADR-0035](adr/0035-managed-execution-credential-and-orphan-protection.md) — the owner's four decisions (2026-08-18).** This ADR records the three defects live on main (credential exposure via argv and `docker inspect`, the 10-second SIGKILL defeating every run over 10s, orphaned containers from crashed subprocesses), the fixes (env/secretEnv split, per-method budget, the reaper), and why none of it was caught by the test suite (the real plugins tested in isolation from the host; the host tested with a fast fake; the wiring between them had no defect-catching surface).
+  - **M23.1f The persistence bound — IN PROGRESS, and it is the largest thing in M23 that nobody planned.**
+    M23.1e's outer catches made a failure `detail` durable: written to a plugin's on-disk ledger, returned
+    by `status()`, and from there into a `Decision`'s `inputContext`. Bounding what an untrusted plugin can
+    put there became eight rounds of work, and this entry is written retroactively because it ran for all
+    eight with **no milestone entry and therefore no definition of done** — which is a substantial part of
+    why each round kept discovering the next defect.
+
+    What landed: `boundText`/`boundDetail`/`boundPersistedJson` in `@scp/runner-launcher`, one bound at each
+    trust boundary (9 call sites, down from 26), a `BoundedDetail` brand on what is *stored*, per-entry and
+    per-COUNT caps on all three plugins' outcome stores, and `boundPluginJson` at `wave-targets-repo.ts`
+    over the three `jsonb` columns a plugin can write — `observed_state`, `executor_ref`, `prior_state_ref`,
+    measured at 500,093 bytes of plugin-chosen text before the bound.
+
+    **Six consecutive rounds' own fixes introduced or multiplied a defect.** Recorded because the pattern is
+    the finding, not the individual bugs:
+
+    | round fixed | round introduced |
+    |---|---|
+    | unbounded `detail` reaching a permanent row | a cut mid-surrogate-pair; Postgres refuses the row, `withTenantTx` rolls back, **the wave never terminalizes** — once a tick, forever (§4.4a again) |
+    | the stall | the bound dropped `rollout` first, silently disabling ADR-0028's `minWeight` gate at 73 image refs |
+    | the gate | an equal-share ceiling that halved utilisation and **doubled** the population where internal-release detection silently stops |
+    | the ceiling | a 2-character overshoot recovered by *halving*, so every unescaped string stored `budget/2` |
+    | the overshoot | leaf branches rendering `null` while charging 0, and cut arrays overspending by their own marker |
+    | those | a seat price that priced admission but not the phase-2 spend: **34,900 whole-value discards in 197,934 pairs**, zero in both preceding builds |
+
+    Backstop firing rate (the backstop discards the WHOLE value, so `revision`, `images` and
+    `rollout.weight` vanish together, silently, every tick) over a fixed corpus, by round:
+    **697 → 30 → 238 → 0 → 34,900 → 0**.
+
+    **Three things measurement established that reading did not, in eleven passes:**
+    1. `isWellFormed()` returns **true** for a NUL-carrying string that `jsonb` refuses. The predicate is
+       *well-formed AND NUL-free*. Model the DB and you get this wrong; ask the DB and you do not.
+    2. The defects were found by instrumenting the walk to compare **charged-vs-rendered per node**, then
+       **charged-vs-given** — never by reading.
+    3. **Random shape generation is the wrong instrument for this class.** 6,000 random shapes found *zero*
+       instances against a build a structured budget sweep caught 49,518 times. The axis eleven passes never
+       varied was the **budget**. The permanent test is a sweep, not a corpus.
+
+    **Definition of done — machine-checked, and NOT met as of pass 13:**
+    1. An adversarial pass finds no defect. Passes 11, 12 and 13 each answered "converged?" with **No**.
+    2. **Six of eight mutations currently survive all 227 tests** — `tailMarkerCost`'s `+1` comma, the
+       phase-1 elision `+2`, `PERSISTED_JSON_SHARE_ROUNDS` at 3 or 8, `renderedCostAtMost`'s negative-cap
+       return, and `Object.assign` for `out[field.key]`. Done requires a corpus that kills them, or a
+       measured argument that no input can distinguish them.
+    3. Zero backstop firings and zero over-budget rows across a dense **budget sweep** (not a random
+       corpus) at every width, depth 0–5.
+    4. Zero rows refused by a real Postgres over adversarial alphabets, with the pre-bound shape refused as
+       a non-vacuity control.
+    5. Every gate leaf survives at every size, asserted **through the reader** (`stageDependencyVerdict`,
+       `resolveReleasedVersion`) — never through a row length, which is what let three of these ship.
+
+    **Known live and uncovered:** a `__proto__` own key — which `JSON.parse` of a plugin response creates —
+    is charged, silently dropped, and replaces the stored object's prototype. The pinned law "L + 96 IS THE
+    WHOLE LAW" is **false past 4,008 characters**; its largest string atom is 300, so it samples only where
+    it happens to hold.
+
+  - **M23.1g Surfacing truncation on the API — DECLARED, not started.** M23.1f turned a verbatim value into
+    one that may be cut and told nobody outside the server. Two consequences go live the moment it merges:
+    - `packages/schemas/src/changes.ts:266` documents `revision` as "the opaque stateRef as-is (a git SHA /
+      Argo revision)". **False now** — it can be a cut string carrying an elision marker mid-value.
+    - `apps/web/src/components/pipeline/PipelineWaveCard.tsx` renders `observed?.images?.[0]`,
+      `observed?.revision`, `observed?.rollout`. An elided `rollout` is `undefined`, so the card reads
+      "no rollout" when the truth is "we truncated it" — **an operator given a wrong cause**, the same class
+      as the `no_weight` reason that blamed the executor (charter principle 6).
+
+    The UI must NOT pattern-match the marker. `isPersistedJsonEntriesElision` and
+    `PERSISTED_JSON_ELIDED_KEY` live in `@scp/runner-launcher`; `apps/web` depends only on `@scp/schemas`,
+    `@scp/sdk`, `@scp/server`, correctly. A UI regexing a server sentinel is the UI reimplementing server
+    semantics, against charter principle 3. So: the server surfaces truncation as **structured data** (a
+    flag and dropped-count per field), the SDK regenerates, the UI renders a fact. Done when the schemas
+    comment is true, a truncated field is distinguishable from an absent one through the generated SDK
+    alone, and a named test fails if a bound is applied without the signal.
+
+    **UI follow-up, deliberately out of this milestone:** what an operator should *see* for
+    truncated-versus-absent is a design judgement belonging with the UI session on
+    `claude/ui-review-worktree-efc42b`, against the settled wire shape.
+
+    RECORD CORRECTION: commit `22c4058d` is labelled `test(m23.3)`. M23.3 is chart wiring, not started; that
+    commit belongs to M23.1e. Its predecessor `b22fcbe1` is titled "renumber off M23.3" — the collision was
+    caught and one commit fixed while this one kept the bad label. History is published; corrected here.
+
   - **M23.2 The Kubernetes adapter.** Job create + watch to completion + log read + delete, `automountServiceAccountToken: false`, the same server-injected never-tenant settings (`runnerImage`, network policy, per-run scoped credentials as env) the Docker path already enforces, and bytes moved by an `emptyDir` workspace + init/sidecar copy rather than `docker cp`. Selection is **explicit operator config**, never auto-detected: guessing the platform from the presence of a service-account token is the runtime/install-time fork M15.4 declined to create.
   - **M23.3 Chart wiring for all three classes.** `managedScan`/`managedDep` get the RBAC + template `managedIac` already has, and the three `SCP_MANAGED_*_RUNNER_IMAGE` values become chart values. NetworkPolicy for the runner Jobs must express `--network none`'s equivalent, since that literal is a charter clause for `managed-dep` ([ADR-0032](adr/0032-dependency-subscriptions.md) §8d), not a default.
   - **M23.4 Retire the "HONEST SCOPE" note** — and only then. Until every clause below is machine-checked, that note stays exactly as written.
