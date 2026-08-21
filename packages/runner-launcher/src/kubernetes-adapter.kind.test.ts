@@ -1024,4 +1024,117 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     expect(result.failure!.deadlineExceeded).toBe(false);
     expect(result.failure!.detail).toContain("NOT this run's own budget");
   }, 240_000);
+
+  it("M23.5 PASS 18: NEVER OBSERVED — a REAL container runs and mutates while the launcher is blind", async () => {
+    /**
+     * THE PROBE THAT FOUND THE DEFECT, KEPT AS A GATE — and only a real cluster can run it, because
+     * the whole point is that the Job, the pod, the kubelet and the volume are real while the
+     * LAUNCHER'S VIEW of them is not.
+     *
+     * WHAT IS FAKED IS EXACTLY ONE THING: the pod reads never land. That is an API-server stall or a
+     * partition, and it is the shape measured in the field. Everything else is real — the unsuspend
+     * PATCH reaches the real API server and succeeds, the real Job controller creates a real pod,
+     * the real kubelet pulls and runs the real container, and the container writes a REAL FILE to
+     * the REAL shared volume, which this test reads off the disk as ground truth.
+     *
+     * WHAT THE LAUNCHER USED TO RECORD FOR THIS RUN:
+     *   kind=spawn-failed code=RunnerContainerNeverStarted deadlineExceeded=false
+     *   spawn-failed: the container CLI could not be executed at all — nothing ran … so NOTHING RAN
+     *   and nothing was mutated — the Job had not yet been observed
+     * with `marker.txt` on the volume saying `THE-RUNNER-RAN-AND-MUTATED`. The clause that disproves
+     * the sentence is inside the sentence.
+     */
+    const runId = "never-observed";
+    const slotDir = join(harness.workspaceHost, runnerJobName(runId), "m0");
+    const markerOnVolume = join(slotDir, "marker.txt");
+
+    const inDir = join(scratch, "never-observed-in");
+    await execFileAsync("mkdir", ["-p", inDir]);
+    await writeFile(join(inDir, "seed.txt"), "seed", "utf8");
+
+    // GROUND TRUTH, SAMPLED WHILE THE RUN IS ALIVE. Teardown removes this run's subtree from the
+    // shared volume — that is correct and unconditional — so the marker is watched for rather than
+    // looked for afterwards. What it proves is not affected: the bytes were on the volume, written
+    // by a container, during the window in which the launcher was recording that nothing ran.
+    let markerContents: string | undefined;
+    let watching = true;
+    const watcher = (async () => {
+      while (watching) {
+        try {
+          markerContents = (await readFile(markerOnVolume, "utf8")).trim();
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+    })();
+
+    const real = io();
+    const blind: KubernetesRunnerIo = {
+      ...real,
+      request: async (req) => {
+        if (
+          req.method === "GET" &&
+          req.path.startsWith(`/api/v1/namespaces/${harness.namespace}/pods?`)
+        ) {
+          // CONSUMES THE BOUND IT WAS HANDED AND THEN REJECTS — `AbortSignal.timeout` firing,
+          // which is what the shipped transport does when nothing answers.
+          await new Promise((r) => setTimeout(r, req.timeoutMs + 50));
+          throw new Error("The operation was aborted due to timeout");
+        }
+        return real.request(req);
+      }
+    };
+
+    const result = await createKubernetesRunnerLauncher({
+      namespace: harness.namespace,
+      workspaceRoot: harness.workspaceHost,
+      workspaceVolume: { kind: "hostPath", path: harness.nodeWorkspace },
+      perRunSecrets: true,
+      runAsNonRoot: false,
+      pollIntervalMs: 500,
+      io: blind
+    }).run(
+      spec({
+        runId,
+        labels: { "scp.run-id": runId },
+        // WRITES, THEN KEEPS RUNNING — a `tofu apply` in flight, which is the case the sentence
+        // under test is read in.
+        operands: [
+          "/bin/sh",
+          "-c",
+          "echo THE-RUNNER-RAN-AND-MUTATED > /work/out/marker.txt; sleep 300"
+        ],
+        copyIn: [{ hostDir: inDir, containerPath: "/work/out" }],
+        timeoutMs: 25_000
+      })
+    );
+    watching = false;
+    await watcher;
+
+    // ---- GROUND TRUTH FIRST. Without this the assertions below are about a fixture. -------------
+    expect(
+      markerContents,
+      "the runner never wrote its marker to the shared volume, so this case did not exercise the " +
+        "defect at all — it must FAIL rather than pass vacuously"
+    ).toBe("THE-RUNNER-RAN-AND-MUTATED");
+
+    // ---- AND NOW THE SENTENCE THE OPERATOR READS ABOUT THAT SAME RUN. --------------------------
+    expect(result.succeeded).toBe(false);
+    const detail = result.failure!.detail;
+    expect(
+      result.failure!.kind,
+      `a run that mutated was classified ${result.failure!.kind}: ${detail}`
+    ).toBe("outcome-unknown");
+    // THE THREE CLAIMS THE RECORD MAY NOT MAKE, measured against a container that did run.
+    expect(detail).not.toContain("NOTHING RAN");
+    expect(detail).not.toContain("nothing was mutated");
+    expect(detail).not.toContain("could not be executed at all");
+    // AND THE ONE IT MUST.
+    expect(detail).toContain("is NOT KNOWN");
+    expect(detail).toContain("Check the target's real state before re-running");
+
+    // TEARDOWN STILL REACHED THE REAL OBJECTS — the verdict changed, the obligation did not.
+    expect(await kubectl("get", "jobs", "-o", "name")).not.toContain(runnerJobName(runId));
+  }, 180_000);
 });
