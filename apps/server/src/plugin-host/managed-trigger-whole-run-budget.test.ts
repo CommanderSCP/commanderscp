@@ -37,9 +37,19 @@ import { SubprocessPluginHost } from "./host.js";
 const RUN_BUDGET_MS = 7_000;
 /** What each of `create` / `cp` / `start` costs. Four such steps = 12s of work in a 7s budget. */
 const STEP_SECONDS = 3;
-/** What the teardown costs. Under `RUNNER_REMOVE_TIMEOUT_MS` (30s), and deliberately NOT free: it
- *  is the only work that happens after the run deadline, so it is the term `MANAGED_TRIGGER_GRACE_MS`
- *  has to cover, and a stub that tore down instantly would make that constant untestable here. */
+/**
+ * What the teardown costs. Under `RUNNER_REMOVE_TIMEOUT_MS` (30s), and deliberately NOT free: it is
+ * the post-deadline work `MANAGED_TRIGGER_GRACE_MS` has to cover, and a stub that tore down
+ * instantly would make that constant untestable here.
+ *
+ * IT IS NOT "THE ONLY WORK THAT HAPPENS AFTER THE RUN DEADLINE", WHICH IS WHAT THIS SAID — corrected
+ * by M23.5. That was true of the DOCKER adapter, which is the one this file drives, and false of the
+ * Kubernetes adapter, whose `finally` is three bounded calls; a step abandoned at the deadline can
+ * also cost one `RUNNER_STEP_ABANDON_GRACE_MS` before the teardown even begins. The whole term is
+ * `runnerPostDeadlineMs(kind)`, and the count it derives from is checked against the code by
+ * `@scp/runner-launcher`'s `teardown-model.test.ts` — this file cannot see either, because it drives
+ * one adapter through a stub `docker`.
+ */
 const TEARDOWN_SECONDS = 6;
 /**
  * What the run may take: the budget, plus one teardown, plus room for subprocess spawn and the RPC.
