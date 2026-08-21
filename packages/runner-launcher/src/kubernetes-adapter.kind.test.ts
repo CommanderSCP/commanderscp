@@ -959,10 +959,19 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
 
       // 3. AND THE PROOF THAT IT IS THE 409 THAT WAS HEALED: the name is usable again. This is the
       //    assertion the four measured red runs were failing.
+      //    THE QUOTA NAMESPACE'S FULL CONVENTION SET, which is ROUTE 1b's verbatim — `limits.cpu`
+      //    AND `limits.memory`. Measured the hard way: with `limits.memory` alone the admission
+      //    refusal is "must specify limits.cpu", the Job creates no pod, and this arm polls its
+      //    whole budget before failing for a reason that has nothing to do with the sweep.
       const result = await launcher({
         quota: true,
-        pod: { resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { memory: "64Mi" } } }
-      }).run(spec({ runId, labels: { "scp.run-id": runId }, timeoutMs: 120_000 }));
+        pod: {
+          resources: {
+            requests: { cpu: "10m", memory: "16Mi" },
+            limits: { cpu: "200m", memory: "64Mi" }
+          }
+        }
+      }).run(spec({ runId, labels: { "scp.run-id": runId }, timeoutMs: 60_000 }));
       expect(
         result.succeeded,
         `the name was still held after the sweep: ${result.failure?.detail ?? ""}`
