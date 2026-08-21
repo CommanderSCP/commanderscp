@@ -2820,6 +2820,36 @@ export const RUNNER_REMOVE_TIMEOUT_MS = 30_000;
  */
 export const RUNNER_STEP_ABANDON_GRACE_MS = 1_000;
 
+/**
+ * THE SMALLEST REMAINING BUDGET A STEP MAY BE ISSUED WITH — and the reason the refusal's old
+ * boundary was unreachable exactly where it mattered most.
+ *
+ * THE REFUSAL USED TO READ `remaining <= 0`, and for the step that FOLLOWS a budget kill that
+ * condition is essentially never true. `RunDeadline` measures the deadline with `Date.now()`, while
+ * the kill that lands on it is a libuv timer read off a different clock; the two disagree by up to a
+ * millisecond. MEASURED, in `whole-run-budget.test.ts` under the full suite's load: a `start` killed
+ * by its own derived timeout reported `Date.now()` ONE MILLISECOND BEFORE the deadline that timeout
+ * was derived from, so the copy-out behind it saw `remaining === 1` and was ISSUED —
+ * `docker cp … { timeout: 1 }`. Three arms of that file failed intermittently on it, 3 runs in 8,
+ * a different arm each time, which is the signature of a boundary the process cannot land on rather
+ * than of a test that is wrong.
+ *
+ * AND A 1ms `docker cp` IS NOT A CALL, IT IS A SPAWN AND A SIGTERM. `whole-run-budget.test.ts`'s own
+ * comment said so before any of this was measured — "issuing a doomed `docker cp` at the deadline is
+ * a call whose only possible outcome is another SIGTERM". Spawning a process costs several
+ * milliseconds before the image is even resolved, so a bound below that is a promise to kill the
+ * work rather than a budget to do it in: it burns a spawn, produces a `killed`/`SIGTERM` diagnosis
+ * about our own impatience rather than about the step, and arrives at the same `deadlineExceeded`
+ * verdict the refusal would have given for free.
+ *
+ * TEN MILLISECONDS: an order of magnitude above the clock disagreement that makes `<= 0`
+ * unreachable, below the cost of the cheapest thing any step here does, and 1% of the smallest whole
+ * run budget the product will accept (`call-policy.ts` floors a stored timeout at one second). It is
+ * NOT padding on the budget — the deadline does not move — it is the point below which "what is
+ * left" stops being budget at all.
+ */
+export const RUNNER_MIN_STEP_BUDGET_MS = 10;
+
 /** `code` on an abandoned step, so a reader can branch without parsing the message. */
 export const RUNNER_ABANDONED_CODE = "ERR_SCP_RUNNER_STEP_ABANDONED";
 
@@ -2957,7 +2987,9 @@ export function createRunDeadline(args: {
     remainingMs: () => at - Date.now(),
     async spend(step, argv, work) {
       const remaining = at - Date.now();
-      if (remaining <= 0) {
+      // BELOW {@link RUNNER_MIN_STEP_BUDGET_MS} IS SPENT, and that is not a rounding convenience —
+      // read that constant for why `<= 0` is a boundary this process cannot reliably land on.
+      if (remaining < RUNNER_MIN_STEP_BUDGET_MS) {
         throw new RunnerLaunchError({
           step,
           file: args.file,
@@ -2965,7 +2997,11 @@ export function createRunDeadline(args: {
           deadlineExceeded: true,
           cause: new Error(
             `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
-              `at the run deadline ${iso} — '${step}' was not issued`
+              `at the run deadline ${iso} — '${step}' was not issued` +
+              (remaining > 0
+                ? ` (${remaining}ms left, under the ${RUNNER_MIN_STEP_BUDGET_MS}ms below which a ` +
+                  `step is a spawn and a SIGTERM rather than a call)`
+                : "")
           ),
           redactions: args.redactions()
         });

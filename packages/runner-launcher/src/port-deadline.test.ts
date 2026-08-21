@@ -88,6 +88,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 const {
+  RUNNER_MIN_STEP_BUDGET_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
   RUNNER_STEP_ABANDON_GRACE_MS,
   RunnerLaunchError,
@@ -95,6 +96,7 @@ const {
   classifyRunnerFailure,
   createDockerRunnerLauncher,
   createKubernetesRunnerLauncher,
+  createRunDeadline,
   runnerJobName,
   runnerRunBoundMs,
   whenKubernetesReapSettled,
@@ -427,6 +429,56 @@ describe("M23.5: the SAME port bounds the Docker adapter — one mechanism, not 
     expect(dockerCalls.filter((c) => c.args[0] === "create")).toStrictEqual([]);
     // AND THE CREDENTIAL IS NOT IN THE MESSAGE — the redaction set is live before the first step.
     expect(err.message).not.toContain("s3cr3t");
+  });
+});
+
+// ==================================================================================================
+describe("M23.5: `RunDeadline.spend` — the refusal, at a boundary the process can actually land on", () => {
+  // ================================================================================================
+  it("A STEP REACHED WITH LESS THAN THE MINIMUM BUDGET IS REFUSED, not issued with a doomed bound", async () => {
+    // THE BOUNDARY `remaining <= 0` COULD NOT REACH, and it is the port primitive rather than an
+    // adapter because the defect is in the primitive. `RunDeadline` measures the deadline with
+    // `Date.now()`; the budget kill that lands on it is a libuv timer on a different clock, and the
+    // two disagree by up to a millisecond — so the step BEHIND a killed one saw `remaining === 1`
+    // and was issued as `docker cp … { timeout: 1 }`. Three arms of `whole-run-budget.test.ts`
+    // failed on that intermittently (3 runs in 8, a different arm each time), which is the shape of
+    // a boundary the process cannot land on rather than of a wrong test.
+    //
+    // DETERMINISTIC BY CONSTRUCTION, which the arms it replaces could not be: the budget is BORN
+    // under the floor rather than whittled down to it by a race.
+    const deadline = createRunDeadline({
+      requestedTimeoutMs: RUNNER_MIN_STEP_BUDGET_MS - 1,
+      file: "docker",
+      redactions: () => []
+    });
+    let issued = false;
+    const err = await deadline
+      .spend("copy-out", ["cp", "container-abc:/work/out/.", "/host/out"], async (timeoutMs) => {
+        issued = true;
+        return timeoutMs;
+      })
+      .catch((e: unknown) => e);
+
+    expect(issued, "a step with less than the minimum budget was handed to Node anyway").toBe(
+      false
+    );
+    expect(err).toBeInstanceOf(RunnerLaunchError);
+    const launchError = err as InstanceType<typeof RunnerLaunchError>;
+    expect(launchError.deadlineExceeded).toBe(true);
+    expect(launchError.message).toContain("was not issued");
+  });
+
+  it("AND A BUDGET THAT IS COMFORTABLY ABOVE THE MINIMUM IS STILL SPENT — the negative control", async () => {
+    // WITHOUT THIS ARM, "refuse everything" passes the one above and no run ever issues a step. The
+    // floor is a floor, not a new deadline: the bound handed down is still what remains.
+    const deadline = createRunDeadline({
+      requestedTimeoutMs: 5_000,
+      file: "docker",
+      redactions: () => []
+    });
+    const bound = await deadline.spend("create", ["create"], async (timeoutMs) => timeoutMs);
+    expect(bound).toBeGreaterThan(RUNNER_MIN_STEP_BUDGET_MS);
+    expect(bound).toBeLessThanOrEqual(5_000);
   });
 });
 
