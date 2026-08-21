@@ -1902,8 +1902,7 @@ function main(): void {
         (r.resources ?? []).includes("events")
       );
       assert(
-        eventRules.length === 1 &&
-          [...(eventRules[0]!.verbs ?? [])].sort().join(",") === "list",
+        eventRules.length === 1 && [...(eventRules[0]!.verbs ?? [])].sort().join(",") === "list",
         `[${label}] expected exactly ONE 'events' rule on the runner Role granting exactly 'list'; found ${JSON.stringify(eventRules)}. Narrower means the pod-creation-refusal diagnosis is unreadable; wider is a grant nothing in the adapter uses`
       );
     }
@@ -2259,9 +2258,18 @@ function main(): void {
         `[${label}] on the documented single-pod topology (api.role=all, worker.replicaCount=0) the api pod has NO service-account token — it is the pod that runs the managed executors, so every API call it makes would be anonymous`
       );
       for (const [root, why] of [
-        [RUNNER_ROOT, "the shared runner workspace — copy-in would write to the container's own ephemeral filesystem and the runner Job would mount the real claim and find an empty directory, SILENTLY"],
-        [IAC_ROOT, "the managed-IaC scratch root — `containerSecurityContext.readOnlyRootFilesystem` is true, so this is EROFS on the first mkdir"],
-        [DEP_ROOT, "the managed-dep scratch root — same EROFS, and nothing has ever mounted it on EITHER pod"]
+        [
+          RUNNER_ROOT,
+          "the shared runner workspace — copy-in would write to the container's own ephemeral filesystem and the runner Job would mount the real claim and find an empty directory, SILENTLY"
+        ],
+        [
+          IAC_ROOT,
+          "the managed-IaC scratch root — `containerSecurityContext.readOnlyRootFilesystem` is true, so this is EROFS on the first mkdir"
+        ],
+        [
+          DEP_ROOT,
+          "the managed-dep scratch root — same EROFS, and nothing has ever mounted it on EITHER pod"
+        ]
       ] as [string, string][]) {
         assert(
           writePaths(singlePod, "-api").includes(root),

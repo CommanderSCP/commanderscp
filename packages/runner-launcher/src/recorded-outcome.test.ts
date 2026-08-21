@@ -140,9 +140,12 @@ describe("withRecordedOutcome", () => {
           'group \\"batch\\" in the namespace \\"scp\\"","reason":"Forbidden","code":403}'
       }
     });
-    await withRecordedOutcome({ record: (_ok, d) => void recorded.push(d), redact: (t) => t }, async () => {
-      throw err;
-    });
+    await withRecordedOutcome(
+      { record: (_ok, d) => void recorded.push(d), redact: (t) => t },
+      async () => {
+        throw err;
+      }
+    );
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toContain("HTTP 403"); // the short message is still there
     expect(recorded[0]).toContain('cannot create resource \\"jobs\\"'); // and now so is the reason
@@ -165,9 +168,12 @@ describe("withRecordedOutcome", () => {
       redactions: [],
       cause: { message: causeMessage } // no `.stderr` on the cause — the Docker shape
     });
-    await withRecordedOutcome({ record: (_ok, d) => void recorded.push(d), redact: (t) => t }, async () => {
-      throw err;
-    });
+    await withRecordedOutcome(
+      { record: (_ok, d) => void recorded.push(d), redact: (t) => t },
+      async () => {
+        throw err;
+      }
+    );
     expect(recorded).toHaveLength(1);
     // Exactly one occurrence — not the message, a separator, and the same text again.
     expect(recorded[0]!.split("no space left on device")).toHaveLength(2);
@@ -189,7 +195,10 @@ describe("withRecordedOutcome", () => {
       }
     });
     await withRecordedOutcome(
-      { record: (_ok, d) => void recorded.push(d), redact: (t) => t.split("SEEDED_SECRET").join("***") },
+      {
+        record: (_ok, d) => void recorded.push(d),
+        redact: (t) => t.split("SEEDED_SECRET").join("***")
+      },
       async () => {
         throw err;
       }

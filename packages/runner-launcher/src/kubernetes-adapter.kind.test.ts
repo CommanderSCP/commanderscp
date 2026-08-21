@@ -4,13 +4,15 @@ import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   LAUNCHER_OWNER_ID,
   RUNNER_LAUNCHER_DEADLINE_ANNOTATION,
   RUNNER_LAUNCHER_OWNER_LABEL,
+  RUNNER_RUN_ID_LABEL,
   createFetchKubernetesIo,
   createKubernetesRunnerLauncher,
+  jobManifest,
   runnerJobName
 } from "./index.js";
 import type { KubernetesRunnerIo, RunnerSpec } from "./index.js";
@@ -179,11 +181,7 @@ function launcher(
     : optedOut
       ? harness.noSecretsNamespace
       : harness.namespace;
-  const token = over.quota
-    ? harness.quotaToken
-    : optedOut
-      ? harness.noSecretsToken
-      : harness.token;
+  const token = over.quota ? harness.quotaToken : optedOut ? harness.noSecretsToken : harness.token;
   return createKubernetesRunnerLauncher({
     namespace,
     workspaceRoot: harness.workspaceHost,
@@ -245,6 +243,14 @@ beforeAll(async () => {
   scratch = await mkdtemp(join(tmpdir(), "scp-kind-"));
 }, 60_000);
 
+// LOW-12 — `beforeAll` mkdtemp's ONCE per file and nothing removed it: 50 accumulated across repeat
+// local runs of this suite. Each plugin's `runner-launcher-selection.test.ts` pairs its `mkdtemp`
+// with a cleanup at the matching cardinality (`beforeEach`/`afterEach` there; `beforeAll`/`afterAll`
+// here, since this file creates exactly one scratch dir for the whole suite, not one per test).
+afterAll(async () => {
+  await rm(scratch, { recursive: true, force: true });
+});
+
 function spec(over: Partial<RunnerSpec> = {}): RunnerSpec {
   return {
     runId: "probe",
@@ -305,6 +311,62 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     expect(jobs).not.toContain(runnerJobName("whole-run"));
     expect(await readdir(harness.workspaceHost)).not.toContain(runnerJobName("whole-run"));
   }, 120_000);
+
+  it("A JOB CREATED SUSPENDED HAS NO POD UNTIL PATCHED — the live-controller semantics create/start rests on (LOW-11)", async () => {
+    // "A WHOLE RUN" above proves the adapter's OWN two-step call sequence produces a successful run
+    // end to end — which a single-step, always-unsuspended adapter would ALSO pass. It never queries
+    // the API server between `create` and `start`, so nothing in this suite actually watched the
+    // suspended Job have no pod. This test does, directly against the controller and without racing
+    // the adapter's own internal timing: it builds the SAME manifest `jobManifest()` produces,
+    // applies it with `kubectl` (deterministic, not a hope of catching a window `run()` closes in
+    // milliseconds), and checks the controller's real behaviour at each half.
+    const runId = "suspend-then-start";
+    const jobName = runnerJobName(runId);
+    const manifestPath = join(scratch, `${jobName}.json`);
+    const manifest = jobManifest(spec({ runId, operands: ["/bin/sh", "-c", "echo hi"] }), {
+      namespace: harness.namespace,
+      jobName,
+      secretName: `${jobName}-env`,
+      reapDeadline: new Date(Date.now() + 120_000).toISOString(),
+      slots: new Map(),
+      workspaceVolume: { kind: "hostPath", path: harness.nodeWorkspace },
+      runAsNonRoot: false,
+      ttlSecondsAfterFinished: 60
+    });
+    await writeFile(manifestPath, JSON.stringify(manifest), "utf8");
+
+    try {
+      await kubectl("apply", "-f", manifestPath);
+
+      // HALF ONE: SUSPENDED MEANS NO POD, MEASURED IMMEDIATELY AFTER CREATE. If the Job controller
+      // created a pod anyway, `create` alone would already have started the run and `start`'s PATCH
+      // would be theatre — exactly the shape this test exists to rule out.
+      const suspendedField = (
+        await kubectl("get", "job", jobName, "-o", `jsonpath={.spec.suspend}`)
+      ).trim();
+      expect(suspendedField).toBe("true");
+      const podsWhileSuspended = (
+        await kubectl("get", "pods", "-l", `${RUNNER_RUN_ID_LABEL}=${runId}`, "-o", "name")
+      ).trim();
+      expect(podsWhileSuspended).toBe("");
+
+      // HALF TWO: THE UNSUSPEND PATCH REALLY STARTS IT. Polled rather than awaited once, because the
+      // controller's reconcile loop is asynchronous even on a live API server — the claim under test
+      // is "a pod eventually appears", not "a pod appears synchronously with the PATCH response".
+      await kubectl("patch", "job", jobName, "--type=merge", "-p", '{"spec":{"suspend":false}}');
+      let podName = "";
+      for (let attempt = 0; attempt < 20; attempt++) {
+        podName = (
+          await kubectl("get", "pods", "-l", `${RUNNER_RUN_ID_LABEL}=${runId}`, "-o", "name")
+        ).trim();
+        if (podName) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      expect(podName).not.toBe("");
+    } finally {
+      await kubectl("delete", "job", jobName, "--ignore-not-found", "--wait=false");
+    }
+  }, 60_000);
 
   it("THE CHART'S RBAC AUTHORISES EVERY VERB THIS ADAPTER USES — including the unsuspend PATCH", async () => {
     // The token this suite uses is bound to the Role `helm template` rendered from
@@ -876,9 +938,18 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     // one. Identical namespace, identical spec, one convention supplied.
     const result = await launcher({
       quota: true,
-      pod: { resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { cpu: "200m", memory: "64Mi" } } }
+      pod: {
+        resources: {
+          requests: { cpu: "10m", memory: "16Mi" },
+          limits: { cpu: "200m", memory: "64Mi" }
+        }
+      }
     }).run(
-      spec({ runId: "quota-satisfied", labels: { "scp.run-id": "quota-satisfied" }, timeoutMs: 120_000 })
+      spec({
+        runId: "quota-satisfied",
+        labels: { "scp.run-id": "quota-satisfied" },
+        timeoutMs: 120_000
+      })
     );
     expect(
       result.succeeded,

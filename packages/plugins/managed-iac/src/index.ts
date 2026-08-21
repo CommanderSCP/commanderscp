@@ -106,7 +106,6 @@ export interface ManagedIacConfig {
   kubernetes?: KubernetesLauncherSettings;
 }
 
-
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_NETWORK_MODE = "none";
 /** Filenames a tenant may supply via `intent.parameters.sourceFiles` — no path separators, no

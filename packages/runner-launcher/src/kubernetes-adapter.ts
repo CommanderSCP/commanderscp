@@ -1076,9 +1076,7 @@ export function createKubernetesRunnerLauncher(
       // PER-ADAPTER, NOT A FLAT TWO MINUTES (M23.5 HIGH-2). This adapter's post-deadline work is
       // three bounded teardown calls, not one, so the stamp has to clear three — see
       // {@link runnerReapGraceMs}.
-      const reapDeadline = new Date(
-        runDeadlineAt + runnerReapGraceMs("kubernetes")
-      ).toISOString();
+      const reapDeadline = new Date(runDeadlineAt + runnerReapGraceMs("kubernetes")).toISOString();
 
       const jobName = runnerJobName(spec.runId);
       const secretName = runnerSecretName(spec.runId);
