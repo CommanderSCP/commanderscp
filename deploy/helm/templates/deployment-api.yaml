@@ -116,6 +116,14 @@ spec:
               readOnly: true
             {{- end }}
             {{- end }}
+            {{- /* M23.5 — THE WORKER-ROLE WRITE PATHS, WHICH THIS POD ALSO NEEDS AT `api.role=all`.
+                   Renders NOTHING at the default `api.role=api`. M23.2 already made this pod's
+                   service-account token conditional on running the worker role; its volumes stayed
+                   keyed on the Deployment's name, so on the single-pod topology `values.yaml` itself
+                   documents, the pod that runs the managed executors mounted neither the shared
+                   runner workspace nor the managed-IaC scratch dir. See
+                   `commanderscp.podRunsWorkerRole`. */}}
+            {{- include "commanderscp.workerRoleVolumeMounts" (dict "root" . "role" "api") | nindent 12 }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -149,3 +157,4 @@ spec:
             secretName: {{ .Values.federation.serverMtls.crl.existingSecret }}
         {{- end }}
         {{- end }}
+        {{- include "commanderscp.workerRoleVolumes" (dict "root" . "role" "api") | nindent 8 }}

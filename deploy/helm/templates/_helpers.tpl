@@ -539,3 +539,93 @@ true
 false
 {{- end -}}
 {{- end }}
+
+{{/*
+=================================================================================================
+DOES THIS POD RUN WORKER-ROLE WORK? — and everything a worker-role pod has to mount.
+=================================================================================================
+
+M23.5, and it is the SECOND HALF of a predicate this chart already got half right. M23.2 made the
+api Deployment's `automountServiceAccountToken` conditional on exactly this question, because
+`values.yaml` documents `api.role=all` + `worker.replicaCount: 0` as the supported single-pod
+topology and a token-less pod cannot launch a runner. The pod's VOLUMES were left keyed on the
+Deployment's NAME instead — `deployment-worker.yaml` mounted the managed-IaC scratch dir and the
+shared runner workspace, `deployment-api.yaml` mounted neither, and on that documented topology the
+one pod that runs the managed executors is the one with nowhere to write.
+
+THE PROPERTY, RATHER THAN THE THREE INSTANCES. A path this chart puts in an env var and the process
+writes to MUST have a volume behind it in EVERY pod that runs the role that writes there. A filterless
+read of `commanderscp.commonEnv`'s `*_WORKSPACE_ROOT` variables against both Deployments' volumeMounts
+found three holes, only one of which was reported:
+
+  managedRunners.kubernetes.workspace.mountPath  api@role=all: NO MOUNT. Copy-in writes to the api
+    container's own filesystem; the runner Job mounts the real claim and finds an empty directory.
+    SILENT — `tofu` runs against an empty /workspace and managed-iac's copy-out swallows failures.
+  managedIac.workspaceRoot                       api@role=all: NO MOUNT, and `containerSecurityContext.
+    readOnlyRootFilesystem` is `true`, so this one is not silent — it is EROFS on the first mkdir.
+  managedDep.workspaceRoot                       NEITHER POD, EVER. `managedDepServerSettings()` has
+    read SCP_MANAGED_DEP_WORKSPACE_ROOT since M21.5 and `commonEnv` has rendered it since; nothing
+    ever mounted anything at `/var/lib/scp/managed-dep`. Same EROFS, on the worker, today.
+
+So the mounts move here, keyed on the ROLE, and both Deployments include the same two helpers. A
+fourth path added to `commonEnv` without a mount is then one edit away from being wrong in both pods
+at once rather than in whichever one the author did not open.
+*/}}
+{{- define "commanderscp.podRunsWorkerRole" -}}
+{{- if eq .role "worker" -}}
+true
+{{- else if eq (include "commanderscp.apiRole" .root) "all" -}}
+true
+{{- else -}}
+false
+{{- end -}}
+{{- end }}
+
+{{- define "commanderscp.workerRoleVolumeMounts" -}}
+{{- $root := .root -}}
+{{- if eq (include "commanderscp.podRunsWorkerRole" .) "true" -}}
+{{- if $root.Values.managedIac.enabled }}
+- name: managed-iac-workspace
+  mountPath: {{ $root.Values.managedIac.workspaceRoot }}
+{{- end }}
+{{- if $root.Values.managedDep.runnerImage }}
+- name: managed-dep-workspace
+  mountPath: {{ $root.Values.managedDep.workspaceRoot }}
+{{- end }}
+{{- if eq (include "commanderscp.needsRunnerApiAccess" $root) "true" }}
+{{- /* THE SHARED RUNNER WORKSPACE (M23.2, owner decision 5). This pod writes each run's inputs into
+       a per-run subtree here and the runner Job mounts the SAME volume at subpaths, because
+       Kubernetes has no `docker cp` (a ConfigMap fails the 1 MiB etcd limit and `pods/exec` + tar is
+       impossible against `apps/runner-dep`'s seven-applet `FROM scratch` image). It MUST be
+       ReadWriteMany and it must already exist — `commanderscp.assertRunnerPrerequisites` refuses the
+       render otherwise rather than letting a runner Job hang unschedulable, and the chart's own PVCs
+       are RWO so none can be reused. */}}
+- name: runner-workspace
+  mountPath: {{ $root.Values.managedRunners.kubernetes.workspace.mountPath }}
+{{- end }}
+{{- end -}}
+{{- end }}
+
+{{- define "commanderscp.workerRoleVolumes" -}}
+{{- $root := .root -}}
+{{- if eq (include "commanderscp.podRunsWorkerRole" .) "true" -}}
+{{- if $root.Values.managedIac.enabled }}
+- name: managed-iac-workspace
+  emptyDir: {}
+{{- end }}
+{{- if $root.Values.managedDep.runnerImage }}
+- name: managed-dep-workspace
+  emptyDir: {}
+{{- end }}
+{{- if eq (include "commanderscp.needsRunnerApiAccess" $root) "true" }}
+{{- /* AN EXISTING CLAIM, NEVER ONE THIS CHART CREATES. RWX is a storage-class capability an operator
+       provisions (NFS, CephFS, EFS, Azure Files, …); a chart that created a PVC and asked for
+       ReadWriteMany against a class that cannot serve it would produce a Pending claim and an
+       unschedulable runner Job — the "mysterious hang" owner decision 5 asks for a clear failure
+       message instead of. */}}
+- name: runner-workspace
+  persistentVolumeClaim:
+    claimName: {{ $root.Values.managedRunners.kubernetes.workspace.claimName | quote }}
+{{- end }}
+{{- end -}}
+{{- end }}

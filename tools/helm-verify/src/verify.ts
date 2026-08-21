@@ -196,6 +196,9 @@ interface Container {
   };
   readinessProbe?: { httpGet?: { path?: string; port?: string; scheme?: string } };
   livenessProbe?: { httpGet?: { path?: string; port?: string; scheme?: string } };
+  /** M23.5 — a write path this chart puts in an env var must have a volume behind it in EVERY pod
+   *  that runs the role that writes there. See the `both roles` block. */
+  volumeMounts?: { name?: string; mountPath?: string }[];
 }
 
 interface PodSpec {
@@ -206,7 +209,7 @@ interface PodSpec {
    *  stay it for every deployment that launches no managed runner through the API server. */
   automountServiceAccountToken?: boolean;
   /** M23.2 — the shared RWX runner workspace is one of these. */
-  volumes?: unknown[];
+  volumes?: { name?: string }[];
 }
 
 function podSpecOf(doc: K8sDoc): PodSpec | undefined {
@@ -1987,8 +1990,112 @@ function main(): void {
         `[${label}] the chart RENDERED with the Kubernetes launcher and ${why}. Owner decision 5 requires "a render-time check and a clear failure message rather than a mysterious hang"`
       );
     }
+    // (5) EVERY WORKER-ROLE WRITE PATH, ON EVERY POD THAT RUNS THE WORKER ROLE (M23.5).
+    //
+    //     THIS BLOCK EXISTS BECAUSE EVERYTHING ABOVE IT LOOKS AT `-worker` AND NOTHING LOOKS AT
+    //     `-api`. `helm template --set api.role=all --set worker.replicaCount=0` — the single-pod
+    //     topology `values.yaml` documents by name — put the token and every launcher setting on the
+    //     api pod (M23.2 fixed the token for exactly that reason) and mounted NOTHING at
+    //     `SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT`. Copy-in wrote to the api container's ephemeral
+    //     filesystem, the runner Job mounted the real claim and found an empty directory, and
+    //     managed-iac's copy-out is `when:"always" / onFailure:"swallow"`, so the run reported
+    //     nothing wrong. `assertRunnerPrerequisites` refuses a render whose claim is MISSING and
+    //     rendered happily for the topology where it is named and never mounted.
+    //
+    //     AND THE ASSERTION THAT WAS ALREADY HALF-WRITTEN. The operator-config-surface block above
+    //     says, in its own comment, "a knob wired into only one of them is a silent half-fix (the
+    //     loops run on the worker, but an `api.role=all` pod runs them too)" — and applies that rule
+    //     to env vars and to nothing else. So the api pod's TOKEN, its launcher settings and its
+    //     volumes were all unasserted: reverting `deployment-api.yaml`'s conditional
+    //     `automountServiceAccountToken` to the hard `false` it shipped with before M23.2 reddened
+    //     nothing in this file. One predicate, both pods, all of it.
+    {
+      const writePaths = (docs: K8sDoc[], suffix: string): string[] => {
+        const doc = docs.find(
+          (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith(suffix)
+        );
+        return (podSpecOf(doc ?? ({} as K8sDoc))?.containers ?? []).flatMap((c) =>
+          (c.volumeMounts ?? []).map((m) => String(m.mountPath))
+        );
+      };
+      const tokenOf = (docs: K8sDoc[], suffix: string): boolean | undefined =>
+        podSpecOf(
+          docs.find(
+            (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith(suffix)
+          ) ?? ({} as K8sDoc)
+        )?.automountServiceAccountToken;
+
+      // The three roots `commanderscp.commonEnv` renders and a worker-role process writes to. Read
+      // off `values.yaml`'s defaults, so a changed default that no mount followed is a red build.
+      const IAC_ROOT = "/var/lib/scp/managed-iac";
+      const DEP_ROOT = "/var/lib/scp/managed-dep";
+      const RUNNER_ROOT = "/var/lib/scp/runner-workspace";
+
+      const everything = [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+        "--set",
+        "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"
+      ];
+
+      // (5a) THE SINGLE-POD TOPOLOGY, BY NAME. `api.role=all` + `worker.replicaCount: 0` is what
+      //      `values.yaml` tells a small install to set; the api pod IS the worker there.
+      const singlePod = renderChart("verify-m23-single-pod", [
+        ...everything,
+        "--set",
+        "api.role=all",
+        "--set",
+        "worker.replicaCount=0"
+      ]);
+      assert(
+        tokenOf(singlePod, "-api") === true,
+        `[${label}] on the documented single-pod topology (api.role=all, worker.replicaCount=0) the api pod has NO service-account token — it is the pod that runs the managed executors, so every API call it makes would be anonymous`
+      );
+      for (const [root, why] of [
+        [RUNNER_ROOT, "the shared runner workspace — copy-in would write to the container's own ephemeral filesystem and the runner Job would mount the real claim and find an empty directory, SILENTLY"],
+        [IAC_ROOT, "the managed-IaC scratch root — `containerSecurityContext.readOnlyRootFilesystem` is true, so this is EROFS on the first mkdir"],
+        [DEP_ROOT, "the managed-dep scratch root — same EROFS, and nothing has ever mounted it on EITHER pod"]
+      ] as [string, string][]) {
+        assert(
+          writePaths(singlePod, "-api").includes(root),
+          `[${label}] api.role=all mounts nothing at ${root}: ${why}`
+        );
+      }
+
+      // (5b) THE SPLIT TOPOLOGY'S WORKER, same three paths. `managedDep` is the one that was missing
+      //      here too — the census, not the reported symptom.
+      const split = renderChart("verify-m23-split", everything);
+      for (const root of [RUNNER_ROOT, IAC_ROOT, DEP_ROOT]) {
+        assert(
+          writePaths(split, "-worker").includes(root),
+          `[${label}] the worker mounts nothing at ${root} — a path this chart renders into an env var and the process writes to`
+        );
+      }
+
+      // (5c) AND THE NEGATIVE CONTROL, which is what makes (5a) mean anything. At the DEFAULT
+      //      `api.role=api` the api pod never runs a managed executor, so it must carry neither the
+      //      token nor any of the three roots. "Mount it on both, unconditionally" would pass (5a)
+      //      and (5b) and hand a token and an RWX claim to a pure request server.
+      assert(
+        tokenOf(split, "-api") === false,
+        `[${label}] a split-topology api pod (api.role=api) mounts a service-account token — it executes no managed trigger, so that is an API credential for a pod that makes no API call`
+      );
+      for (const root of [RUNNER_ROOT, IAC_ROOT, DEP_ROOT]) {
+        assert(
+          !writePaths(split, "-api").includes(root),
+          `[${label}] a split-topology api pod (api.role=api) mounts ${root}. It runs no worker-role work; mounting a shared RWX claim there widens the blast radius of the request server for nothing`
+        );
+      }
+    }
+
     console.log(
-      "  default render unchanged; selected render carries token + egress + volume + settings; the per-run Secret grant is exactly create+delete on secrets, present for all three classes, absent on docker and at the default, and following the runner namespace; both prerequisites refuse at render"
+      "  default render unchanged; selected render carries token + egress + volume + settings; the per-run Secret grant is exactly create+delete on secrets, present for all three classes, absent on docker and at the default, and following the runner namespace; both prerequisites refuse at render; every worker-role write path is mounted on BOTH the worker and an api.role=all pod, and on neither at api.role=api"
     );
   }
 
