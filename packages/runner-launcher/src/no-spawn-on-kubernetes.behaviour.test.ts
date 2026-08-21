@@ -191,9 +191,10 @@ console.log(JSON.stringify({
     };
     // NON-VACUITY FIRST, TWICE OVER: a run that never happened spawns nothing either, and a run that
     // reached the adapter but failed at the first request would not exercise teardown or the log read.
-    expect(report.succeeded, "the Kubernetes run did not succeed, so it drove only its first route").toBe(
-      true
-    );
+    expect(
+      report.succeeded,
+      "the Kubernetes run did not succeed, so it drove only its first route"
+    ).toBe(true);
     expect(report.wire).toContain("POST /apis/batch/v1/namespaces/scp/jobs");
     expect(report.wire).toContain("PATCH /apis/batch/v1/namespaces/scp/jobs/scp-runner-b1");
     expect(report.wire).toContain("DELETE /apis/batch/v1/namespaces/scp/jobs/scp-runner-b1");

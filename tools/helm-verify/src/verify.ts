@@ -205,6 +205,263 @@ function rbacDiff(rendered: unknown, expected: readonly KubernetesRbacRule[]): s
   return problems;
 }
 
+// ==================================================================================================
+// M23.6 CLAUSE 5, WIDENED FROM ONE RULE TO THE WHOLE CHART — WHAT `helm install` ACTUALLY GRANTS
+// ==================================================================================================
+/**
+ * `rbacDiff` above is real and fires in both directions, but it is true of ONE Role. The clause is
+ * "the chart grants exactly what the adapter calls, and no more", and that is a statement about the
+ * CHART. The gap is not theoretical: the M23.6 verification pass pointed a real authorizer at the
+ * harness identity and got `delete nodes: yes` — a question no assertion in this repository had ever
+ * asked, because every RBAC assertion it had was aimed at `-runner-iac`'s `rules` array. A diff can
+ * only speak for the object it is handed; everything the chart renders BESIDE that object was
+ * ungated.
+ *
+ * SO THIS FUNCTION TAKES A WHOLE RENDER AND ANSWERS: WHICH IDENTITY ENDS UP HOLDING WHICH RULES.
+ * It resolves every RoleBinding's `roleRef` against every rendered Role, accumulates the union per
+ * ServiceAccount subject, and compares each identity's TOTAL grant — not one rule of it — against a
+ * pinned expectation. Three identities exist in this chart and all three are named here, so a FOURTH
+ * is a failure by construction rather than something a reader has to notice:
+ *
+ *   - THE WORKLOAD ServiceAccount (the one the api/worker pods run as, and therefore the one the
+ *     Kubernetes adapter's every call authenticates as): exactly `kubernetesRunnerRbac()`, which is
+ *     the set `kubernetes-rbac-contract.test.ts` derives from the wire by driving the adapter. Or
+ *     NOTHING AT ALL, on every render where no managed run can launch.
+ *   - THE TWO AUTOWIRE ServiceAccounts (`-argocd-autowire`, `-gitea-autowire`): `get` on `secrets`,
+ *     in the bundled backend's own namespace. These are install-time hooks that read one generated
+ *     admin secret and mint a scoped API token; their Roles live in a DIFFERENT namespace from
+ *     everything else the chart grants, which is precisely why "the runner Role is correct" never
+ *     said anything about them.
+ *
+ * AND FOUR STRUCTURAL REFUSALS THAT DO NOT DEPEND ON KNOWING THE EXPECTED SET:
+ *   1. NO ClusterRole AND NO ClusterRoleBinding, EVER. Every grant this chart makes is namespaced.
+ *      `delete nodes` is a cluster-scoped question and this is the assertion that makes the answer
+ *      structurally "no" — including for the value combinations no matrix enumerates, since the
+ *      source census at the end of `verifySocketInvariantMatrix` covers the templates as text.
+ *   2. NO WILDCARD in `apiGroups`, `resources` or `verbs`. A `*` passes any set-equality that is
+ *      written as a `.includes`, and grants everything the day a new resource appears.
+ *   3. NO `escalate`, `bind` OR `impersonate`. Those three are how a bounded grant becomes an
+ *      unbounded one without the grant itself changing.
+ *   4. EVERY Role IS BOUND AND EVERY BINDING RESOLVES. A Role nothing references authorises nobody
+ *      (ADR-0035 §6a's exact starting failure, generalised from the one case that was checked), and
+ *      a RoleBinding whose `roleRef` names a Role this render does not contain is a grant that
+ *      silently does nothing — or, worse, picks up a same-named Role that is already in the cluster.
+ */
+const RBAC_WILDCARD = "*";
+const RBAC_ESCALATION_VERBS = ["escalate", "bind", "impersonate"];
+/** Cluster-scoped resources a namespaced Role cannot meaningfully grant — named so that a rule
+ *  mentioning one is reported as the mistake it is rather than as a silently inert line. */
+const CLUSTER_SCOPED_RESOURCES = [
+  "nodes",
+  "namespaces",
+  "persistentvolumes",
+  "clusterroles",
+  "clusterrolebindings",
+  "customresourcedefinitions",
+  "storageclasses",
+  "priorityclasses",
+  "apiservices",
+  "validatingwebhookconfigurations",
+  "mutatingwebhookconfigurations"
+];
+
+interface RenderedRule {
+  apiGroups?: string[];
+  resources?: string[];
+  verbs?: string[];
+}
+
+/**
+ * The identity the api/worker pods run as — the one the Kubernetes adapter's every call
+ * authenticates as, and therefore the subject of "the chart grants exactly what the adapter calls".
+ *
+ * READ FROM THE DEPLOYMENTS' POD SPECS, for two reasons. `serviceAccount.create=false` renders no
+ * ServiceAccount object at all while the pods still authenticate as something, so the object is the
+ * wrong place to look. And the chart's install-time HOOKS (the two bundled-backend autowire Jobs)
+ * deliberately run as their own identities; folding those in here would make this return three names
+ * and say nothing about any of them.
+ */
+function workloadServiceAccountNames(docs: K8sDoc[]): string[] {
+  const names = new Set<string>();
+  for (const doc of docs) {
+    if (doc.kind !== "Deployment") continue;
+    for (const podSpec of podSpecsOf(doc)) {
+      const name = podSpec["serviceAccountName"];
+      if (typeof name === "string" && name.length > 0) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+/** Every identity ANY pod in this render runs as, hooks included — so a new workload running as a
+ *  name nothing pinned is a failure rather than an identity this gate simply never looked at. */
+function allPodServiceAccountNames(docs: K8sDoc[]): string[] {
+  const names = new Set<string>();
+  for (const doc of docs) {
+    for (const podSpec of podSpecsOf(doc)) {
+      const name = podSpec["serviceAccountName"];
+      if (typeof name === "string" && name.length > 0) names.add(name);
+    }
+  }
+  return [...names].sort();
+}
+
+function chartGrantProblems(args: {
+  label: string;
+  docs: K8sDoc[];
+  /** True when a managed run can actually launch here, i.e. the runner Role must render. */
+  expectRunnerGrant: boolean;
+  perRunSecrets: boolean;
+}): string[] {
+  const { label, docs, expectRunnerGrant, perRunSecrets } = args;
+  const problems: string[] = [];
+  const say = (msg: string) => problems.push(`[${label}] ${msg}`);
+
+  // (1) NOTHING CLUSTER-SCOPED, AT ALL.
+  for (const doc of docs) {
+    if (doc.kind === "ClusterRole" || doc.kind === "ClusterRoleBinding") {
+      say(
+        `the chart rendered a ${doc.kind} ('${String(doc.metadata?.name)}'). Every grant this chart makes is namespaced; a cluster-scoped one is how a runner identity comes to hold verbs on nodes, namespaces or other releases' objects`
+      );
+    }
+  }
+
+  // (2)(3) WILDCARDS AND ESCALATION VERBS, over every rule of every role-ish object.
+  const roles = new Map<string, RenderedRule[]>();
+  for (const doc of docs) {
+    if (doc.kind !== "Role" && doc.kind !== "ClusterRole") continue;
+    const name = String(doc.metadata?.name ?? "");
+    const namespace = String(doc.metadata?.namespace ?? "");
+    const rules = (doc["rules"] ?? []) as RenderedRule[];
+    roles.set(`${namespace}/${name}`, rules);
+    for (const rule of rules) {
+      for (const field of ["apiGroups", "resources", "verbs"] as const) {
+        if ((rule[field] ?? []).includes(RBAC_WILDCARD)) {
+          say(
+            `${doc.kind} '${name}' has a rule with ${field}: ['*'] — a wildcard grants every resource that exists now AND every one added later, and satisfies any assertion written as a membership test`
+          );
+        }
+      }
+      for (const verb of rule.verbs ?? []) {
+        if (RBAC_ESCALATION_VERBS.includes(verb)) {
+          say(
+            `${doc.kind} '${name}' grants '${verb}', which lets the holder widen its OWN grant without this chart changing`
+          );
+        }
+      }
+      for (const resource of rule.resources ?? []) {
+        if (CLUSTER_SCOPED_RESOURCES.includes(resource)) {
+          say(
+            `${doc.kind} '${name}' names the cluster-scoped resource '${resource}'; nothing this chart grants is cluster-scoped`
+          );
+        }
+      }
+    }
+  }
+
+  // (4) EVERY BINDING RESOLVES, EVERY ROLE IS BOUND, AND THE UNION PER IDENTITY.
+  const effective = new Map<string, RenderedRule[]>();
+  const subjectNamespaces = new Set<string>();
+  const boundRoles = new Set<string>();
+  for (const doc of docs) {
+    if (doc.kind !== "RoleBinding") continue;
+    const bindingName = String(doc.metadata?.name ?? "");
+    const namespace = String(doc.metadata?.namespace ?? "");
+    const roleRef = (doc["roleRef"] ?? {}) as { kind?: string; name?: string };
+    const key = `${namespace}/${String(roleRef.name)}`;
+    const rules = roles.get(key);
+    if (roleRef.kind !== "Role" || rules === undefined) {
+      say(
+        `RoleBinding '${bindingName}' in namespace '${namespace}' references ${String(roleRef.kind)} '${String(roleRef.name)}', which this render does not contain — the grant either does nothing or silently picks up a same-named object already in the cluster`
+      );
+      continue;
+    }
+    boundRoles.add(key);
+    for (const subject of (doc["subjects"] ?? []) as {
+      kind?: string;
+      name?: string;
+      namespace?: string;
+    }[]) {
+      if (subject.kind !== "ServiceAccount") {
+        say(
+          `RoleBinding '${bindingName}' names a ${String(subject.kind)} subject ('${String(subject.name)}'); this chart grants to ServiceAccounts and nothing else`
+        );
+        continue;
+      }
+      subjectNamespaces.add(String(subject.namespace ?? ""));
+      const identity = String(subject.name);
+      effective.set(identity, [...(effective.get(identity) ?? []), ...rules]);
+    }
+  }
+  for (const key of roles.keys()) {
+    if (!boundRoles.has(key)) {
+      say(
+        `Role '${key}' is rendered with no RoleBinding, so it authorises nobody — the shape ADR-0035 §6a records as the starting failure, here as a property of every Role rather than of the one that was checked`
+      );
+    }
+  }
+  // EVERY IDENTITY LIVES WHERE THE WORKLOAD LIVES. A subject in a second namespace would mean this
+  // release grants to an identity outside itself, which no assertion below would otherwise notice.
+  if (subjectNamespaces.size > 1) {
+    say(
+      `RoleBinding subjects span ${subjectNamespaces.size} namespaces (${[...subjectNamespaces].join(", ")}); every identity this chart grants to is a ServiceAccount in the RELEASE namespace`
+    );
+  }
+
+  // (5) EACH IDENTITY'S TOTAL GRANT, AGAINST WHAT IT IS SUPPOSED TO HOLD.
+  const workload = workloadServiceAccountNames(docs);
+  if (workload.length !== 1) {
+    say(
+      `the pods in this render name ${workload.length} distinct serviceAccountNames (${JSON.stringify(workload)}); the adapter's calls authenticate as ONE identity and this gate cannot say which`
+    );
+    return problems;
+  }
+  const workloadName = workload[0]!;
+  const expected = new Map<string, KubernetesRbacRule[]>();
+  expected.set(workloadName, expectRunnerGrant ? [...kubernetesRunnerRbac({ perRunSecrets })] : []);
+  // THE INSTALL-TIME HOOKS. Pinned by SHAPE here rather than described: each reads exactly one
+  // generated admin Secret in the bundled backend's namespace to mint a scoped API token.
+  const AUTOWIRE_GRANT: KubernetesRbacRule[] = [
+    { apiGroup: "", resource: "secrets", verbs: ["get"] }
+  ];
+  for (const identity of [...effective.keys(), ...allPodServiceAccountNames(docs)]) {
+    if (identity.endsWith("-argocd-autowire") || identity.endsWith("-gitea-autowire")) {
+      expected.set(identity, AUTOWIRE_GRANT);
+    }
+  }
+  for (const identity of effective.keys()) {
+    if (!expected.has(identity)) {
+      say(
+        `'${identity}' is granted rules by this chart and is not one of the three identities it is supposed to have (the workload ServiceAccount and the two bundled-backend autowire hooks)`
+      );
+    }
+  }
+  // AND THE OTHER DIRECTION: a pod running as an identity nothing above pins. A new hook Job with its
+  // own ServiceAccount would otherwise be invisible here until the day someone gave it a Role.
+  for (const identity of allPodServiceAccountNames(docs)) {
+    if (identity !== workloadName && !expected.has(identity)) {
+      say(
+        `a pod in this render runs as '${identity}', which is neither the workload ServiceAccount nor one of the two pinned autowire hooks — a new identity inside the release that no grant assertion covers`
+      );
+    }
+  }
+  for (const [identity, want] of expected) {
+    const got = effective.get(identity) ?? [];
+    if (want.length === 0) {
+      if (got.length > 0) {
+        say(
+          `'${identity}' holds ${JSON.stringify(got)} on a render where no managed run can launch — a standing privilege for a caller that never calls`
+        );
+      }
+      continue;
+    }
+    for (const problem of rbacDiff(got, want)) {
+      say(`the TOTAL grant held by '${identity}' is not what it is supposed to be: ${problem}`);
+    }
+  }
+  return problems;
+}
+
 /** Pure detector: given a role and a rendered bundled chart, return the list of guardrail
  *  violations (a bundled backend that rendered but is not allowed for that role). Empty ⇒ clean.
  *  This is the single decision function shared by the standing gate (feeds `fail()` → non-zero exit)
@@ -250,7 +507,7 @@ function federationRoleViolations(role: string, docs: K8sDoc[]): string[] {
  * `deployment-worker.yaml` produced FOUR `docker.sock` occurrences in `helm template` AT THE DEFAULT
  * VALUES while `pnpm -w test` stayed green (72/72) and helm-verify stayed green.
  *
- * A HANDFUL OF HAND-PICKED COMBINATIONS IS NOT A MATRIX. The 24 `renderChart` calls elsewhere in
+ * A HANDFUL OF HAND-PICKED COMBINATIONS IS NOT A MATRIX. The 31 `renderChart` calls elsewhere in
  * this file are each aimed at one question; none of them is a sweep, and the combination that
  * carries a socket is by definition the one nobody thought to name. The product below is
  * EXHAUSTIVE over the dimensions the clause names — every `managed*` enablement combination and
@@ -402,6 +659,14 @@ interface MatrixPoint {
   args: string[];
   /** True when the chart's own render-time guards are expected to REFUSE this combination. */
   refuses: boolean;
+  /**
+   * M23.6 CLAUSE 5, WIDENED. Whether a managed run can actually launch at this point — i.e. whether
+   * the workload ServiceAccount is supposed to hold the runner grant AT ALL — and, if so, whether
+   * the per-run Secret capability is on. DERIVED FROM THE POINT'S OWN VALUES, never read back out of
+   * the render: an expectation computed from the thing being checked agrees with it by construction.
+   */
+  expectRunnerGrant: boolean;
+  perRunSecrets: boolean;
 }
 
 /**
@@ -497,7 +762,12 @@ function socketMatrix(): MatrixPoint[] {
           points.push({
             label: `${env.name} docker ${classes}`,
             args: [...env.extra, ...classArgs],
-            refuses: false
+            refuses: false,
+            // NO RUNNER GRANT ON A DOCKER DEPLOYMENT, EVER — the narrowing `runner-iac.yaml`'s point 3
+            // declares. The pods mount no token here, so a Role would be a standing grant for a
+            // caller that cannot call.
+            expectRunnerGrant: false,
+            perRunSecrets: false
           });
 
           // THE KUBERNETES LAUNCHER. Refuses outright when no class is enabled ("nothing will ever
@@ -529,7 +799,9 @@ function socketMatrix(): MatrixPoint[] {
                   points.push({
                     label: `${env.name} kubernetes ${classes} ns='${namespace}' secrets=${perRunSecrets} accept=${accept} nonroot=${runAsNonRoot}`,
                     args: [...env.extra, ...classArgs, ...k8sArgs],
-                    refuses: noClass || sharedSecretRefusal
+                    refuses: noClass || sharedSecretRefusal,
+                    expectRunnerGrant: !noClass,
+                    perRunSecrets
                   });
                 }
               }
@@ -555,7 +827,9 @@ function socketMatrix(): MatrixPoint[] {
         "--set",
         `managedIac.runnerImage=${IAC_IMAGE}`
       ],
-      refuses: false
+      refuses: false,
+      expectRunnerGrant: false,
+      perRunSecrets: false
     });
     points.push({
       label: `api.role=${role} kubernetes iac=true`,
@@ -573,7 +847,50 @@ function socketMatrix(): MatrixPoint[] {
         "--set",
         "managedRunners.kubernetes.namespace=scp-runners"
       ],
-      refuses: false
+      refuses: false,
+      expectRunnerGrant: true,
+      // `perRunSecrets` is left at the chart's own default here, which is `true` (values.yaml,
+      // the owner's 2026-08-20 grant). Stated as a literal rather than read back from the render.
+      perRunSecrets: true
+    });
+  }
+
+  /**
+   * THE BUNDLED BACKENDS' OWN IDENTITIES (M23.6 clause 5, widened). `bundledExecutor.*.enabled` is
+   * not a dimension of the socket product — no bundled backend can introduce a runtime socket into
+   * an SCP pod — but each one renders a ServiceAccount, a Role and a RoleBinding IN THE BACKEND'S
+   * NAMESPACE, which is a grant this chart makes to an identity outside everything the runner Role
+   * gate ever looked at. They are swept here so `chartGrantProblems` sees them: both alone and
+   * together, and crossed with the Kubernetes launcher so the runner grant and the hook grants are
+   * checked in one render rather than in two that never meet.
+   */
+  for (const backends of [["argocd"], ["gitea"], ["argocd", "gitea"]]) {
+    const enable = backends.flatMap((be) => ["--set", `bundledExecutor.${be}.enabled=true`]);
+    points.push({
+      label: `bundled ${backends.join("+")} docker`,
+      args: enable,
+      refuses: false,
+      expectRunnerGrant: false,
+      perRunSecrets: false
+    });
+    points.push({
+      label: `bundled ${backends.join("+")} kubernetes iac=true`,
+      args: [
+        ...enable,
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        `managedIac.runnerImage=${IAC_IMAGE}`,
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners"
+      ],
+      refuses: false,
+      expectRunnerGrant: true,
+      perRunSecrets: true
     });
   }
   return points;
@@ -588,6 +905,8 @@ function verifySocketInvariantMatrix(): void {
   let rendered = 0;
   let refused = 0;
   let runnerJobs = 0;
+  let grantsChecked = 0;
+  let grantProblems = 0;
 
   for (const point of points) {
     let raw: string;
@@ -615,6 +934,26 @@ function verifySocketInvariantMatrix(): void {
       .map((d) => d.toJS() as K8sDoc | null)
       .filter((d): d is K8sDoc => d != null && typeof d === "object" && "kind" in d);
     for (const problem of socketInvariantProblems(point.label, raw, docs)) fail(problem);
+
+    /**
+     * M23.6 CLAUSE 5, WIDENED — THE WHOLE CHART'S GRANT, ON THE RENDERS THIS LOOP ALREADY HAS.
+     *
+     * Sharing this loop is a deliberate cost decision, not a tidiness one. Each point is one `helm`
+     * process and this sweep already starved `turbo run test` once at 276 points (see
+     * `socketMatrix`'s own note); a second exhaustive sweep for RBAC would have doubled that for
+     * renders byte-identical to these. So the two invariants are asked of one render each, and the
+     * function above is pure so it can also be pointed at any other render.
+     */
+    for (const problem of chartGrantProblems({
+      label: point.label,
+      docs,
+      expectRunnerGrant: point.expectRunnerGrant,
+      perRunSecrets: point.perRunSecrets
+    })) {
+      fail(problem);
+      grantProblems += 1;
+    }
+    grantsChecked += 1;
 
     // AND THE POD THE CHART CANNOT RENDER.
     const job = runnerJobFromRender(docs);
@@ -692,6 +1031,23 @@ function verifySocketInvariantMatrix(): void {
       !text.includes("SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH"),
       `[${label}] deploy/helm/${file} plumbs SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH — that variable makes the runner Job mount a host directory, and it is deliberately reachable only from the kind harness`
     );
+    /**
+     * M23.6 CLAUSE 5, WIDENED — THE CLUSTER-SCOPED HALF, AS A CENSUS. `chartGrantProblems` refuses a
+     * ClusterRole in every render the matrix visits; this refuses one in every render that COULD
+     * exist, including the value assignments nobody has enumerated. It is the same pairing the socket
+     * invariant uses one assertion above, and for the same reason: a sweep is total over the points
+     * it visits, a census is total over the literal text.
+     */
+    for (const clusterKind of ["ClusterRole", "ClusterRoleBinding"]) {
+      const emitted = text
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+      assert(
+        !new RegExp(`kind:\\s*${clusterKind}\\b`).test(emitted),
+        `[${label}] deploy/helm/${file} can render a ${clusterKind}. Every grant this chart makes is namespaced — a cluster-scoped one authorises the holder against nodes, namespaces and every other release in the cluster, and no value combination can narrow it back`
+      );
+    }
   }
   for (const setArgs of [
     [] as string[],
@@ -719,16 +1075,16 @@ function verifySocketInvariantMatrix(): void {
   // an empty matrix, a render that produced nothing, and a guard that refused everything all
   // produce. The counts are asserted so the sweep cannot pass by having swept nothing.
   assert(
-    points.length === 156,
-    `[${label}] the matrix is ${points.length} points, not the 156 it is documented as — update the count deliberately, with the dimension that changed`
+    points.length === 162,
+    `[${label}] the matrix is ${points.length} points, not the 162 it is documented as — update the count deliberately, with the dimension that changed`
   );
   assert(
-    rendered === 125 && refused === 31,
-    `[${label}] the matrix rendered ${rendered} and saw ${refused} refusals; expected 125 and 31`
+    rendered === 131 && refused === 31,
+    `[${label}] the matrix rendered ${rendered} and saw ${refused} refusals; expected 131 and 31`
   );
   assert(
-    runnerJobs === 107,
-    `[${label}] ${runnerJobs} of the renders produced a derivable runner Job manifest; expected 107. Zero would mean the env-derived half of this gate checked nothing at all`
+    runnerJobs === 110,
+    `[${label}] ${runnerJobs} of the renders produced a derivable runner Job manifest; expected 110. Zero would mean the env-derived half of this gate checked nothing at all`
   );
   // …and the detector itself finds what it is looking for when it IS there.
   const planted: K8sDoc = {
@@ -752,8 +1108,70 @@ function verifySocketInvariantMatrix(): void {
     `[${label}] the socket detector does not fire on a manifest that plainly violates the invariant, so every clean verdict above means nothing`
   );
 
+  /**
+   * AND THE GRANT DETECTOR'S OWN NON-VACUITY. Same discipline as the socket control above: every
+   * verdict `chartGrantProblems` returned was "no problems", which is also what a function that had
+   * stopped looking returns. Four plants, each aimed at one arm that has no other control — a
+   * ClusterRole, a wildcard verb, a Role nothing binds, and an identity the chart is not supposed to
+   * have — asserted by COUNT so a detector that fired once and stopped is visible.
+   */
+  const plantedGrant: K8sDoc[] = [
+    {
+      kind: "Deployment",
+      metadata: { name: "planted" },
+      spec: { template: { spec: { serviceAccountName: "scp", containers: [] } } }
+    },
+    {
+      kind: "ClusterRole",
+      metadata: { name: "planted-cluster" },
+      rules: [{ apiGroups: [""], resources: ["nodes"], verbs: ["delete"] }]
+    },
+    {
+      kind: "Role",
+      metadata: { name: "planted-wild", namespace: "default" },
+      rules: [{ apiGroups: ["batch"], resources: ["jobs"], verbs: ["*"] }]
+    },
+    {
+      kind: "Role",
+      metadata: { name: "planted-unbound", namespace: "default" },
+      rules: [{ apiGroups: [""], resources: ["secrets"], verbs: ["get"] }]
+    },
+    {
+      kind: "RoleBinding",
+      metadata: { name: "planted-binding", namespace: "default" },
+      roleRef: { kind: "Role", name: "planted-wild" },
+      subjects: [{ kind: "ServiceAccount", name: "a-stranger", namespace: "default" }]
+    }
+  ];
+  const plantedProblems = chartGrantProblems({
+    label: "control",
+    docs: plantedGrant,
+    expectRunnerGrant: false,
+    perRunSecrets: false
+  });
+  const plantedNames = [
+    "rendered a ClusterRole",
+    "verbs: ['*']",
+    "names the cluster-scoped resource 'nodes'",
+    "authorises nobody",
+    "is not one of the three identities"
+  ];
+  for (const fragment of plantedNames) {
+    assert(
+      plantedProblems.some((problem) => problem.includes(fragment)),
+      `[${label}] the grant detector did not report '${fragment}' on a render that plainly contains it, so every clean grant verdict above means nothing`
+    );
+  }
+  assert(
+    grantsChecked === rendered && grantProblems === 0,
+    `[${label}] the grant gate checked ${grantsChecked} of ${rendered} renders and reported ${grantProblems} problems`
+  );
+
   console.log(
     `  ${points.length} value combinations: ${rendered} rendered clean, ${refused} refused by the chart's own guards as expected, ${runnerJobs} runner Job manifests derived from the rendered env and checked too — no hostPath and no runtime socket anywhere`
+  );
+  console.log(
+    `  and the WHOLE chart's RBAC grant checked on all ${grantsChecked} of them: no ClusterRole or ClusterRoleBinding, no wildcard, no escalate/bind/impersonate, every Role bound, and each of the three identities holding exactly its pinned set`
   );
 }
 
