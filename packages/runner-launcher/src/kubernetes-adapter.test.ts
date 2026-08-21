@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  KUBERNETES_POLL_INTERVAL_MS,
   LAUNCHER_OWNER_ID,
   RUNNER_OUTCOME_UNKNOWN_CODE,
   RUNNER_LAUNCHER_DEADLINE_ANNOTATION,
@@ -361,7 +362,13 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
         workspaceVolume: WORKSPACE_VOLUME,
         perRunSecrets: opts.perRunSecrets === true,
         runAsNonRoot: opts.runAsNonRoot === true,
-        pollIntervalMs: 1,
+        // THE ADAPTER'S OWN DEFAULT, NOT `1` — M23.5 verification pass 19. `sleep` is stubbed to
+        // resolve immediately below, so this number is NEVER A DELAY here: it costs the suite
+        // nothing, and it is read as a FACT by `kubernetesStartVerdict` ("how old may a landed
+        // observation be and still speak for the budget?"). At `1` every fixture's blind window was
+        // a hundred poll intervals wide and the arm that reasons about staleness could not be
+        // exercised honestly.
+        pollIntervalMs: KUBERNETES_POLL_INTERVAL_MS,
         sleep: () => Promise.resolve(),
         io,
         ...over
@@ -1598,6 +1605,10 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
       unsuspend: "accepted" as const,
       observed: true,
       everStarted: false,
+      // STILL WATCHING WHEN THE BUDGET RAN OUT — the state ROUTE 1 and ROUTE 2 are actually in
+      // against a real cluster, and the only one arm 7's claim is warranted from (pass 19).
+      unwatchedMs: 0,
+      pollIntervalMs: 2_000,
       deadlineExceeded: true,
       waiting: "the pod is Pending and PodScheduled is False: Unschedulable",
       runTimeoutMs: 5_000

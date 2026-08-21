@@ -1010,6 +1010,23 @@ export interface KubernetesStartFacts {
   /** Sticky, from {@link kubernetesContainerStarted}: a runner container was SEEN running or
    *  terminated at some poll, whatever the cluster says now. */
   everStarted: boolean;
+  /**
+   * HOW LONG THIS RUN WAS BLIND BEFORE IT ENDED — the gap between the last read that COMPLETED and
+   * the moment the verdict is made, in milliseconds. `0` when nothing was ever observed (arm 6 owns
+   * that case and says so in its own words).
+   *
+   * IT IS THE FACT ARM 7 IS MISSING WITHOUT, and the one M23.5 verification pass 19 measured
+   * against a real cluster. `observed` says a read landed; it does not say WHEN, and "the runner
+   * container never started within the whole-run budget" is a claim about the WHOLE budget. One
+   * read that landed a tenth of a second after the unsuspend — an empty pod list, because the
+   * controller had not created the pod yet — supported that sentence for a run whose real container
+   * then started, ran and wrote a real file to the real volume during the 24 seconds this launcher
+   * could not see.
+   */
+  unwatchedMs: number;
+  /** {@link KUBERNETES_POLL_INTERVAL_MS}, or the adapter's configured value — the most a landed
+   *  observation can speak for, since the next one is a poll away. */
+  pollIntervalMs: number;
   /** The whole-run budget is what ended the run, as opposed to a failure of this launcher's own
    *  transport with budget still left. */
   deadlineExceeded: boolean;
@@ -1145,15 +1162,34 @@ export function kubernetesStartVerdict(
     };
   }
 
-  // 7. OBSERVED, NOTHING HAD STARTED, AND THE BUDGET IS WHAT ENDED US — M23.5's D2 verdict,
-  //    unchanged, and the arm the routes above exist to keep honest. See this function's doc for
-  //    the exact width of what this read warrants.
+  // 7. OBSERVED, NOTHING HAD STARTED, AND THE BUDGET IS WHAT ENDED US — M23.5's D2 verdict, and it
+  //    is warranted ONLY IF THIS RUN WAS STILL WATCHING WHEN THE BUDGET RAN OUT. That qualifier is
+  //    M23.5 verification pass 19, and without it this arm makes arm 6's claim through the back
+  //    door: `observed` says a read LANDED, never that it landed recently or said anything
+  //    conclusive, and "never started within the whole-run budget" is a claim about the whole
+  //    budget. See this function's doc for the measurement.
   if (f.deadlineExceeded) {
+    if (f.unwatchedMs <= f.pollIntervalMs + RUNNER_MIN_STEP_BUDGET_MS) {
+      return {
+        code: RUNNER_NEVER_STARTED_CODE,
+        message:
+          `the runner container never started within the whole-run budget of ${f.runTimeoutMs}ms ` +
+          `(RunnerSpec.timeoutMs), so NOTHING RAN and nothing was mutated — ${f.waiting}`
+      };
+    }
+    // 7b. THE READ IS TOO OLD TO SPEAK FOR THE BUDGET IT IS BEING QUOTED ABOUT. The Job stayed live
+    //     in the cluster for the whole of the window below and the kubelet does not need this
+    //     process to be watching.
     return {
-      code: RUNNER_NEVER_STARTED_CODE,
+      code: RUNNER_OUTCOME_UNKNOWN_CODE,
       message:
-        `the runner container never started within the whole-run budget of ${f.runTimeoutMs}ms ` +
-        `(RunnerSpec.timeoutMs), so NOTHING RAN and nothing was mutated — ${f.waiting}`
+        `no runner container had started when this launcher last saw the cluster (${f.waiting}), ` +
+        `and it then saw NOTHING FOR THE LAST ${f.unwatchedMs}ms of the whole-run budget of ` +
+        `${f.runTimeoutMs}ms (RunnerSpec.timeoutMs) — a landed read speaks for one poll interval ` +
+        `(${f.pollIntervalMs}ms) and no longer. Whether the Job started a pod in the window that ` +
+        `followed, and if it did whether the runner ran and what it changed, is NOT KNOWN. The ` +
+        `teardown that follows DELETEs the Job, which kills a 'tofu apply' mid-flight. Check the ` +
+        `target's real state before re-running`
     };
   }
 
@@ -1773,6 +1809,11 @@ export function createKubernetesRunnerLauncher(
          */
         let observed = false;
         /**
+         * WHEN THAT LAST READ LANDED — the half of `observed` pass 18 did not carry, and the fact
+         * arm 7's claim is measured against. `0` means never; every landed read moves it.
+         */
+        let lastObservedAt = 0;
+        /**
          * WHAT THE API SERVER SAID ABOUT THE UNSUSPEND. See {@link KubernetesStartFacts.unsuspend}:
          * a STATUS is the server's own "no" and means the Job is still suspended; anything else
          * leaves that unknown, and a run whose Job may be live may not be told nothing ran.
@@ -1853,6 +1894,7 @@ export function createKubernetesRunnerLauncher(
             // verdict rests on. It is set from the parsed body rather than from entering the loop,
             // because a `GET` that was refused, abandoned or rejected describes nothing.
             observed = true;
+            lastObservedAt = Date.now();
             pod = items[0];
             if (kubernetesContainerStarted(pod)) everStarted = true;
             // THE REMEMBERED FLAG, NOT A FRESH READING. A pod carrying a `deletionTimestamp` may
@@ -2015,6 +2057,10 @@ export function createKubernetesRunnerLauncher(
             unsuspend,
             observed,
             everStarted,
+            // MEASURED AT THE MOMENT THE RUN ENDED, which is where this `catch` runs — teardown has
+            // not happened yet, so nothing has moved the clock on this run's behalf.
+            unwatchedMs: lastObservedAt > 0 ? Date.now() - lastObservedAt : 0,
+            pollIntervalMs,
             deadlineExceeded: e.deadlineExceeded,
             waiting,
             runTimeoutMs
