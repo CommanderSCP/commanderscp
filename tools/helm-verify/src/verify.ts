@@ -142,7 +142,14 @@ function renderedFederationRole(docs: K8sDoc[]): string {
  * hold `get` and `pods/log` to hold `list`, neither of which the adapter ever issues — so a render
  * that splits or merges rules differently must fail here rather than be normalised away.
  */
-function rbacDiff(rendered: unknown, expected: readonly KubernetesRbacRule[]): string[] {
+function rbacDiff(
+  rendered: unknown,
+  expected: readonly KubernetesRbacRule[],
+  /** Who the grant is FOR. Defaults to the adapter, which is the caller for the runner Role; the
+   *  chart-wide gate passes the identity's own description so a message about an install-time hook
+   *  does not claim the Kubernetes adapter issues its calls. */
+  caller = "the adapter"
+): string[] {
   type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
   const rules = (rendered ?? []) as Rule[];
   const problems: string[] = [];
@@ -178,7 +185,7 @@ function rbacDiff(rendered: unknown, expected: readonly KubernetesRbacRule[]): s
     const got = seen.get(key);
     if (got === undefined) {
       problems.push(
-        `${key} is NOT granted at all; the adapter issues ${JSON.stringify(verbs)} against it`
+        `${key} is NOT granted at all; ${caller} issues ${JSON.stringify(verbs)} against it`
       );
       continue;
     }
@@ -191,14 +198,14 @@ function rbacDiff(rendered: unknown, expected: readonly KubernetesRbacRule[]): s
     }
     if (extra.length > 0) {
       problems.push(
-        `${key} grants ${JSON.stringify(extra)}, which the adapter never issues — a standing privilege for a caller that never calls`
+        `${key} grants ${JSON.stringify(extra)}, which ${caller} never issues — a standing privilege for a caller that never calls`
       );
     }
   }
   for (const key of seen.keys()) {
     if (!want.has(key)) {
       problems.push(
-        `${key} is granted and the adapter touches it NOT AT ALL (verbs ${JSON.stringify(seen.get(key))})`
+        `${key} is granted and ${caller} touches it NOT AT ALL (verbs ${JSON.stringify(seen.get(key))})`
       );
     }
   }
@@ -327,13 +334,13 @@ function chartGrantProblems(args: {
   }
 
   // (2)(3) WILDCARDS AND ESCALATION VERBS, over every rule of every role-ish object.
-  const roles = new Map<string, RenderedRule[]>();
+  const roles = new Map<string, { kind: string; rules: RenderedRule[] }>();
   for (const doc of docs) {
     if (doc.kind !== "Role" && doc.kind !== "ClusterRole") continue;
     const name = String(doc.metadata?.name ?? "");
     const namespace = String(doc.metadata?.namespace ?? "");
     const rules = (doc["rules"] ?? []) as RenderedRule[];
-    roles.set(`${namespace}/${name}`, rules);
+    roles.set(`${namespace}/${name}`, { kind: doc.kind, rules });
     for (const rule of rules) {
       for (const field of ["apiGroups", "resources", "verbs"] as const) {
         if ((rule[field] ?? []).includes(RBAC_WILDCARD)) {
@@ -369,7 +376,7 @@ function chartGrantProblems(args: {
     const namespace = String(doc.metadata?.namespace ?? "");
     const roleRef = (doc["roleRef"] ?? {}) as { kind?: string; name?: string };
     const key = `${namespace}/${String(roleRef.name)}`;
-    const rules = roles.get(key);
+    const rules = roles.get(key)?.rules;
     if (roleRef.kind !== "Role" || rules === undefined) {
       say(
         `RoleBinding '${bindingName}' in namespace '${namespace}' references ${String(roleRef.kind)} '${String(roleRef.name)}', which this render does not contain — the grant either does nothing or silently picks up a same-named object already in the cluster`
@@ -393,10 +400,10 @@ function chartGrantProblems(args: {
       effective.set(identity, [...(effective.get(identity) ?? []), ...rules]);
     }
   }
-  for (const key of roles.keys()) {
+  for (const [key, role] of roles) {
     if (!boundRoles.has(key)) {
       say(
-        `Role '${key}' is rendered with no RoleBinding, so it authorises nobody — the shape ADR-0035 §6a records as the starting failure, here as a property of every Role rather than of the one that was checked`
+        `${role.kind} '${key}' is rendered with no RoleBinding, so it authorises nobody — the shape ADR-0035 §6a records as the starting failure, here as a property of every Role rather than of the one that was checked`
       );
     }
   }
@@ -455,7 +462,9 @@ function chartGrantProblems(args: {
       }
       continue;
     }
-    for (const problem of rbacDiff(got, want)) {
+    const caller =
+      identity === workloadName ? "the Kubernetes adapter" : `the '${identity}' install-time hook`;
+    for (const problem of rbacDiff(got, want, caller)) {
       say(`the TOTAL grant held by '${identity}' is not what it is supposed to be: ${problem}`);
     }
   }
