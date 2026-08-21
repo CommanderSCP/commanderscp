@@ -187,10 +187,18 @@ What the launcher needs, all of it refused at RENDER time rather than discovered
 - **At least one managed class enabled**: `managedIac.enabled` (with `managedIac.runnerImage`),
   `managedDep.runnerImage`, or `managedScan.runnerImage`. All three are off by default.
 
-The RBAC — `batch/jobs` create/get/list/watch/patch/delete, `pods`/`pods/log` read, and
-`secrets` create/delete — renders whenever the Kubernetes launcher is selected and any class is
+The RBAC — `batch/jobs` create/get/list/patch/delete, `pods` list, `pods/log` get, `events` list,
+and `secrets` create/delete — renders whenever the Kubernetes launcher is selected and any class is
 enabled, into `managedRunners.kubernetes.namespace` (defaulting to the release namespace). It does
 NOT render for a `docker` deployment.
+
+Those verbs are not maintained here by hand and this sentence is not free prose: it is read by
+`packages/source-census`'s documented-grant gate and compared to `kubernetesRunnerRbac()` in
+`@scp/runner-launcher`, which `kubernetes-rbac-contract.test.ts` derives from the wire by driving
+the adapter over a recording io. This paragraph was WRONG for a full milestone after M23.6 narrowed
+the Role — it still described the `watch` the adapter never issues and the collapsed `pods`/`pods/log`
+verb list that gave each resource the other's verbs — which is why it is now gated rather than
+restated.
 
 **The `secrets` grant is the owner's, taken 2026-08-20** (ADR-0035 §6). Only `managed-iac` carries
 a credential; it reaches the runner as a per-run Secret plus `envFrom.secretRef`, owned by the Job

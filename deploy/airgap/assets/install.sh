@@ -323,15 +323,27 @@ echo
 #     (the shipped compose file mounts no socket, and mounting one is a container-escape decision
 #     that is the operator's to make, not this script's).
 #
-#   helm — there is NO lever, so the block prints an INVENTORY and says so. The plugins have no
-#     Kubernetes-native launch mode yet (helm/templates/runner-iac.yaml "HONEST SCOPE"), a pod has
-#     no docker socket, and `SCP_MANAGED_SCAN_RUNNER_IMAGE` has no chart value at all
-#     (helm/README.md "Still NOT settable"). Until M21.7 this block printed
-#     `SCP_MANAGED_SCAN_RUNNER_IMAGE=<ref>` under helm as if it were an instruction: an operator
-#     could follow it exactly and nothing would happen, with no error — the failure mode this
-#     script exists to prevent, since the far side of an air gap is where a silent no-op costs the
-#     most. `bundle-images.test.ts` now holds every knob this script names against the levers that
-#     mode actually has.
+#   helm — THE LEVER EXISTS SINCE M23.2/M23.4, AND IT IS CHART VALUES RATHER THAN ENV VARS. This
+#     comment said the opposite for a full milestone after the code changed under it ("there is NO
+#     lever", "the plugins have no Kubernetes-native launch mode yet", "`SCP_MANAGED_SCAN_RUNNER_
+#     IMAGE` has no chart value at all"), while the block it describes 90 lines below had already
+#     been rewritten to say the truth. All three were false: `packages/runner-launcher`'s Kubernetes
+#     adapter launches each run as a Job through the API server, and `managedScan.runnerImage` is a
+#     chart value (`_helpers.tpl` gates the whole managed-scan block on it being non-empty). A stale
+#     comment in THIS file is the expensive kind — it is read on the far side of an air gap, where
+#     re-checking a claim costs a courier run.
+#     The levers, all chart values: `managedRunners.launcher=kubernetes`, an EXISTING ReadWriteMany
+#     claim in `managedRunners.kubernetes.workspace.claimName`, and at least one class
+#     (`managedIac.enabled`+`managedIac.runnerImage`, `managedDep.runnerImage`,
+#     `managedScan.runnerImage`). A missing prerequisite FAILS THE RENDER with the reason, which is
+#     why naming them here is safe in a way naming an env var never was. Still no docker socket —
+#     this chart mounts none and will not.
+#     THE RULE THAT PRODUCED THE OLD TEXT STILL STANDS AND IS WHY IT WAS RIGHT TO BE CAUTIOUS: until
+#     M21.7 this block printed `SCP_MANAGED_SCAN_RUNNER_IMAGE=<ref>` under helm as if it were an
+#     instruction, and an operator could follow it exactly and have nothing happen, with no error.
+#     Never name a knob that does nothing. `bundle-images.test.ts` holds every knob this script names
+#     against the levers that mode actually has, and `@scp/source-census`'s documented-claim gate now
+#     holds THIS COMMENT to the chart as well, because a comment is what went stale here.
 #
 # WHY THIS SCRIPT NEVER SETS THEM ITSELF, in either mode: for managed-scan and managed-dep the
 # image setting IS the class's on/off control (ADR-0032 §8e — managedDep has no separate `enabled`
@@ -412,13 +424,15 @@ if [[ "$MODE" == "helm" ]]; then
   echo "   tag). This bundle still ships the eval postgres image (${POSTGRES_EVAL_RETARGETED_REF:-n/a})"
   echo "   in case you wire that up yourself; install.sh does not do it for you."
 
-  # ---- The managed-execution runners under HELM: pushed and pinned, and NOT STARTABLE HERE ----
+  # ---- The managed-execution runners under HELM: pushed, pinned, and STARTABLE (M23.4) ----
   #
-  # See the "WHICH LEVER EXISTS IN WHICH MODE" comment above step 4 for why this mode prints an
-  # inventory instead of an activation instruction. Short version: under Kubernetes there is no
-  # lever to hand the operator. The one thing this block must never do is name a knob that does
-  # nothing — an instruction that silently no-ops is worse than silence, because the operator gets
-  # no error to tell them it didn't take.
+  # See the "WHICH LEVER EXISTS IN WHICH MODE" comment above step 4. This comment said "under
+  # Kubernetes there is no lever to hand the operator" while the echo block immediately below it
+  # already listed four — one file, two comments, both stale, and the second one found only because
+  # the first was. The rule that both were protecting is unchanged and still governs every line
+  # below: never name a knob that does nothing. An instruction that silently no-ops is worse than
+  # silence, because the operator gets no error to tell them it didn't take. What makes naming the
+  # chart values safe is that a missing prerequisite FAILS THE RENDER with its reason.
   if [[ -n "${SCP_RUNNER_IAC_DIGEST:-}" || -n "${SCP_RUNNER_SCAN_DIGEST:-}" || -n "${SCP_RUNNER_DEP_DIGEST:-}" ]]; then
     echo
     echo "   MANAGED-EXECUTION RUNNERS: verified, pushed to your registry and digest-pinned above,"
