@@ -1417,10 +1417,12 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(c.jobs.size).toBe(0);
   });
 
-  it("THE NEGATIVE CONTROL: ONE landed observation is enough to say nothing started", async () => {
+  it("THE NEGATIVE CONTROL: a landed observation, still current, is enough to say nothing started", async () => {
     // WITHOUT THIS ARM, "call every deadline `outcome-unknown`" passes the case above — and ROUTE 1
     // and ROUTE 2, where the cluster SAID why it could not start the pod, would stop telling an
-    // operator that nothing was touched. The distinguishing fact is a read that COMPLETED.
+    // operator that nothing was touched. The distinguishing fact is a read that COMPLETED, AND that
+    // is no older than one poll interval when the budget runs out (pass 19: the second half was
+    // missing, and the title of this case used to claim ONE landed read was enough on its own).
     const c = cluster();
     c.setPod(undefined);
     c.setEvents([
@@ -1431,14 +1433,48 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
         message: 'Error creating: pods "x" is forbidden: failed quota: must specify limits.memory'
       }
     ]);
-    const result = await c
-      .launcher({ io: stallingPodGetIo(c.io, 1) })
-      .run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+    // EVERY READ LANDS, RIGHT UP TO THE DEADLINE — which is what ROUTE 1 and ROUTE 2 actually do
+    // against the real cluster, and what this control is for. It used to stall after the first read
+    // and pass anyway, which is how the missing half stayed invisible.
+    const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
 
     expect(result.failure!.kind).toBe("spawn-failed");
     expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
     expect(result.failure!.detail).toContain("NOTHING RAN");
     expect(result.failure!.detail).toContain("must specify limits.memory");
+  });
+
+  it("PASS 19: A LANDED READ THAT WENT STALE CANNOT SAY THE RUN NEVER STARTED", async () => {
+    /**
+     * THE DEFECT PASS 18 LEFT STANDING, at the seam. Its fix moved the boundary to WHETHER a read
+     * landed — not to WHEN. Let exactly ONE `GET pods` through, the one issued immediately after
+     * the unsuspend and before any pod exists, then stall every read after it: `observed` is true,
+     * arm 6 is skipped, and arm 7 said "NOTHING RAN and nothing was mutated" about the 990ms of the
+     * budget that nothing in this process could see.
+     *
+     * `kubernetes-adapter.kind.test.ts` runs the same shape against a REAL cluster, where the pod,
+     * the container and the file it writes are real. This arm is the cheap gate for the same
+     * property; that one is the proof that the property matters.
+     */
+    const c = cluster();
+    c.setPod(undefined);
+    // ONE READ LANDS, AND THEN THE REST OF THE BUDGET PASSES UNSEEN. `pollIntervalMs` is what says
+    // how long a landed read speaks for, so it is stated here rather than inherited: 100ms is a
+    // legitimate setting, and it makes the ~900ms blind window nine intervals wide.
+    const result = await c
+      .launcher({ io: stallingPodGetIo(c.io, 1), pollIntervalMs: 100 })
+      .run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+
+    expect(
+      result.failure!.kind,
+      `a run this launcher stopped watching was classified ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("outcome-unknown");
+    expect(result.failure!.code).toBe(RUNNER_OUTCOME_UNKNOWN_CODE);
+    expect(result.failure!.detail).not.toContain("NOTHING RAN");
+    expect(result.failure!.detail).not.toContain("nothing was mutated");
+    expect(result.failure!.detail).toContain("is NOT KNOWN");
+    // AND IT NAMES THE WINDOW, because "we could not see" without "for how long" is not evidence.
+    expect(result.failure!.detail).toMatch(/saw NOTHING FOR THE LAST \d+ms/);
   });
 
   it("S2 — A TRANSPORT FAILURE WITH BUDGET LEFT IS NOT A BUDGET EXHAUSTION", async () => {
