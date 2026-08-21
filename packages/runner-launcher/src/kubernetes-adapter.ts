@@ -522,6 +522,118 @@ function logRequestPath(ns: string, podName: string, maxBuffer: number): string 
 }
 
 // ==================================================================================================
+// THE RBAC CONTRACT — WHAT THIS ADAPTER ASKS FOR, AS DATA, SO THE CHART CAN BE DIFFED AGAINST IT
+// ==================================================================================================
+/**
+ * M23.6 clause 5: "the chart grants exactly what the adapter calls, and no more".
+ *
+ * WHY A DECLARATION AND A DERIVATION, NOT JUST ONE OF THEM. Before this, `tools/helm-verify` checked
+ * the rendered Role with `JSON.stringify(rules).includes('"patch"')` for `batch/jobs`, set-equality
+ * for `events` and for `secrets`, and NOTHING AT ALL for `pods` / `pods/log`. That gate catches a
+ * verb the adapter needs and the Role omits — the M23.2 defect — and is structurally unable to catch
+ * the opposite. Measured, on this file, before the fix: four unused verbs added to the chart
+ * (`jobs: +deletecollection,+update`; `pods,pods/log: +delete,+create`) left helm-verify green, the
+ * whole workspace green, and the kind suite green. **A grant may only ever drift wider**, which is
+ * the direction that matters for a privilege.
+ *
+ * AND THE SHIPPED ROLE HAD ALREADY DRIFTED. It granted `watch` on `batch/jobs` and on
+ * `pods,pods/log`, inherited from M8's reference shape — while {@link KUBERNETES_POLL_INTERVAL_MS}'s
+ * own doc says, in as many words, "A POLL AND NOT A WATCH, deliberately". There is no `watch=` query
+ * anywhere in this file. It also gave `pods` and `pods/log` ONE verb list, so `get` on `pods` and
+ * `list` on `pods/log` were granted and never used.
+ *
+ * THE TABLE BELOW IS A DECLARATION, and a declaration alone is prose with a type. It is held to the
+ * code by `kubernetes-rbac-contract.test.ts`, which RUNS the adapter through a recording io across
+ * every route — a whole successful run, a run whose pod never appears, and a reap pass — maps each
+ * `(method, path)` that actually reached the wire onto its Kubernetes verb with
+ * {@link kubernetesRbacRequirement}, and asserts the derived set EQUALS this table. `helm-verify`
+ * then asserts the rendered Role equals it too. Three things agree, or the build is red.
+ */
+export interface KubernetesRbacRule {
+  /** `""` for the core group, `"batch"` for Jobs — spelled as the Role's `apiGroups` entry is. */
+  readonly apiGroup: "" | "batch";
+  /** The resource, subresources included and NAMED SEPARATELY: `pods` and `pods/log` are two
+   *  distinct RBAC resources and collapsing them into one rule grants each the other's verbs. */
+  readonly resource: string;
+  /** Sorted, so a set comparison is a value comparison. */
+  readonly verbs: readonly string[];
+}
+
+/** Rendered as `apiGroup/resource`, the key both the derivation and the chart diff group on. */
+export function kubernetesRbacKey(rule: { apiGroup: string; resource: string }): string {
+  return `${rule.apiGroup === "" ? "core" : rule.apiGroup}/${rule.resource}`;
+}
+
+/**
+ * Every rule this adapter's requests require, for a deployment with `perRunSecrets` as given.
+ *
+ * `secrets` is a PARAMETER and not a fifth constant entry because the chart renders that rule behind
+ * `managedRunners.kubernetes.perRunSecrets` and the same value sets the server-side flag — so "what
+ * the adapter calls" genuinely differs between the two deployments, and a diff that ignored the
+ * value would have to be loose in one direction or wrong in the other.
+ */
+export function kubernetesRunnerRbac(opts: { perRunSecrets: boolean }): readonly KubernetesRbacRule[] {
+  const rules: KubernetesRbacRule[] = [
+    // create (POST), get (GET one), list (GET the collection, for the reap sweep), patch (the
+    // unsuspend), delete (teardown and reap). NO `watch`: see the module note above.
+    { apiGroup: "batch", resource: "jobs", verbs: ["create", "delete", "get", "list", "patch"] },
+    // The pod is only ever found by label selector over the COLLECTION — never fetched by name.
+    { apiGroup: "", resource: "pods", verbs: ["list"] },
+    // …and the log is a subresource GET on one pod.
+    { apiGroup: "", resource: "pods/log", verbs: ["get"] },
+    // The Job's own events, by field selector: a collection read, so `list`.
+    { apiGroup: "", resource: "events", verbs: ["list"] }
+  ];
+  if (opts.perRunSecrets) {
+    // One POST and two DELETEs. `get` is unused and `list` returns every Secret BODY in the
+    // namespace — see this file's `perRunSecrets` doc for why that one is a refusal, not an omission.
+    rules.push({ apiGroup: "", resource: "secrets", verbs: ["create", "delete"] });
+  }
+  return rules;
+}
+
+/**
+ * The Kubernetes verb an HTTP request against the API server requires — the mapping the authorizer
+ * itself performs, written here so a request can be turned into a grant and diffed.
+ *
+ * Returns `null` for a path this adapter never issues, which the contract test asserts is
+ * unreachable: an unrecognised path must fail the census loudly rather than be silently excused.
+ */
+export function kubernetesRbacRequirement(
+  method: string,
+  rawPath: string
+): { apiGroup: "" | "batch"; resource: string; verb: string } | null {
+  const path = rawPath.split("?")[0] ?? "";
+  // `/apis/batch/v1/namespaces/{ns}/jobs[/{name}]` and `/api/v1/namespaces/{ns}/{res}[/{name}[/{sub}]]`
+  const batch = /^\/apis\/batch\/v1\/namespaces\/[^/]+\/([^/]+)(?:\/([^/]+))?$/.exec(path);
+  const core = /^\/api\/v1\/namespaces\/[^/]+\/([^/]+)(?:\/([^/]+))?(?:\/([^/]+))?$/.exec(path);
+  const m = batch ?? core;
+  if (!m) return null;
+  const apiGroup: "" | "batch" = batch ? "batch" : "";
+  const collection = m[1]!;
+  const name = m[2];
+  const subresource = m[3];
+  const resource = subresource === undefined ? collection : `${collection}/${subresource}`;
+  // A GET is `list` against a collection and `get` against a named object. That distinction is the
+  // whole reason `pods` needs only `list` while `pods/log` needs only `get`.
+  const verb =
+    method === "GET"
+      ? name === undefined
+        ? "list"
+        : "get"
+      : method === "POST"
+        ? "create"
+        : method === "PATCH"
+          ? "patch"
+          : method === "PUT"
+            ? "update"
+            : method === "DELETE"
+              ? "delete"
+              : null;
+  return verb === null ? null : { apiGroup, resource, verb };
+}
+
+// ==================================================================================================
 // KUBERNETES-SHAPED VALIDATION — the refusals the Docker adapter had no need of
 // ==================================================================================================
 

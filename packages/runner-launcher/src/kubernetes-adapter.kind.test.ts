@@ -471,6 +471,29 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `the chart's runner Role does not grant ${verb} on ${resource}`
       ).toBe("yes");
     }
+    // AND THE OTHER DIRECTION, AGAINST THE REAL AUTHORIZER (M23.6 clause 5). Every check above is
+    // "the answer was yes", and a Role granting `*` on everything answers yes to all of them. These
+    // are the verbs the chart USED to grant and the adapter has never issued: `watch` on both
+    // resources (this adapter POLLS — see `KUBERNETES_POLL_INTERVAL_MS`'s doc — and there is no
+    // `watch=` query anywhere in it), and the two halves of the `pods`/`pods/log` collapse, which
+    // gave each resource the other's verbs. `tools/helm-verify` diffs the rendered rules against
+    // `kubernetesRunnerRbac()` as a set; this is the same claim asked of a real API server, which is
+    // the only thing that can say what the Role MEANS rather than what it says.
+    const narrowness: [string, string][] = [
+      ["watch", "jobs.batch"],
+      ["watch", "pods"],
+      ["watch", "pods/log"],
+      ["get", "pods"],
+      ["list", "pods/log"],
+      ["update", "jobs.batch"],
+      ["deletecollection", "jobs.batch"]
+    ];
+    for (const [verb, resource] of narrowness) {
+      expect(
+        await canI(verb, resource, sa),
+        `the chart's runner Role grants ${verb} on ${resource}, which this adapter never issues`
+      ).toBe("no");
+    }
     // THE GRANT THE OWNER TOOK, ASKED FOR BY NAME (M23.4). Two verbs, in the DEFAULT namespace,
     // because the chart's default is what an operator installs.
     for (const verb of ["create", "delete"]) {

@@ -4200,6 +4200,9 @@ export {
   jobManifest,
   kubernetesContainerStarted,
   kubernetesJobTermination,
+  kubernetesRbacKey,
+  kubernetesRbacRequirement,
+  kubernetesRunnerRbac,
   kubernetesStartVerdict,
   kubernetesTermination,
   kubernetesWaitingEvidence,
@@ -4212,6 +4215,7 @@ export {
 } from "./kubernetes-adapter.js";
 export type {
   KubernetesApiRequest,
+  KubernetesRbacRule,
   KubernetesApiResponse,
   KubernetesStartFacts,
   KubernetesRunnerIo,

@@ -35,8 +35,8 @@ import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseAllDocuments } from "yaml";
-import { jobManifest } from "@scp/runner-launcher";
-import type { RunnerSpec } from "@scp/runner-launcher";
+import { jobManifest, kubernetesRbacKey, kubernetesRunnerRbac } from "@scp/runner-launcher";
+import type { KubernetesRbacRule, RunnerSpec } from "@scp/runner-launcher";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
@@ -116,6 +116,86 @@ function renderedFederationRole(docs: K8sDoc[]): string {
     (d) => d.kind === "Namespace" && d.metadata?.labels?.["commanderscp.io/federation-role"]
   );
   return ns?.metadata?.labels?.["commanderscp.io/federation-role"] ?? "commander";
+}
+
+/**
+ * ==================================================================================================
+ * M23.6 CLAUSE 5 — THE RUNNER ROLE, DIFFED AGAINST WHAT THE ADAPTER ACTUALLY ISSUES, BOTH WAYS
+ * ==================================================================================================
+ *
+ * The clause is "the chart grants exactly what the adapter calls, and no more". The gate that stood
+ * here before could only ever catch the FIRST half: `batch/jobs` was checked with
+ * `JSON.stringify(rules).includes('"patch"')`, `pods`/`pods/log` were checked NOWHERE AT ALL, and
+ * only `events` and `secrets` had a set-equality. Measured against that gate: four unused verbs
+ * added to `runner-iac.yaml` (`jobs: +deletecollection,+update`; `pods,pods/log: +delete,+create`)
+ * left this script green, `pnpm -w test` green and the kind suite green. A privilege that can only
+ * drift wider is the direction that matters.
+ *
+ * THE EXPECTED SET IS NOT WRITTEN HERE. It is `kubernetesRunnerRbac()` in `@scp/runner-launcher`,
+ * which `kubernetes-rbac-contract.test.ts` holds to the adapter by DRIVING every route over a
+ * recording io and deriving the verbs from the wire. A second hand-maintained copy in this file
+ * would be free to agree with the chart and disagree with the code, which is the failure mode this
+ * whole clause is about.
+ *
+ * ONE RULE PER (apiGroup, resource) IS PART OF THE CONTRACT, not a convenience for the comparison. A
+ * rule listing two resources gives each of them every verb in the list — that is how `pods` came to
+ * hold `get` and `pods/log` to hold `list`, neither of which the adapter ever issues — so a render
+ * that splits or merges rules differently must fail here rather than be normalised away.
+ */
+function rbacDiff(
+  rendered: unknown,
+  expected: readonly KubernetesRbacRule[]
+): string[] {
+  type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
+  const rules = (rendered ?? []) as Rule[];
+  const problems: string[] = [];
+
+  const seen = new Map<string, string[]>();
+  for (const rule of rules) {
+    const groups = rule.apiGroups ?? [];
+    const resources = rule.resources ?? [];
+    if (groups.length !== 1) {
+      problems.push(`a rule names ${groups.length} apiGroups (${JSON.stringify(groups)}); one rule, one group`);
+      continue;
+    }
+    if (resources.length !== 1) {
+      problems.push(
+        `a rule names ${resources.length} resources (${JSON.stringify(resources)}) and therefore grants EACH of them ${JSON.stringify(rule.verbs)} — split it, one rule per resource`
+      );
+      continue;
+    }
+    const key = kubernetesRbacKey({ apiGroup: groups[0]!, resource: resources[0]! });
+    if (seen.has(key)) {
+      problems.push(`${key} appears in more than one rule, so its effective grant is the union — merge them`);
+      continue;
+    }
+    seen.set(key, [...(rule.verbs ?? [])].sort());
+  }
+
+  const want = new Map(expected.map((r) => [kubernetesRbacKey(r), [...r.verbs].sort()]));
+  for (const [key, verbs] of want) {
+    const got = seen.get(key);
+    if (got === undefined) {
+      problems.push(`${key} is NOT granted at all; the adapter issues ${JSON.stringify(verbs)} against it`);
+      continue;
+    }
+    const missing = verbs.filter((v) => !got.includes(v));
+    const extra = got.filter((v) => !verbs.includes(v));
+    if (missing.length > 0) {
+      problems.push(`${key} is missing ${JSON.stringify(missing)} — every call using it is a 403 inside a run`);
+    }
+    if (extra.length > 0) {
+      problems.push(
+        `${key} grants ${JSON.stringify(extra)}, which the adapter never issues — a standing privilege for a caller that never calls`
+      );
+    }
+  }
+  for (const key of seen.keys()) {
+    if (!want.has(key)) {
+      problems.push(`${key} is granted and the adapter touches it NOT AT ALL (verbs ${JSON.stringify(seen.get(key))})`);
+    }
+  }
+  return problems;
 }
 
 /** Pure detector: given a role and a rendered bundled chart, return the list of guardrail
@@ -1885,32 +1965,25 @@ function main(): void {
       docs.find((d) => d.kind === "Role" && String(d.metadata?.name ?? "").endsWith("-runner-iac"));
     const roleOn = runnerRole(k8s);
     assert(roleOn, `[${label}] no runner Role rendered with the Kubernetes launcher selected`);
-    // AND THE VERB THE HARNESS FOUND MISSING. The adapter creates the Job SUSPENDED and PATCHes it
-    // live; the Role shipped as create/get/list/watch/delete, so `start` was a 403 for every run.
-    assert(
-      JSON.stringify(roleOn?.rules ?? []).includes('"patch"'),
-      `[${label}] the runner Role does not grant 'patch' on jobs — the adapter unsuspends the Job with a merge patch, so every managed run fails at 'start'`
-    );
-    // AND THE VERB M23.5 ADDED, for the same reason: a rule the adapter needs and this file does not
-    // grant is a silent degradation rather than an error. When a Job cannot create a pod at all
-    // (a ResourceQuota requiring compute limits) the controller's `FailedCreate` Event is the ONLY
-    // record of why, and teardown deletes the Job. Without it every such run reported
-    // `budget-exhausted` — "a tofu apply was SIGTERMed mid-flight, state unknown" — when nothing ran.
+    // THE WHOLE ROLE, AS A SET, AGAINST WHAT THE ADAPTER ISSUES — the M23.6 clause 5 gate. This
+    // subsumes the two assertions that used to stand here: the `patch` the harness found missing
+    // (the adapter creates the Job SUSPENDED and PATCHes it live, so without it `start` is a 403 for
+    // every run) and the `events: list` M23.5 added (when a Job cannot create a pod at all, the
+    // controller's `FailedCreate` Event is the only record of why, and teardown deletes the Job).
+    // Both are now MISSING-verb findings of the same diff, which also reports the opposite.
     {
-      type EventRule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
-      const eventRules = ((roleOn?.rules ?? []) as EventRule[]).filter((r) =>
-        (r.resources ?? []).includes("events")
-      );
+      const problems = rbacDiff(roleOn?.rules, kubernetesRunnerRbac({ perRunSecrets: true }));
       assert(
-        eventRules.length === 1 && [...(eventRules[0]!.verbs ?? [])].sort().join(",") === "list",
-        `[${label}] expected exactly ONE 'events' rule on the runner Role granting exactly 'list'; found ${JSON.stringify(eventRules)}. Narrower means the pod-creation-refusal diagnosis is unreadable; wider is a grant nothing in the adapter uses`
+        problems.length === 0,
+        `[${label}] the runner Role is not what the adapter calls:\n    - ${problems.join("\n    - ")}\n  The expected set is kubernetesRunnerRbac() in @scp/runner-launcher, derived from the wire by kubernetes-rbac-contract.test.ts. Change the adapter and the declaration together, never the chart alone.`
       );
     }
 
     type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
-    const secretRules = ((roleOn?.rules ?? []) as Rule[]).filter((r) =>
+    const secretRulesForShape = ((roleOn?.rules ?? []) as Rule[]).filter((r) =>
       (r.resources ?? []).includes("secrets")
     );
+    const secretRules = secretRulesForShape;
     assert(
       secretRules.length === 1,
       `[${label}] expected exactly ONE 'secrets' rule on the runner Role by default (the owner's grant, ADR-0035); found ${secretRules.length}. managed-iac cannot run on Kubernetes without it, and more than one rule means the grant is being widened somewhere this gate cannot see`

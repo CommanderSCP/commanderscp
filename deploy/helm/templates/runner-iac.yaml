@@ -57,12 +57,34 @@ rules:
   # `kubernetes-adapter.kind.test.ts` asks `kubectl auth can-i` for each verb by name, so a verb the
   # adapter needs and this file does not grant fails with the verb in the message. That is the whole
   # reason owner decision 3 required a real cluster: a fake authorises everything.
+  #
+  # NARROWED TO EXACTLY WHAT THE ADAPTER ISSUES (M23.6 clause 5), AND THE VERBS REMOVED WERE
+  # MEASURED AS UNUSED RATHER THAN JUDGED SO. `packages/runner-launcher`'s
+  # `kubernetes-rbac-contract.test.ts` DRIVES the adapter across every route it has over a recording
+  # io, maps each `(method, path)` that reached the wire onto the verb the authorizer requires, and
+  # asserts the result equals `kubernetesRunnerRbac()`. `tools/helm-verify` then asserts THESE RULES
+  # equal the same declaration, as a SET, in BOTH DIRECTIONS — an unused verb here fails the build
+  # exactly as a missing one does. Before that gate existed, four unused verbs added to this file
+  # (`jobs: +deletecollection,+update`; `pods,pods/log: +delete,+create`) left helm-verify green, the
+  # whole workspace green and the kind suite green.
+  #
+  #   `watch` on jobs and on pods/pods-log — REMOVED. Inherited from M8's reference shape.
+  #     `KUBERNETES_POLL_INTERVAL_MS`'s own doc says "A POLL AND NOT A WATCH, deliberately" (a watch
+  #     stream that ends silently is indistinguishable from "nothing has happened yet"), and there is
+  #     no `watch=` query anywhere in the adapter. Removing both left the kind suite green.
+  #   `pods` and `pods/log` — SPLIT. They are two distinct RBAC resources and one shared verb list
+  #     grants each the other's: `get` on `pods` and `list` on `pods/log`, neither ever issued. The
+  #     pod is only ever found by label selector over the collection; the log is only ever a
+  #     subresource GET on one pod.
   - apiGroups: ["batch"]
     resources: ["jobs"]
-    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+    verbs: ["create", "delete", "get", "list", "patch"]
   - apiGroups: [""]
-    resources: ["pods", "pods/log"]
-    verbs: ["get", "list", "watch"]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
   # THE JOB'S OWN EVENTS (M23.5) — `list` only, and it is the ONLY place one failure route is ever
   # written down.
   #
