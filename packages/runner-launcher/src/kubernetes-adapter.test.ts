@@ -702,10 +702,10 @@ describe("M23.2: identity, attribution and the value that cannot be honoured", (
 });
 
 // ==================================================================================================
-// THE FIVE FAILURE KINDS — through the PORT's one classifier, not a second one
+// THE FAILURE KINDS — through the PORT's one classifier, not a second one
 // ==================================================================================================
 
-describe("M23.2: a pod's terminal state maps onto the port's five failure kinds", () => {
+describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () => {
   const terminatedPod = (state: unknown) => ({
     metadata: { name: "p1" },
     status: { phase: "Failed", containerStatuses: [{ name: "runner", state }] }

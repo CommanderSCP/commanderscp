@@ -1083,7 +1083,7 @@ interface NodeFailureShape {
   /** What `run()` must report when this shape lands on `start`. */
   startsAs: { stdout: string; stderr: string };
   /**
-   * WHICH OF THE FIVE FAILURE KINDS `classifyRunnerFailure` MUST DERIVE FROM THIS SHAPE — MEDIUM
+   * WHICH FAILURE KIND `classifyRunnerFailure` MUST DERIVE FROM THIS SHAPE — MEDIUM
    * (verification pass 5). This column is the whole fix for "an operator cannot tell these four
    * apart afterwards", which the header above pinned as a known behaviour gap. It is per-ROW rather
    * than one assertion for all four precisely because the rows must NOT agree: two of them here

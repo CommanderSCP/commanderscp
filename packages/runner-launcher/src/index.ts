@@ -767,9 +767,63 @@ export const RUNNER_MAXBUFFER_CODE = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
  *                        (`ENOENT` — `dockerBinary` is not on PATH; `EACCES` — not executable).
  *                        Nothing ran, so nothing was mutated.
  *  - `exit-nonzero`      the runner itself exited non-zero. The only one the RUNNER caused.
+ *  - `outcome-unknown`   the launcher never learned what became of the runner. NOT a sixth way to
+ *                        fail — it is the ABSENCE of a verdict, recorded as one. See below.
+ *
+ * WHY THERE IS A SIXTH, AND WHAT IT COSTS — M23.5 verification pass 18.
+ *
+ * THE FIVE ABOVE ARE ALL CLAIMS ABOUT THE RUNNER, and every one of them was reachable for a run
+ * about which this launcher had learned NOTHING. Measured against a real cluster: the unsuspend
+ * PATCH reaches the API server and succeeds, every `GET pods` after it stalls past the budget, and
+ * the real Job, the real pod and the real kubelet do the work anyway. The launcher recorded
+ * `spawn-failed` — "the container CLI could not be executed at all — nothing ran … so NOTHING RAN
+ * and nothing was mutated" — while a real container had written a real file to the real volume. The
+ * evidence that the claim was unfounded sat IN THE SAME SENTENCE ("the Job had not yet been
+ * observed") and the classification ignored it.
+ *
+ * THE TWO EXISTING CANDIDATES ARE BOTH LIES, IN OPPOSITE DIRECTIONS, so choosing between them is
+ * choosing which one to tell. `spawn-failed` asserts nothing was mutated; `budget-exhausted` asserts
+ * the runner "was stopped mid-flight", which is equally unfounded when the Job never produced a pod
+ * at all. Reusing either with a franker `detail` leaves the KIND — the machine-readable word that
+ * heads every recorded string and every audit row — saying something the launcher cannot know.
+ * Charter principle 6 is that a Decision persists its inputs; an input that is a guess is worse than
+ * one that says it is missing.
+ *
+ * AND THE ACTION IS DIFFERENT, which is this type's own test for a new inhabitant ("at the
+ * granularity an operator has to act on"). `budget-exhausted` -> raise the budget and re-run.
+ * `spawn-failed` -> fix the image or the quota and re-run freely, nothing was touched.
+ * `outcome-unknown` -> DO NOT re-run yet: look at the real infrastructure first, because a `tofu
+ * apply` may be half-applied and the teardown that follows this verdict DELETEs the Job, which kills
+ * whatever it was doing.
+ *
+ * WHAT IT COSTS. `RunnerFailureKind` is exported, so this is a contract change every consumer sees.
+ * A filterless census over `apps`, `packages`, `docs` and `deploy` found NO exhaustive switch on it
+ * anywhere and NO schema that carries it: the plugins and `reconcile.ts` read `detail` (whose first
+ * word is the kind) and `deadlineExceeded`, never the kind itself. Inside this package
+ * {@link FAILURE_WORDING} is a `Record<RunnerFailureKind, string>`, so the compiler refuses a
+ * missing arm — that is the mechanism, and the census is only what says the blast radius is small.
+ * What changes for a reader is that the routes where this launcher was BLIND no longer borrow the
+ * vocabulary of the routes where it could see.
  */
 export type RunnerFailureKind =
-  "budget-exhausted" | "output-exceeded" | "signalled" | "spawn-failed" | "exit-nonzero";
+  | "budget-exhausted"
+  | "output-exceeded"
+  | "signalled"
+  | "spawn-failed"
+  | "exit-nonzero"
+  | "outcome-unknown";
+
+/**
+ * THE `code` THAT MAKES A FAILURE {@link RunnerFailureKind} `outcome-unknown`.
+ *
+ * A STRING, like {@link RUNNER_NEVER_STARTED_CODE}, and read by {@link classifyRunnerFailure} BEFORE
+ * `deadlineExceeded` — because the runs this describes usually end AT the deadline, and
+ * `budget-exhausted` would otherwise win and assert the runner "was stopped mid-flight".
+ * {@link RunnerFailure.deadlineExceeded} still reports which bound ended the run, honestly: WHICH
+ * CLOCK RAN OUT and WHAT IS KNOWN ABOUT THE RUNNER are different questions, and conflating them is
+ * the defect this constant exists to end.
+ */
+export const RUNNER_OUTCOME_UNKNOWN_CODE = "ERR_SCP_RUNNER_OUTCOME_UNKNOWN";
 
 // --------------------------------------------------------------------------------------------
 // THE ONE BOUND, CHOSEN ONCE, HERE — and it keeps BOTH ENDS.
@@ -2508,8 +2562,18 @@ export interface RunnerFailure {
   /** Node's own `code`, carried across so a caller can branch without re-parsing `detail`. */
   readonly code: string | number | null | undefined;
   readonly signal: string | null | undefined;
-  /** {@link RunnerLaunchError.deadlineExceeded}, i.e. `kind === "budget-exhausted"`. Kept as its own
-   *  field because it is the one fact a caller is most likely to want as a boolean. */
+  /**
+   * {@link RunnerLaunchError.deadlineExceeded} — WHICH BOUND ENDED THE RUN, which is not the same
+   * question as `kind`. Kept as its own field because it is the one fact a caller is most likely to
+   * want as a boolean.
+   *
+   * THIS DOC USED TO SAY "i.e. `kind === 'budget-exhausted'`" AND THAT EQUIVALENCE IS GONE (M23.5
+   * verification pass 18). `outcome-unknown` is normally reached AT the whole-run deadline and
+   * carries `deadlineExceeded: true`, because the budget really did run out; what it declines to say
+   * is what became of the runner. A caller deciding whether it is safe to re-run must branch on
+   * `kind`, never on this boolean — `true` covers both "we stopped it, so it is stopped" and "we
+   * stopped LOOKING, and it may still have finished".
+   */
   readonly deadlineExceeded: boolean;
 }
 
@@ -2520,7 +2584,13 @@ const FAILURE_WORDING: Record<RunnerFailureKind, string> = {
   "output-exceeded": "the runner printed more than maxBuffer allows, so its output is TRUNCATED",
   signalled: "the runner was killed by a signal that was not this run's own budget",
   "spawn-failed": "the container CLI could not be executed at all — nothing ran",
-  "exit-nonzero": "the runner itself exited non-zero"
+  "exit-nonzero": "the runner itself exited non-zero",
+  // THE ONE SENTENCE HERE THAT CLAIMS NOTHING ABOUT THE RUNNER, which is its entire job. It is
+  // phrased as an INSTRUCTION as well as a statement because the safe next step is the opposite of
+  // the one every other kind implies: the other five all end "…so re-run it".
+  "outcome-unknown":
+    "the launcher never learned what became of the runner — whether it ran, and whether anything " +
+    "was mutated, is NOT KNOWN; check the target's real state before re-running"
 };
 
 /**
@@ -2537,7 +2607,12 @@ const FAILURE_WORDING: Record<RunnerFailureKind, string> = {
  *
  * THE ORDER OF THE TESTS IS LOAD-BEARING and every step of it is a measured Node shape (the table in
  * `docker-adapter.test.ts`, which spawns real children to keep itself honest):
- *   1. `deadlineExceeded` FIRST, because a budget kill also sets `killed: true` and would otherwise
+ *   0. {@link RUNNER_OUTCOME_UNKNOWN_CODE} BEFORE ANYTHING (M23.5 verification pass 18). A producer
+ *      that has declared it does not know what became of the runner must not have that declaration
+ *      overwritten by a test that infers one: `deadlineExceeded` would call it `budget-exhausted`
+ *      ("stopped mid-flight") and the errno test would call it `spawn-failed` ("nothing ran"), and
+ *      those are the two opposite claims it exists to refuse.
+ *   1. `deadlineExceeded` next, because a budget kill also sets `killed: true` and would otherwise
  *      read as `signalled` — and it is the distinction with the largest consequence.
  *   2. maxBuffer BEFORE the errno test, because its `code` IS a string
  *      (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`) and `typeof code === "string"` would otherwise call a
@@ -2613,15 +2688,23 @@ const OUTPUT_TAIL_MARKER = " :: runner output (tail): ";
 /** How much of the child's own output {@link classifyRunnerFailure} appends. See its doc. */
 const FAILURE_OUTPUT_TAIL_CHARS = RUNNER_DETAIL_TAIL_CHARS - OUTPUT_TAIL_MARKER.length;
 export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
-  const kind: RunnerFailureKind = err.deadlineExceeded
-    ? "budget-exhausted"
-    : err.code === RUNNER_MAXBUFFER_CODE
-      ? "output-exceeded"
-      : err.killed === true
-        ? "signalled"
-        : typeof err.code === "string"
-          ? "spawn-failed"
-          : "exit-nonzero";
+  const kind: RunnerFailureKind =
+    err.code === RUNNER_OUTCOME_UNKNOWN_CODE
+      ? // FIRST, AND BEFORE `deadlineExceeded` — see {@link RUNNER_OUTCOME_UNKNOWN_CODE}. The runs
+        // this describes normally end AT the whole-run deadline, so every later test would reach
+        // `budget-exhausted` and re-assert the very claim ("stopped mid-flight") the producer has
+        // just declared it cannot make. It is also before the errno test, which would otherwise call
+        // a STRING code `spawn-failed` — the opposite lie, and the one measured in the field.
+        "outcome-unknown"
+      : err.deadlineExceeded
+        ? "budget-exhausted"
+        : err.code === RUNNER_MAXBUFFER_CODE
+          ? "output-exceeded"
+          : err.killed === true
+            ? "signalled"
+            : typeof err.code === "string"
+              ? "spawn-failed"
+              : "exit-nonzero";
 
   const facts = [`code=${err.code === undefined ? "undefined" : String(err.code)}`];
   if (err.signal) facts.push(`signal=${err.signal}`);
@@ -2660,7 +2743,7 @@ export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
 }
 
 /**
- * THE ONE STRING A CALLER RECORDS FOR A RUN, whatever became of it — success or any of the five
+ * THE ONE STRING A CALLER RECORDS FOR A RUN, whatever became of it — success or any of the six
  * failure kinds. Exported because all three plugins need the same answer and each of them used to
  * spell it `result.succeeded ? result.stdout : result.stderr`, which is precisely the expression
  * that produced `""`.
@@ -4077,6 +4160,7 @@ export {
   jobManifest,
   kubernetesContainerStarted,
   kubernetesJobTermination,
+  kubernetesStartVerdict,
   kubernetesTermination,
   kubernetesWaitingEvidence,
   resolveRunnerLauncher,
@@ -4089,6 +4173,7 @@ export {
 export type {
   KubernetesApiRequest,
   KubernetesApiResponse,
+  KubernetesStartFacts,
   KubernetesRunnerIo,
   KubernetesRunnerLauncherConfig,
   KubernetesRunnerPodConventions,

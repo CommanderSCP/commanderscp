@@ -5,6 +5,8 @@ import {
   LAUNCHER_OWNER_ID,
   RUNNER_LAUNCHER_OWNER_LABEL,
   RUNNER_MAXBUFFER_CODE,
+  RUNNER_MIN_STEP_BUDGET_MS,
+  RUNNER_OUTCOME_UNKNOWN_CODE,
   RUNNER_REAP_BUDGET_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
   RUNNER_RUN_ID_PATTERN,
@@ -576,7 +578,7 @@ export function kubernetesObjectUid(res: KubernetesApiResponse): string | undefi
 }
 
 // ==================================================================================================
-// THE POD'S TERMINAL STATE -> THE PORT'S FIVE FAILURE KINDS
+// THE POD'S TERMINAL STATE -> THE PORT'S FAILURE KINDS
 // ==================================================================================================
 
 /** The slice of a pod this adapter reads. Everything else in the object is ignored. */
@@ -642,11 +644,11 @@ const FATAL_WAITING_REASONS = new Set([
  *
  * THE RETURN IS SHAPED AS AN `execFile` REJECTION ON PURPOSE, and that is the single most useful
  * thing in this file. `classifyRunnerFailure` is the port's only producer of a {@link RunnerFailure},
- * it is 30 lines of measured branch ORDER, and its five kinds are the operator-facing vocabulary the
+ * it is 30 lines of measured branch ORDER, and its kinds are the operator-facing vocabulary the
  * whole product records. Writing a second Kubernetes classifier would have been the M23.1 defect
  * again — one mechanism, two implementations, and the one that gets missed is invisible. So this
  * function's job is translation, not classification: it produces `code`/`killed`/`signal` such that
- * the EXISTING classifier reaches the right kind, and every one of the five is exercised by a named
+ * the EXISTING classifier reaches the right kind, and every one of them is exercised by a named
  * test.
  *
  *   pod Succeeded                      -> succeeded
@@ -971,6 +973,184 @@ export function kubernetesJobTermination(
  */
 export const RUNNER_NEVER_STARTED_CODE = "RunnerContainerNeverStarted";
 
+/**
+ * WHAT THIS RUN OBSERVED — the whole input to {@link kubernetesStartVerdict}, and deliberately not
+ * one boolean more. Every field is something the run WATCHED HAPPEN, never something inferred from
+ * which line of the control flow raised the failure.
+ */
+export interface KubernetesStartFacts {
+  /**
+   * The failure already carries the CLUSTER'S OWN STATEMENT about the runner — a terminal pod or
+   * Job read through {@link kubernetesTermination}/{@link kubernetesJobTermination}, or this
+   * adapter's `maxBuffer` check on the runner's own output. Nothing below knows better than that.
+   */
+  runnerVerdict: boolean;
+  /**
+   * WHAT THE API SERVER SAID ABOUT THE UNSUSPEND, which is a different question from whether the
+   * request went well for us:
+   *  - `accepted`   2xx. The Job left `suspend: true`; from this instant a pod may exist and a
+   *                 container may run WHETHER OR NOT ANYTHING HERE IS STILL WATCHING.
+   *  - `refused`    the server answered with a status (403, 422, 404). It did not apply the patch,
+   *                 so the Job is still suspended and no pod can have been created for it. That is
+   *                 knowledge, not an inference.
+   *  - `unanswered` no answer reached this process — the request was never issued, or it was issued
+   *                 and the transport never came back. Whether the patch applied is NOT KNOWN.
+   */
+  unsuspend: "accepted" | "refused" | "unanswered";
+  /**
+   * AT LEAST ONE READ COMPLETED AFTER THE UNSUSPEND and described this run's world. An empty pod
+   * list counts: "the controller has created no pod" is a description, and it is the one ROUTE 1
+   * rests on. What does NOT count is a read that failed, was refused, or was abandoned.
+   */
+  observed: boolean;
+  /** Sticky, from {@link kubernetesContainerStarted}: a runner container was SEEN running or
+   *  terminated at some poll, whatever the cluster says now. */
+  everStarted: boolean;
+  /** The whole-run budget is what ended the run, as opposed to a failure of this launcher's own
+   *  transport with budget still left. */
+  deadlineExceeded: boolean;
+  /** The last operator-facing clause {@link kubernetesWaitingEvidence} produced, or — when nothing
+   *  was ever observed — the sentence that says so. */
+  waiting: string;
+  /** `clampRunTimeoutMs(spec.timeoutMs)`, for the messages that name the budget. */
+  runTimeoutMs: number;
+}
+
+/**
+ * ==================================================================================================
+ * WHAT A LAUNCHER THAT COULD NOT SEE IS ALLOWED TO SAY — M23.5 verification pass 18
+ * ==================================================================================================
+ *
+ * THE DEFECT THIS REPLACES, MEASURED AGAINST A REAL CLUSTER. `!everStarted` meant two different
+ * things at one site: "observed, and nothing had started" (true, and the whole point of M23.5's D2
+ * fix) and "never observed at all" (unfounded). The second was unguarded. The unsuspend PATCH
+ * reached the API server and succeeded; every `GET pods` after it stalled past the budget; the real
+ * Job, the real pod and the real kubelet did the work and a real container wrote a real file to the
+ * real volume. The record said `spawn-failed: the container CLI could not be executed at all —
+ * nothing ran … so NOTHING RAN and nothing was mutated — the Job had not yet been observed`. THE
+ * EVIDENCE THAT THE CLAIM WAS UNFOUNDED WAS IN THE SAME SENTENCE AS THE CLAIM.
+ *
+ * SO THE RULE IS ONE SENTENCE: THE VERDICT MAY NOT ASSERT WHAT THIS RUN DID NOT OBSERVE. Both
+ * existing claims are assertions — `spawn-failed` says nothing was mutated, `budget-exhausted` says
+ * the runner was stopped mid-flight — and for a blind run each is a coin toss dressed as a finding.
+ * `outcome-unknown` ({@link RUNNER_OUTCOME_UNKNOWN_CODE}) is the third answer, and for managed-iac
+ * it is the one that matters: it is the difference between "re-run it" and "go and look at your
+ * infrastructure before you touch anything".
+ *
+ * A PURE FUNCTION, AND THAT IS THE POINT. The previous version of this decision was three lines
+ * inside a `catch` in a 200-line block, which is why nothing pinned the arm that was wrong.
+ *
+ * THE ONE THING IT STILL CANNOT SEE, SAID PLAINLY RATHER THAN LEFT FOR THE NEXT PASS TO FIND. Arm 6
+ * ("observed, nothing had started, the budget ended us") is warranted by a read that COMPLETED, but
+ * that read is up to one poll interval — {@link KUBERNETES_POLL_INTERVAL_MS} — older than the
+ * deadline, so a container that started inside that last window would not be in it. Three things
+ * bound the risk and they are the reason the arm keeps its claim: `everStarted` is re-evaluated on
+ * EVERY poll, so any start that was visible wins; the arm is only reached when the last read said
+ * the pod could not start (unschedulable, a rejected CREATE, a fatal waiting reason) rather than
+ * that it was about to; and a pod whose container starts in that window is still `Running` when
+ * teardown DELETEs the Job seconds later. Closing it completely would need a read AFTER the
+ * deadline, which is a fourth post-deadline call — {@link RUNNER_POST_DEADLINE_CALLS} would have to
+ * declare it and every grace derived from that count would move.
+ *
+ * @returns `undefined` to leave the failure exactly as it was thrown, or the `code` and `message`
+ *          the run should be RE-RAISED with.
+ */
+export function kubernetesStartVerdict(
+  f: KubernetesStartFacts
+): { code: string; message: string } | undefined {
+  // 1. THE CLUSTER ANSWERED THE QUESTION. A terminal pod, a failed Job, an over-`maxBuffer` log:
+  //    these are statements about the runner made by something that could see it. Nothing here is
+  //    better informed, and overriding them is how M23.5's D2 negative control fails.
+  if (f.runnerVerdict) return undefined;
+
+  // 2. THE API SERVER REFUSED TO START THE JOB, and said so with a status. The patch did not apply,
+  //    so the Job never left `suspend: true` and the controller never created a pod for it. Without
+  //    this arm the refusal reaches `classifyRunnerFailure` as a NUMERIC code and is recorded as
+  //    `exit-nonzero` — "the runner itself exited non-zero" — for a runner that does not exist. That
+  //    is the same class as the defect above, arrived at from the RBAC side: the chart shipped
+  //    without `patch` on `batch/jobs` for a whole release, so this was every managed run.
+  if (f.unsuspend === "refused") {
+    return {
+      code: RUNNER_NEVER_STARTED_CODE,
+      message:
+        `the API server REFUSED to unsuspend this run's Job, so it never left 'suspend: true' and ` +
+        `no pod was ever created for it — NOTHING RAN and nothing was mutated`
+    };
+  }
+
+  // 3. NOBODY ANSWERED THE UNSUSPEND. Never issued, or issued and never answered — and those two
+  //    are not distinguishable from here, so the weaker of them governs: a merge-patch whose
+  //    response was lost may perfectly well have been applied.
+  if (f.unsuspend !== "accepted") {
+    return {
+      code: RUNNER_OUTCOME_UNKNOWN_CODE,
+      message:
+        `this run never learned whether its Job was started: the unsuspend went unanswered, so ` +
+        `whether a pod was created — and if it was, whether the runner ran and what it mutated — ` +
+        `is NOT KNOWN. The teardown that follows DELETEs the Job, which stops anything that was ` +
+        `running. Check the target's real state before re-running`
+    };
+  }
+
+  // 4. A CONTAINER WAS SEEN RUNNING. If the whole-run budget is what ended us, `budget-exhausted`
+  //    is exactly right and says so ("stopped mid-flight, the real state is unknown") — that is
+  //    M23.5's negative control and it must keep passing. If something else ended us with budget
+  //    still left, we stopped WATCHING a run that was still going, which is a different sentence.
+  if (f.everStarted) {
+    if (f.deadlineExceeded) return undefined;
+    return {
+      code: RUNNER_OUTCOME_UNKNOWN_CODE,
+      message:
+        `a runner container WAS running and this launcher's own read of the cluster then failed ` +
+        `with budget still left, so it stopped watching before the run was over — how the run ` +
+        `ended, and what it mutated, is NOT KNOWN. The teardown that follows DELETEs the Job, ` +
+        `which kills a 'tofu apply' mid-flight. Check the target's real state before re-running`
+    };
+  }
+
+  // 5. THE DEFECT. The unsuspend was ACCEPTED and nothing was ever observed after it. The Job was
+  //    live in the cluster from that instant and the kubelet does not need this process to be
+  //    watching; `!everStarted` here means "we never looked", not "nothing started", and the two
+  //    were one flag.
+  if (!f.observed) {
+    return {
+      code: RUNNER_OUTCOME_UNKNOWN_CODE,
+      message:
+        `the API server ACCEPTED the unsuspend of this run's Job and NOTHING WAS EVER OBSERVED ` +
+        `AFTER IT — no read of the pod, the Job or its events completed before the whole-run ` +
+        `budget of ${f.runTimeoutMs}ms (RunnerSpec.timeoutMs) ran out (${f.waiting}). The Job was ` +
+        `live in the cluster and the kubelet does not need this launcher to be watching, so ` +
+        `whether the runner ran, and whether anything was mutated, is NOT KNOWN. The teardown that ` +
+        `follows DELETEs the Job, which kills a 'tofu apply' mid-flight. Check the target's real ` +
+        `state before re-running`
+    };
+  }
+
+  // 6. OBSERVED, NOTHING HAD STARTED, AND THE BUDGET IS WHAT ENDED US — M23.5's D2 verdict,
+  //    unchanged, and the arm the routes above exist to keep honest. See this function's doc for
+  //    the exact width of what this read warrants.
+  if (f.deadlineExceeded) {
+    return {
+      code: RUNNER_NEVER_STARTED_CODE,
+      message:
+        `the runner container never started within the whole-run budget of ${f.runTimeoutMs}ms ` +
+        `(RunnerSpec.timeoutMs), so NOTHING RAN and nothing was mutated — ${f.waiting}`
+    };
+  }
+
+  // 7. OBSERVED, NOTHING HAD STARTED, AND OUR OWN READ FAILED WITH BUDGET LEFT. The Job is still
+  //    live and still able to start a pod; this run simply stopped being able to look. Arm 6's
+  //    claim is not available here, because the budget it is made "within" has not run out.
+  return {
+    code: RUNNER_OUTCOME_UNKNOWN_CODE,
+    message:
+      `no runner container had started when this launcher last saw the cluster (${f.waiting}), and ` +
+      `its own next read then failed with budget still left — so it stopped watching a Job that ` +
+      `was still able to start one, and whether the runner ran is NOT KNOWN. The teardown that ` +
+      `follows DELETEs the Job. Check the target's real state before re-running`
+  };
+}
+
 // ==================================================================================================
 // THE ADAPTER
 // ==================================================================================================
@@ -1217,27 +1397,70 @@ export function createKubernetesRunnerLauncher(
       ): Promise<KubernetesApiResponse> => {
         const argv = [req.method, req.path];
         let res: KubernetesApiResponse;
+        // WHAT THIS REQUEST WAS ACTUALLY HANDED, AND WHEN — the two numbers the `catch` needs to ask
+        // a question about THIS REQUEST rather than about the wall clock. `0` means the work
+        // callback was never entered, i.e. `spend` refused before issuing; that path throws a
+        // `RunnerLaunchError` and is handled first below.
+        let issuedAt = 0;
+        let boundGiven = 0;
         try {
-          res = await runDeadline.spend(req.step, argv, (timeoutMs) =>
-            io.request({ ...req, timeoutMs })
-          );
+          res = await runDeadline.spend(req.step, argv, (timeoutMs) => {
+            issuedAt = Date.now();
+            boundGiven = timeoutMs;
+            return io.request({ ...req, timeoutMs });
+          });
         } catch (cause) {
           // ALREADY THE PORT'S OWN VERDICT — a refusal before the request was issued, or an
           // abandonment of a transport that ignored its bound. Both already name the step and the
           // budget; re-wrapping would restate them worse.
           if (cause instanceof RunnerLaunchError) throw cause;
-          // THROUGH THE DEADLINE OBJECT — the same instant the refusal uses, asked once. See
-          // {@link RunDeadline.spent}: a raw comparison here disagreed with the timer that had just
-          // fired, by up to a millisecond, and turned this adapter's own budget kill into a verdict
-          // about the tenant's runner.
-          const deadlineExceeded = runDeadline.spent();
+          /**
+           * SO THE TRANSPORT REJECTED OF ITS OWN ACCORD, AND THE QUESTION IS WHETHER IT WAS ENDED BY
+           * THE BOUND THIS RUN GAVE IT — M23.5 verification pass 18, S2, and the answer is not the
+           * one the finding assumed.
+           *
+           * THE DOCKER ANALOGUE ASKS A FACT: `e.killed === true && runDeadline.spent()`, where
+           * `killed` is Node's own statement that the `timeout` WE set is what ended the child. This
+           * transport has no such flag to offer — `io` is an injection point, and the three
+           * implementations in this repository reject with three different shapes (a `TimeoutError`
+           * DOMException from `AbortSignal.timeout`, a destroyed socket from the kind harness's
+           * `node:https` shim, a plain `Error` from a fake) — so the fact is MEASURED here instead:
+           * a request that consumed the bound it was handed was ended by that bound.
+           *
+           * AND THE ALGEBRA IS SAID OUT LOUD, BECAUSE IT IS WHY NO TEST COULD TELL THE TWO APART.
+           * `spend` hands a request EXACTLY what remains (`boundGiven = at - issuedAt`), so
+           * `now - issuedAt >= boundGiven - MIN` is `now >= at - MIN`, which is `spent()`. The two
+           * expressions are the SAME PROPOSITION on this adapter today, and the mutation survived
+           * for a plainer reason than the finding proposed: NOTHING PINNED THIS SITE AT ALL. The
+           * gate is `A TRANSPORT FAILURE WITH BUDGET LEFT IS NOT A BUDGET EXHAUSTION` in
+           * `kubernetes-adapter.test.ts`, which kills `= true` in either form.
+           *
+           * THE REQUEST-RELATIVE FORM IS STILL THE ONE KEPT, for the assumption it stops depending
+           * on silently: the equality above holds only while the per-request bound IS the whole
+           * remainder. The day anything caps a single call — a poll read that may not eat a whole
+           * `tofu apply`'s budget is an obvious future — the clock form starts answering "the run's
+           * budget ran out" for a request that merely hit its own cap, and nothing would say so.
+           * `RUNNER_MIN_STEP_BUDGET_MS` is the slack, and it is the deadline's OWN slack rather than
+           * a second number: an `AbortSignal.timeout` fires on a libuv timer and `Date.now()` reads
+           * a different clock, which is the sub-millisecond disagreement M23.5's D4 measured turning
+           * a budget kill into a verdict about the tenant's runner.
+           */
+          const deadlineExceeded =
+            boundGiven > 0 && Date.now() - issuedAt >= boundGiven - RUNNER_MIN_STEP_BUDGET_MS;
           fail(
             req.step,
             argv,
             deadlineExceeded
               ? new Error(
                   `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) ran out during ` +
-                    `'${req.step}' at the run deadline ${new Date(runDeadlineAt).toISOString()}`
+                    `'${req.step}' at the run deadline ${new Date(runDeadlineAt).toISOString()} ` +
+                    // THE TRANSPORT'S OWN LAST WORDS, KEPT. The replacement used to discard them
+                    // entirely, so a reset, a TLS failure or a DNS failure that happened to land at
+                    // the deadline reached the operator as a sentence about the budget and nothing
+                    // else. The classification is ours to make; the evidence is not ours to delete.
+                    `(the transport's own rejection: ${
+                      cause instanceof Error ? cause.message : String(cause)
+                    })`
                 )
               : cause,
             deadlineExceeded
@@ -1514,15 +1737,52 @@ export function createKubernetesRunnerLauncher(
          * one is the difference between `signalled` and `spawn-failed`.
          */
         let everStarted = false;
+        /**
+         * THE INITIAL VALUE IS A FACT, NOT A PLACEHOLDER, AND SAYING SO IS THE M23.5-pass-18 FIX.
+         * It used to be read in a sentence that also asserted "NOTHING RAN and nothing was mutated",
+         * which is the assertion this string contradicts. It is now only ever read by
+         * {@link kubernetesStartVerdict} arm 5 — the arm that says the outcome is UNKNOWN — and
+         * `observed` below is the flag that decides which arm sees it.
+         */
         let waiting = "the Job had not yet been observed";
+        /**
+         * DID ANYTHING EVER DESCRIBE THIS RUN'S WORLD AFTER IT ASKED FOR IT TO START?
+         *
+         * SEPARATE FROM `everStarted` BECAUSE THEY ARE SEPARATE FACTS, and merging them is the whole
+         * defect: `!everStarted` was "observed, and nothing had started" on one route and "never
+         * observed at all" on another, and only the first can support "nothing ran".
+         */
+        let observed = false;
+        /**
+         * WHAT THE API SERVER SAID ABOUT THE UNSUSPEND. See {@link KubernetesStartFacts.unsuspend}:
+         * a STATUS is the server's own "no" and means the Job is still suspended; anything else
+         * leaves that unknown, and a run whose Job may be live may not be told nothing ran.
+         */
+        let unsuspend: KubernetesStartFacts["unsuspend"] = "unanswered";
+        /** The failure being thrown already states what became of the RUNNER — see
+         *  {@link KubernetesStartFacts.runnerVerdict}. Set immediately before the two `fail`s that
+         *  carry one, so a `fail` added later is NOT one until somebody says it is. */
+        let runnerVerdict = false;
         try {
-          await api({
-            step: "start",
-            method: "PATCH",
-            path: `${JOBS_PATH(namespace)}/${jobName}`,
-            contentType: "application/merge-patch+json",
-            body: { spec: { suspend: false } }
-          });
+          try {
+            await api({
+              step: "start",
+              method: "PATCH",
+              path: `${JOBS_PATH(namespace)}/${jobName}`,
+              contentType: "application/merge-patch+json",
+              body: { spec: { suspend: false } }
+            });
+            unsuspend = "accepted";
+          } catch (cause) {
+            // A NUMERIC `code` IS AN HTTP STATUS — `api()` builds exactly that shape for a
+            // non-2xx, and nothing else here produces one. It is the API server's own answer, so
+            // the patch did not apply. Every other rejection (a refusal before the request was
+            // issued, an abandoned transport, a socket that never came back) leaves `unanswered`.
+            if (cause instanceof RunnerLaunchError && typeof cause.code === "number") {
+              unsuspend = "refused";
+            }
+            throw cause;
+          }
 
           // POLL TO A TERMINAL POD — OR TO A TERMINAL JOB, which is the half M23.5 added and the
           // half three measured failure routes needed.
@@ -1551,6 +1811,11 @@ export function createKubernetesRunnerLauncher(
               )}`
             });
             const items = (JSON.parse(listed.body) as { items?: PodView[] }).items ?? [];
+            // THE READ COMPLETED, SO THIS RUN HAS SEEN SOMETHING — and an EMPTY list is a sighting,
+            // not an absence of one: "the controller has created no pod" is precisely what ROUTE 1's
+            // verdict rests on. It is set from the parsed body rather than from entering the loop,
+            // because a `GET` that was refused, abandoned or rejected describes nothing.
+            observed = true;
             pod = items[0];
             if (kubernetesContainerStarted(pod)) everStarted = true;
             // THE REMEMBERED FLAG, NOT A FRESH READING. A pod carrying a `deletionTimestamp` may
@@ -1643,6 +1908,9 @@ export function createKubernetesRunnerLauncher(
           // OVER `maxBuffer` FAILS THE RUN — see `logRequestPath` for why, and why the request asked
           // for exactly one byte more than the limit.
           if (Buffer.byteLength(log, "utf8") > spec.maxBuffer) {
+            // A STATEMENT ABOUT THE RUNNER: it printed this, so it ran. See
+            // {@link KubernetesStartFacts.runnerVerdict}.
+            runnerVerdict = true;
             fail("start", ["GET", "pods/log"], {
               message: `the runner printed more than maxBuffer (${spec.maxBuffer} bytes) allows`,
               code: RUNNER_MAXBUFFER_CODE,
@@ -1656,6 +1924,10 @@ export function createKubernetesRunnerLauncher(
             stdout = redactAllValues(log, redactions);
             stderr = "";
           } else {
+            // THE CLUSTER'S OWN VERDICT ABOUT THE RUNNER — a terminal pod, or a Job that said it
+            // failed. See {@link KubernetesStartFacts.runnerVerdict}: nothing in the `catch` is
+            // better informed than this, and overriding it is how the negative controls fail.
+            runnerVerdict = true;
             fail("start", ["GET", `${PODS_PATH(namespace)}/${podName ?? "?"}`], {
               message: termination!.message,
               code: termination!.code,
@@ -1673,37 +1945,64 @@ export function createKubernetesRunnerLauncher(
           let e = err as RunnerLaunchError;
 
           /**
-           * AND THIS IS THE ONE PLACE THAT SAYS WHAT AN EXHAUSTED BUDGET MEANT — M23.5.
+           * AND THIS IS THE ONE PLACE THAT SAYS WHAT THE FAILURE MEANT — M23.5, corrected by
+           * verification pass 18.
            *
            * `budget-exhausted`'s wording is "a `tofu apply` was SIGTERMed mid-flight, so the real
            * infrastructure state is unknown", which {@link FATAL_WAITING_REASONS} calls the single
-           * worst misdiagnosis available here. It is true only if something RAN. Whether anything
-           * ran is a fact this run observed and remembered; WHICH of the deadline's four possible
-           * discovery points happened to fire is not a fact about the run at all. Deciding it here,
-           * once, is what makes the two independent — a guard placed before any single call can
-           * only ever cover that call, which is why the previous round's re-placement of it fixed
-           * nothing and failed 6 runs in 20.
+           * worst misdiagnosis available here. It is true only if something RAN — and `spawn-failed`
+           * ("NOTHING RAN and nothing was mutated") is true only if this run WATCHED nothing run.
+           * WHICH of the deadline's four possible discovery points happened to fire is not a fact
+           * about the run at all; what this loop OBSERVED is, so the decision is made from the
+           * observations, once, here.
+           *
+           * IT WAS `e.deadlineExceeded && !everStarted`, AND `!everStarted` MEANT TWO THINGS.
+           * "Observed, and nothing had started" and "never observed at all" were one flag, and only
+           * the first can support "nothing was mutated". {@link kubernetesStartVerdict} is the same
+           * decision with the two separated — and as a pure function, because three lines buried in
+           * a `catch` is why the arm that was wrong had nothing pinning it.
            */
-          if (e.deadlineExceeded && !everStarted) {
+          const verdict = kubernetesStartVerdict({
+            runnerVerdict,
+            unsuspend,
+            observed,
+            everStarted,
+            deadlineExceeded: e.deadlineExceeded,
+            waiting,
+            runTimeoutMs
+          });
+          if (verdict) {
             e = new RunnerLaunchError({
               step: e.step,
               file: `kubernetes://${namespace}`,
-              // THE ARGV OF THE CALL THAT DISCOVERED THE CLOCK IS KEPT — it is useful diagnosis,
+              // THE ARGV OF THE CALL THAT DISCOVERED THE FAILURE IS KEPT — it is useful diagnosis,
               // and it is now the only thing that discovery decides.
               argv: [...e.argv],
               cause: {
-                message:
-                  `the runner container never started within the whole-run budget of ` +
-                  `${runTimeoutMs}ms (RunnerSpec.timeoutMs), so NOTHING RAN and nothing was ` +
-                  `mutated — ${waiting}`,
-                // A STRING `code` is what `classifyRunnerFailure` reads as an errno, i.e.
-                // `spawn-failed`: "nothing ran, so nothing was mutated". The deadline is the SAME
-                // deadline — there is still exactly one bound — but the two situations it can end
-                // are not the same situation.
-                code: RUNNER_NEVER_STARTED_CODE,
+                // AND THE FAILURE THAT ACTUALLY ENDED THE RUN IS CARRIED, NOT DISCARDED. The
+                // previous rewrite replaced the whole message, so a 403, a reset or a refused step
+                // vanished behind a sentence about the budget: the reader was told the conclusion
+                // and never the evidence, which is the half of principle 6 a Decision cannot do
+                // without.
+                message: `${verdict.message} — the failure that ended the run: ${e.message}`,
+                // A STRING `code`, read by `classifyRunnerFailure`:
+                // {@link RUNNER_NEVER_STARTED_CODE} reaches `spawn-failed` through the errno test,
+                // {@link RUNNER_OUTCOME_UNKNOWN_CODE} is tested BEFORE `deadlineExceeded` so that
+                // "I do not know" cannot be overwritten by "stopped mid-flight".
+                code: verdict.code,
                 stdout: "",
                 stderr: ""
               },
+              // AND THE TWO ARMS REPORT THE BOUND DIFFERENTLY, DELIBERATELY.
+              // {@link RUNNER_NEVER_STARTED_CODE} keeps `false` — unchanged from M23.5, and it is
+              // load-bearing twice over: it is what stops `budget-exhausted` winning the
+              // classification, and it is TRUE in the sense the boolean is read, because a Job the
+              // controller could not place would not have started with any budget at all.
+              // `outcome-unknown` passes the real answer through: there, more budget might well
+              // have bought the observation that is missing, so the bound is material and hiding it
+              // would be the same kind of silence this whole verdict exists to end.
+              deadlineExceeded:
+                verdict.code === RUNNER_OUTCOME_UNKNOWN_CODE ? e.deadlineExceeded : false,
               redactions
             });
           }
