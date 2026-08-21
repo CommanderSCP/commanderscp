@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
@@ -9,6 +8,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../app.js";
 import { ScpClient } from "@scp/sdk";
+import { mkdtempTrackedForFile } from "@scp/test-tmpdir";
 import type { CreateComponentRequest, GraphObject } from "@scp/schemas";
 import { loadConfig } from "../config.js";
 import { createDb, createPool } from "../db/client.js";
@@ -223,7 +223,7 @@ export async function listenTestServer(
   // The plugin host does NOT need pg-boss, so it is started outside the relay block — which is what
   // lets `withPluginHost` exist without dragging in the loops that make inline processing racy.
   if (opts.withReconcileLoop || opts.withPluginHost) {
-    const stateDir = await mkdtemp(join(tmpdir(), "scp-test-fake-executor-"));
+    const stateDir = await mkdtempTrackedForFile(join(tmpdir(), "scp-test-fake-executor-"));
     pluginHost = new SubprocessPluginHost(opts.pluginHostOptions);
     server.deps.pluginHost = pluginHost; // M7: routes/executors.ts's POST /discovery/run needs this
     await pluginHost.start([

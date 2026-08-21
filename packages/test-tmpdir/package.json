@@ -1,5 +1,5 @@
 {
-  "name": "@scp/cosign",
+  "name": "@scp/test-tmpdir",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,9 +11,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },
+  "peerDependencies": {
+    "vitest": "^3.0.0"
+  },
   "devDependencies": {
-    "@scp/test-tmpdir": "workspace:*",
-    "@types/node": "^22.10.0",
     "typescript": "~5.8.0",
     "vitest": "^3.0.0"
   }

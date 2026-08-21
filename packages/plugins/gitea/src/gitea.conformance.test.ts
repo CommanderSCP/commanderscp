@@ -7,12 +7,11 @@
  * unpredictable number of times) and this file deliberately does NOT assert `nock.isDone()` — that
  * precise single-call proof lives in `index.test.ts`.
  */
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
-import { runDiscoveryConformanceSuite, runExecutorConformanceSuite } from "@scp/plugin-testkit";
+import { runDiscoveryConformanceSuite, runExecutorConformanceSuite, mkdtempTracked } from "@scp/plugin-testkit";
 import nock from "nock";
 import { createGiteaDiscoveryPlugin, createGiteaExecutorPlugin } from "./index.js";
 import { apiBase, authHeaderFor, buildGiteaConfig, buildTestCtx } from "./gitea-test-support.js";
@@ -106,7 +105,7 @@ afterAll(() => {
 runExecutorConformanceSuite("gitea", async () => {
   // A durable statePath (fresh per factory() call) so the cross-restart dedup test reads on-disk
   // state, not the first instance's memory (MAJOR #4).
-  const statePath = join(await mkdtemp(join(tmpdir(), "gitea-conformance-")), "state.json");
+  const statePath = join(await mkdtempTracked(join(tmpdir(), "gitea-conformance-")), "state.json");
   const build = (): {
     plugin: ReturnType<typeof createGiteaExecutorPlugin>;
     ctx: PluginContext;

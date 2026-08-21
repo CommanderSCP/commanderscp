@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
+import { mkdtempTracked } from "@scp/test-tmpdir";
 import { PERSISTED_JSON_ELIDED_KEY, PERSISTED_JSON_MAX_CHARS } from "@scp/runner-launcher";
 import { v7 as uuidv7 } from "uuid";
 import {
@@ -135,7 +135,7 @@ describe("executor_ref and prior_state_ref: the two bounded columns nothing drov
 
     // OUR OWN state file, so arm 3 can read what `coercePriorStateRef` actually decided rather
     // than inferring it. `fakeExecutorConfig` is spread last in the harness, so this wins.
-    const stateDir = await mkdtemp(join(tmpdir(), "scp-test-exec-ref-"));
+    const stateDir = await mkdtempTracked(join(tmpdir(), "scp-test-exec-ref-"));
     statePath = join(stateDir, "fake-executor-state.json");
 
     server = await listenTestServer({
