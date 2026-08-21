@@ -160,7 +160,19 @@ afterEach(async () => {
   await host?.stop();
   host = undefined;
   for (const dir of tempDirs.splice(0)) {
-    await rm(dir, { recursive: true, force: true });
+    // ENOTEMPTY IS A RACE WITH A PROCESS THIS FILE DELIBERATELY ORPHANS, NOT A TIDINESS PROBLEM.
+    // The stub `docker` recreates its state directory (`mkdir -p "$STATE"`) at the top of EVERY
+    // invocation, and the cases here SIGKILL a plugin subprocess mid-run precisely so a grandchild
+    // outlives it. A `rm -r` that walks, empties and then `rmdir`s loses to an invocation that
+    // lands between the walk and the rmdir: measured once in ~15 full `pnpm -w test` runs as
+    // `Error: ENOTEMPTY: directory not empty, rmdir '/tmp/scp-fake-docker-…'`, failing a test whose
+    // own assertions had already passed.
+    //
+    // `maxRetries` IS THE DOCUMENTED ANSWER, not a sleep in disguise: `fs.rm` retries exactly this
+    // error set (EBUSY, EMFILE, ENFILE, ENOTEMPTY, EPERM) with linear backoff. Both files that
+    // orphan a grandchild carry it — the property is "a temp-dir cleanup racing a process the test
+    // deliberately left running", and it is two files wide.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   }
 });
 

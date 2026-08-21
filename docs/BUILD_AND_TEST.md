@@ -1093,6 +1093,18 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
        `@scp/plugin-managed-scan`'s `scanner-containment` test, **390 ms in isolation**, timed out at
        **49,061 ms** once in three runs. The matrix was re-factored to 156 points (see M23.6 clause 6).
 
+       **AND A THIRD FLAKE, FOUND BY THE COUNTER-MEASUREMENT ITSELF AND FIXED AT THE SITE.** On the
+       15th run `apps/server`'s `managed-trigger-budget.test.ts` failed with
+       `Error: ENOTEMPTY: directory not empty, rmdir '/tmp/scp-fake-docker-…'` — a test whose own
+       assertions had already passed, failed by its `afterEach`. It is not a tidiness problem: the
+       stub `docker` recreates its state directory at the top of EVERY invocation, and these cases
+       SIGKILL a plugin subprocess mid-run precisely so a grandchild outlives it, so a `rm -r` that
+       walks, empties and then `rmdir`s loses to an invocation landing between the walk and the
+       rmdir. `fs.rm`'s `maxRetries` retries exactly this error set (EBUSY, EMFILE, ENFILE,
+       ENOTEMPTY, EPERM) with linear backoff, and **both** files that orphan a grandchild now carry
+       it — the property is "a temp-dir cleanup racing a process the test deliberately left
+       running", and a census found it two files wide.
+
        **THE COUNTER-MEASUREMENT, because a fix for a flake is a claim about a rate.** On the finished
        tree, with the kind cluster torn down so the load profile is the one the original 23 runs had:
        **12 consecutive `pnpm -w test` runs green, zero timeouts of any kind** — against 5 failures
