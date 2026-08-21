@@ -1024,6 +1024,42 @@ describe("M23.2: a pod's terminal state maps onto the port's five failure kinds"
     expect(result.failure!.deadlineExceeded).toBe(true);
   });
 
+  it("M23.5 D2 — THE LOG READ IS THE FOURTH DISCOVERY POINT, and it may not overwrite a decided verdict", async () => {
+    // THE ONE PLACE THE DEADLINE CAN FIRE WITH THE ANSWER ALREADY KNOWN. `termination` says the
+    // runner exited 3; the log is DIAGNOSIS, read afterwards. Letting a refused log read throw
+    // replaces "the runner exited 3" with "a `tofu apply` was SIGTERMed mid-flight, so the real
+    // infrastructure state is unknown" — discarding a known outcome for the worst sentence this
+    // package produces, at the last possible moment.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Failed",
+        containerStatuses: [
+          { name: "runner", state: { terminated: { exitCode: 3, reason: "Error" } } }
+        ]
+      }
+    });
+    const io: KubernetesRunnerIo = {
+      ...c.io,
+      request: async (req: KubernetesApiRequest) => {
+        if (req.method === "GET" && req.path.includes("/log")) {
+          // The log request is ISSUED inside the budget and the clock crosses while it is in flight.
+          await new Promise((r) => setTimeout(r, req.timeoutMs + 5));
+          throw new Error("The operation was aborted due to timeout");
+        }
+        return c.io.request(req);
+      }
+    };
+    const result = await c.launcher({ io }).run(spec({ timeoutMs: 300, copyOut: undefined }));
+    expect(
+      result.failure!.kind,
+      `the decided verdict was overwritten by the log read: ${result.failure!.detail}`
+    ).toBe("exit-nonzero");
+    expect(result.failure!.code).toBe(3);
+    expect(result.failure!.deadlineExceeded).toBe(false);
+  });
+
   it("M23.5 D3 — A POD THE PLATFORM DELETED IS `signalled`, never the tenant's own exit 137", async () => {
     // MEASURED against a real cluster after `kubectl delete pod`: the container is SIGKILLed when
     // the termination grace expires and the kubelet writes `terminated{exitCode:137,reason:"Error"}`
