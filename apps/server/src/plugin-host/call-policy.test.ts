@@ -10,13 +10,13 @@ import {
 } from "./call-policy.js";
 import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
+  RUNNER_POST_DEADLINE_CALLS,
   RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
-  RUNNER_TEARDOWN_STEPS,
   clampRunTimeoutMs,
+  runnerPostDeadlineCallsMs,
   runnerPostDeadlineMs,
-  runnerReapGraceMs,
-  runnerTeardownWorstCaseMs
+  runnerReapGraceMs
 } from "@scp/runner-launcher";
 import type { RunnerLauncherKind } from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
@@ -281,14 +281,14 @@ describe("M23.1e: the grace constants stand in the order the cleanup path needs"
  * fourth teardown step reddens the census by name, and correcting the count moves every number
  * here.
  */
-const LAUNCHER_KINDS = Object.keys(RUNNER_TEARDOWN_STEPS) as RunnerLauncherKind[];
+const LAUNCHER_KINDS = Object.keys(RUNNER_POST_DEADLINE_CALLS) as RunnerLauncherKind[];
 
 describe("M23.5: the grace is derived from what teardown costs ON THE ADAPTER IN USE", () => {
   it("EVERY KIND THE LAUNCHER DECLARES IS GATED HERE — a new adapter cannot arrive ungated", () => {
     // Not decoration: the arms below are `it.each` over this list, so if it ever stopped tracking
     // the launcher's own model an adapter could join with no ordering check at all.
     expect(LAUNCHER_KINDS.length).toBeGreaterThanOrEqual(2);
-    expect(LAUNCHER_KINDS).toStrictEqual(Object.keys(RUNNER_TEARDOWN_STEPS));
+    expect(LAUNCHER_KINDS).toStrictEqual(Object.keys(RUNNER_POST_DEADLINE_CALLS));
   });
 
   it.each(LAUNCHER_KINDS)(
@@ -299,10 +299,12 @@ describe("M23.5: the grace is derived from what teardown costs ON THE ADAPTER IN
       // and `withRecordedOutcome` never runs — the M23.1c chain, restored.
       expect(managedTriggerGraceMs(kind)).toBeGreaterThan(runnerPostDeadlineMs(kind));
       // And what is LEFT after the cleanup is the whole reason the grace exists.
-      expect(managedTriggerGraceMs(kind) - runnerPostDeadlineMs(kind)).toBe(MANAGED_OUTCOME_TAIL_MS);
+      expect(managedTriggerGraceMs(kind) - runnerPostDeadlineMs(kind)).toBe(
+        MANAGED_OUTCOME_TAIL_MS
+      );
       // The teardown alone must not be able to eat it, which is the sentence the old gate made
       // about one call and this one makes about however many that adapter issues.
-      expect(managedTriggerGraceMs(kind)).toBeGreaterThan(runnerTeardownWorstCaseMs(kind));
+      expect(managedTriggerGraceMs(kind)).toBeGreaterThan(runnerPostDeadlineCallsMs(kind));
     }
   );
 

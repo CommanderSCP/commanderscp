@@ -340,16 +340,19 @@ export interface RunnerSpec {
    * argument applied to the thing it was originally made about, and {@link withStepBound} is what
    * makes a bound true of work that ignores it.
    *
-   * WHAT IS DELIBERATELY OUTSIDE IT: the `finally` teardown, which must still run after the budget
-   * is gone and keeps its own {@link RUNNER_REMOVE_TIMEOUT_MS} per call; and `reap()`, which is not
-   * awaited at all (see {@link RunnerLauncher.reap}).
+   * WHAT IS DELIBERATELY OUTSIDE IT: every call declared in {@link RUNNER_POST_DEADLINE_CALLS} —
+   * the `finally` teardown, which must still run after the budget is gone, and the Docker adapter's
+   * secret-env `unlink`, which is cleanup of a credential file and must not be refused because the
+   * `create` it follows is what spent the budget; and `reap()`, which is not awaited at all (see
+   * {@link RunnerLauncher.reap}).
    *
    * THE BOUND `run()` IS HELD TO IS {@link runnerRunBoundMs}`(kind, timeoutMs)`, AND THAT SUM IS
    * WHAT EVERY OUTER BUDGET MUST COVER. This used to read `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`,
    * which was a sentence about ONE adapter's ONE-call teardown, written when there was one adapter,
    * and FALSE of the Kubernetes adapter — whose teardown is three calls. The bound is now computed
-   * from the teardown model ({@link RUNNER_TEARDOWN_STEPS}) rather than asserted in prose, and the
-   * model is counted against the code by `teardown-model.test.ts`.
+   * from the post-deadline model ({@link RUNNER_POST_DEADLINE_CALLS}) rather than asserted in prose,
+   * and the model is held to the code from both sides: the type checker forward, and
+   * `teardown-model.test.ts` — which counts every effect issued at or after the deadline — backward.
    */
   timeoutMs: number;
   /** Per-call `maxBuffer`. 16 MiB / 32 MiB / 8 MiB respectively — NOT one shared default. */
@@ -2753,8 +2756,8 @@ async function writeSecretEnvFile(
  * `run()` returns within `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`. That was a sentence about the
  * DOCKER adapter's one-call `finally`, written when there was one adapter. The Kubernetes adapter's
  * teardown is THREE bounded calls, so what an outer budget must carry is their SUM — see
- * {@link runnerTeardownWorstCaseMs} and {@link runnerRunBoundMs}, which DERIVE it from
- * {@link RUNNER_TEARDOWN_STEPS} instead of restating a number in a comment nothing can check.
+ * {@link runnerPostDeadlineCallsMs} and {@link runnerRunBoundMs}, which DERIVE it from
+ * {@link RUNNER_POST_DEADLINE_CALLS} instead of restating a number in a comment nothing can check.
  */
 export const RUNNER_REMOVE_TIMEOUT_MS = 30_000;
 
@@ -2997,7 +3000,8 @@ export function createRunDeadline(args: {
 export type RunnerLauncherKind = "docker" | "kubernetes";
 
 /**
- * HOW MANY BOUNDED CALLS EACH ADAPTER'S TEARDOWN `finally` ISSUES AFTER THE RUN DEADLINE.
+ * EVERY BOUNDED CALL AN ADAPTER MAY ISSUE AFTER THE RUN DEADLINE, BY NAME — the model, and the
+ * question its first version asked wrongly.
  *
  * THIS NUMBER IS THE MODEL, AND THE MODEL IS WHAT WAS MISSING. `MANAGED_TRIGGER_GRACE_MS` was 60s
  * chosen as "two worst-case teardowns", written when a teardown was one `docker rm -f`. The
@@ -3008,35 +3012,99 @@ export type RunnerLauncherKind = "docker" | "kubernetes";
  * (`grace > RUNNER_REMOVE_TIMEOUT_MS`, one teardown) and the MODEL was not, so nothing anywhere knew
  * the teardown had grown.
  *
- * SO THE COUNT IS DECLARED AND THEN CHECKED AGAINST THE CODE. `teardown-model.test.ts` drives each
- * adapter to its `finally` and counts what it actually issues; a fourth teardown step on either
- * adapter reddens that test by name, and every grace derived below moves the moment the count is
- * corrected. Adding a step can no longer be silent.
+ * AND THEN THE CENSUS THAT BUILT IT ASKED THE WRONG QUESTION. It asked *what does the teardown
+ * `finally` issue?* — a right answer to a question one narrower than the property, which is *what
+ * bounded call can be issued after the run deadline?* The very same round added one that is not in
+ * any teardown `finally`: the secret-env `unlink` in the Docker adapter's `create` `finally`, whose
+ * own comment says "BOUNDED LIKE A TEARDOWN, NOT SPENT FROM THE BUDGET … the commonest way to reach
+ * it with nothing left is that `create` is what spent the budget". The words were written; the
+ * number was not moved. MEASURED, with `secretEnv` set and `create`, `unlink` and `rm -f` all
+ * wedged: `run()` returned after 64004ms against a stated bound of 33000ms — exactly one extra
+ * {@link RUNNER_BOUNDED_CALL_WORST_CASE_MS}, which lands 1004ms PAST the host's SIGKILL, so
+ * `withRecordedOutcome` never writes, managed-iac's ledger entry never lands, `reconcile.ts`
+ * retries, and a second `tofu apply` goes at live infrastructure. M23.1c verbatim.
+ *
+ * SO THE MODEL IS A LIST OF NAMES AND THE COUNT IS DERIVED FROM IT, in both directions:
+ *
+ *  - FORWARD, at compile time. {@link withPostDeadlineBound} is the only way either adapter issues
+ *    one of these, and its `call` parameter is typed as a member of THIS list, so a new
+ *    post-deadline call does not compile until it is declared here — and declaring it moves
+ *    {@link runnerPostDeadlineCallsMs}, the reap stamp and `MANAGED_TRIGGER_GRACE_MS` together.
+ *  - BACKWARD, at test time. `teardown-model.test.ts` drives each adapter to a run whose budget is
+ *    ALREADY SPENT and counts every effect issued at or after the deadline, whatever its SHAPE.
+ *    That last word is the fix: the old Docker counter filtered `args[0] === "rm"`, so an
+ *    `fs.unlink` was structurally invisible to it, and it drove a spec with no `secretEnv`, so the
+ *    worst case was unreachable even in principle. The Kubernetes counter beside it passed
+ *    `secretEnv` deliberately and said why — the reasoning was applied to one adapter and not the
+ *    other.
+ *
+ * A DECLARED COUNT PINNED BY ONE ASSERTION IS A CONSTANT WITH A COMMENT, NOT A MODEL. Editing the
+ * old `RUNNER_TEARDOWN_STEPS.docker` from 1 to 2 reddened exactly one test, because every consumer
+ * derived its expected value from the same constant. Nothing here is written twice.
  */
-export const RUNNER_TEARDOWN_STEPS: Readonly<Record<RunnerLauncherKind, number>> = {
-  /** `docker rm -f <name>`. */
-  docker: 1,
+export const RUNNER_POST_DEADLINE_CALLS = {
+  /** `unlink` of the staged env-file in `create`'s `finally`, then `docker rm -f <name>`. */
+  docker: ["secret-env unlink", "teardown rm -f"],
   /** `DELETE …/jobs/<name>`, `DELETE …/secrets/<name>-env`, `removeDir <runRoot>`. */
-  kubernetes: 3
-};
+  kubernetes: ["teardown DELETE job", "teardown DELETE secret", "teardown removeDir"]
+} as const satisfies Readonly<Record<RunnerLauncherKind, readonly string[]>>;
+
+/** The names `kind` may hand {@link withPostDeadlineBound} — anything else is a compile error, which
+ *  is what makes a new post-deadline call impossible to add without moving the model. */
+export type RunnerPostDeadlineCall<K extends RunnerLauncherKind> =
+  (typeof RUNNER_POST_DEADLINE_CALLS)[K][number];
+
+/** HOW MANY of them, per adapter. DERIVED from {@link RUNNER_POST_DEADLINE_CALLS} and written down
+ *  nowhere — the number and the list cannot disagree because there is only the list. */
+export const RUNNER_POST_DEADLINE_CALL_COUNT: Readonly<Record<RunnerLauncherKind, number>> =
+  Object.freeze(
+    Object.fromEntries(
+      Object.entries(RUNNER_POST_DEADLINE_CALLS).map(([kind, calls]) => [kind, calls.length])
+    ) as Record<RunnerLauncherKind, number>
+  );
 
 /** The worst case of ONE bounded call made outside the run budget: its own timeout, plus the margin
  *  {@link withStepBound} waits before giving up on work that ignored it. */
 export const RUNNER_BOUNDED_CALL_WORST_CASE_MS =
   RUNNER_REMOVE_TIMEOUT_MS + RUNNER_STEP_ABANDON_GRACE_MS;
 
-/** The worst-case wall clock of `kind`'s teardown `finally`. */
-export function runnerTeardownWorstCaseMs(kind: RunnerLauncherKind): number {
-  return RUNNER_TEARDOWN_STEPS[kind] * RUNNER_BOUNDED_CALL_WORST_CASE_MS;
+/** The worst-case wall clock of every bounded call `kind` may issue after the run deadline. */
+export function runnerPostDeadlineCallsMs(kind: RunnerLauncherKind): number {
+  return RUNNER_POST_DEADLINE_CALL_COUNT[kind] * RUNNER_BOUNDED_CALL_WORST_CASE_MS;
 }
 
 /**
  * EVERYTHING `run()` MAY STILL DO AFTER ITS WHOLE-RUN DEADLINE — one possible abandonment of the
- * step that was in flight when the deadline passed, then the teardown. This is the term every outer
- * budget has to carry on top of {@link RunnerSpec.timeoutMs}.
+ * step that was in flight when the deadline passed, then every post-deadline call. This is the term
+ * every outer budget has to carry on top of {@link RunnerSpec.timeoutMs}.
  */
 export function runnerPostDeadlineMs(kind: RunnerLauncherKind): number {
-  return RUNNER_STEP_ABANDON_GRACE_MS + runnerTeardownWorstCaseMs(kind);
+  return RUNNER_STEP_ABANDON_GRACE_MS + runnerPostDeadlineCallsMs(kind);
+}
+
+/**
+ * THE ONLY WAY EITHER ADAPTER ISSUES A BOUNDED CALL THAT IS NOT SPENT FROM THE RUN BUDGET.
+ *
+ * NOT A CONVENIENCE WRAPPER — IT IS THE DECLARATION SITE. Every call routed through it names itself
+ * from {@link RUNNER_POST_DEADLINE_CALLS}, so the set of things that can happen after the deadline
+ * is a list the type checker holds the code to rather than a census someone runs and writes down.
+ * The bound is {@link RUNNER_REMOVE_TIMEOUT_MS} for all of them, which is the unit
+ * {@link runnerPostDeadlineCallsMs} multiplies; handing the caller a choice of bound would put the
+ * arithmetic back where it drifted from.
+ */
+export async function withPostDeadlineBound<K extends RunnerLauncherKind, T>(args: {
+  kind: K;
+  /** Which declared call this is. A name not in the list for `kind` does not type-check. */
+  call: RunnerPostDeadlineCall<K>;
+  /** What it addresses, appended to the abandonment message — a container name, a path. */
+  what?: string;
+  work: (timeoutMs: number) => Promise<T>;
+}): Promise<T> {
+  return withStepBound({
+    timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+    what: args.what ? `${args.call} ${args.what}` : args.call,
+    work: args.work
+  });
 }
 
 /**
@@ -3477,17 +3545,24 @@ export function createDockerRunnerLauncher(
       const execFixed = async (
         step: RunnerLaunchStep,
         argv: string[],
-        options: { timeout: number; maxBuffer?: number }
+        call: RunnerPostDeadlineCall<"docker">,
+        options: { maxBuffer?: number } = {}
       ): Promise<{ stdout: string; stderr: string }> => {
         try {
-          // OUTSIDE THE RUN BUDGET IS NOT OUTSIDE A BOUND (M23.5). `options.timeout` is still what
-          // reaches `execFile` — every golden pins it — and {@link withStepBound} is what makes it
-          // TRUE when the child cannot take a SIGTERM. A teardown that never returns is the same
-          // unreturned `run()` as a copy-in that never returns.
-          return await withStepBound({
-            timeoutMs: options.timeout,
+          // OUTSIDE THE RUN BUDGET IS NOT OUTSIDE A BOUND (M23.5). `RUNNER_REMOVE_TIMEOUT_MS` is
+          // still what reaches `execFile` — every golden pins it — and {@link withStepBound} is what
+          // makes it TRUE when the child cannot take a SIGTERM. A teardown that never returns is the
+          // same unreturned `run()` as a copy-in that never returns.
+          //
+          // AND IT NAMES ITSELF FROM THE MODEL. The bound and the timeout both come from
+          // {@link withPostDeadlineBound}, so this call cannot be issued without appearing in
+          // {@link RUNNER_POST_DEADLINE_CALLS} — which is what the count every outer grace is built
+          // from is derived from.
+          return await withPostDeadlineBound({
+            kind: "docker",
+            call,
             what: `'${step}' (${argv[0] ?? ""})`,
-            work: () => execFileAsync(dockerBinary, argv, options)
+            work: (timeout) => execFileAsync(dockerBinary, argv, { ...options, timeout })
           });
         } catch (cause) {
           throw new RunnerLaunchError({
@@ -3678,11 +3753,18 @@ export function createDockerRunnerLauncher(
           // `create` is what spent the budget — so refusing it would leave the credential on disk
           // for `reap()` to find later, which is the wrong direction. It still may not hang: an
           // unbounded `unlink` on a wedged mount holds `run()` open exactly like an unbounded copy.
+          //
+          // AND IT IS IN THE MODEL, WHICH IS THE PART THE ROUND THAT WROTE THIS COMMENT MISSED. The
+          // sentence above says "bounded like a teardown"; the census that built
+          // {@link RUNNER_POST_DEADLINE_CALLS} asked what the TEARDOWN `finally` issues and never
+          // saw this line, so `run()` overran its own stated bound by one whole
+          // {@link RUNNER_BOUNDED_CALL_WORST_CASE_MS} — past the host's SIGKILL, which is a second
+          // `tofu apply`. {@link withPostDeadlineBound} is now the only way to reach here.
           if (envFilePath) {
             const doomed = envFilePath;
-            await withStepBound({
-              timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
-              what: "secret-env `unlink`",
+            await withPostDeadlineBound({
+              kind: "docker",
+              call: "secret-env unlink",
               work: () => unlink(doomed)
             }).catch(() => undefined);
           }
@@ -3781,11 +3863,11 @@ export function createDockerRunnerLauncher(
             containerName
           );
         } else {
-          await execFixed("teardown", ["rm", "-f", containerName], {
-            timeout: RUNNER_REMOVE_TIMEOUT_MS
-          }).catch((cause) => {
-            debug("teardown: rm -f %s failed: %O", containerName, cause);
-          });
+          await execFixed("teardown", ["rm", "-f", containerName], "teardown rm -f").catch(
+            (cause) => {
+              debug("teardown: rm -f %s failed: %O", containerName, cause);
+            }
+          );
         }
       }
     }

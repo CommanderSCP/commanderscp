@@ -15,6 +15,7 @@ import {
   runnerContainerName,
   runnerReapGraceMs,
   runnerRunBoundMs,
+  withPostDeadlineBound,
   withStepBound
 } from "./index.js";
 import type {
@@ -1617,20 +1618,22 @@ export function createKubernetesRunnerLauncher(
             jobName
           );
         } else {
-          // THREE BOUNDED CALLS, AND THE COUNT IS THE MODEL (M23.5 HIGH-2). `RUNNER_TEARDOWN_STEPS`
-          // declares it, `teardown-model.test.ts` counts what this block actually issues, and every
-          // grace downstream — the reap stamp here, `MANAGED_TRIGGER_GRACE_MS` in the host — is
-          // derived from that count. A fourth step added here without correcting the count reddens
-          // that test by name; a fourth step added WITH the count moves every grace that depends on
-          // it. Before this, the grace was 60s chosen as "two worst-case teardowns" of a teardown
-          // that had since become three, and nothing anywhere knew.
+          // THREE BOUNDED CALLS, AND THE NAMES ARE THE MODEL (M23.5 HIGH-2).
+          // `RUNNER_POST_DEADLINE_CALLS` lists them, `withPostDeadlineBound` will not accept a name
+          // that is not in that list, `teardown-model.test.ts` counts every effect this adapter
+          // issues at or after the run deadline whatever its shape, and every grace downstream — the
+          // reap stamp here, `MANAGED_TRIGGER_GRACE_MS` in the host — is derived from the count.
+          // A fourth call added here does not compile until it is declared, and declaring it moves
+          // every grace that depends on it. Before this, the grace was 60s chosen as "two worst-case
+          // teardowns" of a teardown that had since become three, and nothing anywhere knew.
           //
-          // EACH ONE GOES THROUGH `withStepBound`. `removeDir` in particular is the `rm` on the
-          // network volume, which had no bound at all — a teardown that never returns is the same
-          // unreturned `run()` as a copy-in that never returns, arriving one line later.
-          await withStepBound({
-            timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
-            what: `teardown \`DELETE job ${jobName}\``,
+          // EACH ONE IS BOUNDED. `removeDir` in particular is the `rm` on the network volume, which
+          // had no bound at all — a teardown that never returns is the same unreturned `run()` as a
+          // copy-in that never returns, arriving one line later.
+          await withPostDeadlineBound({
+            kind: "kubernetes",
+            call: "teardown DELETE job",
+            what: jobName,
             work: (timeoutMs) =>
               io.request({
                 step: "teardown",
@@ -1640,9 +1643,10 @@ export function createKubernetesRunnerLauncher(
               })
           }).catch((cause) => debug("teardown: DELETE job %s failed: %O", jobName, cause));
           if (secretIsOurs) {
-            await withStepBound({
-              timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
-              what: `teardown \`DELETE secret ${secretName}\``,
+            await withPostDeadlineBound({
+              kind: "kubernetes",
+              call: "teardown DELETE secret",
+              what: secretName,
               work: (timeoutMs) =>
                 io.request({
                   step: "teardown",
@@ -1652,9 +1656,10 @@ export function createKubernetesRunnerLauncher(
                 })
             }).catch((cause) => debug("teardown: DELETE secret %s failed: %O", secretName, cause));
           }
-          await withStepBound({
-            timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
-            what: `teardown \`removeDir ${runRoot}\``,
+          await withPostDeadlineBound({
+            kind: "kubernetes",
+            call: "teardown removeDir",
+            what: runRoot,
             work: (timeoutMs) => io.removeDir({ step: "teardown", dir: runRoot, timeoutMs })
           }).catch((cause) => debug("teardown: removing %s failed: %O", runRoot, cause));
         }

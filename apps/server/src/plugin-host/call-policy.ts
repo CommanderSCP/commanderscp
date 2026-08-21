@@ -147,15 +147,15 @@ export const MANAGED_EXECUTOR_MODULES = ["managed-iac", "managed-scan", "managed
  * to three with every test still green and nothing anywhere knowing it had.
  *
  * SO THE GRACE IS DERIVED FROM THE ADAPTER IN USE, and the model it derives from lives in the
- * launcher, where the teardown does: `RUNNER_TEARDOWN_STEPS` declares how many bounded calls
- * each adapter's `finally` issues, `teardown-model.test.ts` COUNTS what each one actually issues,
- * and `runnerPostDeadlineMs` turns the count into milliseconds. A fourth teardown step reddens that
- * census by name; correcting the declared count then moves this grace, the reap stamp and the
- * stated `run()` bound together. The terms:
+ * launcher, where the calls do: `RUNNER_POST_DEADLINE_CALLS` NAMES every bounded call each adapter
+ * may issue after the run deadline, `teardown-model.test.ts` COUNTS every effect each one actually
+ * issues at or after that deadline, and `runnerPostDeadlineMs` turns the count into milliseconds.
+ * A new post-deadline call does not compile until it is named there, and naming it moves this
+ * grace, the reap stamp and the stated `run()` bound together. The terms:
  *
  *     runnerPostDeadlineMs(kind)   one possible abandonment of the step that was in flight when
- *                                  the deadline passed, plus that adapter's WHOLE teardown —
- *                                  32s on Docker, 94s on Kubernetes
+ *                                  the deadline passed, plus every call that may follow it —
+ *                                  63s on Docker, 94s on Kubernetes
  *   + MANAGED_OUTCOME_TAIL_MS      what the grace EXISTS for: `withRecordedOutcome`'s write,
  *                                  managed-iac's `saveState` fsync, and the RPC response crossing
  *                                  the pipe                                                   30s
