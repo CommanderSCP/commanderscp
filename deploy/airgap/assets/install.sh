@@ -324,10 +324,10 @@ echo
 #     that is the operator's to make, not this script's).
 #
 #   helm — THE LEVER EXISTS SINCE M23.2/M23.4, AND IT IS CHART VALUES RATHER THAN ENV VARS. This
-#     comment said the opposite for a full milestone after the code changed under it ("there is NO
-#     lever", "the plugins have no Kubernetes-native launch mode yet", "`SCP_MANAGED_SCAN_RUNNER_
-#     IMAGE` has no chart value at all"), while the block it describes 90 lines below had already
-#     been rewritten to say the truth. All three were false: `packages/runner-launcher`'s Kubernetes
+#     comment said the opposite for a full milestone after the code changed under it: it denied that
+#     any lever existed, denied that the plugins had a Kubernetes-native launch mode, and denied that
+#     managed-scan's runner image had a chart value — while the block it describes 90 lines below had
+#     already been rewritten to say the truth. All three denials were false: `packages/runner-launcher`'s Kubernetes
 #     adapter launches each run as a Job through the API server, and `managedScan.runnerImage` is a
 #     chart value (`_helpers.tpl` gates the whole managed-scan block on it being non-empty). A stale
 #     comment in THIS file is the expensive kind — it is read on the far side of an air gap, where
@@ -426,8 +426,8 @@ if [[ "$MODE" == "helm" ]]; then
 
   # ---- The managed-execution runners under HELM: pushed, pinned, and STARTABLE (M23.4) ----
   #
-  # See the "WHICH LEVER EXISTS IN WHICH MODE" comment above step 4. This comment said "under
-  # Kubernetes there is no lever to hand the operator" while the echo block immediately below it
+  # See the "WHICH LEVER EXISTS IN WHICH MODE" comment above step 4. This comment used to deny that
+  # Kubernetes had any lever to hand the operator, while the echo block immediately below it
   # already listed four — one file, two comments, both stale, and the second one found only because
   # the first was. The rule that both were protecting is unchanged and still governs every line
   # below: never name a knob that does nothing. An instruction that silently no-ops is worse than

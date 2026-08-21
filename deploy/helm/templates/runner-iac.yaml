@@ -41,7 +41,7 @@ these are the gates rather than a summary of them:
   asserts these rules equal it as a SET, so an UNUSED verb is a red build exactly as a missing one
   is. The kind suite asks a real authorizer the same question, including the "no"s.
 
-  NO POD MOUNTS A CONTAINER RUNTIME SOCKET, IN ANY VALUE COMBINATION. `helm-verify` renders 156
+  NO POD MOUNTS A CONTAINER RUNTIME SOCKET, IN ANY VALUE COMBINATION. `helm-verify` renders 162
   combinations — every `managed*` enablement combination x both launchers x runner namespace x
   perRunSecrets x acceptSharedNamespaceSecretDelete x runAsNonRoot, twice, plus an api.role sweep —
   and checks each render structurally and as raw bytes. It also derives the RUNNER JOB manifest from

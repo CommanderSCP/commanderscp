@@ -372,6 +372,60 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
     expect(kubernetesRbacRequirement("HEAD", "/api/v1/namespaces/scp/pods")).toBeNull();
   });
 
+  it("THE OPERATOR-FACING README STATES THE SAME SET — the prose, held to the declaration", () => {
+    /**
+     * ============================================================================================
+     * M23.6, SECOND PASS — THE ONE PRESENT-TENSE FALSEHOOD OF ITS KIND IN THE TREE
+     * ============================================================================================
+     * `deploy/helm/README.md` told operators the Role granted "`batch/jobs`
+     * create/get/list/watch/patch/delete, `pods`/`pods/log` read, and `secrets` create/delete". Every
+     * clause of that was wrong after M23.6 narrowed the Role: there is no `watch` (this adapter
+     * POLLS), `pods` and `pods/log` are two resources with one verb each rather than a shared "read",
+     * and `events: list` — added in M23.5 and the only record of why a Job that never produced a pod
+     * failed — was missing from the sentence entirely. The commit that wrote the section never
+     * touched it again and the narrowing never came back to it.
+     *
+     * A SENTENCE AN OPERATOR USES TO PLAN THEIR RBAC IS AS LOAD-BEARING AS THE ROLE, so it is read
+     * here and compared to the same declaration `tools/helm-verify` compares the RENDERED Role to.
+     * Three things now agree — the wire, the chart, and the prose — or the build is red.
+     */
+    const readme = readFileSync(resolve(__dirname, "../../../deploy/helm/README.md"), "utf8");
+    const sentence =
+      /The RBAC — ([^]*?) — renders whenever the Kubernetes launcher is selected/.exec(readme);
+    expect(
+      sentence,
+      "deploy/helm/README.md no longer carries the sentence that states the runner Role's verbs. If it moved, point this assertion at its new home in the same change — an operator plans their cluster's RBAC from it"
+    ).not.toBeNull();
+    /** `` `resource` verb/verb `` pairs, in the order the prose lists them. */
+    const documented = new Map<string, string[]>();
+    for (const clause of sentence![1]!.split(",")) {
+      const parsed = /`([a-z/]+)`\s+([a-z/]+)/.exec(clause.replace(/^\s*and\s+/, ""));
+      if (parsed === null) continue;
+      const resource = parsed[1]!;
+      documented.set(
+        resource.includes("/") && !resource.startsWith("batch/") ? `core/${resource}` : resource,
+        parsed[2]!.split("/").sort()
+      );
+    }
+    // `batch/jobs` is already a key; a bare resource is in the core group.
+    const normalised = new Map(
+      [...documented].map(([resource, verbs]) => [
+        resource.includes("/") ? resource : `core/${resource}`,
+        verbs
+      ])
+    );
+    const declared = new Map(
+      kubernetesRunnerRbac({ perRunSecrets: true }).map((rule) => [
+        kubernetesRbacKey(rule),
+        [...rule.verbs].sort()
+      ])
+    );
+    expect(
+      Object.fromEntries([...normalised].sort()),
+      "deploy/helm/README.md's RBAC sentence disagrees with kubernetesRunnerRbac(), which is the set derived from the wire above and the set tools/helm-verify holds the rendered Role to"
+    ).toStrictEqual(Object.fromEntries([...declared].sort()));
+  });
+
   it("THE CENSUS SLOT: every request the adapter can build is one this matrix drove", () => {
     /**
      * The matrix above proves what the routes it drives require. It cannot, on its own, prove there
