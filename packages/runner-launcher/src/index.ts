@@ -3857,12 +3857,30 @@ export async function withRecordedOutcome<T>(
     return await fn();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // M23.5 MEDIUM-8 — `.message` ALONE IS COMPLETE FOR DOCKER AND EMPTY OF THE REASON FOR
+    // KUBERNETES, and this used to read only `.message`. `RunnerLaunchError.message` is built from
+    // its CAUSE's `.message` (see the class doc, `causeMessage`): for the Docker adapter that cause
+    // is `promisify(execFile)`'s own rejection, whose `.message` already IS `Command failed: ...`
+    // plus the whole of stderr — nothing was ever missing there. The Kubernetes adapter's `api()`
+    // fails with a cause `{ message: "kubernetes POST /path -> HTTP 403", stderr: res.body }` — a
+    // deliberately short `.message` — and puts the API SERVER'S OWN RESPONSE BODY in `.stderr`
+    // instead: the quota text, the RBAC sentence, a 422's field path, an admission webhook's policy
+    // name. `RunnerLaunchError.stderr` carries it (see the class doc), already redacted the same way
+    // `.message` is — `causeMessage` and `this.stderr` both run through the same `redact` closure in
+    // the constructor — so appending it here adds no new redaction obligation. `create`,
+    // `secret-env` and `copy-in` failures reject `run()` directly (no `classifyRunnerFailure` runs
+    // for them — that only happens for `start`), so this was the ONLY place those three steps'
+    // failures were ever turned into a recorded detail, and it was dropping the one field the
+    // rejection existed to carry.
+    const stderr = err instanceof RunnerLaunchError ? err.stderr : "";
+    const detail =
+      stderr.length > 0 && !message.includes(stderr) ? `${message} :: ${stderr}` : message;
     // BOUNDED BEFORE `record` EVER SEES IT. A thrown `Error`'s `.message` is freeform text this
     // package did not compose — a `docker create` rejection carries the whole of stderr in it — and
     // `record` writes to a store that is never pruned. Redact, then bound; both are the plugin's
     // store's problem and neither is optional. `boundDetail` keeps the END, so the reason the throw
     // happened survives the bound.
-    await opts.record(false, boundDetail(opts.redact(message)));
+    await opts.record(false, boundDetail(opts.redact(detail)));
     return undefined;
   }
 }
