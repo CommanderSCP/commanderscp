@@ -1137,4 +1137,116 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     // TEARDOWN STILL REACHED THE REAL OBJECTS — the verdict changed, the obligation did not.
     expect(await kubectl("get", "jobs", "-o", "name")).not.toContain(runnerJobName(runId));
   }, 180_000);
+
+  it("PASS 19: OBSERVED ONCE, THEN BLIND — one useless read still says NOTHING RAN", async () => {
+    /**
+     * THE SAME DEFECT, THROUGH THE ARM PASS 18 LEFT STANDING. Pass 18 split `!everStarted` into
+     * "never observed" (arm 6, `outcome-unknown`) and "observed, nothing had started" (arm 7,
+     * `spawn-failed`, "NOTHING RAN and nothing was mutated"). It moved the boundary to WHETHER a
+     * read landed and not to WHEN it landed or WHAT it said.
+     *
+     * So: let exactly ONE `GET pods` through — the one the adapter issues immediately after the
+     * unsuspend, before the Job controller has created a pod — and stall every read after it. The
+     * observation is real, it is 25 seconds stale by the deadline, and it says only "not yet".
+     * `kubernetesStartVerdict` reaches arm 7 and the record says the run never started.
+     *
+     * ONLY A REAL CLUSTER CAN JUDGE IT, for the same reason as the case above: the Job, the pod, the
+     * kubelet, the container and the file are real; only the launcher's view of them is not.
+     */
+    const runId = "observed-once";
+    const slotDir = join(harness.workspaceHost, runnerJobName(runId), "m0");
+    const markerOnVolume = join(slotDir, "marker.txt");
+
+    const inDir = join(scratch, "observed-once-in");
+    await execFileAsync("mkdir", ["-p", inDir]);
+    await writeFile(join(inDir, "seed.txt"), "seed", "utf8");
+
+    let markerContents: string | undefined;
+    let watching = true;
+    const watcher = (async () => {
+      while (watching) {
+        try {
+          markerContents = (await readFile(markerOnVolume, "utf8")).trim();
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 200));
+        }
+      }
+    })();
+
+    const real = io();
+    /** WHAT THE ONE LANDED READ ACTUALLY SAW — recorded, so the case cannot pass vacuously by
+     *  having observed a pod that was already running. */
+    let firstPodRead = "";
+    let through = 0;
+    const blindAfterOne: KubernetesRunnerIo = {
+      ...real,
+      request: async (req) => {
+        if (
+          req.method === "GET" &&
+          req.path.startsWith(`/api/v1/namespaces/${harness.namespace}/pods?`)
+        ) {
+          if (through > 0) {
+            await new Promise((r) => setTimeout(r, req.timeoutMs + 50));
+            throw new Error("The operation was aborted due to timeout");
+          }
+          through += 1;
+          const res = await real.request(req);
+          firstPodRead = res.body;
+          return res;
+        }
+        return real.request(req);
+      }
+    };
+
+    const result = await createKubernetesRunnerLauncher({
+      namespace: harness.namespace,
+      workspaceRoot: harness.workspaceHost,
+      workspaceVolume: { kind: "hostPath", path: harness.nodeWorkspace },
+      perRunSecrets: true,
+      runAsNonRoot: false,
+      pollIntervalMs: 500,
+      io: blindAfterOne
+    }).run(
+      spec({
+        runId,
+        labels: { "scp.run-id": runId },
+        operands: [
+          "/bin/sh",
+          "-c",
+          "echo THE-RUNNER-RAN-AND-MUTATED > /work/out/marker.txt; sleep 300"
+        ],
+        copyIn: [{ hostDir: inDir, containerPath: "/work/out" }],
+        timeoutMs: 25_000
+      })
+    );
+    watching = false;
+    await watcher;
+
+    // ---- THE READ THAT LANDED SAID NOTHING CONCLUSIVE. -----------------------------------------
+    expect(through, "the pass-through read never happened, so this case tests nothing").toBe(1);
+    expect(
+      firstPodRead,
+      `the one landed read already showed a started container, so this case did not exercise the ` +
+        `arm at all: ${firstPodRead}`
+    ).not.toContain('"running"');
+
+    // ---- GROUND TRUTH. -------------------------------------------------------------------------
+    expect(
+      markerContents,
+      "the runner never wrote its marker to the shared volume, so this case did not exercise the " +
+        "defect at all — it must FAIL rather than pass vacuously"
+    ).toBe("THE-RUNNER-RAN-AND-MUTATED");
+
+    // ---- AND THE SENTENCE THE OPERATOR READS. --------------------------------------------------
+    expect(result.succeeded).toBe(false);
+    const detail = result.failure!.detail;
+    expect(
+      result.failure!.kind,
+      `a run that mutated was classified ${result.failure!.kind}: ${detail}`
+    ).toBe("outcome-unknown");
+    expect(detail).not.toContain("NOTHING RAN");
+    expect(detail).not.toContain("nothing was mutated");
+    expect(detail).toContain("is NOT KNOWN");
+  }, 180_000);
 });
