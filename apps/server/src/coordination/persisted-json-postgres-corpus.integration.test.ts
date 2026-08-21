@@ -22,7 +22,7 @@ import { markWaveTargetTriggered, updateWaveTargetObserved } from "./wave-target
  * AND THE NON-VACUITY CONTROL COULD NOT BE WRITTEN AT ALL WITHOUT A SERVER. "Zero refused" is what a
  * corpus of empty strings produces too. The only control that means anything is "the SAME shapes,
  * NOT bounded, ARE refused" — a question with no answer outside a real PostgreSQL. Measured here on
- * PostgreSQL 16 via Testcontainers: **0 refusals after the bound; 9 refusals before it**, split
+ * PostgreSQL 16 via Testcontainers: **0 refusals after the bound; 11 refusals before it**, split
  * between `unsupported Unicode escape sequence` (the NUL class) and `invalid input syntax for type
  * json` (the lone-surrogate class).
  *
@@ -195,19 +195,41 @@ describe("M23.1f clause 4: the whole hostile corpus, through the repository, int
       "NOT ONE pre-bound shape was refused, so 'the bound makes them storable' is a claim about nothing. Either the corpus stopped being hostile or this is not a real PostgreSQL."
     ).toBeGreaterThanOrEqual(3);
     /**
-     * AND THE REFUSALS ARE NAMED, not merely counted. Measured on PostgreSQL 16 through this write
-     * path: three shapes refuse, and each one is a different mechanism —
-     *   `NUL bytes`                 `unsupported Unicode escape sequence \u0000` — the byte `jsonb`
-     *                               refuses outright, and the one `isWellFormed()` says yes to.
-     *   `lone surrogates`           `invalid input syntax for type json` — an unpaired surrogate the
-     *                               driver cannot encode as valid UTF-8.
-     *   `a self-referential object` a `TypeError` from `JSON.stringify` before a byte leaves Node.
-     * A count alone would let the set drift: three refusals for three SIZE reasons would satisfy it
-     * while proving nothing about the encoding class this bound exists for.
+     * AND THE REFUSALS ARE NAMED, not merely counted, because a count drifts silently: eleven
+     * refusals for eleven SIZE reasons would satisfy a count while proving nothing about the
+     * encoding class this bound exists for. Measured on PostgreSQL 16 through this write path —
+     * **11 of the 34 pre-bound shapes refuse**, by three distinct mechanisms:
+     *
+     *   `unsupported Unicode escape sequence \u0000` — the byte `jsonb` refuses outright, and the
+     *     one `String.prototype.isWellFormed()` says YES to. Seven shapes reach it: `NUL bytes`,
+     *     `the whole C0 range`, `NUL as an OBJECT KEY`, `NUL inside an astral pair`,
+     *     `every BMP code unit`, `a NUL-only string` — and note that a NUL in a KEY refuses exactly
+     *     as a NUL in a value does, which no proxy in the unit layer was asking about.
+     *   `invalid input syntax for type json` — an unpaired surrogate the driver cannot encode as
+     *     valid UTF-8: `lone surrogates`, `adjacent unpaired surrogates`,
+     *     `U+FFFD beside a raw high surrogate`.
+     *   a `TypeError` before a byte leaves Node: `a self-referential object` (a cycle) and
+     *     `a bigint` (`JSON.stringify` throws on it).
+     *
+     * The set is pinned EXACTLY. A shape leaving it means the corpus stopped being hostile in a way
+     * a count would not show; a shape joining it means the bound stopped covering something.
      */
     const refusedNames = new Set(refusals.map((r) => r.slice(0, r.indexOf(":"))));
-    expect([...refusedNames].sort()).toContain("NUL bytes");
-    expect([...refusedNames].sort()).toContain("lone surrogates");
+    expect([...refusedNames].sort()).toStrictEqual(
+      [
+        "NUL as an OBJECT KEY",
+        "NUL bytes",
+        "NUL inside an astral pair",
+        "U+FFFD beside a raw high surrogate",
+        "a NUL-only string",
+        "a bigint",
+        "a self-referential object",
+        "adjacent unpaired surrogates",
+        "every BMP code unit",
+        "lone surrogates",
+        "the whole C0 range"
+      ].sort()
+    );
     const joined = refusals.join(" | ");
     expect(
       /unsupported Unicode escape sequence/i.test(joined),
