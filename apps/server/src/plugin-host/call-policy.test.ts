@@ -1,16 +1,24 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   MANAGED_EXECUTOR_MODULES,
+  MANAGED_OUTCOME_TAIL_MS,
   MANAGED_TRIGGER_GRACE_MS,
   assertManagedTimeoutSchemas,
-  resolveCallPolicy
+  managedTriggerGraceMs,
+  resolveCallPolicy,
+  runnerLauncherKindOf
 } from "./call-policy.js";
 import {
   MANAGED_RUN_TIMEOUT_MAX_MS,
   RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
-  clampRunTimeoutMs
+  RUNNER_TEARDOWN_STEPS,
+  clampRunTimeoutMs,
+  runnerPostDeadlineMs,
+  runnerReapGraceMs,
+  runnerTeardownWorstCaseMs
 } from "@scp/runner-launcher";
+import type { RunnerLauncherKind } from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
 /**
@@ -228,11 +236,16 @@ describe("assertManagedTimeoutSchemas (the boot gate)", () => {
  */
 describe("M23.1e: the grace constants stand in the order the cleanup path needs", () => {
   it("MANAGED_TRIGGER_GRACE_MS EXCEEDS the teardown it exists to protect", () => {
-    // The only work that happens after a run's whole-run deadline is the adapter's
-    // `finally { docker rm -f }`, capped at RUNNER_REMOVE_TIMEOUT_MS. A grace merely EQUAL to it
-    // (which is what 30_000 was) is spent entirely by one worst-case teardown, leaving zero for the
-    // `withRecordedOutcome` write and `saveState` that the grace exists to make room for — so the
-    // host SIGKILLs the subprocess at precisely the moment the ledger entry would have landed.
+    // The Docker adapter's `finally { docker rm -f }` is capped at RUNNER_REMOVE_TIMEOUT_MS. A grace
+    // merely EQUAL to it (which is what 30_000 was) is spent entirely by one worst-case teardown,
+    // leaving zero for the `withRecordedOutcome` write and `saveState` that the grace exists to make
+    // room for — so the host SIGKILLs the subprocess at precisely the moment the ledger entry would
+    // have landed.
+    //
+    // THIS ARM IS ABOUT ONE TEARDOWN AND THAT IS NOW ITS LIMIT, said plainly because it read as the
+    // whole gate and was not: it is true of an adapter whose teardown is one call, and M23.5 found
+    // the Kubernetes teardown had become three with this still green. The per-kind arms below are
+    // the gate; this one is kept because the Docker default is what most deployments run.
     expect(MANAGED_TRIGGER_GRACE_MS).toBeGreaterThan(RUNNER_REMOVE_TIMEOUT_MS);
   });
 
@@ -247,6 +260,98 @@ describe("M23.1e: the grace constants stand in the order the cleanup path needs"
 
   it("the reap grace also covers the teardown, so a run that finishes normally is never reapable", () => {
     expect(RUNNER_REAP_GRACE_MS).toBeGreaterThan(RUNNER_REMOVE_TIMEOUT_MS);
+  });
+});
+
+/**
+ * ================================================================================================
+ * M23.5 HIGH-2 — THE ORDERING HOLDS FOR EVERY ADAPTER, NOT FOR THE ONE THAT EXISTED WHEN IT WAS
+ * WRITTEN
+ * ================================================================================================
+ *
+ * `MANAGED_TRIGGER_GRACE_MS` was 60s, chosen in prose as "two worst-case teardowns" of
+ * `RUNNER_REMOVE_TIMEOUT_MS`, and gated by `grace > RUNNER_REMOVE_TIMEOUT_MS` — ONE teardown. The
+ * Kubernetes `finally` is three bounded calls, so sixty seconds of bounded work consumed the whole
+ * grace and left nothing for the outcome write it exists to protect. The number was gated; the
+ * MODEL was not, and nothing knew the teardown had grown.
+ *
+ * THE GATE IS NOW `it.each` OVER THE KINDS, so an adapter cannot be added without its ordering
+ * being checked, and `teardown-model.test.ts` in the launcher counts what each adapter's `finally`
+ * ACTUALLY issues against the declared count these numbers are derived from. Between them: adding a
+ * fourth teardown step reddens the census by name, and correcting the count moves every number
+ * here.
+ */
+const LAUNCHER_KINDS = Object.keys(RUNNER_TEARDOWN_STEPS) as RunnerLauncherKind[];
+
+describe("M23.5: the grace is derived from what teardown costs ON THE ADAPTER IN USE", () => {
+  it("EVERY KIND THE LAUNCHER DECLARES IS GATED HERE — a new adapter cannot arrive ungated", () => {
+    // Not decoration: the arms below are `it.each` over this list, so if it ever stopped tracking
+    // the launcher's own model an adapter could join with no ordering check at all.
+    expect(LAUNCHER_KINDS.length).toBeGreaterThanOrEqual(2);
+    expect(LAUNCHER_KINDS).toStrictEqual(Object.keys(RUNNER_TEARDOWN_STEPS));
+  });
+
+  it.each(LAUNCHER_KINDS)(
+    "%s: the grace covers that adapter's WHOLE post-deadline work and still leaves the outcome write",
+    (kind) => {
+      // THE ARM 60s FAILED ON KUBERNETES. `runnerPostDeadlineMs("kubernetes")` is 94s; a 60s grace
+      // is spent before the teardown even finishes, so the host SIGKILLs the subprocess mid-cleanup
+      // and `withRecordedOutcome` never runs — the M23.1c chain, restored.
+      expect(managedTriggerGraceMs(kind)).toBeGreaterThan(runnerPostDeadlineMs(kind));
+      // And what is LEFT after the cleanup is the whole reason the grace exists.
+      expect(managedTriggerGraceMs(kind) - runnerPostDeadlineMs(kind)).toBe(MANAGED_OUTCOME_TAIL_MS);
+      // The teardown alone must not be able to eat it, which is the sentence the old gate made
+      // about one call and this one makes about however many that adapter issues.
+      expect(managedTriggerGraceMs(kind)).toBeGreaterThan(runnerTeardownWorstCaseMs(kind));
+    }
+  );
+
+  it.each(LAUNCHER_KINDS)(
+    "%s: the reap stamp outlives the host's SIGKILL — never reapable while its owner may live",
+    (kind) => {
+      // HIGH-2's other door, per adapter. A container/Job whose stamp expires before the process
+      // that owns it is dead is `foreign AND past deadline` to every peer launcher, which is
+      // precisely and only what `reap()` destroys — onto a live `tofu apply`.
+      expect(runnerReapGraceMs(kind)).toBeGreaterThan(managedTriggerGraceMs(kind));
+    }
+  );
+
+  it("A KUBERNETES INSTANCE GETS THE KUBERNETES GRACE — the injected field, not a constant", () => {
+    // `runnerLauncher` is server-injected into the same config object the launcher resolver reads,
+    // so host and plugin answer "which adapter?" from ONE value. Before this, the host budgeted a
+    // Docker teardown for a run performing a Kubernetes one.
+    const docker = resolveCallPolicy({
+      module: "managed-iac",
+      config: { timeoutMs: 120_000, runnerLauncher: "docker" },
+      method: "trigger",
+      hangDetectorMs: HANG_DETECTOR_MS
+    });
+    const k8s = resolveCallPolicy({
+      module: "managed-iac",
+      config: { timeoutMs: 120_000, runnerLauncher: "kubernetes" },
+      method: "trigger",
+      hangDetectorMs: HANG_DETECTOR_MS
+    });
+    expect(docker.budgetMs).toBe(120_000 + managedTriggerGraceMs("docker"));
+    expect(k8s.budgetMs).toBe(120_000 + managedTriggerGraceMs("kubernetes"));
+    expect(k8s.budgetMs).toBeGreaterThan(docker.budgetMs);
+  });
+
+  it("AN UNSET OR UNRECOGNISED `runnerLauncher` IS DOCKER — the same fall-through the resolver makes", () => {
+    // `resolveRunnerLauncher` is `config.runnerLauncher !== "kubernetes"` -> Docker. Reading the
+    // field any other way here would let the two disagree, which is the whole thing this closes.
+    expect(runnerLauncherKindOf(undefined)).toBe("docker");
+    expect(runnerLauncherKindOf({})).toBe("docker");
+    expect(runnerLauncherKindOf({ runnerLauncher: "podman" })).toBe("docker");
+    expect(runnerLauncherKindOf({ runnerLauncher: "kubernetes" })).toBe("kubernetes");
+    expect(
+      resolveCallPolicy({
+        module: "managed-iac",
+        config: { timeoutMs: 120_000 },
+        method: "trigger",
+        hangDetectorMs: HANG_DETECTOR_MS
+      }).budgetMs
+    ).toBe(120_000 + MANAGED_TRIGGER_GRACE_MS);
   });
 });
 

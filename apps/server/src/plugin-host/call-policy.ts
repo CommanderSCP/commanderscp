@@ -1,4 +1,9 @@
-import { MANAGED_RUN_TIMEOUT_MAX_MS } from "@scp/runner-launcher";
+import {
+  MANAGED_RUN_TIMEOUT_MAX_MS,
+  RUNNER_TEARDOWN_STEPS,
+  runnerPostDeadlineMs
+} from "@scp/runner-launcher";
+import type { RunnerLauncherKind } from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
 /**
@@ -128,22 +133,85 @@ export const MANAGED_EXECUTOR_MODULES = ["managed-iac", "managed-scan", "managed
  * the WHOLE-RUN budget: the adapter reads one deadline at the top of `run()` and issues every step
  * with what is LEFT of it, so a run cannot exceed `timeoutMs` however many steps it takes. This
  * constant no longer has to guess at a sum. It has to cover exactly the work that happens AFTER
- * that deadline, and there is one such thing:
+ * that deadline.
  *
- *     RUNNER_REMOVE_TIMEOUT_MS   the adapter's `finally { docker rm -f }`, deliberately outside
- *                                the run budget because the commonest reason to reach it is that
- *                                the budget is what ran out                              30s
- *   + the plugin's own tail      `withRecordedOutcome`'s write and managed-iac's `saveState`
- *                                fsync, plus the RPC response crossing the pipe          ~ms
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * AND THAT WORK IS NOT ONE CALL — M23.5 HIGH-2, THE SAME DEFECT ONE LEVEL UP.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────
+ * This block used to name exactly one term — `RUNNER_REMOVE_TIMEOUT_MS`, "the adapter's
+ * `finally { docker rm -f }`" — and chose 60s as TWO worst-case teardowns. True of the Docker
+ * adapter. The Kubernetes adapter's `finally` is THREE bounded calls: DELETE the Job, DELETE the
+ * Secret, remove the workspace subtree. Sixty seconds of bounded work therefore consumed the entire
+ * grace and left nothing for the outcome write the grace exists to protect — verbatim what the
+ * paragraph below calls "WRONG BY CONSTRUCTION" about the 30s this replaced, arriving on the
+ * adapter nobody re-derived the number for.
  *
- * 30s was therefore WRONG BY CONSTRUCTION rather than merely tight: one worst-case teardown
- * consumed the entire grace, leaving nothing for the outcome write the grace exists to protect.
- * 60s is two worst-case teardowns. The RELATIONSHIP, not the number, is what `call-policy.test.ts`
- * gates — importing {@link RUNNER_REMOVE_TIMEOUT_MS} rather than restating it. The launcher package
- * cannot check it from its side; the dependency only goes one way, which is exactly why the old
- * "re-derived here rather than shared, and padded well past it" drifted.
+ * THE NUMBER WAS GATED AND THE MODEL WAS NOT. `call-policy.test.ts` asserted
+ * `MANAGED_TRIGGER_GRACE_MS > RUNNER_REMOVE_TIMEOUT_MS` — ONE teardown — so the teardown could grow
+ * to three with every test still green and nothing anywhere knowing it had.
+ *
+ * SO THE GRACE IS DERIVED FROM THE ADAPTER IN USE, and the model it derives from lives in the
+ * launcher, where the teardown does: {@link RUNNER_TEARDOWN_STEPS} declares how many bounded calls
+ * each adapter's `finally` issues, `teardown-model.test.ts` COUNTS what each one actually issues,
+ * and `runnerPostDeadlineMs` turns the count into milliseconds. A fourth teardown step reddens that
+ * census by name; correcting the declared count then moves this grace, the reap stamp and the
+ * stated `run()` bound together. The terms:
+ *
+ *     runnerPostDeadlineMs(kind)   one possible abandonment of the step that was in flight when
+ *                                  the deadline passed, plus that adapter's WHOLE teardown —
+ *                                  32s on Docker, 94s on Kubernetes
+ *   + MANAGED_OUTCOME_TAIL_MS      what the grace EXISTS for: `withRecordedOutcome`'s write,
+ *                                  managed-iac's `saveState` fsync, and the RPC response crossing
+ *                                  the pipe                                                   30s
+ *
+ * 30s was WRONG BY CONSTRUCTION rather than merely tight: one worst-case teardown consumed the
+ * entire grace. The RELATIONSHIP, not the number, is what `call-policy.test.ts` gates — and it now
+ * gates it for EVERY adapter kind rather than for the one that happened to exist when it was
+ * written. The launcher package cannot check it from its side; the dependency only goes one way,
+ * which is exactly why the old "re-derived here rather than shared, and padded well past it"
+ * drifted.
  */
-export const MANAGED_TRIGGER_GRACE_MS = 60_000;
+export const MANAGED_OUTCOME_TAIL_MS = 30_000;
+
+/**
+ * How much longer the HOST waits than the plugin's own whole-run budget, ON THE ADAPTER IN USE.
+ * Both terms above; neither restated.
+ */
+export function managedTriggerGraceMs(kind: RunnerLauncherKind): number {
+  return runnerPostDeadlineMs(kind) + MANAGED_OUTCOME_TAIL_MS;
+}
+
+/**
+ * The DOCKER grace — the default, because an unset `runnerLauncher` is Docker everywhere else in
+ * this product (`resolveRunnerLauncher`: "an unset value is Docker — byte-identical behaviour for
+ * every deployment that does not opt in"). It stays a constant because it is what every
+ * non-Kubernetes deployment gets; a deployment that selected the Kubernetes launcher gets
+ * {@link managedTriggerGraceMs}`("kubernetes")` instead, off the same server-injected config field
+ * the launcher resolver itself switches on.
+ */
+export const MANAGED_TRIGGER_GRACE_MS = managedTriggerGraceMs("docker");
+
+/**
+ * WHICH ADAPTER THIS INSTANCE'S `trigger()` WILL ACTUALLY USE.
+ *
+ * `runnerLauncher` is server-injected into every managed executor's config by
+ * `executor-bindings-repo.ts`'s `managedRunnerSettings()` — the same field, in the same object,
+ * that `resolveRunnerLauncher` switches on inside the plugin subprocess. Reading it HERE is what
+ * makes "derived from what teardown costs on the adapter in use" true rather than aspirational:
+ * the host and the launcher answer the question from one value, which is the same argument
+ * {@link assertManagedTimeoutSchemas} makes about the ceiling.
+ *
+ * ANYTHING ELSE IS DOCKER, and the fail-safe direction is the one that matters. An unrecognised
+ * value makes the launcher resolver fall through to Docker too (`config.runnerLauncher !==
+ * "kubernetes"`), so the two agree by construction; and Docker is the SHORTER grace, so a
+ * disagreement in this direction could only make the host give up early — never wait past a reap
+ * stamp that has already expired, which is the direction that puts a peer's sweep on a live run.
+ */
+export function runnerLauncherKindOf(config: unknown): RunnerLauncherKind {
+  return (config as { runnerLauncher?: unknown } | undefined)?.runnerLauncher === "kubernetes"
+    ? "kubernetes"
+    : "docker";
+}
 
 /** The one RPC method whose budget is derived rather than fixed. */
 const TRIGGER_METHOD = "trigger";
@@ -245,5 +313,12 @@ export function resolveCallPolicy(args: {
   // bad value is rejected. See the module comment on why the clamp is load-bearing for rows that
   // predate the ceiling.
   const runBudget = Math.min(schema.maximum, Math.max(schema.minimum, Math.trunc(requested)));
-  return { budgetMs: runBudget + MANAGED_TRIGGER_GRACE_MS, retryOnCrash: false };
+  // THE GRACE IS THE ADAPTER'S, NOT A CONSTANT (M23.5 HIGH-2). See {@link runnerLauncherKindOf}: the
+  // field it reads is the one the launcher resolver itself switches on, injected into this same
+  // config object, so the host cannot budget for a Docker teardown while the plugin performs a
+  // Kubernetes one.
+  return {
+    budgetMs: runBudget + managedTriggerGraceMs(runnerLauncherKindOf(args.config)),
+    retryOnCrash: false
+  };
 }
