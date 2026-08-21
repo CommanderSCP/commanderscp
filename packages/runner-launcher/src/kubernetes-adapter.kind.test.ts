@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -223,6 +223,78 @@ const CREDENTIAL = "an-actual-looking-credential";
 
 let scratch: string;
 
+/**
+ * ==================================================================================================
+ * THE SELF-HEAL — M23.5 verification pass 20, LOW-13 and LOW-14, WHICH ARE ONE DEFECT
+ * ==================================================================================================
+ *
+ * WHAT HAPPENS WHEN THIS SUITE IS INTERRUPTED. A run stopped by a SIGTERM — Ctrl-C while iterating,
+ * a CI cancellation, a killed fork — leaves two things behind, and neither of the cleanups that
+ * exist is reached, because both of them run at the END of a process that no longer exists:
+ *
+ *   1. A Job in the cluster. MEASURED: `scp-runner-quota-refused` survived, and the next run's
+ *      `create` POST got the typed 409 the adapter is right to refuse on ("tearing down nothing:
+ *      the Job behind this name belongs to that run" — that rule is load-bearing and stays). Four
+ *      CONSECUTIVE red runs, then self-recovery, because `reap()` is SCHEDULED, NOT AWAITED (see
+ *      `run()`) and therefore races the very `create` it would have unblocked. Re-measured here by
+ *      seeding one leftover: ROUTE 1 red, and the leftover gone by the time the run finished — a
+ *      gate red for a reason with nothing to do with the change under test, exactly while someone
+ *      is iterating on it. Fresh CI clusters never see it, which is why it survived.
+ *   2. A scratch directory in `os.tmpdir()`. Ten were present at the last cleanup, several
+ *      non-empty, spanning two sessions — despite LOW-12's `afterAll`, which is not bypassed by
+ *      anything IN this file: it is bypassed by the process ending without running it.
+ *
+ * SO THE CLEANUP MOVES TO THE FRONT. An `afterAll` is a promise about how this process will end; a
+ * `beforeAll` sweep is a statement about the state the suite starts from, and only the second
+ * survives the way the suite actually dies. The `afterAll` STAYS — it keeps the machine tidy on the
+ * normal path and it is what makes the leak rare — but nothing depends on it any more.
+ *
+ * WHY THE SWEEP MAY DELETE WHAT `reap()` MUST NOT. `reap()` is production code against a shared
+ * cluster: it is fail-closed on the deadline stamp, because deleting a foreign Job whose deadline
+ * has not passed would destroy somebody's live `tofu apply`. These three namespaces belong to this
+ * suite and to nothing else, the config is `singleFork` and the harness script stands them up, so
+ * any launcher-labelled object here at `beforeAll` is debris from a process that is gone. That is
+ * the whole difference, and it is why the fix is HERE and not in the 409 path or in `reap`.
+ */
+async function sweepLeftoverRunnerObjects(): Promise<void> {
+  for (const ns of [harness.namespace, harness.noSecretsNamespace, harness.quotaNamespace]) {
+    // WAITED, NOT `--wait=false`. The whole defect is a teardown that raced a `create`; a sweep that
+    // returned before the Job was gone would reproduce it one layer up.
+    await kubectlIn(ns, "delete", "job", "-l", RUNNER_LAUNCHER_OWNER_LABEL, "--ignore-not-found");
+    await kubectlIn(
+      ns,
+      "delete",
+      "secret",
+      "-l",
+      RUNNER_LAUNCHER_OWNER_LABEL,
+      "--ignore-not-found"
+    );
+  }
+  // AND THE THIRD OBJECT, the one `reap()` also takes: the run's workspace subtree. A leftover `out`
+  // slot is worse than a leftover Job, because it does not fail — it hands the next run's copy-out
+  // the PREVIOUS run's evidence, which is a green for the wrong reason.
+  for (const entry of await readdir(harness.workspaceHost).catch(() => [])) {
+    if (entry.startsWith("scp-runner-")) {
+      await rm(join(harness.workspaceHost, entry), { recursive: true, force: true });
+    }
+  }
+}
+
+/** Every `scp-kind-*` scratch directory in `os.tmpdir()` except this process's own. See above: they
+ *  can only be this file's, and this suite is the only thing that runs it (`singleFork`, one CI
+ *  job), so there is no concurrent peer whose directory this could be. */
+async function sweepStaleScratchDirs(keep: string): Promise<string[]> {
+  const parent = tmpdir();
+  const swept: string[] = [];
+  for (const entry of await readdir(parent).catch(() => [])) {
+    const path = join(parent, entry);
+    if (!entry.startsWith("scp-kind-") || path === keep) continue;
+    await rm(path, { recursive: true, force: true });
+    swept.push(path);
+  }
+  return swept;
+}
+
 beforeAll(async () => {
   const path =
     process.env.SCP_KIND_HARNESS ??
@@ -241,12 +313,22 @@ beforeAll(async () => {
   harness = JSON.parse(raw) as Harness;
   ca = await readFile(harness.caFile);
   scratch = await mkdtemp(join(tmpdir(), "scp-kind-"));
-}, 60_000);
+  // OURS FIRST, THEN EVERYTHING ELSE — the same call the gate below makes, so the gate is testing
+  // this and not a near-relative of it.
+  await sweepStaleScratchDirs(scratch);
+  await sweepLeftoverRunnerObjects();
+}, 120_000);
 
 // LOW-12 — `beforeAll` mkdtemp's ONCE per file and nothing removed it: 50 accumulated across repeat
 // local runs of this suite. Each plugin's `runner-launcher-selection.test.ts` pairs its `mkdtemp`
 // with a cleanup at the matching cardinality (`beforeEach`/`afterEach` there; `beforeAll`/`afterAll`
 // here, since this file creates exactly one scratch dir for the whole suite, not one per test).
+//
+// AND IT IS NO LONGER THE GUARANTEE — LOW-14, pass 20. Ten dirs were present at the next cleanup
+// anyway, several non-empty, spanning two sessions: nothing in this file bypasses this hook, the
+// PROCESS ENDING WITHOUT RUNNING IT does, which is every Ctrl-C and every cancelled CI job. What
+// makes the leak self-healing is `sweepStaleScratchDirs` in `beforeAll`; this stays because it keeps
+// the normal path clean and makes the leak rare, not because anything now depends on it.
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true });
 });
@@ -810,6 +892,98 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
   // ================================================================================================
   // M23.5 — THE POD SPEC, AND THE THREE VERDICTS A FAKE CANNOT PRODUCE
   // ================================================================================================
+
+  it("PASS 20: THE SUITE HEALS THE DEBRIS A SIGTERM LEAVES — which `reap()` may not touch", async () => {
+    /**
+     * THE GATE FOR THE `beforeAll` SWEEP, and without it the sweep is a mechanism nothing pins:
+     * every case in this file passes whether or not it runs, because a clean cluster has nothing to
+     * sweep. So the debris is SEEDED, in the exact shape a killed run leaves it, and the two halves
+     * are asserted separately.
+     *
+     * THE DEADLINE IS IN THE FUTURE, DELIBERATELY. `reap()` is fail-closed on the stamp — it must
+     * be, because on a shared cluster a foreign Job inside its deadline is somebody's live `tofu
+     * apply` — so `reap()` will never take this object, at any point, on any later run. That is the
+     * arm that proves the sweep is doing work `reap()` cannot, rather than duplicating it: the
+     * seeded Job is exactly what a SIGTERM at second 3 of a 120s run leaves behind.
+     */
+    const runId = "sigterm-debris";
+    const jobName = runnerJobName(runId);
+    const ns = harness.quotaNamespace;
+    const stale = join(tmpdir(), "scp-kind-stale-from-a-killed-run");
+    const staleWorkspace = join(harness.workspaceHost, jobName);
+
+    await kubectlIn(
+      ns,
+      "create",
+      "job",
+      jobName,
+      "--image",
+      harness.runnerImage,
+      "--",
+      "/bin/sh",
+      "-c",
+      "sleep 300"
+    );
+    await kubectlIn(
+      ns,
+      "label",
+      "job",
+      jobName,
+      `${RUNNER_LAUNCHER_OWNER_LABEL}=a-process-that-was-killed`
+    );
+    await kubectlIn(
+      ns,
+      "annotate",
+      "job",
+      jobName,
+      `${RUNNER_LAUNCHER_DEADLINE_ANNOTATION}=${new Date(Date.now() + 3_600_000).toISOString()}`
+    );
+    await mkdir(join(staleWorkspace, "out"), { recursive: true });
+    await writeFile(join(staleWorkspace, "out", "evidence.json"), "the PREVIOUS run's evidence");
+    await mkdir(stale, { recursive: true });
+    await writeFile(join(stale, "left-behind"), "x");
+
+    try {
+      // 1. `reap()` LEAVES IT — for the right reason, and forever.
+      const reaped = await launcher({ quota: true }).reap();
+      expect(reaped).not.toContain(jobName);
+      expect(await kubectlIn(ns, "get", "jobs", "-o", "name")).toContain(jobName);
+
+      // 2. THE SWEEP TAKES IT, and takes the workspace subtree with it.
+      await sweepLeftoverRunnerObjects();
+      expect(
+        await kubectlIn(ns, "get", "jobs", "-o", "name"),
+        "the sweep left the Job that makes the next `create` a 409"
+      ).not.toContain(jobName);
+      expect(await readdir(harness.workspaceHost)).not.toContain(jobName);
+
+      // 3. AND THE PROOF THAT IT IS THE 409 THAT WAS HEALED: the name is usable again. This is the
+      //    assertion the four measured red runs were failing.
+      const result = await launcher({
+        quota: true,
+        pod: { resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { memory: "64Mi" } } }
+      }).run(spec({ runId, labels: { "scp.run-id": runId }, timeoutMs: 120_000 }));
+      expect(
+        result.succeeded,
+        `the name was still held after the sweep: ${result.failure?.detail ?? ""}`
+      ).toBe(true);
+
+      // 4. THE SCRATCH SWEEP, and the one thing it must NOT take.
+      const swept = await sweepStaleScratchDirs(scratch);
+      expect(swept).toContain(stale);
+      expect(await readdir(tmpdir())).not.toContain("scp-kind-stale-from-a-killed-run");
+      expect(
+        await readdir(scratch),
+        "the sweep deleted the scratch directory the running suite is using"
+      ).toBeDefined();
+    } finally {
+      await kubectlIn(ns, "delete", "job", jobName, "--ignore-not-found", "--wait=false").catch(
+        () => undefined
+      );
+      await rm(stale, { recursive: true, force: true });
+      await rm(staleWorkspace, { recursive: true, force: true });
+    }
+  }, 180_000);
 
   it("M23.5 HIGH-3: an UNSET imagePullPolicy is `Always` for `:latest` — the air-gap break, measured", async () => {
     // THE MEASUREMENT THAT STARTED THIS. The image is ALREADY ON THE NODE (the harness `kind load`s
