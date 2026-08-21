@@ -226,13 +226,406 @@ function federationRoleViolations(role: string, docs: K8sDoc[]): string[] {
   return violations;
 }
 
+// ==================================================================================================
+// M23.6 CLAUSE 6 — THE SOCKET INVARIANT, ENFORCED BY RENDERING EVERY COMBINATION
+// ==================================================================================================
+/**
+ * THE INVARIANT M23 MUST NOT BREAK, in BUILD_AND_TEST.md's own words: "**no Docker socket is mounted
+ * into any pod, ever** — not behind a value, not behind a `managedIac.enabled` opt-in, not 'for
+ * dev'." The escape risk `runner-iac.yaml`'s module header refuses to paper over is the reason M23
+ * exists at all; a socket mount would satisfy the goal while destroying the reason.
+ *
+ * WHAT STOOD FOR THIS BEFORE, AND WHY IT WAS NOT A GATE. Nothing rendered the chart and looked. A
+ * filterless `grep -rna 'docker.sock\\|/var/run/docker'` over the repo found ZERO assertions over
+ * rendered chart output — every `docker.sock` assertion in the tree was on Docker ARGV, which is a
+ * statement about the compose path and says nothing about a pod. Measured, before this section
+ * existed: a `hostPath: /var/run/docker.sock` volume plus its mount added to
+ * `deployment-worker.yaml` produced FOUR `docker.sock` occurrences in `helm template` AT THE DEFAULT
+ * VALUES while `pnpm -w test` stayed green (72/72) and helm-verify stayed green.
+ *
+ * A HANDFUL OF HAND-PICKED COMBINATIONS IS NOT A MATRIX. The 24 `renderChart` calls elsewhere in
+ * this file are each aimed at one question; none of them is a sweep, and the combination that
+ * carries a socket is by definition the one nobody thought to name. The product below is
+ * EXHAUSTIVE over the dimensions the clause names — every `managed*` enablement combination and
+ * every documented `managedRunners` override — and the count is printed so "exhaustive" is a number
+ * rather than a claim.
+ *
+ * AND THE HALF `helm template` STRUCTURALLY CANNOT SEE. The runner pod is not in the chart: it is
+ * built by `jobManifest()` in `packages/runner-launcher` at RUN time, from the settings the chart
+ * delivers as environment variables. So for every Kubernetes render this section ALSO reads the
+ * worker's own env out of the render, derives the launcher settings exactly as
+ * `managedRunnerKubernetesSettings()` does, builds the Job manifest those values produce, and holds
+ * it to the same invariant. The chart cannot render a socket, and it cannot ASK for one either.
+ */
+
+/** Every spelling of a container runtime's control socket that would grant escape if mounted. */
+const RUNTIME_SOCKET_PATTERNS = [
+  "docker.sock",
+  "/var/run/docker",
+  "containerd.sock",
+  "crio.sock",
+  "podman.sock",
+  "buildkitd.sock"
+];
+
+/** A pod spec, wherever it sits in a workload doc. */
+function podSpecsOf(doc: K8sDoc): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  const spec = doc.spec as Record<string, unknown> | undefined;
+  if (!spec) return out;
+  if (doc.kind === "Pod") out.push(spec);
+  const template = spec["template"] as { spec?: Record<string, unknown> } | undefined;
+  if (template?.spec) out.push(template.spec);
+  // CronJob: spec.jobTemplate.spec.template.spec
+  const jobTemplate = spec["jobTemplate"] as
+    | { spec?: { template?: { spec?: Record<string, unknown> } } }
+    | undefined;
+  if (jobTemplate?.spec?.template?.spec) out.push(jobTemplate.spec.template.spec);
+  return out;
+}
+
+/**
+ * Every reason a rendered manifest violates the invariant. Two independent instruments, because
+ * each catches what the other cannot: a STRUCTURAL walk that knows which field is a volume (so it
+ * can name `hostPath` even when the path is innocuous), and a RAW scan of the bytes (so a socket
+ * hidden in a ConfigMap, an annotation or an unmodelled field cannot slip past the walk).
+ */
+function socketInvariantProblems(label: string, raw: string, docs: K8sDoc[]): string[] {
+  const problems: string[] = [];
+
+  for (const pattern of RUNTIME_SOCKET_PATTERNS) {
+    if (raw.includes(pattern)) {
+      problems.push(`[${label}] the render contains '${pattern}' — a container runtime socket in a manifest this chart would apply`);
+    }
+  }
+
+  for (const doc of docs) {
+    for (const podSpec of podSpecsOf(doc)) {
+      const name = `${doc.kind}/${String(doc.metadata?.name ?? "?")}`;
+      for (const volume of (podSpec["volumes"] as Record<string, unknown>[] | undefined) ?? []) {
+        if (volume["hostPath"] !== undefined) {
+          problems.push(
+            `[${label}] ${name} mounts a hostPath volume ${JSON.stringify(volume["hostPath"])} — this chart declares none, and a hostPath is one path edit away from being a socket`
+          );
+        }
+      }
+      const containers = [
+        ...((podSpec["containers"] as Record<string, unknown>[] | undefined) ?? []),
+        ...((podSpec["initContainers"] as Record<string, unknown>[] | undefined) ?? [])
+      ];
+      for (const container of containers) {
+        for (const mount of (container["volumeMounts"] as { mountPath?: string }[] | undefined) ?? []) {
+          const at = mount.mountPath ?? "";
+          if (RUNTIME_SOCKET_PATTERNS.some((p) => at.includes(p))) {
+            problems.push(`[${label}] ${name} mounts a runtime socket at ${at}`);
+          }
+        }
+      }
+    }
+  }
+  return problems;
+}
+
+/** The worker Deployment's env, flattened — how the chart tells the server what to launch on. */
+function workerEnvMap(docs: K8sDoc[]): Record<string, string> {
+  const worker = docs.find(
+    (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+  );
+  const containers =
+    ((worker?.spec as { template?: { spec?: { containers?: { env?: EnvVar[] }[] } } } | undefined)
+      ?.template?.spec?.containers ?? []) as { env?: EnvVar[] }[];
+  const out: Record<string, string> = {};
+  for (const c of containers) {
+    for (const e of c.env ?? []) {
+      if (typeof e.value === "string") out[e.name] = e.value;
+    }
+  }
+  return out;
+}
+
+/**
+ * The runner Job THIS RENDER WOULD PRODUCE. Mirrors `managedRunnerKubernetesSettings()` in
+ * `apps/server/src/coordination/executor-bindings-repo.ts` — claim first, host path second, nothing
+ * third — so a chart that started plumbing `SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH` (today it
+ * does not, and that absence is itself asserted) would be caught here rather than at run time.
+ */
+function runnerJobFromRender(docs: K8sDoc[]): K8sDoc | null {
+  const env = workerEnvMap(docs);
+  if (env["SCP_MANAGED_RUNNER_LAUNCHER"] !== "kubernetes") return null;
+  const namespace = env["SCP_MANAGED_RUNNER_K8S_NAMESPACE"]?.trim();
+  const workspaceRoot = env["SCP_MANAGED_RUNNER_K8S_WORKSPACE_ROOT"]?.trim();
+  const claimName = env["SCP_MANAGED_RUNNER_K8S_WORKSPACE_CLAIM"]?.trim();
+  const hostPath = env["SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH"]?.trim();
+  if (!namespace || !workspaceRoot) return null;
+  const workspaceVolume = claimName
+    ? ({ kind: "persistentVolumeClaim", claimName } as const)
+    : hostPath
+      ? ({ kind: "hostPath", path: hostPath } as const)
+      : undefined;
+  if (!workspaceVolume) return null;
+  const spec: RunnerSpec = {
+    runId: "socket-matrix",
+    labels: {},
+    image: "ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+    operands: ["apply"],
+    networkMode: "none",
+    env: [],
+    secretEnv: [],
+    copyIn: [],
+    copyOut: undefined,
+    timeoutMs: 600_000,
+    maxBuffer: 32 * 1024 * 1024
+  };
+  return jobManifest(spec, {
+    namespace,
+    jobName: "scp-runner-iac-socket-matrix",
+    secretName: "scp-runner-iac-socket-matrix-env",
+    reapDeadline: new Date(0).toISOString(),
+    slots: new Map([[`${workspaceRoot}/in`, "in"]]),
+    workspaceVolume,
+    runAsNonRoot: env["SCP_MANAGED_RUNNER_K8S_RUN_AS_NON_ROOT"] === "true",
+    ttlSecondsAfterFinished: 3_600
+  }) as K8sDoc;
+}
+
+interface MatrixPoint {
+  label: string;
+  args: string[];
+  /** True when the chart's own render-time guards are expected to REFUSE this combination. */
+  refuses: boolean;
+}
+
+/**
+ * The exhaustive product. Dimensions, and why each one is in it:
+ *  - the three managed classes, independently on/off (8) — the clause names them by wildcard, and
+ *    each one gates a different block of `runner-iac.yaml` and of the worker's env.
+ *  - the launcher (2) — `docker` and `kubernetes` render different pods and different volumes.
+ *  - `managedRunners.kubernetes.namespace` empty vs a runner namespace (2) — moves the Role, the
+ *    RoleBinding and the Jobs, and is the M23.5 render-time guard's own input.
+ *  - `perRunSecrets` (2) — renders or omits a rule and flips a server-side flag.
+ *  - `acceptSharedNamespaceSecretDelete` (2) — the documented override for the guard above; the
+ *    combination it exists to unblock is asserted to REFUSE without it.
+ *  - `runAsNonRoot` (2) — the only value that changes the runner pod's securityContext.
+ * Run twice: once with the rest of the chart at defaults, once with every other optional feature on
+ * (the existing kitchen sink plus `api.role=all`, which is the single-pod install where the worker's
+ * volumes land on the api pod too). Plus one small sweep over `api.role`, whose three values decide
+ * which pods exist at all.
+ */
+function socketMatrix(): MatrixPoint[] {
+  const points: MatrixPoint[] = [];
+  const IAC_IMAGE = "ghcr.io/commanderscp/scp-runner-iac:0.1.0";
+  const bool = [false, true];
+
+  const environments: { name: string; extra: string[] }[] = [
+    { name: "defaults", extra: [] },
+    {
+      name: "everything-on",
+      extra: [
+        "--set", "api.role=all",
+        "--set", "ingress.enabled=true",
+        "--set", "ingress.host=scp.example.com",
+        "--set", "eventBus.driver=nats",
+        "--set", "nats.enabled=true",
+        "--set", "serviceMonitor.enabled=true",
+        "--set", "worker.autoscaling.enabled=true",
+        "--set", "imagePullSecrets[0].name=ghcr-creds",
+        "--set", "image.pullPolicy=Always",
+        "--set", "managedRunners.kubernetes.resources.limits.memory=512Mi",
+        "--set", "managedRunners.kubernetes.imagePullSecrets[0].name=runner-creds",
+        "--set", "managedRunners.kubernetes.imagePullPolicy=IfNotPresent"
+      ]
+    }
+  ];
+
+  for (const env of environments) {
+    for (const iac of bool) {
+      for (const dep of bool) {
+        for (const scan of bool) {
+          const classArgs = [
+            "--set", `managedIac.enabled=${iac}`,
+            ...(iac ? ["--set", `managedIac.runnerImage=${IAC_IMAGE}`] : []),
+            ...(dep ? ["--set", "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"] : []),
+            ...(scan ? ["--set", "managedScan.runnerImage=ghcr.io/commanderscp/scp-runner-scan:0.1.0"] : [])
+          ];
+          const classes = `iac=${iac},dep=${dep},scan=${scan}`;
+
+          // THE DOCKER LAUNCHER. Every Kubernetes value below renders nothing here, so the product
+          // collapses to one point per class combination — asserted, not assumed, by the fact that
+          // this file's (3d) case already proves a docker deployment renders no runner surface.
+          points.push({
+            label: `${env.name} docker ${classes}`,
+            args: [...env.extra, ...classArgs],
+            refuses: false
+          });
+
+          // THE KUBERNETES LAUNCHER. Refuses outright when no class is enabled ("nothing will ever
+          // launch"), so that arm is a refusal point rather than a render.
+          for (const namespace of ["", "scp-runners"]) {
+            for (const perRunSecrets of bool) {
+              for (const accept of bool) {
+                for (const runAsNonRoot of bool) {
+                  const k8sArgs = [
+                    "--set", "managedRunners.launcher=kubernetes",
+                    "--set", "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+                    "--set", `managedRunners.kubernetes.namespace=${namespace}`,
+                    "--set", `managedRunners.kubernetes.perRunSecrets=${perRunSecrets}`,
+                    "--set", `managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=${accept}`,
+                    "--set", `managedRunners.kubernetes.runAsNonRoot=${runAsNonRoot}`
+                  ];
+                  const noClass = !iac && !dep && !scan;
+                  const sharedSecretRefusal = namespace === "" && perRunSecrets && !accept;
+                  points.push({
+                    label: `${env.name} kubernetes ${classes} ns='${namespace}' secrets=${perRunSecrets} accept=${accept} nonroot=${runAsNonRoot}`,
+                    args: [...env.extra, ...classArgs, ...k8sArgs],
+                    refuses: noClass || sharedSecretRefusal
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // `api.role` decides which pods exist at all, so it gets its own sweep on both launchers rather
+  // than riding only in `everything-on`. Its legal values are `api|all` and the chart refuses
+  // anything else at render time (`deployment-api.yaml`), which is why `worker` is not swept here:
+  // there is no such deployment shape to check.
+  for (const role of ["api", "all"]) {
+    points.push({
+      label: `api.role=${role} docker iac=true`,
+      args: ["--set", `api.role=${role}`, "--set", "managedIac.enabled=true", "--set", `managedIac.runnerImage=${IAC_IMAGE}`],
+      refuses: false
+    });
+    points.push({
+      label: `api.role=${role} kubernetes iac=true`,
+      args: [
+        "--set", `api.role=${role}`,
+        "--set", "managedIac.enabled=true",
+        "--set", `managedIac.runnerImage=${IAC_IMAGE}`,
+        "--set", "managedRunners.launcher=kubernetes",
+        "--set", "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set", "managedRunners.kubernetes.namespace=scp-runners"
+      ],
+      refuses: false
+    });
+  }
+  return points;
+}
+
+function verifySocketInvariantMatrix(): void {
+  const label = "M23.6 socket invariant";
+  console.log(
+    "\nhelm-verify: rendering the FULL values matrix and asserting no pod mounts a container runtime socket..."
+  );
+  const points = socketMatrix();
+  let rendered = 0;
+  let refused = 0;
+  let runnerJobs = 0;
+
+  for (const point of points) {
+    let raw: string;
+    try {
+      raw = renderRaw(CHART_DIR, "verify-socket", point.args);
+    } catch (err) {
+      // A REFUSAL IS AN ANSWER, AND THE ONLY ACCEPTABLE ONE FOR A COMBINATION THE CHART GUARDS.
+      // Counting it silently would let a guard that started refusing EVERYTHING shrink the matrix
+      // to nothing, so the expectation is stated per point and checked in both directions.
+      if (!point.refuses) {
+        fail(
+          `[${label}] ${point.label} failed to render, and this combination is expected to be valid: ${String((err as { stderr?: string }).stderr ?? err).slice(0, 400)}`
+        );
+      }
+      refused += 1;
+      continue;
+    }
+    if (point.refuses) {
+      fail(
+        `[${label}] ${point.label} RENDERED, but the chart's own guards are supposed to refuse it — a render-time guard that stopped guarding`
+      );
+    }
+    rendered += 1;
+    const docs = parseAllDocuments(raw)
+      .map((d) => d.toJS() as K8sDoc | null)
+      .filter((d): d is K8sDoc => d != null && typeof d === "object" && "kind" in d);
+    for (const problem of socketInvariantProblems(point.label, raw, docs)) fail(problem);
+
+    // AND THE POD THE CHART CANNOT RENDER.
+    const job = runnerJobFromRender(docs);
+    if (job) {
+      runnerJobs += 1;
+      for (const problem of socketInvariantProblems(
+        `${point.label} runner Job`,
+        JSON.stringify(job),
+        [job]
+      )) {
+        fail(problem);
+      }
+    }
+  }
+
+  // NON-VACUITY, IN THREE PARTS. Every assertion above is "nothing was found", which is exactly what
+  // an empty matrix, a render that produced nothing, and a guard that refused everything all
+  // produce. The counts are asserted so the sweep cannot pass by having swept nothing.
+  assert(
+    points.length === 276,
+    `[${label}] the matrix is ${points.length} points, not the 276 it is documented as — update the count deliberately, with the dimension that changed`
+  );
+  assert(
+    rendered === 216 && refused === 60,
+    `[${label}] the matrix rendered ${rendered} and saw ${refused} refusals; expected 216 and 60`
+  );
+  assert(
+    runnerJobs === 198,
+    `[${label}] ${runnerJobs} of the renders produced a derivable runner Job manifest; expected 198. Zero would mean the env-derived half of this gate checked nothing at all`
+  );
+  // …and the detector itself finds what it is looking for when it IS there.
+  const planted: K8sDoc = {
+    kind: "Deployment",
+    metadata: { name: "planted" },
+    spec: {
+      template: {
+        spec: {
+          volumes: [{ name: "sock", hostPath: { path: "/var/run/docker.sock" } }],
+          containers: [{ name: "c", volumeMounts: [{ mountPath: "/var/run/docker.sock" }] }]
+        }
+      }
+    }
+  };
+  // FOUR, and the number is the two instruments meeting: the raw scan matches `docker.sock` and
+  // `/var/run/docker` in the bytes, and the structural walk names the hostPath VOLUME and the
+  // container's MOUNT separately. A control that only counted one of them would leave the other
+  // instrument unproven.
+  assert(
+    socketInvariantProblems("control", "hostPath: /var/run/docker.sock", [planted]).length === 4,
+    `[${label}] the socket detector does not fire on a manifest that plainly violates the invariant, so every clean verdict above means nothing`
+  );
+
+  console.log(
+    `  ${points.length} value combinations: ${rendered} rendered clean, ${refused} refused by the chart's own guards as expected, ${runnerJobs} runner Job manifests derived from the rendered env and checked too — no hostPath and no runtime socket anywhere`
+  );
+}
+
 function assert(condition: unknown, msg: string): void {
   if (!condition) fail(msg);
 }
 
+/** The RAW `helm template` output. Separate from {@link renderDir} because a NEGATIVE invariant
+ *  ("this string appears nowhere in what would be applied") is strictly stronger over the raw bytes
+ *  than over the parsed docs: a socket path smuggled into a ConfigMap body, an annotation or a
+ *  pod-spec field this file's `K8sDoc` shape does not model is invisible to a structural walk and
+ *  obvious here. This is the exact inverse of the module doc's warning about string-grepping, which
+ *  is about POSITIVE assertions ("the field is present on the container that matters"). */
+function renderRaw(dir: string, releaseName: string, setArgs: string[]): string {
+  return execFileSync("helm", ["template", releaseName, dir, ...setArgs], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024
+  });
+}
+
 function renderDir(dir: string, releaseName: string, setArgs: string[]): K8sDoc[] {
-  const args = ["template", releaseName, dir, ...setArgs];
-  const output = execFileSync("helm", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const output = renderRaw(dir, releaseName, setArgs);
   return parseAllDocuments(output)
     .map((doc) => doc.toJS() as K8sDoc | null)
     .filter((doc): doc is K8sDoc => doc != null && typeof doc === "object" && "kind" in doc);
@@ -2514,6 +2907,8 @@ function main(): void {
       "  default render unchanged; selected render carries token + egress + volume + settings; the per-run Secret grant is exactly create+delete on secrets, present for all three classes, absent on docker and at the default, and following the runner namespace; both prerequisites refuse at render; every worker-role write path is mounted on BOTH the worker and an api.role=all pod, and on neither at api.role=api; the runner Job inherits the deployment pull secrets, pull policy and resources, and none of the three on docker"
     );
   }
+
+  verifySocketInvariantMatrix();
 
   if (failures.length > 0) {
     console.error(`\nhelm-verify: ${failures.length} assertion(s) FAILED:\n`);
