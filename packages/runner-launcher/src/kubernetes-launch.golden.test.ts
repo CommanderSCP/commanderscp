@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LAUNCHER_OWNER_ID, jobManifest } from "./index.js";
+import { LAUNCHER_OWNER_ID, jobManifest, runnerRunBoundMs } from "./index.js";
 import type { RunnerSpec } from "./index.js";
 
 /**
@@ -87,6 +87,9 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
         backoffLimit: 0,
         completions: 1,
         parallelism: 1,
+        // M23.5 MEDIUM-9 — derived from `runnerRunBoundMs`, not a literal, so this golden does not
+        // silently drift from the function it has to match if either changes independently.
+        activeDeadlineSeconds: Math.ceil(runnerRunBoundMs("kubernetes", SPEC.timeoutMs) / 1000),
         ttlSecondsAfterFinished: 3_600,
         template: {
           metadata: {
@@ -314,5 +317,41 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
     expect(manifest.spec.template.spec.containers[0]!["env"]).toStrictEqual([
       { name: "PLAIN", value: "a$$(VAR)b" }
     ]);
+  });
+
+  // ==============================================================================================
+  // MEDIUM-9 — `activeDeadlineSeconds`: A CONTROLLER-ENFORCED BACKSTOP, NOT JUST A PROCESS'S PROMISE
+  // ==============================================================================================
+  //
+  // Every OTHER Job this chart creates (migrations, both bundled auto-wire hooks) states one. This
+  // is the only Job that ever holds a mounted cloud credential, and until this fix it had none: the
+  // launcher's own `run()` budget lives in a process, and a SIGKILL of that process between `start`
+  // and its own teardown (the exact shape M23.1d's whole fix was about) leaves the pod running,
+  // credential mounted, with nothing enforcing a stop until some LATER `reap()` pass notices.
+
+  it("IS DERIVED FROM `spec.timeoutMs` VIA `runnerRunBoundMs`, NOT A FLAT CONSTANT", () => {
+    const short = jobManifest({ ...SPEC, timeoutMs: 30_000 }, OPTS) as {
+      spec: { activeDeadlineSeconds: number };
+    };
+    const long = jobManifest({ ...SPEC, timeoutMs: 3_600_000 }, OPTS) as {
+      spec: { activeDeadlineSeconds: number };
+    };
+    // A managed-iac run against a large estate must not be truncated by a deadline sized for a
+    // 30-second managed-scan step — proving this tracks the SPEC rather than a shared literal.
+    expect(long.spec.activeDeadlineSeconds).toBeGreaterThan(short.spec.activeDeadlineSeconds);
+    expect(short.spec.activeDeadlineSeconds).toBe(
+      Math.ceil(runnerRunBoundMs("kubernetes", 30_000) / 1000)
+    );
+    expect(long.spec.activeDeadlineSeconds).toBe(
+      Math.ceil(runnerRunBoundMs("kubernetes", 3_600_000) / 1000)
+    );
+  });
+
+  it("IS STRICTLY GREATER THAN THE LAUNCHER'S OWN WHOLE-RUN BUDGET IN SECONDS — a backstop, not a race", () => {
+    // If the Job's own deadline could expire BEFORE the launcher's graceful teardown finishes, the
+    // controller's SIGTERM would race `run()`'s own abandon-and-teardown path on every ordinary run
+    // — turning a backstop for a dead process into a second, earlier kill for a live one.
+    const manifest = jobManifest(SPEC, OPTS) as { spec: { activeDeadlineSeconds: number } };
+    expect(manifest.spec.activeDeadlineSeconds).toBeGreaterThan(Math.floor(SPEC.timeoutMs / 1000));
   });
 });

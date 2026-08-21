@@ -14,6 +14,7 @@ import {
   createRunDeadline,
   runnerContainerName,
   runnerReapGraceMs,
+  runnerRunBoundMs,
   withStepBound
 } from "./index.js";
 import type {
@@ -1776,6 +1777,20 @@ export function jobManifest(
       backoffLimit: 0,
       completions: 1,
       parallelism: 1,
+      // A BACKSTOP FOR THIS RUN'S OWN BUDGET, ENFORCED BY THE CONTROLLER RATHER THAN BY A PROCESS
+      // THAT MUST STAY ALIVE TO ENFORCE IT (M23.5 MEDIUM-9). Every OTHER Job this chart creates
+      // (migrations, both bundled auto-wire hooks) states one; this one — the only Job that ever
+      // holds a mounted cloud credential — did not. `run()`'s own budget already bounds the
+      // LAUNCHER's wait via `runDeadline` and `withStepBound`, but that bound lives in a process:
+      // if the launcher is killed (a SIGKILL mid-`trigger()`, the same shape M23.1d's whole fix was
+      // about) between `start` and its own teardown, nothing left running enforces it, and the pod
+      // — with its mounted credential — keeps going until some LATER `reap()` pass notices. The Job
+      // controller enforces this one independently of this process's survival. Derived from
+      // `spec.timeoutMs` via `runnerRunBoundMs` rather than a flat constant: the same bound the
+      // launcher's own promise to the caller already is, so a class with a longer `timeoutMs`
+      // (managed-iac's `tofu apply` against a large estate) does not get truncated by a value sized
+      // for a different one.
+      activeDeadlineSeconds: Math.ceil(runnerRunBoundMs("kubernetes", spec.timeoutMs) / 1000),
       ttlSecondsAfterFinished: opts.ttlSecondsAfterFinished,
       template: {
         metadata: { labels },
