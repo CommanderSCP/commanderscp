@@ -382,6 +382,32 @@ export interface WaveTargetObservedState {
   observedAt?: string;
 }
 
+/**
+ * THE EXACT VALUE THAT BECOMES THE `observed_state` COLUMN — bound, reported and stamped.
+ *
+ * EXTRACTED SO IT CAN BE DRIVEN DIRECTLY (M23.1f clause 5). The composition of the three parts —
+ * the bounded plugin value, the truncation report and the `observedAt` stamp — is the whole of what
+ * makes a stored reading READABLE by `stageDependencyVerdict` and `resolveReleasedVersion`, and it
+ * had no seam: a test that wanted to sweep sizes through those readers had to REBUILD it, which
+ * makes the sweep a test of the copy. `persisted-json-budget-sweep.test.ts` swept the bound and
+ * never a reader, for exactly this reason.
+ *
+ * `null` in, `null` out — a caller-explicit clear. `undefined` never reaches here: the caller uses
+ * it to mean "leave the column alone", which is a different instruction from "store nothing".
+ */
+export function observedStateForRow(
+  observedState: WaveTargetObservedState | null,
+  now: Date
+): WaveTargetObservedState | null {
+  if (observedState === null) return null;
+  const bounded = boundPluginJson(observedState, OBSERVED_STATE_VALUE_MAX_CHARS);
+  return {
+    ...bounded.value,
+    ...(bounded.truncation ? { truncation: bounded.truncation } : {}),
+    observedAt: now.toISOString()
+  };
+}
+
 export async function updateWaveTargetObserved(
   tx: TenantTx,
   orgId: string,
@@ -393,15 +419,13 @@ export async function updateWaveTargetObserved(
   observedState?: WaveTargetObservedState | null
 ): Promise<void> {
   const now = new Date();
-  // ONE BOUND, ONE REPORT, ONE ROW. Computed here rather than inline in the `set` because the value
-  // and its truncation report are two halves of ONE walk: calling the bound twice would walk the
+  // ONE BOUND, ONE REPORT, ONE ROW — see {@link observedStateForRow}, which is where the three
+  // parts are composed. Computed once here rather than inline in the `set` because the value and
+  // its truncation report are two halves of ONE walk: calling the bound twice would walk the
   // plugin's value twice per tick and — worse — allow the two halves to be taken from different
   // walks, which is exactly the "the signal drifted from the thing it describes" failure this
   // increment exists to make impossible.
-  const bounded =
-    observedState == null
-      ? undefined
-      : boundPluginJson(observedState, OBSERVED_STATE_VALUE_MAX_CHARS);
+  const forRow = observedState === undefined ? undefined : observedStateForRow(observedState, now);
   await tx
     .update(changeWaveTargets)
     .set({
@@ -416,28 +440,12 @@ export async function updateWaveTargetObserved(
       // BOUNDED AT THE STORE. Everything in this payload came off a free-form `ExecutionStatus`
       // (see the census above `boundPluginJson`); `observedAt` is stamped here and is ours, so it
       // is added AFTER the bound and cannot be spent by a plugin's budget.
-      ...(observedState !== undefined
-        ? {
-            // `bounded === undefined` inside this branch means `observedState === null`, i.e. a
-            // CALLER-EXPLICIT CLEAR, which must write SQL NULL. Spelling it `bounded && …` would
-            // write `undefined`, and `undefined` in a drizzle `.set()` is "leave the column alone"
-            // — the clear would silently become a no-op.
-            observedState:
-              bounded === undefined
-                ? null
-                : {
-                    ...bounded.value,
-                    // AND WHAT THE BOUND REMOVED, AS DATA — M23.1g. Stamped after the bound like
-                    // `observedAt`, out of the reserve documented above, and only when there is
-                    // something to say: `truncation` absent means nothing was cut, which is every
-                    // honest reading and costs the row nothing. `truncation` cannot collide with a
-                    // plugin key because the object this bounds is composed by `observedStateFrom`
-                    // from three names of OURS, not by the plugin.
-                    ...(bounded.truncation ? { truncation: bounded.truncation } : {}),
-                    observedAt: now.toISOString()
-                  }
-          }
-        : {})
+      // `forRow === null` inside this branch means `observedState === null`, i.e. a CALLER-EXPLICIT
+      // CLEAR, which must write SQL NULL. Spelling it `forRow && …` would write `undefined`, and
+      // `undefined` in a drizzle `.set()` is "leave the column alone" — the clear would silently
+      // become a no-op. The truncation report and the `observedAt` stamp are added by
+      // `observedStateForRow`, after the bound and out of the reserve documented above.
+      ...(forRow !== undefined ? { observedState: forRow } : {})
     })
     .where(and(eq(changeWaveTargets.orgId, orgId), eq(changeWaveTargets.id, targetId)));
 }
