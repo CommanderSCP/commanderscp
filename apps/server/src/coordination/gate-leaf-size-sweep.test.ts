@@ -49,7 +49,10 @@ const MIN_WEIGHT = 50;
  * both ends of a list the bound cuts from the tail.
  */
 function imageList(size: number, at: "head" | "tail"): string[] {
-  const padding = Array.from({ length: Math.max(0, size - 1) }, (_, i) => `ghcr.io/acme/pad-${i}:1.0.0`);
+  const padding = Array.from(
+    { length: Math.max(0, size - 1) },
+    (_, i) => `ghcr.io/acme/pad-${i}:1.0.0`
+  );
   if (size === 0) return [];
   return at === "head" ? [`${COORDINATE}:1.4.2`, ...padding] : [...padding, `${COORDINATE}:1.4.2`];
 }
@@ -197,7 +200,10 @@ describe("M23.1f clause 5: the released-version reader survives the same sweep",
     const lost = observedStateForRow(reading(imageList(firstLost, "tail"), "9f2c1ab"), NOW)!;
     // The row SAYS it cut something — both as the structured report an operator reads, and as the
     // in-band marker this reader is entitled to reason from.
-    expect(lost.truncation, "a ref vanished from the list and the row reported no truncation").toBeDefined();
+    expect(
+      lost.truncation,
+      "a ref vanished from the list and the row reported no truncation"
+    ).toBeDefined();
     const resolved = await resolveReleasedVersion({
       line: { ecosystem: "oci", coordinate: COORDINATE },
       sourceRef: {},
@@ -231,7 +237,9 @@ describe("M23.1f clause 5: the released-version reader survives the same sweep",
       const images = imageList(size, "head");
       const stored = observedStateForRow(reading(images, "9f2c1ab"), NOW)!;
       if (stored.images === undefined || stored.images.length === 0) {
-        failures.push(`size ${size}: images ${stored.images === undefined ? "dropped" : "emptied"}`);
+        failures.push(
+          `size ${size}: images ${stored.images === undefined ? "dropped" : "emptied"}`
+        );
       }
       if (stored.revision === undefined) failures.push(`size ${size}: revision dropped`);
       if (stored.rollout?.weight === undefined) failures.push(`size ${size}: weight dropped`);

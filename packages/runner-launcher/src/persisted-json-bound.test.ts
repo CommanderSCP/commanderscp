@@ -74,7 +74,6 @@ if (Object.keys(markerShape.value as object)[0] !== PERSISTED_JSON_ELIDED_KEY) {
   );
 }
 
-
 describe("MEDIUM: boundPersistedJson bounds a whole plugin-supplied value, not a list of its fields", () => {
   it.each(ADVERSARIAL.map((c) => [c.name, c.value] as const))(
     "%s: renders within the budget and is something Postgres will store",

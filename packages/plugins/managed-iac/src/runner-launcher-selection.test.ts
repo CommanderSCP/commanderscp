@@ -142,12 +142,20 @@ describe("M23.2: managed-iac, constructed the way production constructs it, hono
       ...KUBERNETES_SETTINGS,
       kubernetes: { ...KUBERNETES_SETTINGS.kubernetes, io: recordingIo(seen) }
     });
-    await plugin.trigger(c, { kind: "sync", targetRef: "t3", parameters: { iacAction: "plan" }, idempotencyKey: "select-3" }).catch(() => undefined);
+    await plugin
+      .trigger(c, {
+        kind: "sync",
+        targetRef: "t3",
+        parameters: { iacAction: "plan" },
+        idempotencyKey: "select-3"
+      })
+      .catch(() => undefined);
     await whenKubernetesReapSettled("scp");
     // NON-VACUITY FIRST: a run that never happened spawns nothing either.
-    expect(seen, "the run never reached the Kubernetes adapter, so 'nothing was spawned' is empty").toContain(
-      "POST /apis/batch/v1/namespaces/scp/jobs"
-    );
+    expect(
+      seen,
+      "the run never reached the Kubernetes adapter, so 'nothing was spawned' is empty"
+    ).toContain("POST /apis/batch/v1/namespaces/scp/jobs");
     expect(runnerSpawns(), "a process was spawned on the Kubernetes path").toStrictEqual([]);
     expect(runnerSpawnCount()).toBe(before);
   });
@@ -158,9 +166,19 @@ describe("M23.2: managed-iac, constructed the way production constructs it, hono
     await whenReapSettled();
     clearRunnerSpawns();
     const plugin = createManagedIacExecutorPlugin();
-    await plugin.trigger(ctx({}), { kind: "sync", targetRef: "t4", parameters: { iacAction: "plan" }, idempotencyKey: "select-4" }).catch(() => undefined);
+    await plugin
+      .trigger(ctx({}), {
+        kind: "sync",
+        targetRef: "t4",
+        parameters: { iacAction: "plan" },
+        idempotencyKey: "select-4"
+      })
+      .catch(() => undefined);
     await whenReapSettled();
-    expect(runnerSpawns().length, "the Docker path spawned nothing, so the negative arm proves nothing").toBeGreaterThan(0);
+    expect(
+      runnerSpawns().length,
+      "the Docker path spawned nothing, so the negative arm proves nothing"
+    ).toBeGreaterThan(0);
     expect(new Set(runnerSpawns().map((s) => s.file))).toStrictEqual(new Set(["docker"]));
   });
 
@@ -178,7 +196,14 @@ describe("M23.2: managed-iac, constructed the way production constructs it, hono
     const before = kubernetesConstructionCount();
     const plugin = createManagedIacExecutorPlugin();
     const c = ctx({ kubernetes: { ...KUBERNETES_SETTINGS.kubernetes, io: recordingIo(seen) } });
-    await plugin.trigger(c, { kind: "sync", targetRef: "t5", parameters: { iacAction: "plan" }, idempotencyKey: "select-5" }).catch(() => undefined);
+    await plugin
+      .trigger(c, {
+        kind: "sync",
+        targetRef: "t5",
+        parameters: { iacAction: "plan" },
+        idempotencyKey: "select-5"
+      })
+      .catch(() => undefined);
     expect(
       kubernetesConstructionCount() - before,
       "the Docker path built a Kubernetes launcher or API client and threw it away"
@@ -195,7 +220,14 @@ describe("M23.2: managed-iac, constructed the way production constructs it, hono
       ...KUBERNETES_SETTINGS,
       kubernetes: { ...KUBERNETES_SETTINGS.kubernetes, io: recordingIo(seen) }
     });
-    await plugin.trigger(c, { kind: "sync", targetRef: "t6", parameters: { iacAction: "plan" }, idempotencyKey: "select-6" }).catch(() => undefined);
+    await plugin
+      .trigger(c, {
+        kind: "sync",
+        targetRef: "t6",
+        parameters: { iacAction: "plan" },
+        idempotencyKey: "select-6"
+      })
+      .catch(() => undefined);
     expect(kubernetesConstructionCount()).toBeGreaterThan(before);
   });
 });

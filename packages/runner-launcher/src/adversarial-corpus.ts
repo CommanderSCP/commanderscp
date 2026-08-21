@@ -139,7 +139,10 @@ export const ADVERSARIAL_ALPHABETS: ReadonlyArray<{ name: string; value: unknown
   // to `undefined` at module-evaluation time, which turns the whole corpus into an empty array in
   // any consumer that imports it through the package entry. That is a vacuous sweep with no symptom.
   // `persisted-json-bound.test.ts` asserts this literal still equals the constant.
-  { name: "the bound's own markers as data", value: { __scpElided: "not ours", revision: "\u2026 12 more" } },
+  {
+    name: "the bound's own markers as data",
+    value: { __scpElided: "not ours", revision: "\u2026 12 more" }
+  },
   { name: "a NUL-only string", value: { revision: NUL.repeat(64) } }
 ];
 

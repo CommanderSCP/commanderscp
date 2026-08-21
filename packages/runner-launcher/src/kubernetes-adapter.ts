@@ -572,7 +572,9 @@ export function kubernetesRbacKey(rule: { apiGroup: string; resource: string }):
  * the adapter calls" genuinely differs between the two deployments, and a diff that ignored the
  * value would have to be loose in one direction or wrong in the other.
  */
-export function kubernetesRunnerRbac(opts: { perRunSecrets: boolean }): readonly KubernetesRbacRule[] {
+export function kubernetesRunnerRbac(opts: {
+  perRunSecrets: boolean;
+}): readonly KubernetesRbacRule[] {
   const rules: KubernetesRbacRule[] = [
     // create (POST), get (GET one), list (GET the collection, for the reap sweep), patch (the
     // unsuspend), delete (teardown and reap). NO `watch`: see the module note above.

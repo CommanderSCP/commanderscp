@@ -83,7 +83,9 @@ function recorder(opts: { podAppears: boolean; foreignPastDeadline?: boolean }) 
       name: "scp-runner-someone-elses",
       uid: "uid-foreign",
       labels: { [RUNNER_LAUNCHER_OWNER_LABEL]: "a-different-launcher" },
-      annotations: { [RUNNER_LAUNCHER_DEADLINE_ANNOTATION]: new Date(Date.now() - 60_000).toISOString() }
+      annotations: {
+        [RUNNER_LAUNCHER_DEADLINE_ANNOTATION]: new Date(Date.now() - 60_000).toISOString()
+      }
     }
   };
 
@@ -172,7 +174,10 @@ function launcher(
     // loop spins as fast as the event loop allows until the wall clock passes the deadline, which
     // issues tens of thousands of requests for a route whose whole content is "four distinct
     // shapes". The derived SET is identical either way; the cost is not.
-    sleep: over.realSleep === true ? (ms) => new Promise<void>((r) => setTimeout(r, ms)) : () => Promise.resolve(),
+    sleep:
+      over.realSleep === true
+        ? (ms) => new Promise<void>((r) => setTimeout(r, ms))
+        : () => Promise.resolve(),
     io
   });
 }
@@ -210,14 +215,21 @@ function requiredRules(wire: readonly Wire[]): KubernetesRbacRule[] {
       continue;
     }
     const key = kubernetesRbacKey(need);
-    const slot = byKey.get(key) ?? { apiGroup: need.apiGroup, resource: need.resource, verbs: new Set<string>() };
+    const slot = byKey.get(key) ?? {
+      apiGroup: need.apiGroup,
+      resource: need.resource,
+      verbs: new Set<string>()
+    };
     slot.verbs.add(need.verb);
     byKey.set(key, slot);
   }
   // AN UNRECOGNISED PATH IS A FAILURE, NOT AN EXCUSE. Silently skipping one would make this whole
   // derivation shrink to whatever the mapper happens to understand, which is how a set-equality gate
   // becomes decoration.
-  expect(unmapped, "the requirement mapper did not recognise a path the adapter issued").toStrictEqual([]);
+  expect(
+    unmapped,
+    "the requirement mapper did not recognise a path the adapter issued"
+  ).toStrictEqual([]);
   return [...byKey.values()]
     .map((r) => ({ apiGroup: r.apiGroup, resource: r.resource, verbs: [...r.verbs].sort() }))
     .sort((a, b) => kubernetesRbacKey(a).localeCompare(kubernetesRbacKey(b)));
@@ -241,7 +253,9 @@ async function driveEveryRoute(perRunSecrets: boolean): Promise<Wire[]> {
   const secretEnv = perRunSecrets ? ["TOKEN=shhh"] : [];
   const happy = recorder({ podAppears: true });
   const okResult = await launcher(happy.io, perRunSecrets).run(spec({ secretEnv }));
-  expect(okResult.succeeded, "the happy route must actually succeed or it drove nothing").toBe(true);
+  expect(okResult.succeeded, "the happy route must actually succeed or it drove nothing").toBe(
+    true
+  );
   wire.push(...happy.wire);
 
   // ROUTE 2 — a run whose Job never produces a pod. This is the ONLY route that reads the Job's own
@@ -251,7 +265,9 @@ async function driveEveryRoute(perRunSecrets: boolean): Promise<Wire[]> {
     pollIntervalMs: 50,
     realSleep: true
   }).run(spec({ runId: "r2", timeoutMs: 400, secretEnv }));
-  expect(failed.succeeded, "the no-pod route must fail or it drove the happy path twice").toBe(false);
+  expect(failed.succeeded, "the no-pod route must fail or it drove the happy path twice").toBe(
+    false
+  );
   wire.push(...noPod.wire);
 
   // ROUTE 3 — a reap pass over a peer's past-deadline Job: the labelled collection LIST, and the
@@ -318,12 +334,16 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
   it("the mapper distinguishes a COLLECTION read from a NAMED read — the whole basis of the split", () => {
     // The mapper decides every verb above, so its own behaviour is asserted directly rather than
     // inferred from the fact that the comparison passed.
-    expect(kubernetesRbacRequirement("GET", "/api/v1/namespaces/scp/pods?labelSelector=x")).toStrictEqual({
+    expect(
+      kubernetesRbacRequirement("GET", "/api/v1/namespaces/scp/pods?labelSelector=x")
+    ).toStrictEqual({
       apiGroup: "",
       resource: "pods",
       verb: "list"
     });
-    expect(kubernetesRbacRequirement("GET", "/api/v1/namespaces/scp/pods/p1/log?container=runner")).toStrictEqual({
+    expect(
+      kubernetesRbacRequirement("GET", "/api/v1/namespaces/scp/pods/p1/log?container=runner")
+    ).toStrictEqual({
       apiGroup: "",
       resource: "pods/log",
       verb: "get"
@@ -333,12 +353,16 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
       resource: "jobs",
       verb: "list"
     });
-    expect(kubernetesRbacRequirement("GET", "/apis/batch/v1/namespaces/scp/jobs/j1")).toStrictEqual({
-      apiGroup: "batch",
-      resource: "jobs",
-      verb: "get"
-    });
-    expect(kubernetesRbacRequirement("PATCH", "/apis/batch/v1/namespaces/scp/jobs/j1")).toStrictEqual({
+    expect(kubernetesRbacRequirement("GET", "/apis/batch/v1/namespaces/scp/jobs/j1")).toStrictEqual(
+      {
+        apiGroup: "batch",
+        resource: "jobs",
+        verb: "get"
+      }
+    );
+    expect(
+      kubernetesRbacRequirement("PATCH", "/apis/batch/v1/namespaces/scp/jobs/j1")
+    ).toStrictEqual({
       apiGroup: "batch",
       resource: "jobs",
       verb: "patch"
@@ -365,19 +389,21 @@ describe("M23.6 clause 5: the RBAC declaration is derived from running the adapt
     const literals = [...source.matchAll(/(?<!readonly\s)\bmethod:\s*"([A-Z]+)"/g)]
       .map((m) => m[1]!)
       .sort();
-    expect(literals).toStrictEqual([
-      "DELETE", // teardown: the Job
-      "DELETE", // teardown: the per-run Secret
-      "DELETE", // reap: a peer's past-deadline Job
-      "DELETE", // reap: that Job's per-run Secret
-      "GET", // start: the Job's own status
-      "GET", // start: the Job's events
-      "GET", // start: the pod, by label selector
-      "GET", // start: the pod's log
-      "GET", // reap: the labelled Job collection
-      "PATCH", // start: the unsuspend
-      "POST", // create: the Job
-      "POST" // create: the per-run Secret
-    ].sort());
+    expect(literals).toStrictEqual(
+      [
+        "DELETE", // teardown: the Job
+        "DELETE", // teardown: the per-run Secret
+        "DELETE", // reap: a peer's past-deadline Job
+        "DELETE", // reap: that Job's per-run Secret
+        "GET", // start: the Job's own status
+        "GET", // start: the Job's events
+        "GET", // start: the pod, by label selector
+        "GET", // start: the pod's log
+        "GET", // reap: the labelled Job collection
+        "PATCH", // start: the unsuspend
+        "POST", // create: the Job
+        "POST" // create: the per-run Secret
+      ].sort()
+    );
   });
 });

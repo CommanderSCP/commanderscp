@@ -142,10 +142,7 @@ function renderedFederationRole(docs: K8sDoc[]): string {
  * hold `get` and `pods/log` to hold `list`, neither of which the adapter ever issues — so a render
  * that splits or merges rules differently must fail here rather than be normalised away.
  */
-function rbacDiff(
-  rendered: unknown,
-  expected: readonly KubernetesRbacRule[]
-): string[] {
+function rbacDiff(rendered: unknown, expected: readonly KubernetesRbacRule[]): string[] {
   type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
   const rules = (rendered ?? []) as Rule[];
   const problems: string[] = [];
@@ -155,7 +152,9 @@ function rbacDiff(
     const groups = rule.apiGroups ?? [];
     const resources = rule.resources ?? [];
     if (groups.length !== 1) {
-      problems.push(`a rule names ${groups.length} apiGroups (${JSON.stringify(groups)}); one rule, one group`);
+      problems.push(
+        `a rule names ${groups.length} apiGroups (${JSON.stringify(groups)}); one rule, one group`
+      );
       continue;
     }
     if (resources.length !== 1) {
@@ -166,7 +165,9 @@ function rbacDiff(
     }
     const key = kubernetesRbacKey({ apiGroup: groups[0]!, resource: resources[0]! });
     if (seen.has(key)) {
-      problems.push(`${key} appears in more than one rule, so its effective grant is the union — merge them`);
+      problems.push(
+        `${key} appears in more than one rule, so its effective grant is the union — merge them`
+      );
       continue;
     }
     seen.set(key, [...(rule.verbs ?? [])].sort());
@@ -176,13 +177,17 @@ function rbacDiff(
   for (const [key, verbs] of want) {
     const got = seen.get(key);
     if (got === undefined) {
-      problems.push(`${key} is NOT granted at all; the adapter issues ${JSON.stringify(verbs)} against it`);
+      problems.push(
+        `${key} is NOT granted at all; the adapter issues ${JSON.stringify(verbs)} against it`
+      );
       continue;
     }
     const missing = verbs.filter((v) => !got.includes(v));
     const extra = got.filter((v) => !verbs.includes(v));
     if (missing.length > 0) {
-      problems.push(`${key} is missing ${JSON.stringify(missing)} — every call using it is a 403 inside a run`);
+      problems.push(
+        `${key} is missing ${JSON.stringify(missing)} — every call using it is a 403 inside a run`
+      );
     }
     if (extra.length > 0) {
       problems.push(
@@ -192,7 +197,9 @@ function rbacDiff(
   }
   for (const key of seen.keys()) {
     if (!want.has(key)) {
-      problems.push(`${key} is granted and the adapter touches it NOT AT ALL (verbs ${JSON.stringify(seen.get(key))})`);
+      problems.push(
+        `${key} is granted and the adapter touches it NOT AT ALL (verbs ${JSON.stringify(seen.get(key))})`
+      );
     }
   }
   return problems;
@@ -278,8 +285,7 @@ function podSpecsOf(doc: K8sDoc): Record<string, unknown>[] {
   if (template?.spec) out.push(template.spec);
   // CronJob: spec.jobTemplate.spec.template.spec
   const jobTemplate = spec["jobTemplate"] as
-    | { spec?: { template?: { spec?: Record<string, unknown> } } }
-    | undefined;
+    { spec?: { template?: { spec?: Record<string, unknown> } } } | undefined;
   if (jobTemplate?.spec?.template?.spec) out.push(jobTemplate.spec.template.spec);
   return out;
 }
@@ -295,7 +301,9 @@ function socketInvariantProblems(label: string, raw: string, docs: K8sDoc[]): st
 
   for (const pattern of RUNTIME_SOCKET_PATTERNS) {
     if (raw.includes(pattern)) {
-      problems.push(`[${label}] the render contains '${pattern}' — a container runtime socket in a manifest this chart would apply`);
+      problems.push(
+        `[${label}] the render contains '${pattern}' — a container runtime socket in a manifest this chart would apply`
+      );
     }
   }
 
@@ -314,7 +322,8 @@ function socketInvariantProblems(label: string, raw: string, docs: K8sDoc[]): st
         ...((podSpec["initContainers"] as Record<string, unknown>[] | undefined) ?? [])
       ];
       for (const container of containers) {
-        for (const mount of (container["volumeMounts"] as { mountPath?: string }[] | undefined) ?? []) {
+        for (const mount of (container["volumeMounts"] as { mountPath?: string }[] | undefined) ??
+          []) {
           const at = mount.mountPath ?? "";
           if (RUNTIME_SOCKET_PATTERNS.some((p) => at.includes(p))) {
             problems.push(`[${label}] ${name} mounts a runtime socket at ${at}`);
@@ -331,9 +340,9 @@ function workerEnvMap(docs: K8sDoc[]): Record<string, string> {
   const worker = docs.find(
     (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
   );
-  const containers =
-    ((worker?.spec as { template?: { spec?: { containers?: { env?: EnvVar[] }[] } } } | undefined)
-      ?.template?.spec?.containers ?? []) as { env?: EnvVar[] }[];
+  const containers = ((
+    worker?.spec as { template?: { spec?: { containers?: { env?: EnvVar[] }[] } } } | undefined
+  )?.template?.spec?.containers ?? []) as { env?: EnvVar[] }[];
   const out: Record<string, string> = {};
   for (const c of containers) {
     for (const e of c.env ?? []) {
@@ -437,18 +446,30 @@ function socketMatrix(): MatrixPoint[] {
       fullProduct: false,
       name: "everything-on",
       extra: [
-        "--set", "api.role=all",
-        "--set", "ingress.enabled=true",
-        "--set", "ingress.host=scp.example.com",
-        "--set", "eventBus.driver=nats",
-        "--set", "nats.enabled=true",
-        "--set", "serviceMonitor.enabled=true",
-        "--set", "worker.autoscaling.enabled=true",
-        "--set", "imagePullSecrets[0].name=ghcr-creds",
-        "--set", "image.pullPolicy=Always",
-        "--set", "managedRunners.kubernetes.resources.limits.memory=512Mi",
-        "--set", "managedRunners.kubernetes.imagePullSecrets[0].name=runner-creds",
-        "--set", "managedRunners.kubernetes.imagePullPolicy=IfNotPresent"
+        "--set",
+        "api.role=all",
+        "--set",
+        "ingress.enabled=true",
+        "--set",
+        "ingress.host=scp.example.com",
+        "--set",
+        "eventBus.driver=nats",
+        "--set",
+        "nats.enabled=true",
+        "--set",
+        "serviceMonitor.enabled=true",
+        "--set",
+        "worker.autoscaling.enabled=true",
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds",
+        "--set",
+        "image.pullPolicy=Always",
+        "--set",
+        "managedRunners.kubernetes.resources.limits.memory=512Mi",
+        "--set",
+        "managedRunners.kubernetes.imagePullSecrets[0].name=runner-creds",
+        "--set",
+        "managedRunners.kubernetes.imagePullPolicy=IfNotPresent"
       ]
     }
   ];
@@ -458,10 +479,15 @@ function socketMatrix(): MatrixPoint[] {
       for (const dep of bool) {
         for (const scan of bool) {
           const classArgs = [
-            "--set", `managedIac.enabled=${iac}`,
+            "--set",
+            `managedIac.enabled=${iac}`,
             ...(iac ? ["--set", `managedIac.runnerImage=${IAC_IMAGE}`] : []),
-            ...(dep ? ["--set", "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"] : []),
-            ...(scan ? ["--set", "managedScan.runnerImage=ghcr.io/commanderscp/scp-runner-scan:0.1.0"] : [])
+            ...(dep
+              ? ["--set", "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"]
+              : []),
+            ...(scan
+              ? ["--set", "managedScan.runnerImage=ghcr.io/commanderscp/scp-runner-scan:0.1.0"]
+              : [])
           ];
           const classes = `iac=${iac},dep=${dep},scan=${scan}`;
 
@@ -485,12 +511,18 @@ function socketMatrix(): MatrixPoint[] {
               for (const accept of acceptAxis) {
                 for (const runAsNonRoot of nonRootAxis) {
                   const k8sArgs = [
-                    "--set", "managedRunners.launcher=kubernetes",
-                    "--set", "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
-                    "--set", `managedRunners.kubernetes.namespace=${namespace}`,
-                    "--set", `managedRunners.kubernetes.perRunSecrets=${perRunSecrets}`,
-                    "--set", `managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=${accept}`,
-                    "--set", `managedRunners.kubernetes.runAsNonRoot=${runAsNonRoot}`
+                    "--set",
+                    "managedRunners.launcher=kubernetes",
+                    "--set",
+                    "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+                    "--set",
+                    `managedRunners.kubernetes.namespace=${namespace}`,
+                    "--set",
+                    `managedRunners.kubernetes.perRunSecrets=${perRunSecrets}`,
+                    "--set",
+                    `managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=${accept}`,
+                    "--set",
+                    `managedRunners.kubernetes.runAsNonRoot=${runAsNonRoot}`
                   ];
                   const noClass = !iac && !dep && !scan;
                   const sharedSecretRefusal = namespace === "" && perRunSecrets && !accept;
@@ -515,18 +547,31 @@ function socketMatrix(): MatrixPoint[] {
   for (const role of ["api", "all"]) {
     points.push({
       label: `api.role=${role} docker iac=true`,
-      args: ["--set", `api.role=${role}`, "--set", "managedIac.enabled=true", "--set", `managedIac.runnerImage=${IAC_IMAGE}`],
+      args: [
+        "--set",
+        `api.role=${role}`,
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        `managedIac.runnerImage=${IAC_IMAGE}`
+      ],
       refuses: false
     });
     points.push({
       label: `api.role=${role} kubernetes iac=true`,
       args: [
-        "--set", `api.role=${role}`,
-        "--set", "managedIac.enabled=true",
-        "--set", `managedIac.runnerImage=${IAC_IMAGE}`,
-        "--set", "managedRunners.launcher=kubernetes",
-        "--set", "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
-        "--set", "managedRunners.kubernetes.namespace=scp-runners"
+        "--set",
+        `api.role=${role}`,
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        `managedIac.runnerImage=${IAC_IMAGE}`,
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners"
       ],
       refuses: false
     });
@@ -609,8 +654,14 @@ function verifySocketInvariantMatrix(): void {
   const templateDir = path.join(CHART_DIR, "templates");
   const chartSources = readdirSync(templateDir)
     .filter((f) => f.endsWith(".yaml") || f.endsWith(".tpl"))
-    .map((f) => ({ file: `templates/${f}`, text: readFileSync(path.join(templateDir, f), "utf8") }));
-  chartSources.push({ file: "values.yaml", text: readFileSync(path.join(CHART_DIR, "values.yaml"), "utf8") });
+    .map((f) => ({
+      file: `templates/${f}`,
+      text: readFileSync(path.join(templateDir, f), "utf8")
+    }));
+  chartSources.push({
+    file: "values.yaml",
+    text: readFileSync(path.join(CHART_DIR, "values.yaml"), "utf8")
+  });
   assert(
     chartSources.length > 10,
     `[${label}] the template census read ${chartSources.length} files, which is too few to be the chart — every assertion below would pass on an empty list`
@@ -630,7 +681,10 @@ function verifySocketInvariantMatrix(): void {
     }
     assert(
       !/^\s*hostPath\s*:/m.test(
-        text.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n")
+        text
+          .split("\n")
+          .filter((line) => !/^\s*#/.test(line))
+          .join("\n")
       ),
       `[${label}] deploy/helm/${file} declares a hostPath volume. This chart declares none; the runner workspace is an RWX PersistentVolumeClaim`
     );
@@ -642,10 +696,14 @@ function verifySocketInvariantMatrix(): void {
   for (const setArgs of [
     [] as string[],
     [
-      "--set", "bundledExecutor.argocd.enabled=true",
-      "--set", "bundledExecutor.argoWorkflows.enabled=true",
-      "--set", "bundledExecutor.argoEvents.enabled=true",
-      "--set", "bundledExecutor.gitea.enabled=true"
+      "--set",
+      "bundledExecutor.argocd.enabled=true",
+      "--set",
+      "bundledExecutor.argoWorkflows.enabled=true",
+      "--set",
+      "bundledExecutor.argoEvents.enabled=true",
+      "--set",
+      "bundledExecutor.gitea.enabled=true"
     ]
   ]) {
     const bundledRaw = renderRaw(BUNDLED_CHART_DIR, "verify-socket-bundled", setArgs);

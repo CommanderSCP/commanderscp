@@ -208,8 +208,9 @@ describe("no unit suite runs on a per-test deadline nobody chose", () => {
     const tracked = trackedFiles().filter(
       (p) => /vitest\.[a-z]+\.config\.ts$/.test(p) && !p.endsWith("vitest.config.ts")
     );
-    expect(tracked.slice().sort(), "a new non-unit vitest config appeared — add it to NON_UNIT_CONFIGS").toStrictEqual(
-      NON_UNIT_CONFIGS.slice().sort()
-    );
+    expect(
+      tracked.slice().sort(),
+      "a new non-unit vitest config appeared — add it to NON_UNIT_CONFIGS"
+    ).toStrictEqual(NON_UNIT_CONFIGS.slice().sort());
   });
 });

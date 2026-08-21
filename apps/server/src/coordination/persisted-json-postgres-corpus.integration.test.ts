@@ -2,7 +2,11 @@ import { and, eq } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ADVERSARIAL_ALL } from "@scp/runner-launcher";
-import { createTestOrg, listenTestServer, type ListeningTestServer } from "../test-support/harness.js";
+import {
+  createTestOrg,
+  listenTestServer,
+  type ListeningTestServer
+} from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { changePlans, changeWaveTargets, changeWaves } from "../db/schema.js";
 import { markWaveTargetTriggered, updateWaveTargetObserved } from "./wave-targets-repo.js";
@@ -155,7 +159,9 @@ describe("M23.1f clause 4: the whole hostile corpus, through the repository, int
       if (value === undefined) unserialisable += 1;
     }
 
-    expect(refused.slice(0, 10), "a bounded shape was refused by a real PostgreSQL").toStrictEqual([]);
+    expect(refused.slice(0, 10), "a bounded shape was refused by a real PostgreSQL").toStrictEqual(
+      []
+    );
     // NON-VACUITY: the loop really wrote, and the last write really landed.
     expect(written).toBe(ADVERSARIAL_ALL.length);
     const row = await readRow();
@@ -257,7 +263,10 @@ describe("M23.1f clause 4: the whole hostile corpus, through the repository, int
     } catch {
       rawRefused = true;
     }
-    expect(rawRefused, "a raw NUL-carrying value was ACCEPTED — this is not the encoding this bound was built against").toBe(true);
+    expect(
+      rawRefused,
+      "a raw NUL-carrying value was ACCEPTED — this is not the encoding this bound was built against"
+    ).toBe(true);
 
     await withTenantTx(server.deps.db, orgId, async (tx) => {
       await updateWaveTargetObserved(tx, orgId, targetId, "observing", nul.value as never);
