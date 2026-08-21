@@ -1091,8 +1091,15 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
        **AND THE FIX MADE THE GRAPH HEAVIER, WHICH IS RECORDED RATHER THAN LEFT TO BE REDISCOVERED.**
        M23.6's 276-point socket matrix is one `helm` process per point, and it starved the graph:
        `@scp/plugin-managed-scan`'s `scanner-containment` test, **390 ms in isolation**, timed out at
-       **49,061 ms** once in three runs. The matrix was re-factored to 156 points (see M23.6 clause 6)
-       and the same suite has been green since.
+       **49,061 ms** once in three runs. The matrix was re-factored to 156 points (see M23.6 clause 6).
+
+       **THE COUNTER-MEASUREMENT, because a fix for a flake is a claim about a rate.** On the finished
+       tree, with the kind cluster torn down so the load profile is the one the original 23 runs had:
+       **12 consecutive `pnpm -w test` runs green, zero timeouts of any kind** — against 5 failures
+       in 23 before. That is a rate measured on this machine under this load; the *mechanism* (a
+       heavy test on an implicit 5,000 ms budget with 1.4x headroom, under a 109-task graph) is
+       machine-independent, the rate is not, which is why the gate is the deliverable and not the
+       number.
 
     **WHAT PASS 14 FOUND, and both were live on main-bound code.**
 
