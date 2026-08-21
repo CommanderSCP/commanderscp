@@ -44,9 +44,13 @@ these are the gates rather than a summary of them:
   plans their cluster's RBAC from prose and that paragraph was wrong for a full milestone.
 
   AND THE CLAUSE IS ABOUT THE CHART, NOT ABOUT THIS ROLE — which is the correction the sentence above
-  needed and did not have. A diff can only speak for the object it is handed; the first version of
-  this paragraph was true of these `rules` while a real authorizer answered `delete nodes: yes`, a
-  question nothing had asked. `helm-verify` now resolves EVERY RoleBinding against EVERY Role in each
+  needed and did not have. A diff can only speak for the object it is handed, and the first version of
+  this paragraph spoke for these `rules` alone: the two bundled-backend autowire Roles, which this
+  chart renders into the BACKENDS' namespaces, were covered by nothing at all, and no assertion
+  anywhere forbade a ClusterRole. (A `delete nodes: yes` was reported against this identity and does
+  not reproduce: asked with `--as` the runner ServiceAccount it is `no`; the `yes` is the harness
+  kubeconfig's, i.e. cluster-admin. The gap was real; that particular reading was not.)
+  `helm-verify` now resolves EVERY RoleBinding against EVERY Role in each
   of the 162 renders, sums the grant per ServiceAccount identity, and holds each of the three
   identities this chart has — the workload account and the two bundled-backend autowire hooks, whose
   Roles live in a different namespace — to a pinned total. NO ClusterRole and NO ClusterRoleBinding,
