@@ -1,5 +1,8 @@
 import { tmpdir } from "node:os";
-import type { KubernetesLauncherSettings } from "@scp/runner-launcher";
+import type {
+  KubernetesLauncherSettings,
+  KubernetesRunnerPodConventions
+} from "@scp/runner-launcher";
 import { join } from "node:path";
 import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
 import { v7 as uuidv7 } from "uuid";
@@ -649,6 +652,134 @@ function managedRunnerLauncherKind(): "docker" | "kubernetes" {
  * incomplete, so the resolver's named refusal is what an operator sees rather than a half-built
  * manifest.
  */
+/**
+ * THE DEPLOYMENT'S POD CONVENTIONS FOR THE RUNNER JOB (M23.5) — parsed into a CLOSED shape here,
+ * never handed through as operator JSON.
+ *
+ * THE CENSUS, NOT THE TWO FIELDS THAT WERE REPORTED. `deploy/helm` creates six pods. Five are Helm
+ * templates and every one of them sets `.Values.imagePullSecrets`, `.Values.image.pullPolicy` and a
+ * `resources` block, because a human wrote the same lines into each. The sixth — the runner Job — is
+ * built by `jobManifest()` from settings that described a namespace, a workspace and two booleans and
+ * nothing about the pod, so it inherited NONE of them. The missing thing was the channel; this is it.
+ *
+ * WHY IT IS PARSED RATHER THAN PASSED. These strings land verbatim inside a pod spec the worker
+ * POSTs with its own service-account token — the same reason `workspaceVolume` below is a closed
+ * union built here instead of operator JSON. The distinction that makes `resources` acceptable where
+ * a raw `volumes[]` would not be: a ResourceRequirements is a flat map of validated resource names to
+ * validated quantities, naming no path, no object and no host. The worst a malformed one can do is
+ * make the pod unschedulable.
+ *
+ * AND A MALFORMED VALUE THROWS RATHER THAN BEING DROPPED. A silently-dropped `imagePullSecret` is
+ * `ErrImagePull` minutes into a promotion with nothing anywhere naming the cause — which is the exact
+ * failure this whole block exists to end. The chart cannot produce one (it renders these from typed
+ * values); a hand-rolled deployment can, and it gets the variable name and the offending value.
+ */
+const DNS_1123_SUBDOMAIN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+/** A Kubernetes resource NAME: `cpu`, `memory`, `ephemeral-storage`, `nvidia.com/gpu`. */
+const K8S_RESOURCE_NAME = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(\/[a-z0-9]([-a-z0-9.]*[a-z0-9])?)?$/;
+/** A Kubernetes QUANTITY: `250m`, `1`, `512Mi`, `1.5`, `2Gi`, `1e3`. Deliberately narrow — anything
+ *  this does not match is refused rather than sent to the API server to be rejected there. */
+const K8S_QUANTITY = /^[+-]?([0-9.]+)([eEinumkKMGTP]*[0-9]*)$/;
+
+const RUNNER_PULL_POLICIES = ["Always", "IfNotPresent", "Never"] as const;
+
+function refuseRunnerPodConvention(envVar: string, detail: string): never {
+  throw new Error(
+    `${envVar} is not a valid value for the Kubernetes runner launcher: ${detail}. ` +
+      `This variable lands verbatim in the pod spec of every managed run, so it is refused here ` +
+      `rather than dropped — a dropped pull secret is an ErrImagePull minutes into a promotion ` +
+      `with nothing naming the cause.`
+  );
+}
+
+function managedRunnerPodConventions(): KubernetesRunnerPodConventions | undefined {
+  const out: {
+    imagePullSecrets?: string[];
+    imagePullPolicy?: (typeof RUNNER_PULL_POLICIES)[number];
+    resources?: { requests?: Record<string, string>; limits?: Record<string, string> };
+  } = {};
+
+  const secretsRaw = process.env.SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS?.trim();
+  if (secretsRaw) {
+    const names = secretsRaw
+      .split(",")
+      .map((n) => n.trim())
+      .filter((n) => n.length > 0);
+    for (const name of names) {
+      if (name.length > 253 || !DNS_1123_SUBDOMAIN.test(name)) {
+        refuseRunnerPodConvention(
+          "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS",
+          `${JSON.stringify(name)} is not a Secret name (RFC 1123 subdomain, <=253 chars)`
+        );
+      }
+    }
+    if (names.length > 0) out.imagePullSecrets = names;
+  }
+
+  const policy = process.env.SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY?.trim();
+  if (policy) {
+    if (!(RUNNER_PULL_POLICIES as readonly string[]).includes(policy)) {
+      refuseRunnerPodConvention(
+        "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY",
+        `${JSON.stringify(policy)} is not one of ${RUNNER_PULL_POLICIES.join("|")}`
+      );
+    }
+    out.imagePullPolicy = policy as (typeof RUNNER_PULL_POLICIES)[number];
+  }
+
+  const resourcesRaw = process.env.SCP_MANAGED_RUNNER_K8S_RESOURCES?.trim();
+  if (resourcesRaw && resourcesRaw !== "{}" && resourcesRaw !== "null") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(resourcesRaw);
+    } catch {
+      refuseRunnerPodConvention("SCP_MANAGED_RUNNER_K8S_RESOURCES", "not valid JSON");
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      refuseRunnerPodConvention("SCP_MANAGED_RUNNER_K8S_RESOURCES", "expected a JSON object");
+    }
+    const resources: { requests?: Record<string, string>; limits?: Record<string, string> } = {};
+    for (const [side, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (side !== "requests" && side !== "limits") {
+        refuseRunnerPodConvention(
+          "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+          `unknown key ${JSON.stringify(side)} — only "requests" and "limits" are accepted`
+        );
+      }
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        refuseRunnerPodConvention(
+          "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+          `${side} must be a flat object`
+        );
+      }
+      const sideOut: Record<string, string> = {};
+      for (const [resource, quantity] of Object.entries(value as Record<string, unknown>)) {
+        if (!K8S_RESOURCE_NAME.test(resource)) {
+          refuseRunnerPodConvention(
+            "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+            `${JSON.stringify(resource)} is not a Kubernetes resource name`
+          );
+        }
+        // A YAML `cpu: 1` arrives as a NUMBER through `toJson`, and that is the common case rather
+        // than an edge one — `values.yaml`'s own api/worker blocks write `cpu: "1"` quoted for
+        // exactly this reason, and an operator who forgets the quotes must not be refused.
+        const q = typeof quantity === "number" ? String(quantity) : quantity;
+        if (typeof q !== "string" || !K8S_QUANTITY.test(q)) {
+          refuseRunnerPodConvention(
+            "SCP_MANAGED_RUNNER_K8S_RESOURCES",
+            `${resource}=${JSON.stringify(quantity)} is not a Kubernetes quantity`
+          );
+        }
+        sideOut[resource] = q;
+      }
+      if (Object.keys(sideOut).length > 0) resources[side] = sideOut;
+    }
+    if (Object.keys(resources).length > 0) out.resources = resources;
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefined {
   if (managedRunnerLauncherKind() !== "kubernetes") return undefined;
   const namespace = process.env.SCP_MANAGED_RUNNER_K8S_NAMESPACE?.trim();
@@ -662,6 +793,7 @@ function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefin
       ? ({ kind: "hostPath", path: hostPath } as const)
       : undefined;
   if (!workspaceVolume) return undefined;
+  const pod = managedRunnerPodConventions();
   return {
     namespace,
     workspaceRoot,
@@ -683,6 +815,9 @@ function managedRunnerKubernetesSettings(): KubernetesLauncherSettings | undefin
     // before its entrypoint. Kept as a knob so an operator who rebuilds the images non-root can
     // harden it without a code change.
     runAsNonRoot: process.env.SCP_MANAGED_RUNNER_K8S_RUN_AS_NON_ROOT?.trim() === "true",
+    // THE POD CONVENTIONS EVERY OTHER POD IN THIS CHART INHERITS (M23.5). Absent when the deployment
+    // states none, so a launch is byte-identical to every one before it.
+    ...(pod ? { pod } : {}),
     ...(process.env.SCP_MANAGED_RUNNER_K8S_API_BASE?.trim()
       ? { apiBase: process.env.SCP_MANAGED_RUNNER_K8S_API_BASE.trim() }
       : {})

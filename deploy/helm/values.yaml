@@ -350,6 +350,51 @@ managedRunners:
     # Set it only if you rebuild the runner images to run as a non-root uid.
     runAsNonRoot: false
 
+    # -----------------------------------------------------------------------------------------
+    # THE POD CONVENTIONS THE RUNNER JOB INHERITS (M23.5)
+    #
+    # This chart creates SIX pods. Five of them are templates in this repo and every one carries
+    # `imagePullSecrets`, `image.pullPolicy` and a `resources` block. The sixth — the runner Job —
+    # is built by `jobManifest()` in `packages/runner-launcher` at RUN time, from settings that
+    # described a namespace, a workspace and two booleans and nothing about the pod. So it inherited
+    # none of them. These three values are the channel that was missing.
+    # -----------------------------------------------------------------------------------------
+
+    # Secret names for pulling the runner images, in `.Values.imagePullSecrets`' own `[{name: x}]`
+    # shape. EMPTY MEANS INHERIT `.Values.imagePullSecrets`, which is what every other pod here uses
+    # — so a private registry (the norm for self-hosted, and mandatory behind the per-outpost Harbor
+    # SCP itself designs) works without a second setting. Set it explicitly only when the runner
+    # images live somewhere the scpd image does not.
+    imagePullSecrets: []
+
+    # `imagePullPolicy` for the runner container. EMPTY MEANS INHERIT `.Values.image.pullPolicy`.
+    #
+    # NOT COSMETIC, AND NOT DEFAULTABLE TO NOTHING: an UNSET imagePullPolicy is `Always` for any
+    # `:latest` tag and `IfNotPresent` otherwise. Measured on a real cluster with the image already
+    # loaded on the node, unset produced `spawn-failed, code=ErrImagePull — failed to pull and unpack
+    # image ...:latest` while the identical image ran fine under `docker create`. That is charter
+    # principle 5 ("no runtime network calls to the outside world") broken in an air-gapped install,
+    # by an omission. Pin runner images by digest and this is moot; the inherited `IfNotPresent` is
+    # what makes an air-gapped node work either way.
+    imagePullPolicy: ""
+
+    # `resources` for the runner container. EMPTY BY DEFAULT, AND THE DEFAULT IS A JUDGEMENT RATHER
+    # THAN AN OVERSIGHT: the right memory limit for `tofu apply` against an unknown estate or for
+    # Trivy against an unknown image is not something this chart can know, and a guessed limit
+    # OOMKills real runs — a worse failure than having none, because it looks like a runner bug.
+    #
+    # WHEN YOU MUST SET IT: a namespace with a compute ResourceQuota and no defaulting LimitRange
+    # REJECTS a pod that declares no limits (`must specify limits.memory for: runner`). No pod is
+    # then ever created — measured — and a dedicated runner namespace, which the `namespace` value
+    # above recommends, is exactly where a platform team puts such a quota. Since M23.5 that failure
+    # names itself instead of being reported as an exhausted run budget, but the fix is this value.
+    #
+    # Shape: the Kubernetes `resources` block, e.g.
+    #   resources:
+    #     requests: { cpu: 250m, memory: 512Mi }
+    #     limits: { cpu: "2", memory: 4Gi }
+    resources: {}
+
 # -------------------------------------------------------------------------------------------
 # Managed-scan vulnerability-DB cache (M13.3b-ii — ADR-0020, proposal §13.3b). OPTIONAL, OFF BY
 # DEFAULT: with it off the promotion scan step's runner uses the DB baked into the scp-runner-scan

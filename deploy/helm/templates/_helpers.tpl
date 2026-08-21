@@ -331,6 +331,29 @@ since those three differ between the migrations Job and the api/worker Deploymen
   value: {{ .Values.managedRunners.kubernetes.perRunSecrets | quote }}
 - name: SCP_MANAGED_RUNNER_K8S_RUN_AS_NON_ROOT
   value: {{ .Values.managedRunners.kubernetes.runAsNonRoot | quote }}
+{{- /* M23.5 — THE POD CONVENTIONS EVERY OTHER POD IN THIS CHART INHERITS, carried to the one pod
+       Helm does not render. `jobManifest()` builds the runner Job at run time, so the only way a
+       deployment-wide convention reaches it is through these variables. Each renders only when it
+       has a value, so a deployment that states none produces a byte-identical launch.
+
+       THE TWO DEFAULTS ARE INHERITANCES, not new opinions: an empty `imagePullSecrets` takes
+       `.Values.imagePullSecrets` and an empty `imagePullPolicy` takes `.Values.image.pullPolicy`,
+       which are exactly what the api, worker, migrations and both auto-wire pods use. `resources`
+       has no chart-wide default to inherit and is therefore empty unless set — see values.yaml. */}}
+{{- $rk := .Values.managedRunners.kubernetes -}}
+{{- $pullSecrets := $rk.imagePullSecrets | default .Values.imagePullSecrets -}}
+{{- if $pullSecrets }}
+{{- $names := list -}}
+{{- range $pullSecrets }}{{- $names = append $names .name -}}{{- end }}
+- name: SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS
+  value: {{ join "," (compact $names) | quote }}
+{{- end }}
+- name: SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY
+  value: {{ $rk.imagePullPolicy | default .Values.image.pullPolicy | quote }}
+{{- if $rk.resources }}
+- name: SCP_MANAGED_RUNNER_K8S_RESOURCES
+  value: {{ $rk.resources | toJson | quote }}
+{{- end }}
 {{- /* Node's global fetch cannot take a custom CA without an undici Agent, so the in-cluster API
        server's certificate is trusted through this variable — the SAME mechanism the two shipped
        in-cluster callers (bundled-{argocd,gitea}-autowire-bin.ts) already rely on, and the reason

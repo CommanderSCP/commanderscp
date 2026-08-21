@@ -278,6 +278,52 @@ export type KubernetesWorkspaceVolume =
    */
   | { readonly kind: "hostPath"; readonly path: string };
 
+/**
+ * THE POD CONVENTIONS THIS DEPLOYMENT APPLIES TO EVERY OTHER POD IT CREATES, carried to the one it
+ * does NOT render (M23.5).
+ *
+ * WHY THIS BLOCK EXISTS AT ALL, AND WHY IT IS A BLOCK RATHER THAN THREE MORE SCALARS. `deploy/helm`
+ * creates six pods. Five of them are Helm templates and inherit the deployment's conventions
+ * (`.Values.imagePullSecrets`, `.Values.image.pullPolicy`, a `resources` block) because a human wrote
+ * the same six lines into each. The sixth is built HERE, at runtime, from a settings object that
+ * carried a namespace, a workspace root, a volume, and two booleans — nothing about the POD. So it
+ * inherited nothing, and not for the two fields that were reported but for ALL of them: the missing
+ * channel is the defect, and adding one field to it would leave the next convention exactly as
+ * unreachable as these were.
+ *
+ * WHAT THAT COST, MEASURED ON A REAL CLUSTER, image already loaded on the node and tagged `:latest`:
+ * `spawn-failed, code=ErrImagePull — failed to pull and unpack image docker.io/library/
+ * scp-probe-runner:latest`. An unset `imagePullPolicy` defaults to `Always` for a `:latest` tag, and
+ * the identical image runs fine under `docker create`. That is charter principle 5 — "no runtime
+ * network calls to the outside world" — broken in production, by an omission. And with no
+ * `imagePullSecrets` a runner image in a private registry cannot be pulled at all, which is the norm
+ * for self-hosted and mandatory behind the per-outpost Harbor SCP itself designs, while the worker
+ * pod pulling `scpd` from that same registry works.
+ *
+ * IT IS OPERATOR-SUPPLIED DATA THAT LANDS VERBATIM IN A POD SPEC, so it is parsed into a CLOSED
+ * shape exactly like {@link KubernetesWorkspaceVolume} — see `managedRunnerKubernetesSettings()` in
+ * `apps/server`, which is where the strings are validated. The distinction that makes `resources`
+ * acceptable where a raw volume would not be: a `ResourceRequirements` is a flat map of validated
+ * resource names to validated quantities. It names no path, no object and no host, so the worst a
+ * malformed one can do is make the pod unschedulable — where an arbitrary `volumes[]` entry is a
+ * `hostPath: /` away from reading the node.
+ */
+export interface KubernetesRunnerPodConventions {
+  /** `spec.imagePullSecrets`, by NAME. The chart inherits `.Values.imagePullSecrets`. */
+  readonly imagePullSecrets?: readonly string[];
+  /** The runner container's `imagePullPolicy`. The chart inherits `.Values.image.pullPolicy`
+   *  (`IfNotPresent`), which is the value that keeps an air-gapped node from reaching a registry. */
+  readonly imagePullPolicy?: "Always" | "IfNotPresent" | "Never";
+  /** The runner container's `resources`. NO CHART DEFAULT — see `values.yaml` for why guessing a
+   *  memory limit for `tofu`/Trivy is worse than having none — but a namespace with a compute
+   *  ResourceQuota and no defaulting LimitRange REJECTS a pod that omits it, and a dedicated runner
+   *  namespace (which this chart recommends) is exactly where a platform team puts one. */
+  readonly resources?: {
+    readonly requests?: Readonly<Record<string, string>>;
+    readonly limits?: Readonly<Record<string, string>>;
+  };
+}
+
 export interface KubernetesRunnerLauncherConfig {
   /** The namespace every Job, Secret and pod read lives in. Never derived from a tenant value. */
   readonly namespace: string;
@@ -343,6 +389,9 @@ export interface KubernetesRunnerLauncherConfig {
    * drives exactly that failure against a real cluster and asserts it lands as `spawn-failed`.
    */
   readonly runAsNonRoot?: boolean;
+  /** THE DEPLOYMENT'S POD CONVENTIONS — see {@link KubernetesRunnerPodConventions}. Absent means
+   *  "this deployment stated none", which is byte-identical to every launch before M23.5. */
+  readonly pod?: KubernetesRunnerPodConventions;
   /** `ttlSecondsAfterFinished` on the Job. A BACKSTOP, never the cleanup: teardown deletes the Job. */
   readonly ttlSecondsAfterFinished?: number;
   /** How often `start` asks whether the pod is terminal. */
@@ -1055,7 +1104,8 @@ export function createKubernetesRunnerLauncher(
               slots,
               workspaceVolume: config.workspaceVolume,
               runAsNonRoot: config.runAsNonRoot === true,
-              ttlSecondsAfterFinished: config.ttlSecondsAfterFinished ?? KUBERNETES_JOB_TTL_SECONDS
+              ttlSecondsAfterFinished: config.ttlSecondsAfterFinished ?? KUBERNETES_JOB_TTL_SECONDS,
+              ...(config.pod ? { pod: config.pod } : {})
             })
           },
           (res) => (res.status >= 200 && res.status < 300) || res.status === 409
@@ -1391,6 +1441,9 @@ export function jobManifest(
     workspaceVolume: KubernetesWorkspaceVolume;
     runAsNonRoot: boolean;
     ttlSecondsAfterFinished: number;
+    /** THE DEPLOYMENT'S POD CONVENTIONS (M23.5). Every field is optional and an absent one emits
+     *  nothing, so the golden for a deployment that states none is unchanged. */
+    pod?: KubernetesRunnerPodConventions;
   }
 ): Record<string, unknown> {
   const labels: Record<string, string> = {
@@ -1423,6 +1476,8 @@ export function jobManifest(
           hostPath: { path: opts.workspaceVolume.path, type: "DirectoryOrCreate" }
         };
 
+  const pod = opts.pod ?? {};
+
   return {
     apiVersion: "batch/v1",
     kind: "Job",
@@ -1444,6 +1499,14 @@ export function jobManifest(
         metadata: { labels },
         spec: {
           restartPolicy: "Never",
+          // THE DEPLOYMENT'S OWN PULL SECRETS (M23.5). Every other pod this chart creates carries
+          // `.Values.imagePullSecrets`; this one carried none, so a runner image in a private
+          // registry could not be pulled at all while the worker pulling `scpd` from that SAME
+          // registry worked. Omitted entirely when the deployment states none, so nothing changes
+          // for a public-registry install.
+          ...(pod.imagePullSecrets && pod.imagePullSecrets.length > 0
+            ? { imagePullSecrets: pod.imagePullSecrets.map((name) => ({ name })) }
+            : {}),
           // THE RUNNER NEVER TALKS TO THE API SERVER. The orchestrator does; the runner is handed
           // bytes and an argv. Same posture as the reference shape in `runner-iac.yaml`.
           automountServiceAccountToken: false,
@@ -1455,6 +1518,12 @@ export function jobManifest(
             {
               name: RUNNER_CONTAINER_NAME,
               image: spec.image,
+              // AN UNSET `imagePullPolicy` IS `Always` FOR A `:latest` TAG, and that is charter
+              // principle 5 broken in production: measured on a real cluster with the image already
+              // loaded on the node, the run failed `spawn-failed, code=ErrImagePull` while the
+              // identical image ran fine under `docker create`. The chart passes
+              // `.Values.image.pullPolicy` here, the same value its other five pods use.
+              ...(pod.imagePullPolicy ? { imagePullPolicy: pod.imagePullPolicy } : {}),
               args: spec.operands,
               env: spec.env.map((entry) => {
                 const eq = entry.indexOf("=");
@@ -1468,6 +1537,10 @@ export function jobManifest(
                 readOnlyRootFilesystem: false,
                 capabilities: { drop: ["ALL"] }
               },
+              // A ResourceQuota REQUIRING compute limits REJECTS a pod that declares none — no pod
+              // is ever created, so there is nothing for `kubernetesTermination` to read. See
+              // `values.yaml` for why the chart ships no default here and the honest failure mode.
+              ...(pod.resources ? { resources: pod.resources } : {}),
               volumeMounts
             }
           ],
@@ -1578,6 +1651,10 @@ export const resolveRunnerLauncher: ResolveRunnerLauncher = (config: RunnerLaunc
     workspaceVolume: k8s.workspaceVolume,
     perRunSecrets: k8s.perRunSecrets === true,
     runAsNonRoot: k8s.runAsNonRoot === true,
+    // M23.5 — THE DEPLOYMENT'S POD CONVENTIONS. Carried through the resolver like every other
+    // setting, so the ONE selection path (which `promotion-scan-step.ts` and all three bindings
+    // share) is also the one place a convention can be dropped.
+    ...(k8s.pod ? { pod: k8s.pod } : {}),
     io:
       k8s.io ??
       createFetchKubernetesIo({

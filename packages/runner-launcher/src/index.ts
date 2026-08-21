@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { debuglog, promisify } from "node:util";
 import type {
   KubernetesRunnerIo,
+  KubernetesRunnerPodConventions,
   KubernetesWorkspaceVolume
 } from "./kubernetes-adapter.js";
 
@@ -519,6 +520,10 @@ export interface KubernetesLauncherSettings {
   /** Pod `securityContext.runAsNonRoot`. Off by default — none of the three runner images has a
    *  `USER` line, so `true` makes every managed run fail before its entrypoint. */
   runAsNonRoot?: boolean;
+  /** THE DEPLOYMENT'S POD CONVENTIONS (M23.5) — the block that carries what every OTHER pod this
+   *  chart creates inherits from `.Values` and this one, built at runtime rather than rendered by
+   *  Helm, inherited nothing of. See {@link KubernetesRunnerPodConventions}. */
+  pod?: KubernetesRunnerPodConventions;
   /** API server base. Defaults to `https://kubernetes.default.svc`. */
   apiBase?: string;
   /** THE HARNESS's SEAM, and it is `undefined` in production by construction: nothing injects it
@@ -3899,5 +3904,6 @@ export type {
   KubernetesApiResponse,
   KubernetesRunnerIo,
   KubernetesRunnerLauncherConfig,
+  KubernetesRunnerPodConventions,
   KubernetesWorkspaceVolume
 } from "./kubernetes-adapter.js";

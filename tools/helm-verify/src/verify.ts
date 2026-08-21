@@ -2094,8 +2094,138 @@ function main(): void {
       }
     }
 
+    // (6) THE POD CONVENTIONS THE RUNNER JOB INHERITS (M23.5).
+    //
+    //     THE COUNT IS THE FINDING. This chart creates SIX pods; five are templates in this repo and
+    //     every one of them carries `.Values.imagePullSecrets`, `.Values.image.pullPolicy` and a
+    //     `resources` block. The sixth is built by `jobManifest()` at run time from
+    //     `managedRunnerSettings()`, which described a namespace, a workspace and two booleans — so
+    //     it inherited none of them, and not just the two that were reported. Measured on a real
+    //     cluster with the image already on the node and tagged `:latest`: `spawn-failed,
+    //     code=ErrImagePull`, while the identical image ran fine under `docker create`. An unset
+    //     `imagePullPolicy` is `Always` for `:latest` — charter principle 5, broken in production.
+    //
+    //     ASSERTED ON THE CHART SIDE BECAUSE THAT IS THE HALF NO UNIT TEST CAN SEE. The golden pins
+    //     what `jobManifest` does with these values; `managed-runner-selection.test.ts` pins how the
+    //     server parses them. Neither can answer whether a `helm install` ever emits one.
+    {
+      const runnerEnv = (docs: K8sDoc[], name: string): string | undefined => {
+        const worker = docs.find(
+          (d) => d.kind === "Deployment" && String(d.metadata?.name ?? "").endsWith("-worker")
+        );
+        for (const c of podSpecOf(worker ?? ({} as K8sDoc))?.containers ?? []) {
+          const found = c.env?.find((e) => e.name === name);
+          if (found) return found.value ?? "";
+        }
+        return undefined;
+      };
+      const base = [
+        "--set",
+        "managedRunners.launcher=kubernetes",
+        "--set",
+        "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+      ];
+
+      // (6a) THE PULL POLICY IS ALWAYS STATED, and it is the chart's own `IfNotPresent`. An ABSENT
+      //      variable is the defect: Kubernetes then defaults it to `Always` for a `:latest` tag and
+      //      an air-gapped node reaches for a registry it cannot see.
+      assert(
+        runnerEnv(k8s, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY") === "IfNotPresent",
+        `[${label}] the runner Job's imagePullPolicy is not rendered from the chart's own image.pullPolicy. Unset means Kubernetes defaults it to Always for a :latest tag, which is charter principle 5 broken in an air-gapped install`
+      );
+      const explicitPolicy = renderChart("verify-m23-pullpolicy", [
+        ...base,
+        "--set",
+        "managedRunners.kubernetes.imagePullPolicy=Never"
+      ]);
+      assert(
+        runnerEnv(explicitPolicy, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY") === "Never",
+        `[${label}] managedRunners.kubernetes.imagePullPolicy does not override the inherited value`
+      );
+
+      // (6b) PULL SECRETS ARE INHERITED FROM THE DEPLOYMENT-WIDE VALUE, with no second setting. A
+      //      runner image in a private registry is the norm for self-hosted and mandatory behind the
+      //      per-outpost Harbor SCP itself designs; the worker pulling `scpd` from that same
+      //      registry already worked, and the runner Job could not be pulled at all.
+      assert(
+        runnerEnv(k8s, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS") === undefined,
+        `[${label}] a render with NO imagePullSecrets still emits SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS — an empty statement is not the same as no statement`
+      );
+      const inherited = renderChart("verify-m23-pullsecrets", [
+        ...base,
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds",
+        "--set",
+        "imagePullSecrets[1].name=harbor-creds"
+      ]);
+      assert(
+        runnerEnv(inherited, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS") ===
+          "ghcr-creds,harbor-creds",
+        `[${label}] the runner Job does not inherit .Values.imagePullSecrets, so a runner image in a private registry cannot be pulled while the worker pulling scpd from the SAME registry can`
+      );
+      const overridden = renderChart("verify-m23-pullsecrets-override", [
+        ...base,
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds",
+        "--set",
+        "managedRunners.kubernetes.imagePullSecrets[0].name=runner-only-creds"
+      ]);
+      assert(
+        runnerEnv(overridden, "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS") === "runner-only-creds",
+        `[${label}] managedRunners.kubernetes.imagePullSecrets does not override the inherited list — the runner images may live somewhere the scpd image does not`
+      );
+
+      // (6c) `resources` — ABSENT unless set, and verbatim JSON when it is. The chart ships no
+      //      default deliberately (a guessed memory limit OOMKills a real `tofu apply`, which looks
+      //      like a runner bug); what it must not do is silently drop the value an operator DID set,
+      //      because a namespace with a compute ResourceQuota and no defaulting LimitRange rejects a
+      //      pod that declares none and no pod is then ever created.
+      assert(
+        runnerEnv(k8s, "SCP_MANAGED_RUNNER_K8S_RESOURCES") === undefined,
+        `[${label}] the default render emits SCP_MANAGED_RUNNER_K8S_RESOURCES for an empty resources block`
+      );
+      const withResources = renderChart("verify-m23-resources", [
+        ...base,
+        "--set",
+        "managedRunners.kubernetes.resources.limits.memory=4Gi",
+        "--set",
+        "managedRunners.kubernetes.resources.requests.cpu=250m"
+      ]);
+      const rendered = runnerEnv(withResources, "SCP_MANAGED_RUNNER_K8S_RESOURCES");
+      assert(
+        rendered !== undefined &&
+          (JSON.parse(rendered) as { limits?: { memory?: string } }).limits?.memory === "4Gi",
+        `[${label}] managedRunners.kubernetes.resources does not reach the runner Job (got ${rendered ?? "<absent>"}). A namespace with a compute ResourceQuota rejects a pod that declares no limits, and no pod is then ever created`
+      );
+
+      // (6d) AND NONE OF IT ON A DOCKER DEPLOYMENT. These three describe a pod spec; a compose or VM
+      //      install builds an argv. Same rule as every other Kubernetes variable here.
+      const dockerDocs = renderChart("verify-m23-docker-pod", [
+        "--set",
+        "managedIac.enabled=true",
+        "--set",
+        "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+        "--set",
+        "imagePullSecrets[0].name=ghcr-creds"
+      ]);
+      for (const key of [
+        "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_POLICY",
+        "SCP_MANAGED_RUNNER_K8S_IMAGE_PULL_SECRETS",
+        "SCP_MANAGED_RUNNER_K8S_RESOURCES"
+      ]) {
+        assert(
+          runnerEnv(dockerDocs, key) === undefined,
+          `[${label}] a DOCKER-launcher deployment carries ${key} — a docker deployment must carry no Kubernetes surface at all`
+        );
+      }
+    }
+
     console.log(
-      "  default render unchanged; selected render carries token + egress + volume + settings; the per-run Secret grant is exactly create+delete on secrets, present for all three classes, absent on docker and at the default, and following the runner namespace; both prerequisites refuse at render; every worker-role write path is mounted on BOTH the worker and an api.role=all pod, and on neither at api.role=api"
+      "  default render unchanged; selected render carries token + egress + volume + settings; the per-run Secret grant is exactly create+delete on secrets, present for all three classes, absent on docker and at the default, and following the runner namespace; both prerequisites refuse at render; every worker-role write path is mounted on BOTH the worker and an api.role=all pod, and on neither at api.role=api; the runner Job inherits the deployment pull secrets, pull policy and resources, and none of the three on docker"
     );
   }
 
