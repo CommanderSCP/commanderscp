@@ -1226,7 +1226,11 @@ export function createKubernetesRunnerLauncher(
           // abandonment of a transport that ignored its bound. Both already name the step and the
           // budget; re-wrapping would restate them worse.
           if (cause instanceof RunnerLaunchError) throw cause;
-          const deadlineExceeded = Date.now() >= runDeadlineAt;
+          // THROUGH THE DEADLINE OBJECT — the same instant the refusal uses, asked once. See
+          // {@link RunDeadline.spent}: a raw comparison here disagreed with the timer that had just
+          // fired, by up to a millisecond, and turned this adapter's own budget kill into a verdict
+          // about the tenant's runner.
+          const deadlineExceeded = runDeadline.spent();
           fail(
             req.step,
             argv,
@@ -1598,9 +1602,10 @@ export function createKubernetesRunnerLauncher(
               break;
             }
 
-            const remaining = runDeadlineAt - Date.now();
-            if (remaining <= 0) continue; // let the top of the loop, or `api()`, give the verdict
-            await sleep(Math.min(pollIntervalMs, remaining));
+            // SAME QUESTION, SAME ANSWER. Sleeping out a remainder too small to issue anything with
+            // only delays the refusal `api()` is about to give.
+            if (runDeadline.spent()) continue; // let `api()` give the verdict
+            await sleep(Math.min(pollIntervalMs, runDeadline.remainingMs()));
           }
 
           const podName = pod?.metadata?.name;

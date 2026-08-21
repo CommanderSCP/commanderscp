@@ -2949,6 +2949,25 @@ export interface RunDeadline {
   /** What is left, possibly <= 0. */
   remainingMs(): number;
   /**
+   * IS THE BUDGET GONE? — the ONE way anything in this package asks that question, and the reason
+   * it is a method rather than a `Date.now() >= deadline.at` at each site.
+   *
+   * THREE SITES ASKED IT RAW AND ALL THREE WERE WRONG THE SAME WAY. A budget kill is a libuv timer;
+   * the deadline is `Date.now()`; the two clocks disagree by up to a millisecond, so a step killed
+   * BY ITS OWN DERIVED TIMEOUT could arrive at its `catch` with `Date.now()` still one millisecond
+   * short of the deadline that timeout came from. The Docker adapter then reported
+   * `deadlineExceeded: false` for a kill that was purely its own budget — `exit-nonzero`/`signalled`
+   * instead of `budget-exhausted`, which is a verdict about the TENANT'S runner for something the
+   * launcher did. Measured: 1 run in 20 of the full launcher suite, and a different arm of
+   * `whole-run-budget.test.ts` each time.
+   *
+   * SO THE ANSWER IS THE SAME ONE {@link spend} REFUSES ON — {@link RUNNER_MIN_STEP_BUDGET_MS} — and
+   * it is defined once. "Enough left to refuse a step on" and "enough left to call this our
+   * deadline" cannot be two different questions: they are the same instant, and asking them with two
+   * expressions is how they came to disagree by a millisecond.
+   */
+  spent(): boolean;
+  /**
    * REFUSE, BOUND, OR ABANDON — the three-way decision every step of every adapter goes through,
    * written once.
    *
@@ -2985,6 +3004,7 @@ export function createRunDeadline(args: {
     runTimeoutMs,
     at,
     remainingMs: () => at - Date.now(),
+    spent: () => at - Date.now() < RUNNER_MIN_STEP_BUDGET_MS,
     async spend(step, argv, work) {
       const remaining = at - Date.now();
       // BELOW {@link RUNNER_MIN_STEP_BUDGET_MS} IS SPENT, and that is not a rounding convenience —
@@ -3672,7 +3692,11 @@ export function createDockerRunnerLauncher(
             stdout?: string;
             stderr?: string;
           };
-          const deadlineExceeded = e.killed === true && Date.now() >= runDeadlineAt;
+          // THROUGH THE DEADLINE OBJECT, NOT A SECOND EXPRESSION FOR THE SAME INSTANT — see
+          // {@link RunDeadline.spent}. `Date.now() >= runDeadlineAt` here reported FALSE for a
+          // `create` this adapter's own derived timeout had just killed, because the killing timer
+          // and this comparison read different clocks.
+          const deadlineExceeded = e.killed === true && runDeadline.spent();
           throw new RunnerLaunchError({
             step,
             file: dockerBinary,

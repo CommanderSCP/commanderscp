@@ -468,6 +468,38 @@ describe("M23.5: `RunDeadline.spend` — the refusal, at a boundary the process 
     expect(launchError.message).toContain("was not issued");
   });
 
+  it("`spent()` AND THE REFUSAL ARE THE SAME INSTANT — one question, not two expressions for it", async () => {
+    // THE SECOND HALF OF THE SAME DEFECT, and the one that produced a verdict about the TENANT for
+    // something the launcher did. Three sites asked "is the budget gone?" with a raw
+    // `Date.now() >= deadline.at` while the kill that lands on it is a libuv timer on another clock;
+    // the Docker adapter's was `e.killed === true && Date.now() >= runDeadlineAt`, and it reported
+    // FALSE for a `create` its own derived timeout had just killed — `exit-nonzero` instead of
+    // `budget-exhausted`. If `spent()` ever answers "no" where `spend()` refuses, they have drifted
+    // apart again.
+    const deadline = createRunDeadline({
+      requestedTimeoutMs: RUNNER_MIN_STEP_BUDGET_MS - 1,
+      file: "docker",
+      redactions: () => []
+    });
+    expect(deadline.spent()).toBe(true);
+    let issued = false;
+    await deadline
+      .spend("start", ["start"], async () => {
+        issued = true;
+      })
+      .catch(() => undefined);
+    expect(issued, "`spent()` said the budget was gone and `spend()` issued the step anyway").toBe(
+      false
+    );
+
+    const live = createRunDeadline({
+      requestedTimeoutMs: 5_000,
+      file: "docker",
+      redactions: () => []
+    });
+    expect(live.spent()).toBe(false);
+  });
+
   it("AND A BUDGET THAT IS COMFORTABLY ABOVE THE MINIMUM IS STILL SPENT — the negative control", async () => {
     // WITHOUT THIS ARM, "refuse everything" passes the one above and no run ever issues a step. The
     // floor is a floor, not a new deadline: the bound handed down is still what remains.
