@@ -210,9 +210,24 @@ async function kubectlIn(namespace: string, ...args: string[]): Promise<string> 
 /** `kubectl auth can-i`, whose ANSWER is its exit status: it exits 1 for "no". Reading the status as
  *  a command failure would report "the check could not run" for the one outcome the check exists to
  *  detect, so the answer is read off stdout and the status is not consulted. */
-async function canI(verb: string, resource: string, sa: string): Promise<string> {
+async function canI(
+  verb: string,
+  resource: string,
+  sa: string,
+  subresource?: string
+): Promise<string> {
   try {
-    return (await kubectl("auth", "can-i", verb, resource, "--as", sa)).trim();
+    return (
+      await kubectl(
+        "auth",
+        "can-i",
+        verb,
+        resource,
+        ...(subresource === undefined ? [] : [`--subresource=${subresource}`]),
+        "--as",
+        sa
+      )
+    ).trim();
   } catch (err) {
     return String((err as { stdout?: string }).stdout ?? "").trim() || "no";
   }
@@ -462,8 +477,7 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
       ["list", "jobs.batch"],
       ["patch", "jobs.batch"],
       ["delete", "jobs.batch"],
-      ["list", "pods"],
-      ["get", "pods/log"]
+      ["list", "pods"]
     ];
     for (const [verb, resource] of checks) {
       expect(
@@ -471,6 +485,20 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `the chart's runner Role does not grant ${verb} on ${resource}`
       ).toBe("yes");
     }
+    /**
+     * `pods/log` IS A SUBRESOURCE AND `can-i get pods/log` DOES NOT ASK ABOUT ONE — a false positive
+     * this test carried until M23.6, found by narrowing the Role. `kubectl auth can-i` reads
+     * `resource/name` as "this verb on the OBJECT NAMED name" (its own usage string says
+     * "verb resource or verb resource/resourceName"), so `get pods/log` was asking whether the
+     * ServiceAccount may GET a pod called "log". The Role at the time granted `get` on `pods`, so it
+     * answered "yes" — for a reason that had nothing to do with reading a log. Splitting `pods` down
+     * to `list` turned that "yes" into a "no" and exposed it. `--subresource=log` is the question
+     * that was meant, and it answers "yes" against the same Role.
+     */
+    expect(
+      await canI("get", "pods", sa, "log"),
+      "the chart's runner Role does not grant `get` on the pods/log SUBRESOURCE, so every run's diagnosis is a 403"
+    ).toBe("yes");
     // AND THE OTHER DIRECTION, AGAINST THE REAL AUTHORIZER (M23.6 clause 5). Every check above is
     // "the answer was yes", and a Role granting `*` on everything answers yes to all of them. These
     // are the verbs the chart USED to grant and the adapter has never issued: `watch` on both
@@ -479,19 +507,22 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
     // gave each resource the other's verbs. `tools/helm-verify` diffs the rendered rules against
     // `kubernetesRunnerRbac()` as a set; this is the same claim asked of a real API server, which is
     // the only thing that can say what the Role MEANS rather than what it says.
-    const narrowness: [string, string][] = [
+    const narrowness: [string, string, string?][] = [
       ["watch", "jobs.batch"],
-      ["watch", "pods"],
-      ["watch", "pods/log"],
-      ["get", "pods"],
-      ["list", "pods/log"],
       ["update", "jobs.batch"],
-      ["deletecollection", "jobs.batch"]
+      ["deletecollection", "jobs.batch"],
+      ["watch", "pods"],
+      // `get` on the pod OBJECT: the adapter only ever lists by label selector.
+      ["get", "pods"],
+      // …and the two halves of the collapse, asked as SUBRESOURCE questions this time.
+      ["list", "pods", "log"],
+      ["watch", "pods", "log"]
     ];
-    for (const [verb, resource] of narrowness) {
+    for (const [verb, resource, subresource] of narrowness) {
+      const what = subresource === undefined ? resource : `${resource}/${subresource}`;
       expect(
-        await canI(verb, resource, sa),
-        `the chart's runner Role grants ${verb} on ${resource}, which this adapter never issues`
+        await canI(verb, resource, sa, subresource),
+        `the chart's runner Role grants ${verb} on ${what}, which this adapter never issues`
       ).toBe("no");
     }
     // THE GRANT THE OWNER TOOK, ASKED FOR BY NAME (M23.4). Two verbs, in the DEFAULT namespace,
