@@ -3319,7 +3319,14 @@ export function createDockerRunnerLauncher(
   const sweepStaleSecretEnvFiles = async (dir: string): Promise<void> => {
     let entries: string[];
     try {
-      entries = await readdir(dir);
+      // BOUNDED, LIKE THE CONTAINER HALF OF THE SAME SWEEP (M23.5 census). A `readdir` of a wedged
+      // mount never settles, and this pass is `void`ed — so it would hold its promise open forever,
+      // invisibly, with nothing ever sweeping a leaked credential file again.
+      entries = await withStepBound({
+        timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+        what: `reap \`readdir ${dir}\``,
+        work: () => readdir(dir)
+      });
     } catch (cause) {
       debug("reap: listing secret-env dir %s failed, skipping this pass: %O", dir, cause);
       return;
@@ -3329,12 +3336,20 @@ export function createDockerRunnerLauncher(
       if (!name.startsWith(SECRET_ENV_FILE_PREFIX)) continue; // not ours — never a candidate
       const path = join(dir, name);
       try {
-        const info = await stat(path);
+        const info = await withStepBound({
+          timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+          what: `reap \`stat ${path}\``,
+          work: () => stat(path)
+        });
         // A LIVE run's file is NEVER this old — see {@link RUNNER_SECRET_ENV_MAX_AGE_MS}. An
         // ambiguous or just-created file is left alone, the same fail-closed direction as a
         // missing/garbled container deadline label.
         if (now - info.mtimeMs < RUNNER_SECRET_ENV_MAX_AGE_MS) continue;
-        await unlink(path);
+        await withStepBound({
+          timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+          what: `reap \`unlink ${path}\``,
+          work: () => unlink(path)
+        });
         debug("reap: swept stale secret-env file %s (age %dms)", path, now - info.mtimeMs);
       } catch (cause) {
         debug("reap: could not sweep secret-env file %s: %O", path, cause);
@@ -3581,8 +3596,16 @@ export function createDockerRunnerLauncher(
           refuse("secretEnv was supplied without secretEnvDir — refusing to choose a directory");
         }
         try {
-          envFilePath = await writeSecretEnvFile(spec.secretEnvDir!, spec.runId, spec.secretEnv);
+          // THROUGH THE ONE DEADLINE, LIKE EVERY OTHER STEP (M23.5 census). `secretEnvDir` is a
+          // server-injected path — `SCP_MANAGED_*_WORKSPACE_ROOT`, which an operator may perfectly
+          // well point at the same shared mount the Kubernetes workspace uses — so an `mkdir` +
+          // `writeFile` here is the same unbounded network-filesystem call as a `copyDir`, and it
+          // sits BEFORE `create`, where a hang costs the whole run with no container to show for it.
+          envFilePath = await runDeadline.spend("secret-env", [], () =>
+            writeSecretEnvFile(spec.secretEnvDir!, spec.runId, spec.secretEnv)
+          );
         } catch (cause) {
+          if (cause instanceof RunnerLaunchError) throw cause;
           throw new RunnerLaunchError({
             step: "secret-env",
             file: "",
@@ -3644,7 +3667,20 @@ export function createDockerRunnerLauncher(
         } finally {
           // UNLINKED THE INSTANT `create` RETURNS, on the failure path too. Docker has read the file
           // by then; nothing later in the run needs it. The window is one `create`.
-          if (envFilePath) await unlink(envFilePath).catch(() => undefined);
+          //
+          // BOUNDED LIKE A TEARDOWN, NOT SPENT FROM THE BUDGET (M23.5 census). This is CLEANUP of a
+          // mode-0600 credential file, and the commonest way to reach it with nothing left is that
+          // `create` is what spent the budget — so refusing it would leave the credential on disk
+          // for `reap()` to find later, which is the wrong direction. It still may not hang: an
+          // unbounded `unlink` on a wedged mount holds `run()` open exactly like an unbounded copy.
+          if (envFilePath) {
+            const doomed = envFilePath;
+            await withStepBound({
+              timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+              what: "secret-env `unlink`",
+              work: () => unlink(doomed)
+            }).catch(() => undefined);
+          }
         }
         // TWO IDENTITIES, ON PURPOSE. The steps that only run AFTER a successful `create` address
         // the id the daemon returned — the precise handle, and what every golden records. Teardown

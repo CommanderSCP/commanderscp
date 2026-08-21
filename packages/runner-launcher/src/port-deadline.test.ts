@@ -45,6 +45,27 @@ const dockerCalls: DockerCall[] = [];
  *  cannot reach, which is exactly what a `docker cp` onto a wedged NFS mount looks like. */
 let deaf: Set<string> = new Set();
 
+/**
+ * THE FILESYSTEM SEAM — the Docker adapter's secret-env staging, which is I/O the port drives too.
+ *
+ * `secretEnvDir` is a SERVER-INJECTED path (`SCP_MANAGED_*_WORKSPACE_ROOT`), and an operator may
+ * perfectly well point it at the same shared mount the Kubernetes workspace uses. So the `mkdir` +
+ * `writeFile` that stages a mode-0600 credential file is the same unbounded network-filesystem call
+ * as a `copyDir` — and it happens BEFORE `create`, where a hang costs the whole run with no
+ * container to show for it. The census that found HIGH-1 found this too.
+ */
+let hangSecretEnvWrite = false;
+
+vi.mock("node:fs/promises", () => ({
+  mkdir: async () => undefined,
+  writeFile: async () => {
+    if (hangSecretEnvWrite) await neverSettles<void>();
+  },
+  readdir: async () => [] as string[],
+  stat: async () => ({ mtimeMs: Date.now() }),
+  unlink: async () => undefined
+}));
+
 vi.mock("node:child_process", () => ({
   execFile: (
     file: string,
@@ -230,6 +251,7 @@ function spec(overrides: Partial<RunnerSpec> = {}): RunnerSpec {
 beforeEach(() => {
   dockerCalls.length = 0;
   deaf = new Set();
+  hangSecretEnvWrite = false;
 });
 
 afterEach(async () => {
@@ -382,6 +404,29 @@ describe("M23.5: the SAME port bounds the Docker adapter — one mechanism, not 
     expect(classifyRunnerFailure(err).kind).toBe("budget-exhausted");
     // The teardown still ran, at its own bound — it is outside the budget, not outside a bound.
     expect(dockerCalls.some((c) => c.args[0] === "rm")).toBe(true);
+  });
+
+  it("A SECRET-ENV WRITE THAT NEVER SETTLES IS BOUNDED TOO — the step BEFORE `create` is I/O as well", async () => {
+    // The census arm. `writeSecretEnvFile` is `mkdir` + `writeFile` against an operator-chosen
+    // directory, and it was the one step of the run proper that reached the filesystem without
+    // going through the deadline at all. A hang here is the worst version of the defect: `run()`
+    // never returns and there is no container, no Job and no label for any sweep to find.
+    hangSecretEnvWrite = true;
+    const startedAt = Date.now();
+    const failed = await createDockerRunnerLauncher("docker")
+      .run(spec({ timeoutMs: 300, secretEnv: ["SCP_TOKEN=s3cr3t"], secretEnvDir: "/staging" }))
+      .catch((e: unknown) => e);
+    const elapsed = Date.now() - startedAt;
+
+    expect(elapsed).toBeLessThan(300 + RUNNER_STEP_ABANDON_GRACE_MS + 500);
+    const err = failed as InstanceType<typeof RunnerLaunchError>;
+    expect(err).toBeInstanceOf(RunnerLaunchError);
+    expect(err.step).toBe("secret-env");
+    expect(classifyRunnerFailure(err).kind).toBe("budget-exhausted");
+    // NOT VACUOUS: it really did fail on the staging step, before `create` was ever issued.
+    expect(dockerCalls.filter((c) => c.args[0] === "create")).toStrictEqual([]);
+    // AND THE CREDENTIAL IS NOT IN THE MESSAGE — the redaction set is live before the first step.
+    expect(err.message).not.toContain("s3cr3t");
   });
 });
 
