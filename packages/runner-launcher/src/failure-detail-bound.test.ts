@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   RUNNER_DETAIL_MAX_CHARS,
   RUNNER_DETAIL_TAIL_CHARS,
+  RUNNER_OUTCOME_UNKNOWN_CODE,
   RunnerLaunchError,
   boundDetail,
   classifyRunnerFailure,
@@ -271,5 +272,67 @@ describe("HIGH: the SIZE of the bound, not merely that a bound was applied", () 
     expect(
       classifyRunnerFailure(nodeExitRejection(8 * 1024 * 1024)).detail.length
     ).toBeLessThanOrEqual(4_000);
+  });
+});
+
+// ==================================================================================================
+// M23.5 VERIFICATION PASS 18 — THE KIND THAT REFUSES TO GUESS, AND THE ORDER THAT PROTECTS IT
+// ==================================================================================================
+
+describe("`outcome-unknown` is decided BEFORE every test that would infer a verdict", () => {
+  const unknown = (over: { deadlineExceeded?: boolean; killed?: boolean } = {}) =>
+    new RunnerLaunchError({
+      step: "start",
+      file: "kubernetes://scp",
+      argv: ["GET", "/api/v1/namespaces/scp/pods"],
+      cause: {
+        message: "nothing was ever observed after the unsuspend",
+        code: RUNNER_OUTCOME_UNKNOWN_CODE,
+        killed: over.killed,
+        stdout: "",
+        stderr: ""
+      },
+      redactions: [],
+      deadlineExceeded: over.deadlineExceeded === true
+    });
+
+  it("AT THE DEADLINE it is `outcome-unknown`, not `budget-exhausted` — the order is the mechanism", () => {
+    // THE ARM THAT MATTERS. These runs normally end AT the whole-run deadline, so if
+    // `deadlineExceeded` were tested first every one of them would be re-labelled
+    // `budget-exhausted` — "the runner was stopped mid-flight" — which is precisely the claim the
+    // producer has just declared it cannot make. Swapping the two tests reddens here and nowhere
+    // else.
+    const failure = classifyRunnerFailure(unknown({ deadlineExceeded: true }));
+    expect(failure.kind).toBe("outcome-unknown");
+    // AND THE BOUND IS STILL REPORTED HONESTLY. The kind says what is KNOWN about the runner; this
+    // boolean says which clock ran out, and they are different questions. A consumer that branched
+    // on the boolean to decide whether to re-run would be reading the wrong field — which is why
+    // its own doc now says so.
+    expect(failure.deadlineExceeded).toBe(true);
+    expect(failure.detail).toContain("is NOT KNOWN");
+    expect(failure.detail).not.toContain("stopped mid-flight");
+  });
+
+  it("AND IT BEATS THE ERRNO TEST TOO — a STRING code would otherwise read as `spawn-failed`", () => {
+    // The opposite lie, and the one measured in the field: `typeof code === "string"` is the errno
+    // test, so without the first arm this record would say "the container CLI could not be executed
+    // at all — nothing ran".
+    const failure = classifyRunnerFailure(unknown());
+    expect(failure.kind).toBe("outcome-unknown");
+    expect(failure.deadlineExceeded).toBe(false);
+    expect(failure.detail).not.toContain("nothing ran");
+  });
+
+  it("AND IT BEATS `killed` — a run nobody watched must not be read as a signal either", () => {
+    expect(classifyRunnerFailure(unknown({ killed: true })).kind).toBe("outcome-unknown");
+  });
+
+  it("EVERY KIND HAS WORDING — the compiler's arm, restated where a reader can see it fail", () => {
+    // `FAILURE_WORDING` is a `Record<RunnerFailureKind, string>`, so a new inhabitant does not
+    // compile until it has a sentence. This asserts the consequence an operator sees: the detail
+    // always begins `<kind>: <sentence>`, never `<kind>: undefined`.
+    expect(
+      classifyRunnerFailure(unknown()).detail.startsWith("outcome-unknown: the launcher")
+    ).toBe(true);
   });
 });

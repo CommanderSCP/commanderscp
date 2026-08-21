@@ -1990,8 +1990,13 @@ export function createKubernetesRunnerLauncher(
                 // {@link RUNNER_OUTCOME_UNKNOWN_CODE} is tested BEFORE `deadlineExceeded` so that
                 // "I do not know" cannot be overwritten by "stopped mid-flight".
                 code: verdict.code,
-                stdout: "",
-                stderr: ""
+                // AND THE EVIDENCE THE ORIGINAL CARRIED IS CARRIED TOO. These used to be blanked,
+                // which was invisible while this rewrite only ever fired on a deadline path where
+                // both were already empty — and a lost property the moment it also fires on a
+                // REFUSED unsuspend, whose `stderr` is the API server's echoed (and redacted) body.
+                // `A FAILURE MID-RUN REDACTS THE BASE64 ENCODING TOO` is the test that found it.
+                stdout: e.stdout,
+                stderr: e.stderr
               },
               // AND THE TWO ARMS REPORT THE BOUND DIFFERENTLY, DELIBERATELY.
               // {@link RUNNER_NEVER_STARTED_CODE} keeps `false` — unchanged from M23.5, and it is

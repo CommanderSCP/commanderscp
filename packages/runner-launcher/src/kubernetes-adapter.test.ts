@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   LAUNCHER_OWNER_ID,
+  RUNNER_OUTCOME_UNKNOWN_CODE,
   RUNNER_LAUNCHER_DEADLINE_ANNOTATION,
   RUNNER_LAUNCHER_OWNER_LABEL,
   RUNNER_NETWORK_LABEL,
@@ -9,6 +10,7 @@ import {
   isKubernetesLabelValue,
   kubernetesContainerStarted,
   kubernetesJobTermination,
+  kubernetesStartVerdict,
   kubernetesTermination,
   kubernetesWaitingEvidence,
   resolveRunnerLauncher,
@@ -1309,6 +1311,294 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
         }
       })
     ).toBeUndefined();
+  });
+});
+
+// ==================================================================================================
+// M23.5 VERIFICATION PASS 18 — WHAT A LAUNCHER THAT COULD NOT SEE IS ALLOWED TO SAY
+// ==================================================================================================
+//
+// `!everStarted` MEANT TWO THINGS AT ONE SITE. "Observed, and nothing had started" — the fact D2's
+// fix rests on — and "never observed at all", which is not a fact about the run at all. The second
+// was unguarded, and MEASURED against a real cluster it is the one that happens: the unsuspend PATCH
+// reaches the API server and succeeds, every `GET pods` after it stalls past the budget, the real
+// Job and the real kubelet do the work, a real container writes a real file to the real volume — and
+// the durable record says `spawn-failed: … so NOTHING RAN and nothing was mutated — the Job had not
+// yet been observed`. THE EVIDENCE THAT THE CLAIM IS UNFOUNDED IS IN THE SAME SENTENCE AS THE CLAIM.
+//
+// TWO MUTATIONS SURVIVED THE WHOLE SUITE BEFORE THESE CASES EXISTED, and each has its arm below:
+//   S1  `let waiting = "the Job had not yet been observed"` -> "the pod was observed and no
+//       container had started": a lie about what was observed, in the operator-facing detail.
+//       377/377 green. Nothing pinned the never-observed case at all.
+//   S2  `api()`'s `const deadlineExceeded = runDeadline.spent()` -> `= true`: 377/377 unit AND
+//       18/18 kind green. Nothing pinned that a transport failure with budget LEFT is not a budget
+//       exhaustion, in either adapter's spelling.
+
+/**
+ * A TRANSPORT THAT ANSWERS NOTHING — `AbortSignal.timeout` firing on every `GET pods`, which is what
+ * an API-server stall or a partition looks like from inside this adapter. Unconditional, unlike D2's
+ * `abortingPodGetIo`, which only fires near the deadline and therefore always leaves the run an
+ * observation to reason from: the WHOLE point here is a run that never gets one.
+ *
+ * `letThrough` reads succeed first, so the same fixture produces the negative control — one landed
+ * observation, and the verdict is entitled to say nothing started again.
+ */
+function stallingPodGetIo(inner: KubernetesRunnerIo, letThrough = 0): KubernetesRunnerIo {
+  let through = 0;
+  return {
+    ...inner,
+    request: async (req: KubernetesApiRequest) => {
+      if (req.method === "GET" && req.path.startsWith(`/api/v1/namespaces/${NAMESPACE}/pods?`)) {
+        if (through >= letThrough) {
+          await new Promise((r) => setTimeout(r, req.timeoutMs + 5));
+          throw new Error("The operation was aborted due to timeout");
+        }
+        through += 1;
+      }
+      return inner.request(req);
+    }
+  };
+}
+
+/** A transport that BREAKS rather than runs out of time — a reset, a TLS failure, a DNS failure.
+ *  It rejects IMMEDIATELY, so the run still has almost all of its budget, which is the fact S2's
+ *  mutation erases. */
+function resettingPodGetIo(inner: KubernetesRunnerIo, letThrough = 0): KubernetesRunnerIo {
+  let through = 0;
+  return {
+    ...inner,
+    request: async (req: KubernetesApiRequest) => {
+      if (req.method === "GET" && req.path.startsWith(`/api/v1/namespaces/${NAMESPACE}/pods?`)) {
+        if (through >= letThrough) throw new Error("read ECONNRESET");
+        through += 1;
+      }
+      return inner.request(req);
+    }
+  };
+}
+
+describe("M23.5 pass 18: the verdict may not assert what this run did not observe", () => {
+  it("NEVER OBSERVED AFTER AN ACCEPTED UNSUSPEND IS `outcome-unknown` — not `spawn-failed`", async () => {
+    // THE DEFECT, at the seam. The PATCH succeeds; nothing after it ever lands. The Job is live in
+    // the cluster from that instant and the kubelet does not need this process to be watching.
+    const c = cluster();
+    const result = await c
+      .launcher({ io: stallingPodGetIo(c.io) })
+      .run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+
+    expect(result.succeeded).toBe(false);
+    expect(
+      result.failure!.kind,
+      `a run this launcher never observed was classified ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("outcome-unknown");
+    expect(result.failure!.code).toBe(RUNNER_OUTCOME_UNKNOWN_CODE);
+    // THE TWO SENTENCES IT MAY NOT SAY, both of which were reachable here, in opposite directions.
+    expect(result.failure!.detail).not.toContain("NOTHING RAN");
+    expect(result.failure!.detail).not.toContain("nothing was mutated");
+    expect(result.failure!.detail).not.toContain("stopped mid-flight");
+    // AND THE ONE IT MUST. `NOT KNOWN` is the claim; the rest is what an operator has to do about it.
+    expect(result.failure!.detail).toContain("NOTHING WAS EVER OBSERVED");
+    expect(result.failure!.detail).toContain("is NOT KNOWN");
+    expect(result.failure!.detail).toContain("Check the target's real state before re-running");
+    // S1's MUTATION DIES HERE. The initial value of `waiting` is the only thing in this record that
+    // says WHAT was observed, and it is now load-bearing rather than a placeholder: replacing it
+    // with "the pod was observed and no container had started" makes this record claim an
+    // observation the run never made.
+    expect(result.failure!.detail).toContain("the Job had not yet been observed");
+    expect(result.failure!.detail).not.toContain("was observed and no container had started");
+    // The teardown is unconditional whatever the verdict was.
+    expect(c.jobs.size).toBe(0);
+  });
+
+  it("THE NEGATIVE CONTROL: ONE landed observation is enough to say nothing started", async () => {
+    // WITHOUT THIS ARM, "call every deadline `outcome-unknown`" passes the case above — and ROUTE 1
+    // and ROUTE 2, where the cluster SAID why it could not start the pod, would stop telling an
+    // operator that nothing was touched. The distinguishing fact is a read that COMPLETED.
+    const c = cluster();
+    c.setPod(undefined);
+    c.setEvents([
+      {
+        type: "Warning",
+        reason: "FailedCreate",
+        count: 4,
+        message: 'Error creating: pods "x" is forbidden: failed quota: must specify limits.memory'
+      }
+    ]);
+    const result = await c
+      .launcher({ io: stallingPodGetIo(c.io, 1) })
+      .run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+    expect(result.failure!.detail).toContain("must specify limits.memory");
+  });
+
+  it("S2 — A TRANSPORT FAILURE WITH BUDGET LEFT IS NOT A BUDGET EXHAUSTION", async () => {
+    // THE GATE THE BRANCH DID NOT HAVE. `api()`'s `deadlineExceeded` was asked of the clock and
+    // nothing anywhere required the answer to be FALSE, so `= true` survived 377 unit and 18 kind
+    // cases. A reset on the first poll leaves 10 seconds of budget: this run did not run out of
+    // time, its transport broke.
+    const c = cluster();
+    const result = await c
+      .launcher({ io: resettingPodGetIo(c.io) })
+      .run(spec({ timeoutMs: 10_000, copyOut: undefined }));
+
+    expect(
+      result.failure!.deadlineExceeded,
+      `a reset with 10s of budget left was recorded as a budget exhaustion: ${result.failure!.detail}`
+    ).toBe(false);
+    expect(result.failure!.kind).toBe("outcome-unknown");
+    // AND THE TRANSPORT'S OWN WORDS REACH THE OPERATOR. The classification is this adapter's to
+    // make; the evidence is not its to delete.
+    expect(result.failure!.detail).toContain("read ECONNRESET");
+  });
+
+  it("S2 — AND THE SAME RESET AFTER AN OBSERVATION MUST NOT BECOME `NOTHING RAN`", async () => {
+    // THE ARM WHERE S2'S MUTATION CHANGES THE SENTENCE AND NOT ONLY THE FLAG. One `GET pods` lands
+    // (the pod is Pending, nothing started), the next resets, and 10 seconds of budget remain — so
+    // the Job is still perfectly able to start a pod after this run stops looking. With
+    // `deadlineExceeded` forced true this becomes `spawn-failed`: "NOTHING RAN and nothing was
+    // mutated", asserted about a Job that is still live.
+    const c = cluster();
+    c.setPod({ metadata: { name: "p1" }, status: { phase: "Pending" } });
+    const result = await c
+      .launcher({ io: resettingPodGetIo(c.io, 1) })
+      .run(spec({ timeoutMs: 10_000, copyOut: undefined }));
+
+    expect(result.failure!.kind).toBe("outcome-unknown");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    expect(result.failure!.detail).not.toContain("NOTHING RAN");
+    expect(result.failure!.detail).toContain("still able to start one");
+  });
+
+  it("A RUNNING CONTAINER PLUS A BROKEN READ IS `outcome-unknown`, never a verdict about the runner", async () => {
+    // THE MOST DANGEROUS DIRECTION. A container IS running; this launcher's own read then breaks
+    // with budget left. Before this, the reset reached `classifyRunnerFailure` with no `code` at all
+    // and was recorded as `exit-nonzero` — "the runner itself exited non-zero" — about a runner that
+    // was still running, and the teardown below then DELETEd the Job under it.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          { name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }
+        ]
+      }
+    });
+    const result = await c
+      .launcher({ io: resettingPodGetIo(c.io, 1) })
+      .run(spec({ timeoutMs: 10_000, copyOut: undefined }));
+
+    expect(result.failure!.kind).toBe("outcome-unknown");
+    expect(result.failure!.detail).toContain("a runner container WAS running");
+    expect(result.failure!.detail).not.toContain("the runner itself exited non-zero");
+  });
+
+  it("AND THE NEGATIVE CONTROL FOR THAT: a RUNNING container plus the BUDGET is still `budget-exhausted`", async () => {
+    // The arm M23.5 measured, unchanged and it must stay unchanged: something ran, our budget ran
+    // out, the teardown kills it. "SIGTERMed mid-flight, the real state is unknown" is TRUE here,
+    // and downgrading it to `outcome-unknown` would lose the fact that a `tofu apply` was
+    // interrupted.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          { name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }
+        ]
+      }
+    });
+    const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("budget-exhausted");
+    expect(result.failure!.deadlineExceeded).toBe(true);
+  });
+
+  it("A REFUSED UNSUSPEND IS `spawn-failed`, never `exit-nonzero` — the chart shipped without `patch`", async () => {
+    // THE SAME CLASS FROM THE RBAC SIDE, and it was live for a release: the chart's Role granted
+    // `create,get,list,watch,delete` on `batch/jobs` and NO `patch`, so `start` was a 403 on every
+    // managed run. A numeric `code` is what `classifyRunnerFailure` reads as an exit status, so an
+    // operator was told "the runner itself exited non-zero" — code 403 — about a Job that never left
+    // `suspend: true`.
+    const c = cluster();
+    c.overrides.push({
+      match: (r) => r.method === "PATCH",
+      res: { status: 403, body: 'jobs.batch "scp-runner-r1" is forbidden: cannot patch' }
+    });
+    const result = await c.launcher().run(spec({ copyOut: undefined }));
+
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.detail).toContain("REFUSED to unsuspend");
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+    // The API server's own words survive the rewrite.
+    expect(result.failure!.detail).toContain("cannot patch");
+  });
+
+  it("`kubernetesStartVerdict` — every arm, as a pure function", () => {
+    const base = {
+      runnerVerdict: false,
+      unsuspend: "accepted" as const,
+      observed: true,
+      everStarted: false,
+      deadlineExceeded: true,
+      waiting: "the pod is Pending and PodScheduled is False: Unschedulable",
+      runTimeoutMs: 5_000
+    };
+
+    // 1. THE CLUSTER ANSWERED. Nothing here is better informed.
+    expect(kubernetesStartVerdict({ ...base, runnerVerdict: true })).toBeUndefined();
+    expect(
+      kubernetesStartVerdict({ ...base, runnerVerdict: true, observed: false, everStarted: true })
+    ).toBeUndefined();
+
+    // 4. A CONTAINER RAN AND OUR BUDGET ENDED IT — `budget-exhausted` stands.
+    expect(kubernetesStartVerdict({ ...base, everStarted: true })).toBeUndefined();
+
+    // 2. THE API SERVER SAID NO. Knowledge, not inference.
+    expect(kubernetesStartVerdict({ ...base, unsuspend: "refused" })?.code).toBe(
+      "RunnerContainerNeverStarted"
+    );
+    // AND IT OUTRANKS EVERYTHING BELOW IT — a Job that never left `suspend: true` has no pod, so a
+    // stale `everStarted` cannot make it a kill.
+    expect(
+      kubernetesStartVerdict({ ...base, unsuspend: "refused", everStarted: true })?.message
+    ).toContain("NOTHING RAN");
+
+    // 3. NOBODY ANSWERED THE UNSUSPEND — the patch may have applied.
+    expect(kubernetesStartVerdict({ ...base, unsuspend: "unanswered" })?.code).toBe(
+      RUNNER_OUTCOME_UNKNOWN_CODE
+    );
+
+    // 5. THE DEFECT: accepted, and nothing was ever observed.
+    const blind = kubernetesStartVerdict({ ...base, observed: false, waiting: "W" })!;
+    expect(blind.code).toBe(RUNNER_OUTCOME_UNKNOWN_CODE);
+    expect(blind.message).toContain("NOTHING WAS EVER OBSERVED");
+    // THE `waiting` CLAUSE IS CARRIED, which is what makes S1's mutation visible in the record.
+    expect(blind.message).toContain("(W)");
+    expect(blind.message).not.toContain("NOTHING RAN");
+
+    // 6. OBSERVED, NOTHING STARTED, THE BUDGET ENDED US — D2's verdict, unchanged.
+    const never = kubernetesStartVerdict(base)!;
+    expect(never.code).toBe("RunnerContainerNeverStarted");
+    expect(never.message).toContain("NOTHING RAN and nothing was mutated");
+    expect(never.message).toContain("Unschedulable");
+    expect(never.message).toContain("5000ms");
+
+    // 7. OBSERVED, NOTHING STARTED, AND OUR OWN READ BROKE WITH BUDGET LEFT.
+    const early = kubernetesStartVerdict({ ...base, deadlineExceeded: false })!;
+    expect(early.code).toBe(RUNNER_OUTCOME_UNKNOWN_CODE);
+    expect(early.message).not.toContain("NOTHING RAN");
+
+    // 4b. A CONTAINER RAN AND SOMETHING ELSE ENDED US.
+    const lostSight = kubernetesStartVerdict({
+      ...base,
+      everStarted: true,
+      deadlineExceeded: false
+    })!;
+    expect(lostSight.code).toBe(RUNNER_OUTCOME_UNKNOWN_CODE);
+    expect(lostSight.message).toContain("WAS running");
   });
 });
 
