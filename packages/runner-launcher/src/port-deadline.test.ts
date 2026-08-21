@@ -400,32 +400,59 @@ describe("M23.5: `withStepBound` — the primitive both adapters are built on", 
     expect((err as Error).message).toContain("ABANDONED");
   });
 
-  it("THE GRACE IS NOT PADDING — work that honours its bound is never abandoned, so it keeps its own diagnosis", async () => {
-    // Set the abandonment timer for the same instant as the inner mechanism's and it wins the race
-    // essentially always, because a self-bounded call rejects only AFTER its own timer has fired and
-    // its child has exited. Every ordinary budget kill would then arrive as an abandonment, with the
-    // `code`/`signal`/partial-stdout diagnosis `classifyRunnerFailure` exists to preserve thrown
-    // away. This arm is what that grace buys.
+  it("THE GRACE IS NOT PADDING — a self-bounded call that settles LATE still keeps its own diagnosis", async () => {
+    // WHY THE WORK REJECTS AFTER ITS BOUND RATHER THAN AT IT, and it is the whole point of the arm.
+    // `execFile`'s `timeout` does not reject when it fires: it fires, SIGTERMs the child, and the
+    // promise settles on the child's exit — at least one turn of the loop later, and in practice a
+    // few milliseconds. Set the abandonment timer for the same instant and it wins that race, so
+    // EVERY ordinary budget kill arrives as an abandonment and the `code`/`killed`/`signal` and
+    // partial stdout that `classifyRunnerFailure` exists to preserve are thrown away.
+    //
+    // THE EXISTING SUITES CANNOT ASK THIS. `whole-run-budget.test.ts`'s seam settles a killed step
+    // EXACTLY at `timeout`, and its callback timer is registered before ours, so it wins whatever
+    // the grace is — which is why shrinking the grace to zero leaves those arms green. This one
+    // models the settle delay, so it does not.
+    const SETTLE_DELAY_MS = 25;
     const err = await withStepBound({
       timeoutMs: 100,
       what: "'start'",
       work: (bound) =>
         new Promise<never>((_resolve, reject) => {
           setTimeout(
-            () => reject(Object.assign(new Error("self-bounded"), { killed: true, code: null })),
-            bound
+            () =>
+              reject(
+                Object.assign(new Error("self-bounded"), {
+                  killed: true,
+                  code: null,
+                  signal: "SIGTERM",
+                  stdout: "a partial tofu plan"
+                })
+              ),
+            bound + SETTLE_DELAY_MS
           );
         })
     }).catch((e: unknown) => e);
 
     expect(err).not.toBeInstanceOf(RunnerStepAbandonedError);
     expect((err as Error).message).toBe("self-bounded");
+    // THE DIAGNOSIS IS WHAT THE GRACE BUYS — an abandonment carries none of this.
+    expect(err).toMatchObject({ killed: true, signal: "SIGTERM", stdout: "a partial tofu plan" });
+    // …and the margin really is what saved it: a grace smaller than the settle delay would not.
+    expect(RUNNER_STEP_ABANDON_GRACE_MS).toBeGreaterThan(SETTLE_DELAY_MS);
   });
 
   it("WORK THAT REJECTS AFTER IT WAS ABANDONED IS NOT AN UNHANDLED REJECTION", async () => {
     // An abandoned promise that rejects at minute nine with nobody listening takes a plugin
-    // subprocess down — which is the failure this whole mechanism exists to prevent, arriving by the
-    // back door. `withStepBound` re-catches the abandoned promise for exactly this.
+    // subprocess down — the failure this whole mechanism exists to prevent, arriving by the back
+    // door.
+    //
+    // AND THERE IS NO EXPLICIT GUARD IN `withStepBound` FOR IT — recorded here rather than left for
+    // a reader to wonder about. `Promise.race` subscribes to every promise it is given and keeps
+    // that subscription after it settles, so `pending` is handled from the moment it enters the
+    // race. A first draft added `void pending.catch(() => undefined)`; mutating it away reddened
+    // NOTHING across the whole suite, so it went (charter priority 1). This arm is what a rewrite
+    // away from `Promise.race` — an `AbortController` and a `.then`, say — would have to keep true,
+    // which is why it stays even though nothing in today's code can break it.
     const seen: unknown[] = [];
     const onUnhandled = (reason: unknown): void => {
       seen.push(reason);

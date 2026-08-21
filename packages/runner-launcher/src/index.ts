@@ -2842,9 +2842,18 @@ export class RunnerStepAbandonedError extends Error {
  * when it is needed. (A test that models a hang as a promise which simply never settles must
  * therefore hold a handle of its own — `port-deadline.test.ts` does, and says why.)
  *
- * AND THE ABANDONED PROMISE IS ALWAYS RE-CAUGHT. Work that rejects at minute nine with nobody left
- * listening is an unhandled rejection, which on a plugin subprocess is a process exit — the failure
- * mode this function exists to prevent, arriving by the back door.
+ * WORK THAT REJECTS AFTER IT WAS ABANDONED IS NOT AN UNHANDLED REJECTION, AND THERE IS NO EXPLICIT
+ * GUARD FOR THAT — said plainly, because the obvious guard is exactly what a reader will look for.
+ * A rejection nobody is listening to takes a plugin subprocess down, which is the failure this
+ * function exists to prevent arriving by the back door, so the property matters. It is already
+ * true: `Promise.race` SUBSCRIBES to every promise it is given and keeps that subscription after it
+ * has settled, so `pending` is handled from the moment it enters the race, forever. A first draft
+ * added `void pending.catch(() => undefined)` in a `finally` for this; mutating it away reddened
+ * NOTHING across the whole suite, measured — the definition of a mechanism nothing pins — so
+ * Simplicity (charter priority 1) removed it. The PROPERTY is still gated
+ * (`port-deadline.test.ts`: "WORK THAT REJECTS AFTER IT WAS ABANDONED IS NOT AN UNHANDLED
+ * REJECTION"), which is what a rewrite away from `Promise.race` — an `AbortController` and a
+ * `.then`, say — would have to keep true.
  */
 export async function withStepBound<T>(args: {
   /** The bound handed to `work`, in ms. Clamped to >= 1: `timeout: 0` is NO timeout in Node. */
@@ -2871,7 +2880,6 @@ export async function withStepBound<T>(args: {
     ]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
-    void pending.catch(() => undefined);
   }
 }
 
