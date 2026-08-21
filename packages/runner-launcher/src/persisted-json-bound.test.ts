@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ADVERSARIAL_ALL, deepChain, selfReferential } from "./adversarial-corpus.js";
 import {
   PERSISTED_JSON_ELIDED_KEY,
   PERSISTED_JSON_MAX_CHARS,
@@ -48,82 +49,31 @@ function isWellFormed(s: string): boolean {
   return (s as unknown as { isWellFormed(): boolean }).isWellFormed();
 }
 
-function deepChain(depth: number): unknown {
-  const root: Record<string, unknown> = {};
-  let cursor = root;
-  for (let i = 0; i < depth; i++) {
-    const next: Record<string, unknown> = {};
-    cursor.next = next;
-    cursor = next;
-  }
-  cursor.leaf = "the bottom";
-  return root;
+/**
+ * THE TABLE MOVED TO `adversarial-corpus.ts`, AND IT GAINED A SECOND LAYER (M23.1f clause 4).
+ * This file asserts the PROXIES — well-formed, no NUL, under budget — which is all a pure unit test
+ * can ask. `apps/server`'s `persisted-json-postgres-corpus.integration.test.ts` reads the SAME table
+ * and asks a real PostgreSQL whether it accepts the row, with the PRE-BOUND shape as the control.
+ * One table, because two copies of a hostile-input corpus diverge in the direction that matters: a
+ * new shape is added by whoever was thinking about it, in the file they were looking at.
+ */
+const ADVERSARIAL = ADVERSARIAL_ALL;
+
+/**
+ * THE CYCLE GUARD. `adversarial-corpus.ts` cannot import `PERSISTED_JSON_ELIDED_KEY` from
+ * `./index.js` — `index.ts` re-exports the corpus, and the cycle resolves to `undefined` at
+ * module-evaluation time, which silently turns `ADVERSARIAL_ALL` into an empty array for every
+ * consumer that imports it through the package entry. So the corpus spells the marker as a literal,
+ * and this is what stops the literal drifting from the constant.
+ */
+const markerShape = ADVERSARIAL.find((c) => c.name === "the bound's own markers as data")!;
+if (Object.keys(markerShape.value as object)[0] !== PERSISTED_JSON_ELIDED_KEY) {
+  throw new Error(
+    `adversarial-corpus.ts spells the elision key '${Object.keys(markerShape.value as object)[0]}' ` +
+      `and PERSISTED_JSON_ELIDED_KEY is '${PERSISTED_JSON_ELIDED_KEY}'`
+  );
 }
 
-function selfReferential(): unknown {
-  const o: Record<string, unknown> = { a: 1 };
-  o.self = o;
-  return o;
-}
-
-/** Every one of these is something an `ExecutionStatus` off the JSON-RPC boundary can actually be:
- *  the host types that response with a BARE CAST — `call<ExecutionStatus>("status", …)` — with no
- *  runtime validation anywhere on the path, so "the plugin promised a `string[]`" is not a fact. */
-const ADVERSARIAL: ReadonlyArray<{ name: string; value: unknown }> = [
-  { name: "a few enormous strings", value: { images: [`ghcr.io/x/y:${"a".repeat(100_000)}`] } },
-  {
-    name: "very many small strings",
-    value: { images: Array.from({ length: 5_000 }, (_, i) => `ghcr.io/x/y:${i}`) }
-  },
-  { name: "one 2 MB revision", value: { revision: "r".repeat(2_000_000) } },
-  {
-    name: "astral characters at every cut",
-    value: { revision: "\u{1F600}".repeat(100_000), images: ["\u{1F600}".repeat(50_000)] }
-  },
-  { name: "lone surrogates", value: { revision: `a\uD83Db`, images: [`x\uDE00`] } },
-  { name: "NUL bytes", value: { revision: `a${NUL}b`, images: [`x${NUL}`] } },
-  { name: "worst-case escapes (backslashes)", value: { s: "\\".repeat(200_000) } },
-  { name: "worst-case escapes (C0 controls)", value: { s: "\u0001".repeat(200_000) } },
-  { name: "worst-case escapes (quotes)", value: { s: '"'.repeat(200_000) } },
-  {
-    name: "5 000 keys",
-    value: Object.fromEntries(Array.from({ length: 5_000 }, (_, i) => [`k${i}`, "v".repeat(50)]))
-  },
-  {
-    name: "50 enormous KEYS",
-    value: Object.fromEntries(
-      Array.from({ length: 50 }, (_, i) => [`${"k".repeat(5_000)}${i}`, "v"])
-    )
-  },
-  { name: "a 100 000-element array", value: Array.from({ length: 100_000 }, (_, i) => i) },
-  { name: "200 levels of nesting", value: deepChain(200) },
-  { name: "a self-referential object", value: selfReferential() },
-  { name: "non-finite numbers", value: { a: NaN, b: Infinity, c: -Infinity, d: 1.5 } },
-  { name: "a bigint", value: { n: 10n ** 40n } },
-  { name: "a bare enormous string", value: "s".repeat(1_000_000) },
-  { name: "null", value: null },
-  { name: "undefined", value: undefined },
-  // M23.0 verification pass 11. Every array above holds STRINGS or INTEGERS, and both of those are
-  // charged exactly, so no arm of this corpus could reach the three leaf branches that return
-  // something rendering as `null`. Two of the three charged nothing for it.
-  { name: "a list of 2 000 nulls", value: { images: Array(2_000).fill(null) } },
-  { name: "a list of 2 000 undefineds", value: { images: Array(2_000).fill(undefined) } },
-  {
-    name: "a list of 2 000 functions",
-    value: { images: Array.from({ length: 2_000 }, () => () => 1) }
-  },
-  // …and every array above is cut at most ONCE per value, so no arm could reach the case where
-  // several tail markers are charged against a budget that has nothing left for them.
-  {
-    name: "four lists the budget cannot finish",
-    value: {
-      a: ["x".repeat(9_000), "x".repeat(9_000)],
-      b: ["x".repeat(9_000), "x".repeat(9_000)],
-      c: ["x".repeat(9_000), "x".repeat(9_000)],
-      d: ["x".repeat(9_000), "x".repeat(9_000)]
-    }
-  }
-];
 
 describe("MEDIUM: boundPersistedJson bounds a whole plugin-supplied value, not a list of its fields", () => {
   it.each(ADVERSARIAL.map((c) => [c.name, c.value] as const))(

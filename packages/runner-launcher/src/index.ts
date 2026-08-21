@@ -4260,6 +4260,11 @@ export async function withRecordedOutcome<T>(
 // that ever stopped being true.
 // ==================================================================================================
 export {
+  ADVERSARIAL_ALL,
+  ADVERSARIAL_ALPHABETS,
+  ADVERSARIAL_PERSISTED_JSON
+} from "./adversarial-corpus.js";
+export {
   KUBERNETES_JOB_TTL_SECONDS,
   KUBERNETES_MERGES_STDERR_INTO_STDOUT,
   KUBERNETES_POLL_INTERVAL_MS,
