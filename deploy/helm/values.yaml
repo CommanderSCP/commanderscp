@@ -306,7 +306,11 @@ managedRunners:
   # binary the image does not ship. Anything other than the exact string "kubernetes" is docker.
   launcher: docker
   kubernetes:
-    # Where the runner Jobs are created. Empty means `.Release.Namespace`.
+    # Where the runner Jobs are created. Empty means `.Release.Namespace` — and since
+    # `perRunSecrets` defaults to `true`, leaving this empty is a render-time FAILURE (M23.5
+    # MEDIUM-7) unless `acceptSharedNamespaceSecretDelete` below is also set. See that value and
+    # `perRunSecrets` for why: this is "the narrowing that IS available" for a Role that grants
+    # `delete` on every Secret in whatever namespace it renders into.
     namespace: ""
     # The RWX PersistentVolumeClaim the worker and every runner Job share. MUST ALREADY EXIST — this
     # chart does not create it, because RWX is a storage-class capability an operator provisions.
@@ -329,13 +333,24 @@ managedRunners:
     # on secrets returns every Secret BODY in the namespace, this chart's own database password
     # included. The reap sweep is built to work without it.
     #
+    # `delete` DESERVES THE SAME SENTENCE `list` GOT, AND UNTIL M23.5 MEDIUM-7 DID NOT HAVE ONE.
+    # `list` is refused because it can READ every Secret's body in the namespace; `delete` is
+    # GRANTED, and it can DESTROY every Secret in the namespace, this release's own database
+    # credential included — proved with the worker's own token against a live cluster:
+    #   DELETE …/secrets/scp-commanderscp-db -> {"status":"Success"} ; then GET -> NotFound
+    # A blast radius that large being reasoned about for the read verb and left unstated for the
+    # destructive one was the gap; it is not anymore.
+    #
     # WHAT COULD NOT BE NARROWED, SAID PLAINLY: `resourceNames`. Per-run Secret names derive from
     # `runId`, so the set is unbounded, and Kubernetes RBAC cannot restrict a `create` by
     # `resourceNames` under any circumstances — the object's name is not known to the authorizer at
     # admission time. The grant is therefore namespace-wide on `secrets`. THE NARROWING THAT IS
     # ACTUALLY AVAILABLE IS `namespace` ABOVE: point it at a namespace of the runners' own and the
     # Role, the RoleBinding, the Jobs and the Secrets all move there, away from this release's own
-    # Secrets. That is the recommended shape for anything holding real cloud credentials.
+    # Secrets. That is the recommended shape for anything holding real cloud credentials, and as of
+    # M23.5 it is ENFORCED, not merely recommended: `perRunSecrets: true` with an empty `namespace`
+    # above is a render-time failure (`commanderscp.assertRunnerPrerequisites`) unless
+    # `acceptSharedNamespaceSecretDelete` below says otherwise.
     #
     # SETTING IT `false` STILL WORKS and is the supported opt-out: no rule is rendered and the server
     # refuses a run that needs one, loudly, at its first step, rather than falling back to
@@ -344,6 +359,13 @@ managedRunners:
     # unaffected either way — but they DO need the rest of this Role, which is a separate fix made
     # at the same time; see `templates/runner-iac.yaml`.
     perRunSecrets: true
+    # THE EXPLICIT OVERRIDE (M23.5 MEDIUM-7). `false` by default: with `perRunSecrets: true` and
+    # `namespace` left empty, the chart REFUSES to render rather than silently handing the worker
+    # ServiceAccount `delete` on this release's own Secrets. Set this `true` only if you have
+    # deliberately decided that blast radius is acceptable for this deployment (e.g. a single-tenant
+    # eval install with nothing else of value in the namespace) — the safer fix is almost always
+    # `namespace` above, a runner namespace with nothing else in it.
+    acceptSharedNamespaceSecretDelete: false
     # Pod `securityContext.runAsNonRoot` for runner Jobs. FALSE by default, and that is a fact about
     # the images rather than a preference: none of apps/runner-{iac,scan,dep} declares a `USER`, so
     # `true` makes every managed run fail with CreateContainerConfigError before its entrypoint.

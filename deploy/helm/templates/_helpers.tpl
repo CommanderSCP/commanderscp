@@ -521,6 +521,26 @@ So the message names the requirement explicitly rather than implying the chart v
 {{- if ne (include "commanderscp.anyManagedClass" .) "true" -}}
 {{- fail "managedRunners.launcher=kubernetes is set but no managed executor class is enabled, so nothing will ever launch. Enable managedIac.enabled (with managedIac.runnerImage) and/or set managedDep.runnerImage and/or set managedScan.runnerImage, or leave managedRunners.launcher at its default of `docker`." -}}
 {{- end -}}
+{{/*
+  M23.5 MEDIUM-7 — THE DEFAULT POSTURE, MADE SAFE RATHER THAN MERELY RECOMMENDED.
+
+  `perRunSecrets: true` (the default since 2026-08-20) grants `create` AND `delete` on `""/secrets`,
+  NAMESPACE-WIDE — `resourceNames` cannot scope `create` by name because the per-run name is not
+  known to the authorizer at admission time (see the Role's own comment and ADR-0035 §6). The
+  Role's comment reasoned carefully about `list`'s blast radius (every Secret BODY in the namespace)
+  and was SILENT about `delete`'s — proved with the worker's own token against a live cluster:
+
+    DELETE …/secrets/<this-release's-db-credential> -> {"status":"Success"} ; then GET -> NotFound
+
+  `managedRunners.kubernetes.namespace` is "the narrowing that IS available" per that same comment,
+  but until this guard it was a recommendation nobody was made to read: the default install with the
+  default `perRunSecrets` handed a worker ServiceAccount the ability to destroy its own release's
+  Postgres credential, silently. This makes that combination a render-time refusal instead — set a
+  runner namespace, turn `perRunSecrets` off, or state that you accept the blast radius.
+*/}}
+{{- if and .Values.managedRunners.kubernetes.perRunSecrets (not .Values.managedRunners.kubernetes.namespace) (not .Values.managedRunners.kubernetes.acceptSharedNamespaceSecretDelete) -}}
+{{- fail "managedRunners.kubernetes.perRunSecrets=true with no managedRunners.kubernetes.namespace grants the worker ServiceAccount `delete` on EVERY Secret in THIS RELEASE'S OWN NAMESPACE, this release's database credential included (measured: DELETE .../secrets/<db-secret> -> Success). Set managedRunners.kubernetes.namespace to a dedicated runner namespace (the narrowing this Role's RBAC cannot express any other way — see runner-iac.yaml), set managedRunners.kubernetes.perRunSecrets=false if managed-iac's Kubernetes credentials are not needed, or set managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=true to proceed with this release's own Secrets in the blast radius." -}}
+{{- end -}}
 {{- end -}}
 {{- end }}
 

@@ -1705,6 +1705,12 @@ function main(): void {
       "managedRunners.launcher=kubernetes",
       "--set",
       "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+      // M23.5 MEDIUM-7 — `perRunSecrets` defaults `true`, and since that render-time guard was
+      // added an empty `namespace` alongside it is a refusal, not a render. This render is testing
+      // the token/egress/volume contract, not that guard (which has its own case below), so it
+      // states a runner namespace the same way `values.yaml` recommends operators do.
+      "--set",
+      "managedRunners.kubernetes.namespace=scp-runners",
       "--set",
       "managedIac.enabled=true",
       "--set",
@@ -1749,6 +1755,10 @@ function main(): void {
         "managedRunners.launcher=kubernetes",
         "--set",
         "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render above — M23.5 MEDIUM-7's guard fires here too since
+        // `perRunSecrets` defaults true regardless of which managed class is enabled.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
         "--set",
         "managedDep.runnerImage=ghcr.io/commanderscp/scp-runner-dep:0.1.0"
       ]);
@@ -1871,6 +1881,97 @@ function main(): void {
       `[${label}] perRunSecrets=false does not reach the server`
     );
 
+    // (3a-guard) M23.5 MEDIUM-7 — THE DEFAULT POSTURE IS A RENDER-TIME REFUSAL, NOT A README LINE.
+    //
+    //     `perRunSecrets` defaults `true` and grants `delete` on EVERY Secret in whatever namespace
+    //     this Role renders into (see the assertion above pinning the verb set). Proved with the
+    //     worker's own token against a live cluster: `DELETE .../secrets/scp-commanderscp-db ->
+    //     Success`. Before this guard, an operator who took every OTHER default got that blast
+    //     radius over their own release's Secrets with no signal at install time. Three cases: the
+    //     unsafe combination refuses; each of the three documented escapes renders clean.
+    {
+      let unsafeRefused = false;
+      try {
+        renderChart("verify-m23-secret-ns-unsafe", [
+          "--set",
+          "managedRunners.launcher=kubernetes",
+          "--set",
+          "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+          "--set",
+          "managedIac.enabled=true",
+          "--set",
+          "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          // Deliberately no `namespace`, no `perRunSecrets=false`, no `acceptSharedNamespaceSecretDelete`.
+        ]);
+      } catch {
+        unsafeRefused = true;
+      }
+      assert(
+        unsafeRefused,
+        `[${label}] perRunSecrets=true with no managedRunners.kubernetes.namespace and no acceptSharedNamespaceSecretDelete must FAIL the render — this is the default combination and it grants delete on the release's own Secrets`
+      );
+
+      const escapes: [string, string[]][] = [
+        [
+          "a dedicated runner namespace",
+          [
+            "--set",
+            "managedRunners.launcher=kubernetes",
+            "--set",
+            "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+            "--set",
+            "managedRunners.kubernetes.namespace=scp-runners",
+            "--set",
+            "managedIac.enabled=true",
+            "--set",
+            "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          ]
+        ],
+        [
+          "perRunSecrets=false",
+          [
+            "--set",
+            "managedRunners.launcher=kubernetes",
+            "--set",
+            "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+            "--set",
+            "managedRunners.kubernetes.perRunSecrets=false",
+            "--set",
+            "managedIac.enabled=true",
+            "--set",
+            "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          ]
+        ],
+        [
+          "acceptSharedNamespaceSecretDelete=true",
+          [
+            "--set",
+            "managedRunners.launcher=kubernetes",
+            "--set",
+            "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+            "--set",
+            "managedRunners.kubernetes.acceptSharedNamespaceSecretDelete=true",
+            "--set",
+            "managedIac.enabled=true",
+            "--set",
+            "managedIac.runnerImage=ghcr.io/commanderscp/scp-runner-iac:0.1.0"
+          ]
+        ]
+      ];
+      for (const [why, args] of escapes) {
+        let rendered = false;
+        try {
+          renderChart("verify-m23-secret-ns-escape", args);
+          rendered = true;
+        } catch (cause) {
+          throw new Error(
+            `[${label}] stating ${why} must still render cleanly (M23.5 MEDIUM-7's guard is over-firing): ${String(cause)}`
+          );
+        }
+        assert(rendered, `[${label}] stating ${why} must still render cleanly`);
+      }
+    }
+
     // (3b) THE RBAC EXISTS FOR ALL THREE MANAGED CLASSES, NOT ONLY THE ONE IT WAS NAMED AFTER.
     //
     //      A MEASURED DEFECT, NOT A TIDINESS RULE. Before M23.4 this Role was gated on
@@ -1891,6 +1992,10 @@ function main(): void {
         "managedRunners.launcher=kubernetes",
         "--set",
         "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render above — M23.5 MEDIUM-7's guard fires for every one
+        // of these three, `perRunSecrets` defaulting true regardless of which class is enabled.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
         ...extra.flatMap((e) => ["--set", e])
       ]);
       const role = runnerRole(docs);
@@ -2052,6 +2157,10 @@ function main(): void {
         "managedRunners.launcher=kubernetes",
         "--set",
         "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render in the M23.2 block above — M23.5 MEDIUM-7's guard
+        // fires here too since `perRunSecrets` defaults true.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
         "--set",
         "managedIac.enabled=true",
         "--set",
@@ -2140,6 +2249,10 @@ function main(): void {
         "managedRunners.launcher=kubernetes",
         "--set",
         "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
+        // See the comment on the `k8s` render in the M23.2 block above — M23.5 MEDIUM-7's guard
+        // fires here too since `perRunSecrets` defaults true.
+        "--set",
+        "managedRunners.kubernetes.namespace=scp-runners",
         "--set",
         "managedIac.enabled=true",
         "--set",

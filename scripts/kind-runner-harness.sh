@@ -151,10 +151,16 @@ EOF
   # harness is exercising the Kubernetes launcher, so it selects it, and `workspace.claimName` comes
   # with it (a render-time prerequisite, owner decision 5) even though this single-node harness uses
   # the hostPath workspace below rather than a real RWX claim.
+  # `managedRunners.kubernetes.namespace` IS SET EXPLICITLY (M23.5 MEDIUM-7), even though it
+  # resolves to the exact string `--namespace` already gives `.Release.Namespace` — the render-time
+  # guard added in that fix reads the VALUE, not the resolved namespace, and refuses
+  # `perRunSecrets=true` (the chart's own default, exercised deliberately here) with the value left
+  # empty. Byte-identical output; this only satisfies the guard the same way a real operator would.
   helm template scp "${REPO_ROOT}/deploy/helm" \
     --namespace "$NAMESPACE" \
     --set managedRunners.launcher=kubernetes \
     --set managedRunners.kubernetes.workspace.claimName=scp-runner-harness-rwx \
+    --set managedRunners.kubernetes.namespace="$NAMESPACE" \
     --set managedIac.enabled=true \
     --set managedIac.runnerImage="$RUNNER_IMAGE" \
     --set serviceAccount.name=scp-runner-harness \
@@ -199,10 +205,12 @@ EOF
   log "creating the ResourceQuota namespace (no LimitRange) + ServiceAccount, with the chart's RBAC"
   kubectl create namespace "${NAMESPACE}-quota"
   kubectl -n "${NAMESPACE}-quota" create serviceaccount scp-runner-harness
+  # See the M23.5 MEDIUM-7 comment above the first `helm template` call in this function.
   helm template scp "${REPO_ROOT}/deploy/helm" \
     --namespace "${NAMESPACE}-quota" \
     --set managedRunners.launcher=kubernetes \
     --set managedRunners.kubernetes.workspace.claimName=scp-runner-harness-rwx \
+    --set managedRunners.kubernetes.namespace="${NAMESPACE}-quota" \
     --set managedIac.enabled=true \
     --set managedIac.runnerImage="$RUNNER_IMAGE" \
     --set serviceAccount.name=scp-runner-harness \

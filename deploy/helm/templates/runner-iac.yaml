@@ -107,6 +107,16 @@ rules:
   #   `update`/`patch` on `jobs/finalizers` — NOT granted, which is why the per-run Secret's
   #              ownerReference sets `blockOwnerDeletion: false`.
   #
+  # `delete` IS GRANTED, AND ITS BLAST RADIUS IS THE SAME SHAPE AS `list`'S — SAID HERE NOW RATHER
+  # THAN LEFT UNSTATED (M23.5 MEDIUM-7). `list` was refused because it can READ every Secret's body
+  # in this namespace; `delete` can DESTROY every Secret in this namespace, this release's own
+  # database credential included. Proved with the worker's own token against a live cluster:
+  #   DELETE …/secrets/scp-commanderscp-db -> {"status":"Success"} ; then GET -> NotFound
+  # `resourceNames` cannot narrow it (see below), so the fix is the render-time guard in
+  # `commanderscp.assertRunnerPrerequisites`: `perRunSecrets: true` with an empty
+  # `managedRunners.kubernetes.namespace` refuses to render at all, unless the operator states
+  # `acceptSharedNamespaceSecretDelete: true` and accepts this exact blast radius by name.
+  #
   # WHAT COULD NOT BE NARROWED, SAID PLAINLY RATHER THAN LEFT AS A SILENCE: `resourceNames`. Per-run
   # Secret names derive from `runId`, so the set is unbounded — and Kubernetes RBAC cannot restrict a
   # `create` by `resourceNames` under ANY circumstances, because the object's name is not known to
@@ -114,7 +124,8 @@ rules:
   # the reason stated. The narrowing that IS available is deployment-shaped:
   # `managedRunners.kubernetes.namespace` moves the Jobs, the Secrets, this Role and its binding into
   # a namespace of the runners' own, away from this release's Secrets. Recommended for anything
-  # holding real cloud credentials.
+  # holding real cloud credentials, and as of M23.5 it is enforced by default rather than merely
+  # recommended — see the render-time guard above.
   #
   # WHAT THE OWNER ACCEPTED BY GRANTING, recorded as a named combination in ADR-0035 rather than
   # implied here: a runner pod keeps a routable interface under owner decision 1's accepted
