@@ -6,6 +6,7 @@ import {
   RUNNER_LAUNCHER_OWNER_LABEL,
   RUNNER_MAXBUFFER_CODE,
   RUNNER_MIN_STEP_BUDGET_MS,
+  RUNNER_NEVER_STARTED_CODE,
   RUNNER_OUTCOME_UNKNOWN_CODE,
   RUNNER_REAP_BUDGET_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
@@ -962,16 +963,6 @@ export function kubernetesJobTermination(
     signal: null
   };
 }
-
-/**
- * THE `code` A RUN CARRIES WHEN THE BUDGET RAN OUT AND NOTHING HAD EVER STARTED.
- *
- * A STRING, so {@link classifyRunnerFailure} reaches `spawn-failed` rather than `budget-exhausted`.
- * The deadline is the SAME deadline — there is still exactly one bound — but the two situations it
- * can end are not the same situation, and only one of them means "a `tofu apply` was SIGTERMed
- * mid-flight, so the real infrastructure state is unknown".
- */
-export const RUNNER_NEVER_STARTED_CODE = "RunnerContainerNeverStarted";
 
 /**
  * WHAT THIS RUN OBSERVED — the whole input to {@link kubernetesStartVerdict}, and deliberately not
@@ -2098,10 +2089,12 @@ export function createKubernetesRunnerLauncher(
                 // and never the evidence, which is the half of principle 6 a Decision cannot do
                 // without.
                 message: `${verdict.message} — the failure that ended the run: ${e.message}`,
-                // A STRING `code`, read by `classifyRunnerFailure`:
-                // {@link RUNNER_NEVER_STARTED_CODE} reaches `spawn-failed` through the errno test,
-                // {@link RUNNER_OUTCOME_UNKNOWN_CODE} is tested BEFORE `deadlineExceeded` so that
-                // "I do not know" cannot be overwritten by "stopped mid-flight".
+                // A STRING `code`, read by `classifyRunnerFailure`, and BOTH of these are tested
+                // there ahead of `deadlineExceeded`: {@link RUNNER_NEVER_STARTED_CODE} so that
+                // "nothing ran" cannot be overwritten by "stopped mid-flight", and
+                // {@link RUNNER_OUTCOME_UNKNOWN_CODE} so that "I do not know" cannot be either.
+                // Neither reaches its kind by being a string any more — that was the accident pass
+                // 20 removed.
                 code: verdict.code,
                 // AND THE EVIDENCE THE ORIGINAL CARRIED IS CARRIED TOO. These used to be blanked,
                 // which was invisible while this rewrite only ever fired on a deadline path where
@@ -2111,16 +2104,30 @@ export function createKubernetesRunnerLauncher(
                 stdout: e.stdout,
                 stderr: e.stderr
               },
-              // AND THE TWO ARMS REPORT THE BOUND DIFFERENTLY, DELIBERATELY.
-              // {@link RUNNER_NEVER_STARTED_CODE} keeps `false` — unchanged from M23.5, and it is
-              // load-bearing twice over: it is what stops `budget-exhausted` winning the
-              // classification, and it is TRUE in the sense the boolean is read, because a Job the
-              // controller could not place would not have started with any budget at all.
-              // `outcome-unknown` passes the real answer through: there, more budget might well
-              // have bought the observation that is missing, so the bound is material and hiding it
-              // would be the same kind of silence this whole verdict exists to end.
-              deadlineExceeded:
-                verdict.code === RUNNER_OUTCOME_UNKNOWN_CODE ? e.deadlineExceeded : false,
+              // AND THE BOUND IS REPORTED AS IT WAS, FOR EVERY ARM — M23.5 verification pass 20,
+              // and the deletion of a `false` that had become a contradiction.
+              //
+              // IT USED TO READ `verdict.code === RUNNER_OUTCOME_UNKNOWN_CODE ? e.deadlineExceeded
+              // : false`, defended as load-bearing twice over: it stopped `budget-exhausted` winning
+              // the classification, and it was said to be "TRUE in the sense the boolean is read,
+              // because a Job the controller could not place would not have started with any budget
+              // at all". THE FIRST HALF IS NO LONGER TRUE AND THE SECOND NEVER WAS.
+              //
+              //  - The classification no longer depends on it: {@link classifyRunnerFailure} tests
+              //    {@link RUNNER_NEVER_STARTED_CODE} itself, ahead of `deadlineExceeded`, so the
+              //    kind is `spawn-failed` whatever this boolean says. A flag suppressed to protect a
+              //    ternary somewhere else is a workaround, not a fact.
+              //  - The reading it was defended on — "would more budget have helped?" — is not the
+              //    reading {@link RunnerFailure.deadlineExceeded} documents. That field is WHICH
+              //    BOUND ENDED THE RUN, and it says so at the type, one sentence long. Arm 2 made
+              //    the disagreement undeniable: its message is "the whole-run budget of Nms was
+              //    already spent when this run reached 'start'", the remedy really is to raise the
+              //    budget, and the record carried `deadlineExceeded: false` beside those words.
+              //
+              // SO IT PASSES THROUGH. `false` still arrives here for every arm the budget did NOT
+              // end — a REFUSED unsuspend (arm 3) is an HTTP status, not a clock — because it comes
+              // from the failure rather than from a rewrite of it.
+              deadlineExceeded: e.deadlineExceeded,
               redactions
             });
           }

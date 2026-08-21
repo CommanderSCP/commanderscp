@@ -825,6 +825,32 @@ export type RunnerFailureKind =
  */
 export const RUNNER_OUTCOME_UNKNOWN_CODE = "ERR_SCP_RUNNER_OUTCOME_UNKNOWN";
 
+/**
+ * THE `code` A RUN CARRIES WHEN NOTHING EVER STARTED — the producer's own statement that the runner
+ * container does not exist and never did, so nothing it could have touched was touched.
+ *
+ * READ BY {@link classifyRunnerFailure} BEFORE `deadlineExceeded`, exactly like
+ * {@link RUNNER_OUTCOME_UNKNOWN_CODE} and for the same reason: it is a DECLARATION, and a
+ * declaration may not be overwritten by an inference. Nearly every run that carries it ends AT the
+ * whole-run deadline (the poll loop is what discovers the deadline), so `budget-exhausted` — "a
+ * `tofu apply` was SIGTERMed mid-flight, so the real infrastructure state is unknown" — would
+ * otherwise win and assert the exact opposite of what the producer just said.
+ *
+ * IT USED TO REACH `spawn-failed` THROUGH THE ERRNO TEST, i.e. by being a string, and that was
+ * load-bearing by accident: the classification only came out right because the producer ALSO forced
+ * `deadlineExceeded: false` on the way past — a boolean that then contradicted its own message
+ * ("the whole-run budget … was already spent", with `deadlineExceeded: false`). M23.5 verification
+ * pass 20 separated the two: the code decides the KIND, the boolean reports WHICH CLOCK RAN OUT, and
+ * neither has to lie to protect the other. `classifyRunnerFailure`'s ordering is what makes that
+ * safe, and `A DECLARED "NOTHING STARTED" SURVIVES A TRUE deadlineExceeded` is the test that pins it.
+ *
+ * IT LIVES HERE, NEXT TO THE OTHER DECLARED CODE, RATHER THAN IN THE KUBERNETES ADAPTER — where it
+ * was defined and where it is still produced. `classifyRunnerFailure` now reads it, and the module
+ * cycle only resolves while `kubernetes-adapter.ts` imports from this file and never the reverse
+ * (see the re-export block at the bottom of this file).
+ */
+export const RUNNER_NEVER_STARTED_CODE = "RunnerContainerNeverStarted";
+
 // --------------------------------------------------------------------------------------------
 // THE ONE BOUND, CHOSEN ONCE, HERE — and it keeps BOTH ENDS.
 // --------------------------------------------------------------------------------------------
@@ -2612,6 +2638,13 @@ const FAILURE_WORDING: Record<RunnerFailureKind, string> = {
  *      overwritten by a test that infers one: `deadlineExceeded` would call it `budget-exhausted`
  *      ("stopped mid-flight") and the errno test would call it `spawn-failed` ("nothing ran"), and
  *      those are the two opposite claims it exists to refuse.
+ *   0b. {@link RUNNER_NEVER_STARTED_CODE} NEXT, and it is the SAME RULE as step 0 rather than a
+ *      second special case (M23.5 verification pass 20): a producer that has declared what became of
+ *      the runner outranks a test that infers it. This step is what lets the Kubernetes verdict
+ *      report `deadlineExceeded` HONESTLY — before it, the only thing keeping "the budget was
+ *      already spent when this run reached `start`" out of `budget-exhausted` was that same verdict
+ *      forcing the boolean to `false`, so the durable record said the budget ran out in words and
+ *      denied it in the field beside them.
  *   1. `deadlineExceeded` next, because a budget kill also sets `killed: true` and would otherwise
  *      read as `signalled` — and it is the distinction with the largest consequence.
  *   2. maxBuffer BEFORE the errno test, because its `code` IS a string
@@ -2696,15 +2729,23 @@ export function classifyRunnerFailure(err: RunnerLaunchError): RunnerFailure {
         // just declared it cannot make. It is also before the errno test, which would otherwise call
         // a STRING code `spawn-failed` — the opposite lie, and the one measured in the field.
         "outcome-unknown"
-      : err.deadlineExceeded
-        ? "budget-exhausted"
-        : err.code === RUNNER_MAXBUFFER_CODE
-          ? "output-exceeded"
-          : err.killed === true
-            ? "signalled"
-            : typeof err.code === "string"
-              ? "spawn-failed"
-              : "exit-nonzero";
+      : err.code === RUNNER_NEVER_STARTED_CODE
+        ? // SECOND, AND FOR THE SAME REASON — see {@link RUNNER_NEVER_STARTED_CODE}. A producer that
+          // has declared NOTHING RAN normally ends at the deadline too, so `budget-exhausted` was
+          // one test away from asserting "SIGTERMed mid-flight" about a container that never
+          // existed. It used to be kept out of that branch by the PRODUCER forcing
+          // `deadlineExceeded: false`, which made the record's own boolean contradict its own
+          // sentence; the ordering does it here instead, once, for every producer.
+          "spawn-failed"
+        : err.deadlineExceeded
+          ? "budget-exhausted"
+          : err.code === RUNNER_MAXBUFFER_CODE
+            ? "output-exceeded"
+            : err.killed === true
+              ? "signalled"
+              : typeof err.code === "string"
+                ? "spawn-failed"
+                : "exit-nonzero";
 
   const facts = [`code=${err.code === undefined ? "undefined" : String(err.code)}`];
   if (err.signal) facts.push(`signal=${err.signal}`);
@@ -4150,7 +4191,6 @@ export {
   RUNNER_CONTAINER_NAME,
   RUNNER_LAUNCHER_DEADLINE_ANNOTATION,
   RUNNER_NETWORK_LABEL,
-  RUNNER_NEVER_STARTED_CODE,
   RUNNER_RUN_ID_LABEL,
   RUNNER_WORKSPACE_VOLUME_NAME,
   createFetchKubernetesIo,

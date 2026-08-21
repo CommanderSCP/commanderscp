@@ -880,7 +880,13 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
     // NOT `budget-exhausted`. Nothing ran, so nothing was mutated — which is `spawn-failed`'s
     // wording, verbatim, and the only honest thing to tell an operator holding a `tofu apply`.
     expect(result.failure!.kind).toBe("spawn-failed");
-    expect(result.failure!.deadlineExceeded).toBe(false);
+    // AND THE BOUND THAT ENDED IT IS REPORTED, NOT SUPPRESSED (M23.5 verification pass 20). This
+    // asserted `false` while the run had polled to the deadline and the message said so, because the
+    // producer forced the flag down to keep `budget-exhausted` from winning the classification.
+    // `classifyRunnerFailure` now tests {@link RUNNER_NEVER_STARTED_CODE} itself, ahead of the flag,
+    // so the KIND is settled by what the producer declared and the FLAG is free to say which clock
+    // ran out. The two answer different questions; they were one field.
+    expect(result.failure!.deadlineExceeded).toBe(true);
     expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
     // THE DIAGNOSIS THAT USED TO BE DELETED WITH THE JOB.
     expect(result.failure!.detail).toContain("must specify limits.memory for: runner");
@@ -1007,7 +1013,9 @@ describe("M23.2: a pod's terminal state maps onto the port's failure kinds", () 
       `discovering the deadline at the transport produced ${result.failure!.kind}: ${result.failure!.detail}`
     ).toBe("spawn-failed");
     expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
-    expect(result.failure!.deadlineExceeded).toBe(false);
+    // TRUE, AND THE KIND IS STILL `spawn-failed` — pass 20. The deadline really is what ended this
+    // run; what it did NOT do is start a container, and that is the `code`'s job to say.
+    expect(result.failure!.deadlineExceeded).toBe(true);
     expect(result.failure!.detail).toContain("NOTHING RAN");
   });
 
@@ -1630,6 +1638,24 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(result.failure!.kind).toBe("spawn-failed");
     expect(result.failure!.detail).toContain("NEVER ISSUED");
     expect(result.failure!.detail).toContain("NOTHING RAN");
+    /**
+     * AND THE BOOLEAN AGREES WITH THE SENTENCE — M23.5 verification pass 20, MEDIUM.
+     *
+     * This record used to read `deadlineExceeded: false` under a message that begins "the whole-run
+     * budget of 300ms (RunnerSpec.timeoutMs) was already spent when this run reached 'start'". The
+     * budget PROVABLY ended this run — that is the entire reason the unsuspend was never issued, and
+     * the remedy an operator needs is to raise `timeoutMs` — and the one field a caller is told to
+     * read as "which bound ended the run" denied it. Nothing pinned either half, so the flip is
+     * pinned in BOTH directions here: the flag is true, and the kind stays `spawn-failed` rather
+     * than becoming `budget-exhausted` ("SIGTERMed mid-flight") about a Job still sitting at
+     * `suspend: true`.
+     */
+    expect(
+      result.failure!.deadlineExceeded,
+      `a run the budget stopped before 'start' was recorded as not a budget failure: ${result.failure!.detail}`
+    ).toBe(true);
+    expect(result.failure!.detail).toContain("was already spent");
+    expect(result.failure!.detail).not.toContain("SIGTERMed mid-flight");
     // THE SENTENCE, CHECKED AGAINST THE RECORDED EFFECTS RATHER THAN AGAINST ITSELF. "Never issued"
     // is a claim about the wire; this is the wire.
     expect(requestsOf(c.ops).some((o) => o.method === "PATCH")).toBe(false);

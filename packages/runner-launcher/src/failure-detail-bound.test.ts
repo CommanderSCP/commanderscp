@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   RUNNER_DETAIL_MAX_CHARS,
   RUNNER_DETAIL_TAIL_CHARS,
+  RUNNER_NEVER_STARTED_CODE,
   RUNNER_OUTCOME_UNKNOWN_CODE,
   RunnerLaunchError,
   boundDetail,
@@ -325,6 +326,61 @@ describe("`outcome-unknown` is decided BEFORE every test that would infer a verd
 
   it("AND IT BEATS `killed` — a run nobody watched must not be read as a signal either", () => {
     expect(classifyRunnerFailure(unknown({ killed: true })).kind).toBe("outcome-unknown");
+  });
+
+  /**
+   * THE SECOND DECLARED CODE, AND IT IS THE SAME RULE — M23.5 verification pass 20.
+   *
+   * {@link RUNNER_NEVER_STARTED_CODE} used to reach `spawn-failed` BY BEING A STRING, through the
+   * errno test at the very bottom of the chain — which meant it only ever got there when
+   * `deadlineExceeded` happened to be `false`. It is a verdict produced almost exclusively by runs
+   * that polled to the whole-run deadline, so the flag was `true` essentially every time, and the
+   * only thing keeping "SIGTERMed mid-flight" off a Job that never started a container was the
+   * Kubernetes verdict FORCING the flag back down on the way past. That force made the durable
+   * record contradict itself: `deadlineExceeded: false` printed beside "the whole-run budget … was
+   * already spent". These two cases are what let the force be deleted.
+   */
+  const neverStarted = (over: { deadlineExceeded?: boolean; killed?: boolean } = {}) =>
+    new RunnerLaunchError({
+      step: "start",
+      file: "kubernetes://scp",
+      argv: ["GET", "/api/v1/namespaces/scp/pods"],
+      cause: {
+        message:
+          "the whole-run budget of 300ms (RunnerSpec.timeoutMs) was already spent when this run " +
+          "reached 'start', so the unsuspend was NEVER ISSUED — NOTHING RAN and nothing was mutated",
+        code: RUNNER_NEVER_STARTED_CODE,
+        killed: over.killed,
+        stdout: "",
+        stderr: ""
+      },
+      redactions: [],
+      deadlineExceeded: over.deadlineExceeded === true
+    });
+
+  it("A DECLARED `NOTHING STARTED` SURVIVES A TRUE `deadlineExceeded` — and keeps the flag", () => {
+    const failure = classifyRunnerFailure(neverStarted({ deadlineExceeded: true }));
+    // THE KIND IS THE PRODUCER'S DECLARATION. Move this test below `deadlineExceeded` and the
+    // record becomes `budget-exhausted` — "a `tofu apply` was SIGTERMed mid-flight, so the real
+    // infrastructure state is unknown" — about a Job that never left `suspend: true`.
+    expect(
+      failure.kind,
+      `a declared "nothing started" was reclassified ${failure.kind}: ${failure.detail}`
+    ).toBe("spawn-failed");
+    expect(failure.detail).not.toContain("SIGTERMed mid-flight");
+    // AND THE FLAG IS NOT SUPPRESSED TO GET THERE. This is the half that was missing: the kind and
+    // the boolean answer different questions, so both can be true at once, and the producer no
+    // longer has to lie in one field to be understood in the other.
+    expect(failure.deadlineExceeded).toBe(true);
+    expect(failure.detail).toContain("was already spent");
+  });
+
+  it("AND IT BEATS `killed` TOO — the same order, for the same reason", () => {
+    // Reachable on the Docker path the day this code is produced there: a budget kill sets
+    // `killed: true`, and `signalled` would say the runner was stopped, which is the same
+    // unfounded claim in a third vocabulary.
+    const failure = classifyRunnerFailure(neverStarted({ deadlineExceeded: true, killed: true }));
+    expect(failure.kind).toBe("spawn-failed");
   });
 
   it("EVERY KIND HAS WORDING — the compiler's arm, restated where a reader can see it fail", () => {

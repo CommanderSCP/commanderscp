@@ -925,7 +925,12 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
       result.failure!.kind,
       `the quota-rejected run was classified ${result.failure!.kind}: ${result.failure!.detail}`
     ).toBe("spawn-failed");
-    expect(result.failure!.deadlineExceeded).toBe(false);
+    // AND THE BOUND IS REPORTED AS IT WAS — M23.5 verification pass 20. This run really did poll to
+    // its 20s deadline, so `true` is the fact; `spawn-failed` is what the producer DECLARED about
+    // the runner, and `classifyRunnerFailure` now reads that declaration ahead of the flag instead
+    // of relying on the flag being suppressed. The assertion here was `false` while the run's own
+    // message named the budget, which is the contradiction pass 20 removed.
+    expect(result.failure!.deadlineExceeded).toBe(true);
     // THE API SERVER'S OWN SENTENCE, read off the Job's events before teardown deleted them.
     expect(result.failure!.detail).toMatch(/quota/i);
     expect(result.failure!.detail).toContain("NOTHING RAN");
