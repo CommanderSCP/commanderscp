@@ -1677,6 +1677,28 @@ function redactAllValues(text: string, needles: readonly string[]): string {
 }
 
 /**
+ * ESCAPES `spec.operands` AND `spec.env[].value` FOR THE KUBERNETES `$(VAR)` EXPANSION SYNTAX
+ * (M23.5 MEDIUM-6). The API server expands `args` and `env[].value` itself, independent of and
+ * before the shell the runner's image runs: `$$` collapses to a literal `$`, and `$(NAME)` is
+ * replaced with the value of a container env var named `NAME` (defined ones substitute; undefined
+ * ones pass through as literal text) — INCLUDING a key that arrives only through `envFrom`'s
+ * `secretRef`, which is exactly the channel `spec.secretEnv` uses to keep a credential out of this
+ * manifest. Measured: an operand `"$(MY_CREDENTIAL)"` with a matching `secretEnv` key put that
+ * credential's VALUE into the runner's argv — a manifest built to keep secrets out of `args`
+ * defeating itself the moment a caller's text happened to look like a reference. `spec.operands`
+ * and `spec.env` are caller-controlled (an IaC action name today; managed-dep already puts tenant
+ * manifest text in an operand), so this is not a hypothetical those callers must remember — it is
+ * applied here, once, to both fields, so BYTE-FOR-BYTE pass-through is what every caller gets.
+ * `$` is the only character `$(VAR)`/`$$` expansion is sensitive to, so escaping it alone is
+ * sufficient: `$$` in the caller's text becomes `$$$$`, which the API server collapses back to
+ * `$$`, and `$(` becomes `$$(`, which is never a `$(VAR)` opener. Pinned in
+ * `kubernetes-launch.golden.test.ts` ("MEDIUM-6").
+ */
+export function escapeKubernetesVarExpansion(text: string): string {
+  return text.replaceAll("$", "$$$$");
+}
+
+/**
  * THE JOB MANIFEST — this adapter's `argv`, and the thing its golden pins whole.
  *
  * A PURE FUNCTION OF THE SPEC AND THE DEPLOYMENT SETTINGS, exported for exactly that reason: the
@@ -1685,6 +1707,10 @@ function redactAllValues(text: string, needles: readonly string[]): string {
  * we remembered to check". `kubernetes-launch.golden.test.ts` asserts the whole object with
  * `toStrictEqual`, so a field ADDED here without a golden update is a red test rather than a silent
  * change to what every managed run does.
+ *
+ * `args` and `env[].value` are escaped through {@link escapeKubernetesVarExpansion} before they
+ * reach this object (M23.5 MEDIUM-6) — see that function for why an unescaped caller string can
+ * leak a `secretEnv` value into the runner's argv.
  */
 export function jobManifest(
   spec: RunnerSpec,
@@ -1780,10 +1806,13 @@ export function jobManifest(
               // identical image ran fine under `docker create`. The chart passes
               // `.Values.image.pullPolicy` here, the same value its other five pods use.
               ...(pod.imagePullPolicy ? { imagePullPolicy: pod.imagePullPolicy } : {}),
-              args: spec.operands,
+              args: spec.operands.map(escapeKubernetesVarExpansion),
               env: spec.env.map((entry) => {
                 const eq = entry.indexOf("=");
-                return { name: entry.slice(0, eq), value: entry.slice(eq + 1) };
+                return {
+                  name: entry.slice(0, eq),
+                  value: escapeKubernetesVarExpansion(entry.slice(eq + 1))
+                };
               }),
               ...(spec.secretEnv.length > 0
                 ? { envFrom: [{ secretRef: { name: opts.secretName } }] }

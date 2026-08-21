@@ -269,4 +269,50 @@ describe("THE KUBERNETES LAUNCH GOLDEN", () => {
     ).metadata.labels;
     expect(labels["scp.launcher.network"]).toBe("unexpressible");
   });
+
+  // ==============================================================================================
+  // MEDIUM-6 — `args` AND `env[].value` ARE ESCAPED FOR KUBERNETES `$(VAR)`/`$$` EXPANSION
+  // ==============================================================================================
+  //
+  // Kubernetes expands `$(VAR)` and collapses `$$` -> `$` in `args` and `env[].value`, ON THE API
+  // SERVER, independent of the runner image's own shell. Measured: `"A[$$]B[$(NOT_DEFINED)]C[$PLAIN]"`
+  // came back as `"A[$]B[$(NOT_DEFINED)]C[$PLAIN]"`, and an operand `"$(MY_CREDENTIAL)"` with a
+  // matching `secretEnv` key interpolated that credential's VALUE from the `envFrom` secretRef
+  // straight into the runner's argv — visible only as `***` because the adapter's own redactor
+  // happened to catch it. `escapeKubernetesVarExpansion` is applied to both fields so the caller's
+  // text survives byte-for-byte instead of being run through a second, undocumented interpreter.
+
+  it("A LITERAL `$` IN AN OPERAND SURVIVES THE ROUND TRIP — not a `$(VAR)` reference", () => {
+    const manifest = jobManifest(
+      { ...SPEC, operands: ["A[$$]B[$(NOT_DEFINED)]C[$PLAIN]"] },
+      OPTS
+    ) as { spec: { template: { spec: { containers: Record<string, unknown>[] } } } };
+    // What the API server does to THIS escaped string: `$$$$` -> `$$`, `$$(` -> `$(` (not expanded,
+    // since `$(` only opens a reference when it is not preceded by an escaped `$`), `$$P` -> `$P`.
+    // The net effect is the ORIGINAL, UNESCAPED text the caller supplied.
+    expect(manifest.spec.template.spec.containers[0]!["args"]).toStrictEqual([
+      "A[$$$$]B[$$(NOT_DEFINED)]C[$$PLAIN]"
+    ]);
+  });
+
+  it("AN OPERAND SHAPED LIKE A SECRET REFERENCE DOES NOT BECOME ONE", () => {
+    // Before the fix this operand, combined with a `secretEnv` key of the same name, put the
+    // credential's VALUE in `args` on a real cluster (see the module comment on
+    // `escapeKubernetesVarExpansion`). The golden proves only the SHAPE — that the string reaching
+    // Kubernetes is not a bare `$(...)` — since the manifest never carries the secret's value at all.
+    const manifest = jobManifest(
+      { ...SPEC, operands: ["$(MY_CREDENTIAL)"], secretEnv: ["MY_CREDENTIAL=never-in-a-manifest"] },
+      OPTS
+    ) as { spec: { template: { spec: { containers: Record<string, unknown>[] } } } };
+    expect(manifest.spec.template.spec.containers[0]!["args"]).toStrictEqual(["$$(MY_CREDENTIAL)"]);
+  });
+
+  it("`env[].value` IS ESCAPED THE SAME WAY — `env[].name` IS NOT", () => {
+    const manifest = jobManifest({ ...SPEC, env: ["PLAIN=a$(VAR)b"] }, OPTS) as {
+      spec: { template: { spec: { containers: Record<string, unknown>[] } } };
+    };
+    expect(manifest.spec.template.spec.containers[0]!["env"]).toStrictEqual([
+      { name: "PLAIN", value: "a$$(VAR)b" }
+    ]);
+  });
 });
