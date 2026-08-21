@@ -35,6 +35,8 @@ import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseAllDocuments } from "yaml";
+import { jobManifest } from "@scp/runner-launcher";
+import type { RunnerSpec } from "@scp/runner-launcher";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CHART_DIR = path.resolve(__dirname, "../../../deploy/helm");
@@ -1789,6 +1791,80 @@ function main(): void {
       k8s.some((d) => String(d.metadata?.name ?? "").includes("allow-kube-api-runner")),
       `[${label}] no API-server egress allow for the SCP pods. The chart's own -default-deny selects the worker (its comment records "api / worker / migrations / postgres-eval are NOT selected" as the BLAST RADIUS of the hook allow), so on any CNI that enforces policy every managed run would hang`
     );
+
+    // (2b) M23.5 MEDIUM-10 — THE RUNNER POD'S OWN DENY-ALL, PROVEN TO SELECT THE POD.
+    //
+    //      ADR-0035 §6a's "an operator on Calico/Cilium loses nothing" is a claim about a
+    //      NetworkPolicy that must actually SELECT the runner pod, not merely exist in the chart. A
+    //      podSelector rendered by Helm and a pod template built by `jobManifest()` are two
+    //      independent sources of truth for the SAME label; this reads both and checks the subset
+    //      relationship the API server itself applies, rather than asserting they were WRITTEN to
+    //      agree.
+    {
+      type NetworkPolicyDoc = K8sDoc & {
+        spec?: {
+          podSelector?: { matchLabels?: Record<string, string> };
+          policyTypes?: string[];
+          ingress?: unknown[];
+          egress?: unknown[];
+        };
+      };
+      const denyPolicy = k8s.find(
+        (d) =>
+          d.kind === "NetworkPolicy" &&
+          String(d.metadata?.name ?? "").endsWith("-runner-network-none-deny")
+      ) as NetworkPolicyDoc | undefined;
+      assert(
+        denyPolicy,
+        `[${label}] no runner-network-none-deny NetworkPolicy rendered with the Kubernetes launcher selected — every managed run has unrestricted egress with a mounted credential on any CNI, the ADR-0035 §6a gap MEDIUM-10 fixed`
+      );
+      assert(
+        denyPolicy?.metadata?.namespace === "scp-runners",
+        `[${label}] the runner deny policy rendered into '${String(denyPolicy?.metadata?.namespace)}', not the runner namespace — a NetworkPolicy only applies within its own namespace, so this would select nothing`
+      );
+      assert(
+        JSON.stringify([...(denyPolicy?.spec?.policyTypes ?? [])].sort()) ===
+          '["Egress","Ingress"]' &&
+          !denyPolicy?.spec?.ingress &&
+          !denyPolicy?.spec?.egress,
+        `[${label}] the runner deny policy is not deny-all in both directions (got policyTypes=${JSON.stringify(denyPolicy?.spec?.policyTypes)}, ingress=${JSON.stringify(denyPolicy?.spec?.ingress)}, egress=${JSON.stringify(denyPolicy?.spec?.egress)})`
+      );
+
+      // THE PROOF: build the SAME pod `jobManifest()` produces for a real run in this namespace,
+      // and check the policy's `matchLabels` against its ACTUAL labels — the same subset test the
+      // API server runs. A name-based assertion ("a policy called *-deny exists") cannot catch a
+      // typo'd label value; this can.
+      const runnerSpec: RunnerSpec = {
+        runId: "verify-medium10",
+        labels: {},
+        image: "ghcr.io/commanderscp/scp-runner-iac:0.1.0",
+        operands: ["apply"],
+        networkMode: "none",
+        env: [],
+        secretEnv: [],
+        copyIn: [],
+        copyOut: undefined,
+        timeoutMs: 600_000,
+        maxBuffer: 32 * 1024 * 1024
+      };
+      const manifest = jobManifest(runnerSpec, {
+        namespace: "scp-runners",
+        jobName: "scp-runner-iac-verify-medium10",
+        secretName: "scp-runner-iac-verify-medium10-env",
+        reapDeadline: new Date().toISOString(),
+        slots: new Map(),
+        workspaceVolume: { kind: "hostPath", path: "/var/lib/scp/runner-workspace" },
+        runAsNonRoot: false,
+        ttlSecondsAfterFinished: 3_600
+      }) as { spec: { template: { metadata: { labels: Record<string, string> } } } };
+      const podLabels = manifest.spec.template.metadata.labels;
+      const matchLabels = denyPolicy?.spec?.podSelector?.matchLabels ?? {};
+      const selects = Object.entries(matchLabels).every(([k, v]) => podLabels[k] === v);
+      assert(
+        selects,
+        `[${label}] the runner deny policy's podSelector ${JSON.stringify(matchLabels)} does NOT select a network-mode-none runner pod's actual labels ${JSON.stringify(podLabels)} — rendered but selecting nothing, ADR-0035 §6a's exact starting failure`
+      );
+    }
 
     // (3) THE PER-RUN SECRET GRANT — DECLARED HERE, NOT TOLERATED HERE.
     //

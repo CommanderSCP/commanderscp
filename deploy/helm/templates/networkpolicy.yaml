@@ -276,6 +276,57 @@ spec:
         {{- end }}
 ---
 {{- end }}
+{{- if eq (include "commanderscp.needsRunnerApiAccess" .) "true" }}
+{{/*
+Ingress+Egress: DENY-ALL FOR THE RUNNER PODS THEMSELVES (M23.5 MEDIUM-10, ADR-0035 §6a).
+
+WHAT WAS FALSE AS SHIPPED. `-default-deny` above selects `commanderscp.selectorLabels` — this
+chart's own api/worker/postgres-eval pods. A runner Job's pod carries NONE of those labels;
+`jobManifest()` stamps only `scp.executor`, `scp.run-id` and `scp.launcher.*`. So on EVERY CNI,
+enforcing or not, a managed-iac runner had UNRESTRICTED egress with a mounted cloud credential —
+`-default-deny` never selected it in the first place, which is a different failure than the one
+ADR-0035 §6a named. That ADR reads: "The pod carries `scp.launcher.network=none` precisely so a
+NetworkPolicy can select them... An operator on Calico/Cilium loses nothing." Measured against the
+shipped chart: nothing selected them, so that operator lost everything `--network none` was standing
+in for. This policy is what makes the sentence true rather than aspirational.
+
+WHY `scp.launcher.network: none` AND NOT "every runner pod regardless of mode". `spec.networkMode`
+is server-injected, never tenant-settable (see `resolveRunnerLauncher`'s own doc), and every managed
+class ships it hardcoded or defaulted to `"none"` today (`RUNNER_NETWORK_MODE` /
+`DEFAULT_NETWORK_MODE` in `packages/plugins/managed-{iac,scan,dep}`) — so this selects every runner
+pod that exists in production. An operator who deliberately configures a different mode has asked
+for different connectivity and owns the NetworkPolicy that expresses it; this default does not guess
+at what that should be.
+
+PROVEN TO SELECT THE POD, NOT MERELY RENDERED (the ADR's own bar for choosing this over rewriting
+§6a). `tools/helm-verify` renders this policy AND `jobManifest()`'s pod template labels from the
+SAME `helm template` invocation and asserts the podSelector's `matchLabels` is satisfied by the pod
+template's actual labels — `matchLabels` NetworkPolicy semantics select a pod whose labels are a
+SUPERSET, so this is the same subset check the API server performs, not a name-based guess.
+
+NAMESPACED TO THE RUNNER NAMESPACE, not `.Release.Namespace` — a NetworkPolicy only ever applies
+within its own namespace, and since M23.5 MEDIUM-7 the runner's Jobs, Secrets and RBAC already live
+in `commanderscp.runnerNamespace`, which may differ from the release's. Same helper, same value,
+for the same reason `runner-iac.yaml`'s Role uses it.
+
+NO EGRESS LIST AND NO INGRESS LIST — deny-all in both directions, mirroring what `--network none`
+denies on the Docker path (`ADR-0035 §6a`'s own point of comparison), which is the strongest posture
+this file's convention (an unlisted `policyTypes` entry with no rules is deny-all) can express.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "commanderscp.fullname" . }}-runner-network-none-deny
+  namespace: {{ include "commanderscp.runnerNamespace" . }}
+  labels:
+    {{- include "commanderscp.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      scp.launcher.network: none
+  policyTypes: ["Ingress", "Egress"]
+---
+{{- end }}
 {{- range .Values.networkPolicy.executorEgress }}
 # Egress: executor allowlist entry {{ .name | quote }} (Mode A / BYO-coordinate, DESIGN §12) — SCP
 # api/worker make outbound observe/trigger/status/abort calls to the execution systems they
