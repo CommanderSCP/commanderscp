@@ -27,13 +27,57 @@ WHAT M23.4 CHANGED HERE, AND WHY EACH ONE WAS A DEFECT RATHER THAN A PREFERENCE:
    for the docker launcher, and `helm-verify` asserts it) is a standing grant for a caller that
    never calls. Strictly a narrowing, and declared as one in `tools/helm-verify`.
 
-HONEST SCOPE, INHERITED FROM M8 AND NOW OUT OF DATE IN THE OTHER DIRECTION. This module used to say
-managed execution "does NOT yet work unmodified inside a standard Kubernetes pod". As of M23.2 it
-does: `packages/runner-launcher`'s Kubernetes adapter launches each run as a Job through the API
-server, and `kubernetes-adapter.kind.test.ts` proves it against a real cluster. The `docker
-create`/`docker cp`/`docker start` path is still what a docker-compose or VM deployment takes; which
-one runs is `managedRunners.launcher`. The ConfigMap at the bottom is the M8 REFERENCE SHAPE and is
-no longer what launches — `jobManifest()` is, pinned whole by `kubernetes-launch.golden.test.ts`.
+WHAT IS MACHINE-CHECKED ABOUT THIS FILE (M23.6, and this paragraph REPLACES the "HONEST SCOPE" note
+that stood here from M8 until 2026-08-21). That note said managed execution "does NOT yet work
+unmodified inside a standard Kubernetes pod", and it was already out of date in the other direction:
+`packages/runner-launcher`'s Kubernetes adapter launches each run as a Job through the API server and
+`kubernetes-adapter.kind.test.ts` proves it against a real cluster. The note's own instruction was
+that it stays exactly as written until every M23.6 clause is machine-checked. All seven now are, and
+these are the gates rather than a summary of them:
+
+  THE RULES BELOW ARE DIFFED AGAINST WHAT THE ADAPTER CALLS, IN BOTH DIRECTIONS. `kubernetesRunnerRbac()`
+  is the declaration; `kubernetes-rbac-contract.test.ts` holds it to the code by DRIVING every route
+  the adapter has over a recording io and deriving the verbs from the wire; `tools/helm-verify`
+  asserts these rules equal it as a SET, so an UNUSED verb is a red build exactly as a missing one
+  is. The kind suite asks a real authorizer the same question, including the "no"s.
+
+  NO POD MOUNTS A CONTAINER RUNTIME SOCKET, IN ANY VALUE COMBINATION. `helm-verify` renders 156
+  combinations — every `managed*` enablement combination x both launchers x runner namespace x
+  perRunSecrets x acceptSharedNamespaceSecretDelete x runAsNonRoot, twice, plus an api.role sweep —
+  and checks each render structurally and as raw bytes. It also derives the RUNNER JOB manifest from
+  each render's own environment, because `helm template` cannot see that pod at all, and checks it
+  too. A source census over every template asserts the strings appear nowhere, which covers the
+  combinations no sweep can enumerate.
+
+  NOTHING SPAWNS A CONTAINER CLI ON THIS PATH, AND NOTHING KUBERNETES IS BUILT ON THE OTHER ONE.
+  `spawnRunnerProcess` is the package's only spawn and records the binary by name; each of the three
+  managed plugins asserts an empty ledger on the Kubernetes path and a non-empty one on the Docker
+  path. A construction counter makes "no Kubernetes client is instantiated on a compose install" an
+  assertion rather than an inference.
+
+WHAT IS STILL NOT COVERED, KEPT HERE RATHER THAN RETIRED WITH THE NOTE:
+
+  `--network none` IS NOT EXPRESSIBLE ON A POD. No pod-spec field removes a pod's network namespace.
+  Runner pods carry `scp.launcher.network=<requested mode>` and the chart renders a default-deny
+  NetworkPolicy for `none`, which is TRAFFIC DENIAL, NOT INTERFACE ABSENCE — and fail-open on a CNI
+  that does not enforce NetworkPolicy at all. Owner decision 2026-08-18; do not read the label as
+  containment.
+
+  THE `secrets: delete` GRANT IS NAMESPACE-WIDE and `resourceNames` cannot narrow it (see the block
+  on the rule itself). The available narrowing is deployment-shaped — a runner namespace — and it is
+  enforced at render time rather than recommended.
+
+  THE START VERDICT CAN ASSERT MORE THAN IT WATCHED, for up to `2 * pollIntervalMs +
+  RUNNER_MIN_STEP_BUDGET_MS` (4,010ms at the default cadence): a container that starts inside that
+  window is not in the last landed read, and arm 7 says `NOTHING RAN`. Closing it needs a fourth
+  post-deadline call, which moves the reap stamp and every outer grace. A second residual beside it:
+  arm 7 does not ask WHAT the last read said, so a pod the cluster reported as conclusively blocked
+  and which is then unblocked inside the same window is still recorded as never having started. Both
+  are stated in full at `kubernetesStartVerdict` in `packages/runner-launcher/src/kubernetes-adapter.ts`.
+
+  THE DOCKER PATH IS STILL WHAT A DOCKER-COMPOSE OR VM DEPLOYMENT TAKES; which one runs is
+  `managedRunners.launcher`. The ConfigMap at the bottom is the M8 REFERENCE SHAPE and is no longer
+  what launches — `jobManifest()` is, pinned whole by `kubernetes-launch.golden.test.ts`.
 */}}
 {{- if eq (include "commanderscp.needsRunnerApiAccess" .) "true" }}
 apiVersion: rbac.authorization.k8s.io/v1
