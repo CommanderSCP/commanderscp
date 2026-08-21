@@ -183,11 +183,49 @@ EOF
     --show-only templates/runner-iac.yaml \
     | kubectl apply -n "${NAMESPACE}-nosecrets" -f -
 
+  # A THIRD NAMESPACE WITH A COMPUTE ResourceQuota AND NO DEFAULTING LimitRange (M23.5).
+  #
+  # THIS IS THE ONLY WAY TO MEASURE HIGH-4's FIRST ROUTE, and a fake cannot produce it: the Job is
+  # accepted, unsuspended, and then the CONTROLLER's pod CREATE is refused by admission. No pod ever
+  # exists, so `kubernetesTermination` — which reads `pod.status.containerStatuses` and nothing else
+  # — has nothing to read, and before M23.5 the adapter polled to the whole-run deadline and reported
+  # `budget-exhausted`: "a `tofu apply` was SIGTERMed mid-flight, so the real infrastructure state is
+  # unknown", when nothing had run. The refusal's only record is the Job controller's `FailedCreate`
+  # Event, and teardown deletes the Job.
+  #
+  # A quota with no LimitRange beside it is NOT a contrived shape. It is what a platform team puts on
+  # a shared cluster, and a dedicated runner namespace — which `values.yaml` recommends by name — is
+  # exactly where they put it.
+  log "creating the ResourceQuota namespace (no LimitRange) + ServiceAccount, with the chart's RBAC"
+  kubectl create namespace "${NAMESPACE}-quota"
+  kubectl -n "${NAMESPACE}-quota" create serviceaccount scp-runner-harness
+  helm template scp "${REPO_ROOT}/deploy/helm" \
+    --namespace "${NAMESPACE}-quota" \
+    --set managedRunners.launcher=kubernetes \
+    --set managedRunners.kubernetes.workspace.claimName=scp-runner-harness-rwx \
+    --set managedIac.enabled=true \
+    --set managedIac.runnerImage="$RUNNER_IMAGE" \
+    --set serviceAccount.name=scp-runner-harness \
+    --show-only templates/runner-iac.yaml \
+    | kubectl apply -n "${NAMESPACE}-quota" -f -
+  kubectl apply -n "${NAMESPACE}-quota" -f - <<'QUOTA'
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: runner-quota
+spec:
+  hard:
+    limits.cpu: "4"
+    limits.memory: 8Gi
+QUOTA
+
   log "minting a ServiceAccount token and extracting the cluster CA"
   local token ca_file api_base
   token="$(kubectl -n "$NAMESPACE" create token scp-runner-harness --duration=2h)"
   local nosecrets_token
   nosecrets_token="$(kubectl -n "${NAMESPACE}-nosecrets" create token scp-runner-harness --duration=2h)"
+  local quota_token
+  quota_token="$(kubectl -n "${NAMESPACE}-quota" create token scp-runner-harness --duration=2h)"
   ca_file="${WORKDIR}/cluster-ca.crt"
   kubectl config view --raw --minify -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' \
     | base64 -d >"$ca_file"
@@ -199,6 +237,8 @@ EOF
   "namespace": "${NAMESPACE}",
   "noSecretsNamespace": "${NAMESPACE}-nosecrets",
   "noSecretsToken": "${nosecrets_token}",
+  "quotaNamespace": "${NAMESPACE}-quota",
+  "quotaToken": "${quota_token}",
   "apiBase": "${api_base}",
   "token": "${token}",
   "caFile": "${ca_file}",

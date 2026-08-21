@@ -63,6 +63,28 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log"]
     verbs: ["get", "list", "watch"]
+  # THE JOB'S OWN EVENTS (M23.5) — `list` only, and it is the ONLY place one failure route is ever
+  # written down.
+  #
+  # WHY IT IS NEEDED. When a Job cannot create a pod — a ResourceQuota requiring compute limits, a
+  # PodSecurity admission refusal — there is no pod to carry a status and the Job's `status` says
+  # nothing either. The controller writes `Warning FailedCreate: ... must specify limits.memory for:
+  # runner` as an Event on the Job, and that is the whole diagnosis. Without this rule the adapter
+  # polled to the whole-run deadline and reported `budget-exhausted`, i.e. "a `tofu apply` was
+  # SIGTERMed mid-flight, so the real infrastructure state is unknown" — when nothing had run at all.
+  # Teardown then deleted the Job and took the event with it.
+  #
+  # WHY IT IS NARROW. `list` on `""/events` in the RUNNER namespace only, no `watch` and no `create`.
+  # Events are metadata about objects this ServiceAccount already reads (its own Jobs and pods); they
+  # carry no credential, unlike the `list` on secrets this Role deliberately refuses. The adapter
+  # issues ONE such GET per poll and only while NO pod exists — the pathological case this exists for.
+  #
+  # A DEPLOYMENT THAT DOES NOT UPGRADE THIS ROLE STILL WORKS. The adapter accepts a 403 on the event
+  # read and degrades to a less specific reason rather than letting an authorisation error stand in
+  # for the real cause. Pinned by `kubernetes-adapter.test.ts`'s "A 403 ON THE EVENT READ DEGRADES".
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
   {{- if .Values.managedRunners.kubernetes.perRunSecrets }}
   # THE PER-RUN SECRET GRANT (M23.2 declared it and shipped it OFF; the owner granted it 2026-08-20,
   # "grant the secrets RBAC, keep going"). This block is the ONLY thing that renders it, and the same

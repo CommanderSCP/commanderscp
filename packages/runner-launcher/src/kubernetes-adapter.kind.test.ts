@@ -69,12 +69,19 @@ const execFileAsync = promisify(execFile);
  */
 
 interface Harness {
+  /** The kind cluster's name — needed to `kind load` an image into it. */
+  cluster: string;
   namespace: string;
   /** The OPT-OUT namespace: the same chart rendered at `perRunSecrets=false`. See the harness script
    *  for why this pair's polarity inverted in M23.4 — `namespace` above is now the one WITH the
    *  grant, because that is what the chart's defaults produce since the owner took the decision. */
   noSecretsNamespace: string;
   noSecretsToken: string;
+  /** M23.5 — a namespace with a compute ResourceQuota and NO defaulting LimitRange. The only way to
+   *  produce HIGH-4's first route: the Job is accepted, and the CONTROLLER's pod CREATE is refused,
+   *  so no pod ever exists for `kubernetesTermination` to read. */
+  quotaNamespace: string;
+  quotaToken: string;
   apiBase: string;
   token: string;
   caFile: string;
@@ -149,7 +156,17 @@ function io(token: string = ""): KubernetesRunnerIo {
   });
 }
 
-function launcher(over: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {}) {
+function launcher(
+  over: {
+    perRunSecrets?: boolean;
+    runAsNonRoot?: boolean;
+    /** M23.5 — the ResourceQuota namespace, with its own chart-rendered RBAC and its own token. */
+    quota?: boolean;
+    /** M23.5 — the deployment's pod conventions, which is what the quota namespace needs supplied
+     *  and what HIGH-3 measured the absence of. */
+    pod?: Parameters<typeof createKubernetesRunnerLauncher>[0]["pod"];
+  } = {}
+) {
   // EVERY CASE RUNS UNDER RBAC THE CHART RENDERED, NEVER UNDER A PERMISSION THE HARNESS HANDED
   // ITSELF — that is the whole reason owner decision 3 required a real cluster ("a fake authorises
   // everything"). The default namespace carries the chart's DEFAULT render, which since M23.4 means
@@ -157,14 +174,25 @@ function launcher(over: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {}
   // at that value, and to that namespace's own token, so an opt-out case is exercised under exactly
   // the grant a `helm install --set managedRunners.kubernetes.perRunSecrets=false` makes.
   const optedOut = over.perRunSecrets === false;
+  const namespace = over.quota
+    ? harness.quotaNamespace
+    : optedOut
+      ? harness.noSecretsNamespace
+      : harness.namespace;
+  const token = over.quota
+    ? harness.quotaToken
+    : optedOut
+      ? harness.noSecretsToken
+      : harness.token;
   return createKubernetesRunnerLauncher({
-    namespace: optedOut ? harness.noSecretsNamespace : harness.namespace,
+    namespace,
     workspaceRoot: harness.workspaceHost,
     workspaceVolume: { kind: "hostPath", path: harness.nodeWorkspace },
     perRunSecrets: !optedOut,
     runAsNonRoot: over.runAsNonRoot === true,
     pollIntervalMs: 500,
-    io: io(optedOut ? harness.noSecretsToken : harness.token)
+    ...(over.pod ? { pod: over.pod } : {}),
+    io: io(token)
   });
 }
 
@@ -716,4 +744,213 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
       await rm(join(harness.workspaceHost, dead), { recursive: true, force: true });
     }
   }, 120_000);
+
+  // ================================================================================================
+  // M23.5 — THE POD SPEC, AND THE THREE VERDICTS A FAKE CANNOT PRODUCE
+  // ================================================================================================
+
+  it("M23.5 HIGH-3: an UNSET imagePullPolicy is `Always` for `:latest` — the air-gap break, measured", async () => {
+    // THE MEASUREMENT THAT STARTED THIS. The image is ALREADY ON THE NODE (the harness `kind load`s
+    // it) and this cluster has no registry credentials and, for a `:latest` tag, no reason to
+    // believe the local copy. Kubernetes defaults an unset `imagePullPolicy` to `Always` for
+    // `:latest`, so the kubelet reaches for docker.io and the run dies before its entrypoint —
+    // charter principle 5, broken in production, by an omission in a manifest builder.
+    //
+    // NOTHING ABOUT THIS IS VISIBLE TO A FAKE: it needs a kubelet, a node with an image on it, and a
+    // registry it cannot reach.
+    const latest = "scp-probe-runner:latest";
+    await execFileAsync("docker", ["tag", harness.runnerImage, latest], {
+      env: { ...process.env }
+    });
+    const archive = join(scratch, "latest.tar");
+    // `--platform`, FOR THE REASON THE HARNESS SCRIPT ALREADY RECORDS AND THIS TEST RE-MEASURED:
+    // `kind load image-archive` runs `ctr images import --all-platforms`, which fails on a
+    // multi-arch archive with "content digest ... not found". The NODE's architecture, not the
+    // shell's — the same source the harness reads, so the two cannot disagree.
+    const { stdout: nodeArch } = await execFileAsync(
+      "kubectl",
+      ["get", "nodes", "-o", "jsonpath={.items[0].status.nodeInfo.architecture}"],
+      { env: { ...process.env, KUBECONFIG: harness.kubeconfig } }
+    );
+    await execFileAsync("docker", [
+      "save",
+      "--platform",
+      `linux/${nodeArch.trim()}`,
+      "-o",
+      archive,
+      latest
+    ]);
+    // NOT SWALLOWED. If this load silently failed the image would genuinely be absent, arm (a) would
+    // still see `ErrImagePull` — for the wrong reason — and arm (b) would fail with no explanation.
+    // The whole claim is "the image IS on the node", so it is asserted, not hoped for.
+    await execFileAsync("kind", ["load", "image-archive", archive, "--name", harness.cluster]);
+    const { stdout: onNode } = await execFileAsync("docker", [
+      "exec",
+      `${harness.cluster}-control-plane`,
+      "crictl",
+      "images"
+    ]);
+    expect(
+      onNode,
+      "the probe image is NOT on the node, so this case would measure a missing image rather than a pull policy"
+    ).toContain("scp-probe-runner");
+
+    // (a) WITHOUT the convention: the pull is attempted and fails.
+    const without = await launcher().run(
+      spec({
+        runId: "pullpolicy-unset",
+        labels: { "scp.run-id": "pullpolicy-unset" },
+        image: latest,
+        timeoutMs: 60_000
+      })
+    );
+    expect(without.succeeded).toBe(false);
+    expect(without.failure!.kind).toBe("spawn-failed");
+    expect(without.failure!.detail).toMatch(/ErrImagePull|ImagePullBackOff/);
+
+    // (b) WITH the chart's own `IfNotPresent` — the value five other pods in this chart already get
+    //     — the identical image on the identical node runs.
+    const withPolicy = await launcher({ pod: { imagePullPolicy: "IfNotPresent" } }).run(
+      spec({
+        runId: "pullpolicy-set",
+        labels: { "scp.run-id": "pullpolicy-set" },
+        image: latest,
+        timeoutMs: 60_000
+      })
+    );
+    expect(
+      withPolicy.succeeded,
+      `imagePullPolicy=IfNotPresent did not make the on-node image usable: ${withPolicy.failure?.detail ?? ""}`
+    ).toBe(true);
+    expect(withPolicy.stdout).toContain("hello-from-the-runner");
+  }, 300_000);
+
+  it("M23.5 HIGH-3: the API SERVER ACCEPTS the conventions — pull secrets, policy and resources land on the pod", async () => {
+    // A GOLDEN PROVES WHAT IS SENT; ONLY AN API SERVER PROVES IT IS ACCEPTED. A mistyped
+    // `resources` or a malformed `imagePullSecrets` is a 422 that is invisible until production —
+    // which is item 1 of this file's own list of what it exists for.
+    const result = await launcher({
+      pod: {
+        // A Secret that does not exist. The kubelet WARNS and carries on when an imagePullSecret is
+        // missing and the image is already present, which is exactly what makes this a safe way to
+        // prove the field is ACCEPTED without standing up a registry.
+        imagePullSecrets: ["not-a-real-registry-credential"],
+        imagePullPolicy: "IfNotPresent",
+        resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { memory: "64Mi" } }
+      }
+    }).run(
+      spec({ runId: "conventions", labels: { "scp.run-id": "conventions" }, timeoutMs: 120_000 })
+    );
+    expect(
+      result.succeeded,
+      `the API server or the kubelet rejected the pod conventions: ${result.failure?.detail ?? ""}`
+    ).toBe(true);
+  }, 180_000);
+
+  it("M23.5 HIGH-4 ROUTE 1: a ResourceQuota rejects the pod CREATE — `spawn-failed`, with the quota's own words", async () => {
+    // THE ROUTE NO FAKE CAN PRODUCE AND THE WHOLE REASON THE THIRD NAMESPACE EXISTS. The Job is
+    // ACCEPTED and unsuspended; the Job CONTROLLER then tries to create a pod and admission refuses
+    // it, so no pod is ever created. `kubernetesTermination` reads `pod.status.containerStatuses`
+    // and nothing else, so before M23.5 the adapter polled to the whole-run deadline and reported
+    // `budget-exhausted` — "a `tofu apply` was SIGTERMed mid-flight, so the real infrastructure
+    // state is unknown" — for a run in which NOTHING RAN. The refusal's only record is the
+    // controller's `FailedCreate` Event, and teardown deletes the Job.
+    const result = await launcher({ quota: true }).run(
+      spec({ runId: "quota-refused", labels: { "scp.run-id": "quota-refused" }, timeoutMs: 20_000 })
+    );
+    expect(result.succeeded).toBe(false);
+    expect(
+      result.failure!.kind,
+      `the quota-rejected run was classified ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("spawn-failed");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    // THE API SERVER'S OWN SENTENCE, read off the Job's events before teardown deleted them.
+    expect(result.failure!.detail).toMatch(/quota/i);
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+  }, 180_000);
+
+  it("M23.5 HIGH-4 ROUTE 1b: the SAME quota namespace SUCCEEDS once the deployment states its resources", async () => {
+    // THE NON-VACUITY CONTROL FOR THE CASE ABOVE, and the two halves of M23.5 meeting in one
+    // namespace. Without this arm the quota case proves only "this namespace is broken"; with it,
+    // the quota is what it really is — a deployment that had no way to declare limits, and now has
+    // one. Identical namespace, identical spec, one convention supplied.
+    const result = await launcher({
+      quota: true,
+      pod: { resources: { requests: { cpu: "10m", memory: "16Mi" }, limits: { cpu: "200m", memory: "64Mi" } } }
+    }).run(
+      spec({ runId: "quota-satisfied", labels: { "scp.run-id": "quota-satisfied" }, timeoutMs: 120_000 })
+    );
+    expect(
+      result.succeeded,
+      `the run still failed under the quota with resources declared: ${result.failure?.detail ?? ""}`
+    ).toBe(true);
+    expect(result.stdout).toContain("hello-from-the-runner");
+  }, 180_000);
+
+  it("M23.5 HIGH-4 ROUTE 2: an unschedulable pod reports the SCHEDULER's reason, not a budget verdict", async () => {
+    // A pod that exists, has NO `containerStatuses` at all, and cannot be placed. This is also the
+    // shape of an unbound RWX claim — the failure `assertRunnerPrerequisites` refuses a render to
+    // pre-empt, arriving at run time because a claim that is NAMED can still be unbindable.
+    const result = await launcher({
+      pod: { resources: { requests: { memory: "100000Gi" } } }
+    }).run(
+      spec({
+        runId: "unschedulable",
+        labels: { "scp.run-id": "unschedulable" },
+        // POLLS TO THE DEADLINE ON PURPOSE — the verdict under test is the one produced when the
+        // budget runs out and nothing ever started, so the case has to actually reach it. Kept
+        // short because the wait IS the test's cost.
+        timeoutMs: 20_000
+      })
+    );
+    expect(result.succeeded).toBe(false);
+    expect(
+      result.failure!.kind,
+      `the unschedulable run was classified ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("spawn-failed");
+    expect(result.failure!.detail).toContain("Unschedulable");
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+  }, 180_000);
+
+  it("M23.5 HIGH-4 ROUTE 3: the pod deleted mid-run is `signalled`, and it says it was not our budget", async () => {
+    // THE ONE ROUTE WHERE SOMETHING DID RUN — a node drain, an eviction — and the reason the
+    // `everStarted` flag exists rather than being re-derived from whatever is left. Reporting this
+    // as `spawn-failed` would claim nothing was mutated, which is the OPPOSITE lie to the one being
+    // fixed. Measured rather than assumed: with `backoffLimit: 0` a deleted pod really does make the
+    // Job report `Failed`/`BackoffLimitExceeded` rather than creating a replacement.
+    const runId = "drained";
+    const running = launcher().run(
+      spec({
+        runId,
+        labels: { "scp.run-id": runId },
+        operands: ["/bin/sh", "-c", "echo started; sleep 300"],
+        timeoutMs: 120_000
+      })
+    );
+    // Wait for the pod to be RUNNING — the fact the verdict turns on — then delete it.
+    const deadline = Date.now() + 90_000;
+    for (;;) {
+      const phases = await kubectl(
+        "get",
+        "pods",
+        "-l",
+        `scp.launcher.run-id=${runId}`,
+        "-o",
+        "jsonpath={.items[*].status.phase}"
+      );
+      if (phases.includes("Running")) break;
+      if (Date.now() > deadline) throw new Error(`pod for ${runId} never reached Running`);
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    await kubectl("delete", "pods", "-l", `scp.launcher.run-id=${runId}`, "--wait=false");
+
+    const result = await running;
+    expect(result.succeeded).toBe(false);
+    expect(
+      result.failure!.kind,
+      `the drained run was classified ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("signalled");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    expect(result.failure!.detail).toContain("NOT this run's own budget");
+  }, 240_000);
 });

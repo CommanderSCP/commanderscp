@@ -7,7 +7,10 @@ import {
   RUNNER_RUN_ID_LABEL,
   createKubernetesRunnerLauncher,
   isKubernetesLabelValue,
+  kubernetesContainerStarted,
+  kubernetesJobTermination,
   kubernetesTermination,
+  kubernetesWaitingEvidence,
   resolveRunnerLauncher,
   runnerJobName,
   runnerReapGraceMs,
@@ -113,6 +116,12 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
   const dirs = new Set<string>();
   /** Jobs that already exist before this process starts — the peers `reap()` and the 409 arms need. */
   const foreignJobs: Record<string, unknown>[] = [];
+
+  /** M23.5 — what a `GET jobs/<name>` reports as the Job's OWN status, and what its event stream
+   *  says. Both are `undefined`/empty for every existing case, so nothing changes for them; the
+   *  three routes HIGH-4 measured are the ones that need a Job to speak for itself. */
+  let jobStatus: unknown = undefined;
+  let jobEvents: unknown[] = [];
 
   let pod: unknown = {
     metadata: { name: "scp-runner-r1-abcde" },
@@ -221,6 +230,18 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
       secrets.set(body.metadata.name, body as Record<string, unknown>);
       return { status: 201, body: JSON.stringify(body) };
     }
+    if (req.method === "GET" && path.startsWith(`${jobsRoot}/`)) {
+      const name = path.slice(jobsRoot.length + 1);
+      const job = jobs.get(name);
+      if (!job) return { status: 404, body: JSON.stringify({ reason: "NotFound" }) };
+      return {
+        status: 200,
+        body: JSON.stringify(jobStatus === undefined ? job : { ...job, status: jobStatus })
+      };
+    }
+    if (req.method === "GET" && path === `/api/v1/namespaces/${NAMESPACE}/events`) {
+      return { status: 200, body: JSON.stringify({ items: jobEvents }) };
+    }
     if (req.method === "PATCH" && path.startsWith(`${jobsRoot}/`)) {
       const name = path.slice(jobsRoot.length + 1);
       if (!jobs.has(name)) return { status: 404, body: JSON.stringify({ reason: "NotFound" }) };
@@ -316,6 +337,12 @@ function cluster(opts: { perRunSecrets?: boolean; runAsNonRoot?: boolean } = {})
     },
     setLog: (next: string) => {
       log = next;
+    },
+    setJobStatus: (next: unknown) => {
+      jobStatus = next;
+    },
+    setEvents: (next: unknown[]) => {
+      jobEvents = next;
     },
     hold: (kind: RunnerStepKind, count = 1) => {
       holds[kind] += count;
@@ -787,13 +814,246 @@ describe("M23.2: a pod's terminal state maps onto the port's five failure kinds"
   it("`budget-exhausted` — a step reached with the budget spent is REFUSED, not issued", async () => {
     const c = cluster();
     // Never terminal: the poll loop spins until the deadline, exactly as a wedged runner would.
-    c.setPod({ metadata: { name: "p1" }, status: { phase: "Running", containerStatuses: [] } });
+    //
+    // THE FIXTURE WAS NOT WHAT ITS COMMENT SAID, and M23.5 is where that mattered. `containerStatuses:
+    // []` on a `Running` pod is a shape no kubelet produces — a pod is `Running` only once every
+    // container has been created — and the distinction was invisible while every non-terminal poll
+    // had the same verdict. It does not any more: a run where the container never started is
+    // `spawn-failed` ("nothing ran"), not `budget-exhausted` ("SIGTERMed mid-flight, state unknown").
+    // So the wedged runner is now described as a wedged runner: RUNNING, and never finishing.
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Running",
+        containerStatuses: [{ name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }]
+      }
+    });
     const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
     expect(result.failure!.kind).toBe("budget-exhausted");
     expect(result.failure!.deadlineExceeded).toBe(true);
     // AND THE TEARDOWN STILL HAPPENED — it is deliberately outside the budget, because the commonest
     // reason to reach it is that the budget is what ran out.
     expect(c.jobs.size).toBe(0);
+  });
+
+  // ================================================================================================
+  // M23.5 — THE THREE ROUTES THAT ALL REPORTED `budget-exhausted` AFTER BURNING THE WHOLE BUDGET
+  // ================================================================================================
+  //
+  // `kubernetesTermination` reads `pod.status.containerStatuses` AND NOTHING ELSE. Every route below
+  // was measured on a real cluster, and every one produced the identical verdict — "the whole-run
+  // budget ran out and the runner was stopped mid-flight" — which for managed-iac means "a `tofu
+  // apply` was SIGTERMed mid-flight, so the real infrastructure state is unknown". Two of the three
+  // ran NOTHING. `FATAL_WAITING_REASONS`' own doc calls that "the single worst misdiagnosis available
+  // here", about a set that catches a container the kubelet refused; these are the routes where no
+  // container was ever asked for, and nothing looked at them.
+  //
+  // AND THE EVIDENCE WAS BEING DELETED. Nothing read `job.status.conditions` or the Job's events, and
+  // teardown deletes the Job — so the only record of a `FailedCreate` went with it. It is read here
+  // while the run is still alive.
+
+  it("M23.5 ROUTE 1 — a ResourceQuota rejects the pod CREATE: `spawn-failed`, carrying the API server's own words", async () => {
+    const c = cluster();
+    // NO POD EVER EXISTS. That is the whole shape: the Job is unsuspended, the controller tries to
+    // create a pod, admission refuses, and the pod list stays empty forever.
+    c.setPod(undefined);
+    c.setEvents([
+      {
+        type: "Warning",
+        reason: "FailedCreate",
+        count: 7,
+        message:
+          'Error creating: pods "scp-runner-r1-xxxxx" is forbidden: failed quota: runner-quota: must specify limits.memory for: runner'
+      }
+    ]);
+    const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+
+    // NOT `budget-exhausted`. Nothing ran, so nothing was mutated — which is `spawn-failed`'s
+    // wording, verbatim, and the only honest thing to tell an operator holding a `tofu apply`.
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
+    // THE DIAGNOSIS THAT USED TO BE DELETED WITH THE JOB.
+    expect(result.failure!.detail).toContain("must specify limits.memory for: runner");
+    expect(result.failure!.detail).toContain("FailedCreate");
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+    // And teardown still ran — the Job has to go whatever the verdict was.
+    expect(c.jobs.size).toBe(0);
+  });
+
+  it("M23.5 ROUTE 2 — an unschedulable pod: the scheduler's message, not a budget verdict", async () => {
+    const c = cluster();
+    // A POD THAT EXISTS AND HAS NO `containerStatuses` AT ALL. This is also the shape of an unbound
+    // RWX claim — the failure `assertRunnerPrerequisites` exists to pre-empt at render time, arriving
+    // at run time because a claim that is NAMED can still be unbindable.
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Pending",
+        conditions: [
+          {
+            type: "PodScheduled",
+            status: "False",
+            reason: "Unschedulable",
+            message: "0/3 nodes are available: 3 Insufficient memory."
+          }
+        ]
+      }
+    });
+    const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.detail).toContain("Unschedulable");
+    expect(result.failure!.detail).toContain("Insufficient memory");
+  });
+
+  it("M23.5 ROUTE 3 — the pod is deleted mid-run: `signalled`, and it says it was not our budget", async () => {
+    const c = cluster();
+    // THE ONE ROUTE WHERE SOMETHING DID RUN, and it is the reason `everStarted` is threaded through
+    // rather than re-derived. A node drain removes the pod; the Job (backoffLimit 0) then fails. If
+    // this were reported as `spawn-failed` it would claim nothing was mutated, which is the OPPOSITE
+    // lie to the one being fixed — a `tofu apply` really was interrupted.
+    let polls = 0;
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          { name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }
+        ]
+      }
+    });
+    c.setJobStatus({
+      conditions: [
+        {
+          type: "Failed",
+          status: "True",
+          reason: "BackoffLimitExceeded",
+          message: "Job has reached the specified backoff limit"
+        }
+      ]
+    });
+    // The pod vanishes after the first poll — which is what a drain looks like from here.
+    c.overrides.push({
+      match: (req) => {
+        if (!(req.method === "GET" && req.path.startsWith(`/api/v1/namespaces/${NAMESPACE}/pods?`)))
+          return false;
+        polls += 1;
+        return polls > 1;
+      },
+      res: { status: 200, body: JSON.stringify({ items: [] }) }
+    });
+
+    const result = await c.launcher().run(spec({ timeoutMs: 10_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("signalled");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    expect(result.failure!.detail).toContain("BackoffLimitExceeded");
+    expect(result.failure!.detail).toContain("NOT this run's own budget");
+  });
+
+  it("M23.5 — A JOB FAILURE WITH NOTHING EVER STARTED IS STILL `spawn-failed`, and it is TERMINAL: the budget is not burned", async () => {
+    // The half route 3 cannot show: the SAME Job condition with `everStarted` false must not be
+    // called `signalled`, and — the property that costs real minutes — the run must END there rather
+    // than poll on to a deadline it can no longer reach usefully.
+    const c = cluster();
+    c.setPod(undefined);
+    c.setJobStatus({
+      conditions: [
+        {
+          type: "Failed",
+          status: "True",
+          reason: "BackoffLimitExceeded",
+          message: "Job has reached the specified backoff limit"
+        }
+      ]
+    });
+    const started = Date.now();
+    const result = await c.launcher().run(spec({ timeoutMs: 60_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.code).toBe("JobBackoffLimitExceeded");
+    // TERMINAL. A 60s budget with a poll interval of 1ms would take 60 real seconds to exhaust; this
+    // has to come back at once. (`sleep` is stubbed, but `Date.now()` is not, and the loop's exit is
+    // the deadline — so a non-terminal reading of the condition would spin here for the full minute.)
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("M23.5 — A RUN THAT ACTUALLY STARTED AND WEDGED IS STILL `budget-exhausted`: the negative control", async () => {
+    // WITHOUT THIS ARM, "always say spawn-failed" passes every case above — and every genuinely
+    // interrupted `tofu apply` would then be reported as having changed nothing, which is the more
+    // dangerous of the two lies. A pod whose container is RUNNING and never terminates is the one
+    // shape that must still exhaust the budget.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          { name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }
+        ]
+      }
+    });
+    const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("budget-exhausted");
+    expect(result.failure!.deadlineExceeded).toBe(true);
+  });
+
+  it("M23.5 — A 403 ON THE EVENT READ DEGRADES, never replaces the diagnosis", async () => {
+    // A deployment whose runner Role predates M23.5 has no `events` grant. Diagnosis must not become
+    // the failure: the run reports what it would have reported anyway, with a less specific reason,
+    // rather than an authorisation error standing in for the real cause.
+    const c = cluster();
+    c.setPod(undefined);
+    c.overrides.push({
+      match: (req) => req.path.startsWith(`/api/v1/namespaces/${NAMESPACE}/events`),
+      res: { status: 403, body: JSON.stringify({ reason: "Forbidden" }) }
+    });
+    const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.detail).toContain("no pod has been created for it");
+  });
+
+  it("M23.5 — the three readers, as pure functions", () => {
+    expect(kubernetesContainerStarted(undefined)).toBe(false);
+    expect(kubernetesContainerStarted({ status: { phase: "Pending" } })).toBe(false);
+    // A pod blocked on an image pull or an admission refusal is Pending, never Running — so the
+    // phase alone is a sound "it started", and it is the reading that must not be wrong downward.
+    expect(kubernetesContainerStarted({ status: { phase: "Running" } })).toBe(true);
+    expect(
+      kubernetesContainerStarted({
+        status: { phase: "Pending", containerStatuses: [{ name: "runner", state: { running: {} } }] }
+      })
+    ).toBe(true);
+    // A SIDECAR IS NOT THE RUNNER. Same rule `kubernetesTermination` already applies.
+    expect(
+      kubernetesContainerStarted({
+        status: {
+          phase: "Pending",
+          containerStatuses: [{ name: "istio-proxy", state: { running: {} } }]
+        }
+      })
+    ).toBe(false);
+
+    expect(kubernetesJobTermination({}, false, "why")).toBeUndefined();
+    // A `Failed` condition with `status: "False"` is a Job that is NOT failed. Reading only `type`
+    // would call every healthy Job a failure.
+    expect(
+      kubernetesJobTermination({ status: { conditions: [{ type: "Failed", status: "False" }] } }, false, "why")
+    ).toBeUndefined();
+    expect(
+      kubernetesJobTermination(
+        { status: { conditions: [{ type: "Complete", status: "True" }] } },
+        false,
+        "why"
+      )
+    ).toBeUndefined();
+
+    expect(kubernetesWaitingEvidence(undefined, [])).toContain("no pod has been created");
+    expect(
+      kubernetesWaitingEvidence(undefined, [
+        { type: "Normal", reason: "SuccessfulCreate", message: "created pod" },
+        { type: "Warning", reason: "FailedCreate", message: "exceeded quota", count: 3 }
+      ])
+      // A `Normal` event is not a reason anything is stuck; the Warning is.
+    ).toContain("FailedCreate: exceeded quota (x3)");
   });
 
   it("THE BUDGET IS A WHOLE-RUN DEADLINE — every request's timeout shrinks, none is `timeoutMs`", async () => {

@@ -473,6 +473,14 @@ function slotSubPath(runId: string, slot: string): string {
 const JOBS_PATH = (ns: string): string => `/apis/batch/v1/namespaces/${ns}/jobs`;
 const SECRETS_PATH = (ns: string): string => `/api/v1/namespaces/${ns}/secrets`;
 const PODS_PATH = (ns: string): string => `/api/v1/namespaces/${ns}/pods`;
+/** THE JOB'S OWN EVENTS — the only place a pod-creation refusal is ever written down. See
+ *  {@link kubernetesJobTermination}: when a Job cannot create a pod, no pod exists to carry a
+ *  status, the Job's own `status` says nothing, and the controller's `FailedCreate` event carries
+ *  the API server's verbatim message. `deploy/helm/templates/runner-iac.yaml` grants the read. */
+const EVENTS_PATH = (ns: string, jobName: string): string =>
+  `/api/v1/namespaces/${ns}/events?fieldSelector=${encodeURIComponent(
+    `involvedObject.kind=Job,involvedObject.name=${jobName}`
+  )}`;
 
 /**
  * THE LOG READ, AND HOW `output-exceeded` STAYS REACHABLE WITHOUT AN `execFile`.
@@ -574,14 +582,34 @@ interface PodView {
   metadata?: { name?: string };
   status?: {
     phase?: string;
+    /** M23.5 — WHY THE POD IS NOT RUNNING YET, and the only place `Unschedulable` is written down.
+     *  A pod that cannot be scheduled has NO `containerStatuses` at all, so every field below was
+     *  empty for it and the adapter polled to its deadline reporting an exhausted budget. */
+    conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
     containerStatuses?: {
       name?: string;
       state?: {
+        running?: { startedAt?: string };
         terminated?: { exitCode?: number; signal?: number; reason?: string };
         waiting?: { reason?: string; message?: string };
       };
     }[];
   };
+}
+
+/** The slice of a Job this adapter reads. Everything else in the object is ignored. */
+interface JobView {
+  status?: {
+    conditions?: { type?: string; status?: string; reason?: string; message?: string }[];
+  };
+}
+
+/** The slice of an Event this adapter reads. */
+interface EventView {
+  type?: string;
+  reason?: string;
+  message?: string;
+  count?: number;
 }
 
 /**
@@ -701,6 +729,162 @@ export function kubernetesTermination(pod: PodView):
   }
   return undefined;
 }
+
+/**
+ * DID THE RUNNER CONTAINER EVER START? — the fact every verdict below turns on.
+ *
+ * `budget-exhausted` says, in `RunnerFailureKind`'s own words, "a `tofu apply` was SIGTERMed
+ * mid-flight, so the real infrastructure state is unknown". That sentence is true only if something
+ * ran. Once, for every route where nothing did, it was what an operator was told — which is the same
+ * misdiagnosis {@link FATAL_WAITING_REASONS} already calls "the single worst available here",
+ * arrived at from the other side: that set catches a container the kubelet REFUSED, and this catches
+ * the routes where no container was ever asked for.
+ *
+ * STICKY, not a reading of the current state: a pod deleted mid-run leaves no status at all, and the
+ * whole point of the distinction is to remember that there had been one.
+ */
+export function kubernetesContainerStarted(pod: PodView | undefined): boolean {
+  if (!pod) return false;
+  const container = (pod.status?.containerStatuses ?? []).find(
+    (c) => c.name === RUNNER_CONTAINER_NAME
+  );
+  if (container?.state?.running || container?.state?.terminated) return true;
+  // AND THE PHASE ALONE IS ENOUGH FOR THREE OF THE FIVE. `Running` means the kubelet has created
+  // every container and at least one is running — a pod blocked on an image pull or an admission
+  // refusal is `Pending`, never `Running` — and `Succeeded`/`Failed` are terminal. So a pod whose
+  // container status has been pruned, or that a fake describes only by phase, still reads as having
+  // started, which is the direction that must not be wrong: calling a run that DID start
+  // "nothing ran" is the same class of lie as the one this whole function exists to end.
+  const phase = pod.status?.phase;
+  return phase === "Running" || phase === "Succeeded" || phase === "Failed";
+}
+
+/**
+ * WHY THIS RUN IS STILL WAITING — one operator-facing clause, assembled from whatever said anything.
+ *
+ * THE THREE MEASURED ROUTES, all of which produced the identical `budget-exhausted` verdict after
+ * burning the entire run budget, and none of which `kubernetesTermination` can see because it reads
+ * ONLY `pod.status.containerStatuses`:
+ *
+ *   1. A ResourceQuota requiring compute limits. `jobManifest` set no `resources` block at all
+ *      (M23.5 gives the chart one), so the pod CREATE is rejected — `must specify limits.memory for:
+ *      runner` — no pod ever exists, and the refusal is written down in exactly one place: the Job
+ *      controller's `FailedCreate` event.
+ *   2. An unschedulable pod. The pod EXISTS, has no `containerStatuses` whatsoever, and carries
+ *      `PodScheduled=False` with `Unschedulable` and the scheduler's own message. That is also the
+ *      shape of an unbound RWX claim — the failure `assertRunnerPrerequisites` exists to pre-empt.
+ *   3. The pod deleted mid-run (a node drain, an eviction). Handled by
+ *      {@link kubernetesJobTermination} rather than here, because the Job says so outright.
+ */
+export function kubernetesWaitingEvidence(
+  pod: PodView | undefined,
+  events: readonly EventView[]
+): string {
+  if (pod) {
+    const blocked = (pod.status?.conditions ?? []).find(
+      (c) => c.status === "False" && (c.reason || c.message)
+    );
+    if (blocked) {
+      return `the pod is ${pod.status?.phase ?? "Pending"} and ${blocked.type ?? "a condition"} is False: ${
+        blocked.reason ?? "?"
+      }${blocked.message ? ` — ${blocked.message}` : ""}`;
+    }
+    const container = (pod.status?.containerStatuses ?? []).find(
+      (c) => c.name === RUNNER_CONTAINER_NAME
+    );
+    const waiting = container?.state?.waiting;
+    if (waiting?.reason) {
+      return `the runner container is waiting: ${waiting.reason}${
+        waiting.message ? ` — ${waiting.message}` : ""
+      }`;
+    }
+    return `the pod is ${pod.status?.phase ?? "Pending"} with no container status yet`;
+  }
+
+  // NO POD AT ALL. The Job was unsuspended and the controller could not create one; the only record
+  // is its own event stream, and teardown deletes the Job, taking that with it. So it is read HERE,
+  // while the run is still alive, and carried into the failure.
+  const warning = events.find((e) => e.type === "Warning" && e.message);
+  if (warning) {
+    return `the Job could not create a pod — ${warning.reason ?? "Warning"}: ${warning.message}${
+      warning.count && warning.count > 1 ? ` (x${warning.count})` : ""
+    }`;
+  }
+  return (
+    "the Job was started but no pod has been created for it, and the Job reported no event " +
+    "explaining why (`kubectl describe job` in the runner namespace is the next place to look)"
+  );
+}
+
+/**
+ * WHAT THE JOB ITSELF SAYS HAPPENED — the terminal verdict no pod can carry, or `undefined`.
+ *
+ * `kubernetesTermination` reads `pod.status.containerStatuses` and nothing else, which is correct
+ * for every run that produced a pod that ran and WRONG, in one specific and expensive way, for every
+ * run that did not: with no terminal pod the loop polls to the whole-run deadline and reports
+ * `budget-exhausted`, i.e. "the runner was stopped mid-flight, the real infrastructure state is
+ * unknown", when nothing ran at all.
+ *
+ * A `Failed` condition on the Job is that missing verdict, and the KIND depends on `everStarted` —
+ * which is the whole reason that flag is threaded through:
+ *
+ *   pod deleted mid-run (drain/eviction)  everStarted -> killed  -> `signalled`
+ *   the Job never produced a running pod  !everStarted -> STRING code -> `spawn-failed`
+ *
+ * The second is the honest one: `spawn-failed`'s own wording is "the container CLI could not be
+ * executed at all — nothing ran. Nothing ran, so nothing was mutated", which is exactly true of a
+ * quota rejection and exactly false of the budget verdict it used to get.
+ */
+export function kubernetesJobTermination(
+  job: JobView,
+  everStarted: boolean,
+  waiting: string
+):
+  | {
+      succeeded: boolean;
+      message: string;
+      code: string | number | null;
+      killed: boolean;
+      signal: string | null;
+    }
+  | undefined {
+  const failed = (job.status?.conditions ?? []).find(
+    (c) => c.type === "Failed" && c.status === "True"
+  );
+  if (!failed) return undefined;
+  const reason = failed.reason ?? "Failed";
+  const detail = `${reason}${failed.message ? `: ${failed.message}` : ""}`;
+  if (everStarted) {
+    return {
+      succeeded: false,
+      message:
+        `the runner's pod was destroyed before it reported a result — the Job failed with ` +
+        `${detail}. This is a node drain, an eviction or a deletion, NOT this run's own budget`,
+      code: null,
+      killed: true,
+      signal: "SIGKILL"
+    };
+  }
+  return {
+    succeeded: false,
+    message: `the Job failed before any runner container started (${detail}) — ${waiting}`,
+    // A STRING `code` is what `classifyRunnerFailure` reads as an errno, i.e. `spawn-failed`:
+    // "nothing ran, so nothing was mutated". Which is the truth here, and the whole point.
+    code: `Job${reason}`,
+    killed: false,
+    signal: null
+  };
+}
+
+/**
+ * THE `code` A RUN CARRIES WHEN THE BUDGET RAN OUT AND NOTHING HAD EVER STARTED.
+ *
+ * A STRING, so {@link classifyRunnerFailure} reaches `spawn-failed` rather than `budget-exhausted`.
+ * The deadline is the SAME deadline — there is still exactly one bound — but the two situations it
+ * can end are not the same situation, and only one of them means "a `tofu apply` was SIGTERMed
+ * mid-flight, so the real infrastructure state is unknown".
+ */
+export const RUNNER_NEVER_STARTED_CODE = "RunnerContainerNeverStarted";
 
 // ==================================================================================================
 // THE ADAPTER
@@ -1245,12 +1429,39 @@ export function createKubernetesRunnerLauncher(
             body: { spec: { suspend: false } }
           });
 
-          // POLL TO A TERMINAL POD. `budget-exhausted` is reached the same way every other step
-          // reaches it — `api()` refuses once the deadline is spent — so the loop needs no bound of
-          // its own and cannot invent a second one that disagrees.
+          // POLL TO A TERMINAL POD — OR TO A TERMINAL JOB, which is the half M23.5 added and the
+          // half three measured failure routes needed.
+          //
+          // THERE IS STILL EXACTLY ONE BOUND. Every request goes through `api()`, which refuses once
+          // `runDeadlineAt` is spent; the check at the top of this loop reads that SAME instant and
+          // decides not WHETHER to stop but WHAT TO CALL IT. It is at the TOP, before any call, and
+          // that placement is load-bearing rather than tidy: a deadline test placed at the BOTTOM
+          // races the diagnosis reads above it, `api()` wins whenever one of them is the call that
+          // runs out of budget, and the verdict is then `budget-exhausted` again — intermittently,
+          // which is worse than always. Measured: the 403-degradation case failed that way.
           let pod: PodView | undefined;
           let termination: ReturnType<typeof kubernetesTermination>;
+          // STICKY. A pod deleted mid-run leaves no status at all, and remembering that there had
+          // been one is the difference between `signalled` and `spawn-failed`.
+          let everStarted = false;
+          let waiting = "the Job had not yet been observed";
           for (;;) {
+            if (Date.now() >= runDeadlineAt && !everStarted) {
+              // THE BUDGET RAN OUT AND NOTHING HAD EVER STARTED, which is NOT what
+              // `budget-exhausted` means. Its wording — "a `tofu apply` was SIGTERMed mid-flight, so
+              // the real infrastructure state is unknown" — is the most consequential sentence this
+              // package produces, and all three measured routes got it. A STRING `code` reaches
+              // `spawn-failed` instead: "nothing ran, so nothing was mutated".
+              fail("start", ["GET", PODS_PATH(namespace)], {
+                message:
+                  `the runner container never started within the whole-run budget of ` +
+                  `${runTimeoutMs}ms (RunnerSpec.timeoutMs), so NOTHING RAN and nothing was ` +
+                  `mutated — ${waiting}`,
+                code: RUNNER_NEVER_STARTED_CODE,
+                stdout: "",
+                stderr: ""
+              });
+            }
             const listed = await api({
               step: "start",
               method: "GET",
@@ -1260,10 +1471,55 @@ export function createKubernetesRunnerLauncher(
             });
             const items = (JSON.parse(listed.body) as { items?: PodView[] }).items ?? [];
             pod = items[0];
+            if (kubernetesContainerStarted(pod)) everStarted = true;
             termination = pod ? kubernetesTermination(pod) : undefined;
             if (termination) break;
+
+            // NO TERMINAL POD. Everything below is DIAGNOSIS, and it is gathered while the run is
+            // still alive because teardown deletes the Job and takes the Job's events with it.
+            //
+            // AND DIAGNOSIS NEVER BECOMES THE FAILURE. The whole block is swallowed: a Role that
+            // predates M23.5 has no `events` grant, a `GET job` can 404 against a Job something else
+            // deleted, and either of those replacing the real cause would be this same defect wearing
+            // a different mask. What is lost when it fails is specificity, never the verdict.
+            let jobVerdict: ReturnType<typeof kubernetesJobTermination>;
+            try {
+              let events: EventView[] = [];
+              if (!pod) {
+                // A Job with no pod is the shape a rejected CREATE leaves behind — a ResourceQuota
+                // requiring compute limits, a PodSecurity admission refusal. The pod list can say
+                // nothing about it because there is nothing in it; the Job's event stream can.
+                const eventsRes = await api(
+                  { step: "start", method: "GET", path: EVENTS_PATH(namespace, jobName) },
+                  (r) => (r.status >= 200 && r.status < 300) || r.status === 403
+                );
+                if (eventsRes.status >= 200 && eventsRes.status < 300) {
+                  events = (JSON.parse(eventsRes.body) as { items?: EventView[] }).items ?? [];
+                }
+              }
+              waiting = kubernetesWaitingEvidence(pod, events);
+              if (!pod) {
+                const jobRes = await api({
+                  step: "start",
+                  method: "GET",
+                  path: `${JOBS_PATH(namespace)}/${jobName}`
+                });
+                jobVerdict = kubernetesJobTermination(
+                  JSON.parse(jobRes.body) as JobView,
+                  everStarted,
+                  waiting
+                );
+              }
+            } catch (cause) {
+              debug("start: diagnosis read for %s failed: %O", jobName, cause);
+            }
+            if (jobVerdict) {
+              termination = jobVerdict;
+              break;
+            }
+
             const remaining = runDeadlineAt - Date.now();
-            if (remaining <= 0) continue; // let `api()` produce the one budget refusal
+            if (remaining <= 0) continue; // let the top of the loop, or `api()`, give the verdict
             await sleep(Math.min(pollIntervalMs, remaining));
           }
 

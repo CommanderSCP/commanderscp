@@ -1805,6 +1805,22 @@ function main(): void {
       JSON.stringify(roleOn?.rules ?? []).includes('"patch"'),
       `[${label}] the runner Role does not grant 'patch' on jobs — the adapter unsuspends the Job with a merge patch, so every managed run fails at 'start'`
     );
+    // AND THE VERB M23.5 ADDED, for the same reason: a rule the adapter needs and this file does not
+    // grant is a silent degradation rather than an error. When a Job cannot create a pod at all
+    // (a ResourceQuota requiring compute limits) the controller's `FailedCreate` Event is the ONLY
+    // record of why, and teardown deletes the Job. Without it every such run reported
+    // `budget-exhausted` — "a tofu apply was SIGTERMed mid-flight, state unknown" — when nothing ran.
+    {
+      type EventRule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
+      const eventRules = ((roleOn?.rules ?? []) as EventRule[]).filter((r) =>
+        (r.resources ?? []).includes("events")
+      );
+      assert(
+        eventRules.length === 1 &&
+          [...(eventRules[0]!.verbs ?? [])].sort().join(",") === "list",
+        `[${label}] expected exactly ONE 'events' rule on the runner Role granting exactly 'list'; found ${JSON.stringify(eventRules)}. Narrower means the pod-creation-refusal diagnosis is unreadable; wider is a grant nothing in the adapter uses`
+      );
+    }
 
     type Rule = { apiGroups?: string[]; resources?: string[]; verbs?: string[] };
     const secretRules = ((roleOn?.rules ?? []) as Rule[]).filter((r) =>
