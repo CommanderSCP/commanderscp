@@ -1107,8 +1107,8 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
 
        **THE COUNTER-MEASUREMENT, because a fix for a flake is a claim about a rate.** On the finished
        tree, with the kind cluster torn down so the load profile is the one the original 23 runs had:
-       **12 consecutive `pnpm -w test` runs green, zero timeouts of any kind** — against 5 failures
-       in 23 before. That is a rate measured on this machine under this load; the *mechanism* (a
+       **17 consecutive `pnpm -w test` runs green** (12 before the ENOTEMPTY fix below plus 5
+       after it), **zero timeouts of any kind** — against 5 failures in 23 before. That is a rate measured on this machine under this load; the *mechanism* (a
        heavy test on an implicit 5,000 ms budget with 1.4x headroom, under a 109-task graph) is
        machine-independent, the rate is not, which is why the gate is the deliverable and not the
        number.
