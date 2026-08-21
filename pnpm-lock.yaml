@@ -661,6 +661,9 @@ importers:
       '@scp/plugin-testkit':
         specifier: workspace:*
         version: link:../../plugin-testkit
+      '@scp/source-census':
+        specifier: workspace:*
+        version: link:../../source-census
       nock:
         specifier: ^13.5.0
         version: 13.5.6
@@ -821,6 +824,9 @@ importers:
 
   packages/runner-launcher:
     devDependencies:
+      '@scp/source-census':
+        specifier: workspace:*
+        version: link:../source-census
       typescript:
         specifier: ~5.8.0
         version: 5.8.3

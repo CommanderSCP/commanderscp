@@ -96,3 +96,19 @@ export {
 } from "./ts.js";
 
 export { atLineStart, readHashStripped, stripHashComments } from "./hash.js";
+
+/**
+ * THE OTHER HALF OF THE SAME LESSON, AND THE REASON IT LIVES HERE. Everything above is machinery for
+ * reading source; `spawn-observer.ts` is machinery for proving a source census's blind spot is
+ * covered — that NO PROCESS WAS CREATED, observed from outside the code under test rather than
+ * inferred from its text. M23.6 clause 1 needed exactly that: a census over three plugins and one
+ * package stayed green in the only direction it could ever fail, while a planted `execFile` on the
+ * Kubernetes path spawned fourteen real processes and every ledger stayed empty.
+ */
+export {
+  SPAWN_OBSERVER_PRELOAD,
+  observeNodeSpawns,
+  type ObserveOptions,
+  type ObservedRun,
+  type ObservedSpawn
+} from "./spawn-observer.js";
