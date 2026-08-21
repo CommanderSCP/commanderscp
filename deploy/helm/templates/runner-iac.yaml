@@ -39,7 +39,19 @@ these are the gates rather than a summary of them:
   is the declaration; `kubernetes-rbac-contract.test.ts` holds it to the code by DRIVING every route
   the adapter has over a recording io and deriving the verbs from the wire; `tools/helm-verify`
   asserts these rules equal it as a SET, so an UNUSED verb is a red build exactly as a missing one
-  is. The kind suite asks a real authorizer the same question, including the "no"s.
+  is. The kind suite asks a real authorizer the same question, including the "no"s. `README.md`'s
+  operator-facing sentence about these verbs is held to the same declaration, because an operator
+  plans their cluster's RBAC from prose and that paragraph was wrong for a full milestone.
+
+  AND THE CLAUSE IS ABOUT THE CHART, NOT ABOUT THIS ROLE — which is the correction the sentence above
+  needed and did not have. A diff can only speak for the object it is handed; the first version of
+  this paragraph was true of these `rules` while a real authorizer answered `delete nodes: yes`, a
+  question nothing had asked. `helm-verify` now resolves EVERY RoleBinding against EVERY Role in each
+  of the 162 renders, sums the grant per ServiceAccount identity, and holds each of the three
+  identities this chart has — the workload account and the two bundled-backend autowire hooks, whose
+  Roles live in a different namespace — to a pinned total. NO ClusterRole and NO ClusterRoleBinding,
+  in any render and in any template: every grant this chart makes is namespaced, which is what makes
+  the cluster-scoped answer structurally "no".
 
   NO POD MOUNTS A CONTAINER RUNTIME SOCKET, IN ANY VALUE COMBINATION. `helm-verify` renders 162
   combinations — every `managed*` enablement combination x both launchers x runner namespace x
@@ -50,12 +62,25 @@ these are the gates rather than a summary of them:
   combinations no sweep can enumerate.
 
   NOTHING SPAWNS A CONTAINER CLI ON THIS PATH, AND NOTHING KUBERNETES IS BUILT ON THE OTHER ONE.
-  `spawnRunnerProcess` is the package's only spawn and records the binary by name; each of the three
-  managed plugins asserts an empty ledger on the Kubernetes path and a non-empty one on the Docker
-  path. A construction counter makes "no Kubernetes client is instantiated on a compose install" an
-  assertion rather than an inference.
+  This sentence was FALSE WITH THE SUITE GREEN when it was first written here, and how it was made
+  true is the part worth reading. It rested on a ledger inside `spawnRunnerProcess` — which only sees
+  what goes through it. A planted `execFile` on the Kubernetes path left all three per-class ledger
+  tests green while fourteen processes ran; only a source census reddened, and a census proves the
+  presence of text, never the absence of an execution. So the observation moved OUTSIDE the code: the
+  three plugins and the package are each run in a child `node` whose `node:child_process` was wrapped
+  before they loaded, and the assertion is over the processes that were CREATED, by binary name, with
+  the Docker path observed creating one in the same child as the control. A construction counter
+  makes "no Kubernetes client is instantiated on a compose install" an assertion rather than an
+  inference.
 
-WHAT IS STILL NOT COVERED, KEPT HERE RATHER THAN RETIRED WITH THE NOTE:
+WHAT IS STILL NOT COVERED, KEPT HERE RATHER THAN RETIRED WITH THE NOTE — and the list grew on a
+second pass, which is the argument for keeping it at all:
+
+  THE BUNDLED-BACKENDS CHART'S OWN RBAC IS UNGATED. `deploy/helm-bundled` vendors upstream Argo CD,
+  Argo Workflows and Argo Events manifests, which carry ClusterRoles bound to THEIR OWN
+  ServiceAccounts. It is a separate chart applied separately (`scp-bundled.sh`), and nothing in this
+  repository diffs those grants against anything. The gate above is total over what THIS chart
+  renders and over its template text, and says nothing about that surface.
 
   `--network none` IS NOT EXPRESSIBLE ON A POD. No pod-spec field removes a pod's network namespace.
   Runner pods carry `scp.launcher.network=<requested mode>` and the chart renders a default-deny
