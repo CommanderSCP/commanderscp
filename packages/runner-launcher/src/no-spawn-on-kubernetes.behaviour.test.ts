@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { observeNodeSpawns } from "@scp/source-census";
+import { K8S_SA_DIR } from "./index.js";
 
 /**
  * ==================================================================================================
@@ -257,6 +258,142 @@ console.log(JSON.stringify({ before, after: m.runnerSpawnCount() }));
       after,
       "the ledger saw a spawn that never went through spawnRunnerProcess — if this ever becomes true, the ledger alone is a sufficient gate and this file can say so"
     ).toBe(before);
+  }, 90_000);
+
+  /**
+   * ==============================================================================================
+   * THE HOLE THE CASE ABOVE LEFT, NAMED AND MEASURED (M23.6, third pass)
+   * ==============================================================================================
+   *
+   * EVERY case above — and every one of the three plugin selection tests, and the whole kind suite —
+   * INJECTS `k8s.io`. `resolveRunnerLauncher` reads it as `k8s.io ?? createDefaultKubernetesIo(…)`,
+   * and the right-hand side of a `??` is not evaluated when the left is present. So the resolver's
+   * own default transport was, until this case existed, code that NO test in this repository ever
+   * evaluated or executed.
+   *
+   * THAT IS NOT A THEORETICAL GAP; IT WAS EXERCISED. A `spawnSync(config.dockerBinary ?? "docker",
+   * ["version"])` planted on that right-hand side — in a NEW module, so no `node:child_process`
+   * string appears in `kubernetes-adapter.ts` and the source census in
+   * `no-docker-on-kubernetes.test.ts` sees nothing — ran a REAL `docker version` on this machine
+   * while `@scp/runner-launcher` reported 427/427 and the three managed plugins reported 38 + 50 +
+   * 255, all green. It was proven reached, not merely present: the probe appended to a marker file
+   * and the marker said `reached docker`. The gate above did not miss it by a hair; it could not see
+   * that expression at all.
+   *
+   * THE FIX IS REACHABILITY, NOT A CLEVERER ASSERTION. A gate that names the place a spawn could
+   * happen keeps missing the place it does happen — that is what the source census was, and "the
+   * direct call in the Kubernetes branch" is the same mistake one level in. So the two cases below
+   * take the two things no test took before: the resolver with NO `io` injected (which forces the
+   * `??` right-hand side to be evaluated — `kubernetesConstructionCount()` moving by TWO rather than
+   * ONE is the machine-checked proof of that, and it is the assertion that fails if a future edit
+   * quietly restores an injected default), and the default transport's own three closures, EXECUTED.
+   *
+   * NEITHER CASE PASSES `dockerBinary`, deliberately. The Kubernetes adapter is not given one in
+   * production and must not need one; with the field absent a probe reaching for a container CLI can
+   * only fall back to `DEFAULT_DOCKER_BINARY`, and `run.spawns` must still be empty — so `[]` here is
+   * the whole assertion and no binary name has to be guessed in advance.
+   */
+  it("NO INJECTED `io`: the resolver BUILDS ITS OWN TRANSPORT and still spawns nothing", async () => {
+    const driver = `
+const m = await import(${JSON.stringify(ENTRY)});
+const before = m.kubernetesConstructionCount();
+// NO \`io\`, NO \`dockerBinary\` — the shape production actually has.
+const launcher = m.resolveRunnerLauncher({
+  runnerLauncher: "kubernetes",
+  kubernetes: {
+    namespace: "scp",
+    workspaceRoot: ${JSON.stringify(workspaceRoot)},
+    workspaceVolume: { kind: "persistentVolumeClaim", claimName: "scp-runner-workspace" },
+    // A DEAD LOCAL PORT, so that if this ever runs somewhere a projected token DOES exist, the
+    // request cannot leave the machine. Nothing in this repository's tests may touch a network.
+    apiBase: "http://127.0.0.1:1"
+  }
+});
+const constructed = m.kubernetesConstructionCount() - before;
+let failure = "";
+await launcher.run(${spec("b5", workspaceRoot)}).catch((e) => { failure = String(e && e.message ? e.message : e); });
+await launcher.reap().catch(() => undefined);
+await m.whenKubernetesReapSettled("scp");
+console.log(JSON.stringify({ constructed, failure, ledger: m.runnerSpawnCount() }));
+`;
+    const run = await observeNodeSpawns({ module: driver, timeoutMs: 120_000 });
+    expect(run.ok, `the driver did not complete:\n${run.stderr}`).toBe(true);
+    const report = JSON.parse(run.stdout.trim().split("\n").pop()!) as {
+      constructed: number;
+      failure: string;
+      ledger: number;
+    };
+    // NON-VACUITY 1 — THE `??` RIGHT-HAND SIDE WAS EVALUATED. Two constructions: the launcher, and
+    // the transport the resolver built for itself. An injected `io` makes this ONE, which is exactly
+    // the number every other case in this file produces and the reason none of them could see the
+    // planted spawn.
+    expect(
+      report.constructed,
+      "the resolver did not build its own transport, so the branch this case exists for was not evaluated"
+    ).toBe(2);
+    // NON-VACUITY 2 — THE DEFAULT `readToken` ACTUALLY RAN. It is the resolver's own closure, and its
+    // ENOENT names the projected-token path, which no other code in this package mentions. This
+    // process is not a pod; if it ever is, this assertion is the thing that says so.
+    expect(
+      report.failure,
+      "the run did not reach the default transport's token read, so nothing past construction was driven"
+    ).toContain(`${K8S_SA_DIR}/token`);
+    // …AND THE MEASUREMENT.
+    expect(
+      run.spawns,
+      `a process was created while the resolver built and used its own transport: ${JSON.stringify(run.spawns)}`
+    ).toStrictEqual([]);
+    expect(report.ledger).toBe(0);
+  }, 180_000);
+
+  it("THE DEFAULT TRANSPORT'S THREE CLOSURES, EXECUTED — `readToken`, `copyDir`, `removeDir`", async () => {
+    /**
+     * The case above reaches `readToken` and stops there: the run cannot get past a token this
+     * process does not have. `copyDir` and `removeDir` are the two closures a run would reach NEXT,
+     * they move real bytes on the shared volume, and a `fork()` behind a dynamic `import()` inside
+     * either of them is reached by no construction-time check and named by no census. So they are
+     * driven directly, on real directories, with the bytes checked afterwards — a `copyDir` that
+     * silently did nothing would spawn nothing either.
+     */
+    const scratch = join(workspaceRoot, "closures");
+    const driver = `
+const m = await import(${JSON.stringify(ENTRY)});
+const { mkdir, writeFile, readFile, stat } = await import("node:fs/promises");
+const io = m.createDefaultKubernetesIo("http://127.0.0.1:1");
+const from = ${JSON.stringify(join("SCRATCH", "from"))}.replace("SCRATCH", ${JSON.stringify(scratch)});
+const to = ${JSON.stringify(join("SCRATCH", "to"))}.replace("SCRATCH", ${JSON.stringify(scratch)});
+await mkdir(from + "/nested", { recursive: true });
+await writeFile(from + "/nested/a.txt", "bytes-that-moved");
+let tokenError = "";
+await io
+  .request({ step: "create", method: "GET", path: "/api", timeoutMs: 5_000 })
+  .catch((e) => { tokenError = String(e && e.message ? e.message : e); });
+await io.copyDir({ step: "copy-in", fromDir: from, toDir: to, timeoutMs: 5_000 });
+const copied = await readFile(to + "/nested/a.txt", "utf8");
+await io.removeDir({ step: "teardown", dir: to, timeoutMs: 5_000 });
+let gone = false;
+await stat(to).catch(() => { gone = true; });
+console.log(JSON.stringify({ tokenError, copied, gone, ledger: m.runnerSpawnCount() }));
+`;
+    const run = await observeNodeSpawns({ module: driver, timeoutMs: 60_000 });
+    expect(run.ok, `the driver did not complete:\n${run.stderr}`).toBe(true);
+    const report = JSON.parse(run.stdout.trim().split("\n").pop()!) as {
+      tokenError: string;
+      copied: string;
+      gone: boolean;
+      ledger: number;
+    };
+    // ALL THREE CLOSURES DEMONSTRABLY RAN, each by a signal only that closure can produce.
+    expect(report.tokenError).toContain(`${K8S_SA_DIR}/token`);
+    expect(report.copied, "`copyDir` moved no bytes, so 'it spawned nothing' is empty").toBe(
+      "bytes-that-moved"
+    );
+    expect(report.gone, "`removeDir` removed nothing, so 'it spawned nothing' is empty").toBe(true);
+    expect(
+      run.spawns,
+      `the default transport created a process: ${JSON.stringify(run.spawns)}`
+    ).toStrictEqual([]);
+    expect(report.ledger).toBe(0);
   }, 90_000);
 
   it("THE OBSERVER'S OWN NON-VACUITY: a child that spawns nothing reports nothing, and exits 0", async () => {

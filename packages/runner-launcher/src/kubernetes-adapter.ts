@@ -2672,26 +2672,48 @@ export const resolveRunnerLauncher: ResolveRunnerLauncher = (config: RunnerLaunc
     // setting, so the ONE selection path (which `promotion-scan-step.ts` and all three bindings
     // share) is also the one place a convention can be dropped.
     ...(k8s.pod ? { pod: k8s.pod } : {}),
-    io:
-      k8s.io ??
-      createFetchKubernetesIo({
-        apiBase: k8s.apiBase,
-        readToken: async () => {
-          const { readFile } = await import("node:fs/promises");
-          return readFile(`${K8S_SA_DIR}/token`, "utf8");
-        },
-        copyDir: async (fromDir, toDir) => {
-          const { cp, mkdir } = await import("node:fs/promises");
-          await mkdir(toDir, { recursive: true });
-          await cp(fromDir, toDir, { recursive: true });
-        },
-        removeDir: async (dir) => {
-          const { rm } = await import("node:fs/promises");
-          await rm(dir, { recursive: true, force: true });
-        }
-      })
+    io: k8s.io ?? createDefaultKubernetesIo(k8s.apiBase)
   });
 };
+
+/**
+ * THE PRODUCTION `io`, AS A NAMED EXPORT RATHER THAN AS THREE ANONYMOUS CLOSURES (M23.6 clause 1).
+ *
+ * WHY THIS IS A FUNCTION AND NOT AN OBJECT LITERAL INSIDE THE RESOLVER, WHICH IS WHERE IT LIVED.
+ * These three closures are the ONLY part of the Kubernetes path that no test could reach. Every unit
+ * fixture in this repository — all four behaviour drivers, all three plugin selection tests, the kind
+ * suite — supplies its own `io`, so the right-hand side of `k8s.io ??` was DEAD to the whole suite:
+ * it was neither evaluated nor executed anywhere, which is exactly how a `spawnSync` planted on that
+ * right-hand side ran a real `docker version` with 427 + 38 + 50 + 255 tests green. Code a gate
+ * cannot reach is code the gate does not gate, and the fix is to make it reachable BY NAME rather
+ * than to write a cleverer gate over the same unreachable expression.
+ *
+ * `no-spawn-on-kubernetes.behaviour.test.ts` now drives all three of these under the spawn observer:
+ * `request` far enough to prove `readToken` ran (its ENOENT names the token path — this process is
+ * not a pod), and `copyDir`/`removeDir` all the way, against real temp directories.
+ *
+ * It changes nothing at runtime: the resolver calls this and only this, `createFetchKubernetesIo`
+ * still counts the one construction, and no new field appears on `RunnerLauncherConfig` — an
+ * injectable io/spawner on that server-injected surface was rejected for M23.2 and is still rejected.
+ */
+export function createDefaultKubernetesIo(apiBase?: string): KubernetesRunnerIo {
+  return createFetchKubernetesIo({
+    apiBase,
+    readToken: async () => {
+      const { readFile } = await import("node:fs/promises");
+      return readFile(`${K8S_SA_DIR}/token`, "utf8");
+    },
+    copyDir: async (fromDir, toDir) => {
+      const { cp, mkdir } = await import("node:fs/promises");
+      await mkdir(toDir, { recursive: true });
+      await cp(fromDir, toDir, { recursive: true });
+    },
+    removeDir: async (dir) => {
+      const { rm } = await import("node:fs/promises");
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 /** A stable, short digest of a string — used by the harness to build in-bounds run ids. Exported
  *  from here rather than duplicated in a test, so the harness and the adapter agree by construction. */

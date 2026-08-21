@@ -180,7 +180,13 @@ describe("M23.6 clause 7: nothing Kubernetes is CONSTRUCTED on the Docker path",
     const constructors = [...source.matchAll(/^export function (create[A-Za-z]+)\(/gm)].map(
       (m) => m[1]!
     );
+    // THREE NAMES, TWO COUNTED CONSTRUCTIONS. `createDefaultKubernetesIo` (M23.6) builds nothing of
+    // its own — it delegates to `createFetchKubernetesIo`, which is why the count above stays at two
+    // — and it exists because the three closures it now holds were, as an object literal inside
+    // `resolveRunnerLauncher`, the one stretch of the Kubernetes path NO test could reach. That is
+    // where a planted `spawnSync` ran a real `docker version` with every suite green.
     expect(constructors.slice().sort()).toStrictEqual([
+      "createDefaultKubernetesIo",
       "createFetchKubernetesIo",
       "createKubernetesRunnerLauncher"
     ]);

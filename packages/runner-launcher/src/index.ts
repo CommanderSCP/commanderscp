@@ -4274,6 +4274,7 @@ export {
   RUNNER_NETWORK_LABEL,
   RUNNER_RUN_ID_LABEL,
   RUNNER_WORKSPACE_VOLUME_NAME,
+  createDefaultKubernetesIo,
   createFetchKubernetesIo,
   createKubernetesRunnerLauncher,
   isKubernetesAlreadyExists,
