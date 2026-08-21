@@ -1,7 +1,9 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { observeNodeSpawns } from "@scp/source-census";
 import type { PluginContext } from "@scp/plugin-api";
 import type { KubernetesRunnerIo } from "@scp/runner-launcher";
 import { createManagedIacExecutorPlugin } from "./index.js";
@@ -230,4 +232,119 @@ describe("M23.2: managed-iac, constructed the way production constructs it, hono
       .catch(() => undefined);
     expect(kubernetesConstructionCount()).toBeGreaterThan(before);
   });
+});
+
+/**
+ * ==================================================================================================
+ * M23.6 CLAUSE 1, BEHAVIOURALLY — THE SPAWN IS OBSERVED FROM OUTSIDE THIS PROCESS
+ * ==================================================================================================
+ *
+ * WHY THE LEDGER ARM ABOVE IS NOT ENOUGH, MEASURED. `runnerSpawns()` records what goes THROUGH
+ * `spawnRunnerProcess`. A real `child_process.execFile(dockerBinary, …)` on the Kubernetes path goes
+ * nowhere near it: planted in `resolveRunnerLauncher`'s Kubernetes branch it left this file, its two
+ * siblings and the whole workspace GREEN while fourteen processes were actually created. What caught
+ * it was a source census — and a census proves the presence of TEXT, never the absence of an
+ * EXECUTION, which is this repository's most expensive standing confusion.
+ *
+ * SO THIS CASE RUNS THE PLUGIN IN A CHILD `node` whose `node:child_process` was wrapped before the
+ * plugin loaded, and asserts over the processes that were actually created. It carries its OWN
+ * control in the same child, in order: the Kubernetes trigger first (nothing may be created), then a
+ * Docker trigger (something must be), so an observer that had silently stopped observing fails the
+ * second half rather than passing the first.
+ */
+describe("M23.6 clause 1, behaviourally: managed-iac creates no process on the Kubernetes path", () => {
+  it("OBSERVED FROM OUTSIDE: the Kubernetes trigger spawns NOTHING and the Docker trigger spawns", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "managed-iac-observed-"));
+    try {
+      // BOTH SUBJECTS AS BUILT `dist`, RESOLVED THE WAY NODE WOULD. The driver runs from a temp
+      // directory, so a bare specifier there would resolve against nothing; `createRequire` rooted at
+      // this package's own `package.json` is the same lookup the plugin host performs.
+      const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+      const pluginEntry = join(packageRoot, "dist/index.js");
+      const driver = `
+import { readFileSync } from "node:fs";
+const OUT = process.env.SCP_SPAWN_OBSERVER_OUT;
+const spawnsSoFar = () =>
+  readFileSync(OUT, "utf8").split("\\n").filter((l) => l.trim().length > 0).length;
+
+const { createRequire } = await import("node:module");
+const req = createRequire(${JSON.stringify(join(packageRoot, "package.json"))});
+const rl = await import(req.resolve("@scp/runner-launcher"));
+const plugin = (await import(${JSON.stringify(pluginEntry)})).createManagedIacExecutorPlugin();
+
+const seen = [];
+const io = {
+  request: async (req) => {
+    seen.push(req.method + " " + req.path.split("?")[0]);
+    throw new Error("observed-probe: the Kubernetes io was reached");
+  },
+  copyDir: async () => undefined,
+  removeDir: async () => undefined
+};
+const base = {
+  orgId: "org-1",
+  scopeKey: "domain-1",
+  logger: { debug() {}, info() {}, warn() {}, error() {} },
+  secrets: { get: async () => undefined },
+  http: { request: async () => { throw new Error("managed-iac: never calls ctx.http"); } }
+};
+const config = {
+  runnerImage: "scp-runner-iac:vetted",
+  workspaceRoot: ${JSON.stringify(workspace)},
+  networkMode: "none",
+  statePath: ${JSON.stringify(join(workspace, "dedup.json"))},
+  // A BINARY THAT CANNOT EXIST, so the Docker control below is hermetic and fast: the ledger and the
+  // observer both record the INTENT to spawn, whether or not a container runtime is installed.
+  dockerBinary: "scp-no-such-container-cli"
+};
+
+await plugin
+  .trigger(
+    { ...base, config: { ...config, runnerLauncher: "kubernetes", kubernetes: {
+      namespace: "scp",
+      workspaceRoot: ${JSON.stringify(workspace)},
+      workspaceVolume: { kind: "persistentVolumeClaim", claimName: "scp-runner-workspace" },
+      io
+    } } },
+    { kind: "sync", targetRef: "t1", parameters: { iacAction: "plan" }, idempotencyKey: "observed-k8s" }
+  )
+  .catch(() => undefined);
+await rl.whenKubernetesReapSettled("scp");
+const afterKubernetes = spawnsSoFar();
+
+await plugin
+  .trigger(
+    { ...base, config },
+    { kind: "sync", targetRef: "t2", parameters: { iacAction: "plan" }, idempotencyKey: "observed-docker" }
+  )
+  .catch(() => undefined);
+await rl.whenReapSettled();
+console.log(JSON.stringify({ seen, afterKubernetes, afterDocker: spawnsSoFar() }));
+`;
+      const run = await observeNodeSpawns({ module: driver, timeoutMs: 120_000 });
+      expect(run.ok, `the probe did not complete:\n${run.stderr}`).toBe(true);
+      const report = JSON.parse(run.stdout.trim().split("\n").pop()!) as {
+        seen: string[];
+        afterKubernetes: number;
+        afterDocker: number;
+      };
+      // NON-VACUITY: the Kubernetes adapter was genuinely reached through the zero-argument factory.
+      expect(
+        report.seen,
+        "the probe never reached the Kubernetes adapter, so 'nothing was created' is empty"
+      ).toContain("POST /apis/batch/v1/namespaces/scp/jobs");
+      expect(
+        report.afterKubernetes,
+        `managed-iac created a process on the Kubernetes path: ${JSON.stringify(run.spawns)}`
+      ).toBe(0);
+      // THE CONTROL, IN THE SAME CHILD: the Docker path must be seen creating one, by name.
+      expect(
+        report.afterDocker,
+        "the Docker trigger created no process either, so the observer proves nothing"
+      ).toBeGreaterThan(0);
+      expect(run.binaries).toStrictEqual(["scp-no-such-container-cli"]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 180_000);
 });
