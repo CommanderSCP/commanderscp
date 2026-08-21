@@ -10,6 +10,7 @@ import {
   kubernetesTermination,
   resolveRunnerLauncher,
   runnerJobName,
+  runnerReapGraceMs,
   runnerSecretName,
   whenKubernetesReapSettled,
   workspaceSlots
@@ -549,8 +550,13 @@ describe("M23.2: identity, attribution and the value that cannot be honoured", (
     ).metadata;
     expect(meta.labels[RUNNER_LAUNCHER_OWNER_LABEL]).toBe(LAUNCHER_OWNER_ID);
     const stamped = Date.parse(meta.annotations[RUNNER_LAUNCHER_DEADLINE_ANNOTATION]!);
-    expect(stamped).toBeGreaterThanOrEqual(before + 123_000 + 120_000);
-    expect(stamped).toBeLessThanOrEqual(after + 123_000 + 120_000);
+    // THE GRACE IS THIS ADAPTER'S, NOT THE DOCKER ONE'S (M23.5 HIGH-2). It was a flat 120_000 here
+    // — `RUNNER_REAP_GRACE_MS`, sized against a ONE-call teardown — while this adapter's teardown is
+    // three calls and the host's own grace grows with it. A stamp that expires before the owning
+    // process is dead is precisely what `reap()` must never see.
+    const grace = runnerReapGraceMs("kubernetes");
+    expect(stamped).toBeGreaterThanOrEqual(before + 123_000 + grace);
+    expect(stamped).toBeLessThanOrEqual(after + 123_000 + grace);
     // AND THE REASON IT IS NOT A LABEL: the API server rejects the value outright.
     expect(isKubernetesLabelValue(meta.annotations[RUNNER_LAUNCHER_DEADLINE_ANNOTATION]!)).toBe(
       false

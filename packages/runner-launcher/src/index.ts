@@ -2730,13 +2730,308 @@ async function writeSecretEnvFile(
  * The teardown call's own timeout, and it is NOT the run timeout — a tenant `timeoutMs` never
  * reaches `rm`. It also carries NO `maxBuffer`; both absences are pinned by all three goldens.
  *
- * IT IS ALSO THE ONLY WORK THAT HAPPENS AFTER THE WHOLE-RUN DEADLINE, which makes it the term every
- * outer budget has to carry on top of {@link RunnerSpec.timeoutMs}: `run()` returns within
- * `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`. Both {@link RUNNER_REAP_GRACE_MS} here and
- * `MANAGED_TRIGGER_GRACE_MS` in `apps/server/src/plugin-host/call-policy.ts` are derived from this
- * number, and the latter is gated against it by a test rather than by a comment.
+ * IT IS THE UNIT THE TEARDOWN MODEL IS BUILT FROM, NOT THE WHOLE OF IT (M23.5). This doc used to
+ * call it "the ONLY work that happens after the whole-run deadline" and to state the bound as
+ * `run()` returns within `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`. That was a sentence about the
+ * DOCKER adapter's one-call `finally`, written when there was one adapter. The Kubernetes adapter's
+ * teardown is THREE bounded calls, so what an outer budget must carry is their SUM — see
+ * {@link runnerTeardownWorstCaseMs} and {@link runnerRunBoundMs}, which DERIVE it from
+ * {@link RUNNER_TEARDOWN_STEPS} instead of restating a number in a comment nothing can check.
  */
 export const RUNNER_REMOVE_TIMEOUT_MS = 30_000;
+
+// ==================================================================================================
+// THE PORT'S OWN DEADLINE — M23.5. THE ENFORCEMENT IS HERE, NOT IN WHOEVER IMPLEMENTS THE ADAPTER.
+// ==================================================================================================
+
+/**
+ * WHY THIS SECTION EXISTS, stated as the measurement rather than as a principle.
+ *
+ * {@link clampRunTimeoutMs}'s own doc already argued the shape: the clamp runs INSIDE `run()` "so a
+ * caller cannot skip it and a SECOND ADAPTER CANNOT FORGET IT". That reasoning was applied to the
+ * clamp and to nothing else. The per-step deadline stayed hand-rolled in each adapter — three copies
+ * of `remaining = deadline - now; refuse if spent; pass what is left down` — and the second adapter
+ * promptly forgot one of the three.
+ *
+ * MEASURED, against `dist`, on `KubernetesRunnerIo`: `timeoutMs` is a field of
+ * `KubernetesApiRequest` and of NOTHING else. `copyDir` and `removeDir` carried no deadline at all,
+ * and `createFetchKubernetesIo` implemented them as a bare `cp`/`rm`. The adapter's `copy()` checked
+ * the remaining budget BEFORE the call and then awaited it forever:
+ *
+ *     after 15003ms with timeoutMs=3000: STILL RUNNING
+ *     requests issued: ["GET …/jobs timeoutMs=30000", "POST …/jobs timeoutMs=2999"]
+ *
+ * and the volume is BY CONSTRUCTION a network filesystem — the chart names NFS, CephFS, EFS and
+ * Azure Files — which is the kind that hangs rather than errors. The chain from there is M23.1c
+ * verbatim: `run()` never returns, the host SIGKILLs the subprocess, `withRecordedOutcome` never
+ * writes, managed-iac's ledger entry never lands, `reconcile.ts` retries, and a SECOND `tofu apply`
+ * goes at live infrastructure. Worse than M23.1c, in fact: copy-in precedes `start`, so the
+ * abandoned Job is still SUSPENDED — it never finishes, `ttlSecondsAfterFinished` never applies, and
+ * the per-run credential Secret survives until some later run's `reap()` happens by.
+ *
+ * THE PROPERTY, NAMED: *the whole-run deadline was enforced by whoever happened to implement the
+ * adapter.* The fix is not "give `copyDir` a `timeoutMs` too" — that is the same property with one
+ * more instance patched, and a third adapter forgets it again. A field on an interface obliges the
+ * CALLER to supply a number; nothing whatsoever obliges the IMPLEMENTATION to honour it. So the
+ * enforcement is hoisted to the port: {@link withStepBound} is the only way any adapter in this
+ * package awaits anything, and it gives up on work that did not honour the bound it was handed.
+ */
+
+/**
+ * HOW LONG PAST A STEP'S OWN STATED BOUND THE LAUNCHER WAITS BEFORE ABANDONING IT.
+ *
+ * IT IS NOT PADDING, AND IT MAY NOT BE ZERO. The mechanisms that DO honour a bound —
+ * `execFile`'s `timeout`, `AbortSignal.timeout` — express it as a timer of their own, and a timer of
+ * ours set for the same instant would win the race essentially always: `execFile` fires its timer,
+ * SIGTERMs the child, and rejects only after the child actually exits. Abandoning at the same
+ * instant would therefore convert every ordinary budget kill into an abandonment, throwing away the
+ * `code`/`signal`/partial-stdout diagnosis that {@link classifyRunnerFailure} exists to preserve —
+ * a regression in operator-facing detail bought by a mechanism aimed at a different failure.
+ *
+ * So the inner mechanism gets first refusal, by this margin, and abandonment is what happens ONLY
+ * when the inner mechanism did not exist (a bare `cp`) or did not work (a `SIGTERM` a process in
+ * uninterruptible disk sleep will never take — the exact NFS/CephFS shape this whole section is
+ * about). One second is far longer than any honest self-bounded call needs to settle after its own
+ * timer fires and far shorter than anything an operator would notice.
+ *
+ * AT MOST ONE ABANDONMENT PER RUN, so this is an additive term and not a multiplied one: the first
+ * abandonment spends the budget, after which every later step is REFUSED before it is issued.
+ */
+export const RUNNER_STEP_ABANDON_GRACE_MS = 1_000;
+
+/** `code` on an abandoned step, so a reader can branch without parsing the message. */
+export const RUNNER_ABANDONED_CODE = "ERR_SCP_RUNNER_STEP_ABANDONED";
+
+/**
+ * WHAT {@link withStepBound} THROWS WHEN THE WORK DID NOT HONOUR ITS BOUND. Never leaves this
+ * package: `run()` turns it into a {@link RunnerLaunchError} with `deadlineExceeded`, which is what
+ * makes {@link classifyRunnerFailure} call it `budget-exhausted` — the honest answer, since the
+ * whole-run budget is precisely what ran out.
+ *
+ * THE WORK IS ABANDONED, NOT CANCELLED, and the message says so. `fs.cp` and `fs.rm` take no
+ * `AbortSignal`; there is no way to stop a copy that is wedged on a network mount. What the launcher
+ * can guarantee is that `run()` RETURNS — which is the whole difference between a failed run the
+ * ledger records and a SIGKILLed subprocess that retries into a second `tofu apply`.
+ */
+export class RunnerStepAbandonedError extends Error {
+  readonly code = RUNNER_ABANDONED_CODE;
+  /** The bound the work was handed and did not honour. */
+  readonly boundMs: number;
+  constructor(what: string, boundMs: number) {
+    super(
+      `${what} did not honour its ${boundMs}ms bound and was ABANDONED after a further ` +
+        `${RUNNER_STEP_ABANDON_GRACE_MS}ms — the launcher stopped waiting; the underlying I/O may ` +
+        `still be in flight`
+    );
+    this.name = "RunnerStepAbandonedError";
+    this.boundMs = boundMs;
+  }
+}
+
+/**
+ * THE ONLY WAY THIS PACKAGE AWAITS ANYTHING THAT LEAVES THE PROCESS — one call, one bound, and a
+ * return that is guaranteed whether or not the work cooperates.
+ *
+ * `work` RECEIVES THE BOUND so that a mechanism which CAN self-limit does (that is strictly better:
+ * it cancels rather than abandons, and it keeps its own diagnosis). The race is what makes the bound
+ * true for the mechanisms that cannot.
+ *
+ * THE TIMER IS `unref`'d, DELIBERATELY. An abandonment timer must never be the reason a process
+ * stays alive: if nothing else is pending there is no in-flight I/O to abandon. A genuinely wedged
+ * `fs.cp` holds a libuv threadpool request, which keeps the loop alive, so the timer fires exactly
+ * when it is needed. (A test that models a hang as a promise which simply never settles must
+ * therefore hold a handle of its own — `port-deadline.test.ts` does, and says why.)
+ *
+ * AND THE ABANDONED PROMISE IS ALWAYS RE-CAUGHT. Work that rejects at minute nine with nobody left
+ * listening is an unhandled rejection, which on a plugin subprocess is a process exit — the failure
+ * mode this function exists to prevent, arriving by the back door.
+ */
+export async function withStepBound<T>(args: {
+  /** The bound handed to `work`, in ms. Clamped to >= 1: `timeout: 0` is NO timeout in Node. */
+  timeoutMs: number;
+  /** How the step is named in an abandonment message, e.g. `'copy-in'` or `DELETE job`. */
+  what: string;
+  work: (timeoutMs: number) => Promise<T>;
+}): Promise<T> {
+  const bound = Math.max(1, Math.trunc(args.timeoutMs));
+  // `async` wrapper so a `work` that throws SYNCHRONOUSLY is a rejection like any other rather than
+  // an exception that escapes past the `finally` and leaves the timer armed.
+  const pending = (async () => args.work(bound))();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new RunnerStepAbandonedError(args.what, bound)),
+          bound + RUNNER_STEP_ABANDON_GRACE_MS
+        );
+        timer.unref?.();
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    void pending.catch(() => undefined);
+  }
+}
+
+/**
+ * THE ONE CLOCK A RUN IS HELD TO, and the only thing either adapter may spend it through.
+ *
+ * Created once at the top of `run()` from `clampRunTimeoutMs(spec.timeoutMs)` — the same
+ * "inside `run()` so nobody can forget it" placement the clamp already had, now extended to the
+ * thing the clamp's own doc claimed for it.
+ */
+export interface RunDeadline {
+  /** `clampRunTimeoutMs(spec.timeoutMs)` — the budget the run is actually held to. */
+  readonly runTimeoutMs: number;
+  /** Epoch ms. `Date.now() + runTimeoutMs`, read ONCE. */
+  readonly at: number;
+  /** What is left, possibly <= 0. */
+  remainingMs(): number;
+  /**
+   * REFUSE, BOUND, OR ABANDON — the three-way decision every step of every adapter goes through,
+   * written once.
+   *
+   *  - nothing left -> a {@link RunnerLaunchError} with `deadlineExceeded`, and the step is NEVER
+   *    ISSUED. `timeout: 0` is no timeout at all in Node and a negative one throws synchronously
+   *    with an unredacted argv in the message, so the refusal is the part with the teeth.
+   *  - otherwise -> `work` is handed what remains and raced against
+   *    {@link RUNNER_STEP_ABANDON_GRACE_MS} past it.
+   *  - work rejected on its own -> the rejection is RE-THROWN RAW, because the two adapters shape a
+   *    step failure differently (Docker keeps Node's `code`/`killed`/`signal` and replaces only the
+   *    message; Kubernetes builds a fresh cause from an HTTP status) and normalising that here would
+   *    silently rewrite four goldens. Callers therefore re-throw a {@link RunnerLaunchError} they
+   *    receive unchanged — it is already this port's own verdict.
+   */
+  spend<T>(
+    step: RunnerLaunchStep,
+    argv: readonly string[],
+    work: (timeoutMs: number) => Promise<T>
+  ): Promise<T>;
+}
+
+export function createRunDeadline(args: {
+  /** Raw `spec.timeoutMs`; {@link clampRunTimeoutMs} is applied HERE and nowhere else. */
+  requestedTimeoutMs: number;
+  /** {@link RunnerLaunchError.file} for the refusals this object raises. */
+  file: string;
+  /** Read late: the Docker adapter's redaction set grows an `--env-file` path mid-run. */
+  redactions: () => readonly string[];
+}): RunDeadline {
+  const runTimeoutMs = clampRunTimeoutMs(args.requestedTimeoutMs);
+  const at = Date.now() + runTimeoutMs;
+  const iso = new Date(at).toISOString();
+  return {
+    runTimeoutMs,
+    at,
+    remainingMs: () => at - Date.now(),
+    async spend(step, argv, work) {
+      const remaining = at - Date.now();
+      if (remaining <= 0) {
+        throw new RunnerLaunchError({
+          step,
+          file: args.file,
+          argv,
+          deadlineExceeded: true,
+          cause: new Error(
+            `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
+              `at the run deadline ${iso} — '${step}' was not issued`
+          ),
+          redactions: args.redactions()
+        });
+      }
+      try {
+        return await withStepBound({ timeoutMs: remaining, what: `'${step}'`, work });
+      } catch (cause) {
+        if (cause instanceof RunnerStepAbandonedError) {
+          throw new RunnerLaunchError({
+            step,
+            file: args.file,
+            argv,
+            deadlineExceeded: true,
+            cause: new Error(
+              `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) ran out during ` +
+                `'${step}' at the run deadline ${iso} — ${cause.message}`
+            ),
+            redactions: args.redactions()
+          });
+        }
+        throw cause;
+      }
+    }
+  };
+}
+
+// ==================================================================================================
+// THE TEARDOWN MODEL — M23.5 HIGH-2. What happens after the deadline, per adapter, as a NUMBER.
+// ==================================================================================================
+
+/** The adapters this package ships. Also the key of every per-adapter quantity below. */
+export type RunnerLauncherKind = "docker" | "kubernetes";
+
+/**
+ * HOW MANY BOUNDED CALLS EACH ADAPTER'S TEARDOWN `finally` ISSUES AFTER THE RUN DEADLINE.
+ *
+ * THIS NUMBER IS THE MODEL, AND THE MODEL IS WHAT WAS MISSING. `MANAGED_TRIGGER_GRACE_MS` was 60s
+ * chosen as "two worst-case teardowns", written when a teardown was one `docker rm -f`. The
+ * Kubernetes adapter's teardown is THREE calls — DELETE the Job, DELETE the Secret, remove the
+ * workspace subtree — so sixty seconds of bounded work consumed the entire grace and left nothing
+ * for the outcome write the grace exists to protect. That is precisely what `call-policy.ts`'s own
+ * comment calls "WRONG BY CONSTRUCTION" about the 30s it replaced: the number was gated
+ * (`grace > RUNNER_REMOVE_TIMEOUT_MS`, one teardown) and the MODEL was not, so nothing anywhere knew
+ * the teardown had grown.
+ *
+ * SO THE COUNT IS DECLARED AND THEN CHECKED AGAINST THE CODE. `teardown-model.test.ts` drives each
+ * adapter to its `finally` and counts what it actually issues; a fourth teardown step on either
+ * adapter reddens that test by name, and every grace derived below moves the moment the count is
+ * corrected. Adding a step can no longer be silent.
+ */
+export const RUNNER_TEARDOWN_STEPS: Readonly<Record<RunnerLauncherKind, number>> = {
+  /** `docker rm -f <name>`. */
+  docker: 1,
+  /** `DELETE …/jobs/<name>`, `DELETE …/secrets/<name>-env`, `removeDir <runRoot>`. */
+  kubernetes: 3
+};
+
+/** The worst case of ONE bounded call made outside the run budget: its own timeout, plus the margin
+ *  {@link withStepBound} waits before giving up on work that ignored it. */
+export const RUNNER_BOUNDED_CALL_WORST_CASE_MS =
+  RUNNER_REMOVE_TIMEOUT_MS + RUNNER_STEP_ABANDON_GRACE_MS;
+
+/** The worst-case wall clock of `kind`'s teardown `finally`. */
+export function runnerTeardownWorstCaseMs(kind: RunnerLauncherKind): number {
+  return RUNNER_TEARDOWN_STEPS[kind] * RUNNER_BOUNDED_CALL_WORST_CASE_MS;
+}
+
+/**
+ * EVERYTHING `run()` MAY STILL DO AFTER ITS WHOLE-RUN DEADLINE — one possible abandonment of the
+ * step that was in flight when the deadline passed, then the teardown. This is the term every outer
+ * budget has to carry on top of {@link RunnerSpec.timeoutMs}.
+ */
+export function runnerPostDeadlineMs(kind: RunnerLauncherKind): number {
+  return RUNNER_STEP_ABANDON_GRACE_MS + runnerTeardownWorstCaseMs(kind);
+}
+
+/**
+ * THE BOUND `run()` IS HELD TO on `kind`, for a requested `timeoutMs`. The sentence three documents
+ * used to state as `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`, now computable rather than asserted —
+ * and true of the Kubernetes adapter, of which the old sentence was false.
+ */
+export function runnerRunBoundMs(kind: RunnerLauncherKind, requestedTimeoutMs: number): number {
+  return clampRunTimeoutMs(requestedTimeoutMs) + runnerPostDeadlineMs(kind);
+}
+
+/**
+ * HOW FAR CLEAR OF ITS OWN POST-DEADLINE WORK A RUN STAMPS ITS REAP DEADLINE.
+ *
+ * The stamp must stay in the future for as long as the owning PROCESS may be alive, and the process
+ * outlives `run()` by the host's own grace (`MANAGED_TRIGGER_GRACE_MS`, which this package may not
+ * import — the dependency only goes one way). This headroom is what covers that, and
+ * `call-policy.test.ts` gates the relationship from the side that CAN import, for every adapter
+ * kind rather than for the one that happened to exist when the constant was written.
+ */
+export const RUNNER_REAP_HEADROOM_MS = 90_000;
 
 /** The Docker adapter's default CLI. Server-injected in production; this is the unit-test fallback. */
 export const DEFAULT_DOCKER_BINARY = "docker";
@@ -2773,16 +3068,25 @@ export const RUNNER_LAUNCHER_DEADLINE_LABEL = "scp.launcher.deadline";
  * deadline` to any peer launcher. The threshold was ~24s of `timeoutMs`; all three shipped defaults
  * are far above it.
  *
- * NOW IT IS ARITHMETIC INSIDE THIS ONE FILE. `run()` cannot outlive `runDeadline` by more than one
- * teardown, so the only term this has to cover is {@link RUNNER_REMOVE_TIMEOUT_MS} — 30s, declared
- * forty lines up rather than re-derived across a package boundary from a constant this package is
- * forbidden to import. Two minutes is four times that, and it also stays clear of
- * `MANAGED_TRIGGER_GRACE_MS` (the point at which the host gives up and SIGKILLs the subprocess,
- * `apps/server/src/plugin-host/call-policy.ts`), so a container is never reapable while the process
- * that owns it may still be alive. That second relationship is the one nothing here CAN enforce —
- * the import only goes the other way — so `call-policy.test.ts` gates it from the side that can.
+ * NOW IT IS ARITHMETIC, AND SINCE M23.5 IT IS ARITHMETIC PER ADAPTER. `run()` cannot outlive
+ * `runDeadline` by more than {@link runnerPostDeadlineMs} — one possible abandonment plus that
+ * adapter's whole teardown — so THAT is the term this has to cover, plus
+ * {@link RUNNER_REAP_HEADROOM_MS} for the window in which the run is over but the owning process is
+ * still finishing (the host's `MANAGED_TRIGGER_GRACE_MS`, which this package may not import).
+ *
+ * IT WAS A FLAT `2 * 60_000` AND THAT WAS THE SAME DEFECT AS THE GRACE'S. Two minutes was "four
+ * worst-case teardowns" when a teardown was one `docker rm -f`; on the Kubernetes adapter a teardown
+ * is three bounded calls and the host's own grace grows with it, so a flat two minutes could put the
+ * stamp in the PAST while the owning process was still alive — HIGH-2 through the other door, on the
+ * adapter nobody re-derived the number for.
  */
-export const RUNNER_REAP_GRACE_MS = 2 * 60_000;
+export function runnerReapGraceMs(kind: RunnerLauncherKind): number {
+  return runnerPostDeadlineMs(kind) + RUNNER_REAP_HEADROOM_MS;
+}
+
+/** {@link runnerReapGraceMs} for the DOCKER adapter — the value the Docker stamp and
+ *  {@link RUNNER_SECRET_ENV_MAX_AGE_MS} (an `--env-file` is a Docker-only artefact) are built from. */
+export const RUNNER_REAP_GRACE_MS = runnerReapGraceMs("docker");
 
 /**
  * THE HARD BOUND ON ONE `reap()` PASS — see {@link RunnerLauncher.reap} for the measurement.
@@ -2910,19 +3214,28 @@ export function createDockerRunnerLauncher(
     const passDeadline = Date.now() + RUNNER_REAP_BUDGET_MS;
     let listing: string;
     try {
+      // BOUNDED THROUGH THE PORT, like every other call this package makes (M23.5). A `docker ps`
+      // against a wedged daemon socket is exactly the shape whose SIGTERM never lands, and a reap
+      // pass that never settles is a background promise that never settles — invisible, and it
+      // holds the single-flight slot against every later run.
       listing = (
-        await execFileAsync(
-          dockerBinary,
-          [
-            "ps",
-            "-a",
-            "--filter",
-            `label=${RUNNER_LAUNCHER_OWNER_LABEL}`,
-            "--format",
-            `{{.ID}}\t{{.Label "${RUNNER_LAUNCHER_OWNER_LABEL}"}}\t{{.Label "${RUNNER_LAUNCHER_DEADLINE_LABEL}"}}`
-          ],
-          { timeout: RUNNER_REMOVE_TIMEOUT_MS }
-        )
+        await withStepBound({
+          timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+          what: "reap `docker ps`",
+          work: (timeout) =>
+            execFileAsync(
+              dockerBinary,
+              [
+                "ps",
+                "-a",
+                "--filter",
+                `label=${RUNNER_LAUNCHER_OWNER_LABEL}`,
+                "--format",
+                `{{.ID}}\t{{.Label "${RUNNER_LAUNCHER_OWNER_LABEL}"}}\t{{.Label "${RUNNER_LAUNCHER_DEADLINE_LABEL}"}}`
+              ],
+              { timeout }
+            )
+        })
       ).stdout;
     } catch (cause) {
       debug("reap: listing launcher-owned containers failed, skipping this pass: %O", cause);
@@ -2953,7 +3266,11 @@ export function createDockerRunnerLauncher(
         break;
       }
       try {
-        await execFileAsync(dockerBinary, ["rm", "-f", id], { timeout: RUNNER_REMOVE_TIMEOUT_MS });
+        await withStepBound({
+          timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+          what: `reap \`docker rm -f ${id}\``,
+          work: (timeout) => execFileAsync(dockerBinary, ["rm", "-f", id], { timeout })
+        });
         removed.push(id);
       } catch (cause) {
         debug("reap: rm -f %s failed, leaving it for the next pass: %O", id, cause);
@@ -3055,20 +3372,30 @@ export function createDockerRunnerLauncher(
       );
 
       /**
-       * THE BUDGET THIS RUN IS ACTUALLY HELD TO — `spec.timeoutMs` with the product ceiling applied,
-       * read ONCE so that every number derived below derives from the same one. See
-       * {@link clampRunTimeoutMs} for the measurement: the ceiling used to be enforced on the host's
-       * RPC budget and on NEITHER of the two numbers this function derives, so a stored `timeoutMs`
-       * above it produced a container stamped hours past the SIGKILL that orphaned it.
-       */
-      const runTimeoutMs = clampRunTimeoutMs(spec.timeoutMs);
-      /**
        * THE WHOLE-RUN DEADLINE — the one clock in this function, read once and never recomputed.
        * See {@link RunnerSpec.timeoutMs}: the budget is for the RUN, not for each of the four-to-six
        * `execFile`s a run issues, and the ONLY reason the host's RPC budget and the container's own
        * reap stamp are now correct is that this line makes them derivable.
+       *
+       * IT IS THE PORT'S OBJECT, NOT THIS ADAPTER'S ARITHMETIC (M23.5). The refusal, the
+       * `Math.max(1, …)` and the bound handed to each step all live in {@link createRunDeadline}
+       * now, for one reason: this adapter got that arithmetic right and the SECOND adapter got two
+       * thirds of it right, which is what an invariant re-implemented per adapter is worth.
        */
-      const runDeadlineAt = Date.now() + runTimeoutMs;
+      const runDeadline = createRunDeadline({
+        requestedTimeoutMs: spec.timeoutMs,
+        file: dockerBinary,
+        redactions: () => redactions()
+      });
+      /**
+       * `spec.timeoutMs` WITH THE PRODUCT CEILING APPLIED. See {@link clampRunTimeoutMs}: the
+       * ceiling used to be enforced on the host's RPC budget and on NEITHER of the two numbers this
+       * function derives, so a stored `timeoutMs` above it produced a container stamped hours past
+       * the SIGKILL that orphaned it. It is read off the deadline object rather than recomputed,
+       * because two clamps of one number is how the two drift.
+       */
+      const runTimeoutMs = runDeadline.runTimeoutMs;
+      const runDeadlineAt = runDeadline.at;
       const maxBuffer = spec.maxBuffer;
       const envArgs = spec.env.flatMap((entry) => ["-e", entry]);
 
@@ -3112,7 +3439,15 @@ export function createDockerRunnerLauncher(
         options: { timeout: number; maxBuffer?: number }
       ): Promise<{ stdout: string; stderr: string }> => {
         try {
-          return await execFileAsync(dockerBinary, argv, options);
+          // OUTSIDE THE RUN BUDGET IS NOT OUTSIDE A BOUND (M23.5). `options.timeout` is still what
+          // reaches `execFile` — every golden pins it — and {@link withStepBound} is what makes it
+          // TRUE when the child cannot take a SIGTERM. A teardown that never returns is the same
+          // unreturned `run()` as a copy-in that never returns.
+          return await withStepBound({
+            timeoutMs: options.timeout,
+            what: `'${step}' (${argv[0] ?? ""})`,
+            work: () => execFileAsync(dockerBinary, argv, options)
+          });
         } catch (cause) {
           throw new RunnerLaunchError({
             step,
@@ -3130,51 +3465,27 @@ export function createDockerRunnerLauncher(
        * `spec.timeoutMs` and get a fresh, FULL budget of its own, so k sequential steps meant a
        * k x timeoutMs run and no bound on the sum.
        *
-       * THREE THINGS AT EXHAUSTION, and the first two are traps rather than taste:
-       *   - `timeout: 0` IS NOT "no time left", IT IS NO TIMEOUT AT ALL. Measured on the running
-       *     Node: `execFile(…, { timeout: 0 })` let a 1.5s child run to completion. A naive
-       *     `deadline - now` therefore turns the instant the budget runs out into an UNBOUNDED call
-       *     — the precise defect, restored, at the one moment it does the most damage.
-       *   - A NEGATIVE `timeout` THROWS SYNCHRONOUSLY (`ERR_OUT_OF_RANGE`), outside the try below,
-       *     as a raw error carrying an unredacted argv in its message.
-       *   - So a step reached with nothing left is REFUSED BEFORE IT IS ISSUED, with a message that
-       *     names the budget and the deadline rather than a bare `Command failed: docker cp …`.
-       *
-       * THE `Math.max(1, …)` BELOW IS UNREACHABLE, AND IS KEPT ANYWAY — said plainly, because a
-       * reader who takes it for live code will look for the test that covers it and find none, and
-       * because mutating it away changes no behaviour whatsoever. `Date.now()` is integral, so past
-       * the refusal above `remaining` is an integer >= 1 and the clamp is the identity function.
-       * What it buys is the one boundary no test can reach: move the refusal by a single character
-       * (`<= 0` to `< 0`) and `remaining === 0` — one instant of the clock, unhittable on purpose
-       * and perfectly hittable by accident — becomes `timeout: 0`, i.e. NO BOUND AT ALL, on a
-       * `docker start -a` that is running `tofu apply`. The clamp costs nothing and makes that
-       * instant harmless. The refusal is the part with the teeth, and the part the tests drive.
+       * THE ARITHMETIC IS NO LONGER HERE, AND THAT MOVE IS M23.5's WHOLE POINT. The refusal at
+       * exhaustion, the `Math.max(1, …)` that keeps Node in range, and the abandonment of work that
+       * ignores its bound all live in {@link RunDeadline.spend} — read that doc for the three Node
+       * traps this used to spell out, because they are properties of the PORT and not of this
+       * adapter. What survives here is the only part that genuinely differs between adapters: how a
+       * step's OWN failure is shaped into a {@link RunnerLaunchError}.
        */
       const exec = async (
         step: RunnerLaunchStep,
         argv: string[],
         options: { maxBuffer?: number }
       ): Promise<{ stdout: string; stderr: string }> => {
-        const remaining = runDeadlineAt - Date.now();
-        if (remaining <= 0) {
-          throw new RunnerLaunchError({
-            step,
-            file: dockerBinary,
-            argv,
-            deadlineExceeded: true,
-            cause: new Error(
-              `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
-                `at the run deadline ${new Date(runDeadlineAt).toISOString()} — '${step}' was not issued`
-            ),
-            redactions: redactions()
-          });
-        }
         try {
-          return await execFileAsync(dockerBinary, argv, {
-            ...options,
-            timeout: Math.max(1, remaining)
-          });
+          return await runDeadline.spend(step, argv, (timeout) =>
+            execFileAsync(dockerBinary, argv, { ...options, timeout })
+          );
         } catch (cause) {
+          // ALREADY THE PORT'S OWN VERDICT — a refusal before the step was issued, or an
+          // abandonment of work that ignored its bound. Re-wrapping it here would restate the step
+          // and lose the message the port built.
+          if (cause instanceof RunnerLaunchError) throw cause;
           // OUR OWN DEADLINE, NOT THE STEP'S FAULT — distinguishable because `promisify(execFile)`
           // sets `killed` only when IT did the killing, and because the clock has by then reached
           // the deadline the `timeout` was derived from.

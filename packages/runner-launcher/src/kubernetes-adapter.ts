@@ -6,14 +6,15 @@ import {
   RUNNER_LAUNCHER_OWNER_LABEL,
   RUNNER_MAXBUFFER_CODE,
   RUNNER_REAP_BUDGET_MS,
-  RUNNER_REAP_GRACE_MS,
   RUNNER_REMOVE_TIMEOUT_MS,
   RUNNER_RUN_ID_PATTERN,
   RunnerLaunchError,
   classifyRunnerFailure,
-  clampRunTimeoutMs,
   createDockerRunnerLauncher,
-  runnerContainerName
+  createRunDeadline,
+  runnerContainerName,
+  runnerReapGraceMs,
+  withStepBound
 } from "./index.js";
 import type {
   ResolveRunnerLauncher,
@@ -196,11 +197,9 @@ export const RUNNER_LAUNCHER_DEADLINE_ANNOTATION = "scp.launcher.deadline";
 // THE SEAM — one injected object, the exact analogue of `dockerBinary` + `execFile`
 // ==================================================================================================
 
-/** One request this adapter makes of the Kubernetes API server. */
-export interface KubernetesApiRequest {
-  /** Which port step this request belongs to. PRODUCTION-NECESSARY: every rejection out of this
-   *  adapter is a {@link RunnerLaunchError} and must name the step that failed. */
-  readonly step: RunnerLaunchStep;
+/** One request this adapter makes of the Kubernetes API server. Its `step` and `timeoutMs` are
+ *  {@link KubernetesIoOp}'s — the same two fields every verb on this port carries. */
+export interface KubernetesApiRequest extends KubernetesIoOp {
   readonly method: "GET" | "POST" | "PATCH" | "DELETE";
   /** Path AND query, relative to the API server root. */
   readonly path: string;
@@ -210,14 +209,37 @@ export interface KubernetesApiRequest {
   readonly contentType?: string;
   /** {@link LOG_ACCEPT} for a log read; `application/json` otherwise. */
   readonly accept?: string;
-  /** Derived from the ONE whole-run deadline, never from `spec.timeoutMs`. */
-  readonly timeoutMs: number;
 }
 
 export interface KubernetesApiResponse {
   readonly status: number;
   /** The response body as text. JSON is parsed by the adapter, never by the transport. */
   readonly body: string;
+}
+
+/**
+ * WHAT EVERY OPERATION ON THIS PORT CARRIES — and `timeoutMs` IS PART OF IT, on all three verbs.
+ *
+ * IT WAS ON `request` AND ONLY ON `request`, WHICH IS M23.5's HIGH-1. `copyDir` and `removeDir`
+ * took no deadline at all and `createFetchKubernetesIo` implemented them as a bare `cp`/`rm`; the
+ * adapter's `copy()` checked the remaining budget BEFORE the call and then awaited it forever. On a
+ * volume the chart requires to be NFS/CephFS/EFS/Azure Files — the kind that hangs rather than
+ * errors — that is a `run()` which never returns, and from there the M23.1c chain runs verbatim:
+ * host SIGKILL, no outcome write, no ledger entry, `reconcile.ts` retries, second `tofu apply`.
+ *
+ * AND THE FIELD IS NOT THE FIX. It obliges the CALLER to state a bound; nothing obliges an
+ * IMPLEMENTATION to honour one, which is exactly how the property survived being noticed. The field
+ * is here so a transport that CAN self-limit does (`AbortSignal.timeout` on `fetch`); what makes the
+ * bound TRUE for the ones that cannot is `withStepBound` in `index.ts`, through which this adapter
+ * issues every one of these calls.
+ */
+export interface KubernetesIoOp {
+  /** Which port step this operation belongs to. PRODUCTION-NECESSARY: every rejection out of this
+   *  adapter is a {@link RunnerLaunchError} and must name the step that failed. */
+  readonly step: RunnerLaunchStep;
+  /** Derived from the ONE whole-run deadline, never from `spec.timeoutMs`; for teardown and reap,
+   *  {@link RUNNER_REMOVE_TIMEOUT_MS}. Honour it if you can — you will be given up on either way. */
+  readonly timeoutMs: number;
 }
 
 /**
@@ -229,15 +251,15 @@ export interface KubernetesApiResponse {
  * `removeDir` move bytes on the shared workspace volume. Collapsing them into one "do a thing" verb
  * would hide the fact that the byte movement is NOT an API call — which is the single most important
  * structural difference between this adapter and the Docker one, and the thing owner decision 5 is
- * about.
+ * about. What they now SHARE is {@link KubernetesIoOp}: a step, and a deadline.
  */
 export interface KubernetesRunnerIo {
   request(req: KubernetesApiRequest): Promise<KubernetesApiResponse>;
   /** Recursively copy the CONTENTS of `fromDir` into `toDir`, creating `toDir`. The exact semantics
    *  of `docker cp <src>/. <dst>`, which is what the port's `copyIn`/`copyOut` are specified as. */
-  copyDir(op: { step: RunnerLaunchStep; fromDir: string; toDir: string }): Promise<void>;
+  copyDir(op: KubernetesIoOp & { fromDir: string; toDir: string }): Promise<void>;
   /** Recursively remove `dir`. Absent is not an error — teardown is unconditional. */
-  removeDir(op: { step: RunnerLaunchStep; dir: string }): Promise<void>;
+  removeDir(op: KubernetesIoOp & { dir: string }): Promise<void>;
 }
 
 /**
@@ -666,11 +688,18 @@ export function createKubernetesRunnerLauncher(
     const passDeadline = Date.now() + RUNNER_REAP_BUDGET_MS;
     let listing: KubernetesApiResponse;
     try {
-      listing = await io.request({
-        step: "teardown",
-        method: "GET",
-        path: `${JOBS_PATH(namespace)}?labelSelector=${encodeURIComponent(RUNNER_LAUNCHER_OWNER_LABEL)}`,
-        timeoutMs: RUNNER_REMOVE_TIMEOUT_MS
+      // BOUNDED THROUGH THE PORT (M23.5), like every other call this package makes. A reap pass
+      // that never settles holds the single-flight slot against every later run in this process.
+      listing = await withStepBound({
+        timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+        what: "reap `GET jobs`",
+        work: (timeoutMs) =>
+          io.request({
+            step: "teardown",
+            method: "GET",
+            path: `${JOBS_PATH(namespace)}?labelSelector=${encodeURIComponent(RUNNER_LAUNCHER_OWNER_LABEL)}`,
+            timeoutMs
+          })
       });
     } catch (cause) {
       debug("reap: listing launcher-owned Jobs failed, skipping this pass: %O", cause);
@@ -722,23 +751,41 @@ export function createKubernetesRunnerLauncher(
         break;
       }
       try {
-        await io.request({
-          step: "teardown",
-          method: "DELETE",
-          path: `${JOBS_PATH(namespace)}/${name}?propagationPolicy=Background`,
-          timeoutMs: RUNNER_REMOVE_TIMEOUT_MS
+        await withStepBound({
+          timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+          what: `reap \`DELETE job ${name}\``,
+          work: (timeoutMs) =>
+            io.request({
+              step: "teardown",
+              method: "DELETE",
+              path: `${JOBS_PATH(namespace)}/${name}?propagationPolicy=Background`,
+              timeoutMs
+            })
         });
         // THE WORKSPACE SUBTREE GOES WITH THE JOB. A SIGKILLed predecessor's copy-in bytes are on a
         // SHARED volume with nothing else sweeping them, and for managed-dep those bytes are a
         // tenant's manifest. This is the Kubernetes form of the `--env-file` sweep MEDIUM-4 added on
         // the Docker side: ONE cleanup concept, reached through the same method.
-        await io.removeDir({ step: "teardown", dir: `${workspaceRoot}/${name}` });
+        //
+        // AND IT IS THE `rm` ON THE NETWORK VOLUME — the same unbounded call as the copy-in, in the
+        // one place whose whole job is to make progress when a predecessor already wedged.
+        await withStepBound({
+          timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+          what: `reap \`removeDir ${workspaceRoot}/${name}\``,
+          work: (timeoutMs) =>
+            io.removeDir({ step: "teardown", dir: `${workspaceRoot}/${name}`, timeoutMs })
+        });
         if (config.perRunSecrets) {
-          await io.request({
-            step: "teardown",
-            method: "DELETE",
-            path: `${SECRETS_PATH(namespace)}/${name}-env`,
-            timeoutMs: RUNNER_REMOVE_TIMEOUT_MS
+          await withStepBound({
+            timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+            what: `reap \`DELETE secret ${name}-env\``,
+            work: (timeoutMs) =>
+              io.request({
+                step: "teardown",
+                method: "DELETE",
+                path: `${SECRETS_PATH(namespace)}/${name}-env`,
+                timeoutMs
+              })
           });
         }
         removed.push(name);
@@ -777,9 +824,27 @@ export function createKubernetesRunnerLauncher(
       // process and makes MORE Jobs foreign, so the cost grows with each failure it produces.
       void reap().catch((cause) => debug("reap: background pass rejected: %O", cause));
 
-      const runTimeoutMs = clampRunTimeoutMs(spec.timeoutMs);
-      const runDeadlineAt = Date.now() + runTimeoutMs;
-      const reapDeadline = new Date(runDeadlineAt + RUNNER_REAP_GRACE_MS).toISOString();
+      /**
+       * THE ONE CLOCK, AND IT IS THE PORT'S OBJECT RATHER THAN THIS ADAPTER'S ARITHMETIC (M23.5).
+       * The refusal at exhaustion, the `Math.max(1, …)` and — the part this adapter did not have —
+       * the BOUND on the awaited work all live in {@link createRunDeadline}. This file's own `api()`
+       * doc used to say `clampRunTimeoutMs` "runs inside `run()` so a second adapter cannot forget
+       * it, and this is the second adapter, so it does not". It forgot the other half on `copyDir`
+       * and `removeDir`; hoisting the enforcement is what stops a third adapter repeating it.
+       */
+      const runDeadline = createRunDeadline({
+        requestedTimeoutMs: spec.timeoutMs,
+        file: `kubernetes://${namespace}`,
+        redactions: () => redactions
+      });
+      const runTimeoutMs = runDeadline.runTimeoutMs;
+      const runDeadlineAt = runDeadline.at;
+      // PER-ADAPTER, NOT A FLAT TWO MINUTES (M23.5 HIGH-2). This adapter's post-deadline work is
+      // three bounded teardown calls, not one, so the stamp has to clear three — see
+      // {@link runnerReapGraceMs}.
+      const reapDeadline = new Date(
+        runDeadlineAt + runnerReapGraceMs("kubernetes")
+      ).toISOString();
 
       const jobName = runnerJobName(spec.runId);
       const secretName = runnerSecretName(spec.runId);
@@ -835,22 +900,16 @@ export function createKubernetesRunnerLauncher(
           res.status >= 200 && res.status < 300
       ): Promise<KubernetesApiResponse> => {
         const argv = [req.method, req.path];
-        const remaining = runDeadlineAt - Date.now();
-        if (remaining <= 0) {
-          fail(
-            req.step,
-            argv,
-            new Error(
-              `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
-                `at the run deadline ${new Date(runDeadlineAt).toISOString()} — '${req.step}' was not issued`
-            ),
-            true
-          );
-        }
         let res: KubernetesApiResponse;
         try {
-          res = await io.request({ ...req, timeoutMs: Math.max(1, remaining) });
+          res = await runDeadline.spend(req.step, argv, (timeoutMs) =>
+            io.request({ ...req, timeoutMs })
+          );
         } catch (cause) {
+          // ALREADY THE PORT'S OWN VERDICT — a refusal before the request was issued, or an
+          // abandonment of a transport that ignored its bound. Both already name the step and the
+          // budget; re-wrapping would restate them worse.
+          if (cause instanceof RunnerLaunchError) throw cause;
           const deadlineExceeded = Date.now() >= runDeadlineAt;
           fail(
             req.step,
@@ -875,27 +934,26 @@ export function createKubernetesRunnerLauncher(
         return res;
       };
 
+      /**
+       * THE BYTE MOVEMENT, THROUGH THE SAME DEADLINE AS EVERY API CALL — M23.5's HIGH-1, and the
+       * difference is one word. This function used to check the budget and then `await
+       * io.copyDir(...)` with no bound at all: the pre-check answered "may I start?" and nothing
+       * answered "how long may this take?". `spend` answers both, and abandons work that answers
+       * neither.
+       */
       const copy = async (
         step: RunnerLaunchStep,
         fromDir: string,
         toDir: string
       ): Promise<void> => {
-        const remaining = runDeadlineAt - Date.now();
-        if (remaining <= 0) {
-          fail(
-            step,
-            ["copy-dir", fromDir, toDir],
-            new Error(
-              `whole-run budget of ${runTimeoutMs}ms (RunnerSpec.timeoutMs) was already spent ` +
-                `at the run deadline ${new Date(runDeadlineAt).toISOString()} — '${step}' was not issued`
-            ),
-            true
-          );
-        }
+        const argv = ["copy-dir", fromDir, toDir];
         try {
-          await io.copyDir({ step, fromDir, toDir });
+          await runDeadline.spend(step, argv, (timeoutMs) =>
+            io.copyDir({ step, fromDir, toDir, timeoutMs })
+          );
         } catch (cause) {
-          fail(step, ["copy-dir", fromDir, toDir], cause);
+          if (cause instanceof RunnerLaunchError) throw cause;
+          fail(step, argv, cause);
         }
       };
 
@@ -1254,27 +1312,46 @@ export function createKubernetesRunnerLauncher(
             jobName
           );
         } else {
-          await io
-            .request({
-              step: "teardown",
-              method: "DELETE",
-              path: `${JOBS_PATH(namespace)}/${jobName}?propagationPolicy=Background`,
-              timeoutMs: RUNNER_REMOVE_TIMEOUT_MS
-            })
-            .catch((cause) => debug("teardown: DELETE job %s failed: %O", jobName, cause));
-          if (secretIsOurs) {
-            await io
-              .request({
+          // THREE BOUNDED CALLS, AND THE COUNT IS THE MODEL (M23.5 HIGH-2). `RUNNER_TEARDOWN_STEPS`
+          // declares it, `teardown-model.test.ts` counts what this block actually issues, and every
+          // grace downstream — the reap stamp here, `MANAGED_TRIGGER_GRACE_MS` in the host — is
+          // derived from that count. A fourth step added here without correcting the count reddens
+          // that test by name; a fourth step added WITH the count moves every grace that depends on
+          // it. Before this, the grace was 60s chosen as "two worst-case teardowns" of a teardown
+          // that had since become three, and nothing anywhere knew.
+          //
+          // EACH ONE GOES THROUGH `withStepBound`. `removeDir` in particular is the `rm` on the
+          // network volume, which had no bound at all — a teardown that never returns is the same
+          // unreturned `run()` as a copy-in that never returns, arriving one line later.
+          await withStepBound({
+            timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+            what: `teardown \`DELETE job ${jobName}\``,
+            work: (timeoutMs) =>
+              io.request({
                 step: "teardown",
                 method: "DELETE",
-                path: `${SECRETS_PATH(namespace)}/${secretName}`,
-                timeoutMs: RUNNER_REMOVE_TIMEOUT_MS
+                path: `${JOBS_PATH(namespace)}/${jobName}?propagationPolicy=Background`,
+                timeoutMs
               })
-              .catch((cause) => debug("teardown: DELETE secret %s failed: %O", secretName, cause));
+          }).catch((cause) => debug("teardown: DELETE job %s failed: %O", jobName, cause));
+          if (secretIsOurs) {
+            await withStepBound({
+              timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+              what: `teardown \`DELETE secret ${secretName}\``,
+              work: (timeoutMs) =>
+                io.request({
+                  step: "teardown",
+                  method: "DELETE",
+                  path: `${SECRETS_PATH(namespace)}/${secretName}`,
+                  timeoutMs
+                })
+            }).catch((cause) => debug("teardown: DELETE secret %s failed: %O", secretName, cause));
           }
-          await io
-            .removeDir({ step: "teardown", dir: runRoot })
-            .catch((cause) => debug("teardown: removing %s failed: %O", runRoot, cause));
+          await withStepBound({
+            timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
+            what: `teardown \`removeDir ${runRoot}\``,
+            work: (timeoutMs) => io.removeDir({ step: "teardown", dir: runRoot, timeoutMs })
+          }).catch((cause) => debug("teardown: removing %s failed: %O", runRoot, cause));
         }
       }
     }
@@ -1423,8 +1500,15 @@ export const K8S_SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
 export function createFetchKubernetesIo(opts: {
   apiBase?: string;
   readToken: () => Promise<string>;
-  copyDir: (fromDir: string, toDir: string) => Promise<void>;
-  removeDir: (dir: string) => Promise<void>;
+  /**
+   * `timeoutMs` IS HANDED DOWN, and honouring it is a BEST EFFORT rather than the guarantee (M23.5).
+   * `node:fs/promises`' `cp` and `rm` take no `AbortSignal`, so the filesystem implementations below
+   * cannot honour it at all; what makes the bound true is `withStepBound` in `index.ts`, which the
+   * adapter wraps every one of these calls in. The parameter is here so that an implementation which
+   * CAN self-limit does — cancelling beats abandoning, since abandoned work stays in flight.
+   */
+  copyDir: (fromDir: string, toDir: string, timeoutMs: number) => Promise<void>;
+  removeDir: (dir: string, timeoutMs: number) => Promise<void>;
   fetchImpl?: typeof fetch;
 }): KubernetesRunnerIo {
   const apiBase = opts.apiBase ?? "https://kubernetes.default.svc";
@@ -1445,8 +1529,8 @@ export function createFetchKubernetesIo(opts: {
       });
       return { status: res.status, body: await res.text() };
     },
-    copyDir: (op) => opts.copyDir(op.fromDir, op.toDir),
-    removeDir: (op) => opts.removeDir(op.dir)
+    copyDir: (op) => opts.copyDir(op.fromDir, op.toDir, op.timeoutMs),
+    removeDir: (op) => opts.removeDir(op.dir, op.timeoutMs)
   };
 }
 
