@@ -416,9 +416,25 @@ function socketMatrix(): MatrixPoint[] {
   const IAC_IMAGE = "ghcr.io/commanderscp/scp-runner-iac:0.1.0";
   const bool = [false, true];
 
-  const environments: { name: string; extra: string[] }[] = [
-    { name: "defaults", extra: [] },
+  /**
+   * THE TWO ENVIRONMENTS ARE NOT SYMMETRIC, AND THE ASYMMETRY IS THE FACTORING RATHER THAN A CORNER
+   * CUT. `defaults` carries the FULL `managedRunners` product, because those are the values the
+   * clause names and the ones that gate the runner templates. `everything-on` exists to answer a
+   * different question — "does any OTHER chart feature introduce a socket" — and no other feature
+   * reads a `managedRunners.kubernetes.*` value, so crossing it with the full product would multiply
+   * renders without multiplying coverage. It is crossed with every class combination and both
+   * launchers, which is what decides which pods exist.
+   *
+   * THE COST IS REAL AND IS WHY THIS IS WRITTEN DOWN. Each point is one `helm` process. At 276
+   * points this task starved the rest of `turbo run test`: `@scp/plugin-managed-scan`'s
+   * `scanner-containment` test, 390ms in isolation, timed out at 49,061ms once in three runs. The
+   * `fullProduct` flag is the lever that keeps the sweep exhaustive where exhaustiveness is the
+   * claim and bounded where it is not.
+   */
+  const environments: { name: string; extra: string[]; fullProduct: boolean }[] = [
+    { name: "defaults", extra: [], fullProduct: true },
     {
+      fullProduct: false,
       name: "everything-on",
       extra: [
         "--set", "api.role=all",
@@ -460,10 +476,14 @@ function socketMatrix(): MatrixPoint[] {
 
           // THE KUBERNETES LAUNCHER. Refuses outright when no class is enabled ("nothing will ever
           // launch"), so that arm is a refusal point rather than a render.
-          for (const namespace of ["", "scp-runners"]) {
-            for (const perRunSecrets of bool) {
-              for (const accept of bool) {
-                for (const runAsNonRoot of bool) {
+          const namespaces = env.fullProduct ? ["", "scp-runners"] : ["scp-runners"];
+          const secretsAxis = env.fullProduct ? bool : [true];
+          const acceptAxis = env.fullProduct ? bool : [false];
+          const nonRootAxis = env.fullProduct ? bool : [false];
+          for (const namespace of namespaces) {
+            for (const perRunSecrets of secretsAxis) {
+              for (const accept of acceptAxis) {
+                for (const runAsNonRoot of nonRootAxis) {
                   const k8sArgs = [
                     "--set", "managedRunners.launcher=kubernetes",
                     "--set", "managedRunners.kubernetes.workspace.claimName=scp-runner-rwx",
@@ -565,20 +585,92 @@ function verifySocketInvariantMatrix(): void {
     }
   }
 
+  /**
+   * AND THE CENSUS THAT COVERS THE COMBINATIONS NO MATRIX CAN ENUMERATE. A sweep proves the points
+   * it visits; a string that appears in NO template of the chart cannot appear in ANY render of it,
+   * for every value assignment including the ones nobody has thought of yet. So the two instruments
+   * are complementary rather than redundant: this one is total over literal paths, the matrix is
+   * what catches a path a VALUE supplies.
+   *
+   * `hostPath` IS ASSERTED ABSENT FROM THE TEMPLATES AS WELL AS FROM THE RENDERS. This chart
+   * declares no hostPath volume anywhere and has no value that could produce one — the runner
+   * workspace is an RWX PersistentVolumeClaim and nothing else. `packages/runner-launcher` DOES
+   * support `{ kind: "hostPath" }` (the kind harness uses it, and `kubernetes-launch.golden.test.ts`
+   * pins that shape), reached only through `SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH` — an
+   * environment variable this chart does not set, which is asserted below by name rather than left
+   * as an observation.
+   *
+   * SCOPE, STATED RATHER THAN IMPLIED: `deploy/helm` — the chart `helm install` applies. The
+   * bundled-backends chart is checked for runtime sockets in its RENDER (below) and not for
+   * `hostPath` in its SOURCE, because `deploy/helm-bundled/vendor/argo-workflows` carries upstream
+   * CRD definitions whose openAPI schemas DOCUMENT the `hostPath` field in prose; that text is not a
+   * pod spec and stripping it would mean editing a vendored upstream manifest.
+   */
+  const templateDir = path.join(CHART_DIR, "templates");
+  const chartSources = readdirSync(templateDir)
+    .filter((f) => f.endsWith(".yaml") || f.endsWith(".tpl"))
+    .map((f) => ({ file: `templates/${f}`, text: readFileSync(path.join(templateDir, f), "utf8") }));
+  chartSources.push({ file: "values.yaml", text: readFileSync(path.join(CHART_DIR, "values.yaml"), "utf8") });
+  assert(
+    chartSources.length > 10,
+    `[${label}] the template census read ${chartSources.length} files, which is too few to be the chart — every assertion below would pass on an empty list`
+  );
+  for (const { file, text } of chartSources) {
+    for (const pattern of RUNTIME_SOCKET_PATTERNS) {
+      // The values.yaml PROSE explains why no socket is mounted, so a comment naming one is not a
+      // violation — the check is on what the file would emit, with comment lines removed.
+      const emitted = text
+        .split("\n")
+        .filter((line) => !/^\s*#/.test(line))
+        .join("\n");
+      assert(
+        !emitted.includes(pattern),
+        `[${label}] deploy/helm/${file} contains '${pattern}' outside a comment — no value combination can make that safe`
+      );
+    }
+    assert(
+      !/^\s*hostPath\s*:/m.test(
+        text.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n")
+      ),
+      `[${label}] deploy/helm/${file} declares a hostPath volume. This chart declares none; the runner workspace is an RWX PersistentVolumeClaim`
+    );
+    assert(
+      !text.includes("SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH"),
+      `[${label}] deploy/helm/${file} plumbs SCP_MANAGED_RUNNER_K8S_WORKSPACE_HOST_PATH — that variable makes the runner Job mount a host directory, and it is deliberately reachable only from the kind harness`
+    );
+  }
+  for (const setArgs of [
+    [] as string[],
+    [
+      "--set", "bundledExecutor.argocd.enabled=true",
+      "--set", "bundledExecutor.argoWorkflows.enabled=true",
+      "--set", "bundledExecutor.argoEvents.enabled=true",
+      "--set", "bundledExecutor.gitea.enabled=true"
+    ]
+  ]) {
+    const bundledRaw = renderRaw(BUNDLED_CHART_DIR, "verify-socket-bundled", setArgs);
+    for (const pattern of RUNTIME_SOCKET_PATTERNS) {
+      assert(
+        !bundledRaw.includes(pattern),
+        `[${label}] the bundled-backends render contains '${pattern}' — a vendored backend mounting a container runtime socket is the same escape, one chart along`
+      );
+    }
+  }
+
   // NON-VACUITY, IN THREE PARTS. Every assertion above is "nothing was found", which is exactly what
   // an empty matrix, a render that produced nothing, and a guard that refused everything all
   // produce. The counts are asserted so the sweep cannot pass by having swept nothing.
   assert(
-    points.length === 276,
-    `[${label}] the matrix is ${points.length} points, not the 276 it is documented as — update the count deliberately, with the dimension that changed`
+    points.length === 156,
+    `[${label}] the matrix is ${points.length} points, not the 156 it is documented as — update the count deliberately, with the dimension that changed`
   );
   assert(
-    rendered === 216 && refused === 60,
-    `[${label}] the matrix rendered ${rendered} and saw ${refused} refusals; expected 216 and 60`
+    rendered === 125 && refused === 31,
+    `[${label}] the matrix rendered ${rendered} and saw ${refused} refusals; expected 125 and 31`
   );
   assert(
-    runnerJobs === 198,
-    `[${label}] ${runnerJobs} of the renders produced a derivable runner Job manifest; expected 198. Zero would mean the env-derived half of this gate checked nothing at all`
+    runnerJobs === 107,
+    `[${label}] ${runnerJobs} of the renders produced a derivable runner Job manifest; expected 107. Zero would mean the env-derived half of this gate checked nothing at all`
   );
   // …and the detector itself finds what it is looking for when it IS there.
   const planted: K8sDoc = {
