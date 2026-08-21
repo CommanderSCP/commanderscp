@@ -1181,7 +1181,14 @@ export function kubernetesStartVerdict(
   //    conclusive, and "never started within the whole-run budget" is a claim about the whole
   //    budget. See this function's doc for the measurement.
   if (f.deadlineExceeded) {
-    if (f.unwatchedMs <= f.pollIntervalMs + RUNNER_MIN_STEP_BUDGET_MS) {
+    // TWO POLL INTERVALS, AND BOTH ARE EARNED RATHER THAN CHOSEN. One is the sleep between reads —
+    // the granularity this design already accepts, and the deadline lands somewhere inside it. The
+    // second is the allowance for the read that DISCOVERED the deadline: a read expected to take
+    // longer than a poll interval would make the poll cadence meaningless, so a call still inside
+    // that is a run that was reading, not a run that went blind. MEASURED against the real cluster:
+    // ROUTE 1 and ROUTE 2 end 132ms and 134ms unwatched at `pollIntervalMs: 500`; the case this arm
+    // exists for ends 24,500ms unwatched at the same setting.
+    if (f.unwatchedMs <= 2 * f.pollIntervalMs + RUNNER_MIN_STEP_BUDGET_MS) {
       return {
         code: RUNNER_NEVER_STARTED_CODE,
         message:
