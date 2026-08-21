@@ -1536,6 +1536,35 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(result.failure!.detail).toContain("cannot patch");
   });
 
+  it("THE LOG READ MAY NOT OVERWRITE A DECIDED VERDICT — for ANY reason, not only the deadline", async () => {
+    // THE THIRD INSTANCE THE CENSUS TURNED UP. M23.5 made a log read REFUSED BY THE DEADLINE
+    // degrade, and left every other way it can fail — a Role without `pods/log`, a 500, a reset —
+    // able to replace the verdict exactly as before. A 403 is a NUMERIC `code`, so the operator was
+    // told "the runner itself exited non-zero" with 403 as the exit status, about a runner whose
+    // real exit code (3) this process was holding at that moment.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Failed",
+        containerStatuses: [
+          { name: "runner", state: { terminated: { exitCode: 3, reason: "Error" } } }
+        ]
+      }
+    });
+    c.overrides.push({
+      match: (r) => r.method === "GET" && r.path.includes("/log"),
+      res: { status: 403, body: 'pods "p1" is forbidden: cannot get resource "pods/log"' }
+    });
+    const result = await c.launcher().run(spec({ copyOut: undefined }));
+    expect(
+      result.failure!.kind,
+      `the decided verdict was overwritten by the log read: ${result.failure!.detail}`
+    ).toBe("exit-nonzero");
+    expect(result.failure!.code).toBe(3);
+    expect(result.failure!.detail).toContain("the runner exited 3");
+  });
+
   it("`kubernetesStartVerdict` — every arm, as a pure function", () => {
     const base = {
       runnerVerdict: false,
