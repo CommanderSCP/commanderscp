@@ -411,6 +411,75 @@ describe("M23.2 adapter selection: explicit operator config, never detection", (
     );
   });
 
+  it("M23.5: THE DEPLOYMENT'S POD CONVENTIONS SURVIVE THE WHOLE CHAIN — settings -> resolver -> adapter -> Job", async () => {
+    // THIS TEST EXISTS BECAUSE THE MUTATION TABLE FOUND TWO LINKS NOTHING GATED, and both are the
+    // component-built-never-installed shape. `kubernetes-launch.golden.test.ts` calls `jobManifest`
+    // DIRECTLY, so it stays green when the block never reaches it; `managed-runner-selection.test.ts`
+    // reads `managedRunnerSettings()`, so it stays green when nothing consumes what that returns.
+    // Deleting `...(k8s.pod ? { pod: k8s.pod } : {})` from `resolveRunnerLauncher`, or
+    // `...(config.pod ? { pod: config.pod } : {})` from the `create` step, reddened NOTHING across
+    // all three suites: a channel built end to end and connected in the middle by nobody.
+    //
+    // So this drives the SHIPPED selection path and reads the bytes that were actually POSTed.
+    const c = cluster();
+    const launcher = resolveRunnerLauncher({
+      runnerLauncher: "kubernetes",
+      kubernetes: {
+        namespace: NAMESPACE,
+        workspaceRoot: WORKSPACE_ROOT,
+        workspaceVolume: WORKSPACE_VOLUME,
+        pod: {
+          imagePullSecrets: ["harbor-creds"],
+          imagePullPolicy: "IfNotPresent",
+          resources: { limits: { memory: "4Gi" } }
+        },
+        io: c.io
+      }
+    });
+    await launcher.run(spec({ copyOut: undefined, copyIn: [] }));
+    const created = requestsOf(c.ops).find(
+      (o) => o.method === "POST" && o.path?.endsWith("/jobs")
+    )?.body as {
+      spec: {
+        template: {
+          spec: {
+            imagePullSecrets?: { name: string }[];
+            containers: { imagePullPolicy?: string; resources?: unknown }[];
+          };
+        };
+      };
+    };
+    expect(created.spec.template.spec.imagePullSecrets).toStrictEqual([{ name: "harbor-creds" }]);
+    expect(created.spec.template.spec.containers[0]!.imagePullPolicy).toBe("IfNotPresent");
+    expect(created.spec.template.spec.containers[0]!.resources).toStrictEqual({
+      limits: { memory: "4Gi" }
+    });
+  });
+
+  it("M23.5: AND A DEPLOYMENT THAT STATES NONE POSTS A JOB WITH NONE OF THE THREE", async () => {
+    // The negative control for the case above. Without it, "always emit them" passes — and every
+    // existing deployment's launch changes shape, which is exactly what the golden promises it does
+    // not. Read off the POSTed bytes rather than off `jobManifest`, for the same reason.
+    const c = cluster();
+    const launcher = resolveRunnerLauncher({
+      runnerLauncher: "kubernetes",
+      kubernetes: {
+        namespace: NAMESPACE,
+        workspaceRoot: WORKSPACE_ROOT,
+        workspaceVolume: WORKSPACE_VOLUME,
+        io: c.io
+      }
+    });
+    await launcher.run(spec({ copyOut: undefined, copyIn: [] }));
+    const created = requestsOf(c.ops).find(
+      (o) => o.method === "POST" && o.path?.endsWith("/jobs")
+    )?.body as { spec: { template: { spec: Record<string, unknown> } } };
+    expect(created.spec.template.spec).not.toHaveProperty("imagePullSecrets");
+    const container = (created.spec.template.spec.containers as Record<string, unknown>[])[0]!;
+    expect(container).not.toHaveProperty("imagePullPolicy");
+    expect(container).not.toHaveProperty("resources");
+  });
+
   it("`runnerLauncher: 'kubernetes'` WITH NO SETTINGS REFUSES BY NAME, not with a TypeError", () => {
     expect(() => resolveRunnerLauncher({ runnerLauncher: "kubernetes" })).toThrow(
       /no kubernetes settings were injected/
