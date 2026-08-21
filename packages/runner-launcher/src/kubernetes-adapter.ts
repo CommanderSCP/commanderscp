@@ -1893,15 +1893,26 @@ export function createKubernetesRunnerLauncher(
               );
               log = res.status >= 200 && res.status < 300 ? res.body : "";
             } catch (cause) {
-              // AND THE DEADLINE DEGRADES IT TOO — the fourth of the four places this run could
-              // discover the clock, and the only one that can reach it with the verdict ALREADY
-              // DECIDED. `termination` is settled by the line above; letting a refused log read
-              // throw would replace "the runner exited 3" with "budget-exhausted", i.e. discard a
-              // known outcome in favour of "the real infrastructure state is unknown". Diagnosis
-              // never becomes the failure — this file's own rule, applied to the one read that had
-              // been left outside it.
-              if (!(cause instanceof RunnerLaunchError && cause.deadlineExceeded)) throw cause;
-              debug("start: the log read for %s ran out of budget; continuing without it", podName);
+              /**
+               * AND EVERY FAILURE OF IT DEGRADES, NOT ONLY THE DEADLINE — M23.5 verification pass
+               * 18, and the third instance the census of "what turns a condition into a verdict"
+               * turned up.
+               *
+               * `termination` IS ALREADY SETTLED by the line above: the pod, or the Job, has said
+               * what became of the runner. This read is DIAGNOSIS. M23.5 made a refused-by-deadline
+               * log read degrade rather than replace "the runner exited 3" with "budget-exhausted",
+               * and then left every OTHER way that read can fail — a 403 from a Role without
+               * `pods/log`, a 500, a reset, a node that went away between the two calls — able to do
+               * exactly the same thing. Those reached `classifyRunnerFailure` as an HTTP status,
+               * which is a NUMERIC `code`, i.e. `exit-nonzero`: "the runner itself exited non-zero",
+               * with the status as the exit code, about a runner whose real exit code this process
+               * was holding at the time.
+               *
+               * "DIAGNOSIS NEVER BECOMES THE FAILURE" IS THIS FILE'S OWN RULE, stated forty lines
+               * above about the events/Job reads, where the whole block is swallowed. The log read
+               * is the one that was left outside it, twice.
+               */
+              debug("start: the log read for %s failed; continuing without it: %O", podName, cause);
             }
           }
 
