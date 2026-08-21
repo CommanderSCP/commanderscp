@@ -581,7 +581,13 @@ export function kubernetesObjectUid(res: KubernetesApiResponse): string | undefi
 
 /** The slice of a pod this adapter reads. Everything else in the object is ignored. */
 interface PodView {
-  metadata?: { name?: string };
+  metadata?: {
+    name?: string;
+    /** M23.5 — SET THE INSTANT A DELETION IS REQUESTED, 31 seconds before the SIGKILL that follows
+     *  it produces an exit code. The one fact that distinguishes "the platform destroyed this pod"
+     *  from "the tenant's runner exited 137"; see {@link kubernetesTermination} for the measurement. */
+    deletionTimestamp?: string;
+  };
   status?: {
     phase?: string;
     /** M23.5 — WHY THE POD IS NOT RUNNING YET, and the only place `Unschedulable` is written down.
@@ -652,7 +658,12 @@ const FATAL_WAITING_REASONS = new Set([
  * `budget-exhausted` and `output-exceeded` are not produced here: the first is the deadline path
  * (`deadlineExceeded`) and the second is the log-size check, exactly as on Docker.
  */
-export function kubernetesTermination(pod: PodView):
+export function kubernetesTermination(
+  pod: PodView,
+  /** Sticky, from the run's own polling. Defaults to what THIS pod says for the pure-function
+   *  callers; the loop passes its remembered value, which survives a pod whose status is pruned. */
+  everStarted: boolean = kubernetesContainerStarted(pod)
+):
   | {
       succeeded: boolean;
       message: string;
@@ -679,6 +690,70 @@ export function kubernetesTermination(pod: PodView):
   }
 
   const terminated = container?.state?.terminated;
+
+  /**
+   * THE PLATFORM DELETED THIS POD, AND THAT FACT OUTRANKS WHATEVER THE CONTAINER STATUS SAYS NEXT.
+   *
+   * MEASURED against a real cluster, `kubectl delete pod` on a running runner:
+   *
+   *   t+0    deletionTimestamp set; the pod is still Running
+   *   t+2s   Job condition FailureTarget=True (BackoffLimitExceeded)   <- not yet `Failed`
+   *   t+31s  the grace expires; the container is SIGKILLed -> terminated{exitCode:137,reason:"Error"}
+   *   t+32s  the pod object is collected
+   *   t+34s  Job condition Failed=True (BackoffLimitExceeded)
+   *
+   * A poll landing at t+31s read `exitCode 137` and reported `exit-nonzero` — THE TENANT'S RUNNER
+   * EXITED 137 — for a pod the platform destroyed. A poll landing at t+32s found no pod and got
+   * `signalled` from the Job instead. One event, two verdicts, chosen by a race (6 runs in 10
+   * against a real cluster), and one of them blames the tenant for a drain. 137 is 128+9: it IS the
+   * SIGKILL this deletion sent, and the kubelet writes it into `exitCode` with NO `signal` field, so
+   * nothing downstream of here can tell it from a genuine `exit 137`.
+   *
+   * THE DELETION TIMESTAMP CAN, and it is first-class evidence rather than a tie-break: it is set
+   * when the deletion is REQUESTED — 31 seconds before the exit code exists — so reading it also
+   * ends the run at once instead of polling out the termination grace, which is 31 seconds during
+   * which four different reads could each discover the deadline and answer `budget-exhausted`.
+   *
+   * A CONTAINER THAT HAD ALREADY EXITED CLEANLY IS STILL A SUCCESS. Deletion of a pod whose runner
+   * finished is ordinary garbage collection, not a kill, and calling that a failure would be the
+   * same class of lie in the other direction.
+   */
+  const deletedAt = pod.metadata?.deletionTimestamp;
+  const exitedCleanly =
+    terminated !== undefined &&
+    (terminated.exitCode ?? 0) === 0 &&
+    !terminated.signal &&
+    terminated.reason !== "OOMKilled";
+  if (deletedAt && !exitedCleanly) {
+    const sigkilled = terminated
+      ? ` (the runner was then SIGKILLed when the termination grace expired: exitCode ${
+          terminated.exitCode ?? 0
+        }${terminated.reason ? ` (${terminated.reason})` : ""})`
+      : "";
+    if (everStarted) {
+      return {
+        succeeded: false,
+        message:
+          `the runner's pod was DELETED at ${deletedAt} — a node drain, an eviction or an ` +
+          `explicit deletion destroyed it while it was running${sigkilled}. This is NOT this ` +
+          `run's own budget`,
+        code: null,
+        killed: true,
+        signal: "SIGKILL"
+      };
+    }
+    return {
+      succeeded: false,
+      message:
+        `the runner's pod was DELETED at ${deletedAt} before any runner container started, so ` +
+        `NOTHING RAN and nothing was mutated${sigkilled}`,
+      // A STRING `code` is what `classifyRunnerFailure` reads as an errno, i.e. `spawn-failed`.
+      code: "PodDeleted",
+      killed: false,
+      signal: null
+    };
+  }
+
   if (terminated) {
     if (terminated.signal && terminated.signal !== 0) {
       return {
@@ -850,8 +925,16 @@ export function kubernetesJobTermination(
       signal: string | null;
     }
   | undefined {
+  // `FailureTarget` IS READ ALONGSIDE `Failed`, AND THE 32 SECONDS BETWEEN THEM ARE THE POINT.
+  // Measured on a drained pod: `FailureTarget=True(BackoffLimitExceeded)` at t+2s, `Failed=True` at
+  // t+34s. Waiting for `Failed` alone leaves half a minute in which the pod object has been
+  // collected, no verdict exists yet, and every poll is another chance for one of four reads to
+  // discover the deadline and answer `budget-exhausted` — "a `tofu apply` was SIGTERMed mid-flight,
+  // so the real infrastructure state is unknown" — instead. `FailureTarget` is the Job controller's
+  // own statement that this Job IS going to fail, written down before it gets round to saying so
+  // terminally, and it carries the same `reason`.
   const failed = (job.status?.conditions ?? []).find(
-    (c) => c.type === "Failed" && c.status === "True"
+    (c) => c.status === "True" && (c.type === "Failed" || c.type === "FailureTarget")
   );
   if (!failed) return undefined;
   const reason = failed.reason ?? "Failed";
@@ -1420,6 +1503,14 @@ export function createKubernetesRunnerLauncher(
         let stdout: string;
         let stderr: string;
         let failure: RunnerFailure | undefined;
+        /**
+         * OUTSIDE THE `try`, BECAUSE THE VERDICT IS DECIDED IN THE `catch` — M23.5.
+         *
+         * STICKY. A pod deleted mid-run leaves no status at all, and remembering that there had been
+         * one is the difference between `signalled` and `spawn-failed`.
+         */
+        let everStarted = false;
+        let waiting = "the Job had not yet been observed";
         try {
           await api({
             step: "start",
@@ -1432,36 +1523,22 @@ export function createKubernetesRunnerLauncher(
           // POLL TO A TERMINAL POD — OR TO A TERMINAL JOB, which is the half M23.5 added and the
           // half three measured failure routes needed.
           //
-          // THERE IS STILL EXACTLY ONE BOUND. Every request goes through `api()`, which refuses once
-          // `runDeadlineAt` is spent; the check at the top of this loop reads that SAME instant and
-          // decides not WHETHER to stop but WHAT TO CALL IT. It is at the TOP, before any call, and
-          // that placement is load-bearing rather than tidy: a deadline test placed at the BOTTOM
-          // races the diagnosis reads above it, `api()` wins whenever one of them is the call that
-          // runs out of budget, and the verdict is then `budget-exhausted` again — intermittently,
-          // which is worse than always. Measured: the 403-degradation case failed that way.
+          // THERE IS STILL EXACTLY ONE BOUND, AND NOW EXACTLY ONE PLACE THAT SAYS WHAT REACHING IT
+          // MEANS. Every request goes through `api()`, which refuses once `runDeadlineAt` is spent,
+          // so the deadline can be DISCOVERED at any of four calls in this loop — `GET pods`,
+          // `GET events`, `GET job`, `GET log`. A guard at the top of the loop cannot fix that and
+          // the previous round's attempt to (moving the check up, and calling the placement
+          // load-bearing) did not: the check and the `api()` it guards are not atomic, so the clock
+          // could cross between them and the run reported `budget-exhausted` — "a `tofu apply` was
+          // SIGTERMed mid-flight, so the real infrastructure state is unknown" — for a run in which
+          // NOTHING EVER STARTED. 6 runs in 20, only under the full file's timing.
+          //
+          // SO THE CHECK IS GONE and the verdict is decided ONCE, in the `catch` below, from the
+          // facts this loop observed rather than from which line noticed the clock. What is left
+          // here is the polling itself.
           let pod: PodView | undefined;
           let termination: ReturnType<typeof kubernetesTermination>;
-          // STICKY. A pod deleted mid-run leaves no status at all, and remembering that there had
-          // been one is the difference between `signalled` and `spawn-failed`.
-          let everStarted = false;
-          let waiting = "the Job had not yet been observed";
           for (;;) {
-            if (Date.now() >= runDeadlineAt && !everStarted) {
-              // THE BUDGET RAN OUT AND NOTHING HAD EVER STARTED, which is NOT what
-              // `budget-exhausted` means. Its wording — "a `tofu apply` was SIGTERMed mid-flight, so
-              // the real infrastructure state is unknown" — is the most consequential sentence this
-              // package produces, and all three measured routes got it. A STRING `code` reaches
-              // `spawn-failed` instead: "nothing ran, so nothing was mutated".
-              fail("start", ["GET", PODS_PATH(namespace)], {
-                message:
-                  `the runner container never started within the whole-run budget of ` +
-                  `${runTimeoutMs}ms (RunnerSpec.timeoutMs), so NOTHING RAN and nothing was ` +
-                  `mutated — ${waiting}`,
-                code: RUNNER_NEVER_STARTED_CODE,
-                stdout: "",
-                stderr: ""
-              });
-            }
             const listed = await api({
               step: "start",
               method: "GET",
@@ -1472,7 +1549,10 @@ export function createKubernetesRunnerLauncher(
             const items = (JSON.parse(listed.body) as { items?: PodView[] }).items ?? [];
             pod = items[0];
             if (kubernetesContainerStarted(pod)) everStarted = true;
-            termination = pod ? kubernetesTermination(pod) : undefined;
+            // THE REMEMBERED FLAG, NOT A FRESH READING. A pod carrying a `deletionTimestamp` may
+            // already have had its container status pruned, and "did anything ever run?" is exactly
+            // what decides whether that deletion is `signalled` or `spawn-failed`.
+            termination = pod ? kubernetesTermination(pod, everStarted) : undefined;
             if (termination) break;
 
             // NO TERMINAL POD. Everything below is DIAGNOSIS, and it is gathered while the run is
@@ -1528,19 +1608,31 @@ export function createKubernetesRunnerLauncher(
           // words are what `classifyRunnerFailure` puts in the operator-facing `detail`.
           let log = "";
           if (podName) {
-            const res = await api(
-              {
-                step: "start",
-                method: "GET",
-                accept: LOG_ACCEPT,
-                path: logRequestPath(namespace, podName, spec.maxBuffer)
-              },
-              // A log read can legitimately 400 ("container is waiting to start") for a pod that
-              // never ran. That is not a launch failure — the termination above already says what
-              // happened — so it degrades to no output rather than replacing the real diagnosis.
-              (r) => (r.status >= 200 && r.status < 300) || r.status === 400 || r.status === 404
-            );
-            log = res.status >= 200 && res.status < 300 ? res.body : "";
+            try {
+              const res = await api(
+                {
+                  step: "start",
+                  method: "GET",
+                  accept: LOG_ACCEPT,
+                  path: logRequestPath(namespace, podName, spec.maxBuffer)
+                },
+                // A log read can legitimately 400 ("container is waiting to start") for a pod that
+                // never ran. That is not a launch failure — the termination above already says what
+                // happened — so it degrades to no output rather than replacing the real diagnosis.
+                (r) => (r.status >= 200 && r.status < 300) || r.status === 400 || r.status === 404
+              );
+              log = res.status >= 200 && res.status < 300 ? res.body : "";
+            } catch (cause) {
+              // AND THE DEADLINE DEGRADES IT TOO — the fourth of the four places this run could
+              // discover the clock, and the only one that can reach it with the verdict ALREADY
+              // DECIDED. `termination` is settled by the line above; letting a refused log read
+              // throw would replace "the runner exited 3" with "budget-exhausted", i.e. discard a
+              // known outcome in favour of "the real infrastructure state is unknown". Diagnosis
+              // never becomes the failure — this file's own rule, applied to the one read that had
+              // been left outside it.
+              if (!(cause instanceof RunnerLaunchError && cause.deadlineExceeded)) throw cause;
+              debug("start: the log read for %s ran out of budget; continuing without it", podName);
+            }
           }
 
           // OVER `maxBuffer` FAILS THE RUN — see `logRequestPath` for why, and why the request asked
@@ -1573,7 +1665,43 @@ export function createKubernetesRunnerLauncher(
           // CAPTURED, NOT THROWN — `start` is the one step whose failure becomes a RESULT, exactly
           // as on Docker, so a non-zero runner is an outcome the plugin records rather than a
           // rejection it has to interpret.
-          const e = err as RunnerLaunchError;
+          let e = err as RunnerLaunchError;
+
+          /**
+           * AND THIS IS THE ONE PLACE THAT SAYS WHAT AN EXHAUSTED BUDGET MEANT — M23.5.
+           *
+           * `budget-exhausted`'s wording is "a `tofu apply` was SIGTERMed mid-flight, so the real
+           * infrastructure state is unknown", which {@link FATAL_WAITING_REASONS} calls the single
+           * worst misdiagnosis available here. It is true only if something RAN. Whether anything
+           * ran is a fact this run observed and remembered; WHICH of the deadline's four possible
+           * discovery points happened to fire is not a fact about the run at all. Deciding it here,
+           * once, is what makes the two independent — a guard placed before any single call can
+           * only ever cover that call, which is why the previous round's re-placement of it fixed
+           * nothing and failed 6 runs in 20.
+           */
+          if (e.deadlineExceeded && !everStarted) {
+            e = new RunnerLaunchError({
+              step: e.step,
+              file: `kubernetes://${namespace}`,
+              // THE ARGV OF THE CALL THAT DISCOVERED THE CLOCK IS KEPT — it is useful diagnosis,
+              // and it is now the only thing that discovery decides.
+              argv: [...e.argv],
+              cause: {
+                message:
+                  `the runner container never started within the whole-run budget of ` +
+                  `${runTimeoutMs}ms (RunnerSpec.timeoutMs), so NOTHING RAN and nothing was ` +
+                  `mutated — ${waiting}`,
+                // A STRING `code` is what `classifyRunnerFailure` reads as an errno, i.e.
+                // `spawn-failed`: "nothing ran, so nothing was mutated". The deadline is the SAME
+                // deadline — there is still exactly one bound — but the two situations it can end
+                // are not the same situation.
+                code: RUNNER_NEVER_STARTED_CODE,
+                stdout: "",
+                stderr: ""
+              },
+              redactions
+            });
+          }
           succeeded = false;
           stdout = e.stdout;
           stderr = e.stderr;

@@ -464,9 +464,8 @@ describe("M23.2 adapter selection: explicit operator config, never detection", (
       }
     });
     await launcher.run(spec({ copyOut: undefined, copyIn: [] }));
-    const created = requestsOf(c.ops).find(
-      (o) => o.method === "POST" && o.path?.endsWith("/jobs")
-    )?.body as {
+    const created = requestsOf(c.ops).find((o) => o.method === "POST" && o.path?.endsWith("/jobs"))
+      ?.body as {
       spec: {
         template: {
           spec: {
@@ -498,9 +497,8 @@ describe("M23.2 adapter selection: explicit operator config, never detection", (
       }
     });
     await launcher.run(spec({ copyOut: undefined, copyIn: [] }));
-    const created = requestsOf(c.ops).find(
-      (o) => o.method === "POST" && o.path?.endsWith("/jobs")
-    )?.body as { spec: { template: { spec: Record<string, unknown> } } };
+    const created = requestsOf(c.ops).find((o) => o.method === "POST" && o.path?.endsWith("/jobs"))
+      ?.body as { spec: { template: { spec: Record<string, unknown> } } };
     expect(created.spec.template.spec).not.toHaveProperty("imagePullSecrets");
     const container = (created.spec.template.spec.containers as Record<string, unknown>[])[0]!;
     expect(container).not.toHaveProperty("imagePullPolicy");
@@ -825,7 +823,9 @@ describe("M23.2: a pod's terminal state maps onto the port's five failure kinds"
       metadata: { name: "p1" },
       status: {
         phase: "Running",
-        containerStatuses: [{ name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }]
+        containerStatuses: [
+          { name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }
+        ]
       }
     });
     const result = await c.launcher().run(spec({ timeoutMs: 1_000, copyOut: undefined }));
@@ -950,6 +950,184 @@ describe("M23.2: a pod's terminal state maps onto the port's five failure kinds"
     expect(result.failure!.detail).toContain("NOT this run's own budget");
   });
 
+  // ================================================================================================
+  // M23.5 D2 + D3 — THE VERDICT IS A FUNCTION OF OBSERVED FACTS, NOT OF WHERE THE CLOCK WAS NOTICED
+  // ================================================================================================
+  //
+  // TWO DEFECTS, ONE PROPERTY. `budget-exhausted` beat `spawn-failed` 6 runs in 20 (D2) and
+  // `exit-nonzero` beat `signalled` 6 runs in 10 against a real cluster (D3), and both are the same
+  // thing: a verdict decided by WHICH LINE of the control flow happened to observe the state, rather
+  // than by what the state WAS.
+
+  /** MODELS `AbortSignal.timeout(req.timeoutMs)` FIRING — the way a real transport discovers the
+   *  deadline. The request is ISSUED with what little was left of the budget (the deadline had not
+   *  passed when `spend` checked), the clock crosses while it is in flight, and it rejects. This is
+   *  the shape a guard placed before the call cannot cover, because the guard and the call are not
+   *  atomic — which is why moving the guard to the top of the loop fixed nothing. */
+  function abortingPodGetIo(inner: KubernetesRunnerIo, thresholdMs = 100): KubernetesRunnerIo {
+    return {
+      ...inner,
+      request: async (req: KubernetesApiRequest) => {
+        if (
+          req.method === "GET" &&
+          req.path.startsWith(`/api/v1/namespaces/${NAMESPACE}/pods?`) &&
+          req.timeoutMs < thresholdMs
+        ) {
+          await new Promise((r) => setTimeout(r, req.timeoutMs + 5));
+          throw new Error("The operation was aborted due to timeout");
+        }
+        return inner.request(req);
+      }
+    };
+  }
+
+  it("M23.5 D2 — THE DEADLINE DISCOVERED BY THE TRANSPORT, NOT BY A GUARD, IS STILL `spawn-failed`", async () => {
+    // THE ARM THE PREVIOUS ROUND'S FIX COULD NOT PASS. A check at the top of the poll loop reads the
+    // clock and then issues `GET pods`; the clock can cross in between, and then the REQUEST reports
+    // the deadline instead. The same is true of `GET events`, `GET job` and `GET log` — four places
+    // to discover it, every one of which used to yield "a `tofu apply` was SIGTERMed mid-flight, so
+    // the real infrastructure state is unknown" for a run in which NOTHING EVER STARTED.
+    const c = cluster();
+    c.setPod(undefined);
+    const result = await c
+      .launcher({ io: abortingPodGetIo(c.io) })
+      .run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+    expect(result.succeeded).toBe(false);
+    expect(
+      result.failure!.kind,
+      `discovering the deadline at the transport produced ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("spawn-failed");
+    expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+  });
+
+  it("M23.5 D2 — THE NEGATIVE CONTROL: the SAME transport abort with a pod that RAN is `budget-exhausted`", async () => {
+    // WITHOUT THIS ARM, "convert every deadline into spawn-failed" passes the one above — and every
+    // genuinely interrupted `tofu apply` would then be recorded as having changed nothing, which is
+    // the more dangerous of the two lies. `everStarted` is the fact that separates them, and it is
+    // observed, not inferred from where the failure surfaced.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          { name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }
+        ]
+      }
+    });
+    const result = await c
+      .launcher({ io: abortingPodGetIo(c.io) })
+      .run(spec({ timeoutMs: 1_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("budget-exhausted");
+    expect(result.failure!.deadlineExceeded).toBe(true);
+  });
+
+  it("M23.5 D3 — A POD THE PLATFORM DELETED IS `signalled`, never the tenant's own exit 137", async () => {
+    // MEASURED against a real cluster after `kubectl delete pod`: the container is SIGKILLed when
+    // the termination grace expires and the kubelet writes `terminated{exitCode:137,reason:"Error"}`
+    // with NO `signal` field — indistinguishable, downstream of here, from a runner that really
+    // exited 137. Reporting that as `exit-nonzero` blames the TENANT for a platform kill.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1", deletionTimestamp: "2026-08-20T00:00:00Z" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          { name: "runner", state: { terminated: { exitCode: 137, reason: "Error" } } }
+        ]
+      }
+    });
+    const result = await c.launcher().run(spec({ timeoutMs: 10_000, copyOut: undefined }));
+    expect(
+      result.failure!.kind,
+      `the deleted pod was classified ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("signalled");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    expect(result.failure!.detail).toContain("DELETED");
+    expect(result.failure!.detail).toContain("NOT this run's own budget");
+  });
+
+  it("M23.5 D3 — THE VERDICT LANDS WHEN THE DELETION IS REQUESTED, 31s before any exit code exists", async () => {
+    // `deletionTimestamp` is set at t+0; the SIGKILL that produces an exit code lands at t+31s and
+    // the pod object is collected at t+32s. Waiting for either is 31 seconds of polling in which any
+    // of four reads can discover the deadline — the D2 defect, reached through the D3 one. A pod
+    // that is STILL RUNNING but marked for deletion is already a decided run.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1", deletionTimestamp: "2026-08-20T00:00:00Z" },
+      status: {
+        phase: "Running",
+        containerStatuses: [
+          { name: "runner", state: { running: { startedAt: "2026-08-20T00:00:00Z" } } }
+        ]
+      }
+    });
+    const started = Date.now();
+    const result = await c.launcher().run(spec({ timeoutMs: 60_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("signalled");
+    // TERMINAL. A 60s budget with an immediate `sleep` stub would spin here for the full minute if
+    // the deletion were not itself the verdict.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("M23.5 D3 — A POD DELETED BEFORE ANYTHING STARTED IS `spawn-failed`, not `signalled`", async () => {
+    // THE OPPOSITE LIE, GUARDED. `signalled` on a run where nothing ran would claim a `tofu apply`
+    // was interrupted; `everStarted` is what separates them here exactly as it does on the deadline
+    // path, and it is the same remembered fact rather than a second reading.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1", deletionTimestamp: "2026-08-20T00:00:00Z" },
+      status: { phase: "Pending" }
+    });
+    const result = await c.launcher().run(spec({ timeoutMs: 10_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.code).toBe("PodDeleted");
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+  });
+
+  it("M23.5 D3 — A POD DELETED AFTER ITS RUNNER EXITED 0 IS STILL A SUCCESS", async () => {
+    // Deletion of a pod whose runner FINISHED is ordinary garbage collection. Calling it a kill
+    // would be the same class of lie in the other direction, and it is the one an unconditional
+    // "deletionTimestamp means signalled" would tell on every fast, successful run that got tidied.
+    const c = cluster();
+    c.setPod({
+      metadata: { name: "p1", deletionTimestamp: "2026-08-20T00:00:00Z" },
+      status: {
+        phase: "Succeeded",
+        containerStatuses: [{ name: "runner", state: { terminated: { exitCode: 0 } } }]
+      }
+    });
+    c.setLog("all done");
+    const result = await c.launcher().run(spec({ timeoutMs: 10_000, copyOut: undefined }));
+    expect(result.succeeded).toBe(true);
+    expect(result.stdout).toContain("all done");
+  });
+
+  it("M23.5 D3 — THE JOB'S `FailureTarget` IS A VERDICT, 32 SECONDS BEFORE `Failed` IS", async () => {
+    // Measured on the drained pod: FailureTarget=True(BackoffLimitExceeded) at t+2s, Failed=True at
+    // t+34s. Reading only `Failed` leaves half a minute with the pod gone and no verdict — which is
+    // half a minute of chances for the deadline to answer instead.
+    const c = cluster();
+    c.setPod(undefined);
+    c.setJobStatus({
+      conditions: [
+        {
+          type: "FailureTarget",
+          status: "True",
+          reason: "BackoffLimitExceeded",
+          message: "Job has reached the specified backoff limit"
+        }
+      ]
+    });
+    const started = Date.now();
+    const result = await c.launcher().run(spec({ timeoutMs: 60_000, copyOut: undefined }));
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.code).toBe("JobBackoffLimitExceeded");
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
   it("M23.5 — A JOB FAILURE WITH NOTHING EVER STARTED IS STILL `spawn-failed`, and it is TERMINAL: the budget is not burned", async () => {
     // The half route 3 cannot show: the SAME Job condition with `everStarted` false must not be
     // called `signalled`, and — the property that costs real minutes — the run must END there rather
@@ -1019,7 +1197,10 @@ describe("M23.2: a pod's terminal state maps onto the port's five failure kinds"
     expect(kubernetesContainerStarted({ status: { phase: "Running" } })).toBe(true);
     expect(
       kubernetesContainerStarted({
-        status: { phase: "Pending", containerStatuses: [{ name: "runner", state: { running: {} } }] }
+        status: {
+          phase: "Pending",
+          containerStatuses: [{ name: "runner", state: { running: {} } }]
+        }
       })
     ).toBe(true);
     // A SIDECAR IS NOT THE RUNNER. Same rule `kubernetesTermination` already applies.
@@ -1036,7 +1217,11 @@ describe("M23.2: a pod's terminal state maps onto the port's five failure kinds"
     // A `Failed` condition with `status: "False"` is a Job that is NOT failed. Reading only `type`
     // would call every healthy Job a failure.
     expect(
-      kubernetesJobTermination({ status: { conditions: [{ type: "Failed", status: "False" }] } }, false, "why")
+      kubernetesJobTermination(
+        { status: { conditions: [{ type: "Failed", status: "False" }] } },
+        false,
+        "why"
+      )
     ).toBeUndefined();
     expect(
       kubernetesJobTermination(

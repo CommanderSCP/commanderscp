@@ -111,6 +111,7 @@ const {
   RUNNER_POST_DEADLINE_CALL_COUNT,
   RUNNER_REMOVE_TIMEOUT_MS,
   RUNNER_STEP_ABANDON_GRACE_MS,
+  RUNNER_TIMER_LATENCY_ALLOWANCE_MS,
   clampRunTimeoutMs,
   createDockerRunnerLauncher,
   createKubernetesRunnerLauncher,
@@ -314,7 +315,10 @@ describe("M23.5 HIGH-2: what may happen AFTER the deadline is counted from the c
     // if it ever drops back to one call's worth, the 64004ms-into-a-33000ms-bound measurement is
     // live again.
     expect(runnerRunBoundMs("docker", TIMEOUT_MS)).toBe(
-      TIMEOUT_MS + RUNNER_STEP_ABANDON_GRACE_MS + 2 * RUNNER_BOUNDED_CALL_WORST_CASE_MS
+      TIMEOUT_MS +
+        RUNNER_STEP_ABANDON_GRACE_MS +
+        2 * RUNNER_BOUNDED_CALL_WORST_CASE_MS +
+        RUNNER_TIMER_LATENCY_ALLOWANCE_MS
     );
   });
 
@@ -349,7 +353,9 @@ describe("M23.5 HIGH-2: what may happen AFTER the deadline is counted from the c
       // every post-deadline call — so the post-deadline term is one grace plus all of them, and the
       // stated bound is the budget plus that.
       expect(runnerPostDeadlineMs(kind)).toBe(
-        RUNNER_STEP_ABANDON_GRACE_MS + runnerPostDeadlineCallsMs(kind)
+        RUNNER_STEP_ABANDON_GRACE_MS +
+          runnerPostDeadlineCallsMs(kind) +
+          RUNNER_TIMER_LATENCY_ALLOWANCE_MS
       );
       expect(runnerRunBoundMs(kind, 30_000)).toBe(30_000 + runnerPostDeadlineMs(kind));
       // And the reap stamp clears everything `run()` may still do, on THIS adapter.

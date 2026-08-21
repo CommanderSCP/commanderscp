@@ -3074,12 +3074,35 @@ export function runnerPostDeadlineCallsMs(kind: RunnerLauncherKind): number {
 }
 
 /**
+ * WHAT A SUM OF TIMERS COSTS THAT THE ARITHMETIC DOES NOT SAY.
+ *
+ * Every term in the bound below is a `setTimeout`, and a `setTimeout` NEVER FIRES EARLY AND ALWAYS
+ * FIRES LATE — by however long the event loop takes to come back to it. A bound stated as the exact
+ * sum is therefore exceeded by that latency once per timer, every time, on a perfectly healthy
+ * process. MEASURED on the four-timer worst case (the abandonment of the step in flight at the
+ * deadline, plus both of Docker's post-deadline calls): `run()` returned at 64009ms against an exact
+ * sum of 64000ms.
+ *
+ * NINE MILLISECONDS IS NOT A DEFECT, AND AN UNSTATED SLOP IS. This is a flat allowance of ~100x the
+ * measurement rather than a per-timer one because its purpose is not to be tight: it is so that
+ * {@link runnerRunBoundMs}'s "THE BOUND `run()` IS HELD TO" is a sentence that is TRUE, instead of
+ * one that is true to within a margin every reader has to rediscover by measuring. It is noise
+ * against the 30s outcome tail every consumer already carries on top.
+ */
+export const RUNNER_TIMER_LATENCY_ALLOWANCE_MS = 1_000;
+
+/**
  * EVERYTHING `run()` MAY STILL DO AFTER ITS WHOLE-RUN DEADLINE — one possible abandonment of the
- * step that was in flight when the deadline passed, then every post-deadline call. This is the term
- * every outer budget has to carry on top of {@link RunnerSpec.timeoutMs}.
+ * step that was in flight when the deadline passed, then every post-deadline call, plus the
+ * allowance for the fact that all of those are timers. This is the term every outer budget has to
+ * carry on top of {@link RunnerSpec.timeoutMs}.
  */
 export function runnerPostDeadlineMs(kind: RunnerLauncherKind): number {
-  return RUNNER_STEP_ABANDON_GRACE_MS + runnerPostDeadlineCallsMs(kind);
+  return (
+    RUNNER_STEP_ABANDON_GRACE_MS +
+    runnerPostDeadlineCallsMs(kind) +
+    RUNNER_TIMER_LATENCY_ALLOWANCE_MS
+  );
 }
 
 /**
