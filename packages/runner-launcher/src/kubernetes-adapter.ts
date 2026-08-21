@@ -988,15 +988,19 @@ export interface KubernetesStartFacts {
   /**
    * WHAT THE API SERVER SAID ABOUT THE UNSUSPEND, which is a different question from whether the
    * request went well for us:
-   *  - `accepted`   2xx. The Job left `suspend: true`; from this instant a pod may exist and a
-   *                 container may run WHETHER OR NOT ANYTHING HERE IS STILL WATCHING.
-   *  - `refused`    the server answered with a status (403, 422, 404). It did not apply the patch,
-   *                 so the Job is still suspended and no pod can have been created for it. That is
-   *                 knowledge, not an inference.
-   *  - `unanswered` no answer reached this process — the request was never issued, or it was issued
-   *                 and the transport never came back. Whether the patch applied is NOT KNOWN.
+   *  - `accepted`    2xx. The Job left `suspend: true`; from this instant a pod may exist and a
+   *                  container may run WHETHER OR NOT ANYTHING HERE IS STILL WATCHING.
+   *  - `refused`     the server answered with a status (403, 422, 404). It did not apply the patch,
+   *                  so the Job is still suspended and no pod can have been created for it. That is
+   *                  knowledge, not an inference.
+   *  - `not-issued`  the request PROVABLY never left this process — the whole-run budget was
+   *                  already spent when the run reached `start`, so `spend` refused it. Also
+   *                  knowledge: a request that was never sent cannot have applied.
+   *  - `unanswered`  no answer reached this process and none of the above is provable — it was
+   *                  issued and the transport never came back, or it failed in a way that does not
+   *                  say which. Whether the patch applied is NOT KNOWN.
    */
-  unsuspend: "accepted" | "refused" | "unanswered";
+  unsuspend: "accepted" | "refused" | "not-issued" | "unanswered";
   /**
    * AT LEAST ONE READ COMPLETED AFTER THE UNSUSPEND and described this run's world. An empty pod
    * list counts: "the controller has created no pod" is a description, and it is the one ROUTE 1
@@ -1040,7 +1044,7 @@ export interface KubernetesStartFacts {
  * A PURE FUNCTION, AND THAT IS THE POINT. The previous version of this decision was three lines
  * inside a `catch` in a 200-line block, which is why nothing pinned the arm that was wrong.
  *
- * THE ONE THING IT STILL CANNOT SEE, SAID PLAINLY RATHER THAN LEFT FOR THE NEXT PASS TO FIND. Arm 6
+ * THE ONE THING IT STILL CANNOT SEE, SAID PLAINLY RATHER THAN LEFT FOR THE NEXT PASS TO FIND. Arm 7
  * ("observed, nothing had started, the budget ended us") is warranted by a read that COMPLETED, but
  * that read is up to one poll interval — {@link KUBERNETES_POLL_INTERVAL_MS} — older than the
  * deadline, so a container that started inside that last window would not be in it. Three things
@@ -1063,7 +1067,22 @@ export function kubernetesStartVerdict(
   //    better informed, and overriding them is how M23.5's D2 negative control fails.
   if (f.runnerVerdict) return undefined;
 
-  // 2. THE API SERVER REFUSED TO START THE JOB, and said so with a status. The patch did not apply,
+  // 2. THE UNSUSPEND WAS NEVER SENT. The budget was already gone when the run reached `start`, so
+  //    `spend` refused it before it was issued: the Job is exactly as `create` left it. This arm
+  //    exists so that the KNOWABLE half of "nobody answered" is not swept into arm 3 with the
+  //    unknowable half — telling an operator to go and inspect infrastructure that was never
+  //    touched is a weaker claim than the truth, and a weaker claim is still the wrong one.
+  if (f.unsuspend === "not-issued") {
+    return {
+      code: RUNNER_NEVER_STARTED_CODE,
+      message:
+        `the whole-run budget of ${f.runTimeoutMs}ms (RunnerSpec.timeoutMs) was already spent when ` +
+        `this run reached 'start', so the unsuspend was NEVER ISSUED and the Job never left ` +
+        `'suspend: true' — NOTHING RAN and nothing was mutated`
+    };
+  }
+
+  // 3. THE API SERVER REFUSED TO START THE JOB, and said so with a status. The patch did not apply,
   //    so the Job never left `suspend: true` and the controller never created a pod for it. Without
   //    this arm the refusal reaches `classifyRunnerFailure` as a NUMERIC code and is recorded as
   //    `exit-nonzero` — "the runner itself exited non-zero" — for a runner that does not exist. That
@@ -1078,9 +1097,9 @@ export function kubernetesStartVerdict(
     };
   }
 
-  // 3. NOBODY ANSWERED THE UNSUSPEND. Never issued, or issued and never answered — and those two
-  //    are not distinguishable from here, so the weaker of them governs: a merge-patch whose
-  //    response was lost may perfectly well have been applied.
+  // 4. NOBODY ANSWERED, AND NOTHING PROVES IT WAS NOT SENT. Everything the two arms above can
+  //    settle is settled; what is left is a request that may have reached the API server and been
+  //    applied while its response was lost. A merge-patch is not a question, it is an instruction.
   if (f.unsuspend !== "accepted") {
     return {
       code: RUNNER_OUTCOME_UNKNOWN_CODE,
@@ -1092,7 +1111,7 @@ export function kubernetesStartVerdict(
     };
   }
 
-  // 4. A CONTAINER WAS SEEN RUNNING. If the whole-run budget is what ended us, `budget-exhausted`
+  // 5. A CONTAINER WAS SEEN RUNNING. If the whole-run budget is what ended us, `budget-exhausted`
   //    is exactly right and says so ("stopped mid-flight, the real state is unknown") — that is
   //    M23.5's negative control and it must keep passing. If something else ended us with budget
   //    still left, we stopped WATCHING a run that was still going, which is a different sentence.
@@ -1108,7 +1127,7 @@ export function kubernetesStartVerdict(
     };
   }
 
-  // 5. THE DEFECT. The unsuspend was ACCEPTED and nothing was ever observed after it. The Job was
+  // 6. THE DEFECT. The unsuspend was ACCEPTED and nothing was ever observed after it. The Job was
   //    live in the cluster from that instant and the kubelet does not need this process to be
   //    watching; `!everStarted` here means "we never looked", not "nothing started", and the two
   //    were one flag.
@@ -1126,7 +1145,7 @@ export function kubernetesStartVerdict(
     };
   }
 
-  // 6. OBSERVED, NOTHING HAD STARTED, AND THE BUDGET IS WHAT ENDED US — M23.5's D2 verdict,
+  // 7. OBSERVED, NOTHING HAD STARTED, AND THE BUDGET IS WHAT ENDED US — M23.5's D2 verdict,
   //    unchanged, and the arm the routes above exist to keep honest. See this function's doc for
   //    the exact width of what this read warrants.
   if (f.deadlineExceeded) {
@@ -1138,8 +1157,8 @@ export function kubernetesStartVerdict(
     };
   }
 
-  // 7. OBSERVED, NOTHING HAD STARTED, AND OUR OWN READ FAILED WITH BUDGET LEFT. The Job is still
-  //    live and still able to start a pod; this run simply stopped being able to look. Arm 6's
+  // 8. OBSERVED, NOTHING HAD STARTED, AND OUR OWN READ FAILED WITH BUDGET LEFT. The Job is still
+  //    live and still able to start a pod; this run simply stopped being able to look. Arm 7's
   //    claim is not available here, because the budget it is made "within" has not run out.
   return {
     code: RUNNER_OUTCOME_UNKNOWN_CODE,
@@ -1759,6 +1778,22 @@ export function createKubernetesRunnerLauncher(
          * leaves that unknown, and a run whose Job may be live may not be told nothing ran.
          */
         let unsuspend: KubernetesStartFacts["unsuspend"] = "unanswered";
+        /**
+         * IS THE BUDGET ALREADY GONE? — READ BEFORE THE CALL, AND THAT PLACEMENT IS THE OPPOSITE OF
+         * THE GUARD M23.5 DELETED RATHER THAN A RETURN TO IT.
+         *
+         * The deleted guard read the clock before a call and used the answer to decide the verdict
+         * AFTER it, in the direction that can be wrong: the clock could cross in between, so "there
+         * is budget left" did not mean the call would be issued, and the run reported
+         * `budget-exhausted` for a run in which nothing ever started (6 in 20).
+         *
+         * THIS READS IT IN THE DIRECTION THAT CANNOT BE WRONG. The clock only moves forward, so
+         * `spent()` here means `spend` WILL refuse and the request WILL NOT be issued — a positive
+         * proof. A `false` proves nothing and is used to prove nothing: the run falls through to
+         * `unanswered`, the conservative arm. Non-atomicity can only ever cost precision here,
+         * never make the verdict false.
+         */
+        const nothingLeftForStart = runDeadline.spent();
         /** The failure being thrown already states what became of the RUNNER — see
          *  {@link KubernetesStartFacts.runnerVerdict}. Set immediately before the two `fail`s that
          *  carry one, so a `fail` added later is NOT one until somebody says it is. */
@@ -1780,6 +1815,8 @@ export function createKubernetesRunnerLauncher(
             // issued, an abandoned transport, a socket that never came back) leaves `unanswered`.
             if (cause instanceof RunnerLaunchError && typeof cause.code === "number") {
               unsuspend = "refused";
+            } else if (nothingLeftForStart) {
+              unsuspend = "not-issued";
             }
             throw cause;
           }

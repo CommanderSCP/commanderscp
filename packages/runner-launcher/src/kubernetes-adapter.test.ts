@@ -1565,6 +1565,33 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(result.failure!.detail).toContain("the runner exited 3");
   });
 
+  it("AN UNSUSPEND THAT WAS NEVER ISSUED SAYS SO — and no PATCH is on the wire to contradict it", async () => {
+    // THE KNOWABLE HALF OF "NOBODY ANSWERED". A copy-in on a slow network filesystem finishes
+    // legitimately, inside its own bound, with nothing left for the step after it; `spend` then
+    // refuses the unsuspend BEFORE issuing it, so the Job is exactly as `create` left it. Sweeping
+    // this into `outcome-unknown` would tell an operator to go and inspect infrastructure that was
+    // never touched — a weaker claim than the truth is still the wrong claim.
+    const c = cluster();
+    const io: KubernetesRunnerIo = {
+      ...c.io,
+      // `timeoutMs` IS what remains of the run budget, so leaving 6ms of it leaves less than
+      // RUNNER_MIN_STEP_BUDGET_MS. A `setTimeout` never fires early, so the remainder can only be
+      // smaller than that — the direction that keeps this deterministic.
+      copyDir: async (op) => {
+        await new Promise((r) => setTimeout(r, op.timeoutMs - 6));
+        return c.io.copyDir(op);
+      }
+    };
+    const result = await c.launcher({ io }).run(spec({ timeoutMs: 300, copyOut: undefined }));
+
+    expect(result.failure!.kind).toBe("spawn-failed");
+    expect(result.failure!.detail).toContain("NEVER ISSUED");
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+    // THE SENTENCE, CHECKED AGAINST THE RECORDED EFFECTS RATHER THAN AGAINST ITSELF. "Never issued"
+    // is a claim about the wire; this is the wire.
+    expect(requestsOf(c.ops).some((o) => o.method === "PATCH")).toBe(false);
+  });
+
   it("`kubernetesStartVerdict` — every arm, as a pure function", () => {
     const base = {
       runnerVerdict: false,
@@ -1582,10 +1609,20 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
       kubernetesStartVerdict({ ...base, runnerVerdict: true, observed: false, everStarted: true })
     ).toBeUndefined();
 
-    // 4. A CONTAINER RAN AND OUR BUDGET ENDED IT — `budget-exhausted` stands.
+    // 5. A CONTAINER RAN AND OUR BUDGET ENDED IT — `budget-exhausted` stands.
     expect(kubernetesStartVerdict({ ...base, everStarted: true })).toBeUndefined();
 
-    // 2. THE API SERVER SAID NO. Knowledge, not inference.
+    // 2. NEVER SENT. Knowledge, and it must not be swept into arm 4's "we do not know".
+    const notIssued = kubernetesStartVerdict({ ...base, unsuspend: "not-issued" })!;
+    expect(notIssued.code).toBe("RunnerContainerNeverStarted");
+    expect(notIssued.message).toContain("NEVER ISSUED");
+    expect(notIssued.message).toContain("NOTHING RAN");
+    // AND IT OUTRANKS A STALE `everStarted` for the same reason `refused` does.
+    expect(
+      kubernetesStartVerdict({ ...base, unsuspend: "not-issued", everStarted: true })?.code
+    ).toBe("RunnerContainerNeverStarted");
+
+    // 3. THE API SERVER SAID NO. Knowledge, not inference.
     expect(kubernetesStartVerdict({ ...base, unsuspend: "refused" })?.code).toBe(
       "RunnerContainerNeverStarted"
     );
@@ -1595,12 +1632,12 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
       kubernetesStartVerdict({ ...base, unsuspend: "refused", everStarted: true })?.message
     ).toContain("NOTHING RAN");
 
-    // 3. NOBODY ANSWERED THE UNSUSPEND — the patch may have applied.
+    // 4. NOBODY ANSWERED AND NOTHING PROVES IT WAS NOT SENT — the patch may have applied.
     expect(kubernetesStartVerdict({ ...base, unsuspend: "unanswered" })?.code).toBe(
       RUNNER_OUTCOME_UNKNOWN_CODE
     );
 
-    // 5. THE DEFECT: accepted, and nothing was ever observed.
+    // 6. THE DEFECT: accepted, and nothing was ever observed.
     const blind = kubernetesStartVerdict({ ...base, observed: false, waiting: "W" })!;
     expect(blind.code).toBe(RUNNER_OUTCOME_UNKNOWN_CODE);
     expect(blind.message).toContain("NOTHING WAS EVER OBSERVED");
@@ -1608,19 +1645,19 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(blind.message).toContain("(W)");
     expect(blind.message).not.toContain("NOTHING RAN");
 
-    // 6. OBSERVED, NOTHING STARTED, THE BUDGET ENDED US — D2's verdict, unchanged.
+    // 7. OBSERVED, NOTHING STARTED, THE BUDGET ENDED US — D2's verdict, unchanged.
     const never = kubernetesStartVerdict(base)!;
     expect(never.code).toBe("RunnerContainerNeverStarted");
     expect(never.message).toContain("NOTHING RAN and nothing was mutated");
     expect(never.message).toContain("Unschedulable");
     expect(never.message).toContain("5000ms");
 
-    // 7. OBSERVED, NOTHING STARTED, AND OUR OWN READ BROKE WITH BUDGET LEFT.
+    // 8. OBSERVED, NOTHING STARTED, AND OUR OWN READ BROKE WITH BUDGET LEFT.
     const early = kubernetesStartVerdict({ ...base, deadlineExceeded: false })!;
     expect(early.code).toBe(RUNNER_OUTCOME_UNKNOWN_CODE);
     expect(early.message).not.toContain("NOTHING RAN");
 
-    // 4b. A CONTAINER RAN AND SOMETHING ELSE ENDED US.
+    // 5b. A CONTAINER RAN AND SOMETHING ELSE ENDED US.
     const lostSight = kubernetesStartVerdict({
       ...base,
       everStarted: true,
