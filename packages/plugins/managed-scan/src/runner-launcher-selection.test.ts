@@ -8,6 +8,7 @@ import type { PluginContext } from "@scp/plugin-api";
 import type { KubernetesRunnerIo } from "@scp/runner-launcher";
 import { createManagedScanExecutorPlugin } from "./index.js";
 import {
+  K8S_SA_DIR,
   clearRunnerSpawns,
   kubernetesConstructionCount,
   runnerSpawnCount,
@@ -310,6 +311,143 @@ console.log(JSON.stringify({ seen, afterKubernetes, afterDocker: spawnsSoFar() }
         "the Docker trigger created no process either, so the observer proves nothing"
       ).toBeGreaterThan(0);
       expect(run.binaries).toStrictEqual(["scp-no-such-container-cli"]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 180_000);
+});
+
+/**
+ * ==================================================================================================
+ * M23.6 CLAUSE 1, THE HOLE EVERY CASE ABOVE LEFT: the `io` THIS SUITE ALWAYS INJECTS
+ * ==================================================================================================
+ *
+ * Every case above hands the plugin a `kubernetes.io`. `resolveRunnerLauncher` reads it as
+ * `k8s.io ?? createDefaultKubernetesIo(…)`, and the right-hand side of a `??` is not evaluated when
+ * the left is present — so the transport the resolver builds FOR ITSELF, which is the only one
+ * production ever gets, was evaluated by no test in this repository.
+ *
+ * MEASURED, NOT SUSPECTED. A `spawnSync(config.dockerBinary ?? "docker", ["version"])` planted on
+ * that right-hand side, in a NEW module so that no `node:child_process` string appears in
+ * `kubernetes-adapter.ts` for the source census to find, executed a REAL `docker version` while
+ * `@scp/runner-launcher` reported 427/427 and the three managed plugins reported 38 + 50 + 255 —
+ * every suite green, including the observed case above. A marker file proved the probe was reached
+ * rather than merely present.
+ *
+ * So this case injects NOTHING: no `io`, and NO `dockerBinary` either. The Kubernetes adapter is not
+ * given a container binary in production and must not need one, so with the field absent the only
+ * name a probe can reach for is `DEFAULT_DOCKER_BINARY` — and the assertion is simply that this
+ * child created no process at all, with no binary name guessed in advance.
+ *
+ * TWO THINGS MAKE THE EMPTY LIST MEAN SOMETHING, because a green negative arm was already worthless
+ * once: `kubernetesConstructionCount()` must move by TWO (the launcher AND the transport the resolver
+ * built — an injected `io` makes it one, which is what every case above produces), and the run must
+ * fail naming the projected service-account token path, which is proof the resolver's own `readToken`
+ * closure actually executed. The observer's own liveness is then proven in the SAME child by a
+ * deliberate spawn at the end.
+ */
+describe("M23.6 clause 1: managed-scan on the Kubernetes path with NO injected transport", () => {
+  it("NO `io`, NO `dockerBinary`: the resolver builds its OWN transport and NOTHING is spawned", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "managed-scan-defaultio-"));
+    try {
+      const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+      const pluginEntry = join(packageRoot, "dist/index.js");
+      const driver = `
+import { readFileSync } from "node:fs";
+const OUT = process.env.SCP_SPAWN_OBSERVER_OUT;
+const spawnsSoFar = () =>
+  readFileSync(OUT, "utf8").split("\\n").filter((l) => l.trim().length > 0).length;
+
+const { createRequire } = await import("node:module");
+const req = createRequire(${JSON.stringify(join(packageRoot, "package.json"))});
+const rl = await import(req.resolve("@scp/runner-launcher"));
+const plugin = (await import(${JSON.stringify(pluginEntry)})).createManagedScanExecutorPlugin();
+const base = {
+  orgId: "org-1",
+  scopeKey: "domain-1",
+  logger: { debug() {}, info() {}, warn() {}, error() {} },
+  secrets: { get: async () => undefined },
+  http: { request: async () => { throw new Error("managed-scan: never calls ctx.http"); } }
+};
+const config = {
+  runnerImage: "scp-runner-scan:vetted",
+  networkMode: "none",
+  runnerLauncher: "kubernetes",
+  kubernetes: {
+    namespace: "scp",
+    workspaceRoot: ${JSON.stringify(workspace)},
+    workspaceVolume: { kind: "persistentVolumeClaim", claimName: "scp-runner-workspace" },
+    // A DEAD LOCAL PORT. If this ever runs somewhere a projected token DOES exist, the request still
+    // cannot leave the machine — nothing in this repository's tests may touch a network.
+    apiBase: "http://127.0.0.1:1"
+  }
+};
+
+const before = rl.kubernetesConstructionCount();
+const c = { ...base, config };
+let detail = "";
+const ref = await plugin.trigger(c, {
+  kind: "custom",
+  idempotencyKey: "defaultio-k8s",
+  parameters: {
+    method: "trivy",
+    inputDir: ${JSON.stringify(join(workspace, "oci"))},
+    outputDir: ${JSON.stringify(join(workspace, "out"))}
+  }
+}).catch((e) => {
+  detail = String(e && e.message ? e.message : e);
+  return null;
+});
+const constructed = rl.kubernetesConstructionCount() - before;
+if (ref) {
+  const st = await plugin.status(c, ref);
+  detail = (st && st.detail) || detail;
+}
+await rl.whenKubernetesReapSettled("scp");
+const afterKubernetes = spawnsSoFar();
+
+// THE OBSERVER WAS LIVE IN THIS CHILD — the control, deliberately, and by a name nothing else uses.
+// Without it "zero spawns" is also what a broken preload reports.
+const { execFileSync } = await import("node:child_process");
+try {
+  execFileSync("scp-observer-liveness-control", ["--probe"], { stdio: "ignore" });
+} catch {}
+console.log(
+  JSON.stringify({ constructed, detail, afterKubernetes, afterControl: spawnsSoFar(), ledger: rl.runnerSpawnCount() })
+);
+`;
+      const run = await observeNodeSpawns({ module: driver, timeoutMs: 120_000 });
+      expect(run.ok, `the probe did not complete:\n${run.stderr}`).toBe(true);
+      const report = JSON.parse(run.stdout.trim().split("\n").pop()!) as {
+        constructed: number;
+        detail: string;
+        afterKubernetes: number;
+        afterControl: number;
+        ledger: number;
+      };
+      // NON-VACUITY 1 — the `??` right-hand side was EVALUATED: launcher plus the transport the
+      // resolver built for itself. An injected `io` makes this one.
+      expect(
+        report.constructed,
+        "the resolver did not build its own transport, so the branch this case exists for was not evaluated"
+      ).toBe(2);
+      // NON-VACUITY 2 — the resolver's own `readToken` closure actually RAN. This process is not a pod.
+      expect(
+        report.detail,
+        "the run never reached the default transport's token read, so nothing past construction was driven"
+      ).toContain(`${K8S_SA_DIR}/token`);
+      // THE MEASUREMENT.
+      expect(
+        report.afterKubernetes,
+        `managed-scan created a process on the Kubernetes path: ${JSON.stringify(run.spawns)}`
+      ).toBe(0);
+      expect(report.ledger).toBe(0);
+      // THE OBSERVER'S LIVENESS, in this same child and after the fact.
+      expect(
+        report.afterControl,
+        "the deliberate control spawn was not recorded either — this child was not being observed"
+      ).toBeGreaterThan(report.afterKubernetes);
+      expect(run.binaries).toStrictEqual(["scp-observer-liveness-control"]);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
