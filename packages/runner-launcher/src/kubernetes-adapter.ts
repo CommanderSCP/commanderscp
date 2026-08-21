@@ -1064,17 +1064,32 @@ export interface KubernetesStartFacts {
  * {@link KubernetesStartFacts.unwatchedMs} against {@link KubernetesStartFacts.pollIntervalMs} —
  * and past it arm 7b says the window out loud in milliseconds.
  *
- * THE ONE THING IT STILL CANNOT SEE, SAID PLAINLY RATHER THAN LEFT FOR THE NEXT PASS TO FIND. Inside
- * the poll interval arm 7 still asserts more than it watched: a container that starts between the
- * last landed read and the deadline is not in that read. Two things bound THAT and are why the arm
- * keeps its claim there: `everStarted` is re-evaluated on EVERY poll, so any start that was visible
- * wins; and a pod whose container starts in that window is still `Running` when teardown DELETEs the
- * Job seconds later. Closing it completely would need a read AFTER the deadline, which is a fourth
- * post-deadline call — {@link RUNNER_POST_DEADLINE_CALLS} would have to declare it and every grace
- * derived from that count would move. A SECOND residual, named rather than implied: arm 7 does not
- * ask WHAT the last read said, so a pod the cluster reported as conclusively blocked (a quota
- * refusal, `Unschedulable`) that is unblocked and starts within that same interval is still recorded
- * as never having started.
+ * THE ONE THING IT STILL CANNOT SEE, SAID PLAINLY RATHER THAN LEFT FOR THE NEXT PASS TO FIND — and
+ * CORRECTED BY VERIFICATION PASS 20, which found this paragraph describing a window half the width
+ * of the one the code admits.
+ *
+ * ARM 7 ASSERTS MORE THAN IT WATCHED, FOR UP TO `2 * pollIntervalMs + RUNNER_MIN_STEP_BUDGET_MS`.
+ * That is the arm's own guard, and it is TWO intervals plus the slack, not one: at the default
+ * {@link KUBERNETES_POLL_INTERVAL_MS} of 2,000ms the record may claim `NOTHING RAN and nothing was
+ * mutated` about 4,010ms this process did not see, and at the 500ms the kind harness uses, 1,010ms.
+ * A container that starts anywhere in that window is not in the last landed read.
+ *
+ * TWO THINGS NARROW IT AND NEITHER BOUNDS THE CLAIM ITSELF, WHICH IS THE PART THIS USED TO GET
+ * WRONG. `everStarted` is re-evaluated on EVERY poll, so any start that was VISIBLE wins — that
+ * makes the residual rare, not sound. And a pod whose container starts inside the window is still
+ * `Running` when teardown DELETEs the Job moments later — that bounds HOW LONG the runner ran, and
+ * `spawn-failed`'s sentence is not about duration: it is `nothing was mutated`, and a `tofu apply`
+ * that got a second of CPU can have mutated. So the honest statement is that the window is narrow
+ * and the claim inside it is unfounded, not that anything makes the claim true.
+ *
+ * CLOSING IT COMPLETELY would need a read AFTER the deadline, which is a fourth post-deadline call —
+ * {@link RUNNER_POST_DEADLINE_CALLS} declares three for `kubernetes`, it would have to declare a
+ * fourth, and {@link runnerPostDeadlineCallsMs}, the reap stamp and `MANAGED_TRIGGER_GRACE_MS` all
+ * move with the count. That is the price, and it is why this is written down rather than fixed.
+ *
+ * A SECOND RESIDUAL, NAMED RATHER THAN IMPLIED: arm 7 does not ask WHAT the last read said, so a pod
+ * the cluster reported as conclusively blocked (a quota refusal, `Unschedulable`) that is unblocked
+ * and starts inside that same window is still recorded as never having started.
  *
  * @returns `undefined` to leave the failure exactly as it was thrown, or the `code` and `message`
  *          the run should be RE-RAISED with.
@@ -1195,8 +1210,9 @@ export function kubernetesStartVerdict(
       message:
         `no runner container had started when this launcher last saw the cluster (${f.waiting}), ` +
         `and it then saw NOTHING FOR THE LAST ${f.unwatchedMs}ms of the whole-run budget of ` +
-        `${f.runTimeoutMs}ms (RunnerSpec.timeoutMs) — a landed read speaks for one poll interval ` +
-        `(${f.pollIntervalMs}ms) and no longer. Whether the Job started a pod in the window that ` +
+        `${f.runTimeoutMs}ms (RunnerSpec.timeoutMs) — a landed read speaks for the ${f.pollIntervalMs}ms ` +
+        `interval it sits in, plus one more for the read that finds the deadline, and no longer. ` +
+        `Whether the Job started a pod in the window that ` +
         `followed, and if it did whether the runner ran and what it changed, is NOT KNOWN. The ` +
         `teardown that follows DELETEs the Job, which kills a 'tofu apply' mid-flight. Check the ` +
         `target's real state before re-running`
