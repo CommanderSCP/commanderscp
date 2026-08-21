@@ -1061,17 +1061,29 @@ export interface KubernetesStartFacts {
  * A PURE FUNCTION, AND THAT IS THE POINT. The previous version of this decision was three lines
  * inside a `catch` in a 200-line block, which is why nothing pinned the arm that was wrong.
  *
- * THE ONE THING IT STILL CANNOT SEE, SAID PLAINLY RATHER THAN LEFT FOR THE NEXT PASS TO FIND. Arm 7
- * ("observed, nothing had started, the budget ended us") is warranted by a read that COMPLETED, but
- * that read is up to one poll interval — {@link KUBERNETES_POLL_INTERVAL_MS} — older than the
- * deadline, so a container that started inside that last window would not be in it. Three things
- * bound the risk and they are the reason the arm keeps its claim: `everStarted` is re-evaluated on
- * EVERY poll, so any start that was visible wins; the arm is only reached when the last read said
- * the pod could not start (unschedulable, a rejected CREATE, a fatal waiting reason) rather than
- * that it was about to; and a pod whose container starts in that window is still `Running` when
- * teardown DELETEs the Job seconds later. Closing it completely would need a read AFTER the
- * deadline, which is a fourth post-deadline call — {@link RUNNER_POST_DEADLINE_CALLS} would have to
- * declare it and every grace derived from that count would move.
+ * AND `observed` ALONE WAS THE SAME MISTAKE ONE STEP ALONG — M23.5 verification pass 19, measured
+ * the same way. The paragraph that stood here claimed arm 7's read "is up to one poll interval older
+ * than the deadline" and that "the arm is only reached when the last read said the pod COULD NOT
+ * start". NEITHER WAS TRUE OF THE CODE. Nothing measured the read's age, and nothing looked at what
+ * it said: one `GET pods` landing a tenth of a second after the unsuspend — an empty list, because
+ * the controller had not created the pod yet — set `observed` and satisfied arm 7 for the whole
+ * remaining budget. Against the real cluster: the pod, the kubelet and the container are real, the
+ * container writes `THE-RUNNER-RAN-AND-MUTATED` to the real volume, and the record says `NOTHING
+ * RAN and nothing was mutated`. The bound is now a FACT the run measures —
+ * {@link KubernetesStartFacts.unwatchedMs} against {@link KubernetesStartFacts.pollIntervalMs} —
+ * and past it arm 7b says the window out loud in milliseconds.
+ *
+ * THE ONE THING IT STILL CANNOT SEE, SAID PLAINLY RATHER THAN LEFT FOR THE NEXT PASS TO FIND. Inside
+ * the poll interval arm 7 still asserts more than it watched: a container that starts between the
+ * last landed read and the deadline is not in that read. Two things bound THAT and are why the arm
+ * keeps its claim there: `everStarted` is re-evaluated on EVERY poll, so any start that was visible
+ * wins; and a pod whose container starts in that window is still `Running` when teardown DELETEs the
+ * Job seconds later. Closing it completely would need a read AFTER the deadline, which is a fourth
+ * post-deadline call — {@link RUNNER_POST_DEADLINE_CALLS} would have to declare it and every grace
+ * derived from that count would move. A SECOND residual, named rather than implied: arm 7 does not
+ * ask WHAT the last read said, so a pod the cluster reported as conclusively blocked (a quota
+ * refusal, `Unschedulable`) that is unblocked and starts within that same interval is still recorded
+ * as never having started.
  *
  * @returns `undefined` to leave the failure exactly as it was thrown, or the `code` and `message`
  *          the run should be RE-RAISED with.
