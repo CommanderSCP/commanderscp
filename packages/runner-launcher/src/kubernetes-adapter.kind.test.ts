@@ -214,7 +214,11 @@ async function canI(
   verb: string,
   resource: string,
   sa: string,
-  subresource?: string
+  subresource?: string,
+  /** `--all-namespaces`, which is how `kubectl auth can-i` asks a CLUSTER-SCOPED question rather
+   *  than one about the current namespace. Without it a `delete nodes` check is answered for a
+   *  namespace, which is not the question a cluster-scoped resource has. */
+  opts: { clusterScope?: boolean } = {}
 ): Promise<string> {
   try {
     return (
@@ -224,6 +228,7 @@ async function canI(
         verb,
         resource,
         ...(subresource === undefined ? [] : [`--subresource=${subresource}`]),
+        ...(opts.clusterScope === true ? ["--all-namespaces"] : []),
         "--as",
         sa
       )
@@ -525,6 +530,34 @@ describe("M23.2 kind: the Kubernetes adapter against a real API server", () => {
         `the chart's runner Role grants ${verb} on ${what}, which this adapter never issues`
       ).toBe("no");
     }
+    /**
+     * AND THE CLUSTER-SCOPED QUESTION NOTHING HERE HAD EVER ASKED (M23.6, second pass). Every
+     * narrowness assertion above is about `batch/jobs` and `pods` — the resources the Role names.
+     * The M23.6 verification pass pointed a real authorizer at this identity and asked
+     * `delete nodes`, which no assertion in this repository covered, because "the chart grants
+     * exactly what the adapter calls" had only ever been checked against ONE Role's `rules` array.
+     * `tools/helm-verify` now refuses a ClusterRole or ClusterRoleBinding in every render AND in
+     * every template; this is the same claim asked of a real API server, which is the only thing
+     * that can say what the whole cluster's RBAC adds up to for this ServiceAccount rather than what
+     * one manifest says.
+     */
+    const clusterScoped: [string, string][] = [
+      ["delete", "nodes"],
+      ["get", "nodes"],
+      ["list", "namespaces"],
+      ["delete", "persistentvolumes"],
+      ["create", "clusterrolebindings"],
+      ["bind", "clusterroles"],
+      ["escalate", "roles"],
+      ["impersonate", "serviceaccounts"]
+    ];
+    for (const [verb, resource] of clusterScoped) {
+      expect(
+        await canI(verb, resource, sa, undefined, { clusterScope: true }),
+        `the runner ServiceAccount may ${verb} ${resource} — a cluster-scoped grant nothing in this chart is supposed to make, and the exact question that was never asked`
+      ).toBe("no");
+    }
+
     // THE GRANT THE OWNER TOOK, ASKED FOR BY NAME (M23.4). Two verbs, in the DEFAULT namespace,
     // because the chart's default is what an operator installs.
     for (const verb of ["create", "delete"]) {
