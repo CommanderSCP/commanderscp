@@ -66,19 +66,41 @@ these are the gates rather than a summary of them:
   combinations no sweep can enumerate.
 
   NOTHING SPAWNS A CONTAINER CLI ON THIS PATH, AND NOTHING KUBERNETES IS BUILT ON THE OTHER ONE.
-  This sentence was FALSE WITH THE SUITE GREEN when it was first written here, and how it was made
-  true is the part worth reading. It rested on a ledger inside `spawnRunnerProcess` — which only sees
-  what goes through it. A planted `execFile` on the Kubernetes path left all three per-class ledger
-  tests green while fourteen processes ran; only a source census reddened, and a census proves the
-  presence of text, never the absence of an execution. So the observation moved OUTSIDE the code: the
-  three plugins and the package are each run in a child `node` whose `node:child_process` was wrapped
-  before they loaded, and the assertion is over the processes that were CREATED, by binary name, with
-  the Docker path observed creating one in the same child as the control. A construction counter
-  makes "no Kubernetes client is instantiated on a compose install" an assertion rather than an
-  inference.
+  This sentence was FALSE WITH THE SUITE GREEN TWICE, and both times the fix was a different kind of
+  thing than the one before it. First it rested on a ledger inside `spawnRunnerProcess`, which only
+  sees what goes through it: a planted `execFile` left all three per-class ledger tests green while
+  fourteen processes ran, and only a source census reddened — and a census proves the presence of
+  text, never the absence of an execution. So the observation moved OUTSIDE the code, into a child
+  `node` whose `node:child_process` is wrapped before the subject loads, asserting over the processes
+  that were CREATED, by binary name, with the Docker path observed creating one in the same child as
+  the control.
+
+  THEN THE SENTENCE WAS FALSE AGAIN, for a reason no assertion could have fixed: the code was
+  UNREACHABLE. `resolveRunnerLauncher` builds its transport as `k8s.io ?? createDefaultKubernetesIo(…)`
+  and every fixture in the repository — all four observed drivers, all three plugin selection tests,
+  the whole kind suite — INJECTS `k8s.io`, so the right-hand side of that `??` was evaluated by no
+  test that has ever run here. A `spawnSync` planted on it executed a real `docker version` with
+  427 + 38 + 50 + 255 green, proven reached by a marker file. A gate that names the place a spawn
+  could happen keeps missing the place it does; the fix is REACHABILITY, so those three closures are
+  now a named export driven directly — `readToken` (its ENOENT names the projected-token path, which
+  is how the test proves it ran), `copyDir` and `removeDir` against real directories — and each plugin
+  gained an arm that injects NEITHER an `io` NOR a `dockerBinary`, where the construction counter
+  moving by TWO is what proves the default transport was built rather than skipped. **Mutations, both
+  RED and neither caught by the other's gate:** a `spawnSync` on the `??` right-hand side, in a new
+  module so no `node:child_process` string appears for the census → RED x4, naming `docker`; a `fork`
+  behind a dynamic `import()` INSIDE the `copyDir` closure → RED, naming the forked module. A
+  construction counter makes "no Kubernetes client is instantiated on a compose install" an assertion
+  rather than an inference.
 
 WHAT IS STILL NOT COVERED, KEPT HERE RATHER THAN RETIRED WITH THE NOTE — and the list grew on a
 second pass, which is the argument for keeping it at all:
+
+  THE SPAWN OBSERVER DOES NOT SEE A NATIVE ADDON calling `posix_spawn` directly, and no kind test
+  runs under it — the observed cases are unit-scoped, so a spawn that only a REAL cluster run reaches
+  after a successful service-account token read is outside every gate above. The compensating
+  controls are that the wrapped export set is pinned (a Node release adding a process-creating API
+  fails the preload loudly) and that the transport a real run uses is now driven closure by closure
+  off-cluster; the residual is the run itself.
 
   THE BUNDLED-BACKENDS CHART'S OWN RBAC IS UNGATED. `deploy/helm-bundled` vendors upstream Argo CD,
   Argo Workflows and Argo Events manifests, which carry ClusterRoles bound to THEIR OWN
