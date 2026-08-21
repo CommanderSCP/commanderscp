@@ -1362,9 +1362,35 @@ export function whenKubernetesReapSettled(namespace: string): Promise<readonly s
 const defaultSleep = (ms: number): Promise<void> =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
+// ==================================================================================================
+// THE CONSTRUCTION LEDGER — M23.6 CLAUSE 7's "NEVER CONSTRUCTED", WHICH IS A STRONGER CLAIM THAN
+// "NEVER CALLED"
+// ==================================================================================================
+/**
+ * The clause is: "with the Docker launcher selected, the Kubernetes adapter is never constructed and
+ * no Kubernetes client is instantiated, so an air-gapped VM install gains no new dependency."
+ *
+ * WHAT STOOD FOR IT PROVED THE WEAKER HALF. The three `runner-launcher-selection.test.ts` files
+ * assert that the Kubernetes **io is never touched** — a statement about calls. Measured: making the
+ * Docker branch of {@link resolveRunnerLauncher} construct `createFetchKubernetesIo(...)` AND
+ * `createKubernetesRunnerLauncher(...)`, discard both, and return the Docker launcher left
+ * `pnpm -w test` green (72/72). Nothing anywhere asserted that they were not BUILT.
+ *
+ * This counter is the difference. Two increments, one in each of this module's two constructors, and
+ * `no-docker-on-kubernetes.test.ts` censuses the source so a third constructor cannot join them
+ * unrecorded.
+ */
+let kubernetesConstructions = 0;
+
+/** How many Kubernetes launchers or API clients this process has built. See the block above. */
+export function kubernetesConstructionCount(): number {
+  return kubernetesConstructions;
+}
+
 export function createKubernetesRunnerLauncher(
   config: KubernetesRunnerLauncherConfig
 ): RunnerLauncher {
+  kubernetesConstructions += 1;
   const { namespace, workspaceRoot, io } = config;
   const sleep = config.sleep ?? defaultSleep;
   const pollIntervalMs = config.pollIntervalMs ?? KUBERNETES_POLL_INTERVAL_MS;
@@ -2572,6 +2598,7 @@ export function createFetchKubernetesIo(opts: {
   removeDir: (dir: string, timeoutMs: number) => Promise<void>;
   fetchImpl?: typeof fetch;
 }): KubernetesRunnerIo {
+  kubernetesConstructions += 1;
   const apiBase = opts.apiBase ?? "https://kubernetes.default.svc";
   const doFetch = opts.fetchImpl ?? fetch;
   return {

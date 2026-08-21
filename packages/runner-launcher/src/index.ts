@@ -11,6 +11,82 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
+// ==================================================================================================
+// THE ONE PROCESS SPAWNER, AND THE LEDGER THAT MAKES "NOTHING WAS SPAWNED" AN ASSERTION
+// ==================================================================================================
+/**
+ * M23.6 CLAUSE 1 — "no plugin spawns a Docker CLI on the Kubernetes path", stated as a test that
+ * "asserts the injected process spawner was NEVER called … asserted on the recorded spawn (argv),
+ * not on a mock's call count, so a renamed binary cannot pass it".
+ *
+ * THERE WAS NO SUCH SPAWNER TO ASSERT ON. Every `execFile` in this package went straight to the
+ * module-private `execFileAsync` above, `RunnerLauncherConfig` exposes only `dockerBinary`, and the
+ * Kubernetes adapter is never handed it — so a spawn on the Kubernetes path had nothing recording
+ * it anywhere. Measured before this existed: a real `execFile(dockerBinary, ["version", …])` added
+ * to `resolveRunnerLauncher`'s KUBERNETES branch left `pnpm -w test` green (72/72), and a marker
+ * file proved the mutation was reached six times across the suite.
+ *
+ * WHY A LEDGER AND NOT AN INJECTED FUNCTION. An injectable spawner on `RunnerLauncherConfig` would
+ * be a plugin-facing, server-injected field naming an arbitrary callable — a new hole in exactly the
+ * surface `dockerBinary`'s own doc spends three paragraphs bounding. A module-level ledger needs no
+ * new configuration, cannot be reached by a plugin, and records what actually happened rather than
+ * what a mock was asked for.
+ *
+ * WHAT IS RECORDED, AND WHAT DELIBERATELY IS NOT. The BINARY (so `podman`, `/usr/local/bin/docker`
+ * or any rename is visible by name) and `argv[0]`, which for every call this package makes is a
+ * subcommand — `create`, `cp`, `start`, `rm`, `ps`. NOT the rest of the argv: M23.1a moved
+ * credentials out of argv into an `--env-file` precisely because argv leaks, and a permanent
+ * in-memory copy of every argv would put some of that back. `argv.length` is kept so a test can tell
+ * two spawns of the same subcommand apart.
+ *
+ * BOUNDED, because an unbounded in-process array that grows once per container operation for the
+ * life of a long-running worker is the shape this milestone has already fixed twice elsewhere.
+ */
+export interface RunnerSpawnRecord {
+  /** The binary as it was passed to `execFile` — a rename shows up here and nowhere else. */
+  readonly file: string;
+  /** `argv[0]`: a container-CLI subcommand for every call this package makes. */
+  readonly verb: string;
+  readonly argvLength: number;
+}
+
+/** How many records the ledger keeps. Ring-bounded; {@link runnerSpawnCount} is exact regardless. */
+export const RUNNER_SPAWN_LEDGER_MAX = 200;
+
+const spawnLedger: RunnerSpawnRecord[] = [];
+let spawnTotal = 0;
+
+/** Every process this package has spawned, most recent last, capped at {@link RUNNER_SPAWN_LEDGER_MAX}. */
+export function runnerSpawns(): readonly RunnerSpawnRecord[] {
+  return spawnLedger;
+}
+
+/** Total spawns since process start — exact, and unaffected by the ledger's cap. */
+export function runnerSpawnCount(): number {
+  return spawnTotal;
+}
+
+/** Clears the ledger (not the total). For a test that wants a clean window; harmless in production. */
+export function clearRunnerSpawns(): void {
+  spawnLedger.length = 0;
+}
+
+/**
+ * THE ONLY PLACE THIS PACKAGE STARTS A PROCESS. `execFileAsync` above is referenced exactly once,
+ * here — asserted as a source census by `no-docker-on-kubernetes.test.ts`, because a second direct
+ * call would be a spawn no ledger sees and therefore a clause-1 gate that silently stopped gating.
+ */
+function spawnRunnerProcess(
+  file: string,
+  argv: readonly string[],
+  options: { timeout?: number; maxBuffer?: number }
+): Promise<{ stdout: string; stderr: string }> {
+  spawnTotal += 1;
+  spawnLedger.push({ file, verb: argv[0] ?? "", argvLength: argv.length });
+  if (spawnLedger.length > RUNNER_SPAWN_LEDGER_MAX) spawnLedger.shift();
+  return execFileAsync(file, [...argv], options);
+}
+
 /** `NODE_DEBUG=scp-runner-launcher` to see swallowed teardown/reap failures. Both are best-effort
  *  by design (see {@link RunnerLauncher.reap} and the teardown `.catch`), so this is the only trace
  *  of them that exists — a swallow with nowhere for the reason to go is invisible, not handled. */
@@ -3520,7 +3596,7 @@ export function createDockerRunnerLauncher(
           timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
           what: "reap `docker ps`",
           work: (timeout) =>
-            execFileAsync(
+            spawnRunnerProcess(
               dockerBinary,
               [
                 "ps",
@@ -3566,7 +3642,7 @@ export function createDockerRunnerLauncher(
         await withStepBound({
           timeoutMs: RUNNER_REMOVE_TIMEOUT_MS,
           what: `reap \`docker rm -f ${id}\``,
-          work: (timeout) => execFileAsync(dockerBinary, ["rm", "-f", id], { timeout })
+          work: (timeout) => spawnRunnerProcess(dockerBinary, ["rm", "-f", id], { timeout })
         });
         removed.push(id);
       } catch (cause) {
@@ -3765,7 +3841,7 @@ export function createDockerRunnerLauncher(
             kind: "docker",
             call,
             what: `'${step}' (${argv[0] ?? ""})`,
-            work: (timeout) => execFileAsync(dockerBinary, argv, { ...options, timeout })
+            work: (timeout) => spawnRunnerProcess(dockerBinary, argv, { ...options, timeout })
           });
         } catch (cause) {
           throw new RunnerLaunchError({
@@ -3798,7 +3874,7 @@ export function createDockerRunnerLauncher(
       ): Promise<{ stdout: string; stderr: string }> => {
         try {
           return await runDeadline.spend(step, argv, (timeout) =>
-            execFileAsync(dockerBinary, argv, { ...options, timeout })
+            spawnRunnerProcess(dockerBinary, argv, { ...options, timeout })
           );
         } catch (cause) {
           // ALREADY THE PORT'S OWN VERDICT — a refusal before the step was issued, or an
@@ -4199,6 +4275,7 @@ export {
   isKubernetesLabelValue,
   jobManifest,
   kubernetesContainerStarted,
+  kubernetesConstructionCount,
   kubernetesJobTermination,
   kubernetesRbacKey,
   kubernetesRbacRequirement,

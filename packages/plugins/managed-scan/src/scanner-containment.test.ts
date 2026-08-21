@@ -130,7 +130,9 @@ const SHELL_INVOCATION = new RegExp(
 
 /** A scanner as the COMMAND argument of a Node process-spawning call. */
 const NODE_SPAWN_INVOCATION = new RegExp(
-  String.raw`\b(?:execFile|execFileSync|execFileAsync|spawn|spawnSync|exec|execSync)\s*\(\s*["'\`](?:${SCANNER_BINARIES})["'\`]`
+  // `spawnRunnerProcess` is in this list because M23.6 clause 1 made it the package's ONLY spawner:
+  // a scanner reached through it would otherwise be a scanner invocation this gate stopped seeing.
+  String.raw`\b(?:execFile|execFileSync|execFileAsync|spawnRunnerProcess|spawn|spawnSync|exec|execSync)\s*\(\s*["'\`](?:${SCANNER_BINARIES})["'\`]`
 );
 
 export function invocationHits(text: string): string[] {
@@ -254,8 +256,13 @@ describe("scanner containment: the scanners exist ONLY in the scp-runner-scan im
       resolve(REPO_ROOT, "packages/plugins/managed-scan/src/index.ts")
     );
     expect(pluginSource).toMatch(/resolveLauncher\(\{[^}]*\}\)\.run\(\{/);
+    // `spawnRunnerProcess`, NOT `execFileAsync`, SINCE M23.6 CLAUSE 1. Every spawn in the package
+    // now goes through one recorded function so that "nothing was spawned on the Kubernetes path"
+    // can be an assertion rather than a hope; `no-docker-on-kubernetes.test.ts` censuses that
+    // `execFileAsync` is referenced exactly once, inside it. The claim this line makes is unchanged:
+    // the port still hands the container CLI an argv.
     expect(readStripped(resolve(REPO_ROOT, "packages/runner-launcher/src/index.ts"))).toMatch(
-      /execFileAsync\(\s*\n?\s*dockerBinary,/
+      /spawnRunnerProcess\(\s*\n?\s*dockerBinary,/
     );
   });
 });
