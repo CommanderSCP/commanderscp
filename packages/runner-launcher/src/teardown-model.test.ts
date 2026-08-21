@@ -225,7 +225,9 @@ describe("M23.5 HIGH-2: what teardown COSTS is counted from the code, not assert
       runnerTeardownWorstCaseMs("docker")
     );
     expect(runnerPostDeadlineMs("kubernetes")).toBeGreaterThan(runnerPostDeadlineMs("docker"));
-    expect(runnerRunBoundMs("kubernetes", 1_000)).toBeGreaterThan(runnerRunBoundMs("docker", 1_000));
+    expect(runnerRunBoundMs("kubernetes", 1_000)).toBeGreaterThan(
+      runnerRunBoundMs("docker", 1_000)
+    );
     expect(runnerReapGraceMs("kubernetes")).toBeGreaterThan(runnerReapGraceMs("docker"));
   });
 
@@ -236,7 +238,9 @@ describe("M23.5 HIGH-2: what teardown COSTS is counted from the code, not assert
     expect(RUNNER_BOUNDED_CALL_WORST_CASE_MS).toBe(
       RUNNER_REMOVE_TIMEOUT_MS + RUNNER_STEP_ABANDON_GRACE_MS
     );
-    for (const kind of Object.keys(RUNNER_TEARDOWN_STEPS) as (keyof typeof RUNNER_TEARDOWN_STEPS)[]) {
+    for (const kind of Object.keys(
+      RUNNER_TEARDOWN_STEPS
+    ) as (keyof typeof RUNNER_TEARDOWN_STEPS)[]) {
       expect(runnerTeardownWorstCaseMs(kind)).toBe(
         RUNNER_TEARDOWN_STEPS[kind] * RUNNER_BOUNDED_CALL_WORST_CASE_MS
       );

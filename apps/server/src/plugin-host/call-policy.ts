@@ -1,8 +1,4 @@
-import {
-  MANAGED_RUN_TIMEOUT_MAX_MS,
-  RUNNER_TEARDOWN_STEPS,
-  runnerPostDeadlineMs
-} from "@scp/runner-launcher";
+import { MANAGED_RUN_TIMEOUT_MAX_MS, runnerPostDeadlineMs } from "@scp/runner-launcher";
 import type { RunnerLauncherKind } from "@scp/runner-launcher";
 import { MANIFEST_BY_MODULE } from "./plugin-manifests.js";
 
@@ -151,7 +147,7 @@ export const MANAGED_EXECUTOR_MODULES = ["managed-iac", "managed-scan", "managed
  * to three with every test still green and nothing anywhere knowing it had.
  *
  * SO THE GRACE IS DERIVED FROM THE ADAPTER IN USE, and the model it derives from lives in the
- * launcher, where the teardown does: {@link RUNNER_TEARDOWN_STEPS} declares how many bounded calls
+ * launcher, where the teardown does: `RUNNER_TEARDOWN_STEPS` declares how many bounded calls
  * each adapter's `finally` issues, `teardown-model.test.ts` COUNTS what each one actually issues,
  * and `runnerPostDeadlineMs` turns the count into milliseconds. A fourth teardown step reddens that
  * census by name; correcting the declared count then moves this grace, the reap stamp and the

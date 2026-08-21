@@ -332,10 +332,23 @@ export interface RunnerSpec {
    * by a padding constant. The clamp now runs inside `run()`, so a caller cannot skip it and a
    * second adapter cannot forget it.
    *
-   * WHAT IS DELIBERATELY OUTSIDE IT: the `finally` teardown (`docker rm -f`), which must still run
-   * after the budget is gone and keeps its own {@link RUNNER_REMOVE_TIMEOUT_MS}; and `reap()`,
-   * which is not awaited at all (see {@link RunnerLauncher.reap}). `run()` therefore returns within
-   * `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`, and that sum is what every outer budget must cover.
+   * AND SINCE M23.5 SO DOES THE DEADLINE ITSELF, for exactly the reason that sentence gives. The
+   * clamp was hoisted into `run()`; the per-step deadline was not, and the second adapter forgot it
+   * on the two verbs that move bytes — `copyDir` and `removeDir` had no bound at all, so a copy onto
+   * a wedged network volume made `run()` never return. {@link createRunDeadline} is that same
+   * argument applied to the thing it was originally made about, and {@link withStepBound} is what
+   * makes a bound true of work that ignores it.
+   *
+   * WHAT IS DELIBERATELY OUTSIDE IT: the `finally` teardown, which must still run after the budget
+   * is gone and keeps its own {@link RUNNER_REMOVE_TIMEOUT_MS} per call; and `reap()`, which is not
+   * awaited at all (see {@link RunnerLauncher.reap}).
+   *
+   * THE BOUND `run()` IS HELD TO IS {@link runnerRunBoundMs}`(kind, timeoutMs)`, AND THAT SUM IS
+   * WHAT EVERY OUTER BUDGET MUST COVER. This used to read `timeoutMs + RUNNER_REMOVE_TIMEOUT_MS`,
+   * which was a sentence about ONE adapter's ONE-call teardown, written when there was one adapter,
+   * and FALSE of the Kubernetes adapter — whose teardown is three calls. The bound is now computed
+   * from the teardown model ({@link RUNNER_TEARDOWN_STEPS}) rather than asserted in prose, and the
+   * model is counted against the code by `teardown-model.test.ts`.
    */
   timeoutMs: number;
   /** Per-call `maxBuffer`. 16 MiB / 32 MiB / 8 MiB respectively — NOT one shared default. */

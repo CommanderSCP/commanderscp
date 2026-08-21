@@ -120,11 +120,13 @@ interface PortOp {
   path?: string;
 }
 
-function cluster(opts: {
-  hangCopyDir?: boolean;
-  hangRemoveDir?: boolean;
-  slowCreateMs?: number;
-} = {}) {
+function cluster(
+  opts: {
+    hangCopyDir?: boolean;
+    hangRemoveDir?: boolean;
+    slowCreateMs?: number;
+  } = {}
+) {
   const ops: PortOp[] = [];
   let uid = 0;
 
@@ -258,10 +260,9 @@ describe("M23.5 HIGH-1: a Kubernetes `copyDir` that never settles cannot hold `r
     // AND THE TIGHT ONE, which is what actually catches a regression: the budget, one abandonment
     // grace, and a teardown that answers immediately. The loose bound above would be satisfied by a
     // run that hung for a minute and a half.
-    expect(
-      elapsed,
-      `the hung copy-in held run() for ${elapsed}ms of a 300ms budget`
-    ).toBeLessThan(300 + RUNNER_STEP_ABANDON_GRACE_MS + 500);
+    expect(elapsed, `the hung copy-in held run() for ${elapsed}ms of a 300ms budget`).toBeLessThan(
+      300 + RUNNER_STEP_ABANDON_GRACE_MS + 500
+    );
     // NOT VACUOUS: it really did reach the copy and really did spend the budget getting there.
     expect(elapsed).toBeGreaterThanOrEqual(300);
     expect(c.ops.filter((o) => o.kind === "copyDir")).toHaveLength(1);
@@ -319,8 +320,10 @@ describe("M23.5 HIGH-1: a Kubernetes `copyDir` that never settles cannot hold `r
       .run(spec({ timeoutMs: 200 }))
       .catch((e: unknown) => e);
 
-    expect(c.ops.filter((o) => o.kind === "copyDir"), "the copy was issued with a spent budget")
-      .toStrictEqual([]);
+    expect(
+      c.ops.filter((o) => o.kind === "copyDir"),
+      "the copy was issued with a spent budget"
+    ).toStrictEqual([]);
     const err = failed as InstanceType<typeof RunnerLaunchError>;
     expect(err).toBeInstanceOf(RunnerLaunchError);
     expect(err.deadlineExceeded).toBe(true);
@@ -343,8 +346,10 @@ describe("M23.5 HIGH-1: a Kubernetes `copyDir` that never settles cannot hold `r
       new Set(["request", "copyDir", "removeDir"])
     );
     for (const op of c.ops) {
-      expect(op.timeoutMs, `${op.kind} '${op.step}' was issued with ${op.timeoutMs}ms`)
-        .toBeGreaterThan(0);
+      expect(
+        op.timeoutMs,
+        `${op.kind} '${op.step}' was issued with ${op.timeoutMs}ms`
+      ).toBeGreaterThan(0);
     }
     // …and the teardown's bound is its OWN, deliberately outside the run budget, because the
     // commonest reason to reach it is that the budget is what ran out.
