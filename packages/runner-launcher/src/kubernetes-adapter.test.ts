@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   KUBERNETES_POLL_INTERVAL_MS,
   LAUNCHER_OWNER_ID,
+  RUNNER_MIN_STEP_BUDGET_MS,
   RUNNER_OUTCOME_UNKNOWN_CODE,
   RUNNER_LAUNCHER_DEADLINE_ANNOTATION,
   RUNNER_LAUNCHER_OWNER_LABEL,
@@ -1483,6 +1484,130 @@ describe("M23.5 pass 18: the verdict may not assert what this run did not observ
     expect(result.failure!.detail).toContain("is NOT KNOWN");
     // AND IT NAMES THE WINDOW, because "we could not see" without "for how long" is not evidence.
     expect(result.failure!.detail).toMatch(/saw NOTHING FOR THE LAST \d+ms/);
+  });
+
+  /**
+   * A TRANSPORT THAT CONSUMES ALL BUT `shortfallMs` OF THE BOUND IT WAS HANDED, AND THEN REJECTS —
+   * M23.5 verification pass 20, and the ONE fixture in this file that does not let real time decide
+   * how much of the bound was used.
+   *
+   * WHY IT HAS TO MOVE THE CLOCK ITSELF. Every other fixture here waits `req.timeoutMs + 5` on a
+   * real `setTimeout`, so it always OVERSHOOTS the bound — and `Date.now() - issuedAt >= boundGiven`
+   * is true for an overshoot with or without the slack `api()` subtracts. That is exactly why
+   * removing the slack survived 392 unit and 20 kind cases. The case that separates them is an
+   * UNDERSHOOT of less than a millisecond, which is what a real `AbortSignal.timeout` produces: it
+   * fires on a libuv timer and `issuedAt`/`Date.now()` come from the wall clock, the sub-millisecond
+   * disagreement D4 already measured turning a budget kill into a verdict about the tenant's runner.
+   * A real `setTimeout` cannot be asked to fire early, so the clock is faked and stepped by an exact
+   * amount instead — `toFake: ["Date"]` only, so every `setTimeout` in the adapter (the poll sleep,
+   * `withStepBound`'s abandon timer) is still a real one.
+   */
+  function boundConsumingPodGetIo(
+    inner: KubernetesRunnerIo,
+    opts: { letThrough: number; shortfallMs: number }
+  ): KubernetesRunnerIo {
+    let through = 0;
+    return {
+      ...inner,
+      request: async (req: KubernetesApiRequest) => {
+        if (req.method === "GET" && req.path.startsWith(`/api/v1/namespaces/${NAMESPACE}/pods?`)) {
+          if (through >= opts.letThrough) {
+            // THE WHOLE POINT, IN ONE LINE: the clock lands STRICTLY SHORT of the bound.
+            vi.setSystemTime(Date.now() + req.timeoutMs - opts.shortfallMs);
+            const err = new Error("The operation was aborted due to timeout");
+            err.name = "TimeoutError";
+            throw err;
+          }
+          through += 1;
+        }
+        return inner.request(req);
+      }
+    };
+  }
+
+  /** Both arms below run under a frozen clock that only `boundConsumingPodGetIo` moves. */
+  async function withFrozenClock<T>(body: () => Promise<T>): Promise<T> {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      return await body();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("PASS 20: A REQUEST THAT MISSED ITS BOUND BY LESS THAN A MILLISECOND STILL RAN OUT OF BUDGET", async () => {
+    /**
+     * THE MUTATION THAT SURVIVED EVERYTHING. `api()` asks whether the request consumed the bound it
+     * was handed:
+     *
+     *     Date.now() - issuedAt >= boundGiven - RUNNER_MIN_STEP_BUDGET_MS
+     *
+     * and dropping the `- RUNNER_MIN_STEP_BUDGET_MS` passed 392/392 unit and 20/20 kind, because
+     * every fixture in both suites overshoots its bound on a real timer. A real transport does not:
+     * an `AbortSignal.timeout` fires on a libuv timer while `issuedAt` and `Date.now()` are wall
+     * clock, so the measured elapsed can land a hair SHORT of the bound that ended the request.
+     *
+     * WITHOUT THE SLACK THAT MISS BECOMES `deadlineExceeded: false`, the verdict falls out of arm 7
+     * into arm 8, and the record turns from "the runner container never started within the whole-run
+     * budget … NOTHING RAN" into `outcome-unknown` — "check the target's real state before
+     * re-running". A FALSE UNKNOWN sends an operator to inspect infrastructure after a transient,
+     * which is the same family of defect as a verdict that depended on WHERE the deadline was
+     * discovered, one order of magnitude smaller.
+     *
+     * ONE MILLISECOND SHORT, DELIBERATELY: inside `RUNNER_MIN_STEP_BUDGET_MS`, so the slack is what
+     * decides the answer and nothing else is.
+     */
+    const shortfallMs = 1;
+    expect(
+      shortfallMs > 0 && shortfallMs < RUNNER_MIN_STEP_BUDGET_MS,
+      "this case is only about the slack while the shortfall lies strictly inside it"
+    ).toBe(true);
+
+    const result = await withFrozenClock(async () => {
+      const c = cluster();
+      c.setPod(undefined);
+      // ONE READ LANDS, SO THE VERDICT IS ARM 7's TO MAKE (`observed`), and `pollIntervalMs` is
+      // large enough that the run is still WATCHING when the budget goes — otherwise arm 7b answers
+      // and this case would be measuring the staleness window instead of the slack.
+      return c
+        .launcher({
+          io: boundConsumingPodGetIo(c.io, { letThrough: 1, shortfallMs }),
+          pollIntervalMs: 500
+        })
+        .run(spec({ timeoutMs: 200, copyOut: undefined }));
+    });
+
+    expect(
+      result.failure!.kind,
+      `a request that missed its bound by ${shortfallMs}ms was classified ${result.failure!.kind}: ${result.failure!.detail}`
+    ).toBe("spawn-failed");
+    expect(result.failure!.code).toBe("RunnerContainerNeverStarted");
+    expect(result.failure!.deadlineExceeded).toBe(true);
+    expect(result.failure!.detail).toContain("NOTHING RAN");
+    // AND IT IS NOT THE SENTENCE THE MUTATION PRODUCES.
+    expect(result.failure!.detail).not.toContain("is NOT KNOWN");
+  });
+
+  it("PASS 20: THE NEGATIVE CONTROL — a request that broke well inside its bound did NOT run out", async () => {
+    // WITHOUT THIS ARM, `deadlineExceeded = true` passes the case above — and S2's whole finding
+    // (a reset with budget left is not a budget exhaustion) would stop being pinned at the one site
+    // that can now tell the two apart by a measured margin rather than by which fixture was used.
+    // 60ms of a 200ms bound is six times `RUNNER_MIN_STEP_BUDGET_MS`, so 60ms of budget really is
+    // left: this transport broke, it did not run out of time.
+    const result = await withFrozenClock(async () => {
+      const c = cluster();
+      c.setPod(undefined);
+      return c
+        .launcher({
+          io: boundConsumingPodGetIo(c.io, { letThrough: 1, shortfallMs: 60 }),
+          pollIntervalMs: 500
+        })
+        .run(spec({ timeoutMs: 200, copyOut: undefined }));
+    });
+
+    expect(result.failure!.kind).toBe("outcome-unknown");
+    expect(result.failure!.deadlineExceeded).toBe(false);
+    expect(result.failure!.detail).toContain("still able to start one");
   });
 
   it("S2 — A TRANSPORT FAILURE WITH BUDGET LEFT IS NOT A BUDGET EXHAUSTION", async () => {
