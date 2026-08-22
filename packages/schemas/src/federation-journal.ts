@@ -1,5 +1,6 @@
 import { createHash, sign as cryptoSign, verify as cryptoVerify } from "node:crypto";
 import type { SyncJournalEntry } from "./federation.js";
+import { canonicalJson, canonicalizeDeep } from "./canonical-json.js";
 
 /**
  * Sync-journal hash-chain + Ed25519 signing/verification (DESIGN.md §13) — deliberately NOT part
@@ -26,35 +27,24 @@ import type { SyncJournalEntry } from "./federation.js";
  *  `audit-chain.ts`'s `AUDIT_GENESIS_HASH` exactly (32 zero bytes, hex-encoded). */
 export const JOURNAL_GENESIS_HASH = "0".repeat(64);
 
-/** Deterministic JSON serialization (recursively sorted object keys). Defined here, ahead of
- *  `canonicalizeJournalEntry`, because that function NEEDS it — SECURITY-SENSITIVE bug this
- *  fixes (caught by M6's own integration tests): `payload` is a free-form nested object that
- *  round-trips through a Postgres `jsonb` column, which does NOT guarantee preserving the
- *  original key insertion order. A row_hash computed with plain `JSON.stringify` at WRITE time
- *  (using the in-memory object's original key order) would then MISMATCH the same computation
- *  recomputed at VERIFY time against the entry as read back from the database — a false-positive
- *  "tampered" rejection on every single legitimately unmodified row, the moment it round-trips
- *  through storage. Recursively sorting keys makes the canonical form independent of any
- *  particular JSON serializer's or database driver's key ordering. Duplicated (rather than
- *  imported) from `apps/server/src/graph/objects-repo.ts`'s identical helper because this package
- *  must stay server-independent (BUILD_AND_TEST.md §3 module boundaries — `@scp/schemas` has no
- *  dependency on `apps/server`). */
-export function canonicalStringify(value: unknown): string {
-  return JSON.stringify(sortKeysDeep(value));
-}
-
-function sortKeysDeep(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (value !== null && typeof value === "object") {
-    return Object.keys(value as Record<string, unknown>)
-      .sort()
-      .reduce<Record<string, unknown>>((acc, key) => {
-        acc[key] = sortKeysDeep((value as Record<string, unknown>)[key]);
-        return acc;
-      }, {});
-  }
-  return value;
-}
+/** Deterministic JSON serialization (recursively sorted object keys) — an alias for the repo's
+ *  single canonicalizer, `./canonical-json.ts` (read its doc comment; the reasoning lives there).
+ *
+ *  WHY `canonicalizeJournalEntry` NEEDS IT — SECURITY-SENSITIVE bug this fixes (caught by M6's own
+ *  integration tests): `payload` is a free-form nested object that round-trips through a Postgres
+ *  `jsonb` column, which does NOT guarantee preserving the original key insertion order. A
+ *  row_hash computed with plain `JSON.stringify` at WRITE time (using the in-memory object's
+ *  original key order) would then MISMATCH the same computation recomputed at VERIFY time against
+ *  the entry as read back from the database — a false-positive "tampered" rejection on every
+ *  single legitimately unmodified row, the moment it round-trips through storage.
+ *
+ *  This used to be a local copy of that helper, "duplicated (rather than imported) from
+ *  `apps/server/src/graph/objects-repo.ts`'s identical helper because this package must stay
+ *  server-independent". The module boundary was right; the duplication was not the way to keep it,
+ *  and it is why a canonicalization defect that silently dropped `__proto__` subtrees — making two
+ *  materially different payloads share one `rowHash` and one Ed25519 signature — existed in five
+ *  files simultaneously. The shared home is inside THIS package, so the boundary still holds. */
+export const canonicalStringify = canonicalJson;
 
 /** Deterministic canonical string for the *content* of a journal entry (everything except
  *  `rowHash`/`signature`, which are derived from / computed over this). Field order fixed at the
@@ -68,7 +58,7 @@ export function canonicalizeJournalEntry(
     originDomainId: entry.originDomainId,
     sequence: entry.sequence,
     entryKind: entry.entryKind,
-    payload: sortKeysDeep(entry.payload),
+    payload: canonicalizeDeep(entry.payload),
     contentHash: entry.contentHash,
     baseRevision: entry.baseRevision,
     conflict: entry.conflict,

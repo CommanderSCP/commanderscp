@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { atLineStart } from "@scp/source-census";
@@ -86,6 +86,76 @@ describe("skopeo pin: every copy of the pin agrees with tools/skopeo/pin.env", (
     expect(dockerfile).toMatch(
       atLineStart("COPY tools/skopeo/policy.json /etc/containers/policy.json")
     );
+  });
+
+  it("the image BUILD can be served by the mirror — the fourth consumer form, which had no guard", () => {
+    // ADDED 2026-08-18, after the pinned skopeo digest was DELETED from quay.io (404) and took every
+    // E2E job red at image build, five steps before a test ran. The second quay.io outage to do so.
+    //
+    // `tools/ci-mirror/images.list` mirrors every third-party image to GHCR so CI never pulls live,
+    // and enumerated three consumer forms. A DIGEST-PINNED `FROM` is a fourth, and neither mechanism
+    // reaches it: a `FROM …@sha256:…` resolves AT THE REGISTRY, so a local re-tag is invisible to it,
+    // and the `SCP_*_IMAGE_REF` vars are read by the installer scripts rather than by BuildKit. The
+    // census that produced forms 1-3 was a census of TEST consumers, and an image build is not a test.
+    //
+    // THIS ASSERTS THE THREE HALVES TOGETHER, because any one of them alone is silently inert: the
+    // Dockerfile must take the image from an ARG, compose must pass that ARG through, and the mirror
+    // must export it under that exact name.
+    const dockerfile = readRepoFile("Dockerfile");
+    expect(dockerfile).toMatch(atLineStart("FROM ${SKOPEO_IMAGE} AS skopeo"));
+
+    // A CENSUS, NOT A CASE — and this is the correction that matters. The first version of this
+    // guard read `deploy/compose/docker-compose.yml` BY NAME, and a second compose file
+    // (`docker-compose.federation.yml`, which e2e-m6 builds the very same Dockerfile with) had no
+    // `build.args` at all. One file fixed, one file still pulling quay.io live, and a green guard
+    // over the top. The property is "every compose file that BUILDS the root Dockerfile", so the
+    // population is discovered from disk rather than typed here.
+    const composeDir = path.join(REPO_ROOT, "deploy/compose");
+    const builders = readdirSync(composeDir)
+      .filter((name: string) => name.endsWith(".yml") || name.endsWith(".yaml"))
+      .map((name: string) => ({
+        rel: `deploy/compose/${name}`,
+        text: readFileSync(path.join(composeDir, name), "utf8")
+      }))
+      .filter((f: { rel: string; text: string }) => /dockerfile:\s*Dockerfile\s*$/m.test(f.text));
+
+    // Anti-vacuity: a glob that matched nothing would satisfy every assertion below.
+    expect(builders.length).toBeGreaterThanOrEqual(2);
+
+    for (const { rel, text } of builders) {
+      // PASS-THROUGH FORM, and the shape is the assertion. `- SKOPEO_IMAGE` with no value means
+      // "take it from the environment, and omit the arg entirely when unset", so a developer running
+      // `docker compose up` with no mirror still gets the Dockerfile's pinned default. Writing
+      // `SKOPEO_IMAGE=${SCP_SKOPEO_IMAGE_REF}` would pass an EMPTY string when unset and break `FROM`
+      // for everyone outside CI — which is why this pins the form and not merely the presence.
+      expect(text, `${rel} builds the root Dockerfile but does not pass SKOPEO_IMAGE`).toMatch(
+        /^\s+- SKOPEO_IMAGE\s*$/m
+      );
+      expect(text, `${rel} builds the root Dockerfile but does not pass COSIGN_IMAGE`).toMatch(
+        /^\s+- COSIGN_IMAGE\s*$/m
+      );
+      // COMMENTS STRIPPED FIRST, and that is not fussiness — the un-stripped version of this
+      // assertion FAILED on its own explanatory comment, which spells out the broken form in order to
+      // warn against it. That is the repo's documented hazard in miniature: prose describing a hazard
+      // satisfied a check meant to detect it. The guard must read the YAML, not the essay.
+      const yamlOnly = text
+        .split("\n")
+        .filter((line: string) => !line.trimStart().startsWith("#"))
+        .join("\n");
+      expect(yamlOnly, `${rel} uses the empty-when-unset interpolation form`).not.toMatch(
+        /SKOPEO_IMAGE=\$\{/
+      );
+      expect(yamlOnly, `${rel} uses the empty-when-unset interpolation form`).not.toMatch(
+        /COSIGN_IMAGE=\$\{/
+      );
+    }
+
+    // ...and the mirror exports it under the Dockerfile's own ARG name. Exporting only the
+    // `SCP_`-prefixed ref — which is what shipped — leaves the build pulling upstream while every
+    // other consumer is served from the mirror, which is exactly how this survived one outage.
+    const mirror = readRepoFile("scripts/ci-mirror.sh");
+    expect(mirror).toContain('echo "SKOPEO_IMAGE=${skopeo_ref}"');
+    expect(mirror).toContain('echo "COSIGN_IMAGE=${cosign_ref}"');
   });
 
   it("the wrapper runs the vendored binary against the vendored loader, from the libexec dir", () => {

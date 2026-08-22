@@ -44,6 +44,7 @@ import type {
   ImportBundleRequest,
   // M13.2/M13.3b — the two scan surfaces whose table rows are now exported formatters (Y2).
   InstanceScanFloor,
+  InstanceScanExclusionAdmission,
   ScanDbStatus,
   RefreshScanDbResponse,
   LoadScanDbResponse,
@@ -499,6 +500,26 @@ export function instanceScanFloorRow(item: InstanceScanFloor): Record<string, st
     maxMedium: isAbsent(item.maxMedium) ? "-" : String(item.maxMedium),
     maxLow: isAbsent(item.maxLow) ? "-" : String(item.maxLow),
     note: item.note ?? ""
+  };
+}
+
+/**
+ * One instance-scoped exclusion admission as a table row (`scp scan-exclusion-admissions list`) —
+ * same lift, same reason as `instanceScanFloorRow`.
+ *
+ * THE FABRICATION `isAbsent` STOPS HERE is the reverse of the floor's: an admission row's mere
+ * EXISTENCE is the grant, so there is no value to print `undefined` in — but `note` is nullable and
+ * a literal `null` in an operator's audit column reads as a value somebody authored.
+ */
+export function instanceScanExclusionAdmissionRow(
+  item: InstanceScanExclusionAdmission
+): Record<string, string> {
+  return {
+    tier: item.tier,
+    class: item.class,
+    origin: item.origin,
+    note: isAbsent(item.note) ? "" : String(item.note),
+    updatedAt: isAbsent(item.updatedAt) ? "-" : String(item.updatedAt)
   };
 }
 
@@ -2345,6 +2366,79 @@ export function buildProgram(): Command {
       printResult(updated, opts.output, (item) => objectRow(item as GraphObject));
     });
 
+  // `scp component scan-requirements <idOrUrn>` — M22.8, charter principle 3 (API -> SDK -> CLI).
+  //
+  // WHICH SCAN RULES ARE IN FORCE for this component: the resolved six-tier severity ceiling with
+  // every tier that contributed to it, and which exclusion classes are admitted and where a clause
+  // of each would take effect.
+  //
+  // THIS IS THE POLLABLE ONE. `scp policy evaluate` runs the real orchestrator and writes a Decision
+  // row per invocation with no write suppression; a watch loop on it recreates the amplification
+  // ADR-0024 §D0 exists over. This command reads and writes nothing.
+  //
+  // The table view answers the one question that has no other answer today — "will the exclusion I
+  // am about to author do anything?" — by printing each class's `effectiveAtTiers`. An EMPTY column
+  // there is the shipped default (admission is empty at every tier) and is the state that was
+  // previously invisible from every surface.
+  componentCmd
+    .command("scan-requirements <idOrUrn>")
+    .description(
+      "Show the scan rules in force for a component — resolved severity ceiling, its contributors, and which exclusion classes are admitted (writes no Decision)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (idOrUrn: string, opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const result = await client.components.scanRequirements(idOrUrn);
+      if (opts.output === "json") {
+        printResult(result, "json", () => ({}));
+        return;
+      }
+      const t = result.threshold;
+      console.log(`component: ${result.componentUrn}`);
+      console.log(
+        `effective ceiling: ${
+          t
+            ? JSON.stringify(t.threshold)
+            : "(none — no tier sets one; the scan control falls back to its own binding config)"
+        }`
+      );
+      if (t && t.contributors.length > 0) {
+        console.log("contributors:");
+        printResult(t.contributors, "table", (item) => {
+          const c = item as (typeof t.contributors)[number];
+          return { tier: c.tier, source: c.source, threshold: JSON.stringify(c.threshold) };
+        });
+      }
+      console.log("exclusion classes:");
+      printResult(result.admittedExclusionClasses, "table", (item) => {
+        const c = item as (typeof result.admittedExclusionClasses)[number];
+        return {
+          class: c.class,
+          admittedBy: c.admittedBy.map((a) => a.tier).join(",") || "(nobody)",
+          effectiveAtTiers: c.effectiveAtTiers.join(",") || "(nowhere — inert)"
+        };
+      });
+      if (result.exclusionClauses.length > 0) {
+        console.log("admitted clauses:");
+        printResult(result.exclusionClauses, "table", (item) => {
+          const c = item as (typeof result.exclusionClauses)[number];
+          return { class: c.clause.class, tier: c.tier, source: c.source };
+        });
+      }
+      if (result.unevaluatedConditions.length > 0) {
+        // Named, never folded in silently: this surface evaluates NO CEL (there is no change to
+        // evaluate against), so each of these was treated conservatively — kept for the CEILING,
+        // dropped from the EXCLUSION set. A reader who cannot see them cannot tell a conservative
+        // answer from a confident one.
+        console.log("conditions NOT evaluated here (no change to evaluate against):");
+        printResult(result.unevaluatedConditions, "table", (item) => {
+          const c = item as (typeof result.unevaluatedConditions)[number];
+          return { policy: c.name, condition: c.condition };
+        });
+      }
+    });
+
   // `scp component merge <survivor> --loser <loser>` — driving-case merge (M12 P5d): fold a freshly-
   // imported, binding-only component into <survivor> (moves its bindings, soft-deletes it). 409 on a
   // binding-type collision (relabel one first via `scp executor repurpose`).
@@ -3445,6 +3539,141 @@ export function buildProgram(): Command {
           operatorToken
         );
         printResult(floor, opts.output, (item) => item as unknown as Record<string, string>);
+      }
+    );
+
+  // -------------------------------------------------------------------------------------
+  // instance scan-exclusion-admissions (M22.9 — ADR-0033 §1, §7a). The two ABOVE-org rungs of the
+  // exclusion dimension's monotone AND: a clause authored at any tier has effect only if EVERY
+  // represented tier strictly above it admits that clause's CLASS, and `platform` + `trust_domain`
+  // are ALWAYS represented. No policy can contribute those two — a policy anchors at a graph object
+  // and the containment chain is org-rooted — so with this table empty (the shipped default) every
+  // exclusion clause on the deployment is inert. This command is how an operator changes that.
+  //
+  // The five org-and-below rungs are NOT here and need nothing: they admit through the ordinary
+  // `scanExclusion` policy effect (`scp policy create ... {"scanExclusion":{"admit":[...]}}`).
+  //
+  // `set` REPLACES the admitted set for the tier, so withdrawing everything is `--revoke-all` rather
+  // than simply omitting `--class` — omitting it is refused, because an empty set at an instance rung
+  // makes every exclusion clause on the deployment inert and that is not something to reach by
+  // forgetting a flag.
+  // -------------------------------------------------------------------------------------
+  const scanAdmissionsCmd = program
+    .command("scan-exclusion-admissions")
+    .description(
+      "Instance-scoped scan-exclusion admissions (ADR-0033) — the platform + trust-domain rungs that gate every exclusion clause beneath them"
+    );
+
+  scanAdmissionsCmd
+    .command("list")
+    .description(
+      "List the exclusion classes this deployment admits (an EMPTY list means every exclusion clause anywhere on this deployment is inert)"
+    )
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(async (opts: BaseCliOpts) => {
+      const client = await clientFromStoredCredentials(opts);
+      const admissions = await client.instanceScanExclusionAdmissions.list();
+      printResult(admissions, opts.output, (raw) =>
+        instanceScanExclusionAdmissionRow(raw as (typeof admissions)[number])
+      );
+    });
+
+  scanAdmissionsCmd
+    .command("set")
+    .description(
+      "REPLACE the exclusion classes admitted at one instance tier (OPERATOR ONLY — requires SCP_OPERATOR_TOKEN; this is a whole-set replace, so withdrawing everything needs --revoke-all)"
+    )
+    .requiredOption(
+      "--tier <tier>",
+      "platform|trust-domain (the partition tier, not the intra-org containment domain)"
+    )
+    .option(
+      "--class <class...>",
+      "no_fix_available|vendor_latest|declared_fact|approved_override (repeatable; the WHOLE admitted set for this tier)"
+    )
+    .option(
+      "--revoke-all",
+      "withdraw EVERY admission at this tier (required when --class is omitted, because that is a destructive whole-set replace and not a no-op)"
+    )
+    .option("--origin <origin>", "local|federated", "local")
+    .option("--note <text>", "free-text note recorded with the admission")
+    .option("--base-url <url>", "API base URL override")
+    .option("--output <format>", "json|table", "table")
+    .action(
+      async (
+        opts: BaseCliOpts & {
+          tier: string;
+          class?: string[];
+          revokeAll?: boolean;
+          origin: "local" | "federated";
+          note?: string;
+        }
+      ) => {
+        const operatorToken = process.env.SCP_OPERATOR_TOKEN;
+        if (!operatorToken) {
+          throw new Error(
+            "SCP_OPERATOR_TOKEN is not set — an admission opens a loosening for every org on the deployment, so authoring one requires the deployment operator token, not your tenant login."
+          );
+        }
+        // Accept the friendlier `trust-domain` on the command line, but send the canonical
+        // `trust_domain` literal — never bare `domain` (ADR-0016 / ADR-0033 terminology).
+        const tier = opts.tier === "trust-domain" ? "trust_domain" : opts.tier;
+        if (tier !== "platform" && tier !== "trust_domain") {
+          throw new Error(`--tier must be 'platform' or 'trust-domain' (got '${opts.tier}')`);
+        }
+        const allowed = [
+          "no_fix_available",
+          "vendor_latest",
+          "declared_fact",
+          "approved_override"
+        ] as const;
+        // THE DESTRUCTIVE DEFAULT, MADE EXPLICIT (owner decision, 2026-08-18).
+        //
+        // `set` is a whole-set REPLACE, and that is the right server contract: an additive verb would
+        // make withdrawal the harder operation on a LOOSENING, which is the wrong way round. But it
+        // means `--class` omitted sends `classes: []`, and an empty admitted set at an instance rung
+        // makes EVERY exclusion clause on the deployment inert — every org, every tier beneath it —
+        // because the monotone AND fails at the top. That is a bigger blast radius than any other
+        // single CLI call in this tool, and it was reachable by forgetting a flag.
+        //
+        // The server contract is unchanged; this refusal is CLI-side only. `--revoke-all` is the
+        // withdrawal path and it says what it does.
+        const classes = opts.class ?? [];
+        if (classes.length === 0 && !opts.revokeAll) {
+          throw new Error(
+            `refusing to withdraw every exclusion-class admission at '${tier}': no --class was given, ` +
+              `and 'set' REPLACES the whole admitted set for a tier rather than adding to it. That would ` +
+              `make every exclusion clause on this deployment inert, for every org. Pass --revoke-all if ` +
+              `that is what you mean, or name the classes this tier should admit with --class.`
+          );
+        }
+        if (classes.length > 0 && opts.revokeAll) {
+          throw new Error(
+            "--revoke-all and --class are mutually exclusive: --revoke-all withdraws the whole set, so naming classes alongside it is contradictory."
+          );
+        }
+        for (const cls of classes) {
+          if (!(allowed as readonly string[]).includes(cls)) {
+            // Refused here as well as by the route and the table's CHECK, for 0074's stated reason:
+            // a typo'd class is an admission the operator believes they granted and that admits
+            // nothing, with the clause beneath it silently inert.
+            throw new Error(`--class must be one of ${allowed.join("|")} (got '${cls}')`);
+          }
+        }
+        const client = await clientFromStoredCredentials(opts);
+        const admissions = await client.instanceScanExclusionAdmissions.put(
+          tier,
+          {
+            origin: opts.origin,
+            classes: classes as InstanceScanExclusionAdmission["class"][],
+            note: opts.note
+          },
+          operatorToken
+        );
+        printResult(admissions, opts.output, (raw) =>
+          instanceScanExclusionAdmissionRow(raw as (typeof admissions)[number])
+        );
       }
     );
 

@@ -1,5 +1,10 @@
 import { z } from "zod";
 import { CursorPageQuerySchema, cursorPageResponseSchema } from "./common.js";
+import {
+  ScanFindingRetentionClassSchema,
+  ScanFindingSchema,
+  ScanFindingsRecordSchema
+} from "./supply-chain.js";
 
 /**
  * M4 Governance Engine wire contract (DESIGN.md §10, BUILD_AND_TEST.md §8 M4). Policies and
@@ -27,11 +32,70 @@ export const ControlRunSchema = z.object({
   evidence: z.record(z.string(), z.unknown()),
   detail: z.string().nullable(),
   decisionId: z.string().uuid().nullable(),
-  createdAt: z.string().datetime()
+  createdAt: z.string().datetime(),
+  /**
+   * M22.8 — WHICH GATE CROSSING THIS RUN AUTHORIZED. Both columns have existed on `control_runs`
+   * since M4; neither has ever been projected onto the wire.
+   *
+   * That was survivable while a change had at most ONE run per control: `latestControlRun` was keyed
+   * `(orgId, changeObjectId, controlObjectId)`, so the single row WAS the change's answer and naming
+   * the crossing added nothing. M22.0a changed that — the cache key now carries gate identity, so a
+   * change legitimately carries a run per crossing (the `validating -> accepted` lifecycle edge, then
+   * one per wave boundary), and M22.7 adds forced re-runs on top. An operator reading
+   * `GET /changes/{id}/control-runs` today sees several rows with the same control and status and no
+   * way to tell which one let production through.
+   *
+   * OPTIONAL ON THE WIRE, NOT NULLABLE, and the distinction is the oasdiff rule this repo has
+   * already paid for once: making an EXISTING required response field optional is a breaking change,
+   * so these are added as new optional fields beside the required ones rather than by re-shaping
+   * anything. The columns are `NOT NULL`, so a live server always sends them; the optionality exists
+   * for older generated clients, never as a licence to omit them.
+   */
+  gateKind: z.enum(["lifecycle_edge", "wave_boundary"]).optional(),
+  /** `{fromState,toState}` for a lifecycle edge, `{waveIndex,topologyObjectId}` for a wave boundary.
+   *  Free-form on purpose: it is the gate's own identity object, and pinning a closed union here
+   *  would make adding a third gate kind a wire-breaking change. */
+  gateRef: z.record(z.string(), z.unknown()).optional()
 });
 export type ControlRun = z.infer<typeof ControlRunSchema>;
 export const ControlRunListResponseSchema = cursorPageResponseSchema(ControlRunSchema);
 export type ControlRunListResponse = z.infer<typeof ControlRunListResponseSchema>;
+
+export const ControlRunIdParamSchema = z.object({ id: z.string().uuid() });
+export type ControlRunIdParam = z.infer<typeof ControlRunIdParamSchema>;
+
+/** M22.9 — one `scan_findings` row on the wire. `ScanFindingSchema` unchanged (it is what the parser
+ *  produced and what an exclusion clause matches on) plus the two things only the WRITE knows:
+ *  `ordinal`, which is the finding's identity because it has no other one, and the ADR-0024 §D1
+ *  retention class the row was written at. */
+export const PersistedScanFindingSchema = ScanFindingSchema.extend({
+  ordinal: z.number().int().nonnegative(),
+  /** `E` = an EXCLUDED finding, i.e. accepted-risk evidence recording what an operator chose to
+   *  tolerate; `O` = ordinary telemetry. Projected because past `SCAN_EXCLUSION_EVIDENCE_CAP` (100)
+   *  the run's `evidence.exclusions.applied` list stops enumerating and only these rows still say
+   *  WHICH findings were tolerated (ADR-0033 D10, charter principle 6). */
+  retentionClass: ScanFindingRetentionClassSchema
+});
+export type PersistedScanFinding = z.infer<typeof PersistedScanFindingSchema>;
+
+/**
+ * M22.9 — `GET /control-runs/{id}/findings`.
+ *
+ * `findingsRecord` IS REQUIRED AND NULLABLE, and that is the whole contract, not a style choice.
+ * Every marker state except `full` — `truncated`, `unsupported`, and ABSENT — refuses every
+ * exclusion for that scan ("you cannot except what you did not record", ADR-0033 §7), so a response
+ * that hands back a bare array is one a consumer can use without ever learning that the set it is
+ * looking at is not the set the scanner produced. Required-and-nullable rather than optional so
+ * `null` POSITIVELY says "no marker was recorded"; an omitted optional field would be
+ * indistinguishable from a client too old to know the key, which is the ambiguity this field exists
+ * to remove.
+ */
+export const ControlRunFindingsResponseSchema = cursorPageResponseSchema(
+  PersistedScanFindingSchema
+).extend({
+  findingsRecord: ScanFindingsRecordSchema.nullable()
+});
+export type ControlRunFindingsResponse = z.infer<typeof ControlRunFindingsResponseSchema>;
 
 /** `POST /controls/{idOrUrn}/bindings` — binds a Control graph object to a ControlPlugin instance
  *  (DESIGN §10.2: "ControlPlugin implementations are bindings"). */

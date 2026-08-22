@@ -104,6 +104,7 @@ import {
   validateAndForwardRelayTarball,
   type RelayConfig
 } from "./retrans-relay.js";
+import { parseJsonRejectingPrototypePoisoning } from "../util/safe-json.js";
 
 export const INBOX_QUEUE = "federation-inbox-tick";
 
@@ -476,7 +477,14 @@ async function processBundleFile(
 ): Promise<InboxFileOutcome> {
   let parsed: ImportBundleRequest;
   try {
-    const raw = JSON.parse(rawBytes.toString("utf8")) as unknown;
+    // `parseJsonRejectingPrototypePoisoning`, not a bare `JSON.parse`: this is the AIR-GAP door,
+    // the second of the two places foreign bytes become objects in this process (the other is the
+    // HTTP body parser in `app.ts`), and it needs the same admission control. A `.scpbundle`
+    // arrives from a peer domain across a CDS boundary on removable media — strictly less trusted
+    // than an authenticated HTTP request, not more. A `PrototypePoisoningError` is a `SyntaxError`
+    // subclass, so the existing catch arm below already turns it into the ordinary "not parseable
+    // as a .scpbundle" file refusal, ledgered like any other malformed bundle.
+    const raw = parseJsonRejectingPrototypePoisoning(rawBytes.toString("utf8"));
     const result = ImportBundleRequestSchema.safeParse(raw);
     if (!result.success) {
       return refuseFile(db, {

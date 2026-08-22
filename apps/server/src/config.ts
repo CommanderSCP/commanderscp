@@ -30,6 +30,37 @@ export interface ServerConfig {
    * SCP_PGBOSS_DATABASE_URL when the role is managed externally.
    */
   pgBossDatabaseUrl: string;
+  /**
+   * M22.9 R3 — the connection the four INSTANCE-OPERATOR write doors use (`routes/
+   * instance-scan-exclusion-admissions.ts`, `instance-scan-floors.ts`, `scanner-assignments.ts`,
+   * `scan-db.ts`). Authenticates as `scp_operator`: NOSUPERUSER, NOBYPASSRLS, and granted
+   * INSERT/UPDATE/DELETE plus a write RLS policy on exactly those four instance-scoped tables and
+   * nothing else (drizzle/0076). `SCP_OPERATOR_DATABASE_URL`.
+   *
+   * WHY IT IS A THIRD CONNECTION RATHER THAN EITHER OF THE TWO ABOVE. It cannot be
+   * `runtimeDatabaseUrl`: `scp_app` holds SELECT only on those tables and has no write policy, by
+   * design and in two independent layers (drizzle/0029, 0035, 0036, 0074) — an operator write must
+   * not be reachable from the role that serves tenant traffic. And it must not be `databaseUrl`,
+   * which is what these four doors USED and is the bug they shipped with: in the hardened Helm
+   * shape the api/worker pods hold no admin credential at all (`commanderscp.adminDbEnv` is
+   * included only by `migrations-job.yaml`), so `databaseUrl` silently resolved to the
+   * `localhost:5432` fallback below and every operator write dialed 127.0.0.1 inside its own pod —
+   * ECONNREFUSED, a bare 500, and for M22 an admissions table that stayed empty, which fails the
+   * exclusion AND at its top rung for every clause on the deployment.
+   *
+   * `undefined` MEANS THE WRITE DOORS FAIL CLOSED WITH A 503 THAT NAMES THIS VARIABLE
+   * (`routes/operator-db.ts`), never a 500 and never a fallback to a wider credential. Reads are
+   * unaffected — they run inside the ordinary tenant transaction and always did.
+   *
+   * THE DEFAULT IS THE ADMIN CONNECTION *ONLY IN THE SHAPES THAT ACTUALLY HAVE ONE*, i.e. when
+   * this process is self-migrating (`SCP_SKIP_MIGRATIONS` unset/false — `pnpm dev`, the compose
+   * eval stack, Testcontainers). Those are precisely the shapes where `databaseUrl` is a real,
+   * reachable, superuser-capable credential that `main.ts` Phase 1 already opens a pool on, so
+   * their behaviour is byte-for-byte what it was before this field existed. `SCP_SKIP_MIGRATIONS=
+   * true` is the hardened deployment saying it holds no admin connection, and there the absence of
+   * an explicit `SCP_OPERATOR_DATABASE_URL` is a missing credential, not a default to guess at.
+   */
+  operatorDatabaseUrl?: string;
   role: "all" | "api" | "worker";
   /**
    * M16.3 P3 — the OPERATOR/install-time-declared federation role, `SCP_FEDERATION_ROLE`
@@ -371,6 +402,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const port = Number(env.PORT ?? 8080);
   const host = env.HOST ?? "0.0.0.0";
   const databaseUrl = env.DATABASE_URL ?? "postgres://scp:scp@localhost:5432/scp";
+  // Hoisted out of the object literal only because `operatorDatabaseUrl`'s default reads it — see
+  // that field's doc comment for why "does this process self-migrate?" is the honest test for
+  // "does this process hold a usable admin connection?".
+  const skipMigrations = env.SCP_SKIP_MIGRATIONS === "true";
   const secretsMasterKey = loadSecretsMasterKey(env);
   return {
     port,
@@ -379,6 +414,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     runtimeDatabaseUrl: env.SCP_RUNTIME_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl),
     pgBossDatabaseUrl:
       env.SCP_PGBOSS_DATABASE_URL ?? deriveRuntimeDatabaseUrl(databaseUrl, "scp_pgboss"),
+    // NOT `deriveRuntimeDatabaseUrl(databaseUrl, "scp_operator")` like the two above, and the
+    // difference is load-bearing rather than an oversight: that helper swaps the USER and keeps the
+    // admin PASSWORD, which only authenticates because `main.ts`/`migrate-bin.ts` provision
+    // `scp_app`/`scp_pgboss` with exactly that password at boot. There is no such provisioner for
+    // `scp_operator` yet (drizzle/0076's header names the owed `provisionOperatorRole`), so a
+    // derived URL here would be a credential that looks configured and cannot log in.
+    operatorDatabaseUrl:
+      env.SCP_OPERATOR_DATABASE_URL ?? (skipMigrations ? undefined : databaseUrl),
     role: (env.SCP_ROLE as ServerConfig["role"] | undefined) ?? "all",
     federationRole: loadFederationRole(env),
     // Whether the operator SET it, kept beside the value it resolved to — see the field's doc.
@@ -392,7 +435,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     eventBus: loadEventBusConfig(env),
     secretsMasterKey: secretsMasterKey.key,
     secretsMasterKeyWasGenerated: secretsMasterKey.wasGenerated,
-    skipMigrations: env.SCP_SKIP_MIGRATIONS === "true",
+    skipMigrations,
     graphQueryStatementTimeoutMs: Number(env.SCP_GRAPH_QUERY_TIMEOUT_MS ?? 5000),
     federationServerMtls: loadFederationServerMtlsConfig(env),
     operatorToken:

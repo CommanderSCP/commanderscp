@@ -9,6 +9,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./audit-chain": "./dist/audit-chain.js",
+    "./canonical-json": "./dist/canonical-json.js",
     "./federation-journal": "./dist/federation-journal.js"
   },
   "scripts": {

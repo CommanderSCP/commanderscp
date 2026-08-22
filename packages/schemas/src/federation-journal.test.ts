@@ -169,6 +169,104 @@ describe("sync journal hash chain (pure)", () => {
   });
 });
 
+/**
+ * THE END-TO-END PROOF that `verifyJournalChain` — documented in this module as "the fail-closed
+ * gate a tampered or truncated segment must never pass" — actually covers what a peer can put in a
+ * payload.
+ *
+ * On the base commit it did not. `canonicalStringify` dropped any `__proto__` subtree, so a peer
+ * could append arbitrary content to a SIGNED entry's payload and the recomputed `rowHash` came out
+ * identical, the signature still verified, and `valid` came back `true`. The tamper was invisible
+ * precisely BECAUSE the canonicalizer refused to look at it.
+ */
+
+/**
+ * A full snapshot of `Object.prototype`'s own property names, captured at module load. Asserting
+ * that three named keys are absent only proves those three are absent; this proves NOTHING was
+ * added or removed. A leaked pollution would make every later assertion in the run untrustworthy,
+ * so it is checked rather than assumed.
+ */
+const OBJECT_PROTOTYPE_KEYS_AT_LOAD = Object.getOwnPropertyNames(Object.prototype).sort().join(",");
+
+describe("a __proto__ subtree grafted onto a signed payload no longer passes verifyJournalChain", () => {
+  it("recomputes to a DIFFERENT rowHash, so the segment is rejected", () => {
+    const { publicKey, privateKey } = keyPair();
+
+    // A legitimately signed entry. Nothing about it is unusual.
+    const honest = baseEntry(privateKey, {
+      sequence: 1,
+      prevHash: JOURNAL_GENESIS_HASH,
+      payload: { id: "obj-1", urn: "urn:scp:acme:service:billing" }
+    });
+    expect(verifyJournalChain([honest], { resolvePublicKey: () => publicKey }).valid).toBe(true);
+
+    // The tamper. A peer relays the entry with its rowHash and signature UNTOUCHED, having grafted
+    // a subtree onto the payload. Built by JSON round trip, not `payload.__proto__ = {...}`: the
+    // latter would hit the setter this whole change is about and leave the fixture honest, making
+    // the test vacuous.
+    const tamperedPayload = JSON.parse(
+      JSON.stringify({ id: "obj-1", urn: "urn:scp:acme:service:billing" }).replace(
+        /^\{/,
+        '{"__proto__":{"isAdmin":true,"smuggled":"whatever the attacker likes"},'
+      )
+    ) as Record<string, unknown>;
+    expect(Object.keys(tamperedPayload)).toContain("__proto__");
+
+    const tampered: SyncJournalEntry = { ...honest, payload: tamperedPayload };
+    expect(tampered.rowHash).toBe(honest.rowHash);
+    expect(tampered.signature).toBe(honest.signature);
+
+    // The recomputed hash must now disagree with the one the entry carries — that is the whole
+    // mechanism, and on the base commit the two were equal.
+    expect(computeJournalRowHash(tampered)).not.toBe(honest.rowHash);
+
+    const result = verifyJournalChain([tampered], { resolvePublicKey: () => publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.brokenAt?.code).toBe("row_hash_mismatch");
+
+    // The signature over the CLAIMED hash still verifies — it was never forged. The tamper is
+    // caught by the hash recomputation, which is exactly where a content change belongs.
+    expect(verifyJournalEntrySignature(tampered, publicKey)).toBe(true);
+  });
+
+  it("a tampered entry mid-chain breaks the chain rather than being skipped", () => {
+    const { publicKey, privateKey } = keyPair();
+    const e1 = baseEntry(privateKey, { sequence: 1, prevHash: JOURNAL_GENESIS_HASH });
+    const e2 = baseEntry(privateKey, {
+      id: "0198f2a0-0000-7000-8000-000000000011",
+      sequence: 2,
+      prevHash: e1.rowHash
+    });
+    expect(verifyJournalChain([e1, e2], { resolvePublicKey: () => publicKey }).valid).toBe(true);
+
+    const tamperedE2: SyncJournalEntry = {
+      ...e2,
+      payload: JSON.parse('{"id":"obj-1","urn":"urn:scp:acme:service:billing","__proto__":{"x":1}}')
+    };
+    const result = verifyJournalChain([e1, tamperedE2], { resolvePublicKey: () => publicKey });
+    expect(result.valid).toBe(false);
+    expect(result.brokenAt?.sequence).toBe(2);
+    expect(result.brokenAt?.code).toBe("row_hash_mismatch");
+  });
+
+  it("an honest payload that merely MENTIONS __proto__ still verifies (no over-rejection)", () => {
+    const { publicKey, privateKey } = keyPair();
+    const entry = baseEntry(privateKey, {
+      payload: { note: "__proto__ is a key name", my__proto__key: 1, constructor: "harmless" }
+    });
+    expect(verifyJournalChain([entry], { resolvePublicKey: () => publicKey }).valid).toBe(true);
+  });
+
+  it("leaves Object.prototype unmutated", () => {
+    const probe = {} as Record<string, unknown>;
+    expect(probe.isAdmin).toBeUndefined();
+    expect(probe.smuggled).toBeUndefined();
+    expect(Object.getOwnPropertyNames(Object.prototype).sort().join(",")).toBe(
+      OBJECT_PROTOTYPE_KEYS_AT_LOAD
+    );
+  });
+});
+
 describe("sync journal sparse verification (scope-filtered bundles — contiguous:false)", () => {
   // A scope-filtered bundle deliberately omits out-of-scope entries: its sequence has gaps and each
   // entry's prevHash points at an omitted predecessor. Sparse mode must ACCEPT the gaps while still

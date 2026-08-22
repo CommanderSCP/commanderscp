@@ -2,12 +2,31 @@ import { sql } from "drizzle-orm";
 import type { TenantTx } from "../db/tenant-tx.js";
 import {
   PartialScanThresholdSchema,
+  ScanExclusionEffectSchema,
+  type AdmittedScanExclusionClause,
+  type EffectiveScanExclusions,
   type EffectiveScanThreshold,
   type PartialScanThreshold,
+  type ScanExclusionClass,
+  type ScanExclusionClause,
+  type RefusedScanOverrideGrant,
+  type ScanApprovedOverrides,
+  type ScanDeclaredFacts,
   type ScanRequirementTier,
-  type ScanThresholdContribution
+  type ScanThresholdContribution,
+  type ScanVendorLatestFacts
 } from "@scp/schemas";
 import { containmentChain } from "../graph/containment.js";
+import {
+  intersectVendorLatestFacts,
+  resolveVendorLatestFactsForTarget
+} from "./scan-vendor-latest.js";
+import { intersectDeclaredFacts, resolveDeclaredFactsForTarget } from "./scan-declared-facts.js";
+import {
+  applyOverrideAuthorityBar,
+  intersectApprovedOverrides,
+  resolveApprovedOverridesForTarget
+} from "./scan-override-grants.js";
 import { matchPoliciesForTargets } from "./policy-resolve.js";
 import type { MatchedPolicy } from "./policy-model.js";
 import type { FiredPolicy } from "./evaluate.js";
@@ -127,7 +146,7 @@ const SEVERITY_KEYS = ["maxCritical", "maxHigh", "maxMedium", "maxLow"] as const
  * tier. Before the owning half existed, EVERY group-scoped ceiling read `org` regardless of what it
  * governed, quietly breaking ADR-0016 §5's promise that a block can show which tier set the floor.
  */
-function tierForObjectType(objectTypeId: string): ScanRequirementTier {
+export function tierForObjectType(objectTypeId: string): ScanRequirementTier {
   switch (objectTypeId) {
     case "organization":
       return "org";
@@ -136,6 +155,19 @@ function tierForObjectType(objectTypeId: string): ScanRequirementTier {
       return "containment_domain";
     case "service":
       return "service";
+    case "assembly":
+      // M22.0 (ADR-0033 §5). The OPTIONAL rung between a service and its components (migration
+      // 0055). It shipped AFTER this function was written and fell through to `component` below,
+      // so an assembly-anchored ceiling enforced correctly and reported the WRONG tier — the same
+      // class of defect §2a fixed for group scope, at a rung added later. Nothing about the MERGE
+      // changes: `mergeScanThresholds` never reads a tier.
+      //
+      // WALKING a rung is edge-generic and free (`containmentChain` matches on the `contains` edge,
+      // never on the parent's type, which is why 0055 shipped no resolver edit). NAMING one is not.
+      // If a third container level is ever added, every hardcoded rung list must be revisited —
+      // this switch and `APPROVAL_SCOPE_KEYWORDS` in gate-orchestrator.ts are the two that 0055
+      // silently missed.
+      return "assembly";
     default:
       return "component";
   }
@@ -308,4 +340,642 @@ export async function resolveEffectiveScanThreshold(
 
   if (contributors.length === 0) return undefined;
   return mergeScanThresholds(contributors);
+}
+
+// ===========================================================================================
+// M22.2 (ADR-0033 §1, §3, §4) — THE EXCLUSION DIMENSION, resolved beside the ceiling and sharing
+// nothing with it but the tier vocabulary.
+//
+// Everything below runs the OPPOSITE way from everything above, on purpose:
+//
+//   | | ceiling (ADR-0016, above)          | exclusion (ADR-0033, here)                        |
+//   |-|-----------------------------------|---------------------------------------------------|
+//   | | per-severity MIN over a SET       | monotone AND down the TIER CHAIN                  |
+//   | | a child may only TIGHTEN          | a clause needs admission from every tier above it  |
+//   | | absent contributes nothing        | admission is EMPTY at every tier by default        |
+//   | | union across targets is SAFE      | union across targets is an INVERSION — never done  |
+//   | | an UNEVALUABLE condition FAILS    | an UNEVALUABLE condition yields NO exclusion       |
+//   | |   CLOSED and still sets a ceiling |   (`ceilingContributorKeys` MUST NOT be reused)    |
+//
+// With nothing authored anywhere, `resolveEffectiveScanExclusions` returns `undefined` and every
+// downstream consumer behaves byte-identically to pre-M22.2. That is the property the suite pins
+// first, because it is the one that makes the rest of this safe to ship.
+// ===========================================================================================
+
+/** The six-tier chain as a TOTAL ORDER, top-down. The AND walks this, NOT the containment chain's
+ *  `depth` — `graph/containment.ts` documents that two ancestors of DIFFERENT kinds can be exactly
+ *  equidistant and TIE, so depth cannot express "every tier above". Tier labels can. */
+const TIER_ORDER: readonly ScanRequirementTier[] = [
+  "platform",
+  "trust_domain",
+  "org",
+  "containment_domain",
+  "service",
+  "assembly",
+  "component"
+];
+
+export function tierRank(tier: ScanRequirementTier): number {
+  return TIER_ORDER.indexOf(tier);
+}
+
+/** One tier's statement that a CLASS of exclusion may have effect beneath it. */
+export interface ScanExclusionAdmission {
+  tier: ScanRequirementTier;
+  class: ScanExclusionClass;
+  /** `instance:platform:local`, `policy:<name>@<objectId>`, … */
+  source: string;
+}
+
+/** One tier's contribution of a CLAUSE. */
+export interface ScanExclusionClauseContribution {
+  tier: ScanRequirementTier;
+  source: string;
+  clause: ScanExclusionClause;
+}
+
+/**
+ * Everything the AND needs for ONE target. Built per target and never merged with another's, which
+ * is the whole of ADR-0033 §3.
+ */
+export interface ScanExclusionTargetInput {
+  targetObjectId: string;
+  /**
+   * The tiers that are REPRESENTED for this target — `platform` and `trust_domain` always (they are
+   * facts about the deployment), plus every tier label present on this target's containment chain.
+   *
+   * This is what keeps the AND from being vacuous in both directions. Requiring EVERY tier in
+   * `TIER_ORDER` to admit would make a clause unreachable for any org with no containment domain
+   * and no assembly — there would be nobody to speak for those rungs. Requiring only the tiers that
+   * happened to author something would be the fail-OPEN twin: a silent tier would be read as
+   * consent. So: a rung that EXISTS must say yes, and a rung that does not exist is not asked.
+   */
+  representedTiers: ScanRequirementTier[];
+  /**
+   * M22.6 (D3) — the TIER of every object on this target's containment chain, by object id.
+   *
+   * `representedTiers` answers "which rungs exist here"; this answers "which rung is THIS object",
+   * which is the question an override grant's derived authority needs and which no set of tier
+   * labels can answer. It is built from the SAME `containmentChain` walk that produced
+   * `representedTiers`, so a grant can never be placed at a rung the admission algebra did not see.
+   *
+   * An id ABSENT from this map is not "unknown, assume component" — it is an object that is not an
+   * ancestor of this target at all, and {@link applyOverrideAuthorityBar} refuses it.
+   */
+  chainTierByObjectId: Record<string, ScanRequirementTier>;
+  admissions: ScanExclusionAdmission[];
+  clauses: ScanExclusionClauseContribution[];
+}
+
+/** Stable identity of a clause contribution, used to intersect across targets and to sort
+ *  deterministically. Content-only — no ids, no timestamps (the M22.0 write-suppression rule). */
+function clauseKey(entry: {
+  tier: ScanRequirementTier;
+  source: string;
+  clause: ScanExclusionClause;
+}): string {
+  return JSON.stringify([
+    entry.tier,
+    entry.source,
+    entry.clause.class,
+    entry.clause.vulnerabilityId ?? null,
+    entry.clause.pkgName ?? null,
+    entry.clause.purl ?? null,
+    entry.clause.findingClass ?? null,
+    entry.clause.reason ?? null
+  ]);
+}
+
+/**
+ * THE AND — pure, order-independent, resolved PER TARGET and then INTERSECTED across targets.
+ *
+ * A clause anchored at tier T has effect only if EVERY represented tier strictly above T admits its
+ * class. `platform` and `trust_domain` are always represented, so a deployment whose operator has
+ * inserted no admission row admits nothing at all and every clause beneath is inert — which is
+ * exactly the default this feature ships with.
+ *
+ * WHY THE CROSS-TARGET COMPOSITION IS AN INTERSECTION, NOT A UNION. ADR-0033 §3 forbids unioning:
+ * for a CEILING more contributors can only tighten, so union is safe; for an EXCLUSION a union is an
+ * inversion — a clause admitted for one target would leak to its siblings, which is silent
+ * cross-component scope creep, and it would widen a LOOSENING past the reach of the BLOCKING it
+ * loosens (a failing scan verdict stops only that component from moving forward). One verdict is
+ * produced for one artifact across the change's whole target set, so the only composition that
+ * cannot leak is the one where every target independently admitted the clause. A single-target
+ * change — the overwhelmingly common shape — is unaffected either way.
+ *
+ * A clause of a class whose PREDICATE is not yet built (`vendor_latest`, `declared_fact`,
+ * `approved_override`) still resolves here and is still admitted; it simply matches no finding
+ * (`scanExclusionClauseMatches` in `@scp/schemas`). Admission and application are separate questions
+ * and conflating them would hide one behind the other.
+ *
+ * Returns `undefined` when NO clause survives — mirroring `resolveEffectiveScanThreshold`, so the
+ * conditional context key is simply absent and no evidence field appears.
+ */
+export function resolveEffectiveScanExclusions(
+  targets: ScanExclusionTargetInput[]
+): EffectiveScanExclusions | undefined {
+  // NO targets means nothing to resolve FOR. An intersection over an empty family is conventionally
+  // "everything", which here would be every clause admitted for nobody — the exact inversion §3
+  // exists to prevent.
+  if (targets.length === 0) return undefined;
+
+  let surviving: Map<string, AdmittedScanExclusionClause> | undefined;
+
+  for (const target of targets) {
+    // Which classes each represented tier admits, and who said so. A tier that admits the same class
+    // twice keeps the alphabetically-first source, so the recorded authority is content-determined.
+    const admitted = new Map<string, string>();
+    for (const a of target.admissions) {
+      const key = `${a.tier}::${a.class}`;
+      const current = admitted.get(key);
+      if (current === undefined || a.source < current) admitted.set(key, a.source);
+    }
+    const represented = new Set(target.representedTiers);
+
+    const perTarget = new Map<string, AdmittedScanExclusionClause>();
+    for (const contribution of target.clauses) {
+      const rank = tierRank(contribution.tier);
+      if (rank < 0) continue; // an unrecognized tier label admits nothing
+      const above = TIER_ORDER.filter((t) => tierRank(t) < rank && represented.has(t));
+      const admittedBy: AdmittedScanExclusionClause["admittedBy"] = [];
+      let blocked = false;
+      for (const tier of above) {
+        const source = admitted.get(`${tier}::${contribution.clause.class}`);
+        if (source === undefined) {
+          blocked = true;
+          break;
+        }
+        admittedBy.push({ tier, source });
+      }
+      if (blocked) continue;
+      perTarget.set(clauseKey(contribution), {
+        clause: contribution.clause,
+        tier: contribution.tier,
+        source: contribution.source,
+        admittedBy
+      });
+    }
+
+    if (surviving === undefined) {
+      surviving = perTarget;
+      continue;
+    }
+    for (const key of [...surviving.keys()]) {
+      if (!perTarget.has(key)) surviving.delete(key);
+    }
+  }
+
+  if (!surviving || surviving.size === 0) return undefined;
+  // Sorted by content so two identical evaluations produce an identical array. `restatesDecision`
+  // canonicalises key order but PRESERVES array order, and an unsorted array here would defeat
+  // `insertDecisionIfChanged` and re-open the measured 1.44 GB/day Decision write amplification.
+  const clauses = [...surviving.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([, value]) => value);
+  return { clauses };
+}
+
+/**
+ * The `(policyObjectId, policyVersion)` keys admitted to contribute an EXCLUSION: contributors of a
+ * group that FIRED, MINUS every contributor whose condition could not be evaluated.
+ *
+ * DELIBERATELY NOT `ceilingContributorKeys`, and the two must never be merged. That helper UNIONS
+ * the errored contributors back IN, at every enforcement level, because dropping a CEILING converts
+ * a fail into a pass. Here the sign is reversed: ADMITTING a clause whose condition could not be
+ * evaluated IS the fail-open. ADR-0033 §4 states the requirement in exactly those terms — "the two
+ * dimensions need opposite error handling and must not share that helper".
+ *
+ * The subtraction is not belt-and-braces. `resolveFiredPolicies` ADDS an errored REQUIRED
+ * contributor into `contributingPolicyVersions` (so a fail-closed group blocks and names what broke),
+ * so "fired contributors" alone would already carry an unevaluable contributor's effects.
+ */
+function exclusionContributorKeys(firedPolicies: FiredPolicy[]): Set<string> {
+  const keys = new Set<string>();
+  for (const fp of firedPolicies) {
+    if (!fp.fired) continue;
+    for (const c of fp.contributingPolicyVersions)
+      keys.add(`${c.policyObjectId}::${c.policyVersion}`);
+  }
+  for (const fp of firedPolicies) {
+    for (const c of fp.conditionErrorPolicyVersions)
+      keys.delete(`${c.policyObjectId}::${c.policyVersion}`);
+  }
+  return keys;
+}
+
+/** Parses a policy effect's `scanExclusion` into its two halves, or `undefined` when the effect is
+ *  not one / is malformed. A malformed loosening contributes NOTHING — an unparseable clause must
+ *  never turn a gate into a 500, and it must never be read as "exclude something". */
+function parseScanExclusionEffect(effect: unknown) {
+  const raw = (effect as { scanExclusion?: unknown } | null)?.scanExclusion;
+  if (!raw || typeof raw !== "object") return undefined;
+  const parsed = ScanExclusionEffectSchema.safeParse(raw);
+  if (!parsed.success) return undefined;
+  const value = parsed.data;
+  if (!value.admit?.length && !value.exclude) return undefined;
+  return value;
+}
+
+/**
+ * The instance-scoped (above-org) ADMISSIONS — the `platform` and `trust_domain` rungs of the AND.
+ *
+ * Read through the ORDINARY tenant transaction under the table's tenant-read RLS policy, exactly as
+ * `readInstanceScanFloors` reads its own table, so no gate evaluation path needs the privileged
+ * connection. A DEPLOYMENT WITH NO ROWS ADMITS NOTHING, which is the shipped default: the table is
+ * created empty and never seeded (absent never means admitted).
+ */
+export async function readInstanceScanExclusionAdmissions(
+  tx: TenantTx
+): Promise<ScanExclusionAdmission[]> {
+  const result = await tx.execute<{ tier: string; class: string; origin: string }>(sql`
+    SELECT tier, class, origin FROM scan_exclusion_admissions
+  `);
+  const admissions: ScanExclusionAdmission[] = [];
+  for (const row of result.rows) {
+    // The literal is `trust_domain`, never bare `domain` (the DB CHECK enforces it too).
+    if (row.tier !== "platform" && row.tier !== "trust_domain") continue;
+    admissions.push({
+      tier: row.tier,
+      class: row.class as ScanExclusionClass,
+      source: `instance:${row.tier}:${row.origin}`
+    });
+  }
+  return admissions;
+}
+
+export interface ResolveScanExclusionsInput {
+  orgId: string;
+  targetObjectIds: string[];
+  actorObjectId: string;
+  /** Already-gathered matches, when the caller has them (both gate sites do). */
+  matches?: MatchedPolicy[];
+  /** The condition-resolved firing set — REQUIRED for the same reason the ceiling's is: no call site
+   *  may silently fall back to "every match contributes". */
+  firedPolicies: FiredPolicy[];
+  /** M22.4 — THE instant this whole evaluation is measured against: the vendor rule's freshness
+   *  bound AND the override grants' expiry window, which are the same clock by construction rather
+   *  than by convention (`resolveEffectiveScanExclusionsForTargets` resolves it once and threads it).
+   *  Injectable for tests ONLY; every production caller omits it and gets one `new Date()`. It never
+   *  enters a Decision or evidence — a timestamp in either would defeat write suppression (M22.0). */
+  now?: Date;
+}
+
+/**
+ * THE PER-TARGET GATHER — every input the pure AND consumes, built from the graph, for each target
+ * independently.
+ *
+ * EXTRACTED IN M22.8, NOT REWRITTEN. `GET /components/{idOrUrn}/scan-requirements` has to answer
+ * "which exclusion classes are admitted here, and where would a clause have effect" — which is a
+ * question about ADMISSIONS and REPRESENTED TIERS, neither of which survives into
+ * {@link EffectiveScanExclusions} (that type carries only the clauses that already won). Rebuilding
+ * the gather in the read module would have produced a second construction of the AND's inputs, one
+ * edit away from the read surface and the gate disagreeing about what is admitted — which is the
+ * exact class of divergence M22.2 closed at `promotion-scan-step.ts`'s `firedPolicies: []`.
+ *
+ * So there is ONE gather, and both consumers call it. `resolveEffectiveScanExclusionsForTargets`
+ * feeds it to the pure resolver and then attaches the per-class FACTS; the read surface feeds it to
+ * the same pure resolver and reads the admissions off it directly, resolving no facts.
+ */
+export async function buildScanExclusionTargetInputs(
+  tx: TenantTx,
+  input: ResolveScanExclusionsInput
+): Promise<ScanExclusionTargetInput[]> {
+  const instanceAdmissions = await readInstanceScanExclusionAdmissions(tx);
+
+  const matches =
+    input.matches ??
+    (await matchPoliciesForTargets(tx, {
+      orgId: input.orgId,
+      targetObjectIds: input.targetObjectIds,
+      actorObjectId: input.actorObjectId
+    }));
+
+  const exclusionKeys = exclusionContributorKeys(input.firedPolicies);
+
+  const targets: ScanExclusionTargetInput[] = [];
+  for (const targetId of new Set(input.targetObjectIds)) {
+    const chain = await containmentChain(tx, input.orgId, targetId);
+    const typeById = new Map(chain.map((e) => [e.id, e.typeId]));
+    // `platform` and `trust_domain` are facts about the DEPLOYMENT and are always represented; the
+    // rest come from what this target's chain actually contains.
+    const representedTiers = new Set<ScanRequirementTier>(["platform", "trust_domain"]);
+    // M22.6 (D3) — built in the SAME loop as `representedTiers`, from the same walk, so the two can
+    // never disagree about what this target's chain contains.
+    const chainTierByObjectId: Record<string, ScanRequirementTier> = {};
+    for (const entry of chain) {
+      const tier = tierForObjectType(entry.typeId);
+      representedTiers.add(tier);
+      chainTierByObjectId[entry.id] = tier;
+    }
+
+    const admissions: ScanExclusionAdmission[] = [...instanceAdmissions];
+    const clauses: ScanExclusionClauseContribution[] = [];
+
+    for (const match of matches) {
+      // PER TARGET: only a policy anchored somewhere on THIS target's containment chain speaks for
+      // it. `matchedAt.objectId` is always a chain object (an unscoped or acting-group match parks
+      // at the org root), so this membership test is the whole of the per-target restriction.
+      const objectTypeId = typeById.get(match.matchedAt.objectId);
+      if (objectTypeId === undefined) continue;
+      if (!exclusionKeys.has(`${match.policyObjectId}::${match.policyVersion}`)) continue;
+      const tier = tierForObjectType(objectTypeId);
+      const source = `policy:${match.name}@${match.policyObjectId}`;
+      for (const effect of match.effects as unknown[]) {
+        const parsed = parseScanExclusionEffect(effect);
+        if (!parsed) continue;
+        for (const cls of parsed.admit ?? []) admissions.push({ tier, class: cls, source });
+        if (parsed.exclude) clauses.push({ tier, source, clause: parsed.exclude });
+      }
+    }
+
+    targets.push({
+      targetObjectId: targetId,
+      representedTiers: [...representedTiers],
+      chainTierByObjectId,
+      admissions,
+      clauses
+    });
+  }
+  return targets;
+}
+
+/**
+ * M22.8 — WHICH TIERS ABOVE `tier` ARE REPRESENTED, top-down. The one place `TIER_ORDER` and
+ * `tierRank` are read from outside this module's own AND, so the read surface cannot drift into a
+ * second opinion about the chain's shape.
+ */
+export function representedTiersAbove(
+  tier: ScanRequirementTier,
+  represented: Iterable<ScanRequirementTier>
+): ScanRequirementTier[] {
+  const set = new Set(represented);
+  const rank = tierRank(tier);
+  if (rank < 0) return [];
+  return TIER_ORDER.filter((t) => tierRank(t) < rank && set.has(t));
+}
+
+/** M22.8 — the tier chain itself, top-down, for a consumer that must enumerate every rung. */
+export function scanRequirementTierOrder(): readonly ScanRequirementTier[] {
+  return TIER_ORDER;
+}
+
+/**
+ * M22.6 (D3), THE DERIVED BAR — the tier an override grant must have been approved at-or-above, read
+ * off the RULE rather than off the request.
+ *
+ * PURE, and the one place the bar is computed. The ceiling's `contributors` are the provenance M22.0
+ * put into the gate Decision precisely so a block could name the tier that bound it; this is the
+ * second consumer of that provenance and the reason it had to be recorded rather than merged away.
+ *
+ * THE MOST SENIOR CONTRIBUTOR WINS, not the one whose value happens to be the per-severity MIN.
+ * Excluding a finding removes it from the COUNT, which loosens EVERY ceiling on that severity at once
+ * — a count of 6 dropping to 5 satisfies a platform ceiling of 5 exactly as it satisfies the service
+ * ceiling of 0 that produced the block. Keying on the binding contributor alone would let a junior
+ * tier defeat a senior tier's ceiling indirectly, which is the escalation D3 exists to forbid.
+ *
+ * THERE IS NO SUCH THING AS "NO CEILING", WHICH IS WHY THE BAR NEVER FALLS BELOW `org`.
+ *
+ * This docblock used to say the opposite — that with no contributors the bar is `component`, i.e. no
+ * bar, because "there is no constraint stricter than the requester's own authority to escalate past,
+ * and the control falls back to its own per-binding `config.threshold`". That sentence names the
+ * counter-example in its own final clause and was wrong on both halves:
+ *
+ *   * `config.threshold` IS a constraint. It is authored at the CONTROL object's scope
+ *     (`routes/governance.ts`'s `PUT /controls/:idOrUrn/binding`, guarded by `policy:write` AT THE
+ *     CONTROL), which is nowhere on the component's containment chain. A service- or component-scoped
+ *     principal cannot author it and therefore must not be able to waive it.
+ *   * When neither a policy nor the binding config decides a severity, the plugin does not stop
+ *     enforcing — it applies its historical fail-closed default of `maxCritical`/`maxHigh` = 0
+ *     (`scan-result-control/src/index.ts`, `critical.value ?? 0`, and that module's own docblock says
+ *     so). That is a PLATFORM-SHIPPED rule no tenant can edit at all.
+ *
+ * Exclusions are applied BEFORE the counts are compared, so an approved grant on the only CRITICAL
+ * turns a fail into a pass against whichever of those ceilings is in force. With the bar at
+ * `component`, every candidate that merely sat on the chain cleared it — so a team lead holding a
+ * routine service-scoped `policy:write` could raise and approve a waiver against a ceiling they had
+ * no standing over. That is precisely the escalation D3 exists to forbid.
+ *
+ * THE FLOOR IS `org` (owner decision, 2026-08-18), and it is a floor rather than the fully-derived
+ * answer on purpose. Deriving the true bar — injecting the binding config and the 0/0 default as
+ * synthetic contributors — was costed and REJECTED because it makes every grant inert on any
+ * deployment that authored no `scanThreshold` policy and no `config.threshold`, killing the feature
+ * outright for the common case. `org` is the most senior rung a TENANT can author at, so it is the
+ * strongest bar that still leaves the override usable: a component-, assembly-, service- or
+ * containment-domain-scoped grant can never clear it, while an org-tier grant keeps working.
+ *
+ * WHAT THE FLOOR DOES NOT CLOSE, stated because a partial guard read as a total one is worse than
+ * none: an ORG-tier approver can still waive a `config.threshold` authored at control scope. Closing
+ * that requires the full derivation above and its cost. `platform`/`trust_domain` contributions still
+ * raise the bar past `org` normally — the floor only ever tightens the bottom, never loosens the top.
+ */
+
+/**
+ * The lowest tier that may ever approve an override, regardless of what the ceiling says.
+ *
+ * `org` rather than `component`: see `requiredOverrideApprovalTier`. Named rather than inlined so the
+ * test that pins it and the code that applies it cannot drift apart.
+ */
+export const OVERRIDE_APPROVAL_TIER_FLOOR: ScanRequirementTier = "org";
+
+export function requiredOverrideApprovalTier(
+  ceiling: EffectiveScanThreshold | undefined
+): ScanRequirementTier {
+  let best: ScanRequirementTier = OVERRIDE_APPROVAL_TIER_FLOOR;
+  for (const contribution of ceiling?.contributors ?? []) {
+    const rank = tierRank(contribution.tier);
+    if (rank < 0) continue; // an unrecognized tier label raises no bar
+    if (rank < tierRank(best)) best = contribution.tier;
+  }
+  return best;
+}
+
+/**
+ * Resolves the effective exclusion set for a change's targets across all seven rungs.
+ *
+ * Structurally parallel to `resolveEffectiveScanThreshold` and deliberately NOT folded into it: the
+ * two share the tier vocabulary and nothing else, and a single function computing both would be one
+ * edit away from letting a ceiling contributor admit an exclusion. It does CONSUME the ceiling —
+ * `approved_override` is measured against it (D3) — but only as an input it cannot change.
+ */
+export async function resolveEffectiveScanExclusionsForTargets(
+  tx: TenantTx,
+  input: ResolveScanExclusionsInput
+): Promise<EffectiveScanExclusions | undefined> {
+  if (input.targetObjectIds.length === 0) return undefined;
+
+  // ONE INSTANT FOR THE WHOLE EVALUATION, resolved here and threaded UNCONDITIONALLY. The previous
+  // shape forwarded `input.now` only when it was defined, which meant the shared clock existed only
+  // on the TEST path: in production `resolveVendorLatestFactsForTarget` took a `new Date()` of its
+  // own ONCE PER TARGET and `attachApprovedOverrides` took yet another, so a change with three
+  // targets measured the vendor freshness bound against four different instants and the override
+  // expiry window against a fifth. Harmless-looking and unfindable — the tests that assert "the same
+  // now" were the only callers for whom it was true. Both attach* functions now REQUIRE the instant
+  // (as does `resolveVendorLatestFactsForTarget`), so no future one can quietly re-acquire a clock.
+  const at = input.now ?? new Date();
+  const targets = await buildScanExclusionTargetInputs(tx, input);
+  const resolved = resolveEffectiveScanExclusions(targets);
+  const withVendor = await attachVendorLatestFacts(tx, input.orgId, targets, resolved, at);
+  const withDeclared = await attachDeclaredFacts(tx, input.orgId, targets, withVendor);
+  return attachApprovedOverrides(tx, input, targets, withDeclared, at);
+}
+
+/**
+ * M22.4 (owner decision D1) — resolve the VENDOR FACTS, but only if a `vendor_latest` clause
+ * actually survived the AND.
+ *
+ * TWO PHASES ON PURPOSE, and the order is the point. Phase one is the admission algebra, which is
+ * pure and cheap; phase two is an inventory read per target, which is neither. Resolving the facts
+ * unconditionally would put two joins per target on EVERY gate evaluation in the estate — including
+ * the overwhelming majority that have authored no exclusion at all, for whom M22.2's promise is that
+ * behaviour is byte-identical to pre-M22. So the facts are resolved only once a clause of that class
+ * has been admitted by every tier above it.
+ *
+ * The facts are then INTERSECTED across targets, exactly like the clauses and for exactly the same
+ * reason (ADR-0033 §3): a fact is as much a loosening as a clause is, and one target's currency must
+ * never excuse a sibling's findings.
+ */
+async function attachVendorLatestFacts(
+  tx: TenantTx,
+  orgId: string,
+  targets: ScanExclusionTargetInput[],
+  resolved: EffectiveScanExclusions | undefined,
+  /** The evaluation's ONE instant — required, never conditionally forwarded. See the caller. */
+  at: Date
+): Promise<EffectiveScanExclusions | undefined> {
+  if (!resolved) return undefined;
+  if (!resolved.clauses.some((c) => c.clause.class === "vendor_latest")) return resolved;
+  const perTarget: ScanVendorLatestFacts[] = [];
+  for (const target of targets) {
+    perTarget.push(
+      await resolveVendorLatestFactsForTarget(tx, orgId, target.targetObjectId, { now: at })
+    );
+  }
+  const vendorLatest = intersectVendorLatestFacts(perTarget);
+  // `undefined` only when there were no targets, which cannot be true here (the resolver returns
+  // `undefined` for an empty target set and we returned above). Carried anyway rather than asserted
+  // away: an absent fact must remain "no vendor-pass", never a thrown gate.
+  return vendorLatest ? { ...resolved, vendorLatest } : resolved;
+}
+
+/**
+ * M22.5 (owner decision D2) — resolve WHAT THE COMPONENT DECLARED, but only if a `declared_fact`
+ * clause actually survived the AND.
+ *
+ * SAME TWO-PHASE SHAPE AS THE VENDOR FACTS, and for the same measured reason: the admission algebra
+ * is pure and cheap, a property read per target is not, and the overwhelming majority of deployments
+ * have authored no exclusion at all. M22.2's promise to them is that behaviour is byte-identical to
+ * pre-M22, and that promise is kept by not asking the question.
+ *
+ * The facts are INTERSECTED across targets (ADR-0033 §3): a declaration is as much a loosening as a
+ * clause is, and one component's assertion must never excuse a sibling's findings.
+ */
+async function attachDeclaredFacts(
+  tx: TenantTx,
+  orgId: string,
+  targets: ScanExclusionTargetInput[],
+  resolved: EffectiveScanExclusions | undefined
+): Promise<EffectiveScanExclusions | undefined> {
+  if (!resolved) return undefined;
+  if (!resolved.clauses.some((c) => c.clause.class === "declared_fact")) return resolved;
+  const perTarget: ScanDeclaredFacts[] = [];
+  for (const target of targets) {
+    perTarget.push(await resolveDeclaredFactsForTarget(tx, orgId, target.targetObjectId));
+  }
+  const declaredFacts = intersectDeclaredFacts(perTarget);
+  return declaredFacts ? { ...resolved, declaredFacts } : resolved;
+}
+
+/**
+ * M22.6 (owner decisions D3/D4) — resolve the LIVE override grants, but only if an
+ * `approved_override` clause actually survived the AND.
+ *
+ * THE EXPIRY IS APPLIED HERE, AT READ TIME, and this is the only place it is applied. `at` is the
+ * gate's own instant, so a grant that expired one second ago is simply not in the result — there is
+ * no status to have been flipped and no sweeper to have failed to run.
+ *
+ * The gate-evaluation instant is the SAME one the vendor rule's freshness bound uses, and it is now
+ * PASSED IN rather than taken here. This docblock previously asserted that sameness while the code
+ * did `input.now ?? new Date()` locally and the vendor path did its own per target — so the claim
+ * held only under a test that injected `now`, which is why no test ever caught it. The instant is
+ * resolved once in `resolveEffectiveScanExclusionsForTargets` and is a required parameter here.
+ *
+ * THE AUTHORITY BAR (D3) IS APPLIED HERE TOO, and it is applied PER TARGET before the intersection,
+ * never after. A grant's tier is derived from the containment chain of the target it excuses, and two
+ * targets have two different chains — the same `tierObjectId` can be an ancestor of one and a
+ * stranger to the other. Filtering after the intersection would let a grant that cleared the bar for
+ * target A excuse a finding on target B it has no standing over, which is the same cross-target leak
+ * ADR-0033 §3 forbids for clauses.
+ */
+async function attachApprovedOverrides(
+  tx: TenantTx,
+  input: ResolveScanExclusionsInput,
+  targets: ScanExclusionTargetInput[],
+  resolved: EffectiveScanExclusions | undefined,
+  /** The evaluation's ONE instant — required, never re-derived here. See the caller. */
+  at: Date
+): Promise<EffectiveScanExclusions | undefined> {
+  if (!resolved) return undefined;
+  if (!resolved.clauses.some((c) => c.clause.class === "approved_override")) return resolved;
+  const orgId = input.orgId;
+  // THE BAR IS RESOLVED HERE, NOT THREADED IN FROM THE CALLER — measured, not preferred.
+  //
+  // The first version of this fix took the ceiling as a REQUIRED input field so TypeScript would
+  // force every gate site to supply it. Three sites supplied it, and the mutation run said what a
+  // type cannot: setting the commander producer's (`federation/promotion-scan-step.ts`) to
+  // `undefined` left the WHOLE suite green, because that producer has no override-grant coverage at
+  // all. A fourth site would inherit the same silence. So the resolver asks for itself, from the SAME
+  // `matches` and `firedPolicies` the exclusion dimension already resolved against — there is no
+  // longer a call site that can get this wrong, and `applyOverrideAuthorityBar` is reached by every
+  // caller of this function by construction. One deletion (this resolution) now kills a named test at
+  // every producer instead of one test per site.
+  //
+  // IT COSTS NOTHING ON THE PATH THAT MATTERS. This runs only AFTER an `approved_override` clause has
+  // survived the AND — the same two-phase shape the vendor and declared facts use, for the same
+  // measured reason. A deployment that authored no override clause (the overwhelming majority, and
+  // every deployment before M22) pays not one extra query, and M22.2's promise that its behaviour is
+  // byte-identical to pre-M22 is kept. Where it does run, it repeats one indexed resolution the gate
+  // already did in the same transaction against identical inputs — deterministic by construction,
+  // because `matches` and `firedPolicies` are the caller's own.
+  const requiredTier = requiredOverrideApprovalTier(
+    await resolveEffectiveScanThreshold(tx, {
+      orgId,
+      targetObjectIds: input.targetObjectIds,
+      actorObjectId: input.actorObjectId,
+      ...(input.matches ? { matches: input.matches } : {}),
+      firedPolicies: input.firedPolicies
+    })
+  );
+  const perTarget: ScanApprovedOverrides[] = [];
+  const refusedById = new Map<string, RefusedScanOverrideGrant>();
+  for (const target of targets) {
+    const candidates = await resolveApprovedOverridesForTarget(
+      tx,
+      orgId,
+      target.targetObjectId,
+      at
+    );
+    const { granted, refused } = applyOverrideAuthorityBar({
+      candidates,
+      chainTierByObjectId: target.chainTierByObjectId,
+      requiredTier,
+      rankOf: tierRank
+    });
+    perTarget.push({ grants: granted });
+    for (const entry of refused) refusedById.set(entry.grantObjectId, entry);
+  }
+  const approvedOverrides = intersectApprovedOverrides(perTarget);
+  if (!approvedOverrides) return resolved;
+  const refusedForAuthority = [...refusedById.values()].sort((a, b) =>
+    a.grantObjectId < b.grantObjectId ? -1 : 1
+  );
+  return {
+    ...resolved,
+    approvedOverrides: {
+      ...approvedOverrides,
+      // Always present once this dimension resolved: the bar is the RULE the grants were measured
+      // against, and a Decision listing the grants without it explains half the verdict.
+      requiredTier,
+      ...(refusedForAuthority.length > 0 ? { refusedForAuthority } : {})
+    }
+  };
 }

@@ -1053,6 +1053,62 @@ describe("M13.1a inbox ingest loop (Testcontainers: 3 domains + 2 registries + c
   }, 120_000);
 
   /**
+   * THE AIR-GAP DOOR onto the same room the HTTP body parser guards (`app.ts`; wiring test in
+   * `json-body-parser.test.ts`). A `.scpbundle` used to reach a bare `JSON.parse`, so a peer could
+   * put a `__proto__` key in a bundle and have it become an OWN property on a live object inside
+   * this process — across a CDS boundary, on removable media, which is strictly LESS trusted than
+   * an authenticated HTTP request, not more.
+   *
+   * The A/B is the point: the SAME exported bundle is written twice, differing only by the injected
+   * key. The poisoned copy must be refused BY THE POISONING GUARD (named in the reason), and the
+   * clean copy must not be refused for that reason — otherwise this test would pass just as well
+   * against a bundle that was malformed or schema-invalid for some unrelated reason, which is the
+   * vacuous-green shape this repo keeps getting bitten by.
+   */
+  it("a .scpbundle carrying a __proto__ key is refused at the air-gap door, and the same bundle without it is not", async () => {
+    const bundle = await exportPromotionFromA(changeA1, "outpost-c");
+    const cleanJson = JSON.stringify(bundle, null, 2);
+
+    // Splice the key into the serialized form rather than setting it on the object: assigning
+    // `obj.__proto__ = {...}` in JS would hit the very setter this whole change is about and store
+    // nothing, so the fixture would silently be the CLEAN bundle and the test would be vacuous.
+    const poisonedJson = cleanJson.replace(
+      /^\{/,
+      '{\n  "__proto__": { "polluted": "yes", "isAdmin": true },'
+    );
+    expect(poisonedJson).not.toBe(cleanJson);
+    expect(Object.keys(JSON.parse(poisonedJson) as object)).toContain("__proto__");
+
+    await writeFile(
+      path.join(outpostInbox, "scp-promotion-poisoned.scpbundle"),
+      poisonedJson,
+      "utf8"
+    );
+    const poisonedOutcomes = await tickOutpost();
+    const poisonedRefusals = poisonedOutcomes.filter((o) => o.outcome === "refused");
+    expect(poisonedRefusals).toHaveLength(1);
+    expect(poisonedRefusals[0]!.detail).toContain("forbidden prototype property");
+    expect(poisonedRefusals[0]!.decisionId).toBeTruthy();
+    expect((await latestDecision(outpost, INBOX_INGEST_DECISION_KIND))?.verdict).toBe("block");
+
+    // NEGATIVE CONTROL — identical bytes minus the injected key. Whatever the loop decides about
+    // it (import, duplicate, checksum), it must NOT be the poisoning guard that decides.
+    await writeFile(path.join(outpostInbox, "scp-promotion-clean.scpbundle"), cleanJson, "utf8");
+    // `InboxFileOutcome` carries no file name, but the ledger makes this unambiguous: every other
+    // file in the inbox — the poisoned one included — is already processed by now, so the single
+    // not-already-processed outcome IS the clean bundle.
+    const cleanOutcomes = await tickOutpost();
+    const cleanForThisFile = cleanOutcomes.filter((o) => o.outcome !== "already-processed");
+    expect(cleanForThisFile).toHaveLength(1);
+    expect(cleanForThisFile[0]!.detail).not.toContain("forbidden prototype property");
+
+    // And nothing anywhere in this process got a polluted prototype out of it.
+    const probe = {} as Record<string, unknown>;
+    expect(probe.polluted).toBeUndefined();
+    expect(probe.isAdmin).toBeUndefined();
+  }, 120_000);
+
+  /**
    * PR #153 review Q3 — the tick's CONTAINMENT catch reports the throw's DETAIL, not its HTTP title.
    *
    * Every ANTICIPATED failure inside `processInboxFile` is already caught and turned into a

@@ -15,6 +15,7 @@ import {
   createTestUser,
   listenTestServer,
   reconcileTicks,
+  waitForAcceptEdgeControlRun,
   waitForChangeParked,
   waitUntil,
   type ListeningTestServer,
@@ -391,8 +392,48 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
     // returns pass, so it eventually clears.
     await waitForControlRun(admin, change.id, realControl.id, "pass");
     await waitForValidating(admin, change.id);
+    // ...and the accept edge is authorized by ITS OWN run, not by the wave-boundary run the wait
+    // above returned — `POST /accept` is host-less and can only read the run made for its crossing
+    // (M22.0a). See `waitForAcceptEdgeControlRun`.
+    await waitForAcceptEdgeControlRun(admin, change.id, realControl.id, "pass");
     const accepted = await admin.changes.accept(change.id);
     expect(accepted.state).toBe("accepted");
+
+    // M22.8 — THE RUN NAMES THE CROSSING IT AUTHORIZED. `gate_kind`/`gate_ref` have been stored on
+    // `control_runs` since M4 and were never projected onto the wire. That was invisible while a
+    // control produced at most ONE run per change; M22.0a keyed the cache on gate identity, so a
+    // change now legitimately carries a lifecycle-edge run AND a wave-boundary run for the same
+    // control.
+    //
+    // THIS TEST MEASURED THAT AMBIGUITY RATHER THAN ASSUMING IT. The first version of these
+    // assertions read the run `waitForControlRun`'s `.find()` happened to return and asserted it was
+    // the lifecycle edge; it came back `wave_boundary`. That is precisely the confusion the field
+    // removes — an operator reading this listing had NO way to tell which crossing let a change
+    // through, and neither did this test. So the assertion is now on the SET.
+    const runs = (await admin.controlRuns.listForChange(change.id)).items.filter(
+      (r) => r.controlObjectId === realControl.id
+    );
+    const lifecycleRun = runs.find((r) => r.gateKind === "lifecycle_edge");
+    expect(
+      lifecycleRun,
+      "the run the accept edge consumed must be identifiable BY ITS CROSSING, on the wire"
+    ).toBeDefined();
+    expect(lifecycleRun!.gateRef).toMatchObject({ fromState: "validating", toState: "accepted" });
+    for (const run of runs) {
+      expect(
+        run.gateKind,
+        "every run names a crossing — the columns are NOT NULL, so an absent field is a projection bug"
+      ).toBeDefined();
+    }
+
+    // The SECOND projection of the same shape. Shipping the crossing on one endpoint and not the
+    // other would make "which run authorized production" depend on which endpoint you opened.
+    const explained = await admin.changes.explain(change.id);
+    const explainedRun = explained.controlRuns.find((r) => r.id === lifecycleRun!.id);
+    expect(explainedRun?.gateKind, "/explain renders the same shape and must agree").toBe(
+      "lifecycle_edge"
+    );
+    expect(explainedRun?.gateRef).toMatchObject({ fromState: "validating", toState: "accepted" });
   });
 
   // -----------------------------------------------------------------------------------------
@@ -747,6 +788,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // 'validating' on its own.
       await approverClient.approvals.vote(approvalRequest.id);
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
 
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
@@ -1554,6 +1596,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
 
@@ -1684,6 +1727,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
 
@@ -1789,6 +1833,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       // control context, the clean matching verdict passes, and the change accepts.
       await waitForControlRun(admin, changeObjectId, control.id, "pass");
       await waitForValidating(admin, changeObjectId);
+      await waitForAcceptEdgeControlRun(admin, changeObjectId, control.id, "pass");
       const accepted = await admin.changes.accept(changeObjectId);
       expect(accepted.state).toBe("accepted");
 
@@ -1915,6 +1960,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
 
       await waitForControlRun(admin, change.id, control.id, "pass");
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
     });
@@ -1994,6 +2040,7 @@ describe("governance integration (real graph, real subprocess plugin host)", () 
       expect(checkSource.callCountFor(sha)).toBeGreaterThan(callsWhileInFlight);
 
       await waitForValidating(admin, change.id);
+      await waitForAcceptEdgeControlRun(admin, change.id, control.id, "pass");
       const accepted = await admin.changes.accept(change.id);
       expect(accepted.state).toBe("accepted");
     });

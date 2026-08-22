@@ -19,6 +19,27 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
+      # THE FOURTH CONSUMER FORM, and the one #258's census stopped one short of.
+      #
+      # `tools/ci-mirror/images.list` enumerates three ways a third-party image is consumed here — a
+      # local re-tag, a skopeo `docker://` source, and a `docker create <repo>@sha256:…`. A
+      # DIGEST-PINNED `FROM` in the Dockerfile is a fourth, and NEITHER mirror mechanism can serve it:
+      # a local tag cannot satisfy a `FROM …@sha256:…`, and nothing was passing a build arg. So this
+      # build went on pulling quay.io LIVE, which is precisely what mirroring every image was meant to
+      # end (charter principle 5 — CI must run offline).
+      #
+      # It is not hypothetical twice over: quay.io timing out took main red on 2026-07-25, and on
+      # 2026-08-18 the pinned skopeo digest was DELETED upstream and returned 404, taking every E2E
+      # job red at image build, five steps before a test ran.
+      #
+      # LIST FORM WITHOUT A VALUE IS LOAD-BEARING: compose passes the arg through from the
+      # environment when set, and OMITS it entirely when unset — so the Dockerfile's own pinned
+      # default still applies for a local `docker compose up` with no mirror in sight. Writing
+      # `SKOPEO_IMAGE=${SCP_SKOPEO_IMAGE_REF}` instead would pass an EMPTY string when the var is
+      # unset and break `FROM` for every developer. `scripts/ci-mirror.sh seed` is what sets them.
+      args:
+        - SKOPEO_IMAGE
+        - COSIGN_IMAGE
     environment:
       SCP_ROLE: all
       PORT: "8080"

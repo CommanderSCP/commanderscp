@@ -4,6 +4,7 @@ import {
   type CelSandboxOptions
 } from "../../governance/cel-sandbox.js";
 import type { PolicyEvaluationEntry } from "../../governance/evaluate.js";
+import { canonicalJson } from "../../util/canonical-json.js";
 
 /**
  * THE SUITE-WIDE CEL TIMEOUT FOR DECISION-COUNTING SUITES, AND WHY IT IS NOT THE PRODUCTION 250 ms.
@@ -135,17 +136,12 @@ export function partitionConditionErrors<T extends { reasonTree: unknown }>(
  * new information that persist-on-change lost.
  */
 export function distinctDecisionStatements(rows: DecisionContentRow[]): number {
-  const sortKeys = (v: unknown): unknown => {
-    if (Array.isArray(v)) return v.map(sortKeys);
-    if (v !== null && typeof v === "object") {
-      const src = v as Record<string, unknown>;
-      const out: Record<string, unknown> = {};
-      for (const key of Object.keys(src).sort()) out[key] = sortKeys(src[key]);
-      return out;
-    }
-    return v;
-  };
+  // `@scp/schemas/canonical-json`, not a local copy of the sort: an inline copy here would be a
+  // sixth instance of the family whose shared defect (a silently dropped `__proto__` subtree) made
+  // two materially different Decision statements collapse into one Set entry — which in THIS
+  // function would under-count distinct statements and turn the assertion it exists to make into
+  // a loophole.
   return new Set(
-    rows.map((r) => JSON.stringify(sortKeys({ v: r.verdict, i: r.inputContext, t: r.reasonTree })))
+    rows.map((r) => canonicalJson({ v: r.verdict, i: r.inputContext, t: r.reasonTree }))
   ).size;
 }
