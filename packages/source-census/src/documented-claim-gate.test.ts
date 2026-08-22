@@ -102,6 +102,22 @@ describe("the documented-claim gate: a number in prose is read out of the code t
       pattern: /renders \d+ value combinations and (\d+) derived runner Job manifests/,
       expected: runnerJobs
     },
+    // The two entries above key on the TOOL'S phrasing. The clause-6 summary in M23.6's
+    // "ALL SEVEN MET" block words the same two facts differently, so both slid past this ledger
+    // and went stale (156/107 against a real 162/110) inside the round that built this gate.
+    // A ledger keyed on wording is only as complete as its wordings — these are the other two.
+    {
+      file: "docs/BUILD_AND_TEST.md",
+      what: "the matrix size, in M23.6's clause-6 MET summary",
+      pattern: /`helm template` across \*\*(\d+)\*\* value combinations/,
+      expected: points
+    },
+    {
+      file: "docs/BUILD_AND_TEST.md",
+      what: "the derived runner Job count, in M23.6's clause-6 MET summary",
+      pattern: /\*\*(\d+)\*\* runner Job manifests derived/,
+      expected: runnerJobs
+    },
     {
       file: "docs/BUILD_AND_TEST.md",
       what: "the matrix size, in the cost note",
