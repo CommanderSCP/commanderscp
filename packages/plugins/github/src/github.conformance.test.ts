@@ -19,7 +19,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
-import { runDiscoveryConformanceSuite, runExecutorConformanceSuite, mkdtempTracked } from "@scp/plugin-testkit";
+import {
+  runDiscoveryConformanceSuite,
+  runExecutorConformanceSuite,
+  mkdtempTracked
+} from "@scp/plugin-testkit";
 import nock from "nock";
 import { createGithubDiscoveryPlugin, createGithubExecutorPlugin } from "./index.js";
 import {

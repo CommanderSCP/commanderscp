@@ -57,7 +57,10 @@ afterAll(() => {
 });
 
 runExecutorConformanceSuite("terraform", async () => {
-  const statePath = join(await mkdtempTracked(join(tmpdir(), "terraform-conformance-")), "state.json");
+  const statePath = join(
+    await mkdtempTracked(join(tmpdir(), "terraform-conformance-")),
+    "state.json"
+  );
   const build = (): {
     plugin: ReturnType<typeof createTerraformExecutorPlugin>;
     ctx: ReturnType<typeof realHttpPluginContext>;

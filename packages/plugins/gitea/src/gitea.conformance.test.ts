@@ -11,7 +11,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
 import type { PluginContext } from "@scp/plugin-api";
-import { runDiscoveryConformanceSuite, runExecutorConformanceSuite, mkdtempTracked } from "@scp/plugin-testkit";
+import {
+  runDiscoveryConformanceSuite,
+  runExecutorConformanceSuite,
+  mkdtempTracked
+} from "@scp/plugin-testkit";
 import nock from "nock";
 import { createGiteaDiscoveryPlugin, createGiteaExecutorPlugin } from "./index.js";
 import { apiBase, authHeaderFor, buildGiteaConfig, buildTestCtx } from "./gitea-test-support.js";

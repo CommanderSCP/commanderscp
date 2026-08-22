@@ -126,7 +126,9 @@ if (leaked.length > 0) {
     try {
       rmSync(p, { recursive: true, force: true });
     } catch (err) {
-      console.error(`    (failed to sweep it: ${err instanceof Error ? err.message : String(err)})`);
+      console.error(
+        `    (failed to sweep it: ${err instanceof Error ? err.message : String(err)})`
+      );
     }
   }
   console.error(

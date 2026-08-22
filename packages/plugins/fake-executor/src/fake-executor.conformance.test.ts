@@ -15,7 +15,10 @@ import { runExecutorConformanceSuite, mkdtempTracked } from "@scp/plugin-testkit
 import { createFakeExecutorPlugin } from "./index.js";
 
 runExecutorConformanceSuite("fake-executor", async () => {
-  const statePath = join(await mkdtempTracked(join(tmpdir(), "fake-executor-conformance-")), "state.json");
+  const statePath = join(
+    await mkdtempTracked(join(tmpdir(), "fake-executor-conformance-")),
+    "state.json"
+  );
   const build = (): {
     plugin: ReturnType<typeof createFakeExecutorPlugin>;
     ctx: PluginContext;
