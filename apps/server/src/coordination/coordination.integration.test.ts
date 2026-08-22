@@ -1,9 +1,9 @@
-import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { and, eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
+import { mkdtempTracked } from "@scp/test-tmpdir";
 import type { ExecutionStatus, ExternalRunRef } from "@scp/plugin-api";
 import {
   createTestComponent,
@@ -446,7 +446,7 @@ describe("coordination engine: crash resumption", () => {
   it("kills the worker (reconcile loop + plugin host) mid-wave, via a real fault injected between trigger() firing and its result-commit — a freshly started worker resumes purely from Postgres state, with no duplicate trigger and no shared in-memory handoff", async () => {
     const server = await buildTestServer();
     const org = await createTestOrg(server, "kill-worker");
-    const stateDir = await mkdtemp(join(tmpdir(), "scp-kill-worker-test-"));
+    const stateDir = await mkdtempTracked(join(tmpdir(), "scp-kill-worker-test-"));
     const statePath = join(stateDir, "fake-executor-state.json");
 
     try {
@@ -625,7 +625,7 @@ describe("coordination engine: crash resumption", () => {
   it("kills the fake-executor SUBPROCESS mid-wave — the worker survives, the plugin restarts with backoff, and the wave resumes", async () => {
     const server = await buildTestServer();
     const org = await createTestOrg(server, "kill-subprocess");
-    const stateDir = await mkdtemp(join(tmpdir(), "scp-kill-subprocess-test-"));
+    const stateDir = await mkdtempTracked(join(tmpdir(), "scp-kill-subprocess-test-"));
     const statePath = join(stateDir, "fake-executor-state.json");
 
     // A generous autoSucceedAfterMs (3s) gives a reliable window to observe the wave target

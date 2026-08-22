@@ -31,7 +31,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseAllDocuments } from "yaml";
@@ -1220,10 +1220,17 @@ function renderBundledChart(setArgs: string[]): K8sDoc[] {
  *  stores base64(gzip(whole chart)) and is capped at Kubernetes' 1 MB Secret limit. */
 function packagedChartBase64Size(dir: string): number {
   const out = mkdtempSync(path.join(os.tmpdir(), "helm-verify-pkg-"));
-  execFileSync("helm", ["package", dir, "--destination", out], { stdio: "ignore" });
-  const tgz = readdirSync(out).find((f) => f.endsWith(".tgz"));
-  if (!tgz) throw new Error(`helm package produced no .tgz in ${out}`);
-  return readFileSync(path.join(out, tgz)).toString("base64").length;
+  // The same leaked-tempdir property as the *.test.ts census this dir's sibling fixtures were
+  // swept for (see @scp/test-tmpdir) — this is production tool code, not a vitest test, so that
+  // package's afterEach-based tracking does not apply here; a plain try/finally is the fix.
+  try {
+    execFileSync("helm", ["package", dir, "--destination", out], { stdio: "ignore" });
+    const tgz = readdirSync(out).find((f) => f.endsWith(".tgz"));
+    if (!tgz) throw new Error(`helm package produced no .tgz in ${out}`);
+    return readFileSync(path.join(out, tgz)).toString("base64").length;
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
 }
 
 /** One container env entry. `valueFrom` was `unknown` until the operator-config-surface block

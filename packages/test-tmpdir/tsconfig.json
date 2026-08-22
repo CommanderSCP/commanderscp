@@ -4,6 +4,5 @@
     "outDir": "dist",
     "rootDir": "src"
   },
-  "include": ["src"],
-  "references": [{ "path": "../plugin-api" }, { "path": "../test-tmpdir" }]
+  "include": ["src"]
 }
