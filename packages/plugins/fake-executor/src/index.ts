@@ -105,6 +105,27 @@ interface FakeExecutorConfig {
    * is the case the bound is for, and this is the only stand-in for one.
    */
   detailByTarget?: Record<string, string>;
+
+  /**
+   * A GENERATED per-target `detail`, for values too large to cross a spawn argv.
+   *
+   * `detailByTarget` carries its string literally, and the plugin host passes plugin config on the
+   * subprocess ARGV (`host.ts` `spawnInstance`). Linux caps a single argument at MAX_ARG_STRLEN
+   * (128 KiB) and answers `spawn E2BIG` past it; macOS does not, so a 432 KB literal passed locally
+   * and failed only on CI. The bound belongs to the transport, not to this plugin — so a test that
+   * needs a large detail sends the RECIPE and the plugin expands it here, in-process.
+   */
+  detailRepeatByTarget?: Record<
+    string,
+    { head: string; unit: string; times: number; tail: string }
+  >;
+
+  /** GENERATED image refs, for the same reason `detailRepeatByTarget` exists: a 100 KB+ literal
+   *  cannot cross the spawn argv on Linux. `count` refs, each `head` + `unit` repeated `times`. */
+  imagesRepeatByTarget?: Record<
+    string,
+    { head: string; unit: string; times: number; count: number }
+  >;
   /**
    * Per-target deterministic `status().stateRef` — the synced revision. Mirrors `imagesByTarget`
    * and `rolloutByTarget`, and exists because of what their SHAPES could not reach.
@@ -197,6 +218,13 @@ function computePhase(target: TargetState, autoSucceedAfterMs: number): Executio
   if (target.terminal) return target.phase;
   const elapsed = Date.now() - target.triggeredAt;
   return elapsed >= autoSucceedAfterMs ? "succeeded" : "running";
+}
+
+function expandRepeatedDetail(
+  spec: { head: string; unit: string; times: number; tail: string } | undefined
+): string | undefined {
+  if (!spec) return undefined;
+  return `${spec.head}${spec.unit.repeat(spec.times)}${spec.tail}`;
 }
 
 export class FakeExecutorPlugin implements ExecutorPlugin {
@@ -317,7 +345,11 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
     const images = cfg.imagesByTarget?.[targetRef];
     const rollout = cfg.rolloutByTarget?.[targetRef];
     const observed: { images?: string[]; rollout?: typeof rollout } = {};
-    if (images && images.length > 0) observed.images = images;
+    const generated = cfg.imagesRepeatByTarget?.[targetRef];
+    if (generated) {
+      const ref = `${generated.head}${generated.unit.repeat(generated.times)}`;
+      observed.images = Array.from({ length: generated.count }, () => ref);
+    } else if (images && images.length > 0) observed.images = images;
     if (rollout && Object.keys(rollout).length > 0) observed.rollout = rollout;
     return {
       phase,
@@ -326,6 +358,7 @@ export class FakeExecutorPlugin implements ExecutorPlugin {
       stateRef: cfg.stateRefByTarget?.[targetRef] ?? `v${target.version}`,
       detail:
         cfg.detailByTarget?.[targetRef] ??
+        expandRepeatedDetail(cfg.detailRepeatByTarget?.[targetRef]) ??
         `fake-executor target=${targetRef} version=v${target.version}`,
       ...(observed.images || observed.rollout ? { observed } : {}),
       progress: settled ? 1 : 0.5
@@ -390,6 +423,34 @@ export const manifest: PluginManifest = {
       },
       rolloutByTarget: { type: "object", additionalProperties: { type: "object" } },
       detailByTarget: { type: "object", additionalProperties: { type: "string" } },
+      imagesRepeatByTarget: {
+        type: "object",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            head: { type: "string" },
+            unit: { type: "string" },
+            times: { type: "integer" },
+            count: { type: "integer" }
+          },
+          required: ["head", "unit", "times", "count"],
+          additionalProperties: false
+        }
+      },
+      detailRepeatByTarget: {
+        type: "object",
+        additionalProperties: {
+          type: "object",
+          properties: {
+            head: { type: "string" },
+            unit: { type: "string" },
+            times: { type: "integer" },
+            tail: { type: "string" }
+          },
+          required: ["head", "unit", "times", "tail"],
+          additionalProperties: false
+        }
+      },
       // NOT `additionalProperties: {type: "string"}`: `ExecutionStatus.stateRef` is `unknown`, and
       // a structured prior state is the shape `prior_state_ref` is bounded as.
       stateRefByTarget: { type: "object" },

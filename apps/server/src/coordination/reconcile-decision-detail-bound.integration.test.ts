@@ -41,7 +41,16 @@ import { changeWaveTargets, decisions } from "../db/schema.js";
  *  BOUND (both ends kept, middle elided) from a TRUNCATION (tail lost) from no bound at all. */
 const CAUSE_HEAD = "THIRD-PARTY-EXECUTOR-SAID:";
 const CAUSE_TAIL = "the deployment was rejected by the admission webhook";
-const HUGE_DETAIL = `${CAUSE_HEAD}${"noise from a vendor plugin that logs everything\n".repeat(9_000)}${CAUSE_TAIL}`;
+const NOISE_UNIT = "noise from a vendor plugin that logs everything\n";
+const NOISE_TIMES = 9_000;
+/**
+ * Sent as a RECIPE, not a literal. The plugin host passes plugin config on the subprocess ARGV
+ * (`host.ts` `spawnInstance`), and Linux caps a single argument at MAX_ARG_STRLEN (128 KiB),
+ * answering `spawn E2BIG` past it. macOS does not, so the 432 KB literal this test used to send
+ * passed locally for weeks and failed the first time CI's integration shard actually ran it.
+ * `detailRepeatByTarget` expands in-process, so the size under test never crosses the transport.
+ */
+const HUGE_DETAIL = `${CAUSE_HEAD}${NOISE_UNIT.repeat(NOISE_TIMES)}${CAUSE_TAIL}`;
 
 /**
  * THE SAME SIZE, BUT MADE OF ASTRAL CHARACTERS — the HIGH regression arm. `boundDetail` slices at
@@ -65,7 +74,10 @@ const ASTRAL_DETAIL = `${ASTRAL_HEAD}${"🙂🙃🚀🧨".repeat(3_000)}${ASTRAL
  * fixtures in one config is `spawn E2BIG`. 120 000 is still 15x the whole-payload budget, which is
  * what the arm measures.
  */
-const HUGE_IMAGE_REF = `ghcr.io/vendor/app:${"t".repeat(60_000)}`;
+const IMAGE_HEAD = "ghcr.io/vendor/app:";
+const IMAGE_TAG_LEN = 60_000;
+/** Sent as a recipe (see HUGE_DETAIL) — 2 x 60 KB cannot cross the spawn argv on Linux. */
+const HUGE_IMAGE_REF = `${IMAGE_HEAD}${"t".repeat(IMAGE_TAG_LEN)}`;
 
 describe("reconcile: a plugin's `detail` is bounded before it becomes a Decision row", () => {
   let server: ListeningTestServer;
@@ -87,14 +99,22 @@ describe("reconcile: a plugin's `detail` is bounded before it becomes a Decision
       // the observed-images and rollback suites use.
       fakeExecutorConfig: {
         forcePhase: { [failingTargetId]: "failed", [astralTargetId]: "failed" },
-        detailByTarget: {
-          [failingTargetId]: HUGE_DETAIL,
-          [astralTargetId]: ASTRAL_DETAIL
+        detailRepeatByTarget: {
+          [failingTargetId]: {
+            head: CAUSE_HEAD,
+            unit: NOISE_UNIT,
+            times: NOISE_TIMES,
+            tail: CAUSE_TAIL
+          }
         },
+        // A LITERAL, deliberately: this one is small, and the point of the arm is the exact bytes.
+        detailByTarget: { [astralTargetId]: ASTRAL_DETAIL },
         // The sibling field, on a target that SUCCEEDS — so this arm exercises the branch the
         // previous round never looked at: `observed_state` is written on the succeeded and
         // observing paths too, not only when a Decision is being cut.
-        imagesByTarget: { [observedTargetId]: [HUGE_IMAGE_REF, HUGE_IMAGE_REF] }
+        imagesRepeatByTarget: {
+          [observedTargetId]: { head: IMAGE_HEAD, unit: "t", times: IMAGE_TAG_LEN, count: 2 }
+        }
       }
     });
   });
