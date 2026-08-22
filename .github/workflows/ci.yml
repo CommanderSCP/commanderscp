@@ -199,6 +199,35 @@ jobs:
       # coverage is actually collected. Without this flag the thresholds would be decorative —
       # which is precisely the state §7 was in when it claimed "≥80%" while configuring nothing.
       # Turbo forwards everything after `--` to each package's `test` script.
+      #
+      # ------------------------------------------------------------------------------------------
+      # THE HEAVIEST SUITE RUNS FIRST, WITH THE RUNNER TO ITSELF. Not a style preference — a
+      # measurement. `@scp/runner-launcher` holds the repo's heaviest unit sweeps, and this job runs
+      # them inside a 71-task turbo graph (default concurrency 10) where each vitest ALSO opens one
+      # fork per vCPU: ~40 CPU-bound processes on a 4-vCPU runner. Measured inflation on that
+      # runner: `persisted-json-bound.test.ts` 62,948ms against 4,301ms isolated (~14x), and its
+      # slowest single test 29,737ms against a 30,000ms `testTimeout` — a 263ms margin. The suite
+      # was not slow, it was starved, and it failed the build twice over:
+      #
+      #   * at 62,948ms it crossed vitest's compiled-in 60,000ms worker->main RPC deadline and
+      #     failed the run with `[vitest-worker]: Timeout calling "onTaskUpdate"` while reporting
+      #     `17 passed / 429 passed`. That cause is fixed structurally, in the package's own
+      #     `vitest.config.ts`, and this step is NOT what fixes it.
+      #   * at 29,737/30,000ms it is one scheduling accident away from a `testTimeout` failure,
+      #     which no amount of yielding inside the worker can prevent. THAT is what this step is
+      #     for, and it is the only lever that does not weaken a reviewed budget.
+      #
+      # Two steps rather than a separate job, for two reasons. The second step's `turbo run test`
+      # CACHE-HITS this one (identical task hash — verified locally), so the suite executes once and
+      # its output is replayed; and a new job would need adding to the 5z aggregation gate to mean
+      # anything, which is exactly how a job that gates nothing gets created.
+      #
+      # The tmpdir leak sweep wraps this step too, deliberately: `pnpm test` is
+      # `node scripts/tmpdir-leak-sweep.mjs -- turbo run test`, and a suite that runs here and is
+      # replayed from cache below would otherwise never execute inside the sweep at all — the gate
+      # would go green for this package having watched nothing.
+      - name: "Unit tests — @scp/runner-launcher alone (see the measurement above)"
+        run: node scripts/tmpdir-leak-sweep.mjs -- pnpm exec turbo run test --filter=@scp/runner-launcher -- --coverage
       - run: pnpm test -- --coverage
 
   helm-verify:

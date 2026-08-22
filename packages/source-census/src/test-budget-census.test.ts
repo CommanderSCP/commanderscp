@@ -81,6 +81,7 @@ interface UnitSuite {
   dir: string;
   configPath: string | null;
   declaredMs: number | null;
+  setupFiles: string[];
 }
 
 function trackedFiles(): string[] {
@@ -101,6 +102,13 @@ function trackedFiles(): string[] {
 function declaredTimeoutMs(source: string): number | null {
   const m = /^\s*testTimeout:\s*([0-9_]+)\s*,?\s*$/m.exec(source);
   return m ? Number(m[1]!.replace(/_/g, "")) : null;
+}
+
+/** Every path listed in a config's `setupFiles`, in source order; `[]` when it declares none. */
+function declaredSetupFiles(source: string): string[] {
+  const m = /^\s*setupFiles:\s*\[([^\]]*)\]/m.exec(source);
+  if (m === null) return [];
+  return Array.from(m[1]!.matchAll(/"([^"]+)"/g), (hit) => hit[1]!);
 }
 
 function unitSuites(): UnitSuite[] {
@@ -124,11 +132,13 @@ function unitSuites(): UnitSuite[] {
     const configPath = dir === "" ? "vitest.config.ts" : `${dir}/vitest.config.ts`;
     const abs = resolve(REPO_ROOT, configPath);
     const present = existsSync(abs);
+    const source = present ? readFileSync(abs, "utf8") : null;
     suites.push({
       name: parsed.name ?? manifest,
       dir,
       configPath: present ? configPath : null,
-      declaredMs: present ? declaredTimeoutMs(readFileSync(abs, "utf8")) : null
+      declaredMs: source === null ? null : declaredTimeoutMs(source),
+      setupFiles: source === null ? [] : declaredSetupFiles(source)
     });
   }
   return suites;
@@ -212,5 +222,133 @@ describe("no unit suite runs on a per-test deadline nobody chose", () => {
       tracked.slice().sort(),
       "a new non-unit vitest config appeared — add it to NON_UNIT_CONFIGS"
     ).toStrictEqual(NON_UNIT_CONFIGS.slice().sort());
+  });
+});
+
+/**
+ * ================================================================================================
+ * THE SECOND DEADLINE NOBODY DECLARED — vitest's 60,000ms worker->main RPC timeout
+ * ================================================================================================
+ *
+ * WHAT WENT WRONG (the round after the one above). CI job 4 failed `@scp/runner-launcher#test`
+ * with `17 passed / 429 passed / 1 error` and `Error: [vitest-worker]: Timeout calling
+ * "onTaskUpdate"`. No assertion was wrong. `onTaskUpdate` is the worker->main RPC carrying test
+ * results, and birpc arms a 60,000ms timer on every such CALL. That constant is compiled into
+ * vitest's bundle and vitest passes no override from `getRpcOptions()`, so unlike `testTimeout`
+ * above it CANNOT be declared — it is a ceiling every suite lives under whether or not it knows.
+ *
+ * WHAT CROSSES IT is not a slow test but a STARVED WORKER: a file of purely synchronous tests
+ * never lets its event loop reach the poll phase, so the main thread's reply — sent in
+ * milliseconds — cannot be read. Measured: 63s of synchronous blocking fails with no load and no
+ * coverage; the same 63s with one macrotask yield per test is clean, and so is 126s.
+ *
+ * SO THE DECLARABLE THING IS THE YIELD, AND THIS IS WHERE IT IS DECLARED. A package whose suite
+ * yields between tests can stall at most one TEST, which `testTimeout` above already bounds; a
+ * package that does not is bounded by its whole FILE, a number that grows with every property
+ * added and is measured on a machine nobody controls.
+ *
+ * THE CLASS IS NOT PACKAGE-SPECIFIC, AND THE FIRST CENSUS THAT SAID OTHERWISE WAS WRONG. Ranking
+ * every per-file duration in the failing CI job put two files near the ceiling, both in
+ * `@scp/runner-launcher` (62,948ms and 27,832ms), with the next-heaviest at 12,714ms — a 4.7x
+ * margin. That ranking was then USED AS A PREDICTION, and the prediction failed: driving the whole
+ * workspace under a deliberately excessive local load (a 16-spinner CPU flood on top of the turbo
+ * graph, several times CI's), `@scp/plugin-managed-scan` produced the identical
+ * `Timeout calling "onTaskUpdate"` — from `scanner-containment.test.ts`, which had measured 2,481ms
+ * on CI, a 24x margin. Its "NO product code outside apps/runner-scan EXECUTES a scanner binary"
+ * arm — a synchronous `git ls-files` sweep that reads every tracked file — took 109,591ms there.
+ * A CI duration is one load profile, and an I/O-heavy synchronous sweep degrades far harder under
+ * contention than a pure-CPU one: 44x against runner-launcher's 14x.
+ *
+ * SO WHY IS THIS STILL A TABLE. Because at that same load the run failed FOUR OTHER WAYS that no
+ * amount of yielding addresses — `@scp/airgap` on its chosen 20,000ms budget, `@scp/cli` twice on
+ * its chosen 30,000ms hook budgets, and `@scp/runner-launcher` itself on a 129,783ms stall in
+ * MODULE LOAD, a window a between-tests yield cannot reach. Of five runs at a load CI does not
+ * apply, wiring every package would have changed exactly one. The load is the dominant lever and it
+ * is fixed where it belongs, in `.github/workflows/ci.yml`; the yield is the structural one and is
+ * declared per package here.
+ *
+ * WHAT GENERALISES is therefore the RULE and the TRIPWIRE, not a preemptive edit to 36 configs: a
+ * package that grows a heavy synchronous sweep adds itself below, and `MAX_WORKER_STALL_MS` inside
+ * the setup file fires at 45,000ms — with the cause written on it — before the deadline does. That
+ * tripwire is not theoretical either: it is what named the 129,783ms module-load stall above, in a
+ * run whose only other symptom was "429 passed, 1 error".
+ */
+
+/** vitest's compiled-in birpc deadline for a worker->main RPC call. Not configurable. */
+const WORKER_RPC_DEADLINE_MS = 60_000;
+
+/** Unit suites that must yield the worker's event loop between tests, and why. */
+const REQUIRED_SETUP_FILES: Record<string, { setupFile: string; why: string }> = {
+  "@scp/runner-launcher": {
+    setupFile: "src/test-support/yield-between-tests.ts",
+    why: "persisted-json-bound.test.ts is 79 purely synchronous sweeps and measured 62,948ms on the CI runner, past the 60,000ms onTaskUpdate deadline"
+  }
+};
+
+describe("no unit suite can starve its worker past vitest's un-declarable RPC deadline", () => {
+  it("the setupFiles reader reads — it finds a declaration, and is not fooled by prose", () => {
+    // Non-vacuity for the parser every verdict below rests on. Written in the same shape as the
+    // testTimeout reader's own check, and for the same reason: a census whose reader silently
+    // returns nothing agrees with every assertion in this file.
+    expect(
+      declaredSetupFiles('  setupFiles: ["src/test-support/yield-between-tests.ts"],')
+    ).toEqual(["src/test-support/yield-between-tests.ts"]);
+    expect(declaredSetupFiles('  setupFiles: ["a.ts", "b.ts"]')).toEqual(["a.ts", "b.ts"]);
+    expect(declaredSetupFiles("  test: { testTimeout: 20_000 }")).toEqual([]);
+    expect(declaredSetupFiles('// a setupFiles: ["x.ts"] entry would have fixed it')).toEqual([]);
+  });
+
+  it("every package the table names DECLARES the yield, and the file it names EXISTS", () => {
+    // Both halves matter and neither implies the other. A config that lost the entry runs starved
+    // again; an entry pointing at a file that was moved or deleted makes vitest fail loudly, but
+    // this says so in one line instead of 17 test files' worth of module-resolution errors.
+    const offenders: string[] = [];
+    for (const [name, entry] of Object.entries(REQUIRED_SETUP_FILES)) {
+      const suite = SUITES.find((s) => s.name === name);
+      if (suite === undefined) {
+        offenders.push(`${name}: no unit suite by that name — remove the table entry or fix it`);
+        continue;
+      }
+      if (!suite.setupFiles.includes(entry.setupFile)) {
+        offenders.push(
+          `${name}: ${suite.configPath ?? "<no config>"} does not declare setupFiles ` +
+            `["${entry.setupFile}"] — ${entry.why}`
+        );
+      }
+      const abs = resolve(REPO_ROOT, suite.dir, entry.setupFile);
+      if (!existsSync(abs)) offenders.push(`${name}: ${entry.setupFile} does not exist`);
+    }
+    expect(
+      offenders,
+      'without the yield this suite fails with `[vitest-worker]: Timeout calling "onTaskUpdate"` and EVERY TEST PASSING'
+    ).toStrictEqual([]);
+  });
+
+  it("no unit suite declares a setup file nobody reviewed", () => {
+    // The other direction, so the table cannot drift into decoration while configs grow entries
+    // that were never looked at. `setupFiles` is a per-worker side effect on every test in a
+    // package; it is not a place for something to appear unnoticed.
+    const unreviewed = SUITES.filter((s) => s.setupFiles.length > 0)
+      .filter((s) => {
+        const entry = REQUIRED_SETUP_FILES[s.name];
+        return entry === undefined || !s.setupFiles.every((f) => f === entry.setupFile);
+      })
+      .map((s) => `${s.name}: ${s.setupFiles.join(", ")}`);
+    expect(
+      unreviewed,
+      "add the package to REQUIRED_SETUP_FILES with the reason, or drop the setupFiles entry"
+    ).toStrictEqual([]);
+  });
+
+  it("every reviewed per-test budget stays under the RPC deadline it cannot raise", () => {
+    // The bound the yield buys is "one test, not one file" — worth exactly as much as testTimeout
+    // being smaller than the deadline. A future 60,000ms or 90,000ms entry in REVIEWED_BUDGETS_MS
+    // would silently give it away, and the failure it bought back would once again report every
+    // test as passing.
+    const overrun = [...REVIEWED_BUDGETS_MS].filter((ms) => ms >= WORKER_RPC_DEADLINE_MS);
+    expect(
+      overrun,
+      `a per-test budget at or above vitest's ${WORKER_RPC_DEADLINE_MS}ms onTaskUpdate deadline lets one synchronous test cross it, and that failure names no test`
+    ).toStrictEqual([]);
   });
 });
