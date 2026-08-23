@@ -446,7 +446,17 @@ const REVIEWED_HOOK_BUDGETS_MS = new Set([30_000]);
 const NON_UNIT_HOOK_BUDGETS: Record<string, { ms: number; why: string }> = {
   "apps/server/vitest.integration.config.ts": {
     ms: 60_000,
-    why: "per-worker DROP+CREATE DATABASE ... TEMPLATE clone; the Postgres container itself is globalSetup, which no timer governs (5,384ms measured)"
+    why:
+      // CORRECTED after verification: the first rationale here named the per-worker TEMPLATE
+      // clone, which runs in `setupFiles` as a top-level await and is NOT governed by
+      // hookTimeout at all — same as globalSetup. Naming an ungoverned mechanism as the
+      // reason for a governed budget is false comfort, so here is the measured one.
+      "the heaviest hook this budget actually governs is campaign.integration.test.ts's " +
+      "afterEach (real Postgres + real subprocess plugin host), measured 14,292 / 14,689 / " +
+      "18,095ms across three runs and GROWING within a run, i.e. per-test accumulation " +
+      "rather than noise. 60,000 leaves 3.3-4.2x — real headroom, tighter than the number " +
+      "looks. globalSetup (Postgres container, 5,384ms) and setupFiles (the TEMPLATE clone) " +
+      "are on NO timer; do not count them toward this budget in either direction."
   },
   "packages/plugins/managed-dep/vitest.integration.config.ts": {
     ms: 600_000,
