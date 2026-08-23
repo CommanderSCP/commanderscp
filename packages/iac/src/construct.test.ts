@@ -8,6 +8,7 @@ import {
   Campaign,
   Component,
   DeploymentTarget,
+  Domain,
   Placement,
   Policy,
   ReleaseTopology,
@@ -745,6 +746,86 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
     const { stack: bare } = fixture("producer-none");
     const manifest = bare.synth();
     expect(manifest.producers).toBeUndefined();
+    expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
+  });
+});
+
+describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
+  /**
+   * A rung says "every containment move BENEATH this container needs `governance:move` at both
+   * ends". It is the SECOND collection whose absent key means UNMANAGED, and the more dangerous of
+   * the two to get wrong: pruning a producer re-arms dependency confusion, pruning a rung turns OFF
+   * a governance bar and the symptom is an ABSENCE of refusals. So the last case here is the one
+   * that matters — it exists so nobody "fixes" `synth()` to emit `governanceMoveRungs: []`, which
+   * WOULD disable, silently, every rung on every container each stack that ever declared one owns.
+   *
+   * | Mutation | Result |
+   * |---|---|
+   * | emit `governanceMoveRungs: []` instead of omitting it when empty | "…omits the collection when empty…" FAILS |
+   * | sort rungs by declaration order instead of by subject | "sorts on the subject…" FAILS |
+   * | resolve the subject to something other than its URN (e.g. the construct id) | "lands in the manifest…" and "accepts a container referenced by URN…" FAIL |
+   */
+  function fixture(stackName: string) {
+    const app = new App();
+    const stack = new Stack(app, stackName);
+    const service = new Service(stack, "billing", { name: "Billing" });
+    return { stack, service };
+  }
+
+  it("stack.addGovernanceMoveRung lands in the manifest and survives schema validation", () => {
+    const { stack, service } = fixture("rung-basic");
+    stack.addGovernanceMoveRung(service);
+    const manifest = stack.synth();
+    expect(manifest.governanceMoveRungs).toEqual([{ subjectIdOrUrn: service.urn }]);
+    expect(() => DesiredStateManifestSchema.parse(manifest)).not.toThrow();
+  });
+
+  it("carries NO tier — it is derived server-side from the subject's object type", () => {
+    // A manifest that named a tier could name one the subject is not, and the stored literal would
+    // then describe a containment shape nothing else in the system believes in. The entry has
+    // exactly one key, and this pins that.
+    const { stack, service } = fixture("rung-no-tier");
+    stack.addGovernanceMoveRung(service);
+    expect(Object.keys(stack.synth().governanceMoveRungs?.[0] ?? {})).toEqual(["subjectIdOrUrn"]);
+  });
+
+  it("accepts a container referenced by URN, for one outside this program", () => {
+    // The same escape hatch mappings, placements and producers have. `POST /plans` still refuses it
+    // when this stack does not own the container — the manifest may SAY it, the server decides it.
+    const { stack } = fixture("rung-external");
+    const external = "urn:scp:other-stack:domain:platform";
+    stack.addGovernanceMoveRung(external);
+    expect(stack.synth().governanceMoveRungs?.[0]?.subjectIdOrUrn).toBe(external);
+  });
+
+  it("sorts on the subject — the whole identity — so declaration order never changes the bytes", () => {
+    const one = fixture("rung-order");
+    const oneB = new Domain(one.stack, "platform", { name: "Platform" });
+    one.stack.addGovernanceMoveRung(one.service);
+    one.stack.addGovernanceMoveRung(oneB);
+    const two = fixture("rung-order");
+    const twoB = new Domain(two.stack, "platform", { name: "Platform" });
+    two.stack.addGovernanceMoveRung(twoB);
+    two.stack.addGovernanceMoveRung(two.service);
+    expect(JSON.stringify(one.stack.synth())).toBe(JSON.stringify(two.stack.synth()));
+    expect(one.stack.synth().governanceMoveRungs?.map((r) => r.subjectIdOrUrn)).toEqual(
+      [one.service.urn, oneB.urn].sort((a, b) => a.localeCompare(b))
+    );
+  });
+
+  it("omits the collection when empty — and THAT is why deleting your only rung disables nothing", () => {
+    // Do not "fix" this to emit `governanceMoveRungs: []`. An empty array is a PRESENT collection,
+    // which the server reads as "I manage rungs and declare none" and therefore DISABLES every rung
+    // on a container this stack owns. An absent key means UNMANAGED. Emitting `[]` here would
+    // un-govern a subtree on the next apply of every stack that ever declared a rung and later
+    // dropped it — and the symptom would be moves quietly succeeding, which nothing surfaces.
+    const { stack, service } = fixture("rung-none");
+    stack.addGovernanceMoveRung(service);
+    expect(stack.synth().governanceMoveRungs).toHaveLength(1);
+
+    const { stack: bare } = fixture("rung-none");
+    const manifest = bare.synth();
+    expect(manifest.governanceMoveRungs).toBeUndefined();
     expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
   });
 });
