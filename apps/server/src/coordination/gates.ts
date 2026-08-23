@@ -5,6 +5,7 @@ import { gateBindings } from "../db/schema.js";
 import type { PluginHost } from "../plugin-host/contract.js";
 import type { CelSandbox } from "../governance/cel-sandbox.js";
 import { evaluateGovernanceGate } from "../governance/gate-orchestrator.js";
+import type { TargetFreezes } from "../governance/freeze-scope.js";
 import { targetObjectIdsOf } from "./changes-repo.js";
 import { getObjectByIdOrUrnAnyType } from "../graph/objects-repo.js";
 
@@ -50,6 +51,16 @@ export interface GateVerdict {
   /** Every active freeze this transition overrode (CRITICAL #2 — possibly several) —
    *  transition.ts writes one high-severity `freeze.override` audit event per entry. */
   freezeOverrides?: { freezeId: string; reason: string; scopeObjectId: string }[] | undefined;
+  /** M25.2 — per-target freeze coverage as the gate resolved it, populated only by
+   *  `evaluateWaveGate` (the `lifecycle_edge` path keeps any-target-frozen => block and has no
+   *  per-target dimension to report). Carried through from `GateOutcome.frozenTargets`.
+   *
+   *  DELIBERATELY NOT THE ENFORCEMENT CHANNEL. The wave gate fires ONCE, on `pending -> running`,
+   *  so a freeze declared mid-wave never appears here at all — `coordination/reconcile.ts` and
+   *  `coordination/campaign-reconcile.ts` each resolve holds themselves, every tick, through
+   *  `coordination/freeze-hold.ts`. This field explains a verdict; it does not withhold anything.
+   *  Internal TS, never a wire schema. */
+  frozenTargets?: TargetFreezes[] | undefined;
 }
 
 function allowVerdict(reason: string, extra: Record<string, unknown> = {}): GateVerdict {
@@ -215,6 +226,7 @@ export async function evaluateWaveGate(
       waveIndex: ctx.waveIndex,
       explicitGatesBound: explicitlyBound.length
     },
-    reasonTree: outcome.reasonTree
+    reasonTree: outcome.reasonTree,
+    frozenTargets: outcome.frozenTargets
   };
 }
