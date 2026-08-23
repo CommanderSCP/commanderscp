@@ -59,7 +59,9 @@ tooltip carrying the honesty sentence. The accent (army olive, `army-*` scale) i
 Props: `variant` (tone: `neutral|info|success|warning|danger|unknown`; deprecated aliases
 `default|secondary→neutral`, `destructive→danger`, `outline→neutral`, `info`, `success`),
 `size` (`sm` only, default), `icon?: LucideIcon` (leading, `size-3.5`), plus div props.
-`unknown` is the ONLY sanctioned honesty pill.
+`unknown` is the ONLY sanctioned honesty pill. Idiom: an empty server-enriched name renders the id
+plus this badge reading "unnamed" (design-system.md §6.4) — never a bare id with no signal, and
+never silently in one cell of a row while a sibling cell in the same row stays silent.
 
 ```tsx
 <Badge variant="unknown" icon={Info} data-testid="board-change-visibility-unknown" title="Full sentence lives here.">
