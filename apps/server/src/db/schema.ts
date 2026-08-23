@@ -1028,7 +1028,14 @@ export const freezes = pgTable(
     endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
     reason: text("reason").notNull(),
     createdByActorId: uuid("created_by_actor_id").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow()
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /** M25.2 / owner decision D5 (drizzle/0077) — WHETHER THIS FREEZE STILL PARKS A WHOLE WAVE.
+     *  `false` (the default, and retroactively true of every freeze authored before M25.2): the
+     *  covered wave targets are held one by one in `coordination/reconcile.ts`'s trigger loop and
+     *  their uncovered siblings ship. `true`: any coverage parks every target of the wave — the
+     *  pre-M25.2 behaviour, for coupled targets where half-applied is worse than not-applied.
+     *  Read in exactly one place: `gate-orchestrator.ts`'s `partiallyFrozen` predicate. */
+    atomic: boolean("atomic").notNull().default(false)
   },
   (table) => [
     index("freezes_org_scope").on(table.orgId, table.scopeObjectId),
