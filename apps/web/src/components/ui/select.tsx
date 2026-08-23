@@ -1,6 +1,7 @@
 import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
-import { cn } from "../../lib/utils";
+import { ChevronDown } from "lucide-react";
+import { cn, focusRing } from "../../lib/utils";
 
 export const Select = SelectPrimitive.Root;
 export const SelectValue = SelectPrimitive.Value;
@@ -13,13 +14,21 @@ export const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      "flex h-9 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:cursor-not-allowed disabled:opacity-50",
+      "flex h-9 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm disabled:cursor-not-allowed disabled:opacity-50",
+      focusRing,
       className
     )}
     {...props}
   >
     {children}
-    <SelectPrimitive.Icon className="ml-2 text-slate-500">▾</SelectPrimitive.Icon>
+    {/* §2.12: the one chevron for every Select — lucide `ChevronDown`, never a `▾` literal. */}
+    <SelectPrimitive.Icon asChild>
+      <ChevronDown
+        className="ml-2 size-4 shrink-0 text-slate-500"
+        strokeWidth={2}
+        aria-hidden="true"
+      />
+    </SelectPrimitive.Icon>
   </SelectPrimitive.Trigger>
 ));
 SelectTrigger.displayName = SelectPrimitive.Trigger.displayName;
@@ -33,7 +42,8 @@ export const SelectContent = React.forwardRef<
       ref={ref}
       position={position}
       className={cn(
-        "relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border border-slate-200 bg-white shadow-md",
+        // §1.2: dropdown content is one of the two homes of `shadow-lg`.
+        "relative z-50 max-h-96 min-w-[8rem] overflow-hidden rounded-md border border-slate-200 bg-white shadow-lg",
         position === "popper" && "translate-y-1",
         className
       )}

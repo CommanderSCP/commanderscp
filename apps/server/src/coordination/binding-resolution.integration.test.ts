@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import pg from "pg";
 import { ScpClient } from "@scp/sdk";
@@ -316,9 +317,16 @@ describe("placement-aware binding resolution", () => {
     const surgeon = new pg.Client({ connectionString: testDatabaseUrl() });
     await surgeon.connect();
     try {
+      // WIDEN, never REPLACE. The first form of this surgery set to_types = ['service','component']
+      // — silently DROPPING 'assembly' (migration 0055's real level) for every test that ran after
+      // it, so any later `service -> assembly` edge 400'd with "does not allow 'assembly' as the
+      // 'to' endpoint" purely as a function of test ORDER. The real-assembly tests only passed
+      // because they happened to run first. Measured 2026-08-14 when the domain-local premise test
+      // below landed after the hop-cap tests. Append 'service' to whatever the row already allows.
       await surgeon.query(
-        `UPDATE relationship_types SET to_types = ARRAY['service','component']
-         WHERE id = 'contains'`
+        `UPDATE relationship_types
+            SET to_types = array_append(array_remove(to_types, 'service'), 'service')
+          WHERE id = 'contains'`
       );
     } finally {
       await surgeon.end();
@@ -507,5 +515,76 @@ describe("placement-aware binding resolution", () => {
     await bind(placements[1]!.id, "readapi-ambig-b");
 
     await expect(admin.executors.getBinding(component.id)).rejects.toThrow(/conflict/i);
+  });
+
+  // ============================================================================================
+  // THE OUTPOST'S PREMISE (outpost-ui.md §9, owner question 2026-08-14): does the outpost need
+  // service and assembly levels at all? Only if a DOMAIN-LOCAL container can carry shared domain
+  // infra/config that its components inherit — the cluster shared by a whole domain-local service.
+  // The ladder is generic on the `contains` edge and M20.5 makes locality inherit downward, so this
+  // SHOULD compose, but the exact combination (ADR-0031 local container × ADR-0027/0029 rung
+  // binding) had never been exercised. Measured here, because the whole outpost-catalog shape
+  // rests on it.
+  // ============================================================================================
+
+  it("PREMISE: a DOMAIN-LOCAL service's rung-bound infra resolves for its (inheriting) components", async () => {
+    const service = await admin.services.create({
+      name: `local-svc-${randomUUID().slice(0, 8)}`,
+      domainLocal: true
+    });
+    expect(service.domainLocal).toBe(true);
+    // Created WITHOUT the flag — inherits locality at create (M20.5 §6a).
+    const component = await admin.components.create({
+      name: `local-comp-${randomUUID().slice(0, 8)}`,
+      service: service.id
+    });
+    expect(component.domainLocal, "child must inherit the container's locality").toBe(true);
+    await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
+
+    // The shared domain cluster's IaC, declared ONCE at the service.
+    await bind(service.id, "local-svc-infra", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    expect(
+      r.outcome,
+      "a domain-local component must inherit its domain-local service's infra binding — " +
+        "otherwise the outpost has no place to bind shared domain infra and the service/assembly " +
+        "levels are dead weight there"
+    ).toBe("via_service");
+    expect(r.binding?.targetObjectId).toBe(service.id);
+    expect(r.binding?.pluginInstanceId).toBe("br-local-svc-infra");
+  });
+
+  it("PREMISE (assembly rung): a DOMAIN-LOCAL assembly's binding resolves for the components it contains", async () => {
+    // The assembly level is the finer-grained shared-infra container ("a cluster shared by this
+    // assembly, not the whole service"); same composition, one rung down.
+    const service = await admin.services.create({
+      name: `local-asvc-${randomUUID().slice(0, 8)}`,
+      domainLocal: true
+    });
+    const assembly = await admin.assemblies.create({
+      name: `local-asm-${randomUUID().slice(0, 8)}`
+    });
+    // service contains assembly (route 2), assembly contains component: use the same doors the
+    // fixture and the ancestor-rung tests use.
+    await admin.relationships.create({
+      typeId: "contains",
+      fromId: service.id,
+      toId: assembly.id
+    });
+    const component = await admin.components.create({
+      name: `local-acomp-${randomUUID().slice(0, 8)}`,
+      service: assembly.id
+    });
+    await admin.placements.create({ component: component.id, deploymentTarget: gamma.id });
+    await bind(assembly.id, "local-asm-infra", "infrastructure");
+
+    const r = await resolve(component.id, "infrastructure");
+    expect(r.outcome).toBe("via_service");
+    expect(
+      r.outcome === "via_service" ? r.viaObjectTypeId : null,
+      "the Decision must name the rung honestly"
+    ).toBe("assembly");
+    expect(r.binding?.targetObjectId).toBe(assembly.id);
   });
 });

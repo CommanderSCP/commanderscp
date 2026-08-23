@@ -12,11 +12,6 @@ import { findObjectByIdOrUrnAnyType, getObjectByIdOrUrnAnyType } from "../graph/
  * actor doesn't control is the same escalation, and its `targets` were already an unchecked surface
  * pre-P4B). Both are refused outright on the generic object route (`routes/objects-generic.ts`) so
  * they can be created and mutated ONLY through their typed, target-authority-checked paths.
- * `initiative` is deliberately NOT included here: an initiative's only privilege-relevant action is
- * linking a member campaign, which is already a `coordinates` RELATIONSHIP write — independently
- * authorized both-endpoint wherever it happens (`routes/relationships.ts`'s generic path, and
- * `coordination/initiative-repo.ts`'s own equivalent check) — creating a bare, unlinked `initiative`
- * object poses no privilege escalation.
  */
 export const COORDINATION_TARGET_SCOPED_OBJECT_TYPE_IDS: ReadonlySet<string> = new Set([
   "campaign",

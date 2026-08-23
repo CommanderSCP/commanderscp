@@ -43,6 +43,12 @@ import {
  * | delete `assertNoContainmentCycle` | the MIXED-loop test FAILS. The row above was true only while the check walked `contains` alone: it was unreachable because a PURE-`contains` cycle is unconstructible by endpoint type. It now walks both containment routes, and the one-hop-of-each loop IS constructible with legal types — so the check is live, and deleting it is caught |
  * | make the walk `contains`-only again (the pre-M21.7 hand-rolled loop) | the MIXED-loop test FAILS, and nothing else does — which is the measurement of what the old walk could not see |
  * | refuse every `contains` edge | the CONTROL inside the mixed-loop test FAILS, plus most of this file |
+ *
+ * RENAMED 2026-08-18: `assertNoContainmentCycle` is now `assertContainsEdgeAdmissible` — the same
+ * cycle question plus the DEPTH-BOUND question (owner ruling, ADR-0037 Consequences: no write may
+ * leave a live row past `CONTAINMENT_WALK_MAX_DEPTH`). The rows above are kept under the old name as
+ * the history they record; the depth half is pinned, per door and with mutation, in
+ * `containment-depth-doors.integration.test.ts`, not here.
  */
 describe("service --contains--> component (membership, one service per component)", () => {
   let server: ListeningTestServer;

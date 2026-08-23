@@ -1,8 +1,11 @@
 import { Link, Outlet } from "@tanstack/react-router";
+import { useAuth } from "../lib/auth-context";
 import { useIdOrUrnParam } from "../lib/use-route-params";
+import { cn, focusRing } from "../lib/utils";
 
 /**
- * The chrome shared by every view of ONE component — today Pipeline and Settings.
+ * The chrome shared by every view of ONE component — Infrastructure, Delivery, Dependencies and
+ * Settings.
  *
  * ============================================================================================
  * WHY THIS EXISTS: `RegistryDetailPage` WAS ORPHANED FOR COMPONENTS
@@ -29,20 +32,34 @@ import { useIdOrUrnParam } from "../lib/use-route-params";
  * so every existing link keeps landing on a component's usual view.
  */
 
-const TAB_BASE = "border-b-2 px-3 py-2 text-sm font-medium transition-colors hover:text-slate-900";
+// Every interactive element carries the shared focus ring (design spec §2.10).
+// The ACTIVE tab must be unmistakable (owner, 2026-08-14: "make sure we're highlighting which view
+// we're on"). A hairline olive underline on a white bar did not register; the active tab is now a
+// filled army-700 segment with white text — the same treatment the sidebar gives its active entry
+// (§3.2), so "where am I" reads the same way in both navs. Inactive tabs stay quiet text.
+const TAB_BASE = cn("rounded-t-md px-3 py-2 text-sm font-medium transition-colors", focusRing);
+const TAB_INACTIVE = `${TAB_BASE} text-slate-500 hover:bg-army-50 hover:text-army-800`;
+const TAB_ACTIVE = `${TAB_BASE} bg-army-700 text-white shadow-sm`;
 
 export function ComponentDetailLayout(): React.JSX.Element {
   const idOrUrn = useIdOrUrnParam();
+  const { user } = useAuth();
+  // Owner rule (2026-08-17): dependency automation happens ONLY at the commander — it pulls from
+  // public registries to bump the GLOBAL repos, and outposts receive the result down the promotion
+  // pipeline. So the Dependencies tab is a commander-site tab (like Campaigns/Graph in the nav):
+  // read from the install-time role, never from data. A direct URL on an outpost still renders a
+  // stated pointer (component-dependencies.tsx), never the page.
+  const showDependencies = user?.instanceRole === "commander";
   if (!idOrUrn) return <p className="text-sm text-red-600">Not found.</p>;
 
   return (
     <div className="flex flex-col gap-4">
-      <nav className="flex gap-1 border-b border-slate-200" data-testid="component-tabs">
+      <nav className="flex gap-1 border-b-2 border-army-700/30" data-testid="component-tabs">
         <Link
           to="/components/$idOrUrn/infrastructure"
           params={{ idOrUrn }}
-          className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-slate-900 text-slate-900` }}
+          className={TAB_INACTIVE}
+          activeProps={{ className: TAB_ACTIVE }}
           data-testid="component-tab-infrastructure"
         >
           Infrastructure
@@ -53,17 +70,32 @@ export function ComponentDetailLayout(): React.JSX.Element {
           // `activeOptions.exact` matters: without it this tab stays "active" while a child route is
           // showing, since its path is a prefix of every child's.
           activeOptions={{ exact: true }}
-          className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-slate-900 text-slate-900` }}
+          className={TAB_INACTIVE}
+          activeProps={{ className: TAB_ACTIVE }}
           data-testid="component-tab-software"
         >
-          Software
+          {/* "Delivery", not "Software": this journey carries BOTH the build (application
+              artifact) and configuration pipelines, and calling helm values/k8s manifests
+              "software" is the Category error ADR-0007 exists to prevent. The testid keeps its
+              historical name — it is a machine id, not copy. Owner taxonomy ruling 2026-08-11. */}
+          Delivery
         </Link>
+        {showDependencies ? (
+          <Link
+            to="/components/$idOrUrn/dependencies"
+            params={{ idOrUrn }}
+            className={TAB_INACTIVE}
+            activeProps={{ className: TAB_ACTIVE }}
+            data-testid="component-tab-dependencies"
+          >
+            Dependencies
+          </Link>
+        ) : null}
         <Link
           to="/components/$idOrUrn/settings"
           params={{ idOrUrn }}
-          className={`${TAB_BASE} border-transparent text-slate-500`}
-          activeProps={{ className: `${TAB_BASE} border-slate-900 text-slate-900` }}
+          className={TAB_INACTIVE}
+          activeProps={{ className: TAB_ACTIVE }}
           data-testid="component-tab-settings"
         >
           Settings

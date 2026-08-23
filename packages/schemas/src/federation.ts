@@ -308,7 +308,10 @@ export type OutpostTrustTier = z.infer<typeof OutpostTrustTierSchema>;
 export const CreateOutpostConfigRequestSchema = z.strictObject({
   /** The paired peer this config is ABOUT (its trust-domain id = `federation_peers.id`). The peer
    *  row must already exist and hold role `outpost`; an unbound id is refused, and a second config
-   *  object for the same peer conflicts. */
+   *  object for the same peer conflicts. Since pipeline-substrate-registry-scan.md §10.5 the second
+   *  accepted value is THIS instance's own domain id (`GET /federation/self`) — the HQ OUTPOST
+   *  (formerly 'co-located'; GLOSSARY, ADR-0021 D7) — accepted only from a `commander`-role instance (an outpost's own record is
+   *  commander-declared and arrives replicated; any other role is a 400). */
   peerDomainId: z.string().uuid(),
   /** Display name for the config object. Defaults to the peer's own name. The object's URN is
    *  derived from `peerDomainId`, never from this, so renaming can never fork the binding. */
@@ -355,6 +358,17 @@ export const OutpostConfigSchema = z.object({
    *  the reading instance's own domain id to compare against, and phase B would then be one join away
    *  from rendering someone else's copy as this instance's own assertion. */
   originIsSelf: z.boolean().optional(),
+  /** pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST. `true` when `peerDomainId`
+   *  is the READING instance's OWN trust domain (`federation_self.domainId`): the record describes
+   *  this instance's own domain as an outpost (the commander-and-outpost-are-one case), and there is
+   *  NO `federation_peers` row to join it to — every consumer that joins an outpost record to its
+   *  peer row (peer name, role, transport, sync state) must render this record as "this instance"
+   *  instead, taking name and role from `federation_self`. `false` for a record bound to a paired
+   *  peer (a FIELD outpost — any outpost in another trust domain). Resolved server-side for the same reason `originIsSelf` is: a client would otherwise
+   *  have to already know the reading instance's domain id. NOTE the two flags are independent — on
+   *  an outpost site its own replica reads `originIsSelf: false` (the commander authored it) and
+   *  `peerIsSelf: true` (it is about this domain). Optional for additivity. */
+  peerIsSelf: z.boolean().optional(),
   /** Review round 4 — `"manual"` for an UNVERIFIED hand-filled shadow copy (DESIGN §13 hand-fill),
    *  `null` for anything a signature verified or this domain authored. A `"manual"` row's `trustTier` is
    *  ALSO listed in `unknownFields`: it is a value somebody typed, not an assertion this instance can
@@ -711,6 +725,15 @@ export const FederationStatusResponseSchema = z.object({
    *  nothing). The denominator every `lastExportedThroughSequence` is read against; one value per
    *  instance, not per peer. Optional/additive. */
   ownJournalTail: z.number().int().nullable().optional(),
+  /** pipeline-substrate-registry-scan.md §10.5 — THE HQ OUTPOST RECORD: the `outpost` config
+   *  object whose `peerDomainId` is `self.domainId`, resolved by the same authority rule
+   *  `GET /federation/outposts/{peerDomainId}` applies (`peerIsSelf: true` on it). It has NO peer
+   *  row, so it can never appear in `peers[]`; this is where a client reads it. `null` = this
+   *  instance's own domain has no outpost record (a stated absence — a client says "no outpost
+   *  registered", never invents one); absent = an older server that does not resolve it. On an
+   *  OUTPOST site this is that site's own replica of its config (`originIsSelf: false`). Optional
+   *  for additivity. */
+  selfOutpost: OutpostConfigSchema.nullable().optional(),
   peers: z.array(FederationPeerStatusSchema)
 });
 export type FederationStatusResponse = z.infer<typeof FederationStatusResponseSchema>;

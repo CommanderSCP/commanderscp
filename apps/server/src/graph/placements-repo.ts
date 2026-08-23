@@ -11,6 +11,7 @@ import {
   toGraphObject
 } from "./objects-repo.js";
 import { createRelationship, deleteRelationship, listRelationships } from "./relationships-repo.js";
+import { assertContainmentDepthAdmits, containmentParentChainForDoor } from "./containment.js";
 import { authorize } from "../authz/resolve.js";
 import { insertDecision } from "../coordination/decisions-repo.js";
 import { badRequest, conflict } from "../errors.js";
@@ -34,7 +35,8 @@ import { slugify } from "./urn.js";
  *
  * One fact in two places is a real cost and it is paid deliberately. It is contained by there being
  * exactly ONE local write path: `createPlacement` writes both in one transaction, and the generic
- * `/objects/placement` and overlay doors are refused outright (`graph/pair-bound-types.ts`). The
+ * `/objects/placement`, overlay, IaC, discovery-accept and hand-fill doors are refused outright
+ * (`graph/pair-bound-types.ts` — five doors, the last added 2026-08-18). The
  * federation path reproduces both halves without this module, because a replicated placement arrives
  * as an `object_upsert` plus its own `relationship_upsert` entries.
  */
@@ -180,11 +182,50 @@ export async function createPlacement(
   //
   // A lost race here (two re-declarations of the same withdrawn pair at once) still cannot produce a
   // duplicate: the pair index catches it and raises the 409 below. This only chooses a URN.
-  let id = input.id;
+  const id = input.id ?? uuidv7();
   let urn = baseUrn;
   if (!input.urn && (await urnIsTaken(tx, input.orgId, baseUrn))) {
-    id = input.id ?? uuidv7();
     urn = `${baseUrn}-${id}`;
+  }
+
+  // CONTAINMENT ROUTES 3 AND 4 — THE PAIR DOOR (owner ruling 2026-08-18, ADR-0037 Consequences).
+  //
+  // A placement is CONTAINED by both endpoints it names (`graph/containment.ts` `placementParentsSql`
+  // — read from these very properties), so declaring one adds a hop under the component AND under
+  // the deployment-target, exactly as a `domain_id` write or a `contains` edge adds one. `createObject`
+  // below runs the `domain_id` half of the invariant for the placement's route-1 parent and cannot
+  // see these two, because they arrive as properties. So the same arithmetic runs HERE, once per
+  // endpoint, before anything is written: `hops(endpoint) + 1 > bound` refuses (the placement is new,
+  // height 0, no downward walk). MEASURED before this existed: `POST /placements {component: <a
+  // component at hop ten>, deploymentTarget: <root target>}` answered 201, and `containmentChain` of
+  // the new placement then threw — a placement no policy, freeze or gate could ever scope.
+  //
+  // `authorize` above already 409s (ADR-0037's deny-probe) when an endpoint is itself PAST the bound
+  // and no grant is found before it; it passes at exactly the bound, which is the case this closes.
+  // An endpoint past the bound that a short route made readable is the conversion branch's case
+  // (`containmentParentChainForDoor` turns the walk's 409 into this door's 400).
+  //
+  // WHERE, and why not `createObject`: this module is the SINGLE local writer of a placement (module
+  // doc — the generic, overlay, IaC, discovery and hand-fill doors all refuse the type, and IaC apply funnels
+  // through THIS function), so the door is complete here for every local path. Federation import
+  // never reaches this function (a replica arrives as `object_upsert` + its own `relationship_upsert`
+  // entries, straight into `createObject` under `federationImport`), so the D1/D2 carve-out — the
+  // receiver does not referee a peer-authored containment, and `import-repo.ts`'s `object_upsert`
+  // branch has no try/catch, so one refusal would abort a whole signed bundle — is inherited by
+  // construction rather than restated as a flag. Hand-fill (`federation/handfill-repo.ts`) also wears
+  // `federationImport` but is a LOCAL operator's free-form request, not a channel; it used to admit a
+  // `placement` (proven: a hop-eleven placement landed there while this door refused the same pair)
+  // and now refuses the type outright as the fifth door of the pair-bound census
+  // (`graph/pair-bound-types.ts`), so every local placement write reaches THIS door.
+  for (const endpoint of [component, target]) {
+    const { hops } = await containmentParentChainForDoor(tx, input.orgId, id, endpoint.id);
+    await assertContainmentDepthAdmits(tx, {
+      orgId: input.orgId,
+      childId: id,
+      parentId: endpoint.id,
+      hops,
+      childIsNew: true
+    });
   }
 
   let object: GraphObject;

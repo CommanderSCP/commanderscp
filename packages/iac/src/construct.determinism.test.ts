@@ -4,7 +4,6 @@ import {
   App,
   Campaign,
   Domain,
-  Initiative,
   ReleaseTopology,
   ResourceConstruct,
   Service,
@@ -27,7 +26,7 @@ import { canonicalJson } from "./canonical.js";
 
 // Only the uniform `defineResourceConstruct` types belong here — they share the
 // `(scope, id, ResourceProps)` signature this generic loop relies on. `Component` is deliberately
-// EXCLUDED: like the campaign/initiative/topology constructs (see the note below), it is bespoke and
+// EXCLUDED: like the campaign/topology constructs (see the note below), it is bespoke and
 // needs its own typed props (`service`, to emit its `contains` edge), so it can't be built via the
 // uniform `new Ctor(stack, id, props)` call. Its own synth is pinned in `construct.test.ts`.
 const RESOURCE_CTORS = [Service, Domain, Team] as const;
@@ -156,13 +155,11 @@ describe("@scp/iac: synth determinism (fast-check)", () => {
 /**
  * Same determinism property as above (re-synthesizing the same tree twice is byte-identical;
  * two independently-built-but-equivalent trees synthesize identically regardless of construction
- * order), applied to the M5 constructs (`Campaign`/`Initiative`/`ReleaseTopology`). These can't
+ * order), applied to the M5 constructs (`Campaign`/`ReleaseTopology`). These can't
  * join `RESOURCE_CTORS` above — each needs its own typed props (`waves`, `targets`, `topology`)
  * rather than plain `ResourceProps` — so this is a small dedicated tree builder instead, varying
  * both the random content (names, wave mode/fan-in, descriptions) and, within real dependency
  * constraints (a Campaign's targets must exist before the Campaign does), the construction order.
- * (An `Initiative` carries no synth-declarable membership — `coordinates` is system-managed, added
- * via API only — so it's a standalone object here, same as any other resource construct.)
  */
 interface CampaignTreeSpec {
   stackName: string;
@@ -171,7 +168,6 @@ interface CampaignTreeSpec {
   waveMode: "parallel" | "sequential";
   requiresFanIn: boolean;
   campaignDescription: string;
-  initiativeDescription: string;
 }
 
 const campaignTreeSpecArb: fc.Arbitrary<CampaignTreeSpec> = fc.record({
@@ -180,14 +176,13 @@ const campaignTreeSpecArb: fc.Arbitrary<CampaignTreeSpec> = fc.record({
   serviceBName: fc.string({ minLength: 1, maxLength: 20 }),
   waveMode: fc.constantFrom<"parallel" | "sequential">("parallel", "sequential"),
   requiresFanIn: fc.boolean(),
-  campaignDescription: fc.string({ minLength: 0, maxLength: 20 }),
-  initiativeDescription: fc.string({ minLength: 0, maxLength: 20 })
+  campaignDescription: fc.string({ minLength: 0, maxLength: 20 })
 });
 
 /** Builds a stack with 2 services, a topology and campaign referencing them (built in either
  *  `"topology-first"` or `"campaign-first"` order — both legal, since neither depends on the
- *  other), and a standalone initiative — every construction order a real IaC author could legally
- *  choose, given `Campaign`/`ReleaseTopology` need the services to exist first. */
+ *  other) — every construction order a real IaC author could legally choose, given
+ *  `Campaign`/`ReleaseTopology` need the services to exist first. */
 function buildCampaignTree(
   spec: CampaignTreeSpec,
   serviceOrder: ["a", "b"] | ["b", "a"],
@@ -227,19 +222,13 @@ function buildCampaignTree(
     buildTopology();
   }
 
-  // Standalone — `coordinates` (initiative -> campaign membership) is system-managed and NOT
-  // synth-declarable in IaC (M5 CRITICAL); membership is added via the authority-checked
-  // `POST /initiatives/{id}/campaigns` API. `campaign` is still referenced above (its targets).
+  // `campaign` is referenced above (its targets); the binding is kept for readability.
   void campaign;
-  new Initiative(stack, "initiative", {
-    name: "Initiative",
-    description: spec.initiativeDescription
-  });
 
   return stack;
 }
 
-describe("@scp/iac: synth determinism (fast-check) — Campaign/Initiative/ReleaseTopology", () => {
+describe("@scp/iac: synth determinism (fast-check) — Campaign/ReleaseTopology", () => {
   it("re-synthesizing the same tree twice is byte-identical", () => {
     fc.assert(
       fc.property(campaignTreeSpecArb, (spec) => {

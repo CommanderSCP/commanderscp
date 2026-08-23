@@ -25,6 +25,7 @@ import { recordBumpHeadCommit } from "../dependencies/bump-authorship-repo.js";
 import { proposeChange } from "./changes-repo.js";
 import { deriveUrn } from "../graph/urn.js";
 import { SYSTEM_ACTOR_ID } from "./system-actor.js";
+import { withoutServerOwnedSourceRefKeys } from "../federation/boundary-bundle-ref.js";
 
 const BATCH_LIMIT = 20;
 
@@ -322,7 +323,12 @@ export function canonicalizeSourceRef(
   hint: ExtractedHint
 ): Record<string, unknown> {
   const raw = ((rawPayload as Record<string, unknown>) ?? {}) as Record<string, unknown>;
-  const sourceRef: Record<string, unknown> = { ...raw };
+  // The SERVER-OWNED stamps (`boundaryBundleChecksums`, `promotionExports` — what the exporter
+  // signed, rendered as fact by the component pipeline) are never a delivery's to set: a payload
+  // that carries them is stripped of exactly those keys, nothing else. The delivery row itself
+  // (`change_source_events.payload`) still holds the body byte-for-byte for forensics; the
+  // untrusted `POST /changes` door refuses the same keys with a 400 (`routes/changes.ts`).
+  const sourceRef: Record<string, unknown> = withoutServerOwnedSourceRefKeys({ ...raw });
   // M21.2 — THE TWO KEYS THAT NAME *WHERE* AND *WHICH POINT*, lifted for the first time.
   //
   // `internal-release-detection.ts` and `inventory-ingestion-loop.ts` both read `source_ref` as

@@ -4,8 +4,8 @@ import { ChangeSchema, DecisionSchema } from "./changes.js";
 import { ExecutorTypeSchema } from "./executors.js";
 
 /**
- * M5 Campaigns & Initiatives wire contract (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Campaigns
- * and initiatives introduce NO new engine machinery — a Campaign compiles its own plan/waves over
+ * M5 Campaigns wire contract (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5). Campaigns introduce NO
+ * new engine machinery — a Campaign compiles its own plan/waves over
  * the SAME `coordination/plan-compiler.ts` pure function a Change uses (`coordination/
  * campaign-plan-service.ts`); its wave targets fan out into real M3 Changes (`ChangeSchema`,
  * unchanged) that run through the completely unmodified change lifecycle/gates. Campaign STATUS
@@ -141,63 +141,3 @@ export const CampaignExplainResponseSchema = z.object({
 export type CampaignExplainResponse = z.infer<typeof CampaignExplainResponseSchema>;
 
 // -------------------------------------------------------------------------------------------
-// Initiatives (DESIGN §9.5): graph objects grouping campaigns via `coordinates`; roll-up status
-// is derived by traversal, never stored (graph/named-queries.ts's `initiative-rollup`).
-// -------------------------------------------------------------------------------------------
-
-export const InitiativeSchema = z.object({
-  id: z.string().uuid(),
-  orgId: z.string().uuid(),
-  urn: z.string(),
-  name: z.string(),
-  description: z.string().nullable(),
-  createdAt: z.string().datetime(),
-  updatedAt: z.string().datetime()
-});
-export type Initiative = z.infer<typeof InitiativeSchema>;
-
-/** `POST /initiatives` — `campaigns` (>=1 idOrUrn) become `coordinates` relationships from the
- *  new initiative to each named campaign, created atomically with the initiative itself. */
-export const CreateInitiativeRequestSchema = z.object({
-  name: z.string().min(1).max(200),
-  id: z.string().uuid().optional(),
-  urn: z.string().optional(),
-  domainId: z.string().uuid().nullable().optional(),
-  description: z.string().optional(),
-  labels: z.record(z.string(), z.unknown()).optional(),
-  campaigns: z.array(z.string().min(1)).default([])
-});
-export type CreateInitiativeRequest = z.infer<typeof CreateInitiativeRequestSchema>;
-
-export const InitiativeListQuerySchema = CursorPageQuerySchema;
-export type InitiativeListQuery = z.infer<typeof InitiativeListQuerySchema>;
-export const InitiativeListResponseSchema = cursorPageResponseSchema(InitiativeSchema);
-export type InitiativeListResponse = z.infer<typeof InitiativeListResponseSchema>;
-
-export const InitiativeIdParamSchema = z.object({ id: z.string().uuid() });
-
-/** `POST /initiatives/{id}/campaigns` — adds one more member campaign (another `coordinates`
- *  relationship), same both-endpoint-authz path every relationship write already goes through. */
-export const AddInitiativeCampaignRequestSchema = z.object({
-  campaign: z.string().min(1) // idOrUrn
-});
-export type AddInitiativeCampaignRequest = z.infer<typeof AddInitiativeCampaignRequestSchema>;
-
-/** One member campaign as seen from `GET /initiatives/{id}` — the campaign plus its own derived
- *  `CampaignStatus`, exactly what the roll-up aggregates over. */
-export const InitiativeMemberCampaignSchema = z.object({
-  campaign: CampaignSchema,
-  status: CampaignStatusSchema
-});
-export type InitiativeMemberCampaign = z.infer<typeof InitiativeMemberCampaignSchema>;
-
-/** The initiative roll-up (DESIGN §9.5: "roll-up status DERIVED BY TRAVERSAL... not
- *  stored/duplicated state") — `rollupStatus` is the SAME `CampaignStatus` vocabulary, computed
- *  by `coordination/campaign-status.ts`'s pure `computeInitiativeRollup` over every member
- *  campaign's own derived status. */
-export const InitiativeRollupResponseSchema = z.object({
-  initiative: InitiativeSchema,
-  campaigns: z.array(InitiativeMemberCampaignSchema),
-  rollupStatus: CampaignStatusSchema
-});
-export type InitiativeRollupResponse = z.infer<typeof InitiativeRollupResponseSchema>;

@@ -1,8 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
+import { ExternalLink, Info } from "lucide-react";
+import { CommanderStar, OutpostFort } from "../components/icons/federation-roles";
 import { client } from "../lib/client";
 import { serviceBoardKey } from "../lib/query-client";
 import { useIdOrUrnParam } from "../lib/use-route-params";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import { PageHeader } from "../components/ui/page-header";
+import { Skeleton } from "../components/ui/skeleton";
+import { QueryErrorNotice } from "../components/query-error";
 import { CATEGORY_LABEL } from "./service-board";
 
 /**
@@ -28,34 +33,83 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
     enabled: Boolean(idOrUrn)
   });
 
-  if (query.isLoading) return <p className="text-sm text-slate-500">Loading…</p>;
+  if (query.isLoading) {
+    return (
+      <div className="space-y-4" data-testid="service-infrastructure">
+        <Skeleton className="h-7 w-48" />
+        <Skeleton className="h-24 w-full" />
+      </div>
+    );
+  }
   if (query.error) {
     return (
-      <p className="text-sm text-red-600" data-testid="service-infra-error">
-        {(query.error as Error).message}
-      </p>
+      <QueryErrorNotice
+        error={query.error}
+        what="this service's infrastructure"
+        testId="service-infra-error"
+      />
     );
   }
   const board = query.data;
   if (!board) return <p className="text-sm text-slate-500">No service.</p>;
 
   const bound = board.servicePipelines.filter((p) => p.bound);
+  // outpost-ui.md §9.3a (owner, 2026-08-14) — the same mixed-provenance model as the component
+  // pipeline, one rung up. A service maintained by another domain (on an outpost: the commander)
+  // has its GLOBALLY SHARED infra/config authored there — opaque to this domain, which only knows
+  // the source is the commander; whatever this domain binds at the service is its DOMAIN-SPECIFIC
+  // shared-infra input (a cluster shared by this service's components in this domain, say). A
+  // self-maintained or domain-local service is this domain's own — nothing ahead of it. Read from
+  // the board's `service.maintainedBy`/`domainLocal`, never inferred.
+  const upstream = board.service.maintainedBy;
+  const hasCommanderInput =
+    !upstream.isSelf && upstream.domainId !== null && !board.service.domainLocal;
 
   return (
     <div className="space-y-4" data-testid="service-infrastructure">
-      <div>
-        <h1 className="text-xl font-semibold">{board.service.name}</h1>
-        <p className="font-mono text-xs text-slate-500">{board.service.urn}</p>
-      </div>
+      <PageHeader
+        title={board.service.name}
+        description={<span className="font-mono text-xs break-all">{board.service.urn}</span>}
+        meta={
+          hasCommanderInput ? (
+            <span
+              className="flex items-center gap-1.5 text-xs text-slate-700"
+              data-testid="service-infra-commander-input"
+              title={`This service's globally shared infrastructure and configuration are authored and tracked at ${upstream.name ?? upstream.domainId} — this domain does not see those repos; it only knows their source is the commander. Anything bound at the service here is this domain's own, domain-specific input to the same pipelines.`}
+            >
+              {upstream.role === "commander" ? (
+                <CommanderStar className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              ) : (
+                <OutpostFort className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              )}
+              <span className="font-medium">{upstream.name ?? upstream.domainId}</span>
+              <span className="text-slate-500">
+                — shared inputs (source: the commander); anything bound here is domain-specific
+              </span>
+            </span>
+          ) : board.service.domainLocal ? (
+            <span className="text-xs text-slate-500" data-testid="service-infra-no-upstream">
+              Domain-local — shared infrastructure and configuration bound here are this
+              domain&apos;s own; nothing upstream of them.
+            </span>
+          ) : undefined
+        }
+      />
 
       {bound.length === 0 ? (
         // Rendered, not omitted. "Nothing is bound at the service" is a fact about this service;
-        // an empty tab would read as "this view cannot show it".
+        // an empty tab would read as "this view cannot show it". The full rationale for WHY a
+        // service-level binding exists moves into the Info icon's tooltip (copy rule 1).
         <Card data-testid="service-infra-none">
-          <CardContent className="py-6 text-sm text-slate-600">
-            Nothing is bound at the service itself, so every pipeline here is declared per
-            component. Infrastructure that serves the whole service — a cluster, a shared database —
-            can be bound once on the service instead, and it will drive every component under it.
+          <CardContent className="flex items-center gap-1.5 py-6 text-sm text-slate-600">
+            Nothing bound at the service — every pipeline here is declared per component.
+            <span title="Infrastructure that serves the whole service — a cluster, a shared database — can be bound once on the service instead, and it will drive every component under it.">
+              <Info
+                className="size-3.5 shrink-0 text-slate-400"
+                strokeWidth={1.75}
+                aria-hidden="true"
+              />
+            </span>
           </CardContent>
         </Card>
       ) : (
@@ -78,11 +132,16 @@ export function ServiceInfrastructurePage(): React.JSX.Element {
                       href={b.url}
                       target="_blank"
                       rel="noreferrer"
-                      className="underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900"
+                      className="inline-flex items-center gap-1 underline decoration-slate-300 underline-offset-2 hover:decoration-slate-900"
                       title={b.url}
                     >
                       <span className="font-mono">{b.externalRef || "—"}</span>
-                      {b.executionSystemName ? ` @ ${b.executionSystemName}` : ""} ↗
+                      {b.executionSystemName ? ` @ ${b.executionSystemName}` : ""}
+                      <ExternalLink
+                        className="size-3.5 shrink-0"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
                     </a>
                   ) : (
                     <>

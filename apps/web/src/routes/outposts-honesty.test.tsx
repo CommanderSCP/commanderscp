@@ -38,6 +38,7 @@ const {
   TrustTierCell,
   TransportCell,
   PendingExportCell,
+  attentionLevel,
   isPeerUnknown,
   isOutpostPeer,
   trustTierMark
@@ -299,6 +300,42 @@ describe("outposts overview: an unasserted trust tier is never a tier", () => {
   });
 });
 
+describe("outposts overview: the attention dot triages, it does not cry wolf", () => {
+  /**
+   * Red requires a signal that something SET UP to work is not working. The one such signal in
+   * this payload is poke-mode enabled with no poke ever received. Transport-unknown is amber, not
+   * red — a freshly enrolled peer has no transport yet and a genuinely air-gapped peer may never
+   * have one (bundles move by hand, a supported shape, not a failure). The first QA pass shipped
+   * transport-unknown as red and every fresh row lit up like a fire drill; this pins the repair.
+   */
+  it("a never-synced, transportless peer is WARNING, never danger", () => {
+    const status = basePeer({ transportMode: null });
+    expect(attentionLevel(status)).toBe("warning");
+  });
+
+  it("poke-mode enabled with no poke ever received is DANGER", () => {
+    const status = basePeer({ peer: { ...basePeer().peer, pokeMode: true } });
+    expect(attentionLevel(status)).toBe("danger");
+  });
+
+  it("declared tier + derivable transport is NOMINAL", () => {
+    // `basePeer` declares "trustTier" in `unknownFields`, and `trustTierMark` treats that as a
+    // second unverified signal (the OR in outposts.tsx) — a nominal fixture must clear both.
+    const status = basePeer({
+      trustTier: "il5",
+      trustTierProvenance: "declared",
+      unknownFields: (basePeer().unknownFields ?? []).filter((f) => f !== "trustTier")
+    });
+    expect(attentionLevel(status)).toBe("nominal");
+  });
+
+  it("the dot renders its level as data-attention for the styling to key on", () => {
+    const html = renderRow(basePeer({ transportMode: null }));
+    const dot = elementByTestId(html, "outpost-attention");
+    expect(dot).toContain('data-attention="warning"');
+  });
+});
+
 describe("outposts overview: absent transport is not an air-gap posture", () => {
   it("renders an explicit unknown — and NEVER `air-gap` — when no transport is derivable", () => {
     const html = renderToStaticMarkup(
@@ -359,10 +396,10 @@ describe("outposts overview: no string claims the outpost has anything", () => {
     expect(visibleText(html)).not.toMatch(/up to date/i);
     expect(visibleText(html)).not.toMatch(/fully synced/i);
     expect(visibleText(html)).not.toMatch(/delivered/i);
-    // No success colour over an export figure. `bg-green-600` is the app's success badge variant
-    // (`components/ui/badge.tsx`); a confirmed INBOUND transfer legitimately uses it, and this row
-    // has none, so its absence here is about the export cells.
-    expect(html).not.toContain("bg-green-600");
+    // No success colour over an export figure. `bg-emerald-50` is the app's success badge tone
+    // (`components/ui/badge.tsx`, design spec §1.5); a confirmed INBOUND transfer legitimately
+    // uses it, and this row has none, so its absence here is about the export cells.
+    expect(html).not.toContain("bg-emerald-50");
   });
 
   it("renders applied-at-peer and health as explicit unknowns, not blanks — CONTENT, per cell", () => {

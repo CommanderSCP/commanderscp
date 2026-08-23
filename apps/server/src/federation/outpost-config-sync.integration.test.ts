@@ -121,6 +121,37 @@ describe("M16.2 E2: commander-origin outpost config syncs down as a read-only re
     await outpost?.close();
   });
 
+  /**
+   * §10.5 (review fix) — THE OUTPOST CANNOT AUTHOR THE CO-LOCATED RECORD FOR ITS OWN DOMAIN. The
+   * self shape (`peerDomainId` = this instance's own domain) is accepted ONLY when this instance's
+   * `federation_self.role` is `commander`. Runs FIRST, before any replica exists: with the guard
+   * gone, this create returns 201 and a local-origin `commercial` row exists that the commander's
+   * later replica lands BESIDE (imports skip the guard; the urns differ by org prefix) — and
+   * `byAuthority` (local-origin first) then makes the outpost's own declaration win
+   * `findOutpostConfigByPeer`, `selfOutpost` and every pipeline tile forever, while the commander's
+   * tier never converges. The second half of this pin lives after the replica arrives (below).
+   */
+  it("§10.5: the OUTPOST cannot author its OWN co-located record BEFORE the commander's arrives (400 — role is 'outpost', not 'commander')", async () => {
+    await expectProblem(
+      withTenantTx(outpost.db, outpost.orgId, (tx) =>
+        createOutpostConfig(tx, {
+          orgId: outpost.orgId,
+          actorObjectId: outpost.orgId,
+          requestId: "e2-outpost-authors-self-early",
+          peerDomainId: outpostSelf.domainId,
+          trustTier: "commercial"
+        })
+      ),
+      400,
+      /federation role is 'outpost', not 'commander'.*arrives replicated/i
+    );
+    // Nothing was stored: the outpost's own domain still has NO record of any origin.
+    const none = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      findOutpostConfigByPeer(tx, outpost.orgId, outpostSelf.domainId)
+    );
+    expect(none).toBeNull();
+  });
+
   it("a commander-authored `outpost` object arrives at the outpost with the COMMANDER's domain as originDomainId", async () => {
     const declared = await withTenantTx(commander.db, commander.orgId, (tx) =>
       createOutpostConfig(tx, {
@@ -156,6 +187,17 @@ describe("M16.2 E2: commander-origin outpost config syncs down as a read-only re
     );
     expect(localView?.trustTier).toBe("fedramp-high");
     expect(localView?.originDomainId).toBe(commanderSelf.domainId);
+    // §10.5 — the two self flags are INDEPENDENT, and this replica is the row that proves it: the
+    // commander authored it (`originIsSelf: false` here) and it is ABOUT this outpost's own domain
+    // (`peerIsSelf: true`). Deriving one from the other would fail on exactly this row.
+    expect(localView?.originIsSelf).toBe(false);
+    expect(localView?.peerIsSelf).toBe(true);
+    // …and on the commander the same record is about a PEER: `peerIsSelf: false`.
+    const commanderView = await withTenantTx(commander.db, commander.orgId, (tx) =>
+      findOutpostConfigByPeer(tx, commander.orgId, outpostSelf.domainId)
+    );
+    expect(commanderView?.originIsSelf).toBe(true);
+    expect(commanderView?.peerIsSelf).toBe(false);
   });
 
   it("the OUTPOST's own write to that object is REFUSED by the existing read-only-replica guard", async () => {
@@ -264,6 +306,32 @@ describe("M16.2 E2: commander-origin outpost config syncs down as a read-only re
       400,
       /role 'commander', not 'outpost'/i
     );
+  });
+
+  it("§10.5: …nor its OWN co-located record AFTER the replica arrived (400) — the read stays the commander's, at the commander's origin", async () => {
+    // The replica from the tests above is live at the outpost. Had the self shape been accepted
+    // for an outpost-role instance, this create would 201 (the replica's urn carries the
+    // COMMANDER's org prefix, the local row would carry the outpost's — no urn clash, no 409) and
+    // `findOutpostConfigByPeer` would flip to the local `commercial` row.
+    await expectProblem(
+      withTenantTx(outpost.db, outpost.orgId, (tx) =>
+        createOutpostConfig(tx, {
+          orgId: outpost.orgId,
+          actorObjectId: outpost.orgId,
+          requestId: "e2-outpost-authors-self-late",
+          peerDomainId: outpostSelf.domainId,
+          trustTier: "commercial"
+        })
+      ),
+      400,
+      /federation role is 'outpost', not 'commander'/i
+    );
+    const view = await withTenantTx(outpost.db, outpost.orgId, (tx) =>
+      findOutpostConfigByPeer(tx, outpost.orgId, outpostSelf.domainId)
+    );
+    expect(view?.trustTier).toBe("il5");
+    expect(view?.originDomainId).toBe(commanderSelf.domainId);
+    expect(view?.originIsSelf).toBe(false);
   });
 
   /**

@@ -32,6 +32,7 @@ import type { PluginContext } from "@scp/plugin-api";
 import type { Db } from "../db/client.js";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import { getChange } from "../coordination/changes-repo.js";
+import { ociDigestsOfSourceRef } from "../coordination/artifact-facts.js";
 import { appendAuditEvent } from "../audit/audit-repo.js";
 import {
   insertControlRun,
@@ -275,17 +276,12 @@ function resolveOscapDatastream(sourceRef: Record<string, unknown>): string {
   return DEFAULT_OSCAP_DATASTREAM;
 }
 
-/** Extract the OCI artifact digests the change promotes (mirrors promotion-repo.ts's export
- *  projection: `sourceRef.artifact_digest` / `artifactDigest`, string or string[]). */
+/** Extract the OCI artifact digests the change promotes — the SHARED reader (`ociDigestsOfSourceRef`,
+ *  `coordination/artifact-facts.ts`: `sourceRef.artifact_digest` / `artifactDigest` / the importer's
+ *  `artifactDigests[]`, the same keys the export projection and the pipeline tile read), then
+ *  NORMALIZED to `sha256:<hex>` because this step must build a pull ref from each. */
 function ociDigestsOf(sourceRef: Record<string, unknown>): string[] {
-  const raw =
-    (sourceRef.artifact_digest as unknown) ?? (sourceRef.artifactDigest as unknown) ?? undefined;
-  const list =
-    typeof raw === "string"
-      ? [raw]
-      : Array.isArray(raw)
-        ? raw.filter((d): d is string => typeof d === "string")
-        : [];
+  const list = ociDigestsOfSourceRef(sourceRef);
   const out: string[] = [];
   for (const d of list) {
     const norm = normalizeSha256Digest(d);

@@ -3,6 +3,8 @@ import { RootLayout } from "./components/layout/RootLayout";
 import { AuthenticatedLayout } from "./components/layout/AuthenticatedLayout";
 import { LoginPage } from "./routes/login";
 import { DashboardPage } from "./routes/dashboard";
+import { OutpostDashboardPage } from "./routes/outpost-dashboard";
+import { useAuth } from "./lib/auth-context";
 import { DevicePage } from "./routes/device";
 import { PatsPage } from "./routes/pats";
 import { RegistryListPage } from "./routes/registry-list";
@@ -10,23 +12,29 @@ import { RegistryDetailPage } from "./routes/registry-detail";
 import { GraphExplorerPage } from "./routes/graph-explorer";
 import { GraphLandingPage } from "./routes/graph-landing";
 import { ComponentGraphPage } from "./routes/component-graph";
-import { ChangeListPage } from "./routes/change-list";
 import { ChangeDetailPage } from "./routes/change-detail";
 import { ChangePipelinePage } from "./routes/change-pipeline";
 import { ComponentInfrastructurePage, ComponentPipelinePage } from "./routes/component-pipeline";
 import { ComponentDetailLayout } from "./routes/component-detail";
+import { ComponentDependenciesPage } from "./routes/component-dependencies";
 import { ServiceBoardPage } from "./routes/service-board";
 import { ServiceDetailLayout } from "./routes/service-detail";
 import { ServiceInfrastructurePage } from "./routes/service-infrastructure";
 import { CampaignListPage } from "./routes/campaign-list";
 import { CampaignDetailPage } from "./routes/campaign-detail";
-import { InitiativeListPage } from "./routes/initiative-list";
-import { InitiativeDetailPage } from "./routes/initiative-detail";
 import { FederationStatusPage } from "./routes/federation-status";
 import { OutpostsPage } from "./routes/outposts";
 import { OutpostDetailPage } from "./routes/outpost-detail";
 import { PluginsPage } from "./routes/plugins";
+import { AssemblyBoardPage, AssemblyDetailLayout } from "./routes/assembly-detail";
+import { IdentityPage } from "./routes/identity";
 import { ConnectArgoCdPage } from "./routes/connect-argocd";
+import { ConnectKindPage } from "./routes/connect";
+import { SetupPage } from "./routes/setup";
+import { AdminDependenciesPage } from "./routes/admin-dependencies";
+import { AdminGovernancePage } from "./routes/admin-governance";
+import { AdminDecisionsPage } from "./routes/admin-decisions";
+import { AdminAuditPage } from "./routes/admin-audit";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -53,10 +61,20 @@ const authenticatedLayoutRoute = createRoute({
   component: AuthenticatedLayout
 });
 
+/**
+ * HOME is site-shaped (outpost-ui.md §9.3): the commander gets the org-wide dashboard, the outpost
+ * a small component-level one. Selected by `/auth/me`'s install-time `instanceRole` — the ONE
+ * place role picks a page — and only here: inside either page every row keys on data.
+ */
+function HomePage(): React.JSX.Element {
+  const { user } = useAuth();
+  return user?.instanceRole === "outpost" ? <OutpostDashboardPage /> : <DashboardPage />;
+}
+
 const dashboardRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/",
-  component: DashboardPage
+  component: HomePage
 });
 
 const deviceRoute = createRoute({
@@ -93,12 +111,6 @@ const componentGraphRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/graph/service/$serviceId",
   component: ComponentGraphPage
-});
-
-const changeListRoute = createRoute({
-  getParentRoute: () => authenticatedLayoutRoute,
-  path: "/changes",
-  component: ChangeListPage
 });
 
 const changeDetailRoute = createRoute({
@@ -149,12 +161,51 @@ const componentSettingsRoute = createRoute({
   component: RegistryDetailPage
 });
 
+// The DEPENDENCIES tab (docs/proposals/dependency-subscription-ui.md §4.1): what this component
+// declares, the head of each major line, whether it is subscribed and why, what has been bumped,
+// and the offered enable / opt-out writes. A fourth child of the same layout so it is a real,
+// deep-linkable URL like the other three. Registered on BOTH sites — the outpost renders the bumps
+// section as a sentence, never an empty table that looks up to date.
+const componentDependenciesRoute = createRoute({
+  getParentRoute: () => componentDetailRoute,
+  path: "/dependencies",
+  component: ComponentDependenciesPage
+});
+
 // ONE SERVICE — a LAYOUT route carrying the Board/Settings tabs, with the release board as its INDEX
 // child (coordination-ui-views.md Phase 2, corrected 2026-08-04). `/services/{id}` used to fall
 // through to the generic registry detail, so the board — what is releasing, what is blocked, which
 // pipelines are bound — sat at a URL only one button linked to. The board is what a service IS
 // operationally, so it is the default; the properties table becomes the Settings tab, mounting the
 // same `RegistryDetailPage` (not a copy), exactly as `/components/$idOrUrn` does.
+// ONE ASSEMBLY — the same layout/index-child shape as a service, two tabs instead of three (see
+// routes/assembly-detail.tsx). The static `/assemblies/$idOrUrn` segment out-ranks the dynamic
+// `/$basePath/$idOrUrn` registry route, so an assembly lands on its board; `settings` mounts the
+// generic RegistryDetailPage, which resolves `assemblies` from the pathname.
+const assemblyDetailRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/assemblies/$idOrUrn",
+  component: AssemblyDetailLayout
+});
+
+const assemblyBoardRoute = createRoute({
+  getParentRoute: () => assemblyDetailRoute,
+  path: "/",
+  component: AssemblyBoardPage
+});
+
+const assemblySettingsRoute = createRoute({
+  getParentRoute: () => assemblyDetailRoute,
+  path: "/settings",
+  component: RegistryDetailPage
+});
+
+const identityRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/identity",
+  component: IdentityPage
+});
+
 const serviceDetailRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/services/$idOrUrn",
@@ -205,18 +256,6 @@ const campaignDetailRoute = createRoute({
   component: CampaignDetailPage
 });
 
-const initiativeListRoute = createRoute({
-  getParentRoute: () => authenticatedLayoutRoute,
-  path: "/initiatives",
-  component: InitiativeListPage
-});
-
-const initiativeDetailRoute = createRoute({
-  getParentRoute: () => authenticatedLayoutRoute,
-  path: "/initiatives/$id",
-  component: InitiativeDetailPage
-});
-
 const federationStatusRoute = createRoute({
   getParentRoute: () => authenticatedLayoutRoute,
   path: "/federation",
@@ -258,8 +297,79 @@ const connectArgoCdRoute = createRoute({
   component: ConnectArgoCdPage
 });
 
+// B1 (docs/proposals/outpost-ui.md §4 Lane B) — generalizes the wizard above over the server's own
+// discovery-module catalog instead of one Argo-CD-shaped page (routes/connect.tsx). Registered
+// BESIDE `connectArgoCdRoute` rather than replacing it: this router's own static-outranks-dynamic
+// precedence (the same rule `serviceBoardLegacyRoute` above relies on) means `/connect/argocd`
+// always resolves to THAT route first, so its pinned testids are never at risk from this one —
+// `/connect/$kind` only ever serves a kind other than "argocd" in normal navigation (gitea, gitlab
+// today). See routes/connect.tsx's file-level comment for why "argocd" is still handled
+// defensively inside it.
+const connectKindRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/connect/$kind",
+  component: ConnectKindPage
+});
+
+// G5 (outpost-ui.md §4 close, owner decision 2026-08-13: "both" — a setup landing ALONGSIDE the
+// in-place affordances) — a static 1-segment path, so it out-ranks nothing and needs no precedence
+// reasoning beyond "it isn't `$basePath`" (the same fact `/pats`, `/identity`, etc. already rely on).
+const setupRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/setup",
+  component: SetupPage
+});
+
+// Admin › Dependencies (dependency-subscription-ui.md §12, ADR-0032 §7e) — the org's dependency
+// PRODUCER declarations: declare / retract with a dry-run blast radius first. A static 2-segment
+// path, so it out-ranks the dynamic `/$basePath/$idOrUrn` registry-detail route below exactly as
+// `/connect/argocd` and `/federation/outposts` do. Linked from the COMMANDER nav only (owner rule
+// 2026-08-17: dependency automation is commander-only); the page itself renders the
+// "managed at the commander" pointer and issues no reads on any other install-time role.
+const adminDependenciesRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/dependencies",
+  component: AdminDependenciesPage
+});
+
+// Admin › Governance (governance-reach-on-containment-move.md §9.4) — the governance:move
+// enforcement lattice: instance rung (read-only), the org rung switch, and the enabled-rungs
+// table with Enable at… / Disable. A static 2-segment path, out-ranking the dynamic
+// `/$basePath/$idOrUrn` registry-detail route below exactly as `/admin/dependencies` does.
+// Linked from BOTH the commander and outpost nav tables (enforcement is per-instance).
+const adminGovernanceRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/governance",
+  component: AdminGovernancePage
+});
+
+// Admin › Decisions (owner-approved 2026-08-23, "Decisions & Audit explorer") — every Decision
+// record browsable, filterable by `subjectId`/`kind` exactly as `GET /decisions` allows (charter
+// principle 6). `subjectId` search param is what `registry-detail.tsx`'s "Decisions about this
+// object" link carries — `useSubjectIdSearchForDecisions` (lib/use-route-params.ts). A static
+// 2-segment path, out-ranking the dynamic `/$basePath/$idOrUrn` registry-detail route exactly as
+// `/admin/dependencies` and `/admin/governance` do. Linked from BOTH nav tables (decisions and
+// audit exist on every deployment).
+const adminDecisionsRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/decisions",
+  component: AdminDecisionsPage,
+  validateSearch: (search: Record<string, unknown>): { subjectId?: string } => ({
+    subjectId: typeof search.subjectId === "string" ? search.subjectId : undefined
+  })
+});
+
+// Admin › Audit (owner-approved 2026-08-23) — the hash-chained audit log
+// (`GET /audit-events`, `audit:read`). Same static-2-segment precedence reasoning as the two
+// routes above. Linked from BOTH nav tables.
+const adminAuditRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/audit",
+  component: AdminAuditPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
-// `/campaigns`, `/campaigns/...`, `/initiatives`, `/initiatives/...`, `/federation`) always
+// `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
 // precedence — so those pages never get shadowed by "an unknown registry named 'device'".
 const registryListRoute = createRoute({
@@ -283,14 +393,16 @@ const routeTree = rootRoute.addChildren([
     graphLandingRoute,
     graphExplorerRoute,
     componentGraphRoute,
-    changeListRoute,
     changeDetailRoute,
     changePipelineRoute,
     componentDetailRoute.addChildren([
       componentPipelineRoute,
       componentInfrastructureRoute,
+      componentDependenciesRoute,
       componentSettingsRoute
     ]),
+    assemblyDetailRoute.addChildren([assemblyBoardRoute, assemblySettingsRoute]),
+    identityRoute,
     serviceDetailRoute.addChildren([
       serviceBoardRoute,
       serviceBoardLegacyRoute,
@@ -299,13 +411,17 @@ const routeTree = rootRoute.addChildren([
     ]),
     campaignListRoute,
     campaignDetailRoute,
-    initiativeListRoute,
-    initiativeDetailRoute,
     federationStatusRoute,
     outpostsRoute,
     outpostDetailRoute,
     pluginsRoute,
     connectArgoCdRoute,
+    connectKindRoute,
+    setupRoute,
+    adminDependenciesRoute,
+    adminGovernanceRoute,
+    adminDecisionsRoute,
+    adminAuditRoute,
     registryListRoute,
     registryDetailRoute
   ])

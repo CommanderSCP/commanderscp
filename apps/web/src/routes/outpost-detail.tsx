@@ -1,11 +1,15 @@
-import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { FederationPeerStatus } from "@scp/schemas";
+import type { FederationPeerStatus, FederationStatusResponse } from "@scp/schemas";
+import { Badge } from "../components/ui/badge";
+import { OutpostFort } from "../components/icons/federation-roles";
 import { client } from "../lib/client";
 import { federationStatusKey } from "../lib/query-client";
 import { usePeerDomainIdParam } from "../lib/use-route-params";
 import { QueryErrorNotice } from "../components/query-error";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { PageHeader } from "../components/ui/page-header";
+import { KeyValueList } from "../components/ui/key-value-list";
+import { SectionLabel } from "../components/ui/section-label";
 import {
   InboundSyncCell,
   PendingExportCell,
@@ -13,8 +17,12 @@ import {
   TransportCell,
   TrustTierCell,
   RecentTransfersCell,
+  ObservationScopeNote,
+  APPLIED_AT_PEER_TITLE,
+  HEALTH_ROLLUP_TITLE,
   formatDateTime,
-  roleBadge
+  roleBadge,
+  SelfOutpostLine
 } from "./outposts";
 import { PeerSettingsSection } from "./outpost-settings";
 import { OutpostConfigurationSection } from "./outpost-configuration";
@@ -45,21 +53,6 @@ export function findPeerStatus(
   return peers.find((status) => status.peer.id === peerDomainId) ?? null;
 }
 
-function Field({
-  label,
-  children
-}: {
-  label: string;
-  children: React.ReactNode;
-}): React.JSX.Element {
-  return (
-    <div>
-      <dt className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</dt>
-      <dd className="mt-1 text-sm text-slate-900">{children}</dd>
-    </div>
-  );
-}
-
 /** The read-only status panel — every field rendered by the SAME cells the overview uses, so the two
  *  surfaces cannot drift into disagreeing about what is observable. */
 export function OutpostStatusCard({ status }: { status: FederationPeerStatus }): React.JSX.Element {
@@ -68,58 +61,61 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
       <CardHeader>
         <CardTitle>Status</CardTitle>
         <CardDescription>
-          This side&apos;s own record: what arrived here from this outpost, and what this side put
-          on the wire for it. Nothing below observes what the outpost received or applied.
+          <ObservationScopeNote />
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <dl className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
-          <Field label="Role">{roleBadge(status.peer.role)}</Field>
-          <Field label="Trust tier">
-            <TrustTierCell status={status} />
-          </Field>
-          <Field label="Transport">
-            <TransportCell status={status} />
-          </Field>
-          <Field label="Effective sync cadence">
-            <span data-testid="outpost-effective-cadence">
-              {status.effectiveCadence ?? "unreported"}
-            </span>
-          </Field>
-          <Field label="Last sync in (from this outpost)">
-            <InboundSyncCell status={status} />
-          </Field>
-          <Field label="Exported by this side">
-            <PendingExportCell status={status} />
-          </Field>
-          <Field label="Applied at outpost">
-            <SourcelessCell
-              status={status}
-              field="appliedAtPeer"
-              title={
-                "This instance cannot observe what the outpost applied: it records only what it exported. " +
-                "A return-path confirmation is a named future increment (M16.4), not a field that exists today."
-              }
-            />
-          </Field>
-          <Field label="Health rollup">
-            <SourcelessCell
-              status={status}
-              field="healthRollup"
-              title="No per-outpost health signal is replicated to this instance, so there is no rollup to show."
-            />
-          </Field>
-          <Field label="Last poke received">
-            <span data-testid="outpost-last-poke">{formatDateTime(status.lastPokeReceivedAt)}</span>
-          </Field>
-          <Field label="Last applied sequence (from this outpost)">
-            {status.lastAppliedSequence ?? "none"}
-          </Field>
-        </dl>
+        <KeyValueList
+          columns={2}
+          items={[
+            { label: "Role", value: roleBadge(status.peer.role) },
+            { label: "Trust tier", value: <TrustTierCell status={status} /> },
+            { label: "Transport", value: <TransportCell status={status} /> },
+            {
+              label: "Effective sync cadence",
+              value: (
+                <span data-testid="outpost-effective-cadence">
+                  {status.effectiveCadence ?? "unreported"}
+                </span>
+              )
+            },
+            {
+              label: "Last sync in (from this outpost)",
+              value: <InboundSyncCell status={status} />
+            },
+            { label: "Exported by this side", value: <PendingExportCell status={status} /> },
+            {
+              label: "Applied at outpost",
+              value: (
+                <SourcelessCell
+                  status={status}
+                  field="appliedAtPeer"
+                  title={APPLIED_AT_PEER_TITLE}
+                />
+              )
+            },
+            {
+              label: "Health rollup",
+              value: (
+                <SourcelessCell status={status} field="healthRollup" title={HEALTH_ROLLUP_TITLE} />
+              )
+            },
+            {
+              label: "Last poke received",
+              value: (
+                <span data-testid="outpost-last-poke">
+                  {formatDateTime(status.lastPokeReceivedAt)}
+                </span>
+              )
+            },
+            {
+              label: "Last applied sequence (from this outpost)",
+              value: status.lastAppliedSequence ?? "none"
+            }
+          ]}
+        />
         <div className="mt-6">
-          <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
-            Recent transfers (last 5 recorded here)
-          </div>
+          <SectionLabel>Recent transfers (last 5 recorded here)</SectionLabel>
           <div className="mt-2">
             {/* `?? []` — the SAME guard `outposts.tsx` carries at the identical call, for the same
                 measured reason. `recentTransfers` is required-not-optional by the schema and,
@@ -138,6 +134,53 @@ export function OutpostStatusCard({ status }: { status: FederationPeerStatus }):
   );
 }
 
+/**
+ * THE HQ OUTPOST'S own card (pipeline-substrate-registry-scan.md §10.5; formerly "co-located" —
+ * GLOSSARY, ADR-0021 D7) — rendered when the
+ * route's id is THIS instance's own trust domain. There is no peer row behind it, so NONE of the
+ * status cells apply (nothing syncs to or from self, no transport, no poke): the card states what
+ * `federation_self` and `FederationStatusResponse.selfOutpost` actually know and nothing more — the
+ * same discipline as the Outposts page's self-domain panel.
+ */
+export function SelfOutpostCard({
+  self,
+  selfOutpost
+}: {
+  self: NonNullable<FederationStatusResponse["self"]>;
+  selfOutpost: FederationStatusResponse["selfOutpost"];
+}): React.JSX.Element {
+  return (
+    <Card data-testid="self-outpost-card">
+      <CardHeader>
+        <CardTitle>This instance&apos;s own domain</CardTitle>
+        <CardDescription>
+          The <strong>HQ outpost</strong> — the outpost in this instance&apos;s own trust domain:
+          its record binds that domain, not a paired peer (a field outpost). It never syncs with,
+          exports to, or pokes itself, so there is no status, transport or peer settings to show for
+          it — only its declared configuration below.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <KeyValueList
+          columns={2}
+          className="sm:grid-cols-3"
+          items={[
+            { label: "Domain", value: <span data-testid="self-domain-name">{self.name}</span> },
+            {
+              label: "Declared role",
+              value: <span data-testid="self-domain-role">{roleBadge(self.role)}</span>
+            },
+            {
+              label: "HQ outpost",
+              value: <SelfOutpostLine self={self} selfOutpost={selfOutpost} />
+            }
+          ]}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
 export function OutpostDetailPage(): React.JSX.Element {
   const peerDomainId = usePeerDomainIdParam();
 
@@ -147,21 +190,30 @@ export function OutpostDetailPage(): React.JSX.Element {
   });
 
   const status = findPeerStatus(statusQuery.data?.peers, peerDomainId);
+  // §10.5 — the id names THIS instance's own domain: the HQ outpost. Decided from the
+  // server's own `self`, never by "no peer matched" (an unpaired foreign id is still "not paired").
+  const self = statusQuery.data?.self ?? null;
+  const isSelf = self !== null && self.domainId === peerDomainId;
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <Link to="/federation/outposts" className="text-sm text-slate-500 hover:underline">
-          ← Outposts
-        </Link>
-        <h1
-          className="mt-1 text-2xl font-semibold text-slate-900"
-          data-testid="outpost-detail-name"
-        >
-          {status?.peer.name ?? peerDomainId}
-        </h1>
-        <p className="font-mono text-xs text-slate-500">{peerDomainId}</p>
-      </div>
+      <PageHeader
+        backTo="/federation/outposts"
+        backLabel="Outposts"
+        title={
+          <span className="inline-flex flex-wrap items-center gap-2">
+            <span data-testid="outpost-detail-name">
+              {isSelf ? (status?.peer.name ?? self.name) : (status?.peer.name ?? peerDomainId)}
+            </span>
+            {isSelf && (
+              <Badge variant="info" icon={OutpostFort} data-testid="outpost-detail-co-located">
+                HQ outpost · this instance
+              </Badge>
+            )}
+          </span>
+        }
+        description={<span className="font-mono text-xs break-all">{peerDomainId}</span>}
+      />
 
       {statusQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
       {/* ADR-0023: `isError` is reachable for a 200 whose body fails contract validation, and this
@@ -175,11 +227,13 @@ export function OutpostDetailPage(): React.JSX.Element {
           testId="outpost-detail-error"
         />
       )}
-      {statusQuery.data && !status && (
+      {statusQuery.data && !status && !isSelf && (
         <p className="text-sm text-slate-500" data-testid="outpost-not-paired">
           No peer with this trust-domain id is paired on this instance.
         </p>
       )}
+      {isSelf && <SelfOutpostCard self={self} selfOutpost={statusQuery.data?.selfOutpost} />}
+      {isSelf && <OutpostConfigurationSection selfDomain={self} />}
       {status && <OutpostStatusCard status={status} />}
       {status && <PeerSettingsSection peer={status.peer} />}
       {status && <OutpostConfigurationSection status={status} />}

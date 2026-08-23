@@ -430,6 +430,82 @@ describe("plans: @scp/iac server-side plan/apply", () => {
     ).toBe(0);
   });
 
+  it("§10.6 scope: a create carries it, a changed declaration is an UPDATE in place (every duplicate row converged), an omitted one is left alone, an explicit null clears it", async () => {
+    const org = await createTestOrg(server, "plans-c1-scope");
+    const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });
+    const stackName = `stack-${randomUUID().slice(0, 8)}`;
+    const repo = `acme/${stackName}`;
+
+    function build(scope: "global" | "domain" | null | undefined) {
+      const app = new App();
+      const stack = new Stack(app, stackName);
+      const service = new Service(stack, "billing", { name: "Billing" });
+      const component = new Component(stack, "api", { name: "api", service });
+      component.mapsSource({
+        sourceKind: "github",
+        repoPattern: repo,
+        ...(scope !== undefined ? { scope } : {})
+      });
+      return stack.synth();
+    }
+    const componentUrn = `urn:scp:${stackName}:component:api`;
+    const liveScopes = async () => {
+      const component = await admin.components.get(componentUrn);
+      return (await admin.changeSources.listMappings("github")).items
+        .filter((m) => m.componentObjectId === component.id)
+        .map((m) => m.scope);
+    };
+
+    // 1. Create carries the declared scope, and the plan entry shows it before apply.
+    const first = await admin.plans.create(build("global"));
+    expect(first.diff.sourceMappings).toEqual([
+      expect.objectContaining({ action: "create", scope: "global" })
+    ]);
+    await admin.plans.apply(first.id);
+    expect(await liveScopes()).toEqual(["global"]);
+
+    // A byte-identical sibling created BY HAND (the table has no unique constraint) — the update
+    // below must converge it too, or the next plan proposes the same update forever.
+    const component = await admin.components.get(componentUrn);
+    await admin.changeSources.createMapping("github", {
+      component: component.id,
+      repoPattern: repo
+    });
+    expect((await liveScopes()).sort()).toEqual(["global", null].sort());
+
+    // 2. A differing declaration is an UPDATE — no delete, no create, the route never re-created.
+    const second = await admin.plans.create(build("domain"));
+    expect(second.diff.sourceMappings).toEqual([
+      expect.objectContaining({
+        action: "update",
+        scope: "domain",
+        reason: expect.stringContaining("scope differs")
+      })
+    ]);
+    expect(second.diff.summary).toMatchObject({ updates: 1, deletes: 0 });
+    await admin.plans.apply(second.id);
+    // BOTH rows converged; the plan settles.
+    expect(await liveScopes()).toEqual(["domain", "domain"]);
+    const settled = await admin.plans.create(build("domain"));
+    expect(settled.diff.sourceMappings?.map((m) => m.action)).toEqual(["noop"]);
+
+    // 3. A manifest that OMITS scope manages nothing: noop, and the live value is reported.
+    const omitted = await admin.plans.create(build(undefined));
+    expect(omitted.diff.sourceMappings).toEqual([
+      expect.objectContaining({ action: "noop", scope: "domain" })
+    ]);
+    await admin.plans.apply(omitted.id);
+    expect(await liveScopes()).toEqual(["domain", "domain"]);
+
+    // 4. An explicit null CLEARS it — an update to "not declared".
+    const cleared = await admin.plans.create(build(null));
+    expect(cleared.diff.sourceMappings).toEqual([
+      expect.objectContaining({ action: "update", scope: null })
+    ]);
+    await admin.plans.apply(cleared.id);
+    expect(await liveScopes()).toEqual([null, null]);
+  });
+
   it("C1 prune is stack-scoped: removing the declarations prunes ONLY this stack's rows", async () => {
     const org = await createTestOrg(server, "plans-c1-prune-scope");
     const admin = new ScpClient({ baseUrl: server.baseUrl, token: org.adminToken });

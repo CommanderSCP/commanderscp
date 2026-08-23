@@ -4,6 +4,7 @@ import { formatOutpostClaimantToken, OutpostTrustTierSchema } from "@scp/schemas
 import type {
   FederationPeer,
   FederationPeerStatus,
+  FederationRole,
   OutpostConfig,
   OutpostConfigReconcileResult,
   OutpostTrustTier
@@ -11,10 +12,14 @@ import type {
 import { reconcileStaleClaimants, ScpApiError } from "@scp/sdk";
 import { client } from "../lib/client";
 import { federationStatusKey, outpostConfigListKey } from "../lib/query-client";
+import { cn, focusRing } from "../lib/utils";
 import { isForeignOriginObject, replicaGuard, useOwnDomainId } from "../lib/replica-origin";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Alert, type AlertTone } from "../components/ui/alert";
+import { SectionLabel } from "../components/ui/section-label";
+import { SkeletonRows } from "../components/ui/skeleton";
 import { isAbsent } from "../lib/absent";
 import { UnknownHere } from "./outposts";
 import { problemDetail } from "./outpost-settings";
@@ -144,27 +149,27 @@ export function defaultSurvivor(
   return top.length === 1 ? (top[0] ?? null) : null;
 }
 
-const OUTCOME_COPY: Record<RemovalOutcome, { label: string; detail: string; tone: string }> = {
+const OUTCOME_COPY: Record<RemovalOutcome, { label: string; detail: string; tone: AlertTone }> = {
   "propagates-downstream": {
     label: "authored here — removal PROPAGATES to the outpost",
     detail:
       "Dropping this row journals an ordinary tombstone. It rides the next sync bundle and the outpost " +
       "drops its replica of this config. It can be re-declared afterwards, but it is a downstream change.",
-    tone: "border-red-300 bg-red-50 text-red-800"
+    tone: "danger"
   },
   "local-cleanup": {
     label: "unverified hand-filled shadow — local cleanup only",
     detail:
       "This domain never authored this row, so removing it never rides the sync journal and nothing " +
       "downstream sees it.",
-    tone: "border-slate-300 bg-slate-50 text-slate-700"
+    tone: "neutral"
   },
   refused: {
     label: "signature-verified replica — reconcile REFUSES to delete it",
     detail:
       "Deleting a replica this domain did not author would claim authorship of a row its real authority " +
       "still owns, trading this config conflict for a sync wedge. Keeping a different row will be refused (409).",
-    tone: "border-amber-300 bg-amber-50 text-amber-800"
+    tone: "warning"
   }
 };
 
@@ -177,24 +182,26 @@ function ConfigOriginBadge({
 }): React.JSX.Element {
   if (!isConfigForeign(config, ownDomainId)) {
     return (
-      <Badge variant="secondary" data-testid="config-origin-local">
+      <Badge variant="neutral" data-testid="config-origin-local">
         authored here
       </Badge>
     );
   }
   return config.provenance === "manual" ? (
-    <Badge variant="outline" data-testid="config-origin-shadow">
+    <Badge variant="unknown" data-testid="config-origin-shadow">
       unverified shadow
     </Badge>
   ) : (
-    <Badge variant="outline" data-testid="config-origin-replica">
+    <Badge variant="neutral" data-testid="config-origin-replica">
       verified replica
     </Badge>
   );
 }
 
-const selectClass =
-  "flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1 text-sm shadow-sm";
+const selectClass = cn(
+  "flex h-9 w-full rounded-md border border-slate-300 bg-white px-3 py-1 text-sm shadow-sm",
+  focusRing
+);
 
 /**
  * TRUST TIER — owner-ENTERED, five members, ABSENT UNTIL SET.
@@ -259,9 +266,7 @@ export function TrustTierCard({
   return (
     <div className="flex flex-col gap-3" data-testid="trust-tier-card">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-          Current trust tier
-        </span>
+        <SectionLabel>Current trust tier</SectionLabel>
         {/* `isAbsent`, not `=== null`: `OutpostConfigSchema.trustTier` is required-nullable, and
             BEFORE ADR-0023 the generated SDK validated no response, so a server that omitted the key
             handed this component `undefined` — and `<Badge>{undefined}</Badge>` is an EMPTY BADGE with no
@@ -283,7 +288,7 @@ export function TrustTierCard({
             data-trust-tier={config.trustTier}
             data-tier-unverified={String(unverifiedShadow)}
           >
-            <Badge variant={unverifiedShadow ? "outline" : "secondary"}>{config.trustTier}</Badge>
+            <Badge variant={unverifiedShadow ? "unknown" : "neutral"}>{config.trustTier}</Badge>
             {/* `unverifiedShadow` ALONE. It used to be `tierUnknown && unverifiedShadow`, which meant
                 the visible "unverified" word was withheld whenever the server declared nothing —
                 leaving only an attribute and a badge variant to carry the whole distinction. Whenever
@@ -301,10 +306,7 @@ export function TrustTierCard({
       </div>
 
       {unverifiedShadow && (
-        <div
-          className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
-          data-testid="config-unverified-shadow-notice"
-        >
+        <Alert tone="warning" data-testid="config-unverified-shadow-notice">
           <p>
             The only config object bound to this outpost is an{" "}
             <strong>unverified hand-filled shadow</strong> — somebody typed it here; this domain did
@@ -322,11 +324,11 @@ export function TrustTierCard({
           >
             Reconcile (adopt this configuration)
           </Button>
-        </div>
+        </Alert>
       )}
 
       <label className="block">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Set tier</span>
+        <SectionLabel as="span">Set tier</SectionLabel>
         <select
           name="trustTier"
           data-testid="config-tier-select"
@@ -352,12 +354,9 @@ export function TrustTierCard({
       </label>
 
       {saveError !== undefined && saveError !== null && (
-        <div
-          className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
-          data-testid="config-tier-error"
-        >
+        <Alert tone="danger" data-testid="config-tier-error">
           {problemDetail(saveError)}
-        </div>
+        </Alert>
       )}
 
       <div className="flex items-center gap-3">
@@ -390,20 +389,34 @@ export function declaredTierOf(selectValue: string): OutpostTrustTier | undefine
 
 /** No config object exists for this peer yet. `POST /federation/outposts` binds only to a peer whose
  *  role is `outpost` — a `retrans` peer is a MEASURED 400 (`outpost-object.integration.test.ts`), so
- *  the create control is not offered for one rather than offered and refused. */
+ *  the create control is not offered for one rather than offered and refused — OR (§10.5) to THIS
+ *  instance's own trust domain, the HQ outpost (formerly "co-located" — GLOSSARY, ADR-0021 D7;
+ *  the `coLocated` prop and test ids keep the older spelling): `coLocated` renders that case, for which
+ *  there is no peer row; the role checked is THIS instance's own (`selfRole`, `federation_self.role`),
+ *  which must be `commander` — an outpost's own record is commander-declared and arrives replicated,
+ *  and the server 400s the self shape on any other role (MEASURED —
+ *  `outpost-config-sync.integration.test.ts`, before and after the replica arrives). */
 export function DeclareConfigCard({
   peer,
+  coLocated = false,
+  selfRole,
   createError,
   isCreating = false,
   onCreate
 }: {
-  peer: FederationPeer;
+  /** The peer this record would be about — omitted for the HQ outpost, which has none. */
+  peer?: Pick<FederationPeer, "role">;
+  /** §10.5 — declaring the record for THIS instance's own domain (`peerDomainId` = self). */
+  coLocated?: boolean;
+  /** With `coLocated`: this instance's own federation role (`GET /federation/self`/status `self`).
+   *  Anything but `commander` renders the refusal — the same one the server measures. */
+  selfRole?: FederationRole;
   createError?: unknown;
   isCreating?: boolean;
   onCreate: (tier: OutpostTrustTier | undefined) => void;
 }): React.JSX.Element {
   const [tier, setTier] = useState<string>("");
-  if (peer.role !== "outpost") {
+  if (!coLocated && peer && peer.role !== "outpost") {
     return (
       <p className="text-sm text-slate-600" data-testid="config-role-not-outpost">
         Commander-declared configuration binds only to a peer whose federation role is{" "}
@@ -412,16 +425,50 @@ export function DeclareConfigCard({
       </p>
     );
   }
-  return (
-    <div className="flex flex-col gap-3" data-testid="config-declare-card">
-      <p className="text-sm text-slate-600">
-        No commander-declared configuration exists for this outpost yet. Declaring it creates a
-        commander-origin graph object that syncs down as a read-only replica.
+  if (coLocated && selfRole !== "commander") {
+    return (
+      <p className="text-sm text-slate-600" data-testid="config-self-role-not-commander">
+        This instance&apos;s own outpost record is <strong>commander-declared</strong>: it is
+        authored at the commander and arrives here replicated, read-only. This instance&apos;s
+        federation role is <code>{selfRole ?? "unknown"}</code>, not <code>commander</code>, so it
+        cannot declare one for itself — declare it at the commander
+        {selfRole === "unset" ? (
+          <>
+            {" "}
+            (or designate this instance&apos;s role first:{" "}
+            <code className="rounded bg-slate-100 px-1 py-0.5">
+              scp federation init --role commander
+            </code>
+            )
+          </>
+        ) : null}
+        .
       </p>
+    );
+  }
+  return (
+    <div
+      className="flex flex-col gap-3"
+      data-testid="config-declare-card"
+      data-co-located={coLocated ? "true" : undefined}
+    >
+      {coLocated ? (
+        <p className="text-sm text-slate-600" data-testid="config-declare-co-located">
+          This instance&apos;s own trust domain has no outpost record yet. Every deployment target
+          is part of some outpost — declaring the <strong>HQ outpost</strong> registers this
+          instance&apos;s domain as one, so the targets it authors read that outpost on their
+          pipeline tiles instead of &ldquo;no outpost registered&rdquo;. It is an ordinary
+          commander-origin graph object; at an outpost the same record arrives replicated from this
+          commander.
+        </p>
+      ) : (
+        <p className="text-sm text-slate-600">
+          No commander-declared configuration exists for this outpost yet. Declaring it creates a
+          commander-origin graph object that syncs down as a read-only replica.
+        </p>
+      )}
       <label className="block">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-          Trust tier (optional)
-        </span>
+        <SectionLabel as="span">Trust tier (optional)</SectionLabel>
         <select
           name="trustTier"
           data-testid="config-declare-tier-select"
@@ -440,12 +487,9 @@ export function DeclareConfigCard({
         </select>
       </label>
       {createError !== undefined && createError !== null && (
-        <div
-          className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
-          data-testid="config-declare-error"
-        >
+        <Alert tone="danger" data-testid="config-declare-error">
           {problemDetail(createError)}
-        </div>
+        </Alert>
       )}
       <div>
         <Button
@@ -492,37 +536,39 @@ export function PokeModeCard({
   return (
     <div className="flex flex-col gap-3" data-testid="poke-mode-card">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-          Poke-mode (this side only)
-        </span>
-        <Badge variant={enabled ? "info" : "secondary"} data-testid="poke-mode-state">
+        <SectionLabel>Poke-mode (this side only)</SectionLabel>
+        <Badge variant={enabled ? "info" : "neutral"} data-testid="poke-mode-state">
           {enabled ? "this side may poke" : "poll only"}
         </Badge>
       </div>
-      <p className="text-sm text-slate-600" data-testid="poke-mode-both-sides-note">
-        This flag is <strong>local to this instance</strong>: it licenses this side to SEND a
-        contentless wake signal to the outpost. It does not set the outpost&apos;s own flag — the
-        outpost decides at the outpost whether it accepts a poke and stops polling. Poke-mode is
-        both-sides consent, and this toggle is only this side&apos;s half.
+      {/* Copy rule 1: a fragment in chrome, the full 3-sentence rationale in the tooltip. The
+          fragment keeps the two clauses `outpost-configuration.test.tsx` reads off the visible
+          text ("this side" / "does not set the outpost") — compression must not drop the claim
+          itself, only the words around it. */}
+      <p
+        className="text-xs text-slate-500"
+        data-testid="poke-mode-both-sides-note"
+        title={
+          "This flag is local to this instance: it licenses this side to send a contentless wake " +
+          "signal to the outpost. It does not set the outpost's own flag — the outpost decides at " +
+          "the outpost whether it accepts a poke and stops polling. Poke-mode is both-sides " +
+          "consent, and this toggle is only this side's half."
+        }
+      >
+        Local to this side only — does not set the outpost&apos;s own flag.
       </p>
       {isUnilateralSparse(status) && (
-        <div
-          className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900"
-          data-testid="poke-mode-unilateral-sparse"
-        >
+        <Alert tone="warning" data-testid="poke-mode-unilateral-sparse">
           This side is opted in to poke-mode but <strong>no poke has ever been received</strong>{" "}
           from this peer — the named unilateral-sparse misconfiguration. The scheduler is still
           polling (effective cadence <code>{status.effectiveCadence ?? "unreported"}</code>). Either
           enable poke-mode at the outpost too, or turn it off here.
-        </div>
+        </Alert>
       )}
       {saveError !== undefined && saveError !== null && (
-        <div
-          className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
-          data-testid="poke-mode-error"
-        >
+        <Alert tone="danger" data-testid="poke-mode-error">
           {problemDetail(saveError)}
-        </div>
+        </Alert>
       )}
       <div>
         <Button
@@ -562,9 +608,11 @@ export const MANAGED_ELSEWHERE = [
   {
     id: "local-registry",
     title: "Outpost-local Gitea / registry",
+    // Spec §4E: milestone/ADR codes leave rendered copy (was "(M15, ADR-0010)") — created or
+    // imported at the outpost (M15, ADR-0010).
     where:
-      "Created or imported AT the outpost (M15, ADR-0010). The commander has no writable model for it — " +
-      "it is outpost-owned infrastructure, and the outpost's own UI/CLI configures it."
+      "Created or imported at the outpost — the commander has no writable model for it, so it's " +
+      "configured there."
   },
   {
     id: "bundled-backends",
@@ -623,7 +671,7 @@ export function ReconcileOutcome({
   const removedLocal = result.removedLocalObjectIds ?? [];
   return (
     <div
-      className="rounded border border-slate-300 bg-white p-3 text-sm"
+      className="rounded-lg border border-slate-200 bg-white p-3 text-sm shadow-sm"
       data-testid="reconcile-result"
     >
       <p>
@@ -643,15 +691,12 @@ export function ReconcileOutcome({
         </p>
       )}
       {removedLocal.length > 0 && (
-        <p
-          className="mt-2 rounded border border-red-300 bg-red-50 p-2 text-red-800"
-          data-testid="reconcile-removed-local"
-        >
+        <Alert tone="danger" className="mt-2" data-testid="reconcile-removed-local">
           Removed {removedLocal.length} configuration object
           {removedLocal.length === 1 ? "" : "s"} <strong>this domain authored</strong> — an ordinary
           journaled tombstone that <strong>PROPAGATES downstream</strong>: the outpost will drop its
           replica on the next sync.
-        </p>
+        </Alert>
       )}
       {removedShadows.length === 0 && removedLocal.length === 0 && adopted === null && (
         <p className="mt-2 text-slate-600" data-testid="reconcile-removed-none">
@@ -659,6 +704,31 @@ export function ReconcileOutcome({
         </p>
       )}
     </div>
+  );
+}
+
+/** One dropped row's consequence, stated before the button that would cause it is ever pressed.
+ *  Shared by the per-claimant preview and the default block's preview (spec §2.3 Alert). */
+function RemovalPreviewAlert({
+  entry
+}: {
+  entry: { config: OutpostConfig; outcome: RemovalOutcome };
+}): React.JSX.Element {
+  const copy = OUTCOME_COPY[entry.outcome];
+  return (
+    <Alert
+      tone={copy.tone}
+      className="text-xs"
+      data-testid="reconcile-removal-preview"
+      data-outcome={entry.outcome}
+      title={
+        <>
+          <code>{entry.config.objectId}</code> — {copy.label}
+        </>
+      }
+    >
+      {copy.detail}
+    </Alert>
   );
 }
 
@@ -708,11 +778,11 @@ export function ReconcilePanel({
 
   return (
     <div className="flex flex-col gap-3" data-testid="reconcile-panel">
-      <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-        <strong>Authority conflict:</strong> {claimants.length} live configuration objects are bound
-        to this outpost. The binding is meant to be 1:1, so ordinary edits are refused (409) until
-        one row survives. This is not &quot;no configuration&quot; — it is too much of it.
-      </div>
+      <Alert tone="warning" title="Authority conflict">
+        {claimants.length} live configuration objects are bound to this outpost. The binding is
+        meant to be 1:1, so ordinary edits are refused (409) until one row survives. This is not
+        &quot;no configuration&quot; — it is too much of it.
+      </Alert>
 
       {claimants.map((claimant) => {
         const preview = removalPreview(claimants, claimant.objectId, ownDomainId);
@@ -722,7 +792,7 @@ export function ReconcilePanel({
         return (
           <div
             key={claimant.objectId}
-            className="rounded border border-slate-200 p-3"
+            className="rounded-lg border border-slate-200 p-3"
             data-testid="reconcile-claimant"
             data-object-id={claimant.objectId}
           >
@@ -735,17 +805,7 @@ export function ReconcilePanel({
             </div>
             <div className="mt-2 flex flex-col gap-2">
               {preview.map((entry) => (
-                <div
-                  key={entry.config.objectId}
-                  className={`rounded border p-2 text-xs ${OUTCOME_COPY[entry.outcome].tone}`}
-                  data-testid="reconcile-removal-preview"
-                  data-outcome={entry.outcome}
-                >
-                  <div className="font-medium">
-                    <code>{entry.config.objectId}</code> — {OUTCOME_COPY[entry.outcome].label}
-                  </div>
-                  <div className="mt-1">{OUTCOME_COPY[entry.outcome].detail}</div>
-                </div>
+                <RemovalPreviewAlert key={entry.config.objectId} entry={entry} />
               ))}
             </div>
             <div className="mt-2 flex items-center gap-2">
@@ -798,7 +858,7 @@ export function ReconcilePanel({
           survivor server-side after the operator has already read a prediction. */}
       {defaultKeep ? (
         <div
-          className="rounded border border-slate-200 p-3"
+          className="rounded-lg border border-slate-200 p-3"
           data-testid="reconcile-default-block"
           data-keep={defaultKeep.objectId}
         >
@@ -808,17 +868,7 @@ export function ReconcilePanel({
           </div>
           <div className="mt-2 flex flex-col gap-2">
             {defaultPreview.map((entry) => (
-              <div
-                key={entry.config.objectId}
-                className={`rounded border p-2 text-xs ${OUTCOME_COPY[entry.outcome].tone}`}
-                data-testid="reconcile-removal-preview"
-                data-outcome={entry.outcome}
-              >
-                <div className="font-medium">
-                  <code>{entry.config.objectId}</code> — {OUTCOME_COPY[entry.outcome].label}
-                </div>
-                <div className="mt-1">{OUTCOME_COPY[entry.outcome].detail}</div>
-              </div>
+              <RemovalPreviewAlert key={entry.config.objectId} entry={entry} />
             ))}
           </div>
           <div className="mt-2 flex items-center gap-2">
@@ -854,12 +904,9 @@ export function ReconcilePanel({
       )}
 
       {reconcileError !== undefined && reconcileError !== null && (
-        <div
-          className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
-          data-testid="reconcile-error"
-        >
+        <Alert tone="danger" data-testid="reconcile-error">
           {problemDetail(reconcileError)}
-        </div>
+        </Alert>
       )}
       {result && <ReconcileOutcome result={result} />}
     </div>
@@ -873,15 +920,27 @@ function isNotFound(err: unknown): boolean {
   return err instanceof ScpApiError && err.status === 404;
 }
 
-/** The wired-up Configuration card. */
+/**
+ * The wired-up Configuration card — for a PAIRED PEER (`status`, the peer-status row) or, since
+ * pipeline-substrate-registry-scan.md §10.5, for THIS INSTANCE'S OWN DOMAIN (`selfDomain`): the
+ * HQ outpost, whose record binds `peerDomainId` = this instance's domain id and has NO peer
+ * row. Exactly one of the two is given. The config half (declare / tier / reconcile) is identical
+ * for both — it keys on the domain id alone; the poke-mode card is a PEER-ROW flag and is rendered
+ * only for a peer (there is no peer row to flag for self, and an instance never pokes itself).
+ */
 export function OutpostConfigurationSection({
-  status
+  status,
+  selfDomain
 }: {
-  status: FederationPeerStatus;
+  status?: FederationPeerStatus;
+  /** §10.5 — this instance's own domain (`GET /federation/self` / status `self`), for the
+   *  HQ outpost. `role` is `federation_self.role`: the declare card offers the write only
+   *  for `commander`, the one role the server's self-shape door accepts. */
+  selfDomain?: { domainId: string; name: string; role: FederationRole };
 }): React.JSX.Element {
   const queryClient = useQueryClient();
   const { domainId: ownDomainId } = useOwnDomainId();
-  const peerDomainId = status.peer.id;
+  const peerDomainId = status?.peer.id ?? selfDomain?.domainId ?? "";
 
   // The LIST, not the single-object GET: a peer with two claimant rows is exactly the conflict the
   // reconcile verb exists for, and the single GET resolves it away before a client can see it.
@@ -989,13 +1048,24 @@ export function OutpostConfigurationSection({
       <CardHeader>
         <CardTitle>Configuration</CardTitle>
         <CardDescription>
-          Commander-declared configuration for this outpost. It is an ordinary graph object, so it
-          rides the sync journal down and lands at the outpost as a read-only replica. Poke-mode
-          below is a peer-row flag and is <strong>this side only</strong>.
+          {status ? (
+            <>
+              Commander-declared configuration for this outpost. It is an ordinary graph object, so
+              it rides the sync journal down and lands at the outpost as a read-only replica.
+              Poke-mode below is a peer-row flag and is <strong>this side only</strong>.
+            </>
+          ) : (
+            <>
+              Commander-declared configuration for the <strong>HQ outpost</strong> — this
+              instance&apos;s own trust domain, registered as an outpost. It is an ordinary graph
+              object; there is no peer row behind it, so there is no transport, sync or poke-mode to
+              configure here.
+            </>
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-6">
-        {configsQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {configsQuery.isLoading && <SkeletonRows n={3} />}
 
         {conflict && (
           <ReconcilePanel
@@ -1023,35 +1093,38 @@ export function OutpostConfigurationSection({
           <ReconcileOutcome result={reconcileMutation.data} />
         )}
         {!conflict && config && reconcileMutation.error !== null && (
-          <div
-            className="rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
-            data-testid="reconcile-error"
-          >
+          <Alert tone="danger" data-testid="reconcile-error">
             {problemDetail(reconcileMutation.error)}
-          </div>
+          </Alert>
         )}
 
         {!conflict && !config && configsQuery.isSuccess && (
           <DeclareConfigCard
-            peer={status.peer}
+            {...(status
+              ? { peer: status.peer }
+              : { coLocated: true, ...(selfDomain ? { selfRole: selfDomain.role } : {}) })}
             createError={createMutation.error}
             isCreating={createMutation.isPending}
             onCreate={(tier) => createMutation.mutate(tier)}
           />
         )}
         {configsQuery.isError && !isNotFound(configsQuery.error) && (
-          <p className="text-sm text-red-700" data-testid="config-load-error">
+          <Alert tone="danger" data-testid="config-load-error">
             {problemDetail(configsQuery.error)}
-          </p>
+          </Alert>
         )}
 
-        <hr className="border-slate-200" />
-        <PokeModeCard
-          status={status}
-          saveError={pokeMutation.error}
-          isSaving={pokeMutation.isPending}
-          onToggle={(next) => pokeMutation.mutate(next)}
-        />
+        {status && (
+          <>
+            <hr className="border-slate-200" />
+            <PokeModeCard
+              status={status}
+              saveError={pokeMutation.error}
+              isSaving={pokeMutation.isPending}
+              onToggle={(next) => pokeMutation.mutate(next)}
+            />
+          </>
+        )}
 
         <hr className="border-slate-200" />
         <ManagedElsewhereNotes />

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# M5 Campaigns & Initiatives golden path (BUILD_AND_TEST.md §8 M5 definition of done — flagship
+# M5 Campaigns golden path (BUILD_AND_TEST.md §8 M5 definition of done — flagship
 # E2E): a "patch 3 services" campaign compiles to per-target member changes with correct wave
 # ordering -> wave 1 accepts -> wave 2 is blocked by a required gate on one of its targets
 # (fan-in/fan-out semantics reused from M3, gate reused from M4) -> campaign status aggregates
-# correctly -> an initiative grouping the campaign reflects the roll-up -> campaign-level rollback
-# reverts the accepted target, each rollback producing a Decision -> `scp audit verify` passes.
+# correctly -> campaign-level rollback reverts the accepted target, each rollback producing a
+# Decision -> `scp audit verify` passes.
 #
 # Builds the image, brings up the same two-container compose stack e2e-m0.sh/e2e-m4.sh use, then
 # drives it with the REAL `scp` CLI binary exactly the way an operator would.
@@ -22,7 +22,7 @@
 # subprocess plugin host and a REAL webhook fixture server — a strictly more rigorous environment
 # than a shell script can provide. This E2E's job is proving the WHOLE PATH (campaign compile ->
 # per-target member Changes -> wave-boundary gate reusing coordination/gates.ts's evaluateWaveGate
-# -> campaign status aggregation -> initiative roll-up -> campaign-scoped rollback -> audit
+# -> campaign status aggregation -> campaign-scoped rollback -> audit
 # integrity) wires together against the real compose-deployed image and the real CLI binary, not
 # re-proving individual mechanisms already covered at the integration layer.
 #
@@ -257,21 +257,6 @@ if [ "$WAVE1_UNPROPOSED" != "true" ]; then
 fi
 echo "PASS: wave 1 has no member changes proposed while blocked"
 
-echo "==> scp initiative create --name 'M5 flagship initiative' --campaigns \$CAMPAIGN_ID"
-INITIATIVE_JSON="$("${CLI_BIN[@]}" initiative create --name "M5 flagship initiative" --campaigns "$CAMPAIGN_ID" --output json)"
-INITIATIVE_ID="$(echo "$INITIATIVE_JSON" | json_field id)"
-echo "initiative id: $INITIATIVE_ID"
-
-echo "==> scp initiative status \$INITIATIVE_ID — roll-up must reflect the campaign's 'blocked' status"
-ROLLUP_JSON="$("${CLI_BIN[@]}" initiative status "$INITIATIVE_ID" --output json)"
-ROLLUP_STATUS="$(echo "$ROLLUP_JSON" | json_field rollupStatus)"
-if [ "$ROLLUP_STATUS" != "blocked" ]; then
-  echo "FAIL: expected initiative rollupStatus 'blocked', got '$ROLLUP_STATUS'" >&2
-  echo "$ROLLUP_JSON" >&2
-  exit 1
-fi
-echo "PASS: initiative roll-up reflects the campaign's 'blocked' status"
-
 echo "==> scp campaign rollback \$CAMPAIGN_ID — reverts only the accepted target (svc-a)"
 ROLLBACK_JSON="$("${CLI_BIN[@]}" campaign rollback "$CAMPAIGN_ID" --reason "M5 flagship e2e: revert wave 0 while wave 1 is blocked" --output json)"
 ROLLED_BACK_COUNT="$(node -e '
@@ -341,4 +326,4 @@ echo "PASS: campaign status aggregates to 'rolled_back'"
 echo "==> scp audit verify"
 "${CLI_BIN[@]}" audit verify
 
-echo "==> M5 campaigns & initiatives golden path e2e: ALL CHECKS PASSED"
+echo "==> M5 campaigns golden path e2e: ALL CHECKS PASSED"

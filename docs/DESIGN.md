@@ -140,7 +140,7 @@ commanderscp/
 
 ### 4.1 Everything is an object; relationships are first-class rows
 
-The graph is two generic tables plus a runtime type registry. Core charter types (Organization, Domain, Service, Component, Team, Group, User, DeploymentTarget, Contract, Policy, Control, Change, Campaign, Initiative, ReleaseTopology…) are **pre-seeded registry rows**, so core and org-defined custom types share one code path. Likewise, **all eleven charter relationship types are pre-seeded** `relationship_types` rows — `owns`, `consumes`, `depends_on`, `communicates_with`, `hosted_on`, `governed_by`, `deploys_to`, `coordinates`, `synchronizes_with`, `member_of`, `approves` — with endpoint constraints, plus the built-in `annotates` used by federation overlays (§13). `member_of` (user/service-account → group/team) is load-bearing: authorization resolves group- and team-bound roles through it (§7).
+The graph is two generic tables plus a runtime type registry. Core charter types (Organization, Domain, Service, Component, Team, Group, User, DeploymentTarget, Contract, Policy, Control, Change, Campaign, ReleaseTopology…) are **pre-seeded registry rows**, so core and org-defined custom types share one code path. Likewise, **all eleven charter relationship types are pre-seeded** `relationship_types` rows — `owns`, `consumes`, `depends_on`, `communicates_with`, `hosted_on`, `governed_by`, `deploys_to`, `coordinates`, `synchronizes_with`, `member_of`, `approves` — with endpoint constraints, plus the built-in `annotates` used by federation overlays (§13). `member_of` (user/service-account → group/team) is load-bearing: authorization resolves group- and team-bound roles through it (§7).
 
 Every row is **born federation-ready** (grafted from the Federation-First candidate — unanimously flagged by the judges as cheap now, expensive to retrofit): UUIDv7 primary keys (time-ordered, coordination-free), `origin_domain_id`, a per-domain monotonic `revision`, and a `content_hash`. Federation sync is therefore generic row replication, never per-entity export logic.
 
@@ -312,7 +312,7 @@ Plus a generic bounded `/graph/traverse` (direction, relationship-type set, max 
   relationships/      type-registry/{object-types,relationship-types}
   objects/{type}/     objects/{type}/{id}          # generic endpoint for ANY registry type (grafted)
   changes/            changes/{id}:accept|:cancel|:rollback
-  campaigns/          initiatives/        release-topologies/
+  campaigns/          release-topologies/
   policies/           controls/           approvals/          freezes/
   decisions/{id}      audit-events/
   graph/query/{name}  graph/traverse
@@ -453,9 +453,11 @@ CREATE TABLE changes (                    -- projection table; each row referenc
 
 A DB-persisted explicit state machine is dramatically simpler to operate, ship air-gapped, and explain — and it *is* the charter's reconciliation pattern — while the list above closes the durability gap that made a workflow engine tempting.
 
-### 9.5 Campaigns & Initiatives
+### 9.5 Campaigns
 
-Campaign (Kubernetes upgrade, OS patch cycle) = graph object that `coordinates` many Changes across targets, with its own plan/waves/gates over the same machinery. Initiative (Cloud Modernization, FedRAMP Certification) = graph object grouping campaigns with roll-up status derived by traversal. Both are in MVP scope per the charter; neither introduces new engine machinery.
+Campaign (Kubernetes upgrade, OS patch cycle) = graph object that `coordinates` many Changes across targets, with its own plan/waves/gates over the same machinery. In MVP scope per the charter; introduces no new engine machinery.
+
+> An **Initiative** rung once sat above this — a strategic objective grouping campaigns, with a roll-up status derived by traversal. Removed in full on 2026-08-10 ([ADR-0036](adr/0036-remove-initiative.md)): it carried no plan, compiled no waves and executed nothing, so it bought a read-only view over campaign state at the price of a first-class object type, four API paths, a named graph query, a CLI noun and an IaC construct.
 
 ---
 
@@ -663,7 +665,7 @@ A real service spans layers, each modeled as its own graph object with its own *
 
 **One binary, roles not products — deployed hub-and-spoke.** Every install is a Domain Control Plane. The reference topology (review decision, renamed 2026-07-15 — [ADR-0004](adr/0004-service-naming-commander-outpost-retrans.md)) is **commander/outpost**: one instance is designated the **commander** (the charter's Global Coordination Layer) by configuration, and each domain instance — commercial, GovCloud, air-gapped, … — is an **outpost** enrolled with it. A third role, **retrans**, designates an instance sitting at a CDS (cross-domain solution) boundary; it deliberately does much less than an outpost — it still validates (signature/hash-chain verification, the same fail-closed checks as any import) but otherwise only relays a bundle onward through the CDS, never originating config, holding local authoritative objects, or terminating a promotion (no CDS transfer logic ships with the role declaration itself — that lands with dedicated CDS work). Same image, same chart, same upgrade path. Domains remain fully operational when disconnected: federation enhances operation, it is never required for it.
 
-**The commander is the single source of truth for global configuration** — the domain registry, org structure, global policies, release topologies, campaign and initiative definitions. Under single-writer authority (below) these objects originate at the commander, so at every outpost they are **structurally read-only replicas**: an outpost cannot edit commander-origin config, only layer stricter local policy on top. Outposts are authoritative for their **local** objects — local services/components, deployment targets, changes, control outcomes, approvals, audit segments — and report them upward, which is what gives the commander UI the cross-domain view: every domain, its sync freshness, its in-flight changes, campaign and initiative status. For connected outposts this is near-real-time; for air-gapped outposts it is explicitly last-known-as-of the latest returned bundle, plus outstanding-transfer status (see Transports).
+**The commander is the single source of truth for global configuration** — the domain registry, org structure, global policies, release topologies, campaign definitions. Under single-writer authority (below) these objects originate at the commander, so at every outpost they are **structurally read-only replicas**: an outpost cannot edit commander-origin config, only layer stricter local policy on top. Outposts are authoritative for their **local** objects — local services/components, deployment targets, changes, control outcomes, approvals, audit segments — and report them upward, which is what gives the commander UI the cross-domain view: every domain, its sync freshness, its in-flight changes, campaign status. For connected outposts this is near-real-time; for air-gapped outposts it is explicitly last-known-as-of the latest returned bundle, plus outstanding-transfer status (see Transports).
 
 **Config delivery to disconnected outposts:** connected outposts pull commander config and push status over mTLS HTTPS on an interval — every network connection is outpost-initiated; the commander only listens (see Transports). Air-gapped outposts receive the identical commander config via `scp federation import` of a signed bundle file — or, where even file transfer is impractical, by **hand-entry**: manually entered commander-origin objects are stored as `provenance: manual` shadow copies, flagged as unverified in API and UI, and reconciled (confirmed or replaced) the next time a signed bundle arrives.
 

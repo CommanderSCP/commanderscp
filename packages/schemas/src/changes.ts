@@ -9,7 +9,8 @@ import { ControlRunSchema } from "./governance.js";
 import {
   ExecutorTypeSchema,
   ExecutorCategorySchema,
-  PipelineClassificationSchema
+  PipelineClassificationSchema,
+  SourceMappingScopeSchema
 } from "./executors.js";
 
 /**
@@ -122,7 +123,26 @@ export const ChangeSchema = z.object({
    * `/v1` field (CLAUDE.md: "every new field must be OPTIONAL") — rather than forcing every
    * existing caller that builds a `Change`-shaped object by hand (tests, fixtures) to supply it.
    */
-  originDomainId: z.string().uuid().optional()
+  originDomainId: z.string().uuid().optional(),
+  /**
+   * M20-A3 (ADR-0031 §5) — mirrors `GraphObjectSchema.domainLocal`: `true` when this change's own
+   * existence stays inside its own security domain (INHERITED from its targets at `proposeChange`,
+   * never declared on the change itself — a change has no create-time locality checkbox of its
+   * own). Gates every journal writer this change touches (`change_status`, the underlying object's
+   * `object_upsert`), so a domain-local change never reaches a peer to be asked about.
+   *
+   * REQUIRED, not optional, following `GraphObjectSchema.domainLocal`'s exact precedent: a boundary
+   * predicate has no unknown case, and every change row this instance can return already has this
+   * computed at propose time — there is no legacy row lacking it the way `originDomainId` had to
+   * accommodate.
+   *
+   * What it is FOR on the wire: disambiguating an absent `boundarySegment` (M16.1) — "no boundary
+   * segment" is genuinely ambiguous between "domain-local, so there is nothing to cross" and
+   * "ordinary change, just not promoted yet" without it. `change-detail.tsx`/`change-pipeline.tsx`
+   * read it to render the same `DomainLocalBadge` objects already carry, and to branch the
+   * `NoBoundarySegment` copy onto the honest reason instead of the generic one.
+   */
+  domainLocal: z.boolean()
 });
 export type Change = z.infer<typeof ChangeSchema>;
 
@@ -664,6 +684,31 @@ export const SourceMappingSchema = z.object({
   /** The operator's declared classification of this pipeline (ADR-0030 §2) — UI/reporting only,
    *  never an enforcement input. `null` for an ordinary pipeline. */
   classification: PipelineClassificationSchema.nullable(),
+  /** The operator's DECLARED provenance of this repo (outpost-ui.md §9.3a, migration 0062): `true`
+   *  = this repo mirrors a globally shared source authored at the commander (a domain's local COPY
+   *  of shared IaC); `false` = domain-specific, tracked only in this domain. Declared, never
+   *  inferred from the repo host; UI/reporting only, never an enforcement input. */
+  mirrorOfShared: z.boolean(),
+  /** The operator's PAUSE SWITCH (migration 0063, owner ask 2026-08-14). Unlike `mirrorOfShared`
+   *  above, this IS an enforcement input: `false` means the mapping stays declared but
+   *  `matchComponentForSource` (coordination/correlation.ts) skips it — a push that would
+   *  otherwise match this row routes to nothing. `true` for every pre-0063 row (the default),
+   *  which was already routing. */
+  enabled: z.boolean(),
+  /** The timed close's bound, or null (see SetSourceMappingEnabledRequest). */
+  disabledUntil: z.string().datetime().nullable(),
+  /** The read-time truth the matcher acts on: `enabled`, OR a timed close whose bound has passed.
+   *  Paint state from THIS. */
+  effectivelyEnabled: z.boolean(),
+  /** The operator's DECLARED reach of this repo (pipeline-substrate-registry-scan.md §10.6,
+   *  migration 0066): `global` = a cross-domain shared repo authored and tracked at the commander;
+   *  `domain` = tracked only in this domain; `null` = NOT DECLARED — the pipeline renders no
+   *  provenance label and infers nothing (a pre-0066 row on the commander is not thereby global).
+   *  Orthogonal to `mirrorOfShared` (a `domain`-scope mapping may mirror a global one). Read, never
+   *  inferred; UI/reporting/IaC only, never an enforcement input — the correlation matcher does not
+   *  read it. Required-nullable like `mirrorOfShared`/`disabledUntil` beside it (a new REQUIRED
+   *  response property is additive within /v1). */
+  scope: SourceMappingScopeSchema.nullable(),
   createdAt: z.string().datetime()
 });
 export type SourceMapping = z.infer<typeof SourceMappingSchema>;
@@ -683,7 +728,21 @@ export const CreateSourceMappingRequestSchema = z.object({
   /** The operator's declared pipeline classification (ADR-0030 §2) — UI/reporting only. Omitted
    *  means unclassified. Accepting it here is what makes dev-ness DECLARED rather than inferred
    *  from the branch name. */
-  classification: PipelineClassificationSchema.optional()
+  classification: PipelineClassificationSchema.optional(),
+  /** Declare this repo a MIRROR of a commander-shared source (outpost-ui.md §9.3a). Omitted means
+   *  domain-specific — the pre-0062 meaning of every mapping, so existing callers are unaffected.
+   *  `.optional()` not `.default()` for the same request-shape reason as `type` above. */
+  mirrorOfShared: z.boolean().optional(),
+  /** The operator's pause switch (migration 0063). Omitted means enabled — a mapping routes by
+   *  default, the pre-0063 behaviour, so an existing caller is unaffected. Pass `false` to create
+   *  a mapping that is declared but does not yet route. `.optional()` not `.default()` for the
+   *  same request-shape reason as `type`/`mirrorOfShared` above. */
+  enabled: z.boolean().optional(),
+  /** Declare this repo's reach (§10.6): `global` (shared across domains, tracked at the commander)
+   *  or `domain` (tracked only here). Omitted means NOT DECLARED — stored NULL, no label rendered,
+   *  nothing inferred; set it later with `PATCH .../mappings/{id}/scope`. `.optional()` not
+   *  `.default()` for the same request-shape reason as the fields above. */
+  scope: SourceMappingScopeSchema.optional()
 });
 export type CreateSourceMappingRequest = z.infer<typeof CreateSourceMappingRequestSchema>;
 
@@ -730,6 +789,48 @@ export type DeleteSourceMappingResponse = z.infer<typeof DeleteSourceMappingResp
 
 export const SourceMappingListResponseSchema = cursorPageResponseSchema(SourceMappingSchema);
 export type SourceMappingListResponse = z.infer<typeof SourceMappingListResponseSchema>;
+
+/**
+ * `PATCH /change-sources/{sourceKind}/mappings/{id}` params — the one mapping route addressed by
+ * id rather than the identity tuple, because unlike delete/create this is a genuine UPDATE of one
+ * specific row (migration 0063): flipping `enabled` on a mapping must never also flip its
+ * byte-identical sibling.
+ */
+export const SourceMappingIdParamSchema = z.object({
+  sourceKind: z.string().min(1),
+  id: z.string().uuid()
+});
+
+/**
+ * `PATCH /change-sources/{sourceKind}/mappings/{id}` body — the pause switch (migration 0063).
+ * Deliberately not a general "patch a mapping" shape: every other column here is part of the
+ * identity tuple (`ManifestSourceMappingSchema`) or, like `mirrorOfShared`/`classification`, a
+ * create-time declaration with no update path. `scope` (§10.6) is the one other mutable label and
+ * has its OWN sibling PATCH below rather than a field here — `enabled` is REQUIRED in this body, so a
+ * caller that only wants to label a mapping would have to restate the pause state to do it (and
+ * could clobber a concurrent toggle); a route named `setSourceMappingEnabled` that also sets scope
+ * would be a name that lies. Additive either way; the sibling keeps this contract byte-identical.
+ */
+export const SetSourceMappingEnabledRequestSchema = z.object({
+  enabled: z.boolean(),
+  /** With `enabled: false` only: close UNTIL this instant (ISO), then re-open automatically at
+   *  read time — no timer job. Omitted/null = closed until an operator re-opens. Ignored with
+   *  `enabled: true`. */
+  disabledUntil: z.string().datetime().nullable().optional()
+});
+export type SetSourceMappingEnabledRequest = z.infer<typeof SetSourceMappingEnabledRequestSchema>;
+
+/**
+ * `PATCH /change-sources/{sourceKind}/mappings/{id}/scope` body (§10.6) — set or clear the
+ * declared scope of ONE mapping, by id (same addressing as the pause switch, for the same reason: a
+ * genuine in-place update of one row must never touch its byte-identical siblings). `null` clears
+ * the declaration (back to "not declared" — no label). Required, not optional: an omitted field
+ * would make "clear it" and "I forgot the body" indistinguishable.
+ */
+export const SetSourceMappingScopeRequestSchema = z.object({
+  scope: SourceMappingScopeSchema.nullable()
+});
+export type SetSourceMappingScopeRequest = z.infer<typeof SetSourceMappingScopeRequestSchema>;
 
 /**
  * `POST /change-sources/{sourceKind}/webhook` body — a source-specific payload, kept verbatim

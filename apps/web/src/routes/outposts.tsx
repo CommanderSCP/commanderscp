@@ -1,12 +1,23 @@
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import type { BundleTransfer, FederationPeerStatus, FederationStatusResponse } from "@scp/schemas";
+import { Info } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { CommanderStar, OutpostFort, RetransMast } from "../components/icons/federation-roles";
+import type {
+  BundleTransfer,
+  FederationPeerStatus,
+  FederationStatusResponse,
+  OutpostConfig
+} from "@scp/schemas";
 import { client } from "../lib/client";
 import { isAbsent } from "../lib/absent";
+import { cn } from "../lib/utils";
 import { federationStatusKey } from "../lib/query-client";
 import { Badge } from "../components/ui/badge";
 import { QueryErrorNotice } from "../components/query-error";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { PageHeader } from "../components/ui/page-header";
+import { KeyValueList } from "../components/ui/key-value-list";
 import {
   Table,
   TableBody,
@@ -55,22 +66,92 @@ export function isPeerUnknown(status: FederationPeerStatus, field: string): bool
 }
 
 /**
- * The honest-unknown marker — deliberately the SAME dashed-amber idiom as `service-board.tsx`'s
- * `UnknownHere` and `replica-origin.tsx`'s `ForeignOriginNotice`, so an operator reads one visual
- * language for "this instance cannot see / is not the authority" across the whole app.
+ * The honest-unknown marker — the Badge `unknown` tone (design spec §1.5/§2.2), the ONE sanctioned
+ * rendering of the honesty pill app-wide, so an operator reads one visual language for "this
+ * instance cannot see / is not the authority" everywhere it appears.
  *
  * Its own testid (`outpost-unknown`) rather than the board's, so the two suites cannot pass on each
  * other's markup.
  */
 export function UnknownHere({ title, label = "unknown here" }: { title: string; label?: string }) {
   return (
-    <span
-      className="inline-flex items-center gap-1 rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
-      title={title}
-      data-testid="outpost-unknown"
-    >
+    <Badge variant="unknown" title={title} data-testid="outpost-unknown">
       {label}
+    </Badge>
+  );
+}
+
+/**
+ * "This side's own record — nothing here observes the peer." (spec §4E) — the ONE canonical
+ * sentence replacing the three drifted paragraph variants that used to say this on `/outposts`,
+ * `/outposts/$peerDomainId`, and `/federation` separately. A fragment in chrome (copy rule 1); the
+ * full rationale lives in the `title` tooltip.
+ */
+export function ObservationScopeNote(): React.JSX.Element {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-xs text-slate-500"
+      data-testid="observation-scope-note"
+      title={
+        "Every figure here is this side's own record: what arrived here, and what this side put on " +
+        "the wire. Nothing here observes what a peer received, applied, or is doing right now."
+      }
+    >
+      This side&apos;s own record — nothing here observes the peer.
+      <Info className="size-3.5" strokeWidth={1.75} aria-hidden="true" />
     </span>
+  );
+}
+
+/**
+ * THE ATTENTION-DOT COLUMN (spec §4E) — a leading at-a-glance triage signal derived ONLY from
+ * signals already computed on this row, never a new fetch or a fabricated threshold:
+ *
+ *   * `danger` (red) — a signal that something set up to work is NOT working: this side is opted
+ *     into poke-mode but has never actually received one (the named unilateral-sparse case
+ *     `outpost-configuration.tsx` also renders, computed the same way here for the overview).
+ *   * `warning` (amber) — "worth a look": transport cannot be derived (no base URL or delivery
+ *     target configured), or the trust tier is unset/unverified.
+ *   * `nominal` (slate) — nothing above is true.
+ *
+ * Transport-unknown is DELIBERATELY warning, not danger (first QA pass got this wrong): a freshly
+ * enrolled peer has no transport yet, and a genuinely air-gapped peer may NEVER have one — bundles
+ * move by hand, which is a supported deployment shape, not a failure. Red on every fresh or
+ * air-gap row is the wall-of-amber problem reborn one tier up: when everything is a fire, nothing
+ * is. Red therefore requires a signal that a configured mechanism is misbehaving.
+ */
+export type AttentionLevel = "danger" | "warning" | "nominal";
+
+export function attentionLevel(status: FederationPeerStatus): AttentionLevel {
+  const mark = trustTierMark(status);
+  const transportUnknown = status.transportMode === null;
+  const pokeStuck = status.peer.pokeMode === true && (status.lastPokeReceivedAt ?? null) === null;
+  if (pokeStuck) return "danger";
+  if (transportUnknown || mark.provenance !== "declared") return "warning";
+  return "nominal";
+}
+
+const ATTENTION_TITLE: Record<AttentionLevel, string> = {
+  danger: "Needs attention: poke-mode is enabled but no poke has ever arrived.",
+  warning:
+    "Worth a look: no transport is configured (expected for a new or air-gapped peer), or the trust tier is unset/unverified.",
+  nominal: "Nothing here needs attention."
+};
+
+function AttentionDot({ status }: { status: FederationPeerStatus }): React.JSX.Element {
+  const level = attentionLevel(status);
+  return (
+    <span
+      className={cn(
+        "inline-block size-2.5 shrink-0 rounded-full",
+        level === "danger" && "bg-red-500",
+        level === "warning" && "bg-amber-400",
+        level === "nominal" && "bg-slate-300"
+      )}
+      data-testid="outpost-attention"
+      data-attention={level}
+      title={ATTENTION_TITLE[level]}
+    />
   );
 }
 
@@ -98,9 +179,21 @@ export function ChecksumRef({ checksum }: { checksum: string }): React.JSX.Eleme
   );
 }
 
+/** The ADR-0004 role marks (components/icons/federation-roles.tsx) — `unset` stays icon-less:
+ *  an undesignated role has no insignia, and inventing one would assert a designation. */
+const ROLE_ICONS: Partial<Record<string, LucideIcon>> = {
+  commander: CommanderStar,
+  outpost: OutpostFort,
+  retrans: RetransMast
+};
+
 export function roleBadge(role: string): React.JSX.Element {
   return (
-    <Badge variant={role === "commander" ? "info" : "secondary"} className="capitalize">
+    <Badge
+      variant={role === "commander" ? "info" : "neutral"}
+      className="capitalize"
+      icon={ROLE_ICONS[role]}
+    >
       {role}
     </Badge>
   );
@@ -176,8 +269,8 @@ export function TrustTierCell({ status }: { status: FederationPeerStatus }): Rea
   if (mark.provenance === "unverified") {
     return (
       <span data-testid="outpost-tier" data-trust-tier={tier} data-tier-provenance="unverified">
-        <span
-          className="inline-flex items-center gap-1 rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+        <Badge
+          variant="unknown"
           title={
             provenance === "unverified"
               ? `'${tier}' comes from an UNVERIFIED hand-filled shadow copy, not from this instance's own ` +
@@ -190,14 +283,14 @@ export function TrustTierCell({ status }: { status: FederationPeerStatus }): Rea
           data-testid="outpost-tier-unverified"
         >
           {tier} · unverified
-        </span>
+        </Badge>
       </span>
     );
   }
 
   return (
     <span data-testid="outpost-tier" data-trust-tier={tier} data-tier-provenance="declared">
-      <Badge variant="secondary" data-testid="outpost-tier-declared">
+      <Badge variant="neutral" data-testid="outpost-tier-declared">
         {tier}
       </Badge>
     </span>
@@ -233,7 +326,7 @@ export function TransportCell({ status }: { status: FederationPeerStatus }): Rea
   }
   return (
     <span data-testid="outpost-transport" data-transport-mode={mode}>
-      <Badge variant="outline">{mode}</Badge>
+      <Badge variant="neutral">{mode}</Badge>
       <div className="mt-1 text-xs text-slate-500">
         {mode === "dialable"
           ? `last pull ${formatDateTime(status.lastPullSuccessAt)}`
@@ -356,6 +449,17 @@ export function PendingExportCell({ status }: { status: FederationPeerStatus }):
  * renders "not reported" — still never a clean reading, and visibly different from the declared case
  * so the change is noticed rather than silently absorbed.
  */
+/** Shared tooltip copy for the two sourceless columns (spec §4E: milestone codes stay out of
+ *  rendered/tooltip copy — the "M16.4" citation that used to sit here moved to this comment).
+ *  A return-path confirmation that would source `appliedAtPeer` is a named future increment, not a
+ *  field that exists today. Shared with `outpost-detail.tsx`'s `OutpostStatusCard`, which renders
+ *  the same two fields with the same honest reason. */
+export const APPLIED_AT_PEER_TITLE =
+  "This instance cannot observe what the outpost applied: it records only what it exported. A " +
+  "return-path confirmation isn't implemented yet.";
+export const HEALTH_ROLLUP_TITLE =
+  "No per-outpost health signal is replicated to this instance, so there is no rollup to show.";
+
 export function SourcelessCell({
   status,
   field,
@@ -382,7 +486,7 @@ export function SourcelessCell({
 }
 
 function transferStatusBadge(status: string): React.JSX.Element {
-  const variant = status === "confirmed" ? "success" : status === "submitted" ? "info" : "outline";
+  const variant = status === "confirmed" ? "success" : status === "submitted" ? "info" : "neutral";
   return (
     <Badge variant={variant} className="capitalize">
       {status}
@@ -414,7 +518,7 @@ export function RecentTransfersCell({
     <div className="flex flex-col gap-1" data-testid="outpost-transfers">
       {transfers.slice(0, 5).map((transfer) => (
         <div key={transfer.id} className="flex items-center gap-1.5 text-xs">
-          <Badge variant="outline" className="capitalize">
+          <Badge variant="neutral" className="capitalize">
             {transfer.direction}
           </Badge>
           <span className="text-slate-500">{transfer.kind}</span>
@@ -444,6 +548,9 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
       data-transport-mode={status.transportMode ?? "unknown"}
     >
       <TableCell>
+        <AttentionDot status={status} />
+      </TableCell>
+      <TableCell>
         <Link
           to="/federation/outposts/$peerDomainId"
           params={{ peerDomainId: peer.id }}
@@ -468,21 +575,10 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
         <PendingExportCell status={status} />
       </TableCell>
       <TableCell>
-        <SourcelessCell
-          status={status}
-          field="appliedAtPeer"
-          title={
-            "This instance cannot observe what the outpost applied: it records only what it exported. " +
-            "A return-path confirmation is a named future increment (M16.4), not a field that exists today."
-          }
-        />
+        <SourcelessCell status={status} field="appliedAtPeer" title={APPLIED_AT_PEER_TITLE} />
       </TableCell>
       <TableCell>
-        <SourcelessCell
-          status={status}
-          field="healthRollup"
-          title="No per-outpost health signal is replicated to this instance, so there is no rollup to show."
-        />
+        <SourcelessCell status={status} field="healthRollup" title={HEALTH_ROLLUP_TITLE} />
       </TableCell>
       <TableCell>
         {/* `?? []` — FAIL LOUD IS BETTER THAN FAIL DISHONEST, but a WHITE SCREEN is neither.
@@ -519,10 +615,148 @@ export function OutpostRow({ status }: { status: FederationPeerStatus }): React.
  * name over a place-role deployment-target, and none of this instance's targets carry the
  * `environment` property that derivation needs — so there is nothing honest to print yet.
  */
+/**
+ * THE HQ OUTPOST'S TIER (§10.5; formerly "co-located" — GLOSSARY, ADR-0021 D7) — the same three states `TrustTierCell` renders for a peer
+ * row, read off the OutpostConfig itself (this record has no peer-status row): no tier → the unknown
+ * marker; a tier the server ALSO lists in `unknownFields` (an unverified hand-filled shadow) →
+ * `<tier> · unverified`; else the plain badge. Never blank, never defaulted.
+ */
+export function SelfOutpostTier({ config }: { config: OutpostConfig }): React.JSX.Element {
+  const tier = config.trustTier ?? null;
+  if (tier === null) {
+    return (
+      <span data-testid="self-outpost-tier" data-trust-tier="unknown" data-tier-provenance="none">
+        <UnknownHere
+          label="no tier asserted"
+          title="No trust tier has been asserted for the HQ outpost (the outpost in this instance's own trust domain). The tier is entered by an operator and has no other source — it is not defaulted."
+        />
+      </span>
+    );
+  }
+  const unverified = (config.unknownFields ?? []).includes("trustTier");
+  return (
+    <span
+      data-testid="self-outpost-tier"
+      data-trust-tier={tier}
+      data-tier-provenance={unverified ? "unverified" : "declared"}
+    >
+      <Badge
+        variant={unverified ? "unknown" : "neutral"}
+        title={
+          unverified
+            ? `'${tier}' comes from an UNVERIFIED hand-filled shadow copy, not from this instance's own assertion. Reconcile the record before relying on it.`
+            : undefined
+        }
+      >
+        {unverified ? `${tier} · unverified` : tier}
+      </Badge>
+    </span>
+  );
+}
+
+/**
+ * THE HQ OUTPOST LINE inside the self-domain panel (pipeline-substrate-registry-scan.md
+ * §10.5): the `outpost` record whose `peerDomainId` is THIS instance's own domain, read off
+ * `FederationStatusResponse.selfOutpost` — the ONE place a self-bound record can be read, since it
+ * has no peer row and so no `peers[]` entry. Three states, each stated:
+ *   * a record  → its name (linked to `/federation/outposts/$peerDomainId` with self's own id — that
+ *                 page renders the HQ record), its tier, and the marker
+ *                 `HQ outpost · this instance`;
+ *   * `null`    → `no outpost registered` — a stated absence, with the way to declare one (quiet)
+ *                 ONLY when `self.role` is `commander` (the one role the server's self-shape door
+ *                 accepts); on any other role it reads `declared at the commander` with no link;
+ *   * absent    → `not reported` — an older server that does not resolve it; NOT read as "none".
+ */
+export function SelfOutpostLine({
+  self,
+  selfOutpost
+}: {
+  self: NonNullable<FederationStatusResponse["self"]>;
+  selfOutpost: OutpostConfig | null | undefined;
+}): React.JSX.Element {
+  if (selfOutpost === undefined) {
+    return (
+      <span
+        data-testid="self-outpost"
+        data-self-outpost="unreported"
+        className="text-xs text-slate-500"
+        title="This server did not report whether this domain has an HQ outpost record (the outpost in this instance's own trust domain); it is not a statement that there is none."
+      >
+        not reported
+      </span>
+    );
+  }
+  if (selfOutpost === null) {
+    // The declare offer is made ONLY where the server accepts the write: `outpost-binding.ts` takes
+    // the self shape only when `federation_self.role` is `commander` (MEASURED — `outpost-config-sync
+    // .integration.test.ts`: an outpost-role instance is 400'd both before and after the replica
+    // arrives). On any other role the record is the commander's, and the honest line says so
+    // instead of offering a door the server refuses.
+    return self.role === "commander" ? (
+      <span
+        data-testid="self-outpost"
+        data-self-outpost="none"
+        className="text-xs text-slate-500"
+        title="No outpost record names this instance's own trust domain. Every deployment target is part of some outpost; declare the HQ outpost (the outpost in this instance's own trust domain) so this domain's own targets read it on their pipeline tiles."
+      >
+        no outpost registered —{" "}
+        <Link
+          to="/federation/outposts/$peerDomainId"
+          params={{ peerDomainId: self.domainId }}
+          className="underline"
+          data-testid="self-outpost-declare-link"
+        >
+          declare one
+        </Link>
+      </span>
+    ) : (
+      <span
+        data-testid="self-outpost"
+        data-self-outpost="none"
+        data-self-outpost-authority="commander"
+        className="text-xs text-slate-500"
+        title={`No outpost record names this instance's own trust domain. This instance's federation role is '${self.role}': its own record is commander-declared and arrives replicated from the commander — declare it there.`}
+      >
+        no outpost registered — declared at the commander
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex flex-wrap items-center gap-1.5"
+      data-testid="self-outpost"
+      data-self-outpost="registered"
+      data-object-id={selfOutpost.objectId}
+    >
+      <Link
+        to="/federation/outposts/$peerDomainId"
+        params={{ peerDomainId: self.domainId }}
+        className="font-medium text-slate-900 hover:underline"
+        data-testid="self-outpost-link"
+      >
+        {selfOutpost.name}
+      </Link>
+      <SelfOutpostTier config={selfOutpost} />
+      <Badge
+        variant="info"
+        icon={OutpostFort}
+        title="This record's peerDomainId is this instance's own trust domain — the HQ outpost (the outpost in this instance's own trust domain, not a field outpost in another one). It has no peer row: nothing syncs to or from it."
+        data-testid="self-outpost-marker"
+      >
+        HQ outpost · this instance
+      </Badge>
+    </span>
+  );
+}
+
 export function SelfDomainPanel({
-  self
+  self,
+  selfOutpost
 }: {
   self: FederationStatusResponse["self"];
+  /** §10.5 — `FederationStatusResponse.selfOutpost`; omitted = an older server (rendered as
+   *  "not reported", never as "none"). */
+  selfOutpost?: OutpostConfig | null | undefined;
 }): React.JSX.Element | null {
   if (!self) return null;
   const roleDeclared = self.role !== "unset";
@@ -537,36 +771,41 @@ export function SelfDomainPanel({
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <dl className="grid gap-3 sm:grid-cols-3">
-          <div>
-            <dt className="text-xs uppercase tracking-wide text-slate-500">Domain</dt>
-            <dd className="text-sm font-medium text-slate-900" data-testid="self-domain-name">
-              {self.name}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs uppercase tracking-wide text-slate-500">Declared role</dt>
-            <dd className="text-sm" data-testid="self-domain-role">
-              {roleDeclared ? (
-                <Badge>{self.role}</Badge>
-              ) : (
-                /* `unset` is the lazily-minted default, not a role anyone chose — say so rather
-                 * than printing the literal, which reads like a fourth role beside
-                 * commander/outpost/retrans. */
-                <span className="text-amber-700">
-                  not designated — run{" "}
-                  <code className="rounded bg-slate-100 px-1 py-0.5">scp federation init</code>
+        <KeyValueList
+          columns={2}
+          className="sm:grid-cols-3"
+          items={[
+            {
+              label: "Domain",
+              value: <span data-testid="self-domain-name">{self.name}</span>
+            },
+            {
+              label: "Declared role",
+              value: (
+                <span data-testid="self-domain-role">
+                  {roleDeclared ? (
+                    /* Through roleBadge so the self-domain declaration wears the same insignia
+                       (CommanderStar et al.) as every peer row — one role→mark mapping, no drift. */
+                    roleBadge(self.role)
+                  ) : (
+                    /* `unset` is the lazily-minted default, not a role anyone chose — say so rather
+                     * than printing the literal, which reads like a fourth role beside
+                     * commander/outpost/retrans. */
+                    <span className="text-amber-700">
+                      not designated — run{" "}
+                      <code className="rounded bg-slate-100 px-1 py-0.5">scp federation init</code>
+                    </span>
+                  )}
                 </span>
-              )}
-            </dd>
-          </div>
-          <div>
-            <dt className="text-xs uppercase tracking-wide text-slate-500">Domain id</dt>
-            <dd className="font-mono text-xs text-slate-600" data-testid="self-domain-id">
-              {self.domainId}
-            </dd>
-          </div>
-        </dl>
+              )
+            },
+            { label: "Domain id", value: self.domainId, mono: true },
+            {
+              label: "HQ outpost",
+              value: <SelfOutpostLine self={self} selfOutpost={selfOutpost} />
+            }
+          ]}
+        />
       </CardContent>
     </Card>
   );
@@ -584,17 +823,15 @@ export function OutpostsPage(): React.JSX.Element {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Outposts</h1>
-        <p className="text-sm text-slate-500">
-          Every outpost and retrans peer this domain syncs with. Every figure below is{" "}
-          <strong>this side&apos;s own record</strong> — what arrived here, and what this side put
-          on the wire. Nothing here observes what an outpost received or applied (DESIGN §13), so no
-          column claims it.
-        </p>
-      </div>
+      <PageHeader
+        title="Outposts"
+        description="Every field outpost (an outpost in another trust domain) and retrans peer this domain syncs with."
+        meta={<ObservationScopeNote />}
+      />
 
-      {statusQuery.data && <SelfDomainPanel self={statusQuery.data.self} />}
+      {statusQuery.data && (
+        <SelfDomainPanel self={statusQuery.data.self} selfOutpost={statusQuery.data.selfOutpost} />
+      )}
 
       <Card>
         <CardHeader>
@@ -632,6 +869,9 @@ export function OutpostsPage(): React.JSX.Element {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-8">
+                    <span className="sr-only">Attention</span>
+                  </TableHead>
                   <TableHead>Outpost</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Trust tier</TableHead>

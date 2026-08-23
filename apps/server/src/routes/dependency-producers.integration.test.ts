@@ -289,6 +289,19 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
         declaredByObjectId: impostor.id
       });
       expect(response.status, JSON.stringify(response.json)).toBe(200);
+      // THE WIRE VIEW names both ends (§12.6 Q1): the producer by its component name, the declarer
+      // by the ADMIN's own name — not the impostor's, which is the same provenance fact as below,
+      // read off the response instead of the table.
+      const view = response.json.declaration as {
+        producerObjectId: string;
+        declaredByObjectId: string;
+        producer: { objectId: string; name: string };
+        declaredBy: { objectId: string; name: string };
+      };
+      expect(view.producer).toEqual({ objectId: producer.id, name: producer.name });
+      expect(view.declaredBy.objectId).toBe(adminSubjectObjectId);
+      expect(view.declaredBy.objectId).not.toBe(impostor.id);
+      expect(view.declaredBy.name).not.toBe("");
 
       const stored = await inOrg((tx) =>
         getDependencyLineProducer(tx, org.orgId, { ecosystem: "npm", coordinate })
@@ -469,6 +482,12 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
       expect(lines[0]?.lineId).toBe(line.id);
       // THE UNGUESSABLE HALF: the consumer's id is not in the request anywhere.
       expect(lines[0]?.subscribedComponentObjectIds).toEqual([consumer.id]);
+      // ...AND NAMED, server-side (dependency-subscription-ui.md §12.6 Q1, owner 2026-08-18): the
+      // report a human confirms before the write names what it reaches. Same set, same order.
+      expect(
+        (lines[0] as unknown as { subscribedComponents: { objectId: string; name: string }[] })
+          .subscribedComponents
+      ).toEqual([{ objectId: consumer.id, name: consumer.name }]);
       // ...and WHAT WOULD BE LOST, which is the most consequential thing the verb does.
       expect(lines[0]?.headBefore.latestVersion).toBe("1.4.0");
       expect(lines[0]?.headCleared).toBe(true);
@@ -1065,6 +1084,20 @@ describe("the dependency-line PRODUCER declaration (ADR-0032 §7e)", () => {
 
       const exact = await get(listUrl({ ecosystem: "npm", coordinate: scoped }), org.adminToken);
       expect((exact.json.producers as unknown[]).length).toBe(1);
+      // NAMED rows (the wire view, §12.6 Q1): producer and declarer by name, ids beside them. One
+      // batched `objects` read serves the whole list; a client never pays N+1 reads it may not be
+      // authorized to make (a user object is readable by few).
+      const row = (
+        exact.json.producers as {
+          producerObjectId: string;
+          declaredByObjectId: string;
+          producer: { objectId: string; name: string };
+          declaredBy: { objectId: string; name: string };
+        }[]
+      )[0]!;
+      expect(row.producer).toEqual({ objectId: producer.id, name: producer.name });
+      expect(row.declaredBy.objectId).toBe(row.declaredByObjectId);
+      expect(row.declaredBy.name).not.toBe("");
 
       // VERBATIM, not slugified: `@acme/List-x` and `acme-list-x` share a URN slug and must not
       // share an answer.

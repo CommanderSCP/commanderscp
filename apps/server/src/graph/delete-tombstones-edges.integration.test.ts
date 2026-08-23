@@ -11,7 +11,7 @@ import {
   type TestOrg
 } from "../test-support/harness.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { relationships } from "../db/schema.js";
+import { objects, relationships } from "../db/schema.js";
 import { containmentChain } from "./containment.js";
 import { hasPermission } from "../authz/resolve.js";
 
@@ -99,32 +99,35 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
   }
 
   /**
-   * Re-opens the edge the cascade just tombstoned, producing a LIVE `contains` row whose `from_id`
-   * is a deleted object — the state a replica edge, or any row predating this fix, is already in.
+   * Tombstones an object BELOW THE DOORS — a bare `deleted_at` write that runs no cascade and no
+   * guard — leaving its `contains` edge LIVE with a dead `from_id`. That is the exact state a
+   * replica row, or any row predating the container-delete guard, is already in.
    *
-   * It has to be surgery: `POST /relationships` refuses an endpoint that is deleted (400), which is
-   * itself the right behaviour and is why this state cannot be reached through the API. The write
-   * runs in its OWN committed transaction and is then READ BACK, because a fixture that silently
-   * updates zero rows leaves the test measuring the fixed state and passing for the wrong reason.
+   * It has to be surgery since the 2026-08-18 owner ruling (ADR-0038 clause 5): `DELETE` on a
+   * container that still has containment children answers 409 with the blockers named, so the
+   * live-child-under-dead-ancestor shape can no longer be REACHED through any door — which is the
+   * point of the guard, and why the reader-side pins below still matter: they are the
+   * defence-in-depth for the legacy/imported population. The write runs in its OWN committed
+   * transaction and is READ BACK, because a fixture that silently updates zero rows leaves the
+   * test measuring the fixed state and passing for the wrong reason.
    */
-  async function reopenEdge(fromId: string, toId: string) {
+  async function tombstoneBelowTheDoors(objectId: string) {
     await withTenantTx(server.deps.db, org.orgId, (tx) =>
       tx
-        .update(relationships)
-        .set({ deletedAt: null })
-        .where(
-          and(
-            eq(relationships.orgId, org.orgId),
-            eq(relationships.fromId, fromId),
-            eq(relationships.toId, toId)
-          )
-        )
+        .update(objects)
+        .set({ deletedAt: new Date() })
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, objectId)))
     );
-    const live = await liveEdgesTouching(toId);
+    const [row] = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select({ deletedAt: objects.deletedAt })
+        .from(objects)
+        .where(and(eq(objects.orgId, org.orgId), eq(objects.id, objectId)))
+    );
     expect(
-      live.length,
+      row?.deletedAt,
       "fixture must actually take effect — a no-op surgery would fake a pass"
-    ).toBeGreaterThan(0);
+    ).not.toBeNull();
   }
 
   const gatingPolicy = (name: string, objectRef: string) =>
@@ -152,18 +155,47 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
     ).toHaveLength(0);
   });
 
-  it("soft-deleting the SERVICE tombstones the same edge from the other side", async () => {
+  it("soft-deleting an object tombstones the edge it is the FROM side of", async () => {
     // The cascade matches `from_id` OR `to_id`; a fix that only handled one direction would leave
-    // every component pointing at a dead service.
-    const { service, component } = await servicedComponent("cascade-svc");
+    // every component pointing at a dead service. DELIBERATE FLIP (2026-08-18, ADR-0038 clause 5):
+    // this case used to delete a service that still CONTAINED a component — the container-delete
+    // guard now refuses exactly that (pinned below), so the from_id direction is pinned on a
+    // non-containment edge instead: a childless service with a `depends_on` edge FROM it.
+    const upstream = await admin.object("service").create({ name: `cascade-from-up` });
+    const downstream = await admin.object("service").create({ name: `cascade-from-down` });
+    await admin.relationships.create({
+      typeId: "depends_on",
+      fromId: upstream.id,
+      toId: downstream.id
+    });
+    expect(await liveEdgesTouching(upstream.id), "precondition").toHaveLength(1);
 
-    await admin.object("service").delete(service.id);
+    await admin.object("service").delete(upstream.id);
 
-    expect(await liveEdgesTouching(service.id)).toHaveLength(0);
+    expect(await liveEdgesTouching(upstream.id)).toHaveLength(0);
     expect(
-      await liveEdgesTouching(component.id),
-      "the surviving component must not keep an edge to a deleted service either — it is the same row"
+      await liveEdgesTouching(downstream.id),
+      "the surviving service must not keep an edge to a deleted one either — it is the same row"
     ).toHaveLength(0);
+  });
+
+  it("deleting a service that still CONTAINS a component is REFUSED with the blocker named", async () => {
+    // The owner ruling of 2026-08-18 (ADR-0038 clause 5): a container with live containment
+    // children refuses deletion on every route, before the tombstone — the alternative was this
+    // very file's original fixture, a component left live under a dead service. The 409 names the
+    // blocker so the remedy is in the message.
+    const { service, component } = await servicedComponent("delete-refused");
+
+    await expect(admin.object("service").delete(service.id)).rejects.toMatchObject({
+      status: 409
+    });
+
+    // Both rows still live, edge intact — the refusal really was before the tombstone.
+    expect(await liveEdgesTouching(service.id)).toHaveLength(1);
+    const chain = await withTenantTx(server.deps.db, org.orgId, (tx) =>
+      containmentChain(tx, org.orgId, component.id)
+    );
+    expect(chain.map((c) => c.id)).toContain(service.id);
   });
 
   it("a policy scoped at a DELETED service stops gating its live component", async () => {
@@ -178,8 +210,9 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
     );
     expect(chain.map((c) => c.id)).toContain(service.id);
 
-    await admin.object("service").delete(service.id);
-    await reopenEdge(service.id, component.id);
+    // The dead-ancestor shape is planted below the doors — the container-delete guard (ADR-0038
+    // clause 5) refuses the API route to it, which is pinned in its own case above.
+    await tombstoneBelowTheDoors(service.id);
 
     chain = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       containmentChain(tx, org.orgId, component.id)
@@ -204,8 +237,8 @@ describe("deleting an object tombstones its edges, and a deleted ancestor stops 
     );
     expect(before, "precondition: a service-scoped role reaches its components").toBe(true);
 
-    await admin.object("service").delete(service.id);
-    await reopenEdge(service.id, component.id);
+    // Planted below the doors, as above — the API route to a dead ancestor is closed.
+    await tombstoneBelowTheDoors(service.id);
 
     const after = await withTenantTx(server.deps.db, org.orgId, (tx) =>
       hasPermission(tx, {

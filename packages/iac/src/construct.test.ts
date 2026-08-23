@@ -8,8 +8,9 @@ import {
   Campaign,
   Component,
   DeploymentTarget,
-  Initiative,
+  Domain,
   Placement,
+  Policy,
   ReleaseTopology,
   Service,
   Stack,
@@ -199,11 +200,11 @@ describe("@scp/iac: example stack synth", () => {
 });
 
 /**
- * M5 constructs (Campaign, Initiative, ReleaseTopology) — same example-based style as above: the
+ * M5 constructs (Campaign, ReleaseTopology) — same example-based style as above: the
  * fast-check property test in `construct.determinism.test.ts` covers the general determinism
  * guarantee, this file pins down the exact expected manifest shape.
  */
-describe("@scp/iac: campaign/initiative/release-topology synth", () => {
+describe("@scp/iac: campaign/release-topology synth", () => {
   it("a ReleaseTopology with a parallel wave and a sequential wave resolves construct-reference targets to URN strings", () => {
     const app = new App();
     const stack = new Stack(app, "release-platform");
@@ -297,41 +298,29 @@ describe("@scp/iac: campaign/initiative/release-topology synth", () => {
     });
   });
 
-  it("an Initiative construct exposes NO membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
+  it("no construct exposes a membership-edge method — `coordinates` is system-managed (M5 CRITICAL)", () => {
     const app = new App();
     const stack = new Stack(app, "modernization-platform");
 
     const svcA = new Service(stack, "svc-a", { name: "Svc A" });
     const campaignA = new Campaign(stack, "campaign-a", { name: "Campaign A", targets: [svcA] });
-    const initiative = new Initiative(stack, "modernization", {
-      name: "Cloud Modernization",
-      description: "Multi-year modernization effort"
-    });
 
     // `coordinates` is a system-managed relationship the server refuses on the IaC apply path
-    // (apps/server/src/graph/system-managed-relationships.ts) — so there is deliberately no
-    // `.coordinates()` synth method to declare initiative membership in IaC (it would only ever
-    // produce a manifest that 403s at apply). Initiative membership is added via the
-    // authority-checked `POST /initiatives/{id}/campaigns` API instead.
-    expect((initiative as unknown as { coordinates?: unknown }).coordinates).toBeUndefined();
+    // (apps/server/src/graph/system-managed-relationships.ts) — an edge injected by any actor
+    // holding `relationship:write` could sweep an arbitrary Change into a victim campaign's
+    // rollback. So there is deliberately no `.coordinates()` synth method; a manifest declaring
+    // one would only ever 403 at apply. The campaign -> member-change edges are written by the
+    // reconciler's own authority-checked path instead.
+    //
+    // This guarantee used to be asserted through the removed grouping construct (ADR-0036). The
+    // property is about `coordinates`, not about what sat above a campaign, so it moved here
+    // rather than being deleted alongside it.
+    expect((campaignA as unknown as { coordinates?: unknown }).coordinates).toBeUndefined();
 
     const manifest = stack.synth();
-    // No `coordinates` edge is synthesizable — the manifest carries only the objects and any
-    // NON-system-managed edges (none here).
     expect(manifest.relationships.filter((r) => r.typeId === "coordinates")).toEqual([]);
-    const initiativeObject = manifest.objects.find((o) => o.urn === initiative.urn);
-    expect(initiativeObject?.properties).toEqual({
-      description: "Multi-year modernization effort"
-    });
-    expect(campaignA.urn).toBeTruthy(); // campaign is still a valid standalone construct
+    expect(campaignA.urn).toBeTruthy();
     expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
-  });
-
-  it("an Initiative with no description synthesizes empty properties", () => {
-    const app = new App();
-    const stack = new Stack(app, "modernization-platform-2");
-    new Initiative(stack, "bare-initiative", { name: "Bare Initiative" });
-    expect(stack.synth().objects[0]?.properties).toEqual({});
   });
 });
 
@@ -581,6 +570,83 @@ describe("@scp/iac constructs: placements (C1, ADR-0026)", () => {
   });
 });
 
+/**
+ * M21.6 (proposal §3.3) — a dependency subscription is a `dependencySubscription` EFFECT on an
+ * ordinary `policy` object (ADR-0032 §3a); there is deliberately no bespoke construct or verb for
+ * it anywhere. So the IaC door is a first-class `Policy` construct whose `properties` travel
+ * VERBATIM into the manifest as a `typeId: "policy"` object — no schema change, because the
+ * manifest already accepts any typeId. This is also the DELETE-THE-WIRING gate for the export: drop
+ * `Policy` from index.ts and the import below is `undefined`, so `new Policy(...)` throws.
+ */
+describe("@scp/iac constructs: Policy (M21.6 — a dependency subscription is a policy effect)", () => {
+  it("synthesizes a policy carrying a dependencySubscription effect as a `policy` object with the properties verbatim", () => {
+    const app = new App();
+    const stack = new Stack(app, "checkout-stack");
+    const svc = new Service(stack, "checkout", { name: "checkout" });
+    const api = new Component(stack, "checkout-api", { name: "checkout-api", service: svc });
+
+    const properties = {
+      enforcement: "advisory",
+      scope: { objectRef: api.urn },
+      effects: [
+        {
+          dependencySubscription: {
+            enabled: true,
+            granularity: "minor_and_patch",
+            delivery: "pull_request"
+          }
+        },
+        // An opt-out of ONE line, by the effect-level selector — the coordinate verbatim.
+        { dependencySubscription: { enabled: false, ecosystem: "npm", coordinate: "@acme/lib" } }
+      ]
+    };
+    new Policy(stack, "checkout-deps", { name: "checkout-deps", properties });
+
+    const manifest = stack.synth();
+    const policy = manifest.objects.find((o) => o.typeId === "policy");
+    expect(policy).toEqual({
+      urn: "urn:scp:checkout-stack:policy:checkout-deps",
+      typeId: "policy",
+      name: "checkout-deps",
+      properties,
+      labels: {}
+    });
+    // VERBATIM: the coordinate inside the effect is untouched (never slugified like the URN is).
+    const effects = (policy!.properties as typeof properties).effects;
+    expect(effects[1]!.dependencySubscription.coordinate).toBe("@acme/lib");
+    // Exactly one policy object; the component/service are still there beside it.
+    expect(manifest.objects.filter((o) => o.typeId === "policy")).toHaveLength(1);
+    expect(manifest.objects.map((o) => o.typeId).sort()).toEqual([
+      "component",
+      "policy",
+      "service"
+    ]);
+    // The manifest is valid input for `POST /plans` with no schema change.
+    expect(DesiredStateManifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it("is uniform: an explicit urn/domainId/labels pass through like every other resource construct", () => {
+    const app = new App();
+    const stack = new Stack(app, "s");
+    new Policy(stack, "p", {
+      name: "p",
+      urn: "urn:scp:acme:policy:hand-named",
+      domainId: "00000000-0000-4000-8000-000000000001",
+      labels: { owner: "platform" },
+      properties: { enforcement: "required", effects: [] }
+    });
+    const [obj] = stack.synth().objects;
+    expect(obj).toEqual({
+      urn: "urn:scp:acme:policy:hand-named",
+      typeId: "policy",
+      name: "p",
+      domainId: "00000000-0000-4000-8000-000000000001",
+      properties: { enforcement: "required", effects: [] },
+      labels: { owner: "platform" }
+    });
+  });
+});
+
 describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
   /**
    * A producer declaration says "this component's production releases are where this coordinate's
@@ -680,6 +746,86 @@ describe("@scp/iac constructs: dependency producers (ADR-0032 §7e)", () => {
     const { stack: bare } = fixture("producer-none");
     const manifest = bare.synth();
     expect(manifest.producers).toBeUndefined();
+    expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
+  });
+});
+
+describe("@scp/iac constructs: governance:move rungs (ADR-0038 §2)", () => {
+  /**
+   * A rung says "every containment move BENEATH this container needs `governance:move` at both
+   * ends". It is the SECOND collection whose absent key means UNMANAGED, and the more dangerous of
+   * the two to get wrong: pruning a producer re-arms dependency confusion, pruning a rung turns OFF
+   * a governance bar and the symptom is an ABSENCE of refusals. So the last case here is the one
+   * that matters — it exists so nobody "fixes" `synth()` to emit `governanceMoveRungs: []`, which
+   * WOULD disable, silently, every rung on every container each stack that ever declared one owns.
+   *
+   * | Mutation | Result |
+   * |---|---|
+   * | emit `governanceMoveRungs: []` instead of omitting it when empty | "…omits the collection when empty…" FAILS |
+   * | sort rungs by declaration order instead of by subject | "sorts on the subject…" FAILS |
+   * | resolve the subject to something other than its URN (e.g. the construct id) | "lands in the manifest…" and "accepts a container referenced by URN…" FAIL |
+   */
+  function fixture(stackName: string) {
+    const app = new App();
+    const stack = new Stack(app, stackName);
+    const service = new Service(stack, "billing", { name: "Billing" });
+    return { stack, service };
+  }
+
+  it("stack.addGovernanceMoveRung lands in the manifest and survives schema validation", () => {
+    const { stack, service } = fixture("rung-basic");
+    stack.addGovernanceMoveRung(service);
+    const manifest = stack.synth();
+    expect(manifest.governanceMoveRungs).toEqual([{ subjectIdOrUrn: service.urn }]);
+    expect(() => DesiredStateManifestSchema.parse(manifest)).not.toThrow();
+  });
+
+  it("carries NO tier — it is derived server-side from the subject's object type", () => {
+    // A manifest that named a tier could name one the subject is not, and the stored literal would
+    // then describe a containment shape nothing else in the system believes in. The entry has
+    // exactly one key, and this pins that.
+    const { stack, service } = fixture("rung-no-tier");
+    stack.addGovernanceMoveRung(service);
+    expect(Object.keys(stack.synth().governanceMoveRungs?.[0] ?? {})).toEqual(["subjectIdOrUrn"]);
+  });
+
+  it("accepts a container referenced by URN, for one outside this program", () => {
+    // The same escape hatch mappings, placements and producers have. `POST /plans` still refuses it
+    // when this stack does not own the container — the manifest may SAY it, the server decides it.
+    const { stack } = fixture("rung-external");
+    const external = "urn:scp:other-stack:domain:platform";
+    stack.addGovernanceMoveRung(external);
+    expect(stack.synth().governanceMoveRungs?.[0]?.subjectIdOrUrn).toBe(external);
+  });
+
+  it("sorts on the subject — the whole identity — so declaration order never changes the bytes", () => {
+    const one = fixture("rung-order");
+    const oneB = new Domain(one.stack, "platform", { name: "Platform" });
+    one.stack.addGovernanceMoveRung(one.service);
+    one.stack.addGovernanceMoveRung(oneB);
+    const two = fixture("rung-order");
+    const twoB = new Domain(two.stack, "platform", { name: "Platform" });
+    two.stack.addGovernanceMoveRung(twoB);
+    two.stack.addGovernanceMoveRung(two.service);
+    expect(JSON.stringify(one.stack.synth())).toBe(JSON.stringify(two.stack.synth()));
+    expect(one.stack.synth().governanceMoveRungs?.map((r) => r.subjectIdOrUrn)).toEqual(
+      [one.service.urn, oneB.urn].sort((a, b) => a.localeCompare(b))
+    );
+  });
+
+  it("omits the collection when empty — and THAT is why deleting your only rung disables nothing", () => {
+    // Do not "fix" this to emit `governanceMoveRungs: []`. An empty array is a PRESENT collection,
+    // which the server reads as "I manage rungs and declare none" and therefore DISABLES every rung
+    // on a container this stack owns. An absent key means UNMANAGED. Emitting `[]` here would
+    // un-govern a subtree on the next apply of every stack that ever declared a rung and later
+    // dropped it — and the symptom would be moves quietly succeeding, which nothing surfaces.
+    const { stack, service } = fixture("rung-none");
+    stack.addGovernanceMoveRung(service);
+    expect(stack.synth().governanceMoveRungs).toHaveLength(1);
+
+    const { stack: bare } = fixture("rung-none");
+    const manifest = bare.synth();
+    expect(manifest.governanceMoveRungs).toBeUndefined();
     expect(Object.keys(manifest).sort()).toEqual(["objects", "relationships", "stackName"]);
   });
 });

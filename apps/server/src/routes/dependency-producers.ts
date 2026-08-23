@@ -25,7 +25,8 @@ import {
   declareProducerWithEffects,
   projectLineImpacts,
   readProducerBlastRadius,
-  retractProducerWithEffects
+  retractProducerWithEffects,
+  viewsOfDeclarations
 } from "../dependencies/producer-declaration.js";
 import {
   commanderOnlyFederationVerdict,
@@ -251,7 +252,11 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
           producerObjectId: producer.id
         });
 
-        return { declaration, lines, decisionId };
+        // NAMED for the wire (the view) — the producer's and the declarer's names, one batched read
+        // (dependency-subscription-ui.md §12.6 Q1). Inside the same transaction as the write, so the
+        // names are the ones the declaration was made against.
+        const [view] = await viewsOfDeclarations(tx, auth.orgId, [declaration]);
+        return { declaration: view ?? null, lines, decisionId };
       });
 
       reply.status(200).send({
@@ -420,12 +425,17 @@ export function registerDependencyProducerRoutes(app: FastifyInstance, deps: App
           permission: "object:read",
           scopeObjectId: auth.orgId
         });
-        return listDependencyLineProducers(tx, auth.orgId, {
+        const rows = await listDependencyLineProducers(tx, auth.orgId, {
           ...(request.query.ecosystem !== undefined ? { ecosystem: request.query.ecosystem } : {}),
           ...(request.query.coordinate !== undefined
             ? { coordinate: request.query.coordinate }
             : {})
         });
+        // NAMED for the wire — producer + declarer, one batched `objects` read for the whole list
+        // (dependency-subscription-ui.md §12.6 Q1, owner 2026-08-18): the reader that needs a name
+        // (a page, an operator at a terminal) gets it in the same round trip, and no client pays
+        // N+1 reads it may not be authorized to make (a user object is readable by few).
+        return viewsOfDeclarations(tx, auth.orgId, rows);
       });
       reply.status(200).send({
         producers,

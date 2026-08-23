@@ -157,6 +157,8 @@ import {
   createSourceMapping as createSourceMappingRequest,
   deleteSourceMapping as deleteSourceMappingRequest,
   listSourceMappings as listSourceMappingsRequest,
+  setSourceMappingEnabled as setSourceMappingEnabledRequest,
+  setSourceMappingScope as setSourceMappingScopeRequest,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4, routes/typed-registries.ts +
   // routes/governance.ts): Policy/Control typed-registry resources, control bindings/runs,
   // approvals (N-of-M quorum), freezes, and the `scp policy evaluate` dry-run endpoint.
@@ -183,16 +185,12 @@ import {
   listFreezes as listFreezesRequest,
   getFreeze as getFreezeRequest,
   policyEvaluate as policyEvaluateRequest,
-  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
+  // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
   proposeCampaign as proposeCampaignRequest,
   listCampaigns as listCampaignsRequest,
   getCampaign as getCampaignRequest,
   explainCampaign as explainCampaignRequest,
   rollbackCampaign as rollbackCampaignRequest,
-  proposeInitiative as proposeInitiativeRequest,
-  listInitiatives as listInitiativesRequest,
-  getInitiative as getInitiativeRequest,
-  addInitiativeCampaign as addInitiativeCampaignRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
   initFederation as initFederationRequest,
   getFederationSelf as getFederationSelfRequest,
@@ -221,9 +219,18 @@ import {
   // M21.3 (ADR-0032 §3a/§6) — the dependency-subscription enablement chain.
   getDependencySubscriptionUnlock as getDependencySubscriptionUnlockRequest,
   putDependencySubscriptionUnlock as putDependencySubscriptionUnlockRequest,
+  getObjectGovernanceMoveEnforcement as getObjectGovernanceMoveEnforcementRequest,
+  listGovernanceMoveRungs as listGovernanceMoveRungsRequest,
+  enableGovernanceMoveRung as enableGovernanceMoveRungRequest,
+  disableGovernanceMoveRung as disableGovernanceMoveRungRequest,
+  getGovernanceMoveInstanceRung as getGovernanceMoveInstanceRungRequest,
+  putGovernanceMoveInstanceRung as putGovernanceMoveInstanceRungRequest,
   getComponentDependencySubscription as getComponentDependencySubscriptionRequest,
   // M21.2 (ADR-0032 §4) — the inventory backfill.
   backfillDependencyInventory as backfillDependencyInventoryRequest,
+  // M21.6 — the component-scoped dependency READ surface (inventory + bumps).
+  listComponentDependencyInventory as listComponentDependencyInventoryRequest,
+  listComponentDependencyBumps as listComponentDependencyBumpsRequest,
   // ADR-0032 §7e — the producer declaration's authoring surface.
   declareDependencyLineProducer as declareDependencyLineProducerRequest,
   retractDependencyLineProducer as retractDependencyLineProducerRequest,
@@ -330,6 +337,7 @@ import type {
   ChangeReportRequest,
   SourceMapping,
   SourceMappingListResponse,
+  SourceMappingScope,
   WebhookIngressResponse,
   // M4 Governance Engine (BUILD_AND_TEST.md §8 M4).
   ControlBinding,
@@ -346,19 +354,13 @@ import type {
   CreateFreezeRequest,
   FreezeListResponse,
   PolicyEvaluateResponse,
-  // M5: Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
+  // M5: Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5).
   Campaign,
   CampaignListQuery,
   CampaignListResponse,
   CampaignExplainResponse,
   CreateCampaignRequest,
   RollbackCampaignResponse,
-  Initiative,
-  InitiativeListQuery,
-  InitiativeListResponse,
-  InitiativeRollupResponse,
-  CreateInitiativeRequest,
-  AddInitiativeCampaignRequest,
   // M6: Federation Basics (BUILD_AND_TEST.md §8 M6, DESIGN §13).
   FederationSelfInfo,
   InitFederationRequest,
@@ -383,11 +385,20 @@ import type {
   // M21.3 (ADR-0032 §3a/§6) — the dependency-subscription enablement chain.
   DependencyLineKey,
   DependencySubscriptionUnlock,
+  GovernanceMoveEnforcement,
+  GovernanceMoveRungList,
+  GovernanceMoveRungWriteResponse,
+  GovernanceMoveInstanceRung,
+  PutGovernanceMoveRungRequest,
+  PutGovernanceMoveInstanceRungRequest,
   DependencySubscriptionResolutionResponse,
   PutDependencySubscriptionUnlockRequest,
   // M21.2 (ADR-0032 §4) — the inventory backfill.
   BackfillDependencyInventoryRequest,
   BackfillDependencyInventoryResponse,
+  // M21.6 — the component-scoped dependency READ surface.
+  ComponentDependencyInventoryResponse,
+  ComponentDependencyBumpsResponse,
   // ADR-0032 §7e — the producer declaration's authoring surface.
   DeclareDependencyLineProducerRequest,
   RetractDependencyLineProducerRequest,
@@ -1542,6 +1553,38 @@ export class ScpClient {
       });
       return unwrap(result);
     },
+    /** Flips the pause switch on ONE mapping, by id (migration 0063) — a disabled mapping stays
+     *  declared but `matchComponentForSource` skips it, so it routes nothing. */
+    setMappingEnabled: async (
+      sourceKind: string,
+      id: string,
+      enabled: boolean,
+      /** Timed close (with enabled:false): closed until this ISO instant, then open again at read time. */
+      disabledUntil?: string | null
+    ): Promise<SourceMapping> => {
+      const result = await setSourceMappingEnabledRequest({
+        client: this.client,
+        path: { sourceKind, id },
+        body: { enabled, ...(disabledUntil !== undefined ? { disabledUntil } : {}) }
+      });
+      return unwrap(result);
+    },
+    /** Sets or clears ONE mapping's declared scope, by id (migration 0066, §10.6): `global` = a
+     *  cross-domain shared repo tracked at the commander, `domain` = tracked only in this domain,
+     *  `null` = clear (back to "not declared" — no label). A label read by pipelines, IaC and the
+     *  CLI; never a routing input. */
+    setMappingScope: async (
+      sourceKind: string,
+      id: string,
+      scope: SourceMappingScope | null
+    ): Promise<SourceMapping> => {
+      const result = await setSourceMappingScopeRequest({
+        client: this.client,
+        path: { sourceKind, id },
+        body: { scope }
+      });
+      return unwrap(result);
+    },
     /** M7: configures (or rotates) this org+sourceKind's webhook HMAC signing secret — once set,
      *  `webhook()` deliveries for this sourceKind MUST carry a valid signature or are rejected
      *  (coordination/webhook-signature.ts). */
@@ -1696,7 +1739,7 @@ export class ScpClient {
   }
 
   // -----------------------------------------------------------------------------------------
-  // M5 Campaigns & Initiatives (BUILD_AND_TEST.md §8 M5, DESIGN §9.5) — `scp campaign
+  // M5 Campaigns (BUILD_AND_TEST.md §8 M5, DESIGN §9.5) — `scp campaign
   // create/status` (packages/cli) are thin callers of these, same layering as `changes` above.
   // No `accept`/`cancel` verbs: a campaign has no transition-guarded state machine of its own
   // (coordination/campaign-status.ts's module doc) — `status` is always derived live by `get`.
@@ -1735,31 +1778,6 @@ export class ScpClient {
         body: { reason }
       });
       return unwrap(result);
-    }
-  };
-
-  readonly initiatives = {
-    propose: async (req: CreateInitiativeRequest): Promise<Initiative> => {
-      const result = await proposeInitiativeRequest({ client: this.client, body: req });
-      return unwrap(result);
-    },
-    list: async (query: InitiativeListQuery = { limit: 20 }): Promise<InitiativeListResponse> => {
-      const result = await listInitiativesRequest({ client: this.client, query });
-      return unwrap(result);
-    },
-    /** The initiative plus its member campaigns and the traversal-derived `rollupStatus`
-     *  (DESIGN §9.5) — always computed live, never stored. */
-    get: async (id: string): Promise<InitiativeRollupResponse> => {
-      const result = await getInitiativeRequest({ client: this.client, path: { id } });
-      return unwrap(result);
-    },
-    addCampaign: async (id: string, req: AddInitiativeCampaignRequest): Promise<void> => {
-      const result = await addInitiativeCampaignRequest({
-        client: this.client,
-        path: { id },
-        body: req
-      });
-      unwrap(result);
     }
   };
 
@@ -1964,6 +1982,74 @@ export class ScpClient {
   // at the scope you want it, and opt one line back out with `{ coordinate: "…", enabled: false }`.
   // A convenience wrapper here would be a second authoring path for one concept.
   // -----------------------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------------------
+  // `governance:move` — THE OPT-IN SECOND BAR ON A CONTAINMENT MOVE (proposal
+  // governance-reach-on-containment-move.md §9.2, owner ruling 2026-08-18).
+  //
+  // THERE IS NO `move()` HERE, AND THERE MUST NOT BE. A move is still made through the ordinary
+  // verbs — `object(type).update({ domainId })`, `components.setService(...)`, `relationships`
+  // create/delete of a `contains` edge, or an IaC apply. What this block exposes is the LATTICE that
+  // decides whether those verbs demand `governance:move` as well as `object:write`.
+  //
+  // `enforcement(type, idOrUrn)` answers about ONE object's containment chain. A move has TWO ends
+  // and the door ORs them, so `enforced: false` here is not a promise that a particular move is
+  // ungoverned — the destination's chain may carry the rung.
+  // -----------------------------------------------------------------------------------------
+  readonly governanceMove = {
+    /** Is a move of this object governed, and by which rung? (See the note above about two ends.) */
+    enforcement: async (type: string, idOrUrn: string): Promise<GovernanceMoveEnforcement> => {
+      const result = await getObjectGovernanceMoveEnforcementRequest({
+        client: this.client,
+        path: { type, idOrUrn }
+      });
+      return unwrap(result);
+    },
+    /** Every rung this org has enabled, with the instance rung's state. */
+    rungs: async (): Promise<GovernanceMoveRungList> => {
+      const result = await listGovernanceMoveRungsRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /** Enable a rung at one container. `policy:write` at-or-above the subject; idempotent. */
+    enable: async (
+      idOrUrn: string,
+      req: PutGovernanceMoveRungRequest = {}
+    ): Promise<GovernanceMoveRungWriteResponse> => {
+      const result = await enableGovernanceMoveRungRequest({
+        client: this.client,
+        path: { idOrUrn },
+        body: req
+      });
+      return unwrap(result);
+    },
+    /** Disable a rung. 409 while an upper rung (an ancestor's, or the instance rung) is enabled —
+     *  an enablement above cannot be undone below. */
+    disable: async (idOrUrn: string): Promise<GovernanceMoveRungWriteResponse> => {
+      const result = await disableGovernanceMoveRungRequest({
+        client: this.client,
+        path: { idOrUrn }
+      });
+      return unwrap(result);
+    },
+    /** The instance (commander) rung. It ACTIVATES for every org on the deployment. */
+    instance: async (): Promise<GovernanceMoveInstanceRung> => {
+      const result = await getGovernanceMoveInstanceRungRequest({ client: this.client });
+      return unwrap(result);
+    },
+    /** Set the instance rung. `operatorToken` is the deployment-level `SCP_OPERATOR_TOKEN` — no
+     *  tenant role can grant this, because the rung binds every org on the deployment. */
+    setInstance: async (
+      req: PutGovernanceMoveInstanceRungRequest,
+      operatorToken: string
+    ): Promise<GovernanceMoveInstanceRung> => {
+      const result = await putGovernanceMoveInstanceRungRequest({
+        client: this.client,
+        body: req,
+        headers: { "x-scp-operator-token": operatorToken }
+      });
+      return unwrap(result);
+    }
+  };
+
   readonly dependencySubscriptions = {
     /** The instance unlock — the FIRST conjunct. `unlocked: true` PERMITS; it activates nothing. */
     unlock: async (): Promise<DependencySubscriptionUnlock> => {
@@ -2017,6 +2103,47 @@ export class ScpClient {
       req: BackfillDependencyInventoryRequest = {}
     ): Promise<BackfillDependencyInventoryResponse> => {
       const result = await backfillDependencyInventoryRequest({ client: this.client, body: req });
+      return unwrap(result);
+    },
+    /**
+     * M21.6 — a component's dependency INVENTORY: one row per (major line × dependency manifest)
+     * with the line's last-observed head, its DECLARED producer and its resolved dependency
+     * subscription, plus the component-level ingestion gate.
+     *
+     * Every `rows[].subscription` is resolved AS THE CALLER — the acting subject is the requesting
+     * principal, exactly as `resolve()` threads it — so it is byte-equal to `resolve()` for the same
+     * caller and line, and a `scope.group` policy can make one human's answer differ from another's.
+     * `ingestion: null` and `lastIngestionDecision: null` mean NOT RECORDED; an empty `rows` beside
+     * them is UNKNOWN, never "no dependencies". `object:read` at the component; paged (limit ≤ 200,
+     * default 100).
+     */
+    inventory: async (
+      componentIdOrUrn: string,
+      query: ListQuery = {}
+    ): Promise<ComponentDependencyInventoryResponse> => {
+      const result = await listComponentDependencyInventoryRequest({
+        client: this.client,
+        path: { idOrUrn: componentIdOrUrn },
+        query
+      });
+      return unwrap(result);
+    },
+    /**
+     * M21.6 — the bumps SCP AUTHORED for a component, newest dispatch first: each authorship row
+     * joined to its change's name and to the newest dispatch (`delivery`) and merge (`merge`)
+     * Decisions. `pullRequestUrl` is `null` until the server persists one — a consumer links only
+     * when it is non-null and never composes a URL from `repo` + `pullRequestNumber`. Same
+     * authorization and paging as `inventory`.
+     */
+    bumps: async (
+      componentIdOrUrn: string,
+      query: ListQuery = {}
+    ): Promise<ComponentDependencyBumpsResponse> => {
+      const result = await listComponentDependencyBumpsRequest({
+        client: this.client,
+        path: { idOrUrn: componentIdOrUrn },
+        query
+      });
       return unwrap(result);
     }
   };

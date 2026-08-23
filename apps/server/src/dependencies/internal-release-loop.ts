@@ -85,13 +85,14 @@ import {
  *    nothing: the only consumer is a bump, and `bumpDispatchRoleGuard` has been commander-only since
  *    M21.5.
  *
- *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (ADR-0032 §7d's vocabulary note). An HQ outpost —
- *    the outpost in the commander's own trust domain — is not a deployment this guard could refuse:
- *    `SCP_FEDERATION_ROLE` is one value per process (`config.ts:56`), and an `outpost` graph object
- *    can never name the commander's own domain, because it must be bound 1:1 to a paired
- *    `federation_peers` row and an instance is never its own peer (`federation/peers-repo.ts:436-439`,
- *    `federation/outpost-binding.ts:98-100`). A release into the HQ domain is therefore detected by
- *    THIS loop, in this process, and needs no exemption from the rule above.
+ *    "FIELD" IS LOAD-BEARING HERE, NOT DECORATION (GLOSSARY `HQ outpost` / `field outpost`, ADR-0021
+ *    D7; ADR-0032 §7d's vocabulary note). An HQ outpost — the outpost in the commander's own trust
+ *    domain — is not a deployment this guard could refuse: `SCP_FEDERATION_ROLE` is one value per
+ *    process (`config.ts`), and this guard reads THAT, never an `outpost` graph object — an
+ *    `outpost` object CAN name the commander's own domain (the commander-declared HQ outpost record,
+ *    pipeline-substrate-registry-scan.md §10.5, `federation/outpost-binding.ts`), but that record
+ *    describes which outpost, not what this deployment is. A release into the HQ domain is therefore
+ *    detected by THIS loop, in this process, and needs no exemption from the rule above.
  *
  *    THE OLD ARGUMENT'S MEASUREMENT SURVIVES AND BECOMES THE STATED COST. It is true that a FIELD
  *    outpost is where the evidence LIVES: `change_wave_targets.status`/`observed_state.images` are

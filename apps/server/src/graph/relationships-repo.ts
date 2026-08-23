@@ -6,7 +6,12 @@ import { objects, relationships } from "../db/schema.js";
 import { badRequest, conflict, notFound } from "../errors.js";
 import { isUniqueViolation } from "../db/pg-errors.js";
 import { decodeCursor, encodeCursor, keysetAfter, keysetOrderBy } from "../pagination.js";
-import { containmentChain } from "./containment.js";
+import {
+  assertContainmentDepthAdmits,
+  containmentChain,
+  containmentParentChainForDoor,
+  type ChainEntry
+} from "./containment.js";
 import { computeRelationshipContentHash } from "./content-hash.js";
 import { requireRelationshipType } from "./type-registry-repo.js";
 import { validateProperties } from "./property-validation.js";
@@ -152,38 +157,83 @@ const SINGULAR_SIDES: Record<string, { from: boolean; to: boolean }> = {
  * a route added there (route 4 arrived after route 3) is inherited here instead of drifting away from
  * here — the exact failure `graph/containment.ts`'s header records paying for twice. It is also a
  * FIXED one query, where the hand-rolled walk was one round trip PER HOP (1 in the common shape, up
- * to 32), so the widened check is not paid for in latency on the deep shapes. Its
- * bound is 10 against a `contains` chain that can be at most two hops deep (`service -> assembly ->
- * component`; `assembly -> assembly` is refused above), and both `contains` ancestors sit at walk
- * depth 1 and 2 from `fromId`, so nothing that was in range before is out of range now. It also
- * skips tombstoned ancestors, matching `scopeExpandCte` — a deleted object is not a container.
+ * to 32), so the widened check is not paid for in latency on the deep shapes. Its bound is the shared
+ * `CONTAINMENT_WALK_MAX_DEPTH`, and since nested domains landed the walk from `fromId` covers the
+ * container's whole `domain_id` ancestry too — a container under nine stacked domains sits at ten
+ * hops, which is why the depth question below is asked here at all. It also skips tombstoned
+ * ancestors, matching `scopeExpandCte` — a deleted object is not a container.
  *
- * ## Deliberately ONLY the cycle question — not `assertRootedContainmentParent` wholesale
+ * ## The cycle question AND the depth question — not `assertRootedContainmentParent` wholesale
  *
- * That function bundles two further refusals onto the same walk, and both would be NEW behaviour
- * here rather than an invariant: the truncation refusal would reject a `contains` edge under any
- * container whose own chain sits at the bound — which `routes/containment-move-cycle-and-source-authz
- * .integration.test.ts` deliberately pins as the model's honest ten-level ceiling, by attaching a
- * component to the tip of a ten-deep chain — and the root-reachability refusal would newly reject
- * edges inside an already-stranded subtree, which is the one place an operator still has to work.
- * A guard that quietly lowers a documented limit is a behaviour change, not a bug fix.
+ * A `contains` edge is containment ROUTE 2 (`graph/containment.ts`), so writing one adds a hop to
+ * the `to` row's chain exactly as a `domain_id` write does — and to every row UNDER it. The DOOR
+ * INVARIANT (owner ruling 2026-08-18, ADR-0037 Consequences: every live row reaches the org root
+ * within the bound over its longest route) therefore has to be enforced here as well as at the
+ * `domain_id` doors, with the ONE shared arithmetic in `assertContainmentDepthAdmits`:
+ * `hops(container) + 1 + height(to) > bound` refuses. RETIRED REASONING, kept so nobody reinstalls
+ * it: an earlier version of this block declined the depth refusal on the grounds that "a ten-hop
+ * chain is complete and readable" and that refusing under such a container "would quietly lower a
+ * documented limit". The container's chain IS complete at ten hops; the COMPONENT attached to it
+ * then sits at hop eleven, and every walk of that component refuses (measured: `containmentChain`
+ * threw, `matchPoliciesForTargets` threw, and in an org with any policy at all the reach capture
+ * below refused the create with the walk's 409 AFTER the row was written, so the whole thing was
+ * already being refused — accidentally, and only when a policy existed). The limit was never
+ * lowered; the door now counts the row it writes.
+ *
+ * The ROOT-REACHABILITY refusal (`assertRootedContainmentParent`'s third) is still deliberately
+ * left out here: it would newly reject edges inside an already-stranded subtree, which is the one
+ * place an operator still has to work.
+ *
+ * ## `federationImport` — the cycle question runs, the depth question does not
+ *
+ * A signed-journal replica reaches this door too (`federation/import-repo.ts` `relationship_upsert`).
+ * The depth refusal is carved out for it for the reason the `domain_id` doors state at theirs: the
+ * receiving domain does not referee a peer-authored containment — and here the depth of a replica's
+ * chain is not even the origin's depth, because `resolveImportDomainId` may have re-parented the
+ * replicated rows above it onto THIS org's root. Failure mode, grounded: that importer catches a
+ * 400 per ENTRY (the edge is skipped) but re-throws anything else, so a door 400 here would silently
+ * drop a peer's edge rather than wedge the channel, and the walk's own 409 — `containmentChain`
+ * refusing because the imported CONTAINER is already past the bound — DOES wedge the whole bundle
+ * today, independent of this door. Both are named rather than fixed here. The cycle check keeps
+ * running on import (a loop is invalid in any org), and its 400 is the one that importer skips.
  */
-async function assertNoContainmentCycle(
+async function assertContainsEdgeAdmissible(
   tx: TenantTx,
   orgId: string,
   fromId: string,
-  toId: string
+  toId: string,
+  federationImport: FederationImportContext | undefined
 ): Promise<void> {
   if (fromId === toId) {
     // Kept as its own refusal for the message alone: "an object cannot contain itself" is the
     // diagnosis, where the cycle message below would report the object as its own ancestor.
     throw badRequest("an object cannot contain itself");
   }
-  const chain = await containmentChain(tx, orgId, fromId);
+  // Local writes take the DOOR's reading of the walk (the walk's 409 for a container already past
+  // the bound becomes this door's 400 — `containmentParentChainForDoor`); the import path keeps the
+  // raw walk, unchanged from before this door existed (see the module doc above for what that costs).
+  let chain: ChainEntry[];
+  let hops = 0;
+  if (federationImport) {
+    chain = await containmentChain(tx, orgId, fromId);
+  } else {
+    ({ chain, hops } = await containmentParentChainForDoor(tx, orgId, toId, fromId));
+  }
   if (chain.some((entry) => entry.id === toId)) {
     throw badRequest(
       `'contains' would create a containment cycle: ${toId} is already an ancestor of ${fromId}`
     );
+  }
+  if (!federationImport) {
+    // The `to` row EXISTS (loaded live by the caller), so its subtree — components under an
+    // assembly, placements under a component — moves with it: childIsNew is false.
+    await assertContainmentDepthAdmits(tx, {
+      orgId,
+      childId: toId,
+      parentId: fromId,
+      hops,
+      childIsNew: false
+    });
   }
 }
 
@@ -312,7 +362,13 @@ export async function createRelationship(
           "component, so nest the components rather than the assemblies"
       );
     }
-    await assertNoContainmentCycle(tx, input.orgId, input.fromId, input.toId);
+    await assertContainsEdgeAdmissible(
+      tx,
+      input.orgId,
+      input.fromId,
+      input.toId,
+      input.federationImport
+    );
   }
 
   await assertCardinality(tx, input.orgId, type.id, type.cardinality, input.fromId, input.toId);

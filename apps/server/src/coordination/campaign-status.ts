@@ -1,17 +1,15 @@
 import type { CampaignStatus, ChangeState } from "@scp/schemas";
 
 /**
- * Campaign/initiative status aggregation (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5) — PURE
+ * Campaign status aggregation (DESIGN.md §9.5, BUILD_AND_TEST.md §8 M5) — PURE
  * functions, zero I/O, per BUILD_AND_TEST.md §4.1 ("anything testable as a pure function must be
  * written as a pure function") and §7's explicit M5 unit-test requirement ("status-aggregation
- * logic (pure, table-driven); initiative roll-up derivation (pure)").
+ * logic (pure, table-driven)").
  *
  * A campaign is deliberately NOT given its own transition-guarded state machine (see
  * `db/schema.ts`'s M5 section doc comment / `drizzle/0011_campaigns.sql`'s header) — its status is
  * always RE-DERIVED from its compiled plan's wave statuses and its member Changes' CURRENT states,
- * the same way an initiative's roll-up is derived from its member campaigns' statuses one level up
  * (DESIGN §9.5: "roll-up status derived by traversal... not stored/duplicated state" — applied
- * here to the campaign layer too, not just the initiative layer).
  */
 
 export interface CampaignWaveTargetStatusInput {
@@ -60,35 +58,5 @@ export function computeCampaignStatus(input: ComputeCampaignStatusInput): Campai
   if (input.waves.every((w) => w.waveStatus === "succeeded" || w.waveStatus === "skipped")) {
     return "completed";
   }
-  return "active";
-}
-
-/**
- * Priority order for initiative roll-up (DESIGN §9.5) — the first tier with at least one member
- * campaign wins. Most-actionable-first: an operator scanning initiatives wants to see "something
- * needs me" (`blocked`/`failed`) before "some work is still in flight" (`active`/`proposed`)
- * before "nothing left to do" (`completed`/`rolled_back`).
- */
-const ROLLUP_PRIORITY: readonly CampaignStatus[] = [
-  "blocked",
-  "failed",
-  "partially_rolled_back",
-  "active",
-  "proposed",
-  "rolled_back",
-  "completed"
-];
-
-/** Derives an initiative's roll-up status (DESIGN §9.5: "grouping campaigns with roll-up status
- *  derived by traversal") from its member campaigns' own derived statuses. An initiative with no
- *  member campaigns yet reads `proposed` (nothing started). */
-export function computeInitiativeRollup(
-  campaignStatuses: readonly CampaignStatus[]
-): CampaignStatus {
-  if (campaignStatuses.length === 0) return "proposed";
-  for (const tier of ROLLUP_PRIORITY) {
-    if (campaignStatuses.includes(tier)) return tier;
-  }
-  /* istanbul ignore next -- ROLLUP_PRIORITY is exhaustive over CampaignStatus; unreachable. */
   return "active";
 }

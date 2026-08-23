@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| **Status** | **Accepted** — owner decision, 2026-07-24 |
+| **Status** | **Accepted** — owner decision, 2026-07-24; **D7 added by owner decision, 2026-08-17** |
 | **Date** | 2026-07-24 |
 | **Deciders** | Owner (jag8765) |
 | **Delivers** | [docs/GLOSSARY.md](../GLOSSARY.md) |
@@ -193,6 +193,21 @@ The change-lifecycle approval gate becomes **`accept`**, and its terminal succes
 **Honest status — no stage entity exists.** There is **no `stage` table and no `environment` table** in the schema, and **no stage-grammar compound name such as `commercial-amer-gamma` appears anywhere in the code** — scoped that way deliberately, because this ADR and the glossary both use such names as illustrative examples, so an unscoped "zero hits in the repository" claim would falsify itself the moment this branch merges. "Stage" is *reserved vocabulary a future entity may fill*. This ADR reserves the word; it does not build the thing.
 
 **This model confirms the misuse diagnosis.** The `/v1` `stages[]` / `currentStage` / `ServiceBoardStageSchema` fields genuinely *are* the wave sense wearing the wrong name — `packages/schemas/src/services.ts:25` documents `ServiceBoardStageSchema` as *"One pipeline stage of a component's latest change = one compiled wave"*. The full census and the corrected cost are in Consequences (iii) below; the earlier "two in-tree misuses, cheap, UI and docs only" framing was wrong on both counts and is superseded.
+### D7. **HQ outpost** and **field outpost** (owner decision, 2026-08-17)
+
+Every outpost is exactly one of two kinds, and the split is **trust-domain topology**, not connectivity:
+
+- **HQ outpost** — the outpost in the **commander's own trust domain**: the `outpost` object whose `peerDomainId` is this instance's own domain (`federation_self.domainId`), commander-declared, with **no peer row** behind it. On the wire it is the record with `peerIsSelf === true` and the value of `FederationStatusResponse.selfOutpost`. This is the record [docs/proposals/pipeline-substrate-registry-scan.md §10.5](../proposals/pipeline-substrate-registry-scan.md) introduced under the working name *"the co-located outpost"*.
+- **field outpost** — **any** outpost in **another** trust domain: every paired federation peer of role `outpost` that is not the HQ one, whether it is connected over mTLS, disconnected, or air-gapped. On the wire, `peerIsSelf === false`.
+
+**Why the split is drawn here.** The question a reader of an Outposts page or a pipeline tile actually asks is *"whose domain is this?"* — the commander's own, or someone else's. Connectivity (mTLS vs bundle vs poke-mode) is a separate axis that any field outpost may sit anywhere on, and it changes over time; which trust domain a record names does not. "Co-located" was a poor name for the HQ record because [ADR-0009](0009-optional-poke-mode-federation.md) and [docs/proposals/outpost-poke.md](../proposals/outpost-poke.md) already use "co-located / same-partition" for the **reachability** sense — a field outpost can be co-located in *that* sense while being nobody's HQ. Those documents keep their wording; the glossary entry says the two senses are different axes.
+
+**Precedent in the tree.** The review fixture (`scripts/seed-review-fixture.mjs`) already names its two records `hq-outpost` and `field-outpost`; this decision makes the fixture's vocabulary the official one.
+
+**Consequences.**
+- Vocabulary + rendered copy only: [docs/GLOSSARY.md](../GLOSSARY.md) gains the two sub-entries under `outpost` and a "Deprecated / avoid" row; the web Outposts pages and the pipeline tile hint say "HQ outpost"; `scp federation outpost list`'s `binding` column reads `hq` / `field` (`?` when an older server does not say); the `declare --peer` help, the schema doc comments, the fixture's log lines and §10.5 are reworded.
+- **The wire is unchanged**: `OutpostConfig.peerIsSelf`, `FederationStatusResponse.selfOutpost` and every route keep their names. Code identifiers (`coLocated`, `isSelf`, `SelfOutpostLine`) and machine test ids (`outpost-detail-co-located`, `config-declare-co-located`) keep the older spelling — they are not vocabulary.
+- No new kind is introduced: a disconnected or air-gapped outpost is a field outpost with a connectivity property, never a third category.
 
 ---
 
@@ -247,6 +262,7 @@ Rejected as premature. D6 reserves the *word* and settles its grammar; building 
 | **`promote` → `accept`** (D5) | `changes.state='promoted'` (**DB value**); `POST /v1/changes/{id}/promote` (**a `/v1` path**); `promoted` in the `ChangeState` enum on **every change response**; `scp change promote`; the seeded `state_transitions` rows; `transitions.ts` `LEGAL_TRANSITIONS` | **Highest in the system — BREAKING.** `/v1` contract change + data migration. Paid because pre-1.0, single deployment, and ADR-0004 precedent. | **Done** — follow-on PR (ii) |
 | **`stage`** (D6) — cheap half | UI labels/test hooks (`StageCard.tsx`, `change-pipeline.tsx`, `PromotionArrow.tsx`, `change-detail.tsx`, `query-client.ts`) + comments, docblocks and prose — including the `M<n> stage N` milestone comments and the CI-phase references under `tools/openapi/`. Full file rosters in Consequences (iii-a). | **Cheap.** UI + docs only — no API, no schema, no migration. One caveat: the `tools/openapi/` sites cite "BUILD_AND_TEST.md §6 stage 3" by name, so fixing them means renaming that section too. | Follow-on PR (iii-a) — **landed**; the CI-phase references under `tools/openapi/` were deliberately left, see (iii-a) |
 | **`stage`** (D6) — breaking half | **The `/v1` contract.** `ServiceBoardStageSchema` / `ServiceBoardStage` / `ServiceBoardRow.currentStage` / `.stages` in `packages/schemas/src/services.ts`, shipped on `GET /api/v1/services/{idOrUrn}/board` (`apps/server/src/routes/services.ts`), exported from `packages/sdk/src/index.ts` and regenerated into **both** `packages/sdk/src/generated/types.gen.ts` (the field pair) and `packages/sdk/src/generated/sdk.gen.ts` (the operation docstring), committed in `tools/openapi/openapi.v1.json` (route `summary`, both fields, and the `required` list), plus the server projection `apps/server/src/coordination/service-board.ts` and the consuming UI `apps/web/src/routes/service-board.tsx` (including its `@scp/sdk` type import). Full site roster at Consequences (iii-b). | **BREAKING.** A `/v1` **response-shape** change: trips the oasdiff additive-only gate and requires `pnpm gen` + SDK regeneration. **No `stage` table and no `environment` table exist** — but the *word* is in the contract in the wave sense. | **Done** — follow-on PR (iii-b), batched with (ii) |
+| **HQ outpost / field outpost** (D7) | Glossary, web copy on the Outposts pages and the pipeline tile hint, one CLI column's values, help text, doc comments, the fixture's log lines, §10.5 | **Cheap.** Rendered strings and prose only — no `/v1` change, no schema, no codegen drift, no identifier or test-id rename. | Adopted, 2026-08-17 |
 | **`scp federation promote`** | CLI verb for Promotion Bundle export | **Zero — unchanged.** It is a genuine promotion. | Kept |
 | **`parent`/`child`** | — | Already paid, [ADR-0004](0004-service-naming-commander-outpost-retrans.md) | Precedent |
 

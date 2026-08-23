@@ -15,17 +15,22 @@
  * write door, but it cannot catch a well-formed-looking pair of UUIDs pointing at the wrong types,
  * and it cannot write edges. Hence the refusal.
  *
- * This mirrors `service-member-types.ts` exactly. FOUR surfaces consult it, and the list is the
- * point — it was wrong twice, in the same way, and both misses were user-facing write doors that
- * reach `createObject` WITHOUT passing through a create route:
+ * This mirrors `service-member-types.ts` exactly. FIVE surfaces consult it, and the list is the
+ * point — it was wrong three times, in the same way, and every miss was a user-facing write door
+ * that reaches `createObject` WITHOUT passing through a create route:
  *
  *   - the generic `/objects/{type}` route (`routes/objects-generic.ts`)
  *   - the federation overlay route (`federation/overlay-repo.ts`)
  *   - IaC plan/apply (`iac/plans-repo.ts`) — added 2026-08-03 after a manifest declaring
  *     `typeId: "placement"` was PROVEN to apply cleanly and write an edgeless island
  *   - discovery accept (`routes/executors.ts`) — added at the same time; see the note below
+ *   - federation hand-fill (`federation/handfill-repo.ts`) — added 2026-08-18: it wears
+ *     `federationImport`, so it read as an import path, but its `typeId` and `properties` are a local
+ *     operator's free-form request; PROVEN to hand-fill an edgeless placement that also sat past the
+ *     ADR-0037 depth bound (the pair door lives only in `graph/placements-repo.ts`, which hand-fill
+ *     never reaches)
  *
- * BEFORE ADDING A FIFTH DOOR, RE-RUN THE CENSUS: `grep -rn "createObject(" apps/server/src` and ask
+ * BEFORE ADDING A SIXTH DOOR, RE-RUN THE CENSUS: `grep -rna "createObject(" apps/server/src` and ask
  * of each caller whether its `typeId` is FIXED (safe — it cannot name a pair-bound type) or
  * CALLER-SUPPLIED (must guard). That question, not the list, is what makes the set complete. It is a SEPARATE set from
  * `SERVICE_MEMBER_OBJECT_TYPE_IDS` on purpose: that set's reason is service MEMBERSHIP, this one's

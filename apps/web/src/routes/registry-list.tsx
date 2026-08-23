@@ -6,6 +6,7 @@ import { client } from "../lib/client";
 import { findRegistry, getRegistryClient } from "../lib/registries";
 import { registryListKey } from "../lib/query-client";
 import { useBasePathParam } from "../lib/use-route-params";
+import { useOwnDomainId } from "../lib/replica-origin";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -23,7 +24,97 @@ import {
   TableHeader,
   TableRow
 } from "../components/ui/table";
-import { Badge } from "../components/ui/badge";
+import { PageHeader } from "../components/ui/page-header";
+import { DomainLocalBadge, DomainLocalCreateField } from "../components/domain-local";
+import { Alert } from "../components/ui/alert";
+import { EmptyState } from "../components/ui/empty-state";
+import { SkeletonRows } from "../components/ui/skeleton";
+import { QueryErrorNotice } from "../components/query-error";
+
+/**
+ * The create-request payload's field-inclusion rules, pulled out as a pure function so the wiring
+ * claim ("domainId rides through only when a parent domain was actually chosen") is testable without
+ * a router or a live mutation. Mirrors the `domainLocal` field's existing omit-when-unset rule
+ * immediately below it — an unset optional field is left OUT of the payload, never sent as `""`/`null`.
+ */
+export function buildCreatePayload(input: {
+  name: string;
+  serviceMember: boolean;
+  serviceId: string;
+  domainLocal: boolean;
+  isDomainsRegistry: boolean;
+  parentDomainId: string;
+}): { name: string; service?: string; domainLocal?: true; domainId?: string } {
+  return {
+    name: input.name,
+    ...(input.serviceMember ? { service: input.serviceId } : {}),
+    // Omitted when unchecked rather than sent as `false` — only a true declaration needs the
+    // `federation:write` permission, and only true is immutable (ADR-0031 §1/§6).
+    ...(input.domainLocal ? { domainLocal: true } : {}),
+    // G2: empty selection = top-level (no parent), same as today — `domainId` rides through only
+    // when the operator actually picked a domain, and only on the domains registry.
+    ...(input.isDomainsRegistry && input.parentDomainId ? { domainId: input.parentDomainId } : {})
+  };
+}
+
+/**
+ * OWNERSHIP-SHAPED ORDERING (outpost-ui.md §9, owner 2026-08-14). On an outpost the catalog lists
+ * are dominated by commander replicas (measured: 8 of 9 services on the live outpost were
+ * replicas), and the one fact an outpost operator needs — "which containers are MINE, so I can
+ * hang shared domain IaC/CaC on them?" — was invisible on the list rows. This sorts DOMAIN-OWNED
+ * rows first (origin === self), then everything else, each half keeping the API's order; and it
+ * is a pure function so the rule is pinned without a router. It runs on BOTH sites — on the
+ * commander almost everything is self-owned, so it is a no-op there in practice; the point is
+ * that neither site infers ownership from labels or names, only from `originDomainId`.
+ */
+export function orderDomainOwnedFirst<T extends { originDomainId: string }>(
+  items: T[],
+  ownDomainId: string | undefined
+): T[] {
+  if (!ownDomainId) return items;
+  const own = items.filter((i) => i.originDomainId === ownDomainId);
+  const other = items.filter((i) => i.originDomainId !== ownDomainId);
+  return [...own, ...other];
+}
+
+/**
+ * The parent-domain picker itself, pulled out as its own component so the "renders for the domains
+ * registry only" claim is testable with a plain `renderToStaticMarkup` — `RegistryListPage` needs a
+ * router (`useBasePathParam`) to mount at all, but this piece of markup does not.
+ *
+ * `show` is the caller's `isDomainsRegistry` flag rather than a registry object, so the test can
+ * assert both branches without constructing a `RegistryConfig`.
+ */
+export function ParentDomainField(props: {
+  show: boolean;
+  value: string;
+  onChange: (value: string) => void;
+  options: { id: string; name: string }[];
+}): React.JSX.Element | null {
+  if (!props.show) return null;
+  return (
+    <div className="flex flex-1 flex-col gap-1.5">
+      <label htmlFor="new-parent-domain" className="text-sm font-medium text-slate-700">
+        Parent domain
+      </label>
+      {/* Optional — no selection means top-level (the existing default), not "required" the way the
+          service picker is. A subdomain nests one hop under the chosen domain and inherits its
+          locality at create (M20.5, ADR-0031 §6a). */}
+      <Select value={props.value} onValueChange={props.onChange}>
+        <SelectTrigger id="new-parent-domain" data-testid="new-parent-domain-select">
+          <SelectValue placeholder="Top-level (no parent)" />
+        </SelectTrigger>
+        <SelectContent>
+          {props.options.map((dom) => (
+            <SelectItem key={dom.id} value={dom.id}>
+              {dom.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
 
 /** `/{basePath}` (BUILD_AND_TEST.md §8 M2 item 2) — list view + create-new affordance. */
 export function RegistryListPage(): React.JSX.Element {
@@ -33,7 +124,15 @@ export function RegistryListPage(): React.JSX.Element {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [serviceId, setServiceId] = useState("");
+  const [domainLocal, setDomainLocal] = useState(false);
+  const [parentDomainId, setParentDomainId] = useState("");
   const serviceMember = registry?.serviceMember ?? false;
+  // G2 (outpost-ui.md §5(b), owner decision 2026-08-13): nested containment domains are first-class
+  // — the domains registry alone gets a parent-domain picker at create. No other registry may name a
+  // `domain` as its container from this form (a service/component's `domainId` is still inherited via
+  // M20.5, never chosen here).
+  const isDomainsRegistry = registry?.basePath === "domains";
+  const { domainId: ownDomainId } = useOwnDomainId();
 
   const listQuery = useQuery({
     queryKey: registryListKey(basePath ?? ""),
@@ -49,21 +148,44 @@ export function RegistryListPage(): React.JSX.Element {
     enabled: !!registry && serviceMember
   });
 
+  // The parent-domain picker's options — every domain this org already has. Optional (a domain with
+  // no parent is a top-level domain, same as today), so this never blocks submit the way the
+  // service picker does.
+  const domainsQuery = useQuery({
+    queryKey: registryListKey("domains"),
+    queryFn: () => client.domains.list({ limit: 100 }),
+    enabled: !!registry && isDomainsRegistry
+  });
+
   const createMutation = useMutation({
-    mutationFn: (input: { name: string; service?: string }) =>
+    mutationFn: (input: {
+      name: string;
+      service?: string;
+      domainLocal?: boolean;
+      domainId?: string;
+    }) =>
       // `service` is only set for a service-member registry; it rides through to
       // `CreateComponentRequest.service`. Cast because the shared client type is the base request.
+      // `domainId` is only ever set here for the domains registry — CreateObjectRequest already
+      // carries it (packages/schemas/src/objects.ts:39), so no schema change and no generic-client
+      // fallback are needed.
       getRegistryClient(client, registry!).create(input as CreateObjectRequest),
     onSuccess: async () => {
       setName("");
       setServiceId("");
+      setDomainLocal(false);
+      setParentDomainId("");
       setShowCreate(false);
       await queryClient.invalidateQueries({ queryKey: registryListKey(basePath ?? "") });
     }
   });
 
   if (!registry) {
-    return <p className="text-sm text-red-600">Unknown registry &quot;{basePath}&quot;.</p>;
+    return (
+      <Alert tone="danger" title="Unknown registry">
+        &quot;{basePath}&quot; is not a registry this instance knows about.
+      </Alert>
+    );
   }
 
   function handleCreate(event: FormEvent<HTMLFormElement>): void {
@@ -74,112 +196,174 @@ export function RegistryListPage(): React.JSX.Element {
     // would 400 otherwise). The Select is also marked required for accessibility/native validation.
     if (serviceMember && !serviceId) return;
     createMutation.mutate(
-      serviceMember ? { name: trimmed, service: serviceId } : { name: trimmed }
+      buildCreatePayload({
+        name: trimmed,
+        serviceMember,
+        serviceId,
+        domainLocal,
+        isDomainsRegistry,
+        parentDomainId
+      })
     );
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-slate-900">{registry.label}</h1>
-        <Button onClick={() => setShowCreate((v) => !v)} data-testid="toggle-create">
-          {showCreate ? "Cancel" : "New"}
-        </Button>
-      </div>
+    <div className="flex flex-col gap-6">
+      <PageHeader
+        title={registry.label}
+        actions={
+          <Button onClick={() => setShowCreate((v) => !v)} data-testid="toggle-create">
+            {showCreate ? "Cancel" : "New"}
+          </Button>
+        }
+      />
 
       {showCreate && (
         <form
-          className="flex items-end gap-2 rounded-lg border border-slate-200 bg-white p-4"
+          className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4"
           onSubmit={handleCreate}
         >
-          <div className="flex flex-1 flex-col gap-1.5">
-            <label htmlFor="new-name" className="text-sm font-medium text-slate-700">
-              Name
-            </label>
-            <Input
-              id="new-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              data-testid="new-name-input"
-            />
-          </div>
-          {serviceMember && (
+          <div className="flex items-end gap-2">
             <div className="flex flex-1 flex-col gap-1.5">
-              <label htmlFor="new-service" className="text-sm font-medium text-slate-700">
-                Service
+              <label htmlFor="new-name" className="text-sm font-medium text-slate-700">
+                Name
               </label>
-              <Select value={serviceId} onValueChange={setServiceId} required>
-                <SelectTrigger id="new-service" data-testid="new-service-select">
-                  <SelectValue placeholder="Select a service…" />
-                </SelectTrigger>
-                <SelectContent>
-                  {(servicesQuery.data?.items ?? []).map((svc) => (
-                    <SelectItem key={svc.id} value={svc.id}>
-                      {svc.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {servicesQuery.data && servicesQuery.data.items.length === 0 && (
-                <p className="text-xs text-amber-700" data-testid="no-services-hint">
-                  Create a service first — a component must belong to one.
-                </p>
-              )}
+              <Input
+                id="new-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+                data-testid="new-name-input"
+              />
             </div>
-          )}
-          <Button
-            type="submit"
-            disabled={createMutation.isPending || (serviceMember && !serviceId)}
-            data-testid="submit-create"
-          >
-            {createMutation.isPending ? "Creating…" : "Create"}
-          </Button>
+            {serviceMember && (
+              <div className="flex flex-1 flex-col gap-1.5">
+                <label htmlFor="new-service" className="text-sm font-medium text-slate-700">
+                  Service
+                </label>
+                <Select value={serviceId} onValueChange={setServiceId} required>
+                  <SelectTrigger id="new-service" data-testid="new-service-select">
+                    <SelectValue placeholder="Select a service…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(servicesQuery.data?.items ?? []).map((svc) => (
+                      <SelectItem key={svc.id} value={svc.id}>
+                        {svc.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {servicesQuery.data && servicesQuery.data.items.length === 0 && (
+                  <p className="text-xs text-amber-700" data-testid="no-services-hint">
+                    Create a service first — a component must belong to one.
+                  </p>
+                )}
+              </div>
+            )}
+            <ParentDomainField
+              show={isDomainsRegistry}
+              value={parentDomainId}
+              onChange={setParentDomainId}
+              options={domainsQuery.data?.items ?? []}
+            />
+            <Button
+              type="submit"
+              disabled={createMutation.isPending || (serviceMember && !serviceId)}
+              data-testid="submit-create"
+            >
+              {createMutation.isPending ? "Creating…" : "Create"}
+            </Button>
+          </div>
+          <DomainLocalCreateField checked={domainLocal} onChange={setDomainLocal} />
         </form>
       )}
       {createMutation.isError && (
-        <p className="text-sm text-red-600">
+        <Alert tone="danger">
           {createMutation.error instanceof Error
             ? createMutation.error.message
             : "Failed to create"}
-        </p>
+        </Alert>
       )}
 
-      {listQuery.isLoading && <p className="text-sm text-slate-500">Loading…</p>}
+      {listQuery.isLoading && <SkeletonRows n={5} />}
       {listQuery.isError && (
-        <p className="text-sm text-red-600">
-          {listQuery.error instanceof Error ? listQuery.error.message : "Failed to load"}
-        </p>
+        <QueryErrorNotice
+          error={listQuery.error}
+          what={registry.label.toLowerCase()}
+          testId="registry-list-error"
+        />
       )}
       {listQuery.data && listQuery.data.items.length === 0 && (
-        <p className="text-sm text-slate-500" data-testid="empty-state">
-          No {registry.label.toLowerCase()} yet.
-        </p>
+        <EmptyState
+          icon={registry.icon}
+          message={`No ${registry.label.toLowerCase()} yet.`}
+          data-testid="empty-state"
+        />
       )}
       {listQuery.data && listQuery.data.items.length > 0 && (
         <Table data-testid="registry-table">
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
+              <TableHead>Maintained by</TableHead>
               <TableHead>URN</TableHead>
               <TableHead>Updated</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {listQuery.data.items.map((item) => (
-              <TableRow key={item.id} data-testid="registry-row">
+            {orderDomainOwnedFirst(listQuery.data.items, ownDomainId).map((item) => (
+              <TableRow
+                key={item.id}
+                data-testid="registry-row"
+                data-maintained-by={
+                  ownDomainId ? (item.originDomainId === ownDomainId ? "self" : "other") : "unknown"
+                }
+              >
                 <TableCell>
-                  <Link
-                    to="/$basePath/$idOrUrn"
-                    params={{ basePath: registry.basePath, idOrUrn: item.id }}
-                    className="font-medium text-slate-900 hover:underline"
-                  >
-                    {item.name}
-                  </Link>
+                  <span className="flex items-center gap-2">
+                    <Link
+                      to="/$basePath/$idOrUrn"
+                      params={{ basePath: registry.basePath, idOrUrn: item.id }}
+                      className="font-medium text-slate-900 hover:underline"
+                    >
+                      {item.name}
+                    </Link>
+                    {item.domainLocal === true && (
+                      <DomainLocalBadge inheritedFrom={item.domainLocalInheritedFrom} />
+                    )}
+                  </span>
+                </TableCell>
+                {/* READ from originDomainId vs this instance's own domain — the same fact the
+                    detail page's read-only-replica notice and the pipeline's maintainedBy use.
+                    Own domain: em-dash (structurally expected, spec §1.5). Other: the neutral
+                    "replica" pill — a fact, not an alarm. Unknown self (federation not
+                    initialised): em-dash with the reason. */}
+                <TableCell className="text-xs">
+                  {!ownDomainId ? (
+                    <span
+                      className="text-slate-400"
+                      title="Federation isn't initialised, so ownership can't be attributed yet."
+                    >
+                      —
+                    </span>
+                  ) : item.originDomainId === ownDomainId ? (
+                    <span className="text-slate-400" title="Maintained by this domain.">
+                      —
+                    </span>
+                  ) : (
+                    <span
+                      className="inline-flex items-center rounded border border-dashed border-amber-400 bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800"
+                      title={`Authoritatively owned by another domain (${item.originDomainId}) — a read-only replica here. Shared IaC/CaC for it belongs to that domain, not this one.`}
+                      data-testid="registry-row-replica"
+                    >
+                      replica
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="font-mono text-xs text-slate-500">{item.urn}</TableCell>
-                <TableCell>
-                  <Badge variant="secondary">{new Date(item.updatedAt).toLocaleDateString()}</Badge>
+                {/* A date is not a status (spec §4E) — plain caption text, not a Badge. */}
+                <TableCell className="text-xs text-slate-500">
+                  {new Date(item.updatedAt).toLocaleDateString()}
                 </TableCell>
               </TableRow>
             ))}

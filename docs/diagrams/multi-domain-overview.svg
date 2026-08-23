@@ -25,7 +25,7 @@
     <rect x="790" y="146" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
     <text x="965" y="165" text-anchor="middle">domain registry + Ed25519 key registry (pairing · rotation)</text>
     <rect x="420" y="182" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
-    <text x="595" y="201" text-anchor="middle">campaigns · initiatives — cross-domain coordination</text>
+    <text x="595" y="201" text-anchor="middle">campaigns — cross-domain coordination</text>
     <rect x="790" y="182" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
     <text x="965" y="201" text-anchor="middle">cross-domain status UI — all domains · sync freshness</text>
     <rect x="420" y="218" width="350" height="30" rx="6" fill="#ffffff" opacity="0.85" stroke="#5eead4"/>
