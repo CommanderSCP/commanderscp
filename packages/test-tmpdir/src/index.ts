@@ -43,6 +43,40 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { afterAll, afterEach } from "vitest";
+import { getCurrentTest } from "vitest/suite";
+
+/**
+ * WHY THE PER-TEST PAIR REFUSES TO RUN OUTSIDE A TEST — the doc above already NAMED this hazard
+ * ("using the per-test pair on a `beforeAll` fixture would delete out from under test 2"), and it
+ * shipped anyway, silently, in the same round that wrote the warning. CLAUDE.md: a well-written
+ * comment naming a hazard is a signal to sweep, not evidence it was handled.
+ *
+ * WHAT IT ACTUALLY COST (measured 2026-08-23, `executor-ref-prior-state-bound.integration.test.ts`,
+ * a fully green 888-test run). `mkdtempTracked` in `beforeAll` put the fixture directory on the
+ * PER-TEST list. The module `afterEach` deleted it after arm 1 — taking the live fake-executor's
+ * `fake-executor-state.json` with it — and then `fake-executor`'s next persist re-created the
+ * directory (`packages/plugins/fake-executor/src/index.ts`: `mkdir(dirname(statePath), {recursive:
+ * true})` before every write). The re-created directory is on NO list, so nothing removes it: the
+ * repo's own tmpdir-leak gate caught it on disk at the end of the run. So the visible symptom was a
+ * leak, but the SILENT one was worse — every test after the first ran against an executor whose
+ * durable run registry had just been wiped, which is precisely the "unknown run ⇒ answer pending"
+ * branch that file exists to rule out.
+ *
+ * `getCurrentTest()` is `undefined` at module top level and inside `beforeAll`/`afterAll`, and is
+ * set for `beforeEach` and `it` (measured on vitest 3.2.7 — a probe printed both, in all five
+ * positions). That is EXACTLY the boundary the two lifetimes are named after, so the wrong choice
+ * is now a loud throw at the call site instead of a green suite and a directory on disk.
+ */
+function assertInsideTest(fn: string): void {
+  if (getCurrentTest()) return;
+  throw new Error(
+    `${fn}() was called outside a running test (module top level, or a beforeAll/afterAll hook). ` +
+      "Its directory is swept in `afterEach`, so it would be deleted the moment the FIRST test in " +
+      "this file finishes — while a beforeAll fixture is still in use. Use " +
+      `${fn.replace("mkdtempTracked", "mkdtempTrackedForFile")}() for a directory built once per ` +
+      "FILE (swept in afterAll). See @scp/test-tmpdir's module doc."
+  );
+}
 
 let pendingPerTest: string[] = [];
 let pendingPerFile: string[] = [];
@@ -65,6 +99,7 @@ afterAll(async () => {
  * `path.join(os.tmpdir(), "scp-whatever-")` exactly as you would to the raw `mkdtemp`.
  */
 export async function mkdtempTracked(prefix: string): Promise<string> {
+  assertInsideTest("mkdtempTracked");
   const dir = await mkdtemp(prefix);
   pendingPerTest.push(dir);
   return dir;
@@ -72,6 +107,7 @@ export async function mkdtempTracked(prefix: string): Promise<string> {
 
 /** Sync counterpart of {@link mkdtempTracked}. */
 export function mkdtempTrackedSync(prefix: string): string {
+  assertInsideTest("mkdtempTrackedSync");
   const dir = mkdtempSync(prefix);
   pendingPerTest.push(dir);
   return dir;

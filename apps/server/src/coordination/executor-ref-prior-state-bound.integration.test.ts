@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ScpClient } from "@scp/sdk";
-import { mkdtempTracked } from "@scp/test-tmpdir";
+import { mkdtempTrackedForFile } from "@scp/test-tmpdir";
 import { PERSISTED_JSON_ELIDED_KEY, PERSISTED_JSON_MAX_CHARS } from "@scp/runner-launcher";
 import { v7 as uuidv7 } from "uuid";
 import {
@@ -135,7 +135,17 @@ describe("executor_ref and prior_state_ref: the two bounded columns nothing drov
 
     // OUR OWN state file, so arm 3 can read what `coercePriorStateRef` actually decided rather
     // than inferring it. `fakeExecutorConfig` is spread last in the harness, so this wins.
-    const stateDir = await mkdtempTracked(join(tmpdir(), "scp-test-exec-ref-"));
+    //
+    // `mkdtempTrackedForFile`, NOT `mkdtempTracked` — this is a `beforeAll` fixture shared by all
+    // three arms, and the per-test allocator shipped here first. Measured 2026-08-23: its
+    // `afterEach` deleted this directory (and the fake executor's live state file inside it) the
+    // moment ARM 1 finished; `fake-executor`'s next persist re-created the directory via its
+    // `mkdir(dirname(statePath), { recursive: true })`, so the tmpdir-leak gate found it on disk
+    // after a fully green run — and arms 2 and 3 had been running against an executor whose
+    // durable run registry had just been wiped, i.e. the exact "unknown run ⇒ pending forever"
+    // branch this file exists to rule out. @scp/test-tmpdir now REFUSES the per-test pair outside
+    // a running test, so this line cannot regress silently.
+    const stateDir = await mkdtempTrackedForFile(join(tmpdir(), "scp-test-exec-ref-"));
     statePath = join(stateDir, "fake-executor-state.json");
 
     server = await listenTestServer({

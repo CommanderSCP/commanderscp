@@ -33,7 +33,7 @@ export default defineConfig({
   test: {
     include: ["src/**/*.integration.test.ts"],
     globalSetup: ["src/test-support/global-setup.ts"],
-    setupFiles: ["src/test-support/per-worker-db.ts"],
+    setupFiles: ["src/test-support/per-worker-db.ts", "src/test-support/plugin-state-dir.ts"],
     testTimeout: 60_000,
     hookTimeout: 60_000,
     pool: "forks",

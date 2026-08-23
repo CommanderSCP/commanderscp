@@ -68,3 +68,12 @@ describe("mkdtempTrackedForFile", () => {
     expect(existsSync(sharedDir)).toBe(true);
   });
 });
+
+/**
+ * POSITIVE CONTROL FOR `assertInsideTest` (index.ts). Every `it()` above calls the per-test pair
+ * from inside a running test, which is the case the guard must stay SILENT for — so a guard that
+ * threw unconditionally, or whose `getCurrentTest()` detection broke and reported "no test"
+ * always, reds this file rather than passing quietly. The refusing half is driven in
+ * `guard-outside-test.test.ts`, which needs its own file because stubbing `vitest/suite` is
+ * module-scoped.
+ */

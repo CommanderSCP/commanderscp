@@ -916,7 +916,14 @@ export function managedDepServerSettings(): {
   };
 }
 
-function pluginStateDir(): string {
+/**
+ * Root for every executor instance's durable dedup/idempotency file. EXPORTED for
+ * `test-support/plugin-state-isolation.integration.test.ts` only, which asserts that a test process
+ * is not writing into the fixed machine-global default — the check that keeps
+ * `test-support/plugin-state-dir.ts` from being a setup file nobody wired in (delete that
+ * `setupFiles` entry and that test dies, which is the point).
+ */
+export function pluginStateDir(): string {
   return process.env.SCP_PLUGIN_STATE_DIR ?? join(tmpdir(), "scp-plugin-state");
 }
 
