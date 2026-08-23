@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { ScpClient } from "@scp/sdk";
+import { ScpApiError, ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
 import {
+  auditEvents,
   campaignWaveTargets,
   changes,
   changeWaveTargets,
@@ -218,17 +219,19 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
         .where(eq(changeWaveTargets.orgId, org.orgId))
     );
 
-  /** Lift a freeze by moving its window into the past — expiry IS the window predicate and nothing
-   *  else (`freezes-repo.ts`), so this is exactly what the passage of time does. Written as SQL
-   *  because `DELETE`/`PATCH /api/v1/freezes/{id}` is M25.1 and has NOT SHIPPED; when it does, this
-   *  helper is the call site to move onto it. */
-  const liftFreeze = (freezeId: string) =>
-    withTenantTx(server.deps.db, org.orgId, (tx) =>
-      tx
-        .update(freezes)
-        .set({ endsAt: new Date(Date.now() - 1_000) })
-        .where(and(eq(freezes.orgId, org.orgId), eq(freezes.id, freezeId)))
-    );
+  /** Close a freeze's window by moving `endsAt` into the past — expiry IS the window predicate and
+   *  nothing else (`freezes-repo.ts`), so this is exactly what the passage of time does.
+   *
+   *  M25.1 MOVED THIS ONTO THE REAL API. It was a raw `UPDATE freezes` because `PATCH
+   *  /api/v1/freezes/{id}` had not shipped, with a note naming this as the call site to move onto
+   *  it; that has now happened, so the release case below exercises a shipped route rather than a
+   *  hand-poked column, and "shortening `endsAt` to a past instant releases a held target" is
+   *  covered by the case that was already here. */
+  const shortenFreezeToPast = (freezeId: string) =>
+    admin.freezes.updateWindow(freezeId, {
+      endsAt: new Date(Date.now() - 1_000).toISOString(),
+      reason: "integration: the incident is over"
+    });
 
   const firedFor = (placementId: string) =>
     triggered.filter((call) => call.targetRef === placementId).length;
@@ -944,7 +947,7 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     expect(held).toHaveLength(1);
     expect(held[0]!.verdict).toBe("hold");
 
-    await liftFreeze(frozen.id);
+    await shortenFreezeToPast(frozen.id);
     await tick(3);
 
     const afterLift = await decisionsOfKind(change.id, "freeze_admission");
@@ -1155,5 +1158,353 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     const board = await admin.services.board(service.id);
     expect(board.serviceFreeze).toBeNull();
     expect(board.rows.find((r) => r.component.id === app.id)?.activeFreeze).toBeNull();
+  });
+
+  // ============================================================================================
+  // M25.1 — LIFT AND SHORTEN: the exits `/freezes` shipped without.
+  //
+  // `/api/v1/freezes` was CREATE / LIST / GET. A freeze could be declared and never retracted,
+  // which was survivable only while a freeze parked a WHOLE wave — the operator waited for
+  // `endsAt` and the release resumed on its own. Every case above is a demonstration of why that
+  // stopped being true: per-target admission means a far-future `endsAt` holds a SUBSET of a
+  // wave's targets while the siblings have already shipped, so a mistyped year leaves a fleet
+  // split across two versions with no API exit at all.
+  //
+  // THE STANDING MUTATION GATE FOR THIS BLOCK: delete `isNull(freezes.liftedAt)` from
+  // `activeFreezesInWindow` — the ONE liveness filter — and "a lift un-holds a held target" must
+  // go red. Recorded in the PR body; run and confirmed KILLED when this block landed.
+  // ============================================================================================
+
+  const auditEventsFor = (subjectId: string) =>
+    withTenantTx(server.deps.db, org.orgId, (tx) =>
+      tx
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.orgId, org.orgId), eq(auditEvents.subjectId, subjectId)))
+        .orderBy(auditEvents.seq)
+    );
+
+  const freezeRow = (freezeId: string) =>
+    withTenantTx(server.deps.db, org.orgId, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(freezes)
+        .where(and(eq(freezes.orgId, org.orgId), eq(freezes.id, freezeId)));
+      return row!;
+    });
+
+  /** The status of a rejected SDK call. Asserting the CODE and not merely "it threw" is the point:
+   *  a 404 and a 403 are the difference between "no such freeze" and "not yours to lift", and a
+   *  test that accepts either would pass against an authorization check that never ran. */
+  async function statusOf(call: Promise<unknown>): Promise<number> {
+    try {
+      await call;
+      return 200;
+    } catch (err) {
+      if (err instanceof ScpApiError) return err.status ?? -1;
+      throw err;
+    }
+  }
+
+  it("M25.1 lift: DELETE un-holds a held target, ships it, and releases the hold Decision", async () => {
+    // THE POINT OF THE WHOLE INCREMENT, and the one case the liveness-filter mutation must kill.
+    const app = await fourRegionComponent("lift");
+    const change = await release("lift", [app.id]);
+    const frozen = await freezeAt(amer.id, "amer-lift-freeze");
+
+    await tick(3);
+    expect(firedFor(app.at(amer)), "the freeze is doing its job before we lift it").toBe(0);
+    const heldBefore = await decisionsOfKind(change.id, "freeze_admission");
+    expect(heldBefore).toHaveLength(1);
+    expect(heldBefore[0]!.verdict).toBe("hold");
+
+    // `endsAt` is still an hour out — nothing about the WINDOW changes here. Only the retraction.
+    const lifted = await admin.freezes.lift(frozen.id, {
+      reason: "integration: the deploy that caused the incident was reverted"
+    });
+    expect(lifted.liftedAt, "the response carries the retraction, not an empty 204").not.toBeNull();
+    expect(lifted.endsAt, "and does NOT pretend the declared window moved").toBe(
+      (await admin.freezes.get(frozen.id)).endsAt
+    );
+
+    await tick(3);
+
+    // THE ASSERTION, against the EXECUTOR rather than a status column.
+    expect(
+      firedFor(app.at(amer)),
+      "a lifted freeze holds nothing: the target that was held must now be handed to its executor"
+    ).toBeGreaterThan(0);
+    expect((await waveTarget(change.id, app.at(amer))).executorRef).not.toBeNull();
+
+    // ...and the hold is RELEASED through the same `clearFreezeAdmissionHold` path a window
+    // closing uses (§1.5). There is no lift-specific code anywhere in reconcile — the predicate is
+    // read-time, so a lifted freeze simply stops being returned and the next tick clears.
+    const afterLift = await decisionsOfKind(change.id, "freeze_admission");
+    expect(afterLift).toHaveLength(2);
+    expect(afterLift[1]!.verdict).toBe("allow");
+    expect(afterLift[1]!.inputContext).toMatchObject({ held: [] });
+
+    // EXACTLY ONCE — the release must not become a per-tick writer (ADR-0024).
+    await tick(10);
+    expect(await decisionsOfKind(change.id, "freeze_admission")).toHaveLength(2);
+  });
+
+  it("M25.1 extend: pushing `endsAt` FURTHER OUT keeps the target held", async () => {
+    // The paired direction. Without it the two release cases could pass against a PATCH that
+    // ignored its body and simply retired the freeze whatever instant it was handed.
+    const app = await fourRegionComponent("extend");
+    const change = await release("extend", [app.id]);
+    const frozen = await freezeAt(amer.id, "amer-extend-freeze");
+
+    await tick(3);
+    expect(firedFor(app.at(amer))).toBe(0);
+
+    const extended = await admin.freezes.updateWindow(frozen.id, {
+      endsAt: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString(),
+      reason: "integration: the incident is not over"
+    });
+    expect(new Date(extended.endsAt).getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 3_600_000);
+
+    await tick(3);
+
+    expect(
+      firedFor(app.at(amer)),
+      "an EXTENSION is a tightening — the held target must stay held"
+    ).toBe(0);
+    const holds = await decisionsOfKind(change.id, "freeze_admission");
+    expect(
+      holds.map((d) => d.verdict),
+      "NO `allow` row at any point: nothing was released, so nothing should claim to have been"
+    ).not.toContain("allow");
+    // There IS a second `hold` row, and it is correct rather than write amplification: the hold
+    // Decision's `inputContext` records the freeze's `endsAt` (never `now` — ADR-0024), so moving
+    // `endsAt` genuinely changes the situation and `insertDecisionIfChanged` restates it ONCE. The
+    // restatement is the assertion: the standing explanation now names the NEW deadline, which is
+    // what an operator reading `scp change explain` after an extension needs to see.
+    const latest = holds[holds.length - 1]!;
+    expect(latest.verdict).toBe("hold");
+    expect(
+      (latest.inputContext as { held: { freezes: { endsAt: string }[] }[] }).held[0]!.freezes[0]!
+        .endsAt,
+      "the standing hold must name the extended deadline, not the one it was declared with"
+    ).toBe(extended.endsAt);
+    // The unfrozen siblings shipped throughout, so this case is not passing because nothing moved.
+    expect(firedFor(app.at(apac))).toBeGreaterThan(0);
+  });
+
+  it("M25.1 authz: `freeze:write` at a service cannot lift the ORG-ROOT freeze — but can lift its own", async () => {
+    // THE PROPERTY: authority at a narrow scope is not authority over a broad freeze. It holds
+    // because the route authorizes at the FREEZE'S OWN `scopeObjectId` and `hasPermission` expands
+    // the checked scope UPWARD — checking at `auth.orgId` instead would make this case green with
+    // the property gone, which is why the org-root arm is here and not just the happy path.
+    const service = await admin.services.create({
+      name: `lift-authz-svc-${randomUUID().slice(0, 8)}`
+    });
+    const orgWide = await freezeAt(org.orgId, "org-root-freeze");
+    const serviceWide = await freezeAt(service.id, "service-freeze");
+
+    const serviceAdmin = await createTestUser(server, org, [
+      { role: "Administrator", scope: service.id }
+    ]);
+    const scoped = new ScpClient({ baseUrl: server.baseUrl, token: serviceAdmin.token });
+
+    expect(
+      await statusOf(scoped.freezes.lift(orgWide.id, { reason: "not mine to lift" })),
+      "an Administrator scoped to one service must not be able to retract a freeze protecting the whole org"
+    ).toBe(403);
+    // The freeze is untouched, not merely un-returned.
+    expect((await freezeRow(orgWide.id)).liftedAt).toBeNull();
+
+    // PATCH is the same door and must refuse identically — two verbs, one authorization rule.
+    expect(
+      await statusOf(
+        scoped.freezes.updateWindow(orgWide.id, {
+          endsAt: new Date(Date.now() - 1_000).toISOString(),
+          reason: "nor to shorten"
+        })
+      ),
+      "shortening someone else's freeze into the past is a lift by another name — same scope check"
+    ).toBe(403);
+
+    // THE CONTROL. Same actor, same permission, a freeze at their own scope: allowed. Without this
+    // arm the case above would pass just as well against a route that refused everyone.
+    const ok = await scoped.freezes.lift(serviceWide.id, {
+      reason: "integration: this one IS mine"
+    });
+    expect(ok.liftedAt).not.toBeNull();
+    expect(ok.liftedByActorId).toBe(serviceAdmin.objectId);
+  });
+
+  it("M25.1 authz: Viewer and Operator hold no `freeze:write` at all", async () => {
+    const frozen = await freezeAt(amer.id, "amer-role-freeze");
+    for (const role of ["Viewer", "Operator"]) {
+      const user = await createTestUser(server, org, [{ role, scope: org.orgId }]);
+      const client = new ScpClient({ baseUrl: server.baseUrl, token: user.token });
+      expect(
+        await statusOf(client.freezes.lift(frozen.id, { reason: `${role} tries to lift` })),
+        `${role} does not hold freeze:write (drizzle/0010 grants it to Administrator and Owner only)`
+      ).toBe(403);
+      expect(
+        await statusOf(
+          client.freezes.updateWindow(frozen.id, {
+            endsAt: new Date(Date.now() + 60_000).toISOString(),
+            reason: `${role} tries to shorten`
+          })
+        )
+      ).toBe(403);
+    }
+    expect((await freezeRow(frozen.id)).liftedAt).toBeNull();
+  });
+
+  it("M25.1: a lift REQUIRES a reason — absent and empty are both refused", async () => {
+    const frozen = await freezeAt(amer.id, "amer-reason-freeze");
+    // Both arms go through `inject`, because the typed SDK will not let a caller express either
+    // shape — which is the point: the refusal has to live at the server, not in TypeScript.
+    for (const payload of [{}, { reason: "" }, { reason: "   " }]) {
+      const rejected = await server.app.inject({
+        method: "DELETE",
+        url: `/api/v1/freezes/${frozen.id}`,
+        headers: { authorization: `Bearer ${org.adminToken}` },
+        payload
+      });
+      expect(
+        rejected.statusCode,
+        `lifting a freeze with reason=${JSON.stringify(payload)} is a governance loosening with no recorded justification — freeze:override has refused exactly this since M4`
+      ).toBe(400);
+    }
+    // A whitespace-only reason is refused by `liftFreeze`'s own `trim()`, not by the schema's
+    // `min(1)`, so the row must still be standing after all three.
+    expect((await freezeRow(frozen.id)).liftedAt).toBeNull();
+
+    const shorten = await server.app.inject({
+      method: "PATCH",
+      url: `/api/v1/freezes/${frozen.id}`,
+      headers: { authorization: `Bearer ${org.adminToken}` },
+      payload: { endsAt: new Date(Date.now() + 60_000).toISOString() }
+    });
+    expect(shorten.statusCode, "and the same on the window edit, in both directions").toBe(400);
+  });
+
+  it("M25.1: a lifted freeze is still READABLE by id and by list — but is not active", async () => {
+    // WHY SOFT: `gate-orchestrator.ts`'s block Decision carries `inputContext.freeze.id` and
+    // `recordFreezeAdmissionHold` carries `inputContext.held[].freezes[].id`, permanently. A hard
+    // DELETE would make `scp change explain` name an id that resolves to nothing — the question
+    // charter principle 6 exists to keep answerable.
+    const app = await fourRegionComponent("readable");
+    const change = await release("readable", [app.id]);
+    const frozen = await freezeAt(amer.id, "amer-readable-freeze");
+    await tick(3);
+
+    const holdDecision = (await decisionsOfKind(change.id, "freeze_admission"))[0]!;
+    const citedId = (holdDecision.inputContext as { held: { freezes: { id: string }[] }[] })
+      .held[0]!.freezes[0]!.id;
+    expect(citedId).toBe(frozen.id);
+
+    await admin.freezes.lift(frozen.id, { reason: "integration: retracted" });
+
+    // (a) THE CITATION STILL RESOLVES.
+    const stillThere = await admin.freezes.get(citedId);
+    expect(stillThere.id).toBe(frozen.id);
+    expect(stillThere.reason, "including WHY it was declared in the first place").toContain(
+      "amer-readable-freeze"
+    );
+    expect(stillThere.liftReason).toBe("integration: retracted");
+    // WHO, and it is the bootstrap admin's own subject object — not `org.orgId`. The distinction
+    // matters: `createFreeze`'s test fixtures pass `org.orgId` as the actor, and an assertion
+    // written against that would have passed against a route that recorded the ORG rather than the
+    // person, which is exactly the field this column exists to hold.
+    expect(stillThere.liftedByActorId).not.toBeNull();
+    expect(stillThere.liftedByActorId).not.toBe(org.orgId);
+
+    // (b) AND IT IS STILL LISTED — lifted is a FIELD, not an absence. An operator reviewing what
+    // was in force last Tuesday needs to see it.
+    const listed = (await admin.freezes.list()).items.find((f) => f.id === frozen.id);
+    expect(listed?.liftedAt).not.toBeNull();
+
+    // (c) BUT IT IS NOT ACTIVE — asserted against a BRAND NEW change, so this cannot pass on the
+    // first change's already-cleared state.
+    const second = await release("readable2", [app.id]);
+    await tick(4);
+    expect(
+      await decisionsOfKind(second.id, "freeze_admission"),
+      "a lifted freeze must hold nothing, including releases proposed after it was lifted"
+    ).toHaveLength(0);
+    expect((await waves(second.id)).map((w) => w.status)).toEqual(["running"]);
+  });
+
+  it("M25.1: both verbs write a Decision carrying the before/after, and an audit event citing it", async () => {
+    const frozen = await freezeAt(amer.id, "amer-audit-freeze");
+    const originalEndsAt = frozen.endsAt;
+
+    const shortened = await admin.freezes.updateWindow(frozen.id, {
+      endsAt: new Date(Date.now() + 60_000).toISOString(),
+      reason: "integration: cutting it short"
+    });
+    const lifted = await admin.freezes.lift(frozen.id, {
+      reason: "integration: and retracting it"
+    });
+    expect(lifted.liftedAt).not.toBeNull();
+
+    const decisions = await decisionsOfKind(frozen.id, "freeze_window");
+    expect(decisions).toHaveLength(2);
+    // THE OLD VALUE AND THE NEW ONE. `audit_events` has no payload column, so this Decision is the
+    // ONLY place the previous `endsAt` survives — without it, "the freeze ends at T" is
+    // unfalsifiable after the fact and a three-week window cut to a minute is indistinguishable
+    // from one that was always a minute.
+    expect(decisions[0]!.inputContext).toMatchObject({
+      action: "shortened",
+      endsAt: { from: originalEndsAt, to: shortened.endsAt }
+    });
+    expect(
+      (decisions[0]!.reasonTree as { loosening: boolean }).loosening,
+      "shortening a freeze is a LOOSENING, recorded as a flag rather than left to be inferred from two timestamps"
+    ).toBe(true);
+    expect(decisions[1]!.inputContext).toMatchObject({ action: "lift" });
+
+    const events = await auditEventsFor(frozen.id);
+    expect(events.map((e) => e.action)).toEqual(["freeze.window.shortened", "freeze.lift"]);
+    expect(events.map((e) => e.reason)).toEqual([
+      "integration: cutting it short",
+      "integration: and retracting it"
+    ]);
+    // Each event points at ITS OWN Decision — the `freeze.override` shape, so an operator reading
+    // the audit log can resolve the structured before/after rather than only free text.
+    expect(events.map((e) => e.decisionId)).toEqual(decisions.map((d) => d.id));
+  });
+
+  it("M25.1: a retraction is final, and a window edit cannot invert the window", async () => {
+    const frozen = await freezeAt(amer.id, "amer-final-freeze");
+
+    // `endsAt <= startsAt` is refused by the SAME `assertWindowOrdered` `createFreeze` uses — a
+    // PATCH that admitted it would leave a row `POST /freezes` refuses to produce.
+    expect(
+      await statusOf(
+        admin.freezes.updateWindow(frozen.id, {
+          endsAt: new Date(Date.now() - 3_600_000).toISOString(),
+          reason: "before the freeze even started"
+        })
+      ),
+      "the fixture's startsAt is 60s ago; an endsAt an hour ago inverts the window"
+    ).toBe(400);
+
+    await admin.freezes.lift(frozen.id, { reason: "integration: retracted for good" });
+
+    expect(
+      await statusOf(admin.freezes.lift(frozen.id, { reason: "again" })),
+      "a lift records WHO retracted this and WHY; a second caller must not overwrite that record"
+    ).toBe(409);
+    expect(
+      await statusOf(
+        admin.freezes.updateWindow(frozen.id, {
+          endsAt: new Date(Date.now() + 3_600_000).toISOString(),
+          reason: "re-open it"
+        })
+      ),
+      "extending a lifted freeze would promise protection that `lifted_at` cancels — declare a new freeze instead"
+    ).toBe(409);
+
+    // The original lift's record is intact, which is the whole reason both refusals exist.
+    const row = await freezeRow(frozen.id);
+    expect(row.liftReason).toBe("integration: retracted for good");
   });
 });
