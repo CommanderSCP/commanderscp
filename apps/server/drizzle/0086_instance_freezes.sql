@@ -9,9 +9,14 @@
 --
 -- THIS KNOWINGLY OVERTURNS DESIGN.md §10.3, which said freeze scoping is "org-rooted; the
 -- above-org tiers ADR-0016 adds are scan-requirement-only and do not extend freeze scoping".
--- That sentence is now false by owner decision and DESIGN.md §10.3 is being replaced (proposal
--- "Documents to change"). It is called out here rather than left for a reader to discover,
--- because the next person to read §10.3 will read it as an invariant.
+-- That sentence is now false by owner decision. DESIGN.md §10.3 STILL SAYS IT AT THE TIME THIS
+-- MIGRATION SHIPPED, and that is stated rather than glossed: the proposal's "Documents to change"
+-- carries a drafted replacement, but the draft counts SEVEN tiers including `trust_domain` and
+-- this table deliberately has no such rung (see below), so applying it verbatim would trade one
+-- false clause for another. ADR-0040 §7c and its closing section carry the correction as an owner
+-- call, together with the charter "Freeze Scope" amendment, which needs owner sign-off and which
+-- this change does not have. Called out here because the next person to read §10.3 will read it
+-- as an invariant, and on this branch it is not one.
 --
 -- `containmentChain` is org-rooted and org-FILTERED on every join, so it structurally cannot
 -- reach above org. The above-org tier therefore gets its own table — exactly the shape ADR-0016
