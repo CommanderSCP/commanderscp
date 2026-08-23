@@ -72,8 +72,7 @@ import {
  * `atomic` union and the Decision projections work across tiers with no per-tier branch at all.
  */
 export type EffectiveFreeze =
-  | ({ tier: "org" } & FreezeRow)
-  | ({ tier: "platform" } & InstanceFreezeRow);
+  ({ tier: "org" } & FreezeRow) | ({ tier: "platform" } & InstanceFreezeRow);
 
 /** One wave target and every ACTIVE freeze covering it, at the instant asked about, from BOTH
  *  tiers. `freezes` is empty for a target nothing covers — an entry is always present for every id

@@ -53,6 +53,35 @@ function freeze(id: string, scopeObjectId: string, atomic = false): OrgTierFreez
   };
 }
 
+/** An instance-tier row as `activeInstanceFreezesInWindow` returns it (M25.3, drizzle/0086). The
+ *  fake below hands these back from the SECOND window read; the matcher is unit-tested on its own
+ *  in `instance-freezes-repo.test.ts` and what is measured here is only the resolution COST. */
+function instanceFreeze(
+  match: Partial<
+    Pick<InstanceFreezeRow, "matchAllEnvironments" | "matchEnvironment" | "matchRegion">
+  >
+): InstanceFreezeRow {
+  return {
+    id: "inst-1",
+    key: "inst-1",
+    name: null,
+    startsAt: new Date("2026-01-01T00:00:00Z"),
+    endsAt: new Date("2026-12-31T00:00:00Z"),
+    reason: "test",
+    matchAllEnvironments: false,
+    matchEnvironment: null,
+    matchRegion: null,
+    atomic: false,
+    overridable: false,
+    note: null,
+    // Already past `activeInstanceFreezesInWindow`'s `lifted_at IS NULL` filter by construction.
+    liftedAt: null,
+    liftReason: null,
+    updatedAt: new Date("2026-01-01T00:00:00Z"),
+    ...match
+  };
+}
+
 /**
  * A `tx` that answers the two queries this module can issue and counts each one.
  *
@@ -144,6 +173,35 @@ describe("freezesByTarget: INERTNESS (property 1)", () => {
     // Still ZERO coordinate reads: no instance freeze is live, so nothing asks where the target
     // runs. This is the conjunct that keeps M25.3's cost off the org-tier path entirely.
     expect(counts.coordinateReads).toBe(0);
+  });
+
+  it("M25.3: a LIVE instance freeze costs coordinate reads and STILL no containment walk when the org declared nothing", async () => {
+    // The instance tier is resolved from its OWN window read, so an org with no freeze of its own
+    // walks NO containment chain even while a platform freeze is in force — the org-tier cost and
+    // the instance-tier cost are independent, which is what keeps a deployment-wide freeze from
+    // turning every tick into a graph traversal for every org on the instance.
+    const { counts, tx } = countingTx([], [], [instanceFreeze({ matchEnvironment: "prod" })]);
+
+    await freezesByTarget(tx, "org", ["t1", "t2"], new Date());
+
+    expect(counts.selects, "one window read per tier").toBe(2);
+    expect(counts.executes, "the ORG tier declared nothing — no chain is walked").toBe(0);
+    // Two lookups per target: the placement hop, then the deployment-target's properties.
+    expect(counts.coordinateReads).toBe(4);
+  });
+
+  it("M25.3: a DEPLOYMENT-WIDE instance freeze reads no coordinates at all — it covers every target regardless", async () => {
+    // The conjunct that makes the widest freeze the CHEAPEST one. `matchAllEnvironments` consults
+    // no coordinate, so asking the graph where each target runs would be two reads per target per
+    // tick answering a question the matcher never looks at.
+    const { counts, tx } = countingTx([], [], [instanceFreeze({ matchAllEnvironments: true })]);
+
+    const byTarget = await freezesByTarget(tx, "org", ["t1", "t2"], new Date());
+
+    expect(counts.coordinateReads).toBe(0);
+    expect(counts.executes).toBe(0);
+    // And it covered both targets even though neither declares anything — the one form that does.
+    expect(byTarget.map((e) => e.freezes.map((f) => f.tier))).toEqual([["platform"], ["platform"]]);
   });
 
   it("returns an entry for EVERY target, covered or not — a caller never interprets a missing key", async () => {

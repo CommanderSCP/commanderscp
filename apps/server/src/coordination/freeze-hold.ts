@@ -1,9 +1,5 @@
 import type { TenantTx } from "../db/tenant-tx.js";
-import {
-  freezesByTarget,
-  unionFreezes,
-  type EffectiveFreeze
-} from "../governance/freeze-scope.js";
+import { freezesByTarget, unionFreezes, type EffectiveFreeze } from "../governance/freeze-scope.js";
 import { resolvePlacementPair } from "./stage-dependency-hold.js";
 import { readTargetLiveness } from "./target-liveness.js";
 

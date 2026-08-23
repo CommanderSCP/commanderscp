@@ -82,7 +82,14 @@ export async function activeInstanceFreezesInWindow(
   const rows = await tx
     .select()
     .from(instanceFreezes)
-    .where(freezeWindowCovers(instanceFreezes.startsAt, instanceFreezes.endsAt, instanceFreezes.liftedAt, at));
+    .where(
+      freezeWindowCovers(
+        instanceFreezes.startsAt,
+        instanceFreezes.endsAt,
+        instanceFreezes.liftedAt,
+        at
+      )
+    );
   return rows as InstanceFreezeRow[];
 }
 
@@ -112,10 +119,7 @@ export async function activeInstanceFreezesInWindow(
  * about.
  */
 export function instanceFreezeCovers(
-  freeze: Pick<
-    InstanceFreezeRow,
-    "matchAllEnvironments" | "matchEnvironment" | "matchRegion"
-  >,
+  freeze: Pick<InstanceFreezeRow, "matchAllEnvironments" | "matchEnvironment" | "matchRegion">,
   coordinate: StageCoordinate | null
 ): boolean {
   if (freeze.matchAllEnvironments) return true;
