@@ -40,6 +40,13 @@ export default defineConfig({
     // a unit test ever legitimately approaches this, that is a signal it belongs in the
     // integration layer, not a reason to raise the number again.
     testTimeout: 20_000,
+    // THE HOOK BUDGET, declared for the reason `@scp/source-census`'s `test-budget-census.test.ts`
+    // gives in full: vitest's `hookTimeout` is a SECOND, independent deadline whose implicit
+    // default (10,000ms) nobody chose, and the only hook cost this repo has ever measured under
+    // CI's load profile — `@scp/cli`'s lazy-import warm-up — was 5,400ms against it. 30,000 is 25x
+    // the isolated worst case in the unit layer (1,205ms) and half the un-declarable 60,000ms
+    // `onTaskUpdate` RPC deadline a synchronous hook would otherwise be free to cross.
+    hookTimeout: 30_000,
     coverage: {
       provider: "v8",
       reporter: ["text-summary"],
