@@ -513,6 +513,25 @@ export interface RunnerLauncher {
    * cannot prove any of this: it cannot show that a killed process leaves a container, that a label
    * survives on it, or that a real `docker ps --filter` finds it. Returns the ids actually removed.
    *
+   * WHAT THE RETURNED LIST IS, AND THE TWO THINGS IT IS NOT. It is what THIS pass removed — a report
+   * on one sweep, never a post-condition on the daemon. Two properties make "everything that was
+   * expired when I called is now gone, and it is in this list" FALSE, and both have been measured
+   * (2026-08-23) as intermittent reds of `reaper.integration.test.ts`'s predicate case:
+   *   1. A JOINER GETS THE IN-FLIGHT PASS'S RESULT. Single-flighting means a caller arriving while a
+   *      pass is running is handed THAT pass's promise, and that pass's `docker ps` may have been
+   *      issued before the caller's own container existed — so the caller can be told `[]` about a
+   *      container that is expired, present, and untouched. Await {@link whenReapSettled} FIRST if
+   *      you need an enumeration that begins after your own state does.
+   *   2. THE DAEMON IS SHARED AND OWNERSHIP IS PER-PROCESS. "Foreign and past its deadline" is
+   *      exactly what EVERY process running this package is entitled to collect, so a peer process's
+   *      pass removes the same containers this one would have. An empty list therefore never means
+   *      "nothing was expired" — it can equally mean a peer got there first. Nothing in-process can
+   *      see that, {@link whenReapSettled} included.
+   * No production caller reads this value — `run()` schedules its pass with `void` and ignores it —
+   * so neither property is load-bearing today. They are stated because the tests DO read it, and
+   * because a future operator-facing sweep that reported "removed 0" as "nothing to remove" would be
+   * reporting a lie under both.
+   *
    * ALSO SWEEPS THE TRANSIENT `--env-file` (MEDIUM-4) — the SAME hazard, one level down. A SIGKILL
    * between {@link writeSecretEnvFile} and the `finally` that unlinks it leaves a plaintext
    * credential on disk with nothing left to remove it, for exactly the reason a killed `run()`
@@ -3555,6 +3574,16 @@ const reapInFlight = new Map<string, Promise<string[]>>();
  * none. Nothing in production awaits it — that is the entire point of the change (see
  * {@link RunnerLauncher.reap}) — and it exists so a shutdown path, or a test that needs the sweep to
  * have SETTLED before it asserts on what was removed, has something to await instead of a sleep.
+ *
+ * AWAITING IT DOES DRAIN THE SLOT: {@link reapInFlight}'s entry is deleted by the pass's own
+ * `.finally`, which runs BEFORE the promise this returns resolves, so a `reap()` issued after this
+ * settles always starts a FRESH enumeration rather than joining the drained one.
+ *
+ * IT KNOWS ONLY ABOUT THIS PROCESS. The single-flight map is module state, so this says nothing
+ * about a pass running in a PEER process against the same daemon — and such a peer is entitled to
+ * remove exactly the containers this process's next pass would have (property 2 in
+ * {@link RunnerLauncher.reap}'s doc). A test that needs its own pass to be the one that collects a
+ * fixture must handle losing that race, not assume this call prevents it.
  */
 export function whenReapSettled(
   dockerBinary: string = DEFAULT_DOCKER_BINARY
