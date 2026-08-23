@@ -14,7 +14,8 @@ import {
 import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
-import { badRequest, conflict, forbidden, notFound } from "../errors.js";
+import { conflict, forbidden, notFound } from "../errors.js";
+import { assertWindowOrdered } from "../governance/freezes-repo.js";
 import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
 
 /**
@@ -199,14 +200,12 @@ export function registerInstanceFreezeRoutes(app: FastifyInstance, deps: AppDeps
       const body = request.body;
       const startsAt = new Date(body.startsAt);
       const endsAt = new Date(body.endsAt);
-      // THE SAME invariant `assertWindowOrdered` enforces on both org-tier write paths, and a DB
-      // CHECK behind it. A row with `ends_at <= starts_at` reads as permanently inactive to the
-      // half-open window predicate with nobody having lifted it.
-      if (endsAt <= startsAt) {
-        throw badRequest(
-          `instance freeze endsAt (${endsAt.toISOString()}) must be after startsAt (${startsAt.toISOString()})`
-        );
-      }
+      // THE SAME FUNCTION the org tier's two write paths call, not a third copy of the comparison
+      // — `assertWindowOrdered`'s docblock is explicit that a second copy is the drift
+      // `activeFreezesInWindow`'s header is about. A row with `ends_at <= starts_at` reads as
+      // permanently inactive to the half-open window predicate with nobody having lifted it, and
+      // 0086's `instance_freezes_window_ck` is the second barrier behind this one.
+      assertWindowOrdered(startsAt, endsAt);
       const allEnvironments = body.match.allEnvironments === true;
 
       await withOperatorDb(deps.config, "instance freezes", async (client) => {

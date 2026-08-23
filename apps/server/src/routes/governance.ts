@@ -46,6 +46,7 @@ import {
   quorumStatus
 } from "../governance/approvals-repo.js";
 import {
+  assertWindowOrdered,
   createFreeze,
   getFreeze,
   liftFreeze,
@@ -505,7 +506,12 @@ export function registerGovernanceRoutes(app: FastifyInstance, deps: AppDeps): v
         });
         const startsAt = new Date(request.body.startsAt);
         const endsAt = new Date(request.body.endsAt);
-        if (endsAt <= startsAt) throw badRequest("freeze endsAt must be after startsAt");
+        // M25.3: was an inline `endsAt <= startsAt` comparison — a THIRD copy of the invariant
+        // `assertWindowOrdered` was extracted in M25.1 to own (its docblock says so: "a second
+        // copy of this comparison is exactly the drift `activeFreezesInWindow`'s header is
+        // about"). `createFreeze` calls it defensively a line later anyway, so the only thing the
+        // inline copy contributed was a second message that could drift from the real one.
+        assertWindowOrdered(startsAt, endsAt);
         return createFreeze(tx, {
           orgId: auth.orgId,
           scopeObjectId: scopeObject.id,
