@@ -56,6 +56,13 @@ export default defineConfig({
     // `MAX_WORKER_STALL_MS` tripwire (45,000ms) exists to catch — it fires first, and with the
     // cause on it. The override is left at its measured value rather than tightened by guesswork:
     // it was observed at 27,829ms on the loaded CI runner and 11,969ms under the local graph.
-    testTimeout: 30_000
+    testTimeout: 30_000,
+    // THE HOOK BUDGET, declared for the reason `@scp/source-census`'s `test-budget-census.test.ts`
+    // gives in full: vitest's `hookTimeout` is a SECOND, independent deadline whose implicit
+    // default (10,000ms) nobody chose, and the only hook cost this repo has ever measured under
+    // CI's load profile — `@scp/cli`'s lazy-import warm-up — was 5,400ms against it. 30,000 is 25x
+    // the isolated worst case in the unit layer (1,205ms) and half the un-declarable 60,000ms
+    // `onTaskUpdate` RPC deadline a synchronous hook would otherwise be free to cross.
+    hookTimeout: 30_000
   }
 });
