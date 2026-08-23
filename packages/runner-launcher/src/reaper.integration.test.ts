@@ -255,6 +255,15 @@ describe.runIf(await dockerAvailable())(
         extraLabels: { "scp.test": "no-label" }
       });
 
+      // JOIN ANY PASS ALREADY IN FLIGHT BEFORE ASSERTING. `reap()` is single-flighted per binary
+      // (`reapInFlight`): a caller arriving while a pass is running gets THAT pass's result, not a
+      // fresh enumeration. `run()` schedules a reap with `void reap()`, so any earlier case in this
+      // file can leave one running — and its enumeration predates the three containers just
+      // crafted, which returns `[]` and fails this assertion for a reason that has nothing to do
+      // with the predicate under test. Measured on CI 2026-08-23: "expected [] to deeply equal
+      // ArrayContaining[Any<String>]" on a docs-only PR. `whenReapSettled` is exported for exactly
+      // this.
+      await whenReapSettled();
       const removed = await createDockerRunnerLauncher().reap();
 
       expect(removed, "the past-deadline foreign container must be among the removed ids").toEqual(
