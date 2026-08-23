@@ -377,8 +377,8 @@ describe("no unit suite can starve its worker past vitest's un-declarable RPC de
  * `vite*.config.*` in the repo — 43 files, of which 36 are the unit configs a `test` script loads:
  *
  *   - 36 of 36 unit configs declared NO `hookTimeout`. Every `beforeAll`/`beforeEach`/`afterAll`/
- *     `afterEach` in the unit layer — 179 call sites across 22 packages — ran on a number nobody
- *     chose.
+ *     `afterEach` in the unit layer — 159 call sites across 23 of those 36 packages — ran on a
+ *     number nobody chose.
  *   - All 6 non-unit configs (the five integration ones and the kind one) DID declare it, at
  *     60,000 / 120,000 / 300,000 / 600,000ms. So the option was known, deliberately set where a
  *     container start made it obvious, and left implicit everywhere else. That is CLAUDE.md's
@@ -624,7 +624,7 @@ describe("no HOOK runs on a deadline nobody chose either", () => {
 
   it("EVERY package declares one, including the ones that have no hook today", () => {
     // No allowlist, deliberately, and this asserts that choice rather than leaving it to drift.
-    // Fourteen of the thirty-six unit suites contained no hook at all when this was written
+    // Thirteen of the thirty-six unit suites contained no hook at all when this was written
     // (measured 2026-08-23; the assertion below deliberately does not pin the count, which would
     // red on the next package added rather than on anything going wrong), so a budget there
     // bounds nothing today — but the cost of declaring it is a line, and the cost of NOT declaring it is
@@ -634,7 +634,10 @@ describe("no HOOK runs on a deadline nobody chose either", () => {
     const withoutHooks = SUITES.filter((s) =>
       unitTestFiles(s, SUITES, files).every((f) => {
         const src = readFileSync(resolve(REPO_ROOT, f), "utf8");
-        return !/(^|[^\w.$])(beforeAll|beforeEach|afterAll|afterEach)\s*\(/.test(src);
+        // The SAME line-anchored predicate `hookTimeoutOverrides` uses, so "has a hook" means
+        // one thing in this file rather than two — an unanchored copy here would count THIS
+        // file's own fixture strings as hook registrations and quietly disagree with itself.
+        return !/^[ \t]*(beforeAll|beforeEach|afterAll|afterEach)\s*\(/m.test(src);
       })
     );
     expect(withoutHooks.length).toBeGreaterThan(0);
