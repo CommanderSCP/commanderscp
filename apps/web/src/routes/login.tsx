@@ -50,7 +50,9 @@ export function LoginPage(): React.JSX.Element {
       <Card className="w-full max-w-sm border-t-2 border-t-army-700 p-8 shadow-sm">
         <div className="flex flex-col items-center gap-2 pb-6 text-center">
           <BrandMark size="lg" />
-          <span className="text-lg font-semibold text-slate-900">CommanderSCP</span>
+          {/* A real heading, not a styled span: the page's one h1, which is also what the login
+              E2E pins (getByRole heading). */}
+          <h1 className="text-lg font-semibold text-slate-900">CommanderSCP</h1>
           <p className="text-xs text-slate-500">Federated systems coordination.</p>
         </div>
         <CardContent className="p-0">

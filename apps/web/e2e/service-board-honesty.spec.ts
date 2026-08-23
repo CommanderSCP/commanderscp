@@ -212,10 +212,11 @@ test("service board: an unobservable field renders as an explicit unknown, never
     "";
   const notDrivenBadgeClass =
     (await notDrivenStat.locator("div").last().getAttribute("class")) ?? "";
+  // Six-tone system (docs/design-system.md): success = emerald tint, not the retired solid green.
   expect(stableBadgeClass, "premise: Stable really is the success variant").toContain(
-    "bg-green-600"
+    "bg-emerald-50"
   );
-  expect(notDrivenBadgeClass).not.toContain("bg-green-600");
+  expect(notDrivenBadgeClass).not.toContain("bg-emerald-50");
 
   // 5. The board-level freeze-visibility caveat: freezes never replicate, so an unfrozen row on a
   //    federated instance means "none declared here", not "none applies" — for EVERY row alike.
