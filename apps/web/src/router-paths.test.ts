@@ -3,6 +3,8 @@ import { router } from "./router";
 import { ComponentDependenciesPage } from "./routes/component-dependencies";
 import { AdminDependenciesPage } from "./routes/admin-dependencies";
 import { AdminGovernancePage } from "./routes/admin-governance";
+import { AdminDecisionsPage } from "./routes/admin-decisions";
+import { AdminAuditPage } from "./routes/admin-audit";
 
 /**
  * THE ROUTE TABLE STILL RESOLVES THE URLS OTHER THINGS DEPEND ON.
@@ -92,7 +94,12 @@ describe("router: URLs other code depends on still resolve", () => {
     [
       "/admin/governance",
       "both nav tables' Admin › Governance entry — the governance:move enforcement lattice (governance-reach-on-containment-move.md §9.4)"
-    ]
+    ],
+    [
+      "/admin/decisions",
+      "both nav tables' Admin › Decisions entry + the object-page 'Decisions about this object' link (registry-detail.tsx)"
+    ],
+    ["/admin/audit", "both nav tables' Admin › Audit entry — the hash-chained audit log"]
   ])("resolves %s — needed by %s", (url) => {
     expect(resolves(url)).toBe(true);
   });
@@ -140,6 +147,18 @@ describe("router: URLs other code depends on still resolve", () => {
     const governance = registeredComponents().find((r) => r.path === "/admin/governance");
     expect(governance?.component, "the /admin/governance route must exist").toBeDefined();
     expect(governance?.component).toBe(AdminGovernancePage);
+  });
+
+  it("`/admin/decisions` renders AdminDecisionsPage (the URL AND the view)", () => {
+    const decisions = registeredComponents().find((r) => r.path === "/admin/decisions");
+    expect(decisions?.component, "the /admin/decisions route must exist").toBeDefined();
+    expect(decisions?.component).toBe(AdminDecisionsPage);
+  });
+
+  it("`/admin/audit` renders AdminAuditPage (the URL AND the view)", () => {
+    const audit = registeredComponents().find((r) => r.path === "/admin/audit");
+    expect(audit?.component, "the /admin/audit route must exist").toBeDefined();
+    expect(audit?.component).toBe(AdminAuditPage);
   });
 
   it("`/components/{id}/dependencies` renders ComponentDependenciesPage (the URL AND the view — a registered path pointed at another page is the same break)", () => {

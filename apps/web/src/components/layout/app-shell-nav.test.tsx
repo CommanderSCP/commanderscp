@@ -123,6 +123,23 @@ describe("app nav: destinations survive the 2026-08-10 regrouping", () => {
     expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/governance");
   });
 
+  /** Admin › Decisions & Admin › Audit (owner-approved 2026-08-23, charter principle 6) — every
+   *  Decision record and the hash-chained audit log, both browsable. BOTH sites carry both: every
+   *  instance persists Decisions and writes its own audit log, same reasoning as Governance above. */
+  it("links to Admin › Decisions (/admin/decisions), under the Admin section", () => {
+    expect(navHrefs(html)).toContain("/admin/decisions");
+    expect(html).toContain(">Decisions</a>");
+    const adminSection = COMMANDER_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/decisions");
+  });
+
+  it("links to Admin › Audit (/admin/audit), under the Admin section", () => {
+    expect(navHrefs(html)).toContain("/admin/audit");
+    expect(html).toContain(">Audit</a>");
+    const adminSection = COMMANDER_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/audit");
+  });
+
   /** G5 (outpost-ui.md §4 close) — "Setup" lives under the pre-existing FEDERATION section
    *  (with Outposts and Federation status), not a new heading; both survive alongside it. */
   it("links to the setup landing, under the pre-existing Federation section", () => {
@@ -231,6 +248,19 @@ describe("app nav: the OUTPOST site is the small one (outpost-ui.md §9)", () =>
     expect(adminSection?.entries.map((e) => e.to)).toContain("/admin/governance");
   });
 
+  /** Admin › Decisions & Admin › Audit are per-instance facts too (every instance persists its
+   *  own Decisions and writes its own audit log), so the outpost site carries both. */
+  it("carries Admin › Decisions and Admin › Audit (per-instance facts, not commander-only)", () => {
+    expect(hrefs).toContain("/admin/decisions");
+    expect(html).toContain(">Decisions</a>");
+    expect(hrefs).toContain("/admin/audit");
+    expect(html).toContain(">Audit</a>");
+    const adminSection = OUTPOST_NAV.find((s) => s.label === "Admin");
+    expect(adminSection?.entries.map((e) => e.to)).toEqual(
+      expect.arrayContaining(["/admin/decisions", "/admin/audit"])
+    );
+  });
+
   it("is a strict SUBSET of the commander site's destinations (plus nothing new)", () => {
     // Every outpost destination exists on the commander site too — the outpost REMOVES, it does
     // not invent. If this fails, someone added an outpost-only route; that needs a decision, not
@@ -274,6 +304,12 @@ describe("app router: every nav destination this milestone adds actually resolve
 
   it("registers the Admin › Dependencies page the commander nav link points at", () => {
     expect(routePaths()).toContain("/admin/dependencies");
+  });
+
+  it("registers the Admin › Decisions and Admin › Audit pages both nav tables link to", () => {
+    const paths = routePaths();
+    expect(paths).toContain("/admin/decisions");
+    expect(paths).toContain("/admin/audit");
   });
 
   /** The Changes LIST route is gone; the DETAIL route must not have gone with it — it holds the
