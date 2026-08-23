@@ -255,7 +255,7 @@ describe("freezeWindowStatus / activeAndUpcomingFreezes", () => {
   });
 });
 
-describe("FreezeRow — the no-early-lift claim", () => {
+describe("FreezeRow — the lift claim, and the state a lift leaves behind", () => {
   const ROW_FREEZE: Freeze = {
     id: "6f0a1b2c-3d4e-4f50-8161-728394a5b6c7",
     scopeObjectId: "0c1d2e3f-4a5b-4c6d-8e9f-a0b1c2d3e4f5",
@@ -271,19 +271,71 @@ describe("FreezeRow — the no-early-lift claim", () => {
     liftReason: null
   };
 
-  it("states, in the row's own tooltip, that the freeze lifts only at its endsAt and there is no early-lift control", () => {
+  // DELIBERATE INVERSION (M25.1). Until `DELETE /api/v1/freezes/{id}` shipped, these two cases
+  // pinned the OPPOSITE claim: that the tooltip said "no early-lift or delete control yet" and
+  // that a freeze row contained no `<button>` at all. That reasoning was CORRECT for the server it
+  // was written against — the API genuinely had create/list/get and nothing else, and pinning the
+  // absence stopped the UI from implying a control that did not exist. M25.1 made it false, so the
+  // pins are flipped in the same change that wires the control, never before and never after.
+  //
+  // Non-vacuity: revert `LIFT_SENTENCE` to the retired wording and the first case goes red; drop
+  // the `onLift` branch from `FreezeRow` and the second goes red.
+  it("states, in the row's own tooltip, that the freeze can be lifted early and that a reason is needed", () => {
     const html = renderToStaticMarkup(
       <FreezeRow freeze={ROW_FREEZE} now={new Date("2026-08-14T00:00:00.000Z")} />
     );
-    expect(html).toMatch(/no early-lift or delete control yet/i);
-    expect(html).toMatch(/lifts automatically at its end time/i);
+    expect(html).toMatch(/unless it is lifted early/i);
+    expect(html).toMatch(/needs a reason/i);
+    expect(html).not.toMatch(/no early-lift or delete control yet/i);
   });
 
-  it("offers no lift/delete control at all — there is no button in a freeze row", () => {
+  it("offers no lift control when the caller passes no `onLift` — a read-only render stays read-only", () => {
     const html = renderToStaticMarkup(
       <FreezeRow freeze={ROW_FREEZE} now={new Date("2026-08-14T00:00:00.000Z")} />
     );
     expect(html).not.toContain("<button");
+  });
+
+  it("offers Lift, with a REQUIRED reason field, when `onLift` is supplied", () => {
+    const html = renderToStaticMarkup(
+      <FreezeRow
+        freeze={ROW_FREEZE}
+        now={new Date("2026-08-14T00:00:00.000Z")}
+        onLift={() => undefined}
+      />
+    );
+    expect(html).toContain("<button");
+    expect(html).toContain("freeze-lift-reason-input");
+    expect(html).toMatch(/required/);
+  });
+
+  it("a LIFTED freeze reads as lifted, keeps its row, and stops offering Lift", () => {
+    const html = renderToStaticMarkup(
+      <FreezeRow
+        freeze={{
+          ...ROW_FREEZE,
+          liftedAt: "2026-08-15T09:00:00.000Z",
+          liftedByActorId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+          liftReason: "incident resolved"
+        }}
+        now={new Date("2026-08-16T00:00:00.000Z")}
+        onLift={() => undefined}
+      />
+    );
+    // The row SURVIVES the lift: the reason and instant are the record an operator came back for,
+    // and a `freeze_admission` Decision still cites this freeze's id (charter principle 6).
+    expect(html).toContain("Lifted");
+    expect(html).toContain("incident resolved");
+    // ...and offers no second lift.
+    expect(html).not.toContain("<button");
+  });
+
+  it("`freezeWindowStatus` lets a lift OUTRANK the window — a lifted-but-unexpired freeze is not `active`", () => {
+    const midWindow = new Date("2026-08-14T00:00:00.000Z");
+    expect(freezeWindowStatus(ROW_FREEZE, midWindow)).toBe("active");
+    expect(
+      freezeWindowStatus({ ...ROW_FREEZE, liftedAt: "2026-08-13T12:00:00.000Z" }, midWindow)
+    ).toBe("lifted");
   });
 
   it("an untitled freeze (nullable `name`) still renders, never crashes or drops the row", () => {
@@ -304,7 +356,8 @@ describe("buildCreateFreezePayload", () => {
       name: "",
       startsAt: "2026-08-20T09:30",
       endsAt: "2026-08-21T09:30",
-      reason: "  release freeze  "
+      reason: "  release freeze  ",
+      atomic: false
     });
     expect(payload.scopeObjectId).toBe("urn:scp:default:domain:amer");
     expect(payload.reason).toBe("release freeze");
@@ -339,22 +392,41 @@ describe("DeclareFreezeForm — exactly CreateFreezeRequest's fields, nothing in
     );
   }
 
-  it("has one field per CreateFreezeRequestSchema key: scopeObjectId, name, startsAt, endsAt, reason", () => {
+  it("has one field per CreateFreezeRequestSchema key: scopeObjectId, name, startsAt, endsAt, reason, atomic", () => {
     const html = render();
     expect(html).toContain('data-testid="freeze-scope-input"');
     expect(html).toContain('data-testid="freeze-name-input"');
     expect(html).toContain('data-testid="freeze-starts-input"');
     expect(html).toContain('data-testid="freeze-ends-input"');
     expect(html).toContain('data-testid="freeze-reason-input"');
-    // Census, not a spot check: exactly 4 <input>s and 1 <textarea> — a sixth field (e.g. a role
+    expect(html).toContain('data-testid="freeze-atomic-input"');
+    // Census, not a spot check: exactly 5 <input>s and 1 <textarea> — a seventh field (e.g. a role
     // or scope-TYPE picker) would fail this even if it carried no testid at all.
-    expect((html.match(/<input\b/g) ?? []).length).toBe(4);
+    //
+    // The count moved 4 -> 5 with M25.2's `atomic`, and the count is the POINT of this case: it is
+    // what makes the form's field set track `CreateFreezeRequestSchema` rather than drift from it.
+    // `atomic` is a real key on that schema, so it belongs here; bumping the number is the correct
+    // response, and inventing a field that is NOT on the schema still fails.
+    expect((html.match(/<input\b/g) ?? []).length).toBe(5);
     expect((html.match(/<textarea\b/g) ?? []).length).toBe(1);
   });
 
-  it("the ends field also carries the no-early-lift disclaimer, at declare time — not just after the fact", () => {
+  // DELIBERATE INVERSION (M25.1) — the retired pin asserted this field said "no early lift yet",
+  // which was true until `DELETE /api/v1/freezes/{id}` shipped. The disclaimer's PURPOSE survives
+  // the inversion and is what is re-pinned here: the declare-time copy must still tell the operator
+  // what the end time actually means, rather than going silent because the old sentence went stale.
+  it("the ends field states, at declare time, that the window can be cut short — not just after the fact", () => {
     const html = render();
-    expect(html).toMatch(/no early lift yet/i);
+    expect(html).toMatch(/unless lifted early/i);
+    expect(html).not.toMatch(/no early lift yet/i);
+  });
+
+  it("offers `atomic` OFF by default — per-target admission is the normal behaviour", () => {
+    const html = render();
+    // An unchecked checkbox renders without the `checked` attribute; the payload builder is what
+    // actually carries the value, and `buildCreateFreezePayload` is pinned separately below.
+    expect(html).toContain('data-testid="freeze-atomic-input"');
+    expect(html).not.toMatch(/data-testid="freeze-atomic-input"[^>]*checked/);
   });
 
   it("offers exactly one control: the submit button — no separate lift/delete/edit affordance", () => {
