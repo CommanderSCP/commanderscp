@@ -167,6 +167,19 @@ export function RegistryDetailPage(): React.JSX.Element {
             <Link to="/graph/$idOrUrn" params={{ idOrUrn: object.id }}>
               <Button variant="outline">Open in graph explorer</Button>
             </Link>
+            {/* Decisions & Audit explorer (owner-approved 2026-08-23) — every object gets this
+                pointer, unconditionally: `GET /decisions` filters by `subjectId` on the wire
+                (DecisionListQuerySchema, packages/schemas/src/changes.ts), so the search param
+                below is a real server-side filter, not a client one dressed up as an object
+                page. */}
+            <Link
+              to="/admin/decisions"
+              search={{ subjectId: object.id }}
+              className={cn("text-sm text-slate-600 underline", focusRing)}
+              data-testid="object-decisions-link"
+            >
+              Decisions about this object
+            </Link>
           </>
         }
       />

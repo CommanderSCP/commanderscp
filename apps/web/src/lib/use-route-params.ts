@@ -49,3 +49,11 @@ export function usePeerDomainIdParam(): string | undefined {
 export function useUserCodeSearch(): string | undefined {
   return (useSearch({ strict: false }) as { user_code?: string }).user_code;
 }
+
+/** `/admin/decisions?subjectId=…` (Decisions & Audit explorer) — carries the subject an object
+ *  page's "Decisions about this object" link (`registry-detail.tsx`) filters on. `decisions.list`
+ *  DOES filter by `subjectId` on the wire (`DecisionListQuerySchema`), which is what makes this
+ *  link honest rather than a client-side filter posing as a server one. */
+export function useSubjectIdSearchForDecisions(): string | undefined {
+  return (useSearch({ strict: false }) as { subjectId?: string }).subjectId;
+}

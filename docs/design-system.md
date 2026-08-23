@@ -156,6 +156,8 @@ Nav **structure, order, labels, and hrefs unchanged** (test-pinned owner decisio
 | Access Tokens | `KeyRound` |
 | Dependencies (Admin › dependency producers; commander nav only) | `Package` |
 | Governance (Admin › governance:move enforcement; both sites) | `Scale` |
+| Decisions (Admin › Decisions explorer; both sites) | `FileSearch` |
+| Audit (Admin › hash-chained audit log; both sites) | `ScrollText` |
 
 Catalog entries come from `REGISTRIES`; add an `icon` field to the registry config so the allow-list mapping stays data-driven.
 

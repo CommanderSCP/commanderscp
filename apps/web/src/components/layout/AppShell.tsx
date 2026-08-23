@@ -3,6 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   CircleUser,
+  FileSearch,
   Flag,
   Globe,
   KeyRound,
@@ -11,6 +12,7 @@ import {
   Package,
   Puzzle,
   Scale,
+  ScrollText,
   Users,
   Waypoints,
   type LucideIcon
@@ -141,7 +143,13 @@ export const COMMANDER_NAV: NavSection[] = [
       // carry this one: enforcement is PER-INSTANCE, and an outpost's own local containment moves
       // are real moves that the lattice can govern just as a commander's can. Pinned in both
       // COMMANDER_NAV and OUTPOST_NAV by app-shell-nav.test.tsx.
-      { to: "/admin/governance", label: "Governance", icon: Scale }
+      { to: "/admin/governance", label: "Governance", icon: Scale },
+      // Decisions & Audit explorer (owner-approved 2026-08-23, charter principle 6) — BOTH sites
+      // carry these two: every instance persists Decisions and writes the hash-chained audit log,
+      // so both are per-instance facts exactly like Governance above. Pinned in both
+      // COMMANDER_NAV and OUTPOST_NAV by app-shell-nav.test.tsx.
+      { to: "/admin/decisions", label: "Decisions", icon: FileSearch },
+      { to: "/admin/audit", label: "Audit", icon: ScrollText }
     ]
   }
 ];
@@ -168,7 +176,11 @@ export const OUTPOST_NAV: NavSection[] = [
       { to: "/pats", label: "Access Tokens", icon: KeyRound },
       // Same rule as the commander table above: enforcement is per-instance, so the outpost
       // carries this too — its own local moves are real moves the lattice can govern.
-      { to: "/admin/governance", label: "Governance", icon: Scale }
+      { to: "/admin/governance", label: "Governance", icon: Scale },
+      // Same rule as the commander table above: Decisions and the audit log are per-instance
+      // facts, not federation-management, so the outpost carries both too.
+      { to: "/admin/decisions", label: "Decisions", icon: FileSearch },
+      { to: "/admin/audit", label: "Audit", icon: ScrollText }
     ]
   }
 ];

@@ -33,6 +33,8 @@ import { ConnectKindPage } from "./routes/connect";
 import { SetupPage } from "./routes/setup";
 import { AdminDependenciesPage } from "./routes/admin-dependencies";
 import { AdminGovernancePage } from "./routes/admin-governance";
+import { AdminDecisionsPage } from "./routes/admin-decisions";
+import { AdminAuditPage } from "./routes/admin-audit";
 
 /**
  * Code-based TanStack Router route tree (BUILD_AND_TEST.md §8 M2 item 2 — "TanStack Router...
@@ -341,6 +343,31 @@ const adminGovernanceRoute = createRoute({
   component: AdminGovernancePage
 });
 
+// Admin › Decisions (owner-approved 2026-08-23, "Decisions & Audit explorer") — every Decision
+// record browsable, filterable by `subjectId`/`kind` exactly as `GET /decisions` allows (charter
+// principle 6). `subjectId` search param is what `registry-detail.tsx`'s "Decisions about this
+// object" link carries — `useSubjectIdSearchForDecisions` (lib/use-route-params.ts). A static
+// 2-segment path, out-ranking the dynamic `/$basePath/$idOrUrn` registry-detail route exactly as
+// `/admin/dependencies` and `/admin/governance` do. Linked from BOTH nav tables (decisions and
+// audit exist on every deployment).
+const adminDecisionsRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/decisions",
+  component: AdminDecisionsPage,
+  validateSearch: (search: Record<string, unknown>): { subjectId?: string } => ({
+    subjectId: typeof search.subjectId === "string" ? search.subjectId : undefined
+  })
+});
+
+// Admin › Audit (owner-approved 2026-08-23) — the hash-chained audit log
+// (`GET /audit-events`, `audit:read`). Same static-2-segment precedence reasoning as the two
+// routes above. Linked from BOTH nav tables.
+const adminAuditRoute = createRoute({
+  getParentRoute: () => authenticatedLayoutRoute,
+  path: "/admin/audit",
+  component: AdminAuditPage
+});
+
 // Static segments (`/login`, `/device`, `/pats`, `/graph/...`, `/changes`, `/changes/...`,
 // `/campaigns`, `/campaigns/...`, `/federation`) always
 // out-rank the single dynamic `$basePath` segment below at the same depth — standard router
@@ -393,6 +420,8 @@ const routeTree = rootRoute.addChildren([
     setupRoute,
     adminDependenciesRoute,
     adminGovernanceRoute,
+    adminDecisionsRoute,
+    adminAuditRoute,
     registryListRoute,
     registryDetailRoute
   ])
