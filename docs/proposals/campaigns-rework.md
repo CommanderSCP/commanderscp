@@ -307,9 +307,47 @@ status is re-derived at read time rather than read off the Decision). **§1.8's 
 projection field did NOT** — it holds a codegen slot on the UI branch and the 2026-08-23 correction
 below removes it from M25.2 explicitly.
 
-**M25.1 (`DELETE` + `PATCH endsAt`) still has not shipped**, and M25.2 landed ahead of it. Everything
-§1.7 says about a far-future freeze is now true of a *subset* of a wave's targets rather than of the
-whole wave, which is the worse shape. It remains the next thing to build.
+**M25.1 (`DELETE` + `PATCH endsAt`) SHIPPED 2026-08-23**, out of order — M25.2 landed ahead of it,
+which is what made it urgent: everything §1.7 says about a far-future freeze became true of a
+*subset* of a wave's targets rather than of the whole wave, the worse shape, with `scp change
+cancel` / `scp change rollback` (both of which discard the release rather than the freeze) as the
+only exits. What landed, and the decisions taken to land it:
+
+- **A SOFT lift** — `drizzle/0078` adds `lifted_at` + `lifted_by_actor_id` + `lift_reason`, not a
+  hard `DELETE FROM freezes`. `gate-orchestrator.ts`'s block Decision carries
+  `inputContext.freeze.id` and `recordFreezeAdmissionHold` carries
+  `inputContext.held[].freezes[].id`, permanently; a hard delete dangles every one of them and
+  `scp change explain` would name an id resolving to nothing (charter principle 6). The row stays
+  readable by id and stays listed — **lifted is a field on the response, not an absence from it**.
+  Follows `personal_access_tokens.revoked_at`, the house pattern for retiring a projection row.
+- **Why not simply `ends_at = now()`**, which would have needed no migration: a freeze SCHEDULED
+  for next week has `starts_at` in the future, so that assignment produces `ends_at < starts_at` —
+  a row the window-order invariant refuses on both write paths — and a mistakenly-scheduled freeze
+  is exactly one someone needs to retract. A lift is also durable where "ends_at is in the past" is
+  clock-relative and silently reversible by a later PATCH.
+- **The liveness filter is in `activeFreezesInWindow` and nowhere else** — the function §1.1(a)
+  split out precisely because it is the one place that knows the window predicate. Every "is this
+  freeze in force" consumer composes over it, so one `IS NULL` retires a freeze on every path at
+  once, *including the release path*: reconcile's per-target loop stops seeing a hold and
+  `clearFreezeAdmissionHold` writes its `allow` row on the next tick, with no lift-specific code in
+  reconcile at all. A filterless census confirms `freezes-repo.ts` is the only non-test reader of
+  the table.
+- **`PATCH` moves `endsAt` in both directions and records which.** Shortening is a LOOSENING,
+  extending a TIGHTENING; both `freeze:write`, both mandatory-reason, both writing a
+  `freeze_window` Decision carrying the old *and* new instant (`audit_events` has no payload
+  column) plus a high-severity audit event citing it — the `freeze.override` shape. **Shortening to
+  a past instant is deliberately not re-labelled a lift**: same effect on admission, different and
+  truthful record, and reversible where a lift is not. `startsAt` stays uneditable.
+- **Authorization is `freeze:write` at the freeze's OWN `scopeObjectId`**, mirroring how
+  `checkFreeze` authorizes overrides per freeze at that freeze's scope. `hasPermission` expands the
+  checked scope upward, so an Administrator scoped to one service can lift that service's freeze
+  and cannot touch the org-root freeze covering everyone. **Not `freeze:override`**, despite a lift
+  reaching further than an override: requiring the Owner-only bypass permission to retract a
+  declaration would mean an Administrator can create a governance object they cannot remove — the
+  entrance-with-no-exit this increment exists to close — and reach is already bounded by the scope
+  the permission is demanded at.
+
+This unblocks the freeze-authoring UI session, whose gate M25.1 was.
 
 #### 1.8 The aggregate-status honesty problem
 
