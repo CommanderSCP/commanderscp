@@ -258,6 +258,59 @@ ALTER TABLE freezes ADD COLUMN atomic boolean NOT NULL DEFAULT false;
 
 A **bounded hold** — terminalizing a target as `frozen_out` past a horizon — was designed and is **not proposed**. It would introduce a new terminal wave-target status that must land in both `TERMINAL_WAVE_TARGET_STATUSES` and reconcile's terminal branch ("add to both or neither"), and it fails a wave because of a calendar window. If it is ever built, the determinism trick is to compare the freeze horizon against `change_waves.started_at` (a stored instant), **never** against `now` — comparing to `now` flips the verdict at a wall-clock boundary with no `inputContext` change, and would make hold-vs-refuse change its mind mid-hold.
 
+#### 1.7a M25.2 build notes — what shipped, what did not, and the one narrowing (2026-08-23)
+
+Recorded here rather than left in commit messages, because two of these change what a reader of §1.2
+and §1.6 should expect from the code.
+
+**D7 is narrowed by one qualifier, and the narrowing is load-bearing.** §1.2 invariant 3 exempts a
+rollback from the per-target hold on `isRollback` alone. Per-target admission makes a composition
+reachable that could not happen before it: the freeze holds `amer`, the siblings now **ship**, so
+`apac` can fail, so the wave goes `failed`, so an `autoRollbackOnFailure` policy mints a rollback —
+unattended, as `SYSTEM_ACTOR_ID` — over **all** of the original's targets, `amer` included.
+`findOriginalWaveTarget` returns a never-triggered row, so `priorStateRef` is `null`, and
+`client.trigger({kind: "rollback"})` fires into a scope under a declared freeze to undo a release
+that never happened there. (`argocd` and `managed-iac` fail closed on the null ref; `pipeline-generic`
+and `github` dispatch the workflow anyway.) D7's stated rationale — *holding a rollback pins a broken
+release in place* — is about a target the broken release actually reached, so the exemption is now
+qualified by `originalChangeDispatchedTarget`: `attempt > 0` **or** a non-null `executor_ref` on any
+of the original change's wave targets for that object. This **refuses** more than D7's letter and
+permits nothing D7 does not, and pre-M25.2 that target was freeze-blocked anyway — so it is not a
+regression on behaviour that ever shipped. Flagged for the owner as an interpretation of D7, not a
+new decision.
+
+**`atomic` is read at BOTH seams, not only the gate.** §1.6 places the predicate in
+`gate-orchestrator.ts`. The gate fires exactly once, on `pending -> running`, so a gate-only reader
+makes `atomic` degrade silently to per-target admission for any freeze that opens after the wave
+started — the second of the two defects §1 exists to fix, applied to one dimension and not the other.
+`coordination/freeze-hold.ts` reads it too, and holds every target of the set when any covering freeze
+is atomic. Consequence worth stating: an `atomic` freeze declared **before** the gate parks the wave
+whole (no hold Decision), and one declared **mid-wave** produces a hold Decision naming it.
+
+**A dead target is not held.** §1.2 places the change-side `continue` before `triggerWaveTarget`,
+whose target-liveness gate it therefore precedes — so a tombstoned placement under a region freeze
+would sit `pending` for the whole window behind a Decision saying a freeze held it, while the truth
+was that the object was deleted, deferring the tombstone's own audit event for just as long.
+`evaluateFreezeHolds` now checks liveness for covered targets only. This makes the change side agree
+with the ordering §1.3 already argues for on the campaign side.
+
+**`atomic`'s authoring door shipped in M25.2**, against the migration header's own note that it would
+not: `CreateFreezeRequestSchema.atomic` (optional), `FreezeSchema.atomic` (required response, additive),
+`scp freeze create --atomic`. D5 is retroactively permissive and `atomic` is the mitigation it was
+approved on the strength of; shipping the loosening one increment before its escape hatch leaves a
+window in which the escape hatch does not exist. This claims the freeze surface's codegen slot.
+
+**§1.5's `clearFreezeAdmissionHold` shipped**; **§1.8's first two honesty defects shipped** (the
+service board resolves freezes through containment over the service, its components *and their
+placements*, which also deletes the third copy of the window predicate; the campaign's `blocked`
+status is re-derived at read time rather than read off the Decision). **§1.8's wave-target `hold`
+projection field did NOT** — it holds a codegen slot on the UI branch and the 2026-08-23 correction
+below removes it from M25.2 explicitly.
+
+**M25.1 (`DELETE` + `PATCH endsAt`) still has not shipped**, and M25.2 landed ahead of it. Everything
+§1.7 says about a far-future freeze is now true of a *subset* of a wave's targets rather than of the
+whole wave, which is the worse shape. It remains the next thing to build.
+
 #### 1.8 The aggregate-status honesty problem
 
 While held:
