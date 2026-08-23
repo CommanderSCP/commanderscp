@@ -1,4 +1,3 @@
-import { timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ZodTypeProvider } from "fastify-type-provider-zod";
@@ -15,7 +14,7 @@ import type { AppDeps } from "../types.js";
 import { requireAuth } from "../auth/require-auth.js";
 import { withTenantTx } from "../db/tenant-tx.js";
 import { forbidden } from "../errors.js";
-import { withOperatorDb } from "./operator-db.js";
+import { operatorTokenMatches, withOperatorDb } from "./operator-db.js";
 
 /**
  * M13.3a — the SCANNER-ASSIGNMENT REGISTRY's API surface (ADR-0020 §2, proposal §13.3), API-first
@@ -69,16 +68,6 @@ function toApi(row: AssignmentRow): ScannerAssignment {
   };
 }
 
-/** Constant-time comparison of the presented operator token against the configured one — a
- *  length-leaking `===` on a shared secret is exactly what a security review flags. Identical to the
- *  instance-scan-floors check on purpose (same secret, same posture). */
-function operatorTokenMatches(presented: unknown, configured: string | undefined): boolean {
-  if (!configured || typeof presented !== "string" || presented.length === 0) return false;
-  const a = Buffer.from(presented, "utf8");
-  const b = Buffer.from(configured, "utf8");
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(a, b);
-}
 
 function requireOperator(deps: AppDeps, request: FastifyRequest): void {
   if (!deps.config.operatorToken) {
