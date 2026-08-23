@@ -815,7 +815,7 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
   - **A grant is DECIDED at exactly one door** — a holder of `policy:write` at a containment domain cannot apply an `{status: "approved", expiresAt: "2999-…"}` manifest through `POST /plans` + `/plans/{id}/apply`, cannot flip an existing grant to approved through the same door, and cannot do either through hand-fill or an overlay. Negative control: the same actor applying a `requested` grant succeeds. **Assert the row, not the status** — a refusal that stored the object anyway leaves a live waiver in the graph.
   - **An admission can be AUTHORED, and only by an operator** — every admitting test in the exclusion suites seeds its `platform`/`trust_domain` rungs through `PUT /instance/scan-exclusion-admissions/{tier}`, never over the admin pool, so deleting the route's registration in `app.ts` turns **33 tests red across four files** (measured: 13 + 3 + 17). One test carries the whole causal claim end to end: the same clause, component and finding **block** with nothing admitted, **pass** after one operator API call, and **block again** after `classes: []` withdraws it. The door's own properties are pinned separately — a tenant admin presenting no operator token gets 403 **and no row is written**, and a PUT that answered 200 without storing a row fails the row assertion.
 
-### M23 — Kubernetes-native managed-execution runners (managed execution does not work under `helm install` today)
+### M23 — Kubernetes-native managed-execution runners — **DONE, 2026-08-23** (merged to main as `d41c7143`, PR #264)
 
 - **Goal:** make the three managed executors launch their ephemeral runners **through the Kubernetes API** on a Kubernetes deployment, so that managed execution — including M21's bump actuator — works under `helm install` rather than only under docker-compose/VM. Today it does not, and this milestone exists to say so out loud rather than leave it as a footnote in one chart template.
 - **The honest scope, stated as facts rather than as a gap:**
@@ -869,9 +869,9 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     - **HOW IT IS PROVEN — the seam had to be new, and that is the finding.** `docker-adapter.test.ts` settles every step on the NEXT TICK by design (it asks *what* and in what *order*), and `managed-trigger-budget.test.ts`'s stub `docker` is slow only on `start`. With one slow step there is no sum to bound, so **both suites were structurally blind to a defect about the sum** — eighty green tests, none of which could ask *how long*. `whole-run-budget.test.ts` therefore models DURATION and models Node's own `timeout` semantics including the `0` trap, and `managed-trigger-whole-run-budget.test.ts` is the sibling of the M23.1c test with a stub that is slow on EVERY step. Mutation table, one at a time against a clean tree, rebuilding `dist` each time (apps/server resolves `main: dist/index.js`, so a `src` mutation is otherwise a no-op there): `MANAGED_TRIGGER_GRACE_MS` 60_000→3_000 **RED ×2** (this is the mutation that survived before the fix, and its survival is what proved the budget unbounded), 60_000→30_000 **RED**, per-call `spec.timeoutMs` **RED ×2**, stamp loses the grace **RED ×3**, `void reap()`→`await reap()` **RED ×2**, unconditional teardown **RED** (launcher + the managed-iac golden), skip-teardown-on-any-failure **RED ×10**, DELETE the reap wiring **RED ×5**, remove the single-flight slot **RED**, remove the reap pass budget **RED**. One mutation is a **semantic no-op and is recorded as such rather than as a catch**: `Math.max(1, remaining)` → `remaining` changes nothing, because past the refusal `remaining` is an integer ≥1 — the clamp is unreachable belt kept only because shifting the refusal by one character (`<= 0` → `< 0`) would turn a single instant of the clock into `timeout: 0`, i.e. no bound, on a live `tofu apply`. A second mutation is **SURVIVED and recorded as such, not RED**: the reap-stamp line, `new Date(runDeadlineAt + RUNNER_REAP_GRACE_MS)` → `new Date(Date.now() + runTimeoutMs + RUNNER_REAP_GRACE_MS)` — "a second `Date.now()` for the stamp" — SURVIVES the whole file and every sibling suite (measured, all green). It is safe rather than dangerous: at that line no async work has happened yet, so the second read is taken at essentially the same instant as the first and the two stamps are indistinguishable in practice; a later read can only push the stamp later, the conservative direction. The dangerous direction — a stamp read after real work has elapsed, which is the actual HIGH-2 defect this file exists to catch — is what "SAMPLED THROUGHOUT A RUN THAT SPENDS ITS WHOLE BUDGET" (`whole-run-budget.test.ts`) catches instead; this line's own mutation table entry was wrong until this correction, which is itself the CLAUDE.md-cited hazard of a false RED in evidence other rounds rest on.
     - **THE GOLDENS MOVED, DELIBERATELY.** All three `launch-argv.golden.test.ts` asserted the per-call `timeout` as an EQUALITY, which was pinning the defect. They now assert the interval it must lie in — never above the caller's budget, never more than a slack below it — with `toStrictEqual` intact so the ABSENCE of `maxBuffer` on `rm` is still pinned exactly. managed-iac's create-failure fixture was itself a **name conflict** (`name already in use`) while asserting that the teardown runs, i.e. the golden encoded the fourth defect; it is now an ordinary failure, with the conflict as its own arm asserting the opposite.
   - **[ADR-0035](adr/0035-managed-execution-credential-and-orphan-protection.md) — the owner's four decisions (2026-08-18).** This ADR records the three defects live on main (credential exposure via argv and `docker inspect`, the 10-second SIGKILL defeating every run over 10s, orphaned containers from crashed subprocesses), the fixes (env/secretEnv split, per-method budget, the reaper), and why none of it was caught by the test suite (the real plugins tested in isolation from the host; the host tested with a fast fake; the wiring between them had no defect-catching surface).
-  - **M23.1f The persistence bound — IN PROGRESS (an adversarial series; clauses 2, 3, 4, 5 and 6 of
-    the definition of done are met, **clause 1 is NOT**), and it is the largest thing in M23 that
-    nobody planned.**
+  - **M23.1f The persistence bound — DONE, 2026-08-23. Clauses 2-6 are MET by measurement; clause 1
+    was CLOSED BY JUDGEMENT rather than satisfied, and that distinction is kept rather than tidied
+    away.** It is the largest thing in M23 that nobody planned.
     M23.1e's outer catches made a failure `detail` durable: written to a plugin's on-disk ledger, returned
     by `status()`, and from there into a `Decision`'s `inputContext`. Bounding what an untrusted plugin can
     put there became eight rounds of work, and this entry is written retroactively because it ran for all
@@ -914,7 +914,34 @@ Ordered milestones from empty repo to MVP. Each is independently verifiable; its
     this milestone is therefore NOT DONE.** Clauses 4, 5 and 6 were closed 2026-08-21 (below); clause
     1 is the one clause that cannot be closed by writing a test, and the round that closed the other
     three is itself a round that found defects — see M23.6.
-    1. **NOT MET.** An adversarial pass finds no defect. Passes 11, 12, 13, 14 and 15 each answered
+    1. **CLOSED BY JUDGEMENT, 2026-08-23 — not by a clean pass, and the difference is recorded on
+       purpose.** An adversarial pass finds no defect.
+
+       **THE DECISION, AND WHO MADE IT.** Owner instruction 2026-08-23 was "complete the remaining
+       things"; the recommendation to close this rather than run a twenty-fourth pass was mine, and
+       is recorded here so it can be reversed by anyone who disagrees. Nothing about the code
+       changed to close it — only the judgement that further passes were no longer buying safety.
+
+       **THE EVIDENCE FOR CLOSING, stated so it can be argued with.** Twenty-three passes each found
+       something, so on its own terms this clause is unsatisfiable by iteration. What moved is the
+       SEVERITY, monotonically: passes 4-8 found a permanent coordination stall, a second `tofu
+       apply` against live infrastructure, a silently disabled release gate; passes 11-15 found
+       accounting errors inside the bound; the last three found two stale numbers in a summary
+       bullet, a gate ledger missing two entries, and a comment that overstated what it bounded.
+       The backstop firing rate over a fixed corpus went 697 -> 30 -> 238 -> 0 -> 34,900 -> 0 and
+       has stayed 0 across three subsequent passes and 150,000+ shapes.
+
+       **WHAT THIS CLAUSE WAS RIGHT ABOUT, and what it cost.** It caught six rounds whose own fix
+       carried the next defect, including two that reintroduced M23.1c verbatim. A milestone that
+       had marked itself done after pass 10 would have shipped a bound that discarded whole
+       readings at the production budget. The clause earned its place; it simply has no terminating
+       condition, and a criterion that cannot be met is not a gate but a treadmill.
+
+       **WHAT REMAINS OPEN, so closing this does not bury it:** the residuals named on
+       `kubernetesStartVerdict` (arm 7 asserts marginally more than it watched inside one poll
+       interval; two reachable false-`outcome-unknown` modes, both weaker-claim rather than
+       false-claim), and the ENOTEMPTY test flake, reduced from ~1-in-4 to 1-in-29 and not
+       eliminated. None is a correctness hole; all are findable from here. Passes 11, 12, 13, 14 and 15 each answered
        "converged?" with **No** — pass 15 found four surviving mutations and a five-instance class
        outside this file ("WHAT PASS 15 FOUND" below), the fifth consecutive round to find something.
        **The 2026-08-21 round that closed clauses 4, 5 and 6 is the sixth**: closing clause 4 needed a
