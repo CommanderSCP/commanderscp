@@ -72,9 +72,7 @@ export function computeCampaignStatus(input: ComputeCampaignStatusInput): Campai
   // `block` verdict (a policy or control did not pass), and M25.2's per-target freeze hold, which
   // deliberately leaves the wave `running` so its unfrozen siblings can proceed. Same tier, because
   // the operator-facing fact is the same one — something needs a human before this finishes.
-  if (
-    input.waves.some((w) => w.waveStatus === "blocked" || (w.frozenTargetCount ?? 0) > 0)
-  ) {
+  if (input.waves.some((w) => w.waveStatus === "blocked" || (w.frozenTargetCount ?? 0) > 0)) {
     return "blocked";
   }
   if (input.waves.every((w) => w.waveStatus === "succeeded" || w.waveStatus === "skipped")) {

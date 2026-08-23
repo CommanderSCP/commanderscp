@@ -4,7 +4,13 @@ import { and, eq, sql } from "drizzle-orm";
 import { ScpClient } from "@scp/sdk";
 import type { GraphObject } from "@scp/schemas";
 import { withTenantTx, type TenantTx } from "../db/tenant-tx.js";
-import { campaignWaveTargets, changes, changeWaveTargets, decisions, freezes } from "../db/schema.js";
+import {
+  campaignWaveTargets,
+  changes,
+  changeWaveTargets,
+  decisions,
+  freezes
+} from "../db/schema.js";
 import {
   createTestComponent,
   createTestOrg,
@@ -666,10 +672,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // consulted only the first target's chain would report nothing frozen and allow.
     const noOverride = await gate(org.orgId);
     expect(noOverride.verdict).toBe("block");
-    expect(
-      [frozen.id, alsoFrozen.id],
-      "the block names one of the two active freezes"
-    ).toContain((noOverride.inputContext.freeze as { id: string }).id);
+    expect([frozen.id, alsoFrozen.id], "the block names one of the two active freezes").toContain(
+      (noOverride.inputContext.freeze as { id: string }).id
+    );
 
     // (b) AUTHORITY AT THE WRONG SCOPE IS NOT AUTHORITY. `freeze:override` at the FIRST service
     // says nothing about a freeze declared at the second — that is exactly the escalation checking
@@ -991,7 +996,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     refuseTargets.add(app.at(apac));
     const change = await release("dedup2", [app.id]);
     await tick(2);
-    expect((await waves(change.id))[0]!.status, "the gate saw no freeze and allowed").toBe("running");
+    expect((await waves(change.id))[0]!.status, "the gate saw no freeze and allowed").toBe(
+      "running"
+    );
 
     const atomicFreeze = await atomicFreezeAt(amer.id, "amer-atomic-first");
     const plainFreeze = await freezeAt(apac.id, "apac-plain-second");
@@ -1064,10 +1071,9 @@ describe("freeze admission: per-target holds, whole-wave blocks, and what is exe
     // holding it while the truth is that the object was deleted, and would defer the tombstone's
     // own audit event and block Decision for exactly as long. Terminalizing it is PROGRESS, which
     // is the ordering `campaign-reconcile.ts`'s seam already states for itself.
-    expect(
-      (await waveTarget(change.id, app.at(amer))).status,
-      "a dead target is not held"
-    ).toBe("target_deleted");
+    expect((await waveTarget(change.id, app.at(amer))).status, "a dead target is not held").toBe(
+      "target_deleted"
+    );
     expect(firedFor(app.at(amer)), "and nothing was ever dispatched at it").toBe(0);
   });
 

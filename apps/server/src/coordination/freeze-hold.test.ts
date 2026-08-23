@@ -46,14 +46,17 @@ describe("describeHeldTargets (M25.2 — the anti-write-amplification sort)", ()
 
   it("does not mutate its input, and carries the stage pair through", () => {
     const input = [
-      { ...verdict("t-b", ["f-1"]), stage: { componentObjectId: "c", deploymentTargetObjectId: "d" } },
+      {
+        ...verdict("t-b", ["f-1"]),
+        stage: { componentObjectId: "c", deploymentTargetObjectId: "d" }
+      },
       verdict("t-a", [])
     ];
     const held = describeHeldTargets(input);
-    expect(input.map((v) => v.targetObjectId), "the caller's array is its own").toEqual([
-      "t-b",
-      "t-a"
-    ]);
+    expect(
+      input.map((v) => v.targetObjectId),
+      "the caller's array is its own"
+    ).toEqual(["t-b", "t-a"]);
     expect(held[1]).toMatchObject({
       targetObjectId: "t-b",
       componentObjectId: "c",

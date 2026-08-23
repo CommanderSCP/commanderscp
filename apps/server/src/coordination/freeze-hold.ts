@@ -125,7 +125,10 @@ export async function evaluateFreezeHolds(
     const holding =
       atomicFreezes.length === 0
         ? entry.freezes
-        : unionFreezes([{ targetObjectId: entry.targetObjectId, freezes: entry.freezes }, { targetObjectId: entry.targetObjectId, freezes: atomicFreezes }]);
+        : unionFreezes([
+            { targetObjectId: entry.targetObjectId, freezes: entry.freezes },
+            { targetObjectId: entry.targetObjectId, freezes: atomicFreezes }
+          ]);
     if (holding.length === 0) continue;
 
     // ==========================================================================================
